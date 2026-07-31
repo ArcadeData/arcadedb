@@ -201,7 +201,8 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     private final Shape         searchShape;
     private       int           nextBucket;
     private       IndexCursor   cursor;
-    private       Identifiable  next;
+    /** Lookahead, named for what it holds rather than for next(): fetchNext() fills it, next() drains it. */
+    private       Identifiable  pending;
 
     GeoCandidateIterator(final List<Index> bucketIndexes, final Shape searchShape) {
       this.bucketIndexes = bucketIndexes;
@@ -210,20 +211,20 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
 
     @Override
     public boolean hasNext() {
-      if (next == null)
+      if (pending == null)
         fetchNext();
-      return next != null;
+      return pending != null;
     }
 
     @Override
     public Record next() {
-      if (next == null) {
+      if (pending == null) {
         fetchNext();
-        if (next == null)
+        if (pending == null)
           throw new NoSuchElementException();
       }
-      final Identifiable current = next;
-      next = null;
+      final Identifiable current = pending;
+      pending = null;
       return current.getRecord();
     }
 
@@ -233,7 +234,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
           while (cursor.hasNext()) {
             final Identifiable candidate = cursor.next();
             if (candidate != null) {
-              next = candidate;
+              pending = candidate;
               return;
             }
           }
@@ -261,7 +262,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
         cursor.close();
         cursor = null;
       }
-      next = null;
+      pending = null;
       nextBucket = bucketIndexes.size();
     }
   }

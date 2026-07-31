@@ -19,9 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Record;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,18 +34,67 @@ import static org.assertj.core.api.Assertions.assertThat;
  * file that still has one in {@code dropRetiredCompactedIndexes} - so that scan has to be released when the caller is
  * done, exactly as {@code FetchFromIndexStep.close()} already guarantees for the regular index path.
  * <p>
- * This pins the propagation itself rather than its downstream consequence: closing the result set must reach
- * {@link FetchFromIndexedFunctionStep#close()} and drop the iterator. Asserting on the retire guard instead would need
- * a fixture large enough to produce a compacted series (tens of thousands of records), and would hold vacuously on
- * anything smaller.
+ * The guarantee has two halves and both are asserted here, because {@code releaseResult()} nulls its field
+ * unconditionally: asserting only that the field became null would still pass if the iterator stopped being
+ * {@link AutoCloseable} - the very regression this wiring exists to prevent. So these tests check that the production
+ * iterator IS closeable, and drive a tracking iterator through the real plan to prove {@code close()} actually reaches
+ * it.
+ * <p>
+ * Pinned on the propagation rather than on its downstream consequence: asserting on the retire-guard counter would
+ * need a fixture large enough to produce a compacted series (tens of thousands of records), and would hold vacuously
+ * on anything smaller.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
   private static final String SEARCH_BOX = "POLYGON ((5 35, 20 35, 20 48, 5 48, 5 35))";
 
+  /** Wraps the real lazy chain so the test can observe whether the step actually closed it. */
+  private static class TrackingIterator implements Iterator<Record>, AutoCloseable {
+    private final Iterator<Record> delegate;
+    private       boolean          closed;
+
+    TrackingIterator(final Iterator<Record> delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public boolean hasNext() {
+      return delegate.hasNext();
+    }
+
+    @Override
+    public Record next() {
+      return delegate.next();
+    }
+
+    @Override
+    public void close() throws Exception {
+      closed = true;
+      if (delegate instanceof final AutoCloseable closeable)
+        closeable.close();
+    }
+  }
+
   @Test
-  void closingTheResultSetReleasesTheIteratorOfAnAbandonedQuery() {
+  void theLazyChainOfAGeoQueryIsCloseable() {
+    createCities();
+
+    final ResultSet resultSet = database.query("sql",
+        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 1");
+    try {
+      assertThat(resultSet.hasNext()).isTrue();
+      resultSet.next();
+
+      // if the geo path ever stopped answering with a closeable iterator the release below would silently do nothing
+      assertThat(indexedFunctionStep(resultSet).fullResult).isInstanceOf(AutoCloseable.class);
+    } finally {
+      resultSet.close();
+    }
+  }
+
+  @Test
+  void closingTheResultSetClosesTheIteratorOfAnAbandonedQuery() {
     createCities();
 
     final ResultSet resultSet = database.query("sql",
@@ -53,28 +104,37 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
     resultSet.next();
 
     final FetchFromIndexedFunctionStep step = indexedFunctionStep(resultSet);
-    assertThat(step.fullResult).as("the step holds the lazy chain while the query is being consumed").isNotNull();
+    final TrackingIterator tracker = new TrackingIterator(step.fullResult);
+    step.fullResult = tracker;
 
     // abandoned with the covering-cell walk still mid-flight - the shape that could not exist while get() drained
     resultSet.close();
 
-    assertThat(step.fullResult).as("closing the result set must reach the step and release the lazy chain").isNull();
+    assertThat(tracker.closed).as("ResultSet.close() must reach the step and close the lazy chain").isTrue();
+    assertThat(step.fullResult).isNull();
   }
 
   @Test
-  void resetAlsoReleasesTheIterator() {
+  void resetAlsoClosesTheIterator() {
     createCities();
 
     final ResultSet resultSet = database.query("sql",
         "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 1");
+    try {
+      assertThat(resultSet.hasNext()).isTrue();
+      resultSet.next();
 
-    assertThat(resultSet.hasNext()).isTrue();
-    resultSet.next();
+      final FetchFromIndexedFunctionStep step = indexedFunctionStep(resultSet);
+      final TrackingIterator tracker = new TrackingIterator(step.fullResult);
+      step.fullResult = tracker;
 
-    final FetchFromIndexedFunctionStep step = indexedFunctionStep(resultSet);
-    step.reset();
+      step.reset();
 
-    assertThat(step.fullResult).as("a reset re-runs the search, so the previous chain must be released first").isNull();
+      assertThat(tracker.closed).as("a reset re-runs the search, so the previous chain must be closed first").isTrue();
+      assertThat(step.fullResult).isNull();
+    } finally {
+      resultSet.close();
+    }
   }
 
   private FetchFromIndexedFunctionStep indexedFunctionStep(final ResultSet resultSet) {
