@@ -138,10 +138,17 @@ public class SQLQueryEngine implements QueryEngine {
    * statements replicate correctly under {@code sqlscript} and not under {@code sql}. Off HA the wrapper is the
    * instance itself, so this is a no-op there.
    * <p>
-   * Every path in this class that hands a database to {@code Statement.execute} must use this, not the field: both
-   * {@code command()} overloads and {@code analyze()}'s {@code AnalyzedQuery.execute()}. The engine itself is bound
-   * to the inner instance ({@code RaftReplicatedDatabase.getQueryEngine} delegates to {@code proxied}), so the field
-   * is never the right answer for execution.
+   * <b>Which paths must use this:</b> every one that can carry a statement that commits - both {@code command()}
+   * overloads and {@code analyze()}'s {@code AnalyzedQuery.execute()}. {@code analyze()} is included because it is
+   * not gated on idempotency: the MCP command tool executes writes through it, so it can carry a {@code TRUNCATE}.
+   * <p>
+   * The two {@code query()} overloads deliberately keep the field. They throw
+   * {@link com.arcadedb.exception.QueryNotIdempotentException} before execution for anything non-idempotent, so no
+   * statement reaching them can commit, and leaving them alone keeps read traffic - including follower-local reads -
+   * resolving exactly as it did before. Add a new entry point that can execute a write, and it belongs on this
+   * method; the engine itself is bound to the inner instance
+   * ({@code RaftReplicatedDatabase.getQueryEngine} delegates to {@code proxied}), so the field is never the right
+   * answer for anything that might commit.
    */
   private DatabaseInternal executionDatabase() {
     return database.getWrappedDatabaseInstance();
