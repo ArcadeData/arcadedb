@@ -122,6 +122,9 @@ public class Profiler {
     final long pageCacheHits = pStats.cacheHits;
     final long pageCacheMiss = pStats.cacheMiss;
     final long concurrentModificationExceptions = pStats.concurrentModificationExceptions;
+    final long edgeAppendMerges = pStats.edgeAppendMerges;
+    final long txPageSlotMerges = pStats.txPageSlotMerges;
+    final long mergesDeclinedByCoverage = pStats.mergesDeclinedByCoverage;
     final long evictionRuns = pStats.evictionRuns;
     final long pagesEvicted = pStats.pagesEvicted;
     final int readCachePages = pStats.readCachePages;
@@ -144,6 +147,11 @@ public class Profiler {
     json.put("walBytesWritten", new JSONObject().put("space", walBytesWritten));
     json.put("walTotalFiles", walTotalFiles);
     json.put("concurrentModificationExceptions", new JSONObject().put("count", concurrentModificationExceptions));
+    // #5608: the three page-merge counters travel WITH concurrentModificationExceptions on purpose - a merge that
+    // stops firing shows up as conflicts here and declines there, and neither half means anything alone.
+    json.put("edgeAppendMerges", new JSONObject().put("count", edgeAppendMerges));
+    json.put("txPageSlotMerges", new JSONObject().put("count", txPageSlotMerges));
+    json.put("mergesDeclinedByCoverage", new JSONObject().put("count", mergesDeclinedByCoverage));
 
     json.put("writeTx", new JSONObject().put("count", writeTx));
     json.put("readTx", new JSONObject().put("count", readTx));
@@ -303,6 +311,9 @@ public class Profiler {
       final long pageCacheHits = pStats.cacheHits;
       final long pageCacheMiss = pStats.cacheMiss;
       final long concurrentModificationExceptions = pStats.concurrentModificationExceptions;
+      final long edgeAppendMerges = pStats.edgeAppendMerges;
+      final long txPageSlotMerges = pStats.txPageSlotMerges;
+      final long mergesDeclinedByCoverage = pStats.mergesDeclinedByCoverage;
       final long evictionRuns = pStats.evictionRuns;
       final long pagesEvicted = pStats.pagesEvicted;
       final int readCachePages = pStats.readCachePages;
@@ -360,6 +371,12 @@ public class Profiler {
         "%n PAGE-MANAGER flushQueue=%d cacheHits=%d cacheMiss=%d concModExceptions=%d evictionRuns=%d pagesEvicted=%d".formatted(
           pageFlushQueueLength,
           pageCacheHits, pageCacheMiss, concurrentModificationExceptions, evictionRuns, pagesEvicted));
+
+      // #5608: read this line together with concModExceptions above. Contention absorbed by a merge never becomes a
+      // retry; a jump in mergesDeclined with a dip in the two merge counters is a writer dirtying a mergeable page
+      // without declaring its coverage (see MutablePage.beginCoveredWrite).
+      buffer.append("%n    edgeAppendMerges=%d txPageSlotMerges=%d mergesDeclinedByCoverage=%d".formatted(
+          edgeAppendMerges, txPageSlotMerges, mergesDeclinedByCoverage));
 
       buffer.append(
         "%n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s".formatted(walTotalFiles, walPagesWritten,
