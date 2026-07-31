@@ -611,15 +611,20 @@ Java API alike:
 CREATE INDEX ON Location (coords) GEOSPATIAL METADATA {"precision": 6}
 ```
 
-Two related sharp edges went with it:
+A `METADATA` clause the index cannot use is now reported instead of dropped. An unknown key (`{"precisin": 6}`), a
+precision that is not a whole number in 1-12, an invalid tokenization, or a `METADATA` on an index type that has
+no settings at all raise a `CommandSQLParsingException`. Silently ignoring the clause is what kept this gap
+invisible in the first place.
 
-- **An unusable `METADATA` clause is rejected instead of dropped.** An unknown key (`{"precisin": 6}`), an
-  out-of-range precision, an invalid tokenization, or a `METADATA` on an index type that has no settings at all
-  now raise a `CommandSQLParsingException`. Silently ignoring the clause is what kept the gap invisible.
-- **`withType()` no longer leaves the original builder unconfigured.** It returns a specialised subclass for
-  `LSM_VECTOR`, `FULL_TEXT`, `LSM_SPARSE_VECTOR` and now `GEOSPATIAL`, so a caller that ignored the return value
-  (`builder.withType(X); builder.create();`) hit `indexType was not specified`. The type is recorded on the
-  original builder as well.
+> **Breaking change, at execution time.** `CREATE INDEX ... UNIQUE METADATA {"test": 3}` - a `METADATA` clause on
+> a plain `LSM_TREE` or `HASH` index, which has no settings to configure - used to be accepted and ignored, and
+> now fails the statement. The SQL **grammar** is unchanged, so such a statement still parses; only running it
+> is refused. If a schema script carries a `METADATA` that was never doing anything, drop the clause.
+
+One more sharp edge went with it: **`withType()` no longer leaves the original builder unconfigured.** It returns
+a specialised subclass for `LSM_VECTOR`, `FULL_TEXT`, `LSM_SPARSE_VECTOR` and now `GEOSPATIAL`, so a caller that
+ignored the return value (`builder.withType(X); builder.create();`) hit `indexType was not specified`. The type is
+recorded on the original builder as well.
 
 ## GEOSPATIAL: an area shape indexes fewer cells
 

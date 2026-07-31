@@ -119,6 +119,10 @@ public class TypeGeoIndexBuilder extends TypeIndexBuilder {
       final Object precision = json.get("precision");
       if (!(precision instanceof Number number))
         throw new IllegalArgumentException("Geospatial index precision must be a number, got: " + precision);
+      // A GeoHash precision is a tree LEVEL, so 6.9 is not "6": truncating it would drop the very kind of typo this
+      // method exists to report.
+      if (number.doubleValue() != number.intValue())
+        throw new IllegalArgumentException("Geospatial index precision must be a whole number, got: " + precision);
       geoMetadata.setPrecision(number.intValue());
     }
 

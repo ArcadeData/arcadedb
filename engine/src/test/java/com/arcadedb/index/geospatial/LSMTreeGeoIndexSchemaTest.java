@@ -176,6 +176,19 @@ class LSMTreeGeoIndexSchemaTest extends TestHelper {
   }
 
   @Test
+  void fractionalPrecisionIsRejected() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location10");
+    database.command("sql", "CREATE PROPERTY Location10.coords STRING");
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX ON Location10 (coords) GEOSPATIAL METADATA {\"precision\": 6.9}"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("whole number");
+
+    assertThat(database.getSchema().existsIndex("Location10[coords]")).isFalse();
+  }
+
+  @Test
   void invalidTokenizationIsRejected() {
     database.command("sql", "CREATE DOCUMENT TYPE Location8");
     database.command("sql", "CREATE PROPERTY Location8.coords STRING");
