@@ -59,6 +59,10 @@ import java.util.logging.Level;
 public class GraphSearcherPool {
   /**
    * The (graph, epoch) pair the pool currently serves. Held as one value so it can never be read half-updated.
+   * <p>
+   * Both this and {@link Pooled} match their graph by <b>reference</b>, never by {@code equals}: a rebuild
+   * publishes a new {@code ImmutableGraphIndex} instance, and a searcher's {@code View} is bound to the exact
+   * instance it was built from, so two distinct instances are never interchangeable however equal their contents.
    */
   private record Identity(ImmutableGraphIndex graph, long epoch) {
   }
@@ -104,6 +108,13 @@ public class GraphSearcherPool {
         return entry.searcher;
       // Pooled under an identity this caller does not share: it was queued by a release racing an identity
       // change, after the sweep for that change had already passed. Reclaim it and keep looking.
+      //
+      // Matching against the caller's own pair rather than the current one is deliberate. Should the identity
+      // move on again while this loop runs, an entry a concurrent release queued under that newer identity is
+      // closed here even though it was still usable. That costs one searcher reallocation under a rebuild
+      // storm and can never return a wrong searcher, which is the trade-off a best-effort sweep is allowed to
+      // make; re-reading the published identity per iteration would put a volatile read on the search path to
+      // buy nothing but pooling efficiency.
       close(entry.searcher);
     }
     return new GraphSearcher(graph);
