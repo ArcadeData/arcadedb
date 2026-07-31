@@ -207,12 +207,16 @@ public class MCPDispatcher {
     // escapes dispatch entirely and reaches the transport as a bodiless HTTP 500 rather than a JSON-RPC envelope.
     // Both members belong to the request object itself, which makes a wrong shape an invalid request rather than
     // invalid params.
+    // The two members are read differently on purpose. 'method' goes through stringMember, which decides on the
+    // value's own JSON type and so raises IllegalArgumentException for every non-string shape alike; the accessor
+    // it replaces would have unwrapped a one-element array instead. 'params' keeps the accessor, whose
+    // getAsJsonObject raises for an array of any size, so arity never decided anything there.
     final String method;
     final JSONObject params;
     try {
-      method = request.getString("method", "");
+      method = stringMember(request, "method", "");
       params = request.getJSONObject("params", new JSONObject());
-    } catch (final IllegalStateException | UnsupportedOperationException e) {
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
       return error(id, -32600, "Invalid Request: 'method' must be a string and 'params' an object", 200);
     }
 
@@ -273,10 +277,12 @@ public class MCPDispatcher {
     // Guarded for the same reason as the request members in dispatch: a 'uri' present but of another JSON type
     // raises out of the read, which sits above the try below. A wrong shape is invalid params, distinct from the
     // resource-not-found the try answers with for a URI that is well formed but names nothing readable.
+    // stringMember raises IllegalArgumentException for every non-string shape, including the one-element array the
+    // accessor it replaces would have unwrapped into a readable URI.
     final String uri;
     try {
-      uri = params.getString("uri", "");
-    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      uri = stringMember(params, "uri", "");
+    } catch (final IllegalArgumentException e) {
       return error(id, -32602, "Invalid params: 'uri' must be a string", 200);
     }
 
@@ -310,7 +316,7 @@ public class MCPDispatcher {
     // only for an absent or null member, so a member of the wrong JSON shape raises instead. That is a malformed
     // request rather than a server fault, and answering it needs the -32602 mapping below.
     try {
-      final String name = params.getString("name", "");
+      final String name = stringMember(params, "name", "");
       final JSONObject args = params.getJSONObject("arguments", new JSONObject());
 
       LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get '%s' (user=%s)", transport, name, user.getName());
@@ -332,12 +338,18 @@ public class MCPDispatcher {
     // Guarded for the same reason as the request members in dispatch: a member present but of the wrong JSON type
     // raises out of the read, and these reads sit above the try below. A malformed member here is invalid params
     // rather than a failed tool call, so it answers with a JSON-RPC error rather than an isError tool envelope.
+    // 'name' goes through stringMember so that a one-element array naming a real tool is refused here instead of
+    // being unwrapped and executed; 'arguments' keeps the accessor, which already refuses an array of any size.
+    // Only the name is narrowed. The members inside 'arguments' are left to the accessor on purpose: formatArgs
+    // reads 'arguments.key' to decide whether to mask a secret value in the request log while SetServerSettingTool
+    // reads the same member to decide what to write, and two readers of one member must agree on its coercion or
+    // the masking can be bypassed. 'name' has no second reader - formatArgs receives the value resolved here.
     final String toolName;
     final JSONObject args;
     try {
-      toolName = params.getString("name", "");
+      toolName = stringMember(params, "name", "");
       args = params.getJSONObject("arguments", new JSONObject());
-    } catch (final IllegalStateException | UnsupportedOperationException e) {
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
       return error(id, -32602, "Invalid params: 'name' must be a string and 'arguments' an object", 200);
     }
 
@@ -535,6 +547,28 @@ public class MCPDispatcher {
     result.put("content", content);
     result.put("isError", true);
     return result(id, result);
+  }
+
+  /**
+   * Reads a member that the protocol types as a string, deciding on the value's own JSON type rather than on what
+   * a converting accessor makes of it. {@link JSONObject#getString(String, String)} delegates to Gson, which
+   * unwraps a one-element array to that element and stringifies a bare number or boolean, raising only for any
+   * other shape. Array arity would then decide whether a request is executed or refused. {@link JSONObject#opt}
+   * maps each JSON type to its Java counterpart without converting between them, so comparing the result against
+   * String admits the JSON strings and nothing else.
+   *
+   * @return the member's value, or defaultValue when the member is absent or JSON null.
+   *
+   * @throws IllegalArgumentException when the member is present with any other JSON type. Callers translate this
+   *                                  into the JSON-RPC error that fits where the member sits.
+   */
+  private static String stringMember(final JSONObject json, final String name, final String defaultValue) {
+    final Object value = json.opt(name);
+    if (value == null)
+      return defaultValue;
+    if (value instanceof String string)
+      return string;
+    throw new IllegalArgumentException("'" + name + "' must be a string");
   }
 
   /**

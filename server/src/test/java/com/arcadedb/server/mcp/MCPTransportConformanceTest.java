@@ -121,10 +121,59 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
   }
 
+  /**
+   * JSON-RPC 2.0 types 'method' as a String, but the value used to be read through an accessor that delegates to
+   * Gson, which unwraps a one-element array to that element and raises only for any other size. Array arity
+   * therefore decided whether the request was executed or rejected: {@code ["ping"]} dispatched ping while
+   * {@code ["ping","x"]} was refused. Both are the same malformed shape and both must be refused.
+   */
+  @Test
+  void requestWithSingleElementArrayMethodIsRejected() throws Exception {
+    final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":[\"ping\"]}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("result")).isFalse();
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+  }
+
+  /**
+   * The accessor also stringifies a bare non-string primitive, so a numeric or boolean 'method' used to reach the
+   * dispatch switch as its text form and be answered with 'Method not found' rather than an invalid request.
+   */
+  @Test
+  void requestWithNonStringPrimitiveMethodIsRejected() throws Exception {
+    for (final String method : new String[] { "42", "true" }) {
+      final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":" + method + "}", null);
+
+      assertThat(response.status).as("method=%s", method).isEqualTo(200);
+      final JSONObject json = new JSONObject(response.body);
+      assertThat(json.has("error")).as("method=%s", method).isTrue();
+      assertThat(json.getJSONObject("error").getInt("code")).as("method=%s", method).isEqualTo(-32600);
+    }
+  }
+
+  /**
+   * The same coercion applied to every string-typed params member. Each payload below names a target that exists,
+   * so before the fix the coerced value was dispatched and the call succeeded.
+   */
+  @Test
+  void toolsCallWithSingleElementArrayNameIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":[\"list_databases\"]}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("result")).isFalse();
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
   @Test
   void requestWithNonStringMethodIsRejected() throws Exception {
-    // An object, not a one-element array: Gson coerces a single-element array to that element's string form, so
-    // "method":["ping"] would silently succeed as a call to ping rather than exercising the malformed path.
+    // An object rather than a one-element array. Both are refused now, but they were not always: the array shape
+    // used to be unwrapped into a call to ping, which is what requestWithSingleElementArrayMethodIsRejected pins.
     final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":{}}", null);
 
     assertThat(response.status).isEqualTo(200);
@@ -181,6 +230,54 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     final JSONObject json = new JSONObject(response.body);
     assertThat(json.has("error")).isTrue();
     assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  @Test
+  void resourcesReadWithSingleElementArrayUriIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resources/read\","
+            + "\"params\":{\"uri\":[\"arcadedb://graph/schema\"]}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("result")).isFalse();
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  @Test
+  void promptsGetWithSingleElementArrayNameIsRejected() throws Exception {
+    // Both required arguments are supplied, so the only thing wrong with this request is the shape of 'name'.
+    // Omitting them would make the assertion pass on the missing-argument path and prove nothing.
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"prompts/get\","
+            + "\"params\":{\"name\":[\"graphrag_query\"],"
+            + "\"arguments\":{\"database\":\"graph\",\"question\":\"who?\"}}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("result")).isFalse();
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  /**
+   * The guard rejects by JSON type, so an absent member must still fall back to its default rather than be caught
+   * by it. A request with no 'params' reaches the same handler as one carrying an empty object.
+   */
+  @Test
+  void absentAndNullStringMembersStillFallBackToTheirDefault() throws Exception {
+    for (final String params : new String[] { "", ",\"params\":{}", ",\"params\":{\"name\":null}" }) {
+      final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\"" + params + "}", null);
+
+      assertThat(response.status).as("params=%s", params).isEqualTo(200);
+      final JSONObject json = new JSONObject(response.body);
+      // An absent name defaults to the empty string, which is a well-formed request naming no tool. That is an
+      // unknown tool, answered as an isError tool envelope, and must stay distinct from the -32602 a malformed
+      // member now produces.
+      assertThat(json.has("error")).as("params=%s", params).isFalse();
+      assertThat(json.getJSONObject("result").getBoolean("isError")).as("params=%s", params).isTrue();
+    }
   }
 
   @Test
