@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -38,6 +39,7 @@ import com.arcadedb.schema.TypeGeoIndexBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
@@ -49,6 +51,17 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 public class CreateIndexStatement extends DDLStatement {
+
+  /**
+   * Reported for every LSM_VECTOR statement whose METADATA does not carry a usable {@code dimensions}.
+   * Only that one setting is mandatory: it is compared against the length of every candidate vector, so
+   * an index built without it indexes nothing. The others all have defaults, which the previous wording
+   * ("requires METADATA with dimensions, similarity, maxConnections, and beamWidth") did not say (#5607).
+   */
+  private static final String LSM_VECTOR_METADATA_HINT =
+      "LSM_VECTOR index requires a METADATA clause with a positive 'dimensions', e.g. METADATA {\"dimensions\": 384}. "
+          + "Optional: similarity (default COSINE), maxConnections (default 32), beamWidth (default 100), "
+          + "quantization (default NONE)";
 
   public Identifier                         name;
   public Identifier                         typeName;
@@ -200,19 +213,38 @@ public class CreateIndexStatement extends DDLStatement {
     // Handle vector-specific metadata
     if (indexType == Schema.INDEX_TYPE.LSM_VECTOR) {
       if (metadata == null)
-        throw new CommandSQLParsingException(
-            "LSM_VECTOR index requires METADATA with dimensions, similarity, maxConnections, and beamWidth");
+        // Only "dimensions" is mandatory; the rest of the knobs have defaults. The message used to list
+        // all four as required, which sent users looking for values they did not have to supply (#5607).
+        throw new CommandSQLParsingException(LSM_VECTOR_METADATA_HINT);
 
       final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
       final JSONObject jsonMetadata = new JSONObject(metadataMap);
 
-      // Extract buildGraphNow directive (default true) before passing metadata to builder
-      final boolean buildGraphNow = jsonMetadata.getBoolean("buildGraphNow", true);
-      jsonMetadata.remove("buildGraphNow");
-
       // Builder is now an LSMVectorIndexBuilder after withType(LSM_VECTOR)
       final TypeLSMVectorIndexBuilder vectorBuilder = builder.withLSMVectorType();
-      vectorBuilder.withMetadata(jsonMetadata);
+
+      final boolean buildGraphNow;
+      try {
+        // An empty or dimension-less METADATA satisfied the null check above and then built an index with
+        // dimensions=0, which accepts writes and indexes nothing. The builder refuses it too, but raising a
+        // parsing exception here keeps a malformed statement a client error (HTTP 400) instead of a 500.
+        if (jsonMetadata.getInt("dimensions", 0) < 1)
+          throw new CommandSQLParsingException(LSM_VECTOR_METADATA_HINT);
+
+        // Extract buildGraphNow directive (default true) before passing metadata to builder
+        buildGraphNow = jsonMetadata.getBoolean("buildGraphNow", true);
+        jsonMetadata.remove("buildGraphNow");
+
+        vectorBuilder.withMetadata(jsonMetadata);
+      } catch (final IndexException | IllegalArgumentException | JSONException e) {
+        // Every value in this clause comes from the statement, so a value the builder cannot read is a
+        // client mistake, not a server fault: an unparsable number ({"dimensions": "abc"} used to escape
+        // as a raw NumberFormatException), an unknown similarity or quantization name, an out-of-range PQ
+        // setting. Reporting them as parsing errors keeps the HTTP answer a 400, the same treatment the
+        // GEOSPATIAL branch below gives its metadata.
+        throw new CommandSQLParsingException("Invalid METADATA for LSM_VECTOR index: " + e.getMessage(), e);
+      }
+
       final TypeIndex typeIndex = vectorBuilder.create();
 
       // Build the HNSW graph immediately unless explicitly disabled

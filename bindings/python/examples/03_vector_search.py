@@ -220,15 +220,6 @@ with arcadedb.create_database(db_path) as db:
     print("Step 5: Creating vector index...")
     step_start = time.time()
 
-    print(f"   💡 JVector Parameters:")
-    print(f"      • dimensions: {EMBEDDING_DIM} (matches embedding size)")
-    print("      • distance_function: cosine (best for normalized vectors)")
-    print(
-        "      • max_connections: 32 (connections per node, higher = more accurate but slower)"
-    )
-    print("      • beam_width: 256 (search quality, higher = more accurate)")
-    print()
-
     db.command(
         "sql",
         f"""
@@ -240,6 +231,26 @@ with arcadedb.create_database(db_path) as db:
         }}
         """,
     )
+
+    # Report what the index was actually built with. The METADATA above sets only
+    # dimensions and similarity, so everything else comes from the engine defaults;
+    # reading them back keeps this output correct if those defaults change.
+    index_meta = db.schema.get_vector_index("Article", "embedding").get_metadata()
+    print("   💡 JVector Parameters:")
+    print(f"      • dimensions: {index_meta['dimensions']} (matches embedding size)")
+    print(
+        f"      • distance_function: {index_meta['similarity_function']}"
+        " (best for normalized vectors)"
+    )
+    print(
+        f"      • max_connections: {index_meta['max_connections']}"
+        " (connections per node, higher = more accurate but slower)"
+    )
+    print(
+        f"      • beam_width: {index_meta['beam_width']}"
+        " (search quality, higher = more accurate)"
+    )
+    print()
 
     print("   ✅ Created JVector vector index")
     print("   ✅ Built vector index graph immediately via SQL")
