@@ -57,15 +57,6 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class GeoIndexCursor implements IndexCursor {
-  /**
-   * Opens the underlying scan that answers one covering cell. Kept as a factory rather than a direct call into
-   * {@link LSMTreeGeoIndex} so the streaming behaviour can be exercised without a database.
-   */
-  @FunctionalInterface
-  interface CellCursorFactory {
-    IndexCursor open(String token, boolean frontier);
-  }
-
   private final Object[]            keys;
   private final GeoCoveringCellWalk walk;
   private final CellCursorFactory   cellCursorFactory;
@@ -74,6 +65,15 @@ class GeoIndexCursor implements IndexCursor {
   private       RID                 nextRID;
   private       RID                 currentRID;
   private       boolean             closed;
+
+  /**
+   * Opens the underlying scan that answers one covering cell. Kept as a factory rather than a direct call into
+   * {@link LSMTreeGeoIndex} so the streaming behaviour can be exercised without a database.
+   */
+  @FunctionalInterface
+  interface CellCursorFactory {
+    IndexCursor open(String token, boolean frontier);
+  }
 
   GeoIndexCursor(final Object[] keys, final GeoCoveringCellWalk walk, final CellCursorFactory cellCursorFactory) {
     this.keys = keys;
