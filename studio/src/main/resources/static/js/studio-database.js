@@ -3401,6 +3401,11 @@ function renderMaterializedViewQuickActions(view) {
 // own document-level handlers. Values are read from dataset, never from jQuery's .data(): schema names may
 // look numeric or boolean ("123", "true") and .data() would coerce those away from the string the SQL layer
 // expects.
+//
+// Note for anyone adding a control elsewhere in Studio: because the dispatch is bound to document, the
+// data-action values below form a page-wide namespace. Reusing one of these names for an unrelated control
+// anywhere in the DOM would route its clicks here as well, so pick a distinct value (or a distinct
+// container-scoped handler) rather than a name that already appears in either registry.
 var schemaClickActions = {
   "show-type-detail": function (d) { showTypeDetail(d.name); },
   "browse-type": function (d) { browseType(d.name); },

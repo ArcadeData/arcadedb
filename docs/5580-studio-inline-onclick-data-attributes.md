@@ -114,6 +114,23 @@ two things most likely to have silently sunk the approach: that single-quoted at
 The bot noted it could not execute `node --test` in its sandbox and read the tests instead of running them.
 The 41/41 result is reproduced locally, and the revert-one-renderer falsification check is recorded above.
 
+### Cycle 2 - `6d83c305b`
+
+**LGTM** again, with four non-blocking observations. Three of them (icon clicks inside buttons dispatching
+via `this` rather than `event.target`; `preventDefault` without `stopPropagation`; the `change` handler
+correctly omitting `preventDefault` so the native `<select>` dropdown still opens) were confirmations that
+the current behaviour is right, not requests to change it.
+
+The fourth was worth acting on: because the dispatch is bound to `document`, the `data-action` values form a
+page-wide namespace, and a future control elsewhere in Studio reusing one of these names would be routed
+here too. **Applied** - the registry comment now spells that out for the next contributor.
+
+### Unrelated CI
+
+`Meterian Scanner workflow` fails on this branch, and also on the five most recent `main` commits. This
+change touches no dependency manifest (only `studio-database.js`, two test files and this doc), so the
+failure is pre-existing and unrelated. `Studio Security Audit` passes.
+
 ## Out of scope / follow-ups
 
 - `restoreBackupAction` / `deleteBackupAction` (backup file names) and `updateDatabaseSetting` (setting
