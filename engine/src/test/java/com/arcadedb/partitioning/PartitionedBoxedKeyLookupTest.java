@@ -238,6 +238,10 @@ class PartitionedBoxedKeyLookupTest extends TestHelper {
    * The bucket count is deliberately NOT a power of two. Flipping the case of an ASCII letter shifts the Java string
    * hash by a multiple of 32, so with 8 or 16 buckets the two spellings land on the same bucket by arithmetic
    * accident and the defect stays invisible; with 3 they diverge for every value below.
+   * <p>
+   * The collation is switched on AFTER the strategy is attached, because since issue #5603 asking for this
+   * combination outright is refused. Which is the point of keeping this test: the index behind a partition can be
+   * dropped and recreated at any time, so the runtime decline still has to hold on its own.
    */
   @Test
   void aCaseInsensitivePartitionIndexStillFindsEverySpelling() {
@@ -247,10 +251,15 @@ class PartitionedBoxedKeyLookupTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().buildDocumentType().withName(typeName).withTotalBuckets(3).create();
       database.command("sql", "CREATE PROPERTY " + typeName + ".name STRING");
-      database.command("sql", "CREATE INDEX ON " + typeName + " (name COLLATE CI) UNIQUE");
+      database.command("sql", "CREATE INDEX ON " + typeName + " (name) UNIQUE");
       database.command("sql", "ALTER TYPE " + typeName + " BucketSelectionStrategy `partitioned('name')`");
       for (final String value : values)
         database.newDocument(typeName).set("name", value).save();
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "DROP INDEX `" + typeName + "[name]`");
+      database.command("sql", "CREATE INDEX ON " + typeName + " (name COLLATE CI) UNIQUE");
     });
 
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);

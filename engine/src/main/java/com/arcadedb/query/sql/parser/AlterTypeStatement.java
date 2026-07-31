@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -175,8 +176,28 @@ public class AlterTypeStatement extends DDLStatement {
           // Permission failures (UPDATE_SCHEMA) must surface as-is so the HTTP layer maps them to 403,
           // not get masked as a parsing error.
           throw e;
-        } catch (final Exception e) {
-          throw new CommandSQLParsingException("Bucket selection strategy implementation '" + implName + "' was not found", e);
+        } catch (final IllegalArgumentException | SchemaException e) {
+          // Report why the strategy was refused rather than claiming it does not exist. Every failure used to be
+          // rewritten as "was not found", so `partitioned('x')` with no unique index on x - or, since issue #5603,
+          // with a partition key whose stored form cannot be hashed consistently - sent the user hunting for a typo
+          // in a name that was perfectly valid. The genuinely unknown implementation still says so: that case
+          // arrives with its own "Cannot find bucket selection strategy class" message, which this keeps.
+          // <p>
+          // The exception TYPE stays a CommandParsingException subtype, and only the message changes. Refusing a
+          // strategy is a client-side DDL mistake, and CommandParsingException is what the HTTP layer maps to 400
+          // (AbstractServerHttpHandler, both the plain and the transaction-wrapped arm); a CommandExecutionException
+          // would be answered 500, telling clients and load balancers to retry a request that can only ever fail the
+          // same way. Statement-level validation refusals elsewhere in this package (see RebuildTypeStatement's
+          // repartition gate) classify the same way.
+          // <p>
+          // Only the two types a REFUSAL can arrive as are caught: IllegalArgumentException from the strategy's own
+          // unique-index check, and SchemaException from the suitability check and from an unresolvable
+          // implementation name. Catching Exception would hand the same "your DDL is wrong" 400 to a failure that is
+          // nothing of the sort - an NPE, a persistence error - and the sharper message this now carries would make
+          // that misclassification read as authoritative. Anything else propagates and is classified on its merits.
+          throw new CommandSQLParsingException(
+              "Cannot set bucket selection strategy '" + implName + "' on type '" + type.getName() + "': "
+                  + e.getMessage(), e);
         }
         break;
       }
