@@ -933,9 +933,19 @@ Two expression positions that were leaves for the same reason are covered too: a
 `BooleanCoercionExpression` - byte-for-byte the same behaviour, minus the blind spot. Procedure `CALL` arguments
 and the `LOAD CSV FROM` url expression are walked as well.
 
+Working out what a name is - a node, a relationship, a path - was written twice, once for a statement and once
+for a subquery body, and the two had already drifted. They are one construction now, which closed an asymmetry
+older than this issue: the statement's copy dropped every kind at a `WITH *`, because it kept only what the
+projection names, while the body's copy passed the incoming scope through.
+
 > **Potentially breaking, in the same way #5602 was.** A query whose bad call sits inside a subquery body is now
 > rejected before it starts rather than failing at runtime - or, where the subquery matched no row, rather than
 > quietly answering `false` / `0` / `[]`. The call was always wrong. One shape worth calling out: `type(b)` where
 > `b` is a node, written inside a subquery, is now the type error it already was outside one.
+>
+> A second shape comes from the shared scope construction: a kind now survives `WITH *`, so
+> `MATCH p = (a)-[:KNOWS]->(b) WITH * RETURN p.name` is rejected as the path-property access it always was,
+> where before the `WITH *` made the engine forget `p` was a path and the query failed at runtime instead. A
+> projection that names what it keeps is unaffected - `WITH 1 AS p` still stops `p` being a path.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

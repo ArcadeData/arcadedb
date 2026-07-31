@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.parser;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -28,7 +29,6 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.log.LogManager;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -1889,10 +1889,19 @@ class CypherExpressionBuilder {
       builder.addMatch(new MatchClause(astBuilder.visitPatternList(patternCtx), false,
           whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
       return builder.build();
-    } catch (final Exception e) {
+    } catch (final CommandParsingException e) {
+      // The builder refusing a body it does not support is the case this fallback is for, and it is not news.
       LogManager.instance().log(CypherExpressionBuilder.class, Level.FINE,
           "Cannot build the AST of subquery body '%s': it keeps its text and escapes the parse-time checks", e,
           CypherASTBuilder.getOriginalText(queryCtx != null ? queryCtx : patternCtx));
+      return null;
+    } catch (final RuntimeException e) {
+      // Anything else is a defect in the builder rather than a body it declines, and the cost of it is invisible -
+      // the query still runs, the checks just stop seeing inside that body. WARNING so a degraded body shows up in
+      // an ordinary log instead of only under FINE, which is the difference between discoverable and theoretical.
+      LogManager.instance().log(CypherExpressionBuilder.class, Level.WARNING,
+          "Unexpected failure building the AST of subquery body '%s': it keeps its text and escapes the parse-time "
+              + "checks", e, CypherASTBuilder.getOriginalText(queryCtx != null ? queryCtx : patternCtx));
       return null;
     }
   }
