@@ -76,7 +76,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       exportMetrics(response, user);
       exportSettings(response);
     } else if ("cluster".equals(mode)) {
-      exportCluster(exchange, response, user);
+      exportCluster(response, user);
     }
 
     Metrics.counter("http.server-info").increment();
@@ -91,7 +91,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
    * blanket root check here would break every non-root client. The per-database rows are a different matter
    * and are scoped to the caller.
    */
-  private void exportCluster(final HttpServerExchange exchange, final JSONObject response, final ServerSecurityUser user) {
+  private void exportCluster(final JSONObject response, final ServerSecurityUser user) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null) {
       final JSONObject haJSON = new JSONObject();
