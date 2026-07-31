@@ -67,23 +67,39 @@ jobs:
       - name: "Validate Package.json"
         run: |
           echo "📋 Validating package.json..."
-          # Check for known vulnerable packages
-          if grep -q "jquery.*1\." package.json; then
-            echo "❌ Vulnerable jQuery 1.x detected!"
-            exit 1
-          fi
-
-          if grep -q "bootstrap.*[1-4]\." package.json; then
-            echo "❌ Vulnerable Bootstrap 4.x or earlier detected!"
-            exit 1
-          fi
-
-          if grep -q "sweetalert2.*1[0-1]\.[0-5]" package.json; then
-            echo "❌ Potentially vulnerable SweetAlert2 version detected!"
-            exit 1
-          fi
-
-          echo "✅ Package versions look secure"
+          # Compare the MAJOR version of each declared range instead of grepping the raw line. The
+          # previous greps matched any digit anywhere after the package name, so `"bootstrap": "^5.3.8"`
+          # tripped `bootstrap.*[1-4]\.` through its "3." and `"sweetalert2": "^11.26.25"` tripped
+          # `sweetalert2.*1[0-1]\.[0-5]` through its "11.2": the step failed on perfectly current,
+          # non-vulnerable dependencies and would have kept doing so on every future patch bump.
+          node -e '
+            const pkg = require("./package.json");
+            const declared = { ...pkg.dependencies, ...pkg.devDependencies };
+            // package -> lowest major considered safe, with the reason it is the floor
+            const floors = {
+              jquery: [3, "jQuery 1.x/2.x carry unpatched XSS advisories"],
+              bootstrap: [5, "Bootstrap 4.x and earlier are EOL with known XSS issues"],
+              sweetalert2: [11, "SweetAlert2 below 11 is unmaintained"]
+            };
+            let failed = false;
+            for (const [name, [floor, reason]] of Object.entries(floors)) {
+              const range = declared[name];
+              if (range === undefined)
+                continue;
+              const major = Number.parseInt(String(range).replace(/^[^0-9]*/, ""), 10);
+              if (Number.isNaN(major)) {
+                console.log(`⚠️  ${name}: cannot read a major version out of "${range}", not checked`);
+                continue;
+              }
+              if (major < floor) {
+                console.log(`❌ ${name} ${range} is below the required major ${floor}: ${reason}`);
+                failed = true;
+              }
+            }
+            if (failed)
+              process.exit(1);
+            console.log("✅ Package versions look secure");
+          '
 
       - name: "Test Build Process"
         run: |
