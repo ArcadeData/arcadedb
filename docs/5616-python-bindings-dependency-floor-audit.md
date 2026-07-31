@@ -35,11 +35,12 @@ A `dependency-floors` job in `.github/workflows/test-python-bindings.yml`, besid
 which scans the folder with our own tooling instead of waiting on Meterian:
 
 ```
-uv pip compile pyproject.toml --extra test --extra vector --extra examples --resolution lowest-direct
+uv pip compile pyproject.toml --extra test --extra vector --extra examples \
+  --resolution lowest-direct --python-version <each of 3.10 ... 3.14>
 pip-audit --no-deps --disable-pip -r <result>
 ```
 
-`pyproject.toml` is untouched apart from the floors themselves. Three details are load-bearing:
+`pyproject.toml` is untouched apart from the floors themselves. Four details are load-bearing:
 
 **`--resolution lowest-direct`.** The default resolution picks the newest release each constraint admits, so
 it audits versions nobody is pinned to and a floor left open to a vulnerable release stays invisible. On the
@@ -59,6 +60,13 @@ an sdist when no wheel matches the runner's interpreter. A regressed `numpy>=1.2
 testing, with `Cannot import 'setuptools.build_meta'` instead of the advisory that caused it. Since the file
 is fully pinned there is nothing to resolve, and `--disable-pip` reads it directly.
 
+**Every interpreter in `requires-python` is resolved.** The declared floors do not vary by interpreter, but
+their transitive closure does: Python 3.10 pulls `exceptiongroup`, `tomli` and `typing-extensions` that 3.12
+does not need, and 3.14 drops one package further, so the audited set is 30 / 27 / 27 / 27 / 26 packages
+across 3.10 to 3.14. Auditing only one of them would leave the transitive half of the claim untested for the
+rest of the supported range. `--python-version` selects the resolution target without installing anything,
+which keeps this a single job rather than a five-cell matrix.
+
 ### Floors raised
 
 The job was red on the manifest as it stood, on floors that PR #5548 did not reach:
@@ -77,8 +85,9 @@ resolves on Python 3.10, the oldest interpreter in the test matrix.
 
 Both directions were run, so the job is known to fail as well as to pass.
 
-**Passes on the fixed manifest.** `uv pip compile` exit 0, 27 pinned requirements, `pip-audit` exit 0,
-"No known vulnerabilities found".
+**Passes on the fixed manifest, on every supported interpreter.** `uv pip compile` and `pip-audit` both exit
+0 for 3.10, 3.11, 3.12, 3.13 and 3.14 (30 / 27 / 27 / 27 / 26 pinned requirements), each reporting
+"No known vulnerabilities found". Confirmed in CI as well: the job resolved 27 packages and passed in 16s.
 
 **Fails on a regressed manifest.** Reverting the two floors PR #5548 raised (`py7zr>=0.20.0`,
 `numpy>=1.20.0`) makes `pip-audit` exit 1 and name exactly the advisories the issue cites:
@@ -121,6 +130,37 @@ unnoticed in the first place.
 The gap this does not close: an advisory affecting only releases above the floor. The floor stays clean, so
 the job stays green, while a user installing today gets the newest release. Meterian would cover that if it
 could read the folder.
+
+## Review
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5632
+
+### Cycle 1 - `9995248eb`
+
+`claude[bot]` reviewed with nothing blocking and four observations. Two were applied, two declined.
+
+**1. "The uv installer is unpinned while everything else in this job is pinned" - applied.** The four other
+workflows that install uv all use the unpinned `https://astral.sh/uv/install.sh`, so this diverges from the
+house convention on purpose: this job's output depends on how uv resolves, and `--resolution lowest-direct`
+is exactly the behavior a resolver change could alter silently. Pinned to `0.12.0`, the version every result
+in this document was produced with. The comment above the step says why it differs from its neighbors.
+
+**2. "The audit only runs on Python 3.12 while the package targets 3.10 to 3.14" - applied.** The claim
+checked out: `uv pip compile` resolves against the running interpreter, and the closures genuinely differ
+(30 / 27 / 27 / 27 / 26 packages, with 3.10 pulling `exceptiongroup`, `tomli` and `typing-extensions`). The
+job now loops over all five. It uses `--python-version` rather than the suggested job matrix, since nothing
+is installed (`--disable-pip`), so selecting the resolution target is enough and it stays one ~1 minute job.
+All five audit clean today.
+
+**3. "The job inherits `workflow_run` and `workflow_call` triggers, so it re-runs where the manifest has not
+changed" - declined.** Correct, but the sibling Bandit job in this same workflow has exactly the same
+property and no `if:` guard. Adding one only here would make the two security jobs behave differently for no
+stated reason. Both are around a minute. The follow-up below about a separate trigger is the right place to
+address it, for both jobs at once.
+
+**4. "`export PATH` in the Setup UV step only affects that step shell" - no action, and the review agrees.**
+That block is copied verbatim from the existing uv setup in this same workflow. It is correct as written:
+`$GITHUB_PATH` carries uv to later steps and the export exists so `uv --version` works in the same step.
 
 ## Follow-ups
 
