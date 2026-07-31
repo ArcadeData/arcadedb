@@ -29,6 +29,7 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Computes cluster-level health alerts surfaced to operators (Studio HA panel, {@code GET /api/v1/cluster}).
@@ -88,14 +89,44 @@ public class ClusterAlerts {
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples) {
+    return scan(server, stateMachine, followerSamples, null);
+  }
+
+  /**
+   * Scan overload that restricts every database-scoped alert to {@code visibleDatabases}.
+   * <p>
+   * Alerts are not purely server-level diagnostics: they name the databases they are about, and the
+   * single-bucket check additionally names their types. Served straight to an HTTP caller that is scoped to
+   * one database, that is a cross-tenant disclosure, so the caller passes the set it may see and the counts
+   * in each message are computed from the reduced list rather than the full one. Pass {@code null} for the
+   * unrestricted operator view (root, and the non-HTTP callers).
+   * <p>
+   * Node-scoped alerts (lagging followers) are unaffected: they describe the cluster, not a database.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples, final Set<String> visibleDatabases) {
     final JSONArray alerts = new JSONArray();
-    checkSingleBucketTypes(server, alerts);
+    checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
-      checkLeaderMissingDatabases(stateMachine, alerts);
-      checkFailedAcquireDatabases(stateMachine, alerts);
+      checkLeaderMissingDatabases(stateMachine, alerts, visibleDatabases);
+      checkFailedAcquireDatabases(stateMachine, alerts, visibleDatabases);
     }
     addLaggingFollowerAlert(followerSamples, alerts);
     return alerts;
+  }
+
+  /**
+   * Reduces a list of database names to the ones the caller may see. A {@code null} filter means the
+   * unrestricted operator view and returns {@code names} untouched.
+   */
+  private static List<String> visible(final List<String> names, final Set<String> visibleDatabases) {
+    if (visibleDatabases == null || names == null || names.isEmpty())
+      return names;
+    final List<String> result = new ArrayList<>(names.size());
+    for (final String name : names)
+      if (visibleDatabases.contains(name))
+        result.add(name);
+    return result;
   }
 
   /**
@@ -153,8 +184,11 @@ public class ClusterAlerts {
    * where auto-acquire cannot reach them. The database is deliberately NOT dropped; the operator must transfer
    * leadership to a node that holds it (or resync) to redistribute it.
    */
-  static void checkLeaderMissingDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
-    addLeaderMissingAlert(stateMachine.getReconciler().getDatabasesWithAcquireState(DatabaseReconciler.AcquireState.LEADER_MISSING), alerts);
+  static void checkLeaderMissingDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts,
+      final Set<String> visibleDatabases) {
+    addLeaderMissingAlert(visible(
+        stateMachine.getReconciler().getDatabasesWithAcquireState(DatabaseReconciler.AcquireState.LEADER_MISSING),
+        visibleDatabases), alerts);
   }
 
   /**
@@ -163,8 +197,11 @@ public class ClusterAlerts {
    * InstallSnapshot - which Ratis avoids in favor of log replay. Such a database can therefore stay absent
    * indefinitely even after the leader's copy is fixed, so surface it for an explicit operator resync.
    */
-  static void checkFailedAcquireDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
-    addFailedAcquireAlert(stateMachine.getReconciler().getDatabasesWithAcquireState(DatabaseReconciler.AcquireState.FAILED), alerts);
+  static void checkFailedAcquireDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts,
+      final Set<String> visibleDatabases) {
+    addFailedAcquireAlert(visible(
+        stateMachine.getReconciler().getDatabasesWithAcquireState(DatabaseReconciler.AcquireState.FAILED),
+        visibleDatabases), alerts);
   }
 
   /** Pure alert builder (package-private for unit testing): appends the failed-acquire alert iff {@code failed} is non-empty. */
@@ -209,11 +246,14 @@ public class ClusterAlerts {
         .put("details", new JSONObject().put("databases", names)));
   }
 
-  static void checkSingleBucketTypes(final ArcadeDBServer server, final JSONArray alerts) {
+  static void checkSingleBucketTypes(final ArcadeDBServer server, final JSONArray alerts,
+      final Set<String> visibleDatabases) {
     final JSONObject byDatabase = new JSONObject();
     int totalTypes = 0;
 
     for (final String dbName : server.getDatabaseNames()) {
+      if (visibleDatabases != null && !visibleDatabases.contains(dbName))
+        continue;
       try {
         // allowLoad=false: never re-open a database just to compute a status poll.
         final ServerDatabase db = server.getDatabase(dbName, false, false);

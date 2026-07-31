@@ -149,8 +149,17 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
 
     // Per-database list, used by Studio to render per-database actions (e.g. the emergency
     // "Resync from Leader" control on followers) and to surface bootstrap baselines when present.
+    // Scoped to the caller: the cluster status is server-level, but a database row carries that
+    // database's transaction id and bootstrap fingerprint, which belong to its tenant alone.
+    // Reserved internal databases (the Raft control directory '.raft') are not operator-visible state: the
+    // presence matrix and the bootstrap-state RPC both skip them, and offering Studio a per-database action
+    // row for one would be meaningless. Dropped once, here, rather than inside the loop below, so that the
+    // databases array and the alerts payload built from the same set agree on what exists.
+    final Set<String> authorizedDatabases = filterAuthorizedDatabases(user, httpServer.getServer().getDatabaseNames());
+    authorizedDatabases.removeIf(ArcadeDBServer::isReservedDatabaseName);
+
     final JSONArray databases = new JSONArray();
-    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
+    for (final String dbName : authorizedDatabases) {
       final JSONObject dbJson = new JSONObject();
       dbJson.put("name", dbName);
       final ArcadeStateMachine.BootstrapBaseline baseline = stateMachine.getBootstrapBaseline(dbName);
@@ -172,12 +181,22 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
 
     // Optional per-database x per-node presence matrix (issue #4727), gated behind ?presence=true so the
     // cheap auto-poll never triggers the peer fan-out. Built on the leader; followers return only their own.
-    if (isLeader && isPresenceRequested(exchange))
-      response.put("databasePresence", buildPresenceMatrix(raftHAServer, localPeerId));
+    // Root-only, and checked before the fan-out runs: the matrix answers a whole-cluster question ("which
+    // node is missing which database") that no single tenant can act on - every remedy it points to (resync,
+    // transfer leadership) is itself root-only - and each request costs one bootstrap-state RPC per peer,
+    // which may open a closed database on the far side.
+    if (isPresenceRequested(exchange)) {
+      checkRootUser(user);
+      if (isLeader)
+        response.put("databasePresence", buildPresenceMatrix(raftHAServer, localPeerId));
+    }
 
     // Cluster-level health alerts (e.g. single-bucket types that serialize concurrent writes on the
     // leader). Surfaced in Studio's HA panel so operators see actionable warnings without log-grepping.
-    response.put("alerts", ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples));
+    // Scoped like the database list above, because the alert payloads name databases and, for the
+    // single-bucket check, their type names too.
+    response.put("alerts",
+        ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases));
 
     return new ExecutionResponse(200, response.toString());
   }
