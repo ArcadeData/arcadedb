@@ -633,6 +633,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * same map, which continues the numbering instead of colliding with it.
    */
   static void appendUpdateOperations(final StringBuilder sql, final Map<String, Object> params, final Document u) {
+    assert params.isEmpty();
+
     if (isReplacement(u)) {
       sql.append(" CONTENT ");
       MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(u));

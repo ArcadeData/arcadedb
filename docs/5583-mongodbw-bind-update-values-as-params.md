@@ -150,7 +150,9 @@ than the edit. Nothing was weakened - the assertions still pin the same observab
 - `{field: null}` binds `field = :p0` with null, which does not match missing fields the way MongoDB does.
   Carried over from #5581, unfiled, not a regression.
 - `executeUpsert` / `applyOperatorsToDocument` build a record through the API rather than through SQL, so they
-  never had this exposure and are untouched.
+  never had this exposure and are untouched. They do, however, call `record.set(key, rawBsonValue)` with no
+  conversion, so unlike the update path they never turn a nested `ObjectId` into hex: the same `$set` stores a
+  different representation depending on whether the row already existed. Pre-existing, worth its own issue.
 
 ## Review cycles
 
@@ -202,9 +204,70 @@ rather than merely out of scope. Two non-blocking observations:
 2. Dotted `$set` keys deserve their own issue - agreed, and left for the developer to file rather than opened
    unilaterally. Recorded under "Follow-ups not taken" above.
 
+### Cycle 4 - `53b07cb6e` - found a server-crash bug
+
+`claude[bot]`: **LGTM**, no blocking issues, three non-blocking notes. The first one turned out to matter a great
+deal.
+
+1. *Date fidelity is only unit-tested; a wire-level round trip would guard the stated behaviour change.*
+   **Applied - and it failed.** Writing that test exposed a crash, described in full below.
+2. *The empty-`params` contract is documented but not enforced; a cheap `assert` would make a future
+   silent-overwrite loud.* **Applied** as `assert params.isEmpty()` at the top of `appendUpdateOperations`.
+   `assert` is already used in this file (line 425), so this matches local convention.
+3. *`executeUpsert` -> `applyOperatorsToDocument` does not apply the `ObjectId` -> hex conversion that
+   `toMapValue` does, so a nested `ObjectId` lands differently depending on whether the row already exists.*
+   **Verified correct** - that path calls `record.set(key, rawBsonValue)` with no conversion. Pre-existing and
+   unrelated to binding; recorded as a follow-up, not changed.
+
+#### The crash
+
+`aDateSurvivesBeingSetByAnUpdate` failed, and not on the update - on the **read-back**:
+
+```
+SEVER [MongoWireMessageEncoder] Failed to encode {...}
+java.lang.IllegalArgumentException: Unknown type: class java.time.LocalDateTime
+    at de.bwaldvogel.mongo.wire.bson.BsonEncoder.determineType(BsonEncoder.java:204)
+```
+
+The write succeeded; encoding the stored value into the wire response threw, which killed the connection and
+surfaced client-side as `MongoSocketReadException: Prematurely reached end of stream`.
+
+**This is a pre-existing defect, not one this change introduced.** Confirmed with a throwaway probe on the
+**insert** path, which this PR does not touch: `insertOne(new Document("when", date))` followed by `find` fails
+identically. `MongoDBToSqlTranslator.convertDocumentToMongoDB` passed every stored value straight through, and a
+temporal property is held as a `java.time` value, which the encoder rejects. So **any** date written through
+mongodbw and read back killed the connection.
+
+**But binding made it reachable on a path where it previously was not.** Before this change a `$set` date went
+through `JSONObject` and was stored as a *string*, which encodes fine. After it, the value is stored as a real
+`LocalDateTime`. So without a fix, this PR would have converted a lossy-but-working path into a crashing one -
+and the unit test could never have caught it, because the failure is in the response encoder.
+
+#### The fix
+
+`convertDocumentToMongoDB`'s two identical overloads now share one `convertMapToMongoDB`, and values pass through
+`toBsonValue`, which maps temporal types onto the single temporal type `BsonEncoder` accepts. Inspecting the
+encoder's bytecode shows it handles `java.time.Instant` and **not** `java.util.Date` - the first attempt
+converted to `Date` and failed the same way with `Unknown type: class java.util.Date`, so this was determined
+empirically rather than assumed. `LocalDateTime`/`LocalDate` are anchored at `ZoneOffset.UTC`, matching what
+`DateUtils` uses on the way in, so the round trip is exact. `toBsonValue` also recurses into embedded documents
+and lists, since a date can sit inside either.
+
+Four wire tests cover it: the `$set` path, the insert path (independent of this PR's change), a date nested in a
+sub-document, and the large-`Double` case from the same fidelity claim.
+
 ## Final state
 
-Three review cycles, all `LGTM` with no blocking issues at any point. Two of the seven non-blocking notes were
-applied (map presizing, precondition Javadoc), one was a real coverage gap that was filled (combined
-`$set` + `$inc`), one was declined with reasoning (`params.size()` counter), and three were pre-existing gaps
-recorded as follow-ups rather than changed.
+Four review cycles, all `LGTM` with no blocking issues at any point. Of the ten non-blocking notes: four applied
+(map presizing, precondition Javadoc, `assert params.isEmpty()`, wire-level fidelity tests), one was a coverage
+gap that was filled (combined `$set` + `$inc`), one led to the temporal-encoding fix above, one was declined with
+reasoning (`params.size()` counter), and three were pre-existing gaps recorded as follow-ups.
+
+Module total: **73 green**, up from 52.
+
+### Needs the developer's attention before merge
+
+The cycle-4 temporal-encoding fix (`MongoDBToSqlTranslator.convertMapToMongoDB` / `toBsonValue`) **has not been
+through a bot review cycle** - the 4-cycle limit was reached when it was written. It is also the one part of this
+PR that goes beyond the issue's scope. It is here because leaving it out would have shipped a regression, but it
+is genuinely a separate bug fix and a reasonable thing to split into its own PR.
