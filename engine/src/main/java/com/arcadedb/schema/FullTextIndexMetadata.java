@@ -227,7 +227,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
       this.queryAnalyzerClass = json.getString("query_analyzer");
 
     if (json.has("allowLeadingWildcard"))
-      this.allowLeadingWildcard = json.getBoolean("allowLeadingWildcard");
+      this.allowLeadingWildcard = metadataBoolean(json, "allowLeadingWildcard");
 
     if (json.has("defaultOperator"))
       this.defaultOperator = json.getString("defaultOperator");
@@ -238,16 +238,16 @@ public class FullTextIndexMetadata extends IndexMetadata {
       setSimilarity(json.getString("similarity"));
 
     if (json.has("bm25_k1"))
-      setBm25K1(json.getFloat("bm25_k1", DEFAULT_BM25_K1));
+      setBm25K1(metadataFloat(json, "bm25_k1"));
 
     if (json.has("bm25_b"))
-      setBm25B(json.getFloat("bm25_b", DEFAULT_BM25_B));
+      setBm25B(metadataFloat(json, "bm25_b"));
 
     for (final String key : json.keySet())
       if (key.endsWith(ANALYZER_SUFFIX) && !USER_METADATA_KEYS.contains(key))
         setFieldAnalyzer(key.substring(0, key.length() - ANALYZER_SUFFIX.length()), json.getString(key));
       else if (key.endsWith(BOOST_SUFFIX))
-        setFieldBoost(key.substring(0, key.length() - BOOST_SUFFIX.length()), json.getFloat(key, 1.0f));
+        setFieldBoost(key.substring(0, key.length() - BOOST_SUFFIX.length()), metadataFloat(json, key));
   }
 
   /**

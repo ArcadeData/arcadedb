@@ -143,7 +143,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   @Override
   protected void applyUserMetadata(final JSONObject json) {
     if (json.has("dimensions"))
-      this.dimensions = json.getInt("dimensions");
+      this.dimensions = metadataInt(json, "dimensions");
 
     if (json.has("similarity"))
       setSimilarity(json.getString("similarity"));
@@ -155,52 +155,52 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       setEncoding(json.getString("encoding"));
 
     if (json.has("maxConnections"))
-      setMaxConnections(json.getInt("maxConnections"));
+      setMaxConnections(metadataInt(json, "maxConnections"));
 
     if (json.has("beamWidth"))
-      setBeamWidth(json.getInt("beamWidth"));
+      setBeamWidth(metadataInt(json, "beamWidth"));
 
     if (json.has("efSearch"))
-      setEfSearch(json.getInt("efSearch"));
+      setEfSearch(metadataInt(json, "efSearch"));
 
     if (json.has("neighborOverflowFactor"))
-      setNeighborOverflowFactor(((Number) json.get("neighborOverflowFactor")).floatValue());
+      setNeighborOverflowFactor(metadataFloat(json, "neighborOverflowFactor"));
 
     if (json.has("alphaDiversityRelaxation"))
-      setAlphaDiversityRelaxation(((Number) json.get("alphaDiversityRelaxation")).floatValue());
+      setAlphaDiversityRelaxation(metadataFloat(json, "alphaDiversityRelaxation"));
 
     if (json.has("idPropertyName"))
       this.idPropertyName = json.getString("idPropertyName");
 
     if (json.has("locationCacheSize"))
-      this.locationCacheSize = json.getInt("locationCacheSize");
+      this.locationCacheSize = metadataInt(json, "locationCacheSize");
 
     if (json.has("graphBuildCacheSize"))
-      this.graphBuildCacheSize = json.getInt("graphBuildCacheSize");
+      this.graphBuildCacheSize = metadataInt(json, "graphBuildCacheSize");
 
     if (json.has("mutationsBeforeRebuild"))
-      this.mutationsBeforeRebuild = json.getInt("mutationsBeforeRebuild");
+      this.mutationsBeforeRebuild = metadataInt(json, "mutationsBeforeRebuild");
 
     if (json.has("inactivityRebuildTimeoutMs"))
-      this.inactivityRebuildTimeoutMs = json.getInt("inactivityRebuildTimeoutMs");
+      this.inactivityRebuildTimeoutMs = metadataInt(json, "inactivityRebuildTimeoutMs");
 
     if (json.has("storeVectorsInGraph"))
-      this.storeVectorsInGraph = json.getBoolean("storeVectorsInGraph");
+      this.storeVectorsInGraph = metadataBoolean(json, "storeVectorsInGraph");
 
     if (json.has("addHierarchy"))
-      this.addHierarchy = json.getBoolean("addHierarchy");
+      this.addHierarchy = metadataBoolean(json, "addHierarchy");
 
     if (json.has("pqSubspaces"))
-      setPQSubspaces(json.getInt("pqSubspaces"));
+      setPQSubspaces(metadataInt(json, "pqSubspaces"));
 
     if (json.has("pqClusters"))
-      setPQClusters(json.getInt("pqClusters"));
+      setPQClusters(metadataInt(json, "pqClusters"));
 
     if (json.has("pqCenterGlobally"))
-      this.pqCenterGlobally = json.getBoolean("pqCenterGlobally");
+      this.pqCenterGlobally = metadataBoolean(json, "pqCenterGlobally");
 
     if (json.has("pqTrainingLimit"))
-      setPQTrainingLimit(json.getInt("pqTrainingLimit"));
+      setPQTrainingLimit(metadataInt(json, "pqTrainingLimit"));
   }
 
   /**

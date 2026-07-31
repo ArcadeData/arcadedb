@@ -3,6 +3,7 @@ package com.arcadedb.schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -114,6 +115,65 @@ public class IndexMetadata {
    */
   protected void applyUserMetadata(final JSONObject json) {
     // no user-facing setting on a plain index
+  }
+
+  /**
+   * Reads an integer-valued key of the {@code METADATA} clause.
+   * <p>
+   * Every value in that clause comes from the statement, so a value of the wrong shape is a client mistake and must
+   * answer HTTP 400. Reading it straight off the JSON getters does not achieve that: a cast to {@code Number} raises
+   * {@code ClassCastException} and a JSON object raises {@code UnsupportedOperationException}, neither of which the SQL
+   * layer turns into a parsing error, so they escaped as a 500 (issue #5639).
+   * <p>
+   * A quoted number is accepted - {@code {"dimensions": "8"}} means 8, the same as everywhere else in the clause - but
+   * a fractional value is refused rather than truncated: these keys are counts and limits, so silently reading
+   * {@code 8.5} as {@code 8} would drop the very kind of typo this reader exists to report.
+   */
+  protected static int metadataInt(final JSONObject json, final String key) {
+    final Number number = metadataNumber(json, key, "a whole number");
+    if (number.doubleValue() != Math.rint(number.doubleValue()) || number.doubleValue() != number.intValue())
+      throw new IllegalArgumentException(
+          "Index metadata '" + key + "' must be a whole number, got: " + json.get(key));
+    return number.intValue();
+  }
+
+  /**
+   * Reads a decimal-valued key of the {@code METADATA} clause, accepting the quoted form. See {@link #metadataInt} for
+   * why the raw JSON getters are not enough.
+   */
+  protected static float metadataFloat(final JSONObject json, final String key) {
+    return metadataNumber(json, key, "a number").floatValue();
+  }
+
+  /**
+   * Reads a boolean-valued key of the {@code METADATA} clause. Only a real boolean, or the strings {@code "true"} /
+   * {@code "false"}, are accepted: {@code JSONObject.getBoolean()} answers {@code false} for any other string, so
+   * {@code {"addHierarchy": "yes"}} used to disable the setting the user was asking for (issue #5639).
+   */
+  protected static boolean metadataBoolean(final JSONObject json, final String key) {
+    final Object value = json.get(key);
+    if (value instanceof Boolean b)
+      return b;
+    if (value instanceof String s) {
+      if ("true".equalsIgnoreCase(s.trim()))
+        return true;
+      if ("false".equalsIgnoreCase(s.trim()))
+        return false;
+    }
+    throw new IllegalArgumentException("Index metadata '" + key + "' must be true or false, got: " + value);
+  }
+
+  private static Number metadataNumber(final JSONObject json, final String key, final String expected) {
+    final Object value = json.get(key);
+    if (value instanceof Number n)
+      return n;
+    if (value instanceof String s)
+      try {
+        return new BigDecimal(s.trim());
+      } catch (final NumberFormatException e) {
+        throw new IllegalArgumentException("Index metadata '" + key + "' must be " + expected + ", got: " + value, e);
+      }
+    throw new IllegalArgumentException("Index metadata '" + key + "' must be " + expected + ", got: " + value);
   }
 
   /**

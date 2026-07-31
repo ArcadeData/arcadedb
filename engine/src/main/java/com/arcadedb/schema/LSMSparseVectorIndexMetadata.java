@@ -88,7 +88,7 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
     // default because it reads a complete persisted definition; here an absent key means the user did not ask for
     // anything, so whatever the builder was already configured with must stand.
     if (json.has("dimensions"))
-      setDimensions(json.getInt("dimensions"));
+      setDimensions(metadataInt(json, "dimensions"));
 
     if (json.has("modifier"))
       setModifier(json.getString("modifier"));

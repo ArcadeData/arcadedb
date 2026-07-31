@@ -109,16 +109,10 @@ public class GeoIndexMetadata extends IndexMetadata {
 
   @Override
   protected void applyUserMetadata(final JSONObject json) {
-    if (json.has("precision")) {
-      final Object precision = json.get("precision");
-      if (!(precision instanceof Number number))
-        throw new IllegalArgumentException("Geospatial index precision must be a number, got: " + precision);
-      // A GeoHash precision is a tree LEVEL, so 6.9 is not "6": truncating it would drop the very kind of typo this
-      // guard exists to report.
-      if (number.doubleValue() != number.intValue())
-        throw new IllegalArgumentException("Geospatial index precision must be a whole number, got: " + precision);
-      setPrecision(number.intValue());
-    }
+    // A GeoHash precision is a tree LEVEL, so 6.9 is not "6": metadataInt refuses a fractional value rather than
+    // truncating it, which would drop the very kind of typo this guard exists to report.
+    if (json.has("precision"))
+      setPrecision(metadataInt(json, "precision"));
 
     if (json.has("tokenization")) {
       final Object tokenization = json.get("tokenization");

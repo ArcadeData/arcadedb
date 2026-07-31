@@ -159,6 +159,70 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     assertThat(maxDistance).as("the reopened index must still score with EUCLIDEAN").isGreaterThan(0.1);
   }
 
+  /**
+   * A value of the wrong shape is a client mistake like any other, so it must answer HTTP 400. Reading the clause
+   * straight off the JSON getters did not achieve that: the two float keys were cast to {@code Number}, so a string
+   * raised a {@code ClassCastException}, and a JSON object raises {@code UnsupportedOperationException} - neither is in
+   * the set the SQL layer turns into a parsing error, so both escaped as a 500.
+   */
+  @Test
+  void malformedDenseVectorMetadataValuesAreClientErrors() {
+    createVectorType("Doc");
+
+    for (final String metadata : new String[] {
+        "{\"dimensions\": 8, \"neighborOverflowFactor\": \"abc\"}",
+        "{\"dimensions\": 8, \"alphaDiversityRelaxation\": \"abc\"}",
+        "{\"dimensions\": 8, \"maxConnections\": {}}",
+        "{\"dimensions\": 8, \"efSearch\": [1, 2]}",
+        // A count read as 8 instead of 8.5 is a dropped input, not a rounded one.
+        "{\"dimensions\": 8.5}",
+        // getBoolean() answers false for any string that is not "true", so this used to DISABLE what was asked for.
+        "{\"dimensions\": 8, \"addHierarchy\": \"yes\"}" })
+      assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA " + metadata))
+          .as("METADATA %s", metadata)
+          .isInstanceOf(CommandSQLParsingException.class);
+
+    assertThat(database.getSchema().existsIndex("Doc[embedding]")).isFalse();
+
+    // The quoted form of a number stays valid, on every numeric key and not just the ones read with getInt().
+    database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA "
+        + "{\"dimensions\": \"8\", \"neighborOverflowFactor\": \"1.4\", \"efSearch\": \"250\", \"addHierarchy\": \"true\"}");
+
+    final LSMVectorIndexMetadata metadata = vectorMetadata("Doc");
+    assertThat(metadata.dimensions).isEqualTo(8);
+    assertThat(metadata.neighborOverflowFactor).isEqualTo(1.4f);
+    assertThat(metadata.efSearch).isEqualTo(250);
+    assertThat(metadata.addHierarchy).isTrue();
+  }
+
+  /**
+   * The Java builder and the SQL clause must reach the same set of settings: four of these had no fluent setter, so a
+   * Java caller could not configure what SQL could.
+   */
+  @Test
+  void everyDenseVectorSettingIsReachableFromTheJavaBuilder() {
+    createVectorType("Doc");
+
+    database.getSchema().buildTypeIndex("Doc", new String[] { "embedding" })
+        .withLSMVectorType()
+        .withDimensions(8)
+        .withEfSearch(250)
+        .withInactivityRebuildTimeout(7000)
+        .withMutationsBeforeRebuild(4242)
+        .withLocationCacheSize(1024)
+        .withGraphBuildCacheSize(2048)
+        .withStoreVectorsInGraph(true)
+        .create();
+
+    final LSMVectorIndexMetadata metadata = vectorMetadata("Doc");
+    assertThat(metadata.efSearch).isEqualTo(250);
+    assertThat(metadata.inactivityRebuildTimeoutMs).isEqualTo(7000);
+    assertThat(metadata.mutationsBeforeRebuild).isEqualTo(4242);
+    assertThat(metadata.locationCacheSize).isEqualTo(1024);
+    assertThat(metadata.graphBuildCacheSize).isEqualTo(2048);
+    assertThat(metadata.storeVectorsInGraph).isTrue();
+  }
+
   @Test
   void unknownDenseVectorMetadataKeyIsReported() {
     createVectorType("Doc");

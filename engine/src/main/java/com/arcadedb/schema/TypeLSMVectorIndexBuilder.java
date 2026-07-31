@@ -107,6 +107,70 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Sets the search-time beam width: the recall/latency knob of every query that does not override it per call.
+   * Higher values improve recall at the cost of latency. Typical range: 50-500, default: 100.
+   *
+   * @param efSearch the search beam width
+   */
+  public TypeLSMVectorIndexBuilder withEfSearch(final int efSearch) {
+    vectorMetadata().setEfSearch(efSearch);
+    return this;
+  }
+
+  /**
+   * Sets how long the index waits, with pending mutations and no further write, before rebuilding its graph in the
+   * background. {@code 0} disables the timer; {@code -1} (default) defers to
+   * {@code arcadedb.vectorIndex.inactivityRebuildTimeoutMs}.
+   *
+   * @param inactivityRebuildTimeoutMs the inactivity window in milliseconds
+   */
+  public TypeLSMVectorIndexBuilder withInactivityRebuildTimeout(final int inactivityRebuildTimeoutMs) {
+    vectorMetadata().inactivityRebuildTimeoutMs = inactivityRebuildTimeoutMs;
+    return this;
+  }
+
+  /**
+   * Sets the number of pending mutations that trigger a graph rebuild. {@code -1} (default) defers to the global
+   * setting.
+   *
+   * @param mutationsBeforeRebuild the mutation threshold
+   */
+  public TypeLSMVectorIndexBuilder withMutationsBeforeRebuild(final int mutationsBeforeRebuild) {
+    vectorMetadata().mutationsBeforeRebuild = mutationsBeforeRebuild;
+    return this;
+  }
+
+  /**
+   * Sets the size of the vector-location cache. {@code -1} (default) defers to the global setting.
+   *
+   * @param locationCacheSize the cache size in entries
+   */
+  public TypeLSMVectorIndexBuilder withLocationCacheSize(final int locationCacheSize) {
+    vectorMetadata().locationCacheSize = locationCacheSize;
+    return this;
+  }
+
+  /**
+   * Sets the size of the cache used while building the graph. {@code -1} (default) defers to the global setting.
+   *
+   * @param graphBuildCacheSize the cache size in entries
+   */
+  public TypeLSMVectorIndexBuilder withGraphBuildCacheSize(final int graphBuildCacheSize) {
+    vectorMetadata().graphBuildCacheSize = graphBuildCacheSize;
+    return this;
+  }
+
+  /**
+   * Sets whether the vectors are stored inline in the graph file rather than read from the index pages.
+   *
+   * @param storeVectorsInGraph true to store the vectors in the graph file
+   */
+  public TypeLSMVectorIndexBuilder withStoreVectorsInGraph(final boolean storeVectorsInGraph) {
+    vectorMetadata().storeVectorsInGraph = storeVectorsInGraph;
+    return this;
+  }
+
+  /**
    * Sets the neighbor overflow factor for graph construction.
    * This parameter controls how many extra candidate neighbors are considered during graph building.
    * Higher values can improve graph quality but increase build time.
