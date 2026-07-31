@@ -697,26 +697,6 @@ public abstract class ContainersTestTemplate {
   }
 
   /**
-   * Counts how many times a marker appears in each container's stdout, and logs the per-container tally.
-   * Used to turn a replication failure into a number: {@code WALVersionGapException} occurrences and snapshot-resync
-   * cycles are the signature of #5492, and a run that converges on counts can still have logged them.
-   *
-   * @param marker substring to look for, matched literally
-   *
-   * @return total occurrences across every container
-   */
-  /**
-   * Sums a counter over the per-test {@link #loggingMeterRegistry} rather than {@link Metrics#globalRegistry}.
-   * A meter on the global composite reports the value of one arbitrarily chosen child registry, not the sum, and this
-   * class adds and removes a backing registry around every test - so reading a counter off the composite can return
-   * another test method's value or zero. The per-test registry is created fresh in setup, which makes the value both
-   * unambiguous and scoped to the run being measured.
-   *
-   * @param name counter name, matched exactly
-   *
-   * @return summed count across every counter registered under that name
-   */
-  /**
    * Writes each container's stdout to {@code target/container-logs/<label>-<name>.log} while the containers are still
    * up. Testcontainers removes them during teardown, taking the logs with them, so anything not written out here
    * cannot be examined after the run - which matters when a count printed at the end raises a question the raw log is
@@ -744,10 +724,33 @@ public abstract class ContainersTestTemplate {
     }
   }
 
+  /**
+   * Sums a counter over the per-test {@link #loggingMeterRegistry} rather than {@link Metrics#globalRegistry}.
+   * A meter on the global composite reports the value of one arbitrarily chosen child registry, not the sum, and this
+   * class adds and removes a backing registry around every test - so reading a counter off the composite can return
+   * another test method's value or zero. The per-test registry is created fresh in setup, which makes the value both
+   * unambiguous and scoped to the run being measured.
+   *
+   * @param name counter name, matched exactly
+   *
+   * @return summed count across every counter registered under that name
+   */
   protected double sumCounter(final String name) {
     return loggingMeterRegistry.find(name).counters().stream().mapToDouble(Counter::count).sum();
   }
 
+  /**
+   * Counts how many times a marker appears in each container's stdout, and logs the per-container tally.
+   * Used to turn a replication failure into a number: page-version gaps and snapshot-resync cycles are the signature
+   * of #5492, and a run that converges on record counts can still have logged them.
+   * <p>
+   * Match what the servers actually log. Neither the exception class name nor the text of a message passed to a
+   * {@code throw} reaches the log, so a marker taken from either counts zero against a log full of the event.
+   *
+   * @param marker substring to look for, matched literally
+   *
+   * @return total occurrences across every container
+   */
   protected int countInContainerLogs(final String marker) {
     int total = 0;
     for (final GenericContainer<?> container : containers) {

@@ -137,6 +137,11 @@ public class SQLQueryEngine implements QueryEngine {
    * {@code SQLScriptQueryEngine} has always resolved the wrapper for the same reason, which is why the identical
    * statements replicate correctly under {@code sqlscript} and not under {@code sql}. Off HA the wrapper is the
    * instance itself, so this is a no-op there.
+   * <p>
+   * Every path in this class that hands a database to {@code Statement.execute} must use this, not the field: both
+   * {@code command()} overloads and {@code analyze()}'s {@code AnalyzedQuery.execute()}. The engine itself is bound
+   * to the inner instance ({@code RaftReplicatedDatabase.getQueryEngine} delegates to {@code proxied}), so the field
+   * is never the right answer for execution.
    */
   private DatabaseInternal executionDatabase() {
     return database.getWrappedDatabaseInstance();
@@ -166,7 +171,11 @@ public class SQLQueryEngine implements QueryEngine {
         final long resultSetLimit = database.getResultSetLimit();
         if (resultSetLimit > 0)
           statement.setLimit(new Limit(JJTLIMIT).setValue((int) resultSetLimit));
-        return statement.execute(database, parameters);
+        // Same resolution as command(): this is a third execution entry point, not an analysis-only one.
+        // The MCP command tool runs SQL exclusively through here (analyze() once, then execute(); the
+        // database.command() fallback is only reached by engines whose execute() returns null), so leaving
+        // the raw instance here would keep #5492 open for that caller alone.
+        return statement.execute(executionDatabase(), parameters);
       }
     };
   }

@@ -21,10 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,7 +57,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class Issue5492TruncateBatchNotReplicatedIT extends BaseRaftHATest {
 
-  private static final String TYPE_NAME  = "TruncateBatchDoc";
+  private static final String TYPE_COMMAND  = "TruncateBatchDoc";
+  private static final String TYPE_ANALYZED = "TruncateBatchAnalyzedDoc";
   private static final int    BATCH_SIZE = 2;
   private static final int    RECORDS    = 5;
 
@@ -80,21 +84,21 @@ class Issue5492TruncateBatchNotReplicatedIT extends BaseRaftHATest {
     // statement's last, which is the one whose pages went missing.
     leaderDb.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE, BATCH_SIZE);
 
-    leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+    leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_COMMAND);
     for (int i = 0; i < RECORDS; i++)
-      leaderDb.command("sql", "INSERT INTO " + TYPE_NAME + " SET id = " + i);
+      leaderDb.command("sql", "INSERT INTO " + TYPE_COMMAND + " SET id = " + i);
 
     waitForAllServers();
-    assertThat(awaitCountOn(followerIndex, RECORDS)).as("baseline replicated before the truncate").isEqualTo(RECORDS);
+    assertThat(awaitCountOn(followerIndex, TYPE_COMMAND, RECORDS)).as("baseline replicated before the truncate").isEqualTo(RECORDS);
 
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
 
     // Run it exactly as MaterializedViewRefresher does: a dedicated transaction on the wrapper, with the
     // statement issued through the 'sql' engine. The batch commits happen inside, before this one returns.
     final DatabaseInternal wrapped = ((DatabaseInternal) leaderDb).getWrappedDatabaseInstance();
-    wrapped.transaction(() -> wrapped.command("sql", "TRUNCATE TYPE `" + TYPE_NAME + "`").close(), false);
+    wrapped.transaction(() -> wrapped.command("sql", "TRUNCATE TYPE `" + TYPE_COMMAND + "`").close(), false);
 
-    assertThat(countOn(leaderIndex)).as("leader truncated the type").isZero();
+    assertThat(countOn(leaderIndex, TYPE_COMMAND)).as("leader truncated the type").isZero();
 
     waitForAllServers();
 
@@ -106,21 +110,68 @@ class Issue5492TruncateBatchNotReplicatedIT extends BaseRaftHATest {
         .as("follower must see no WAL version gap: every batch commit of the truncate has to be replicated")
         .isZero();
 
-    assertThat(awaitCountOn(followerIndex, 0))
+    assertThat(awaitCountOn(followerIndex, TYPE_COMMAND, 0))
         .as("every batch commit of the truncate must reach the follower, not only the statement's last one")
         .isZero();
 
     // A page bumped on the leader but not on the follower does not fail until something touches it again,
     // so an ordinary replicated write into the same bucket is what would surface a surviving gap.
-    leaderDb.command("sql", "INSERT INTO " + TYPE_NAME + " SET id = 100");
+    leaderDb.command("sql", "INSERT INTO " + TYPE_COMMAND + " SET id = 100");
     waitForAllServers();
 
     assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
         .as("no WAL version gap after a subsequent ordinary write into the truncated bucket")
         .isZero();
-    assertThat(awaitCountOn(followerIndex, 1))
+    assertThat(awaitCountOn(followerIndex, TYPE_COMMAND, 1))
         .as("follower converges with the leader after the subsequent ordinary write")
         .isEqualTo(1);
+  }
+
+  /**
+   * The MCP command tool ({@code ExecuteCommandTool}) never calls {@code command()}: it analyzes once and runs SQL
+   * through {@code AnalyzedQuery.execute()}, falling back to {@code database.command()} only for engines whose
+   * {@code execute()} returns null. That is a second entry point into statement execution, and it took its own fix -
+   * so it takes its own test, or a refactor reopens #5492 for that caller alone with everything else still green.
+   */
+  @Test
+  void truncateBatchCommitsReachFollowersViaAnalyzedQuery() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE, BATCH_SIZE);
+
+    leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_ANALYZED);
+    for (int i = 0; i < RECORDS; i++)
+      leaderDb.command("sql", "INSERT INTO " + TYPE_ANALYZED + " SET id = " + i);
+
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, TYPE_ANALYZED, RECORDS)).as("baseline replicated before the truncate").isEqualTo(RECORDS);
+
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
+
+    // Exactly the MCP tool's shape: resolve the engine off the database, analyze, then execute.
+    final DatabaseInternal wrapped = ((DatabaseInternal) leaderDb).getWrappedDatabaseInstance();
+    wrapped.transaction(() -> {
+      final QueryEngine.AnalyzedQuery analyzed = wrapped.getQueryEngine("sql")
+          .analyze("TRUNCATE TYPE `" + TYPE_ANALYZED + "`");
+      final ResultSet rs = analyzed.execute(Collections.emptyMap());
+      // Cast to Object: ResultSet extends both Iterator and Spliterator, so the AssertJ overloads are ambiguous.
+      assertThat((Object) rs).as("SQL analyze().execute() returns a result set rather than deferring to command()")
+          .isNotNull();
+      rs.close();
+    }, false);
+
+    assertThat(countOn(leaderIndex, TYPE_ANALYZED)).as("leader truncated the type").isZero();
+
+    waitForAllServers();
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
+        .as("no WAL version gap when the truncate runs through analyze().execute()")
+        .isZero();
+    assertThat(awaitCountOn(followerIndex, TYPE_ANALYZED, 0))
+        .as("batch commits must replicate on the analyzed-query path too, not only through command()")
+        .isZero();
   }
 
   /**
@@ -128,20 +179,20 @@ class Issue5492TruncateBatchNotReplicatedIT extends BaseRaftHATest {
    * handle cached before it throws {@code DatabaseIsClosed} - which reads like an infrastructure failure rather than
    * the divergence that caused it.
    */
-  private long countOn(final int serverIndex) {
+  private long countOn(final int serverIndex, final String typeName) {
     // count(id) rather than count(*): the latter reads a cached per-bucket counter, which is the wrong tool
     // when the question is whether the pages themselves arrived.
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + TYPE_NAME).next().getProperty("cnt"))
+    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName).next().getProperty("cnt"))
         .longValue();
   }
 
-  private long awaitCountOn(final int serverIndex, final long expected) throws InterruptedException {
+  private long awaitCountOn(final int serverIndex, final String typeName, final long expected) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 30_000;
     long count = -1;
     while (System.currentTimeMillis() < deadline) {
       try {
-        count = countOn(serverIndex);
+        count = countOn(serverIndex, typeName);
         if (count == expected)
           return count;
       } catch (final RuntimeException e) {
