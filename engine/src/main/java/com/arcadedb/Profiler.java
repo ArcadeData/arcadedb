@@ -73,7 +73,18 @@ public class Profiler {
   private static final int STAT_ASYNC_PARALLEL    = 22;
   private static final int STATS_COUNT            = 23;
 
-  private final Set<DatabaseInternal> databases = new LinkedHashSet<>();
+  /**
+   * Registered database INSTANCES, compared by identity.
+   * <p>
+   * Not a {@link LinkedHashSet}: {@code LocalDatabase.equals}/{@code hashCode} are derived from the database PATH, so
+   * an equals-based set treats a closed instance and a freshly reopened one on the same path as the same element.
+   * That breaks this class in both directions - {@link #registerDatabase} would silently no-op on the reopened
+   * instance while a stale one was still present (its counters then never counted at all), and
+   * {@link #unregisterDatabase} would fold the stale instance's counters a second time and evict the LIVE database
+   * from the registry. What the profiler tracks is instances, so the set has to compare by identity. Iteration order
+   * is now unspecified, which no reader depends on: every use is a sum or a size.
+   */
+  private final Set<DatabaseInternal> databases = Collections.newSetFromMap(new IdentityHashMap<>());
 
   /**
    * The monotonic contribution of every database that has been closed or dropped since JVM start.

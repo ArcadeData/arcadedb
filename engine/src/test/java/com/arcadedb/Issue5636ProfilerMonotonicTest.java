@@ -163,6 +163,49 @@ class Issue5636ProfilerMonotonicTest {
     }
   }
 
+  /**
+   * {@code LocalDatabase.equals}/{@code hashCode} are derived from the database PATH, so an equals-based registry
+   * cannot tell a closed instance from a freshly reopened one on the same path. The profiler tracks INSTANCES, and
+   * with a path-keyed set a stale {@code unregisterDatabase(closedInstance)} would match the live reopened one:
+   * it would fold the closed instance's counters a second time AND evict the live database from the registry, so
+   * everything that database went on to do would stop being counted.
+   */
+  @Test
+  void aStaleUnregisterOfAClosedInstanceDoesNotDisturbTheReopenedOne() {
+    final Database closed;
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      closed = factory.create();
+      closed.getSchema().createDocumentType("Doc");
+      for (int i = 0; i < QUERIES; i++)
+        closed.query("sql", "select from Doc").close();
+      closed.close();
+    }
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database reopened = factory.open();
+      try {
+        reopened.query("sql", "select from Doc").close();
+        final long beforeStaleUnregister = profilerCount("queries");
+
+        // The closed instance is equal-by-path to the reopened one, but is NOT the reopened one.
+        Profiler.INSTANCE.unregisterDatabase((DatabaseInternal) closed);
+
+        assertThat(profilerCount("queries"))
+            .as("a stale unregister must not fold the closed instance's counters in a second time")
+            .isLessThan(beforeStaleUnregister + QUERIES);
+
+        // The live database must still be registered: if it had been evicted, its own counters would stop being
+        // summed and this query would not move the total.
+        final long beforeOneMoreQuery = profilerCount("queries");
+        reopened.query("sql", "select from Doc").close();
+        assertThat(profilerCount("queries")).as("the reopened database must still be registered")
+            .isGreaterThan(beforeOneMoreQuery);
+      } finally {
+        reopened.drop();
+      }
+    }
+  }
+
   private static long profilerCount(final String key) {
     final JSONObject json = Profiler.INSTANCE.toJSON();
     return json.getJSONObject(key).getLong("count", 0L);
