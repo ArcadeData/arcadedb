@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
+import com.arcadedb.schema.TypeGeoIndexBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -257,7 +258,25 @@ public class CreateIndexStatement extends DDLStatement {
       }
       sparseBuilder.create();
 
+    } else if (indexType == Schema.INDEX_TYPE.GEOSPATIAL) {
+      // Builder is already a TypeGeoIndexBuilder after withType(GEOSPATIAL)
+      final TypeGeoIndexBuilder geoBuilder = builder.withGeoType();
+      if (metadata != null) {
+        final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
+        try {
+          geoBuilder.withMetadata(new JSONObject(metadataMap));
+        } catch (final IllegalArgumentException e) {
+          throw new CommandSQLParsingException(e.getMessage(), e);
+        }
+      }
+      geoBuilder.create();
+
     } else {
+      // Every index type whose settings live in METADATA is handled above. Reaching here with a METADATA clause means
+      // the user configured something this index type cannot use: saying so beats dropping it on the floor (#5600).
+      if (metadata != null && !metadata.toMap((Result) null, context).isEmpty())
+        throw new CommandSQLParsingException(
+            "METADATA is not supported by index type '" + typeAsString + "'");
       builder.create();
     }
     typeName = prevName;

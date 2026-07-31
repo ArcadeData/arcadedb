@@ -72,14 +72,14 @@ public class GeoUtils {
       return shape;
     // Cypher point() returns a Map with x/y or longitude/latitude keys
     if (value instanceof Map<?, ?> map) {
-      double x;
-      double y;
+      final double x;
+      final double y;
       if (map.containsKey("x") && map.containsKey("y")) {
-        x = ((Number) map.get("x")).doubleValue();
-        y = ((Number) map.get("y")).doubleValue();
+        x = coordinate(map.get("x"), "x");
+        y = coordinate(map.get("y"), "y");
       } else if (map.containsKey("longitude") && map.containsKey("latitude")) {
-        x = ((Number) map.get("longitude")).doubleValue();
-        y = ((Number) map.get("latitude")).doubleValue();
+        x = coordinate(map.get("longitude"), "longitude");
+        y = coordinate(map.get("latitude"), "latitude");
       } else {
         throw new IllegalArgumentException("Cannot parse geometry from map: missing x/y or longitude/latitude keys");
       }
@@ -93,6 +93,21 @@ public class GeoUtils {
     } catch (Exception e) {
       throw new IllegalArgumentException("Cannot parse geometry from: " + wkt, e);
     }
+  }
+
+  /**
+   * Reads one coordinate of a point map. A non-numeric entry is an unparseable geometry like any other, so it has to
+   * leave as {@link IllegalArgumentException}: callers that skip a value they cannot parse - a WHERE clause dropping a
+   * row whose column holds junk - catch that, and a raw {@link ClassCastException} would escape them and fail the whole
+   * query instead of the one row (issue #5600).
+   */
+  private static double coordinate(final Object value, final String key) {
+    if (!(value instanceof Number number))
+      throw new IllegalArgumentException(
+          "Cannot parse geometry from map: '" + key + "' must be a number, got: " + (value == null ?
+              "null" :
+              value.getClass().getSimpleName()));
+    return number.doubleValue();
   }
 
   /**
