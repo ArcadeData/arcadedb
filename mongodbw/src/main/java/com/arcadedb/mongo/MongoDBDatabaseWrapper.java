@@ -688,7 +688,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * order is preserved so a replacement document reaches the record in wire order.
    */
   private static Map<String, Object> documentToMap(final Document doc) {
-    final Map<String, Object> map = new LinkedHashMap<>(doc.size());
+    final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
       map.put(entry.getKey(), toMapValue(entry.getValue()));
     return map;

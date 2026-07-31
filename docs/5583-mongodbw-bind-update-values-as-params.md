@@ -140,7 +140,30 @@ than the edit. Nothing was weakened - the assertions still pin the same observab
 
 ## Follow-ups not taken
 
+- **Dotted `$set` keys do not navigate.** `{"$set": {"address.city": "Rome"}}` reaches the record as a literal
+  property named `address.city` rather than setting `city` inside `address`. `documentToMap` keeps the key
+  verbatim and `UpdateMergeStep.handleMerge` calls `doc.set(key, value)` per entry, so the behaviour is
+  byte-identical to the old JSON-literal path (`MERGE {"address.city": "Rome"}` produced the same map). Not a
+  regression and out of scope here, but worth its own issue if MongoDB dotted-path semantics are expected. Note
+  this is only the **update** side: on the filter side `quoteFieldPath()` does split the path per segment, so the
+  two halves disagree.
 - `{field: null}` binds `field = :p0` with null, which does not match missing fields the way MongoDB does.
   Carried over from #5581, unfiled, not a regression.
 - `executeUpsert` / `applyOperatorsToDocument` build a record through the API rather than through SQL, so they
   never had this exposure and are untouched.
+
+## Review cycles
+
+### Cycle 1 - `6190293b3`
+
+`claude[bot]`: **LGTM**, no blocking issues. It independently traced the grammar/engine path and confirmed the
+binding, the merge semantics, the parameter numbering, and the recursion/fidelity claims. Three non-blocking
+notes:
+
+1. `documentToMap` sized its map with `new LinkedHashMap<>(doc.size())`, which is a *capacity*, so with the
+   default 0.75 load factor it rehashes once a document has ~4 or more fields. **Applied**, using the JDK 19
+   factory `LinkedHashMap.newLinkedHashMap(doc.size())` rather than the suggested
+   `(int) (doc.size() / 0.75f) + 1`: same sizing, no arithmetic in the source, and it matches the existing
+   `HashMap.newHashMap(size)` at `QuerySession:83`.
+2. Dotted `$set` keys - recorded above as a follow-up, not changed here.
+3. `{field: null}` - already recorded, carried over from #5581.
