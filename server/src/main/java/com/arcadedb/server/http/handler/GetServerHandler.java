@@ -73,10 +73,10 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     if ("basic".equals(mode)) {
       // JUST RETURN BASIC SERVER DATA (name and version)
     } else if ("default".equals(mode)) {
-      exportMetrics(response);
+      exportMetrics(response, user);
       exportSettings(response);
     } else if ("cluster".equals(mode)) {
-      exportCluster(exchange, response);
+      exportCluster(response, user);
     }
 
     Metrics.counter("http.server-info").increment();
@@ -84,7 +84,14 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, response.toString());
   }
 
-  private void exportCluster(final HttpServerExchange exchange, final JSONObject response) {
+  /**
+   * Emits the {@code ha} section. The topology fields ({@code leaderAddress}, {@code replicaAddresses},
+   * {@code network}) are server-level and stay readable by every authenticated user: the remote driver calls
+   * this route on each connection, as whatever user the application uses, and routes requests from them - a
+   * blanket root check here would break every non-root client. The per-database rows are a different matter
+   * and are scoped to the caller.
+   */
+  private void exportCluster(final JSONObject response, final ServerSecurityUser user) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null) {
       final JSONObject haJSON = new JSONObject();
@@ -97,7 +104,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
       final JSONArray databases = new JSONArray();
 
-      for (String dbName : httpServer.getServer().getDatabaseNames()) {
+      for (final String dbName : filterAuthorizedDatabases(user, httpServer.getServer().getDatabaseNames())) {
         // Never expose reserved internal databases (e.g. the Raft control directory '.raft').
         if (ArcadeDBServer.isReservedDatabaseName(dbName))
           continue;
@@ -122,7 +129,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     }
   }
 
-  private void exportMetrics(final JSONObject response) {
+  private void exportMetrics(final JSONObject response, final ServerSecurityUser user) {
     final JSONObject metricsJSON = new JSONObject();
     response.put("metrics", metricsJSON);
 
@@ -187,7 +194,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     // per-bucket sub-indexes; surfaced on the Studio Server tab so operators can see compaction
     // lag (memtable not draining) and segment-count growth without log-grepping. The shape is
     // {dbName: {indexName: {memtablePostings, segmentCount, totalPostings}}}.
-    metricsJSON.put("sparseVectorIndexes", buildSparseVectorIndexesJSON());
+    metricsJSON.put("sparseVectorIndexes", buildSparseVectorIndexesJSON(user));
 
     int serverEventsSummaryErrors = 0;
     int serverEventsSummaryWarnings = 0;
@@ -306,9 +313,9 @@ public class GetServerHandler extends AbstractServerHttpHandler {
    * handful of sparse indexes) the cost is negligible. Future caching could amortize it on
    * deployments with thousands of indexes per database; not worth the staleness budget today.
    */
-  private JSONObject buildSparseVectorIndexesJSON() {
+  private JSONObject buildSparseVectorIndexesJSON(final ServerSecurityUser user) {
     final JSONObject byDatabase = new JSONObject();
-    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
+    for (final String dbName : filterAuthorizedDatabases(user, httpServer.getServer().getDatabaseNames())) {
       try {
         // Use the {@code allowLoad=false} variant so a database that was unloaded between
         // getDatabaseNames() and getDatabase() does NOT get re-opened by the metrics scrape.

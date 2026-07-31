@@ -878,4 +878,30 @@ The underlying contract was loose in three places, and all three are tightened:
   `NumberFormatException`), an unknown `similarity` or `quantization` name, or an out-of-range `pqClusters` is a
   client mistake. They are reported as parsing errors now, the same treatment the `GEOSPATIAL` metadata gets.
 
+## Server and cluster status endpoints scope their per-database output to the caller
+
+The routes that enumerate the whole database registry rather than naming one database in the path now reduce
+every per-database entry they emit to the databases the caller is authorized for. This covers the `databases`
+array and the database-scoped `alerts` of `GET /api/v1/cluster`, the `ha.databases` array of
+`GET /api/v1/server?mode=cluster`, and the `metrics.sparseVectorIndexes` map of `GET /api/v1/server`. The
+server-level fields of those responses are unchanged and stay readable by any authenticated user - in
+particular `ha.leaderAddress` and `ha.replicaAddresses`, which the remote driver reads on every connection to
+route requests, and which therefore cannot be restricted to root.
+
+Two cluster endpoints move behind the root check that the seven mutating Raft endpoints already use:
+
+- **`POST /api/v1/cluster/bootstrap-state`** is a peer-to-peer RPC with no browser or driver consumer, and each
+  call computes a SHA-256 over every database directory on the node. Peers are unaffected: they reach it with
+  the cluster token forwarded as root.
+- **`GET /api/v1/cluster?presence=true`** fans that RPC out to every peer to build the presence matrix. The
+  matrix answers a whole-cluster question, and every remedy it points to (resync, transfer leadership) is
+  itself root-only. The cheap `GET /api/v1/cluster` poll without the parameter is unchanged. Note the root
+  check runs before the leader check, so a non-root caller passing the parameter to a **follower** now gets
+  `403` where it previously got a `200` with no matrix in it - tooling that polls followers with the flag
+  will see the change. In Studio the matrix is loaded by an explicit button, not by the cluster tab's
+  auto-poll, so a non-root operator's tab keeps working.
+
+`GET /api/v1/cluster` also stops listing reserved internal databases such as the Raft control directory
+`.raft`, matching what the presence matrix and the bootstrap-state RPC already did.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
