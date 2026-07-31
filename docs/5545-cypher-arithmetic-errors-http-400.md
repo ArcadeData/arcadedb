@@ -114,9 +114,17 @@ The non-obvious calls, recorded because the reasoning is not visible in the diff
 The engine change itself was never modified after the first commit; every review cycle touched only tests,
 Javadoc and docs.
 
-## Follow-ups (not in scope)
+## Follow-ups (filed)
 
-- SQL arithmetic operators wrap silently on overflow instead of failing like their Cypher counterparts. Worth
-  its own issue - it is a behaviour change, not a status-code change.
-- `SQLFunctionAbsoluteValue`'s `Duration` branch guards with `seconds > -1 && nanos > -1`, which looks wrong
-  for durations between -1s and 0s. Pre-existing and untouched here.
+Both were probed empirically before filing, which turned up more than expected.
+
+- **#5647** - SQL integer arithmetic. Two defects, not one. `Long.MAX_VALUE * 2` returns `-2` and
+  `Long.MAX_VALUE + 1` returns `Long.MIN_VALUE`, silently, so a wrong number can be persisted by an
+  `UPDATE ... SET`. Separately, SQL `1/0` and `1%0` raise a **raw** `java.lang.ArithmeticException`, which
+  misses the #5602 classification arms entirely and falls through to the generic `catch (Throwable)` arm -
+  still HTTP 500 today. That second half is literally the defect #5545 described, still live on the SQL
+  side; #5631 only converted `SQLFunctionAbsoluteValue`.
+- **#5649** - the `Duration` branch of `SQLFunctionAbsoluteValue`. The guard reads `toSecondsPart()` /
+  `toNanosPart()` (components, not the whole), and `Duration.ofSeconds(abs(seconds), abs(nanos))` does not
+  reconstruct the magnitude of a negative duration, which `Duration` normalizes as negative seconds plus a
+  positive nanos adjustment. The branch has no test at all.
