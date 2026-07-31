@@ -39,8 +39,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Asserted through HTTP because the classification only exists at that boundary, and over both the read and the
  * write path because the auto-commit wrapper re-wraps the failure as a {@code TransactionException}, the shape that
  * historically degraded a client error back to 500.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue5545SqlArithmeticErrorHttpStatusIT extends BaseGraphServerTest {
 
