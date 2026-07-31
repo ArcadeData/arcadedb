@@ -551,7 +551,11 @@ public class MCPDispatcher {
     if (message == null || message.has("method") || !message.has("id") || !isValidRequestId(message.opt("id")))
       return false;
 
-    return "2.0".equals(message.getString("jsonrpc", null))
+    // Compared through opt rather than read as a string. This probe runs before anything else in dispatch, so it
+    // is the one member read that cannot sit under a guard: it decides whether a reply is owed at all, and a raise
+    // here would escape as a transport failure with no envelope. opt maps any JSON shape to an object instead of
+    // demanding one, so a 'jsonrpc' that is not the string "2.0" simply means this payload is not a response.
+    return "2.0".equals(message.opt("jsonrpc"))
         && message.has("result") != message.has("error");
   }
 
