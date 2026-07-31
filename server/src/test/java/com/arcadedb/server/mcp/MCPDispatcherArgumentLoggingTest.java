@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.mcp;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -84,5 +85,28 @@ class MCPDispatcherArgumentLoggingTest {
 
     // An unknown key is rejected by the tool before it changes anything, so its value is not a secret.
     assertThat(MCPDispatcher.formatArgs("set_server_setting", args)).contains("value=\"plain\"");
+  }
+
+  @Test
+  void aSettingKeyOfAnotherJsonTypeDoesNotRaise() {
+    final JSONObject args = new JSONObject()
+        .put("key", new JSONObject())
+        .put("value", SECRET);
+
+    // This line is logged before the tool runs and above the handler's try, so a raise here escapes the dispatcher
+    // and reaches the transport as a bodiless HTTP 500 rather than a JSON-RPC envelope.
+    assertThat(MCPDispatcher.formatArgs("set_server_setting", args)).isNotNull();
+  }
+
+  @Test
+  void aSecretSettingKeyGivenAsASingleElementArrayIsStillMasked() {
+    final JSONObject args = new JSONObject()
+        .put("key", new JSONArray().put("arcadedb.server.rootPassword"))
+        .put("value", SECRET);
+
+    // Gson coerces a single-element array to that element's string form, so the tool resolves this key and does
+    // write the secret. Guarding the read must not narrow it to a plain string, or the value reaches the log
+    // unmasked while the setting is still applied.
+    assertThat(MCPDispatcher.formatArgs("set_server_setting", args)).doesNotContain(SECRET);
   }
 }
