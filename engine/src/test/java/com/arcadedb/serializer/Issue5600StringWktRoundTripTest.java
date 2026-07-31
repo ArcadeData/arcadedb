@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #5600 (1): a value stored in a {@code STRING} property must read back as the very same {@code String}. The
@@ -180,5 +181,29 @@ class Issue5600StringWktRoundTripTest extends TestHelper {
         "SELECT name FROM Place WHERE coords.intersectsWith(" + box + ") = true");
     assertThat(intersects.next().<String>getProperty("name")).isEqualTo("inside");
     assertThat(intersects.hasNext()).isFalse();
+  }
+
+  /**
+   * A malformed geometry written in the QUERY is a mistake to report, while a row that simply does not hold a geometry
+   * is filtered out: failing the whole query over one bad row would be worse than skipping it.
+   */
+  @Test
+  void aMalformedParameterIsReportedButABadRowIsJustSkipped() {
+    database.getSchema().createDocumentType("Mixed").createProperty("coords", Type.STRING);
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Mixed SET name = 'good', coords = 'POINT (12.5 41.9)'");
+      database.command("sql", "INSERT INTO Mixed SET name = 'junk', coords = 'not a geometry at all'");
+    });
+
+    // The bad row does not match; the good one still does, and the query completes
+    final ResultSet rs = database.query("sql",
+        "SELECT name FROM Mixed WHERE coords.intersectsWith('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))') = true");
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("good");
+    assertThat(rs.hasNext()).isFalse();
+
+    // A typo in the literal is surfaced rather than silently answering "no match"
+    assertThatThrownBy(() -> database.query("sql", "SELECT name FROM Mixed WHERE coords.isWithin('POLYGONN ((0 0))') = true")
+        .hasNext()).hasMessageContaining("POLYGONN");
   }
 }

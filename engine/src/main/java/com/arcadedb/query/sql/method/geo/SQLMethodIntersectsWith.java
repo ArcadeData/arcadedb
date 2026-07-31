@@ -18,11 +18,6 @@
  */
 package com.arcadedb.query.sql.method.geo;
 
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.function.sql.geo.GeoUtils;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
@@ -30,40 +25,21 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLMethodIntersectsWith extends AbstractSQLMethod {
+public class SQLMethodIntersectsWith extends AbstractSQLGeoRelationMethod {
 
   public static final String NAME = "intersectswith";
 
   public SQLMethodIntersectsWith() {
-    super(NAME, 0, 1);
+    super(NAME, "intersectsWith");
+  }
+
+  @Override
+  protected boolean matches(final SpatialRelation relation) {
+    return relation != SpatialRelation.DISJOINT;
   }
 
   @Override
   public String getSyntax() {
     return "intersectsWith( <shape> )";
-  }
-
-  @Override
-  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
-    if (value == null)
-      return null;
-
-    if (params.length != 1 || params[0] == null)
-      throw new IllegalArgumentException("intersectsWith() requires a shape as parameter");
-
-    // A geometry is accepted as a Shape, as WKT text or as a Cypher point map: the deserializer no longer turns a
-    // WKT string into a Shape behind everyone's back (issue #5600), so the conversion happens where it is asked for.
-    final Shape target;
-    final Shape shape;
-    try {
-      target = GeoUtils.parseGeometry(value);
-      shape = GeoUtils.parseGeometry(params[0]);
-    } catch (final IllegalArgumentException e) {
-      return null;
-    }
-    if (target == null || shape == null)
-      return null;
-
-    return target.relate(shape) != SpatialRelation.DISJOINT;
   }
 }

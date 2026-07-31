@@ -100,10 +100,12 @@ public class TypeGeoIndexBuilder extends TypeIndexBuilder {
    * than dropped: a silently ignored {@code METADATA} is exactly what made the missing forwarding invisible (#5600).
    *
    * @param json the JSON object containing the metadata configuration
+   *
+   * @return this builder for chaining
    */
-  public void withMetadata(final JSONObject json) {
+  public TypeGeoIndexBuilder withMetadata(final JSONObject json) {
     if (json == null)
-      return;
+      return this;
 
     for (final String key : json.keySet())
       if (!SUPPORTED_METADATA_KEYS.contains(key))
@@ -137,6 +139,8 @@ public class TypeGeoIndexBuilder extends TypeIndexBuilder {
             + Arrays.toString(GeoIndexMetadata.TOKENIZATION.values()), e);
       }
     }
+
+    return this;
   }
 
   /**
