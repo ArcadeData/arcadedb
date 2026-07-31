@@ -1047,6 +1047,19 @@ was never doing anything - but a statement that "worked" before can now fail, so
 accepted keys, which the error message lists. Existing indexes are untouched; only new `CREATE INDEX` statements are
 validated, and reading a persisted definition stays tolerant of the structural keys it carries.
 
+Two consequences for **embedded (Java) callers** specifically:
+
+- The strict reading applies to `TypeLSMVectorIndexBuilder.withMetadata(JSONObject)` and its full-text, sparse and
+  geospatial counterparts, not only to SQL. A caller that passed an extra key for forward compatibility now gets an
+  exception. Note in particular `buildGraphNow`, which is a directive of the SQL layer rather than an index setting: the
+  SQL path consumes and removes it before the builder sees it, so a Java caller passing it through `withMetadata` is
+  passing a key the builder has never understood, and now hears about it. Restoring an exported definition has its own
+  entry point, `withPersistedMetadata(JSONObject)`, which tolerates the structural keys such a definition carries.
+- `BucketLSMVectorIndexBuilder` no longer exposes its settings as public fields (`dimensions`, `similarityFunction`,
+  `encoding`, `maxConnections`, ...). Those fields *were* the defect - a setting added to the metadata had to be
+  remembered there too, and two never were - so they are gone rather than kept in sync. Every fluent `withX()` method is
+  preserved (with `withEfSearch` added), and `getVectorMetadata()` returns the whole configuration as one object.
+
 Four dense-vector settings were unreachable behind that silence, and are now settable and persisted:
 
 - **`efSearch`** and **`inactivityRebuildTimeoutMs`** were never read from the clause, so the search-time
