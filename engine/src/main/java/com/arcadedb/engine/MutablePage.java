@@ -35,6 +35,20 @@ import java.util.Arrays;
  */
 public class MutablePage extends BasePage implements TrackableContent {
   /**
+   * Commit-time page-replay mechanism: the commutative edge-append merge
+   * ({@code TransactionContext.rebaseEdgeAppends}).
+   */
+  public static final  int     COVERAGE_EDGE_APPEND_MERGE = 1;
+  /**
+   * Commit-time page-replay mechanism: the disjoint-slot merge ({@code TransactionContext.rebaseSlots}).
+   */
+  public static final  int     COVERAGE_SLOT_MERGE        = 1 << 1;
+  /**
+   * Every commit-time page-replay mechanism at once: used by writers whose changes are re-applied by ALL of them
+   * (e.g. {@code LocalBucket.compressPage}, which the commit path re-runs on the rebased page).
+   */
+  public static final  int     COVERAGE_ALL_MERGES        = COVERAGE_EDGE_APPEND_MERGE | COVERAGE_SLOT_MERGE;
+  /**
    * Maximum number of disjoint modified intervals tracked per page. Page layouts write at both ends (an LSM index
    * page grows its sorted pointer array up from the header and its key/value content down from the tail; a bucket
    * page does the same with its record pointer table), so two or three intervals cover the real cases. The extra
@@ -42,12 +56,22 @@ public class MutablePage extends BasePage implements TrackableContent {
    * merged, which only makes the tracking coarser (never wrong) and degrades at worst to the single-hull behavior
    * this class had before issue #5470.
    */
-  private static final int     MAX_MODIFIED_RANGES = 8;
+  private static final int     MAX_MODIFIED_RANGES        = 8;
   private static final byte[]  ZERO_BYTES_ARRAY;
   // Sorted, disjoint and non-adjacent intervals as [from0,to0, from1,to1, ...]. One extra slot is kept free so an
   // insertion can happen before the merge that puts the count back within budget.
-  private final        int[]   modifiedRanges      = new int[(MAX_MODIFIED_RANGES + 1) * 2];
-  private              int     modifiedRangeCount  = 0;
+  private final        int[]   modifiedRanges             = new int[(MAX_MODIFIED_RANGES + 1) * 2];
+  private              int     modifiedRangeCount         = 0;
+  // Replay-coverage bookkeeping (issue #5596). declaredCoverage is the set of mechanisms that own the write
+  // currently in progress; uncoveredMechanisms is the sticky set of mechanisms that CANNOT account for at least one
+  // byte this transaction dirtied on this page. See beginCoveredWrite/isFullyCoveredBy.
+  // Plain ints on purpose, like every other field of this class: a MutablePage is one transaction's private image of
+  // a page (see the class note above), dirtied only by the thread that owns that transaction and read on the
+  // committing thread - which is the same thread, or one the commit hand-off already orders against it. Do NOT
+  // introduce a background mutator of a modified image: it would need synchronisation here, and an unsynchronised
+  // one could hide a dirtied byte from the coverage proof, which is the very hazard #5596 exists to remove.
+  private              int     declaredCoverage           = 0;
+  private              int     uncoveredMechanisms        = 0;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
@@ -227,11 +251,66 @@ public class MutablePage extends BasePage implements TrackableContent {
     return modifiedRangeCount;
   }
 
+  /**
+   * Declares that every byte the caller is about to write on this page can be re-derived at commit time by the given
+   * commit-time replay mechanism(s) - a bit set of {@link #COVERAGE_EDGE_APPEND_MERGE} and
+   * {@link #COVERAGE_SLOT_MERGE} - and returns the previous declaration so it can be restored by
+   * {@link #endCoveredWrite(int)}. Nesting is therefore supported; callers MUST restore in a {@code finally}.
+   * <p>
+   * This is the opt-IN half of issue #5596: a commit-time page merge drops this transaction's whole image of the
+   * conflicting page and replays only its tracked writes on top of the newer committed version, which is sound only
+   * if every byte the transaction wrote is accounted for by one of those tracked writes. Instead of trusting each
+   * writer to opt OUT (the {@code poisonEdgeAppendPage}/{@code poisonSlotRebasePage} calls, one forgotten call = a
+   * silently lost write), a byte counts as covered only while its writer says so: any write performed outside a
+   * declaration permanently marks the page as not re-derivable by the mechanisms that did not declare it.
+   * <p>
+   * NOTE: this REPLACES the current declaration, it does not union with it - a {@code begin(EDGE)} nested inside a
+   * {@code begin(SLOT)} scope declares its writes EDGE-only, not both. That is deliberate: coverage must name the
+   * mechanism that actually replays each byte, and a union would let an outer scope vouch for writes it cannot
+   * reproduce. Pass the full mask when a write really is replayed by several mechanisms (as
+   * {@code compressPage} does with {@link #COVERAGE_ALL_MERGES}).
+   */
+  public int beginCoveredWrite(final int mechanisms) {
+    final int previous = declaredCoverage;
+    // The one thing that could turn this backstop into the very hazard it removes: a writer that opens a declaration
+    // and never restores it (a missing finally, an exception unwinding past it) leaves the declaration live, so a
+    // LATER undeclared write to the same page is wrongly vouched for. No writer legitimately opens a non-zero
+    // declaration inside another one - each names the single mechanism that replays its own bytes, and a write
+    // replayed by several of them passes the full mask instead - so inheriting a live declaration means exactly that
+    // leak. An assertion, not a hard check: it fails fast under -ea (surefire's default) at zero production cost,
+    // where the sticky uncovered set still keeps the outcome safe.
+    assert previous == 0 || mechanisms == 0 :
+        "A covered-write declaration leaked on page " + pageId + " (declared=" + previous
+            + "): every beginCoveredWrite must be restored by endCoveredWrite in a finally block";
+    declaredCoverage = mechanisms;
+    return previous;
+  }
+
+  /**
+   * Restores the declaration {@link #beginCoveredWrite(int)} replaced. Always call it from a {@code finally} block:
+   * leaving a stale declaration behind would make unrelated later writes look covered.
+   */
+  public void endCoveredWrite(final int previousMechanisms) {
+    declaredCoverage = previousMechanisms;
+  }
+
+  /**
+   * Tells whether EVERY modification this transaction made to this page was declared (see
+   * {@link #beginCoveredWrite(int)}) as re-derivable by {@code mechanism}, so a commit-time conflict on the page can
+   * be resolved by replaying that mechanism's tracked writes instead of failing the transaction.
+   */
+  public boolean isFullyCoveredBy(final int mechanism) {
+    return (uncoveredMechanisms & mechanism) == 0;
+  }
+
   @Override
   public void updateModifiedRange(final int start, final int end) {
     if (start < 0 || end >= getPhysicalSize())
       throw new IllegalArgumentException(
           "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
+
+    // Whatever the current writer did NOT declare can no longer re-derive this page (issue #5596).
+    uncoveredMechanisms |= COVERAGE_ALL_MERGES & ~declaredCoverage;
 
     if (modifiedRangeCount == 0) {
       modifiedRanges[0] = start;
