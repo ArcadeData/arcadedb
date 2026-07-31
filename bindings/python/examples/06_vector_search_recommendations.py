@@ -250,7 +250,7 @@ def create_sql_vector_index(db, property_suffix=""):
     num_movies = len(result_list)
 
     print(f"\nCreating HNSW (JVector) index for {embedding_prop}...")
-    print("  metric=cosine, max_connections=32, beam_width=256")
+    print("  metric=cosine, max_connections=32, beam_width=100 (engine defaults)")
 
     start_time = time.time()
 

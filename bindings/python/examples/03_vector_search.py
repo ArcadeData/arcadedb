@@ -226,7 +226,7 @@ with arcadedb.create_database(db_path) as db:
     print(
         "      • max_connections: 32 (connections per node, higher = more accurate but slower)"
     )
-    print("      • beam_width: 256 (search quality, higher = more accurate)")
+    print("      • beam_width: 100 (engine default; higher = more accurate)")
     print()
 
     db.command(
