@@ -102,21 +102,36 @@ public class Profiler {
    * lock-free, so no database lock can be on the other side of the wait.
    */
   public synchronized void unregisterDatabase(final DatabaseInternal database) {
-    if (!databases.remove(database))
+    if (!databases.contains(database))
       // ALREADY UNREGISTERED: DO NOT FOLD ITS COUNTERS IN TWICE
       return;
 
+    // CAPTURE BEFORE REMOVING, NOT AFTER. Removing first and folding second leaves a window in which a throw from
+    // accumulateMonotonic drops the database out of `databases` with its contribution never folded into
+    // retainedStats - so the next scrape is LOWER than the last, which a Prometheus counter reads as a reset and
+    // turns into a fabricated rate() spike. That is the exact artifact this baseline exists to prevent, so the
+    // ordering below closes the window rather than relying on the read not to fail.
+    final long[] departing = new long[STATS_COUNT];
+    boolean captured = false;
     try {
-      final long[] departing = new long[STATS_COUNT];
       accumulateMonotonic(departing, database);
+      captured = true;
+    } catch (final Exception e) {
+      // THE CALLER IS MID-CLOSE: A STAT SOURCE ALREADY TORN DOWN MUST NOT TAKE THE CLOSE PATH DOWN WITH IT. The
+      // database still has to leave the registry - keeping it would make every later toJSON() throw on the same
+      // dead source - so this one case genuinely does decrease the totals, and on a typed counter that reads as a
+      // reset. Logged at WARNING, not FINE: it is the only path that can still produce the artifact, and an
+      // operator seeing an unexplained rate spike needs this line to explain it.
+      LogManager.instance()
+          .log(this, Level.WARNING, "Could not retain the profiler counters of a closing database: the engine "
+              + "totals will step back by its contribution, which appears as a counter reset in Prometheus", e);
+    }
+
+    databases.remove(database);
+
+    if (captured)
       for (int i = 0; i < MONOTONIC_STATS; i++)
         retainedStats[i] += departing[i];
-    } catch (final Exception e) {
-      // THE CALLER IS MID-CLOSE: A STAT SOURCE ALREADY TORN DOWN MUST NOT TAKE THE CLOSE PATH DOWN WITH IT. THE ONLY
-      // COST IS THAT THIS DATABASE'S CONTRIBUTION IS LOST, WHICH IS THE PRE-#5636 BEHAVIOUR FOR EVERY DATABASE.
-      LogManager.instance()
-          .log(this, Level.FINE, "Could not retain the profiler counters of a closing database", e);
-    }
   }
 
   /**

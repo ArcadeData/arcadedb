@@ -23,6 +23,9 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -108,11 +111,23 @@ class EngineMetricsBinderTest {
   /**
    * Micrometer's {@code (obj, fn)} builders hold a WEAK reference to {@code obj}, and the only production caller does
    * {@code new EngineMetricsBinder().bindTo(registry)} - so anchoring the meters to the binder instance would let
-   * every one of them silently stop reporting at the next GC. The meters read through a static cache instead; this
-   * pins that they survive the binder becoming unreachable.
+   * every one of them silently stop reporting at the next GC.
+   * <p>
+   * Asserted structurally rather than by forcing a collection: {@code System.gc()} is only a hint, and because the
+   * meters read through the static cache the values come back either way - so a GC-based test would keep passing if
+   * someone regressed the cache to an instance field, which is the exact bug it is supposed to catch. What actually
+   * has to hold is that whatever the meters are anchored to outlives the binder, i.e. that no instance field of the
+   * binder can be the anchor.
    */
   @Test
-  void metersKeepReportingAfterTheBinderIsCollected() {
+  void theMetersAreAnchoredToSomethingThatOutlivesTheBinder() {
+    for (final Field field : EngineMetricsBinder.class.getDeclaredFields())
+      assertThat(Modifier.isStatic(field.getModifiers()))
+          .as("EngineMetricsBinder.%s is an instance field. Micrometer holds the meter's read target by WEAK "
+              + "reference and the binder is discarded right after bindTo(), so anchoring a meter here would make "
+              + "every engine metric stop reporting at the next GC.", field.getName())
+          .isTrue();
+
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     new EngineMetricsBinder().bindTo(registry);
 

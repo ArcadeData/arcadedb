@@ -28,6 +28,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.lang.reflect.Field;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -98,8 +100,41 @@ class Issue5636ProfilerMonotonicTest {
   }
 
   /**
+   * {@code statOf} degrades a missing or non-numeric key to 0 so a metrics scrape survives it. That is the right
+   * trade at runtime, but it also means a typo in {@code DB_STAT_KEYS} - or a source key someone renames later -
+   * silently produces a wrong total instead of failing. Nothing else would catch it: every other assertion here
+   * reads through the same defaulting. So the key list is checked against a real stats map.
+   */
+  @Test
+  void everyAccumulatedStatKeyExistsInARealStatsMap() throws Exception {
+    // Read Profiler's OWN key list, not a copy of it: a second copy here would pass happily while the production
+    // list carried the typo. This is the one assertion that has to reach into the class under test.
+    final Field keysField = Profiler.class.getDeclaredField("DB_STAT_KEYS");
+    keysField.setAccessible(true);
+    final String[] dbStatKeys = (String[]) keysField.get(null);
+    assertThat(dbStatKeys).isNotEmpty();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final DatabaseInternal db = (DatabaseInternal) factory.create();
+      try {
+        final Map<String, Object> dbStats = db.getStats();
+        for (final String key : dbStatKeys)
+          assertThat(dbStats.get(key)).as("Profiler.DB_STAT_KEYS entry '%s' is not in DatabaseInternal.getStats()", key)
+              .isInstanceOf(Number.class);
+
+        final Map<String, Object> walStats = db.getTransactionManager().getStats();
+        for (final String key : new String[] { "pagesWritten", "bytesWritten", "logFiles" })
+          assertThat(walStats.get(key)).as("Profiler reads WAL stat '%s', which TransactionManager does not emit", key)
+              .isInstanceOf(Number.class);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
    * A database that is never registered - or is unregistered twice - must not double-count. Guards the
-   * {@code if (!databases.remove(database)) return;} short-circuit that makes the fold idempotent.
+   * {@code if (!databases.contains(database)) return;} short-circuit that makes the fold idempotent.
    */
   @Test
   void unregisteringTwiceFoldsTheCountersOnlyOnce() {
