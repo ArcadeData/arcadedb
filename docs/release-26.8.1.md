@@ -588,7 +588,8 @@ needs a repartition.
 - **`ALTER TYPE ... BucketSelectionStrategy` now says what actually went wrong.** Every failure used to be
   rewritten as `implementation '...' was not found`, so a `partitioned('x')` rejected for want of a unique index on
   `x` sent you hunting for a typo in a name that was perfectly valid. A genuinely unknown implementation still
-  reports that it cannot be found.
+  reports that it cannot be found. Only the message changed: the refusal is still a client error and still answers
+  HTTP 400.
 
 Two states the issue asked about turned out not to be reachable, and are pinned by tests rather than fixed: an
 **undeclared partition property** cannot occur, because the strategy demands a unique automatic index and an index

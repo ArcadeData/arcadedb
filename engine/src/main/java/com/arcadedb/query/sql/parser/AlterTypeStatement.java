@@ -181,7 +181,14 @@ public class AlterTypeStatement extends DDLStatement {
           // with a partition key whose stored form cannot be hashed consistently - sent the user hunting for a typo
           // in a name that was perfectly valid. The genuinely unknown implementation still says so: that case
           // arrives with its own "Cannot find bucket selection strategy class" message, which this keeps.
-          throw new CommandExecutionException(
+          // <p>
+          // The exception TYPE stays a CommandParsingException subtype, and only the message changes. Refusing a
+          // strategy is a client-side DDL mistake, and CommandParsingException is what the HTTP layer maps to 400
+          // (AbstractServerHttpHandler, both the plain and the transaction-wrapped arm); a CommandExecutionException
+          // would be answered 500, telling clients and load balancers to retry a request that can only ever fail the
+          // same way. Statement-level validation refusals elsewhere in this package (see RebuildTypeStatement's
+          // repartition gate) classify the same way.
+          throw new CommandSQLParsingException(
               "Cannot set bucket selection strategy '" + implName + "' on type '" + type.getName() + "': "
                   + e.getMessage(), e);
         }

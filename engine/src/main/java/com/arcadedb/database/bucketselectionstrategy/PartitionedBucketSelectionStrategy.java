@@ -31,11 +31,15 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -329,9 +333,20 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
         internal.getSerializer().getDateTimeImplementation();
   }
 
+  /**
+   * Whether a temporal implementation carries nothing beyond the instant that reaches disk, so that a value hashes
+   * the same before and after a round trip.
+   * <p>
+   * An allow-list, like the {@code Type} switch above and for the same reason: a deny-list of the zone-carrying
+   * classes would silently pass any implementation nobody thought to name - including one configured by a user -
+   * which is exactly the failure this guard exists to prevent. These four are the zone-free half of what
+   * {@code DateUtils.dateTime}/{@code DateUtils.date} can construct; the rest ({@link Calendar},
+   * {@link ZonedDateTime}, {@link OffsetDateTime}) carry a zone that placement hashes and the deserializer cannot
+   * give back.
+   */
   private static boolean isZoneFree(final Class<?> implementation) {
-    return implementation != Calendar.class && implementation != ZonedDateTime.class
-        && implementation != OffsetDateTime.class;
+    return implementation == Date.class || implementation == Instant.class || implementation == LocalDate.class
+        || implementation == LocalDateTime.class;
   }
 
   /**

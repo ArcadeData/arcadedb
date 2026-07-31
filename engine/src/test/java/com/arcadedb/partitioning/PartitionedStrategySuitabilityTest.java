@@ -24,7 +24,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.schema.LocalDocumentType;
@@ -201,7 +201,10 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
   @Test
   void aRefusedAssignmentLeavesThePreviousStrategyInPlace() {
     createIndexedType("Rollback", "BINARY");
-    assertThatThrownBy(() -> partition("Rollback")).isInstanceOf(CommandExecutionException.class);
+    // A CommandParsingException subtype, which is what the HTTP layer maps to 400 - a refusal is a client-side DDL
+    // mistake, and a CommandExecutionException here would be answered 500. Pinned end to end by
+    // PartitionedStrategyRefusalHttpTest in the server module.
+    assertThatThrownBy(() -> partition("Rollback")).isInstanceOf(CommandParsingException.class);
 
     assertThat(database.getSchema().getType("Rollback").getBucketSelectionStrategy().getName())
         .isEqualTo(new RoundRobinBucketSelectionStrategy().getName());
