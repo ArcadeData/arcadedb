@@ -202,6 +202,62 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
   }
 
   /**
+   * A composite partition is only as prunable as its worst component: one unsuitable property in the set is enough,
+   * because placement sums the per-value hashes and the sum is no more reproducible than any term in it. The
+   * suitable component must not mask it.
+   */
+  @Test
+  void oneUnsuitableComponentRefusesTheWholeCompositePartition() {
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("Composite").withTotalBuckets(BUCKETS).create();
+      database.command("sql", "CREATE PROPERTY Composite.a STRING");
+      database.command("sql", "CREATE PROPERTY Composite.b DECIMAL");
+      database.command("sql", "CREATE INDEX ON Composite(a,b) UNIQUE");
+    });
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql",
+        "ALTER TYPE Composite BucketSelectionStrategy `partitioned('a','b')`")))
+        .as("the DECIMAL component alone makes the composite partition unprunable")
+        .hasMessageContaining("DECIMAL")
+        .hasMessageContaining("'b'");
+  }
+
+  /**
+   * The composite counterpart of the fan-out advisory, and the case {@code coversPartitionProperties} exists for: an
+   * index on a strict SUBSET of the partition properties hashes fewer values than placement did, so it cannot be
+   * pruned to one bucket either. Accepted, and reported.
+   */
+  @Test
+  void anIndexOnPartOfACompositePartitionIsWarnedAbout() {
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("CompositeSubset").withTotalBuckets(BUCKETS).create();
+      database.command("sql", "CREATE PROPERTY CompositeSubset.a STRING");
+      database.command("sql", "CREATE PROPERTY CompositeSubset.b STRING");
+      database.command("sql", "CREATE INDEX ON CompositeSubset(a,b) UNIQUE");
+      database.command("sql", "CREATE INDEX ON CompositeSubset(a) NOTUNIQUE");
+    });
+
+    final List<String> warnings = captureWarnings(() -> database.transaction(() -> database.command("sql",
+        "ALTER TYPE CompositeSubset BucketSelectionStrategy `partitioned('a','b')`")));
+
+    assertThat(database.getSchema().getType("CompositeSubset").getBucketSelectionStrategy().getName())
+        .as("a partial index is a warning, never a refusal")
+        .isEqualTo("partitioned");
+    assertThat(warnings).anyMatch(m -> m.contains("CompositeSubset") && m.contains("[a]"));
+
+    // And the runtime guard agrees with the diagnosis: a key covering only part of the partition declines to prune.
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("CompositeSubset");
+    final PartitionedBucketSelectionStrategy strategy =
+        (PartitionedBucketSelectionStrategy) type.getBucketSelectionStrategy();
+    assertThat(strategy.getBucketIdByKeys(List.of("a"), new Object[] { "acme" }, false))
+        .as("a partial key hashes fewer values than placement did")
+        .isEqualTo(-1);
+    assertThat(strategy.getBucketIdByKeys(List.of("a", "b"), new Object[] { "acme", "eu" }, false))
+        .as("but the full composite key still prunes")
+        .isNotEqualTo(-1);
+  }
+
+  /**
    * A refused assignment must leave nothing behind. The strategy is stored on the type before it is validated - it
    * has to be, so it can read back the type it is being bound to - so a refusal that does not put the previous one
    * back leaves the type running the very strategy the DDL just rejected.
