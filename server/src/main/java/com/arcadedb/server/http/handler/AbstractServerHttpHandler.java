@@ -447,6 +447,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
+      // Resolved once: the arm below needs both the answer and the exception itself, and the chain walk is not worth
+      // repeating.
+      final ArithmeticErrorException arithmetic = arithmeticError(e);
 
       if (realException instanceof QueryNotIdempotentException) {
         LogManager.instance()
@@ -477,16 +480,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      } else if (arithmeticError(e) != null) {
+      } else if (arithmetic != null) {
         // An integer overflow or a division by zero is decided by the values the caller supplied, not by anything
         // wrong with the server, and Neo4j classifies the whole category as a client error
         // (Neo.ClientError.Statement.ArithmeticError). Reported as 400 with the arithmetic message rather than the
         // 500 it used to degrade to. See issue #5602.
-        final Throwable reported = arithmeticError(e);
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        reported.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
+                        arithmetic.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", arithmetic, null);
       } else if (e instanceof CommandParsingException || realException instanceof CommandParsingException) {
         // A parsing/semantic validation error (malformed query, unknown variable, invalid MERGE
         // rebind, unsupported Gremlin syntax such as Groovy closures, ...) is a client error - the query
@@ -523,6 +525,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
+      final ArithmeticErrorException arithmetic = arithmeticError(e);
 
       if (realException instanceof SecurityException) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
@@ -560,15 +563,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      } else if (arithmeticError(e) != null) {
+      } else if (arithmetic != null) {
         // Symmetric with the un-wrapped arithmetic arm above (#5602): the auto-commit wrapper in
         // DatabaseAbstractHandler re-wraps the failure as a TransactionException, and without this branch the
         // client error would degrade back to 500.
-        final Throwable reported = arithmeticError(e);
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        reported.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
+                        arithmetic.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", arithmetic, null);
       } else if (realException instanceof CommandParsingException) {
         // Symmetric with the un-wrapped CommandParsingException arm above. A Cypher/SQL validation
         // error thrown during execution is wrapped by the auto-commit transaction wrapper in
