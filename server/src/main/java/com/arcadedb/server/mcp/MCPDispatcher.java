@@ -201,8 +201,20 @@ public class MCPDispatcher {
     if (!isValidRequestId(id))
       return error(null, -32600, "Invalid Request: 'id' must be a string or an integer", 200);
 
-    final String method = request.getString("method", "");
-    final JSONObject params = request.getJSONObject("params", new JSONObject());
+    // Read both members under a guard rather than inline. The defaulting accessors substitute the default only for
+    // an absent or null member, so a member that is present but of another JSON type raises out of the read
+    // instead. These two reads sit above the try below, whose only block is a finally, so an unguarded raise here
+    // escapes dispatch entirely and reaches the transport as a bodiless HTTP 500 rather than a JSON-RPC envelope.
+    // Both members belong to the request object itself, which makes a wrong shape an invalid request rather than
+    // invalid params.
+    final String method;
+    final JSONObject params;
+    try {
+      method = request.getString("method", "");
+      params = request.getJSONObject("params", new JSONObject());
+    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32600, "Invalid Request: 'method' must be a string and 'params' an object", 200);
+    }
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] %s (user=%s)", transport, method, user.getName());
 
@@ -258,7 +270,15 @@ public class MCPDispatcher {
   }
 
   private MCPResponse resourcesRead(final Object id, final JSONObject params, final ServerSecurityUser user) {
-    final String uri = params.getString("uri", "");
+    // Guarded for the same reason as the request members in dispatch: a 'uri' present but of another JSON type
+    // raises out of the read, which sits above the try below. A wrong shape is invalid params, distinct from the
+    // resource-not-found the try answers with for a URI that is well formed but names nothing readable.
+    final String uri;
+    try {
+      uri = params.getString("uri", "");
+    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32602, "Invalid params: 'uri' must be a string", 200);
+    }
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read '%s' (user=%s)", transport, uri, user.getName());
 
@@ -299,7 +319,7 @@ public class MCPDispatcher {
     } catch (final SecurityException e) {
       LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, e.getMessage());
       return error(id, -32600, e.getMessage(), 200);
-    } catch (final IllegalArgumentException | IllegalStateException e) {
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
       return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
@@ -309,8 +329,17 @@ public class MCPDispatcher {
 
   private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
       final EffectiveToolProfile profile) {
-    final String toolName = params.getString("name", "");
-    final JSONObject args = params.getJSONObject("arguments", new JSONObject());
+    // Guarded for the same reason as the request members in dispatch: a member present but of the wrong JSON type
+    // raises out of the read, and these reads sit above the try below. A malformed member here is invalid params
+    // rather than a failed tool call, so it answers with a JSON-RPC error rather than an isError tool envelope.
+    final String toolName;
+    final JSONObject args;
+    try {
+      toolName = params.getString("name", "");
+      args = params.getJSONObject("arguments", new JSONObject());
+    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32602, "Invalid params: 'name' must be a string and 'arguments' an object", 200);
+    }
 
     LogManager.instance()
         .log(this, Level.INFO, "MCP[%s] tools/call '%s' %s (user=%s)", transport, toolName, formatArgs(toolName, args), user.getName());

@@ -106,6 +106,67 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
   }
 
+  /**
+   * A member of the wrong JSON type must still produce a JSON-RPC envelope. The defaulting accessors fall back only
+   * for an absent or null member, so a member that is present but of another shape raises out of the read, and a
+   * read placed where nothing can answer for it reaches the transport as an HTTP 500 with no envelope at all.
+   */
+  @Test
+  void requestWithNonObjectParamsIsRejected() throws Exception {
+    final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":[\"a\"]}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+  }
+
+  @Test
+  void requestWithNonStringMethodIsRejected() throws Exception {
+    // An object, not a one-element array: Gson coerces a single-element array to that element's string form, so
+    // "method":["ping"] would silently succeed as a call to ping rather than exercising the malformed path.
+    final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":{}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+  }
+
+  @Test
+  void toolsCallWithNonObjectArgumentsIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+            + "\"params\":{\"name\":\"list_databases\",\"arguments\":[\"a\"]}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  @Test
+  void resourcesReadWithNonStringUriIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"resources/read\",\"params\":{\"uri\":{}}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  @Test
+  void promptsGetWithNonStringNameIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"prompts/get\",\"params\":{\"name\":{}}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
   @Test
   void requestWithFractionalIdIsRejected() throws Exception {
     final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"tools/list\"}", null);
