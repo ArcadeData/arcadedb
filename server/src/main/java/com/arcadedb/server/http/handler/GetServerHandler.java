@@ -49,8 +49,12 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   private static final ConcurrentHashMap<String, Long>   prevProfilerCounts  = new ConcurrentHashMap<>();
   private static final ConcurrentHashMap<String, Double> prevHttpCounts      = new ConcurrentHashMap<>();
 
+  // #5608: the three page-merge counters are rate-tracked next to concurrentModificationExceptions because the
+  // signal they carry is a DERIVATIVE ("a jump in the declines with a dip in the merges"), which monotonic counters
+  // cannot show - an operator would otherwise have to sample and subtract them by hand.
   private static final Set<String> RATE_TRACKED_PROFILER_METRICS = Set.of(
-      "writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions"
+      "writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions",
+      "edgeAppendMerges", "txPageSlotMerges", "mergesDeclinedByCoverage"
   );
 
   public GetServerHandler(final HttpServer httpServer) {

@@ -2021,10 +2021,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Defragments the page in place, closing the holes an update or a delete left behind.
    * <p>
    * #5596: with {@code forceWipeOut=false} every byte written here is declared covered by ALL the commit-time page
-   * merges. That is sound - and necessary to keep them effective - because the commit path re-runs exactly this call
-   * on the page a merge re-derived, so the compression is reproduced rather than lost: it is a layout-only
-   * transformation of whatever records the page ends up holding, not a change of this transaction's own. A FORCED
-   * wipe-out (the database checker) is not re-run by the merge path, so it declares nothing and disqualifies the page.
+   * merges. That is sound - and necessary to keep them effective - because the merge re-runs exactly this call on the
+   * page it re-derived, so the compression is reproduced rather than lost: it is a layout-only transformation of
+   * whatever records the page ends up holding, not a change of this transaction's own. A FORCED wipe-out (the
+   * database checker) is not re-run by the merge path, so it declares nothing and disqualifies the page.
+   * <p>
+   * #5608: that re-run is the load-bearing half of the declaration, so it lives INSIDE the two methods that produce a
+   * rebased page ({@code TransactionContext.rebaseEdgeAppends} and {@code rebaseSlots}) rather than in the commit loop
+   * that calls them - where reordering or dropping it would have invalidated the declaration with no test failing.
+   * {@code Issue5608RebasedPageCompressionTest} pins the invariant from the outside.
    */
   public void compressPage(final MutablePage page, final boolean forceWipeOut) throws IOException {
     final int previousCoverage = page.beginCoveredWrite(forceWipeOut ? 0 : MutablePage.COVERAGE_ALL_MERGES);

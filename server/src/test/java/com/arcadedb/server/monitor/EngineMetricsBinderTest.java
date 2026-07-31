@@ -60,4 +60,22 @@ class EngineMetricsBinderTest {
     assertThat(walFiles).isNotNull();
     assertThat(Double.isNaN(walFiles.value())).isFalse();
   }
+
+  /**
+   * #5608: a collapse of the commit-time page-merge rate (or a rise in the coverage declines) is a throughput
+   * regression that no correctness signal catches, so the three counters have to be alertable - i.e. reach a
+   * registry, not just {@code PageManager.getStats()}.
+   */
+  @Test
+  void registersPageMergeGauges() {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    new EngineMetricsBinder().bindTo(registry);
+
+    for (final String name : new String[] { "arcadedb.engine.page.merges.edge.append", "arcadedb.engine.page.merges.slot",
+        "arcadedb.engine.page.merges.declined" }) {
+      final Gauge gauge = registry.find(name).gauge();
+      assertThat(gauge).as(name).isNotNull();
+      assertThat(Double.isNaN(gauge.value())).as(name).isFalse();
+    }
+  }
 }

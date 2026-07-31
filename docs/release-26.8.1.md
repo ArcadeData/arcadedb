@@ -579,6 +579,33 @@ existed ([#5596](https://github.com/ArcadeData/arcadedb/issues/5596)).
   concurrent updates, inserts and deletes of unrelated records sharing a page): those pages are fully declared.
 - **Cost is two ints per page and one OR per page write.**
 
+## The page-merge counters are now visible to an operator
+
+`mergesDeclinedByCoverage`, introduced above as *the* signal that some writer is dirtying a mergeable page without
+declaring it, could not actually be read outside a debugger or a unit test: `Profiler` surfaced exactly one
+page-manager contention stat, `concurrentModificationExceptions`, and none of the three merge counters. The advice
+that came with it - "watch it next to `edgeAppendMerges`/`txPageSlotMerges`: a jump here with a dip there is
+exactly the shape of a forgotten declaration" - was therefore unfollowable in production
+([#5608](https://github.com/ArcadeData/arcadedb/issues/5608)).
+
+All three now reach the `PAGE-MANAGER` block of the text dump, the `/api/v1/server` JSON, the Studio metrics table
+and `/prometheus` (`arcadedb.engine.page.merges.edge.append`, `.slot`, `.declined`). They are also **rate-tracked**
+alongside `concurrentModificationExceptions`, because the signal is a derivative: monotonic counters cannot show a
+jump-with-a-dip without an operator sampling and subtracting them by hand.
+
+Two smaller hardenings shipped with it:
+
+- **The compression a merge owes the page it re-derives is now structural.** `LocalBucket.compressPage` declares
+  its writes covered by *every* merge, which is true only because the compression is re-run on the rebased page.
+  That re-run moved from the commit loop into `rebaseEdgeAppends`/`rebaseSlots` themselves, so reordering or
+  optimising the commit loop can no longer invalidate the declaration - the consequence being a lost defrag, which
+  no correctness assertion would have caught. A regression test now asserts a merged page is committed hole-free.
+- **A diagnostic can no longer replace the conflict it is reporting.** `reportCoverageDecline` runs inside the
+  commit loop's `catch (ConcurrentModificationException)`, one statement before the rethrow, and reached a bucket
+  lookup that raises `SchemaException` for an unknown id. Escaping there, it would have been wrapped as a plain
+  `TransactionException` - turning a conflict the caller would have retried into a hard failure. The diagnostic is
+  now total by construction.
+
 ## A `STRING` property no longer reads back as a geometry
 
 Deserializing any string looked at its first characters and, when they were `POINT`, `CIRCLE`, `LINESTRING`,

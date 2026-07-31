@@ -679,7 +679,9 @@ public class TransactionContext implements Transaction {
    * <p>
    * Since #5596 this is the fast, precise opt-OUT, no longer the only line of defence: the merge additionally
    * requires the page to PROVE that every byte this transaction wrote there was declared replayable by it (see
-   * {@link MutablePage#beginCoveredWrite(int)}), so a forgotten call here costs a retry, not a lost write.
+   * {@link MutablePage#beginCoveredWrite(int)}), so a forgotten call here costs a retry, not a lost write. That
+   * does NOT make the call redundant - see {@link #poisonSlotRebasePage(int, int)} for the #5608 audit of what
+   * poisoning still buys over the proof (skipped tracking work, and a clean {@code mergesDeclinedByCoverage}).
    */
   public void poisonEdgeAppendPage(final RID segmentRID) {
     if (!edgeAppendMerge)
@@ -773,7 +775,8 @@ public class TransactionContext implements Transaction {
    * an eligibility {@link #isRebasableEdgeAppendPage(MutablePage)} verifies against the page itself rather than
    * trusting every writer to have excluded itself (#5596).
    *
-   * @return the freshly rebased page, ready to be version-checked and committed.
+   * @return the freshly rebased page, ALREADY COMPRESSED and ready to be version-checked and committed. The
+   * compression is part of the contract, not the caller's job: see the note at the end of the method body (#5608).
    *
    * @throws ConcurrentModificationException if a targeted chunk filled up in the meantime (a pure in-chunk
    *                                         rebase is no longer possible): the caller falls back to a normal
@@ -831,6 +834,15 @@ public class TransactionContext implements Transaction {
     final MutablePage rebased = modifiedPages.get(pageId);
     if (rebased == null)
       throw new ConcurrentModificationException("Edge-append rebase produced no page for " + pageId + ". Please retry the operation");
+
+    // #5608: MUST stay here, in the method that produces the rebased page. Re-running the compression on the page the
+    // merge just re-derived is what makes compressPage's COVERAGE_ALL_MERGES declaration true rather than merely
+    // plausible - a declaration that, without this call, would vouch for a defrag the rebase silently dropped.
+    // Pinned by Issue5608RebasedPageCompressionTest.
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(pageId.getFileId(), false);
+    if (bucket != null)
+      bucket.compressPage(rebased, false);
+
     database.getPageManager().incrementEdgeAppendMerges();
     return rebased;
   }
@@ -1004,6 +1016,16 @@ public class TransactionContext implements Transaction {
    * As on the edge-append side, since #5596 this is the fast, precise opt-OUT and not the only line of defence:
    * {@link #isRebasableSlotPage(MutablePage)} also requires the page to prove that every byte this transaction
    * wrote there was declared replayable by this merge (see {@link MutablePage#beginCoveredWrite(int)}).
+   * <p>
+   * #5608 audited every call site to decide whether the ones the coverage proof now subsumes - most clearly the
+   * multi-page writers', whose inline record-table writes are undeclared anyway - should be dropped. They stay,
+   * all of them, because poisoning is not only a duplicate of the proof. It runs BEFORE the page is read and is
+   * O(1); it makes {@link #isSlotRebasePagePoisoned(int, int)} true, which is what lets the write path skip the
+   * pre-image/final-image record copies for every later write to the page (they would be allocated and then
+   * discarded); and, since {@code reportCoverageDecline} deliberately ignores poisoned pages, it is what keeps a
+   * DELIBERATE exclusion out of {@code mergesDeclinedByCoverage} - the statistic that exists to expose an
+   * ACCIDENTAL one. Removing a redundant call would therefore cost allocations and blunt that signal, to save
+   * nothing. Keep poisoning any page whose writes this merge cannot replay, even when the proof would catch it.
    */
   public void poisonSlotRebasePage(final int fileId, final int pageNumber) {
     if (!slotMerge)
@@ -1082,21 +1104,39 @@ public class TransactionContext implements Transaction {
    * (#5596). Counting inside the {@code isRebasable*} predicates instead would double-count a page both merges
    * looked at, and could even count a decline for a page the other merge went on to rebase - which would make the
    * one statistic meant to expose a forgotten declaration untrustworthy.
+   * <p>
+   * #5608: TOTAL by construction. It runs inside the {@code catch (ConcurrentModificationException)} of the commit
+   * loop, one statement before {@code throw e}, so anything thrown here would REPLACE the conflict the caller is
+   * propagating. That is worse than a misleading message: {@link #hasReplayableEdgeAppends(PageId)} reaches
+   * {@link #edgeSegmentPageKey(RID)}, whose bucket lookup raises {@code SchemaException} for an unknown id - the
+   * {@code bucket == null} branch under it never fires, because {@code LocalSchema.getBucketById(id)} throws before
+   * it can return null - and a {@code SchemaException} is NOT a {@link NeedRetryException}: the commit's generic
+   * {@code catch (Exception)} would have wrapped it into a plain {@code TransactionException}, turning a conflict
+   * the caller would have retried into a hard failure. Swallowing here, rather than making that one call
+   * non-throwing, is deliberate: it also covers whatever a future diagnostic adds to this method. A diagnostic must
+   * never be able to change what the caller reports.
    */
   private void reportCoverageDecline(final MutablePage page) {
-    final PageId pageId = page.getPageId();
-    final boolean edgeDeclined = hasReplayableEdgeAppends(pageId)//
-        && !page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
-    final boolean slotDeclined = hasReplayableSlotWrites(pageId)//
-        && !page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
-    if (!edgeDeclined && !slotDeclined)
-      // An ordinary conflict on a page no merge ever tracked: nothing to do with coverage.
-      return;
+    try {
+      final PageId pageId = page.getPageId();
+      final boolean edgeDeclined = hasReplayableEdgeAppends(pageId)//
+          && !page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
+      final boolean slotDeclined = hasReplayableSlotWrites(pageId)//
+          && !page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
+      if (!edgeDeclined && !slotDeclined)
+        // An ordinary conflict on a page no merge ever tracked: nothing to do with coverage.
+        return;
 
-    database.getPageManager().incrementMergesDeclinedByCoverage();
-    LogManager.instance().log(this, Level.FINE,
-        "%s merge declined page %s: it carries changes no tracked write accounts for",
-        edgeDeclined && slotDeclined ? "Edge-append and slot" : edgeDeclined ? "Edge-append" : "Slot", pageId);
+      database.getPageManager().incrementMergesDeclinedByCoverage();
+      LogManager.instance().log(this, Level.FINE,
+          "%s merge declined page %s: it carries changes no tracked write accounts for",
+          edgeDeclined && slotDeclined ? "Edge-append and slot" : edgeDeclined ? "Edge-append" : "Slot", pageId);
+    } catch (final RuntimeException diagnosticError) {
+      // The conflict the caller is about to rethrow is the truth; losing one counter increment is not worth
+      // corrupting it. Logged at FINE so the swallowed cause is still recoverable when debugging this path.
+      LogManager.instance().log(this, Level.FINE, "Unable to report the coverage decline of page %s", diagnosticError,
+          page.getPageId());
+    }
   }
 
   /**
@@ -1106,7 +1146,8 @@ public class TransactionContext implements Transaction {
    * is stable), and only for a page whose every modification this transaction made was a tracked disjoint-slot
    * insert or an update that stayed inside the page.
    *
-   * @return the freshly rebased page, ready to be version-checked and committed.
+   * @return the freshly rebased page, ALREADY COMPRESSED and ready to be version-checked and committed. The
+   * compression is part of the contract, not the caller's job: see the note at the end of the method body (#5608).
    *
    * @throws ConcurrentModificationException if a slot was taken/changed by a concurrent commit (a true conflict)
    *                                         or the page can no longer host a record: the caller falls back to a
@@ -1146,6 +1187,12 @@ public class TransactionContext implements Transaction {
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
     }
+
+    // #5608: MUST stay here, in the method that produces the rebased page. A shrinking update or a delete replayed
+    // above leaves a hole exactly as the original write did, and re-running the compression is what makes
+    // compressPage's COVERAGE_ALL_MERGES declaration true rather than merely plausible (a declaration that, without
+    // this call, would vouch for a defrag the rebase silently dropped). Pinned by Issue5608RebasedPageCompressionTest.
+    bucket.compressPage(committed, false);
 
     database.getPageManager().incrementTxPageSlotMerges();
     return committed;
@@ -1543,12 +1590,12 @@ public class TransactionContext implements Transaction {
         }
       }
 
+      // #5608: the rebased page is ALREADY compressed - rebaseEdgeAppends/rebaseSlots re-run compressPage themselves,
+      // because that re-run is what makes compressPage's COVERAGE_ALL_MERGES declaration true. Do not lift it back up
+      // here: see the note on those two methods.
       if (pagesToRebase != null)
         for (final PageId pageId : pagesToRebase) {
           final MutablePage rebased = rebaseEdgeAppends(pageId);
-          final LocalBucket bucket = localSchema.getBucketById(rebased.getPageId().getFileId(), false);
-          if (bucket != null)
-            bucket.compressPage(rebased, false);
           pageManager.checkPageVersion(rebased, false);
           pages.add(rebased);
         }
@@ -1556,9 +1603,6 @@ public class TransactionContext implements Transaction {
       if (slotPagesToRebase != null)
         for (final PageId pageId : slotPagesToRebase) {
           final MutablePage rebased = rebaseSlots(pageId);
-          final LocalBucket bucket = localSchema.getBucketById(rebased.getPageId().getFileId(), false);
-          if (bucket != null)
-            bucket.compressPage(rebased, false);
           pageManager.checkPageVersion(rebased, false);
           pages.add(rebased);
         }

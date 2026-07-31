@@ -558,15 +558,27 @@ written to the WAL and replicated, so followers apply the merged bytes verbatim.
   inside a `MutablePage.beginCoveredWrite(COVERAGE_EDGE_APPEND_MERGE)` declaration -
   the coverage is opt-**in**, not opt-out. `LocalBucket` declares exactly the in-place
   segment rewrite that backs a tracked append (plus `compressPage`, whose defrag the
-  commit path re-runs on the rebased page anyway); any other writer touching the page
+  merge re-runs on the rebased page anyway); any other writer touching the page
   leaves an undeclared byte behind and disqualifies it. A writer that never heard of
   the merge therefore cannot have its change silently dropped - the worst outcome is
   the plain retry that predates the merge.
+- **`compressPage`'s blanket declaration is paid for inside the rebase (#5608).** It
+  declares `COVERAGE_ALL_MERGES`, which is true only because the compression is re-run
+  on the page the merge re-derived. That re-run now lives in `rebaseEdgeAppends` /
+  `rebaseSlots` themselves rather than in the commit loop around them, so optimising
+  the commit loop can no longer invalidate the declaration by accident - a lost defrag
+  fails no correctness assertion. `Issue5608RebasedPageCompressionTest` pins it from
+  the outside, by asserting a merged page is committed hole-free.
 - **The explicit poison calls stay as the fast, precise path.** Every non-commutative
   write still poisons the page up front: edge removal/relink
   (`EdgeLinkedList.updateSegment`), bulk `addAll`, `deleteAll`, and new-chunk
   allocation (centralised in `LocalDatabase.createRecordNoLock`). The coverage proof is
   the backstop that turns a forgotten call into a retry instead of a lost write.
+  #5608 audited whether the now-redundant ones should be dropped: they stay. Poisoning
+  runs *before* the page is read, it suppresses the pre-image/final-image record copies
+  that every later write to the page would otherwise allocate and discard, and it keeps
+  a *deliberate* exclusion out of `mergesDeclinedByCoverage` - the counter that exists
+  to expose an *accidental* one.
 - **Bulk import (`GraphBatch`) neither tracks nor poisons** - and since #5596 it no
   longer has to: its chunk writes are undeclared, so a page it touched can never be
   rebased, even if the same transaction also drove `EdgeLinkedList.add` on it.
@@ -580,7 +592,10 @@ written to the WAL and replicated, so followers apply the merged bytes verbatim.
 poison + coverage check + `rebaseEdgeAppends` + commit-loop hook), `MutablePage`
 (per-page coverage bookkeeping), `LocalBucket` (declares the replayable writes),
 `LocalDatabase` (central new-chunk poison), `EdgeLinkedList` (register appends;
-poison remove/bulk paths), `PageManager` (`edgeAppendMerges` stat).
+poison remove/bulk paths), `PageManager` (`edgeAppendMerges` stat), `Profiler` +
+`EngineMetricsBinder` + `GetServerHandler` (#5608: the merge counters reach the
+`/api/v1/server` JSON, the text dump and `/prometheus`, rate-tracked next to
+`concurrentModificationExceptions`).
 
 ## B.4 The two lost-update fixes (#5147, #5153) (shipped)
 

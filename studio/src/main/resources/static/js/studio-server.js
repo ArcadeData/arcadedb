@@ -233,8 +233,13 @@ function displayMetrics() {
   var m = serverData.metrics.meters || {};
 
   // Database Operations table (metrics with rate tracking)
-  var rateTrackedMetrics = ["writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions"];
-  var rateTrackedLabels = { writeTx: "Write Tx", readTx: "Read Tx", txRollbacks: "Tx Rollbacks", queries: "Queries", concurrentModificationExceptions: "MVCC Contention" };
+  // The three page-merge counters (#5608) sit under MVCC Contention on purpose: a merge is contention the engine
+  // absorbed instead of turning into a retry, and a decline is contention it refused to absorb.
+  var rateTrackedMetrics = ["writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions",
+    "edgeAppendMerges", "txPageSlotMerges", "mergesDeclinedByCoverage"];
+  var rateTrackedLabels = { writeTx: "Write Tx", readTx: "Read Tx", txRollbacks: "Tx Rollbacks", queries: "Queries",
+    concurrentModificationExceptions: "MVCC Contention", edgeAppendMerges: "Edge-Append Page Merges",
+    txPageSlotMerges: "Slot Page Merges", mergesDeclinedByCoverage: "Page Merges Declined" };
   var dbOpsHtml = "";
   for (var i = 0; i < rateTrackedMetrics.length; i++) {
     var name = rateTrackedMetrics[i];
@@ -253,7 +258,8 @@ function displayMetrics() {
   // Profiler details table (remaining metrics without rate tracking)
   var skipProfiler = { cpuLoad: 1, ramHeapUsed: 1, ramHeapMax: 1, ramOsUsed: 1, ramOsTotal: 1,
     diskFreeSpace: 1, diskTotalSpace: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1,
-    writeTx: 1, readTx: 1, txRollbacks: 1, queries: 1, concurrentModificationExceptions: 1 };
+    writeTx: 1, readTx: 1, txRollbacks: 1, queries: 1, concurrentModificationExceptions: 1,
+    edgeAppendMerges: 1, txPageSlotMerges: 1, mergesDeclinedByCoverage: 1 };
   var profilerHtml = "";
   var profilerNames = Object.keys(p).sort();
   for (var i = 0; i < profilerNames.length; i++) {
