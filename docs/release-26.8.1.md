@@ -913,8 +913,16 @@ per-database counters (`tx.write`, `tx.read`, `tx.rollbacks`, `queries`, `comman
 summed over the **currently open** databases only, so closing or dropping one made the JVM-wide total go
 *backwards* - which Prometheus reads as a counter reset, fabricating a rate spike on the next scrape. `Profiler`
 now folds a departing database's counters into a retained baseline, so the totals only ever grow for the lifetime
-of the JVM. The same fix removes a smaller long-standing oddity: Studio's query and transaction counters visibly
-dropped when a database was dropped. `Profiler.unregisterDatabase()` is also synchronized now, having been mutating
+of the JVM.
+
+This changes `Profiler.toJSON()` for every consumer, not just Prometheus, and each of them was quietly wrong
+before: the counters it reports are now all-time JVM totals rather than a sum over the databases that happen to be
+open. `GET /api/v1/server` (and so Studio's Database Operations table) no longer shows its query and transaction
+counts drop when a database is dropped, and its per-minute rates no longer skip a window to avoid publishing a
+negative delta. The **query profiler** benefits most: it records a snapshot at start and another at stop and hands
+both to Studio to subtract, so a database closing inside the recording window used to make that subtraction come
+out short, or negative. The AI chat handler embeds the same JSON descriptively and is unaffected either way.
+`Profiler.unregisterDatabase()` is also synchronized now, having been mutating
 a plain `LinkedHashSet` that the synchronized `toJSON()` iterates.
 
 ## Studio shows a profiler counter sitting at zero instead of hiding it
