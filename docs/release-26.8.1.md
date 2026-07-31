@@ -579,4 +579,27 @@ existed ([#5596](https://github.com/ArcadeData/arcadedb/issues/5596)).
   concurrent updates, inserts and deletes of unrelated records sharing a page): those pages are fully declared.
 - **Cost is two ints per page and one OR per page write.**
 
+## Studio can create a vector index, and a vector index can no longer be created without `dimensions`
+
+Studio's "Add Index" dialog offered `LSM_VECTOR` in the algorithm list but built the statement without a
+`METADATA` clause, which the engine refuses outright - and the dialog had no input for the settings the error
+message asked for. Creating a dense vector index from the UI was simply impossible
+([#5607](https://github.com/ArcadeData/arcadedb/issues/5607)). The dialog now collects **dimensions** (required),
+**similarity**, **max connections**, **beam width** and **quantization**, and the sparse branch gained the
+matching **weight quantization** selector.
+
+The underlying contract was loose in two places, and both are tightened:
+
+- **`dimensions` is now enforced, everywhere.** It is the one vector setting with no usable default: every write
+  and every graph build compares the candidate vector's length against it, so an index created with `dimensions`
+  unset accepted writes and indexed nothing, forever, without a single warning. `CREATE INDEX ... LSM_VECTOR
+  METADATA {}` and the equivalent builder call are now refused at creation time. Indexes created before this
+  release are untouched - the check runs only when a new index is built.
+- **The `CREATE INDEX` error message told the truth about only one of the four settings it named.** It asked for
+  `dimensions`, `similarity`, `maxConnections` and `beamWidth`; the last three have defaults (`COSINE`, `32`,
+  `100`). It now names `dimensions` as the requirement and lists the rest as optional with their defaults.
+- **Index creation failures carry their reason again.** Any error raised while building an index was rewrapped
+  as a bare `Error on creating index on type 'X', properties [y]`, discarding the cause's message on the way to
+  the SQL and HTTP layers. The reason is now part of the message.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

@@ -84,6 +84,20 @@
                             <arguments>run build</arguments>
                         </configuration>
                     </execution>
+
+                    <!-- Run the frontend unit tests (node:test, no extra dependency) so a regression in the
+                         Studio JS fails the build instead of waiting to be noticed in the browser. -->
+                    <execution>
+                        <id>npm test</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <phase>test</phase>
+                        <configuration>
+                            <arguments>test</arguments>
+                            <skip>${skipTests}</skip>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 

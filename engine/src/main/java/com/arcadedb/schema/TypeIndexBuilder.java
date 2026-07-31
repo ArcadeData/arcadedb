@@ -382,8 +382,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
-      throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames,
-          e);
+      // Carry the root cause into the message: this exception is what the SQL/HTTP layers report back, and
+      // without the reason a configuration mistake (a missing vector 'dimensions', an incompatible property
+      // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607).
+      throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames
+          + (e.getMessage() != null ? ": " + e.getMessage() : ""), e);
     }
   }
 
