@@ -43,6 +43,7 @@ import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.ReduceExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
@@ -149,6 +150,11 @@ public final class CypherExpressionWalker {
     }
     case BooleanWrapperExpression wrapper -> walk(wrapper.getBooleanExpression(), visitor);
     case ComparisonExpressionWrapper wrapper -> walk(wrapper.getComparison(), visitor);
+    case PatternComprehensionExpression comprehension -> {
+      walk(comprehension.getPathPattern(), visitor);
+      walk(comprehension.getWhereExpression(), visitor);
+      walk(comprehension.getMapExpression(), visitor);
+    }
     case ShortestPathExpression shortestPath -> walk(shortestPath.getPathPattern(), visitor);
     default -> {
       // A leaf: literal, variable, parameter, property access, or a subquery kept as text.
