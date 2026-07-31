@@ -22,8 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.CollectExpression;
+import com.arcadedb.query.opencypher.ast.CountExpression;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.ExistsExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
@@ -380,6 +385,53 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
     assertThat(visits).isNotEmpty();
     assertThat(visits.entrySet().stream().filter(entry -> entry.getValue() > 1).map(entry -> entry.getKey().getText())
         .toList()).isEmpty();
+  }
+
+  /**
+   * Building the body AST puts the statement builder on the parse path of something that used to be carried as text,
+   * so a body it cannot assemble must leave the query alone rather than fail it: the build is best-effort and the
+   * expression keeps a null body. What that costs is coverage - the walk sees a leaf, exactly as it did before
+   * #5626 - and what it must not cost is an exception, which would turn a running query into a parse error.
+   * <p>
+   * The three expressions are checked in the shape the fallback leaves them, and the walk is asserted to have
+   * carried on past each: a null body that stopped the traversal would take the rest of the query's checks with it.
+   * <p>
+   * The visitor here dereferences the statement it is handed, the way the validator's does when it builds the inner
+   * scope. That is the assertion that matters: the guarantee is not "the walk survives a null body" but "a boundary
+   * hook is never called with one", and only a visitor that reads the statement can tell the two apart.
+   */
+  @Test
+  void aSubqueryExpressionWithNoBodyIsALeafRatherThanAFailure() {
+    final List<Expression> withoutBody = List.of(
+        new ExistsExpression("MATCH (m:P) RETURN m", "EXISTS { MATCH (m:P) RETURN m }", null),
+        new CountExpression("MATCH (m:P) RETURN m", "COUNT { MATCH (m:P) RETURN m }", null),
+        new CollectExpression("MATCH (m:P) RETURN m.name", "COLLECT { MATCH (m:P) RETURN m.name }", null));
+
+    for (final Expression subquery : withoutBody) {
+      final List<Expression> visited = new ArrayList<>();
+      final Expression sibling = new VariableExpression("afterTheSubquery");
+      final Expression enclosing = new ListExpression(List.of(subquery, sibling), "[subquery, afterTheSubquery]");
+
+      final CypherExpressionWalker.Visitor readsTheNestedStatement = new CypherExpressionWalker.Visitor() {
+        @Override
+        public void visit(final Expression expression) {
+          visited.add(expression);
+        }
+
+        @Override
+        public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement nested) {
+          nested.getClausesInOrder();
+          return this;
+        }
+      };
+
+      assertThatCode(() -> CypherExpressionWalker.walk(enclosing, readsTheNestedStatement)).doesNotThrowAnyException();
+
+      assertThat(visited).contains(subquery);
+      assertThat(visited)
+          .as("the walk must carry on past a body-less subquery, not stop at it")
+          .contains(sibling);
+    }
   }
 
   private List<String> names(final String query) {

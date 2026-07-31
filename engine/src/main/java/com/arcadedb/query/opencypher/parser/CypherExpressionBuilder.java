@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.log.LogManager;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -40,6 +41,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Handles expression parsing for the Cypher AST builder.
@@ -1857,6 +1859,14 @@ class CypherExpressionBuilder {
    * <p>
    * A body written as a bare pattern - {@code EXISTS { (n)-[:KNOWS]->(m) }} - has no {@code queryWithLocalDefinitions}
    * of its own and is wrapped into the {@code MATCH} the executor synthesizes for it anyway.
+   * <p>
+   * <b>A body this cannot build is not a query this rejects.</b> Building the AST here puts the statement builder on
+   * the parse path of a body that used to be carried as text and only re-parsed at execution, so a construct ANTLR
+   * accepts but the builder cannot assemble would turn a query that used to run into a parse failure - a regression,
+   * and one this issue has no business causing. The build is therefore best-effort: on failure the body stays text
+   * only, the walk treats the expression as a leaf exactly as it did before #5626, and execution re-parses the text
+   * as it always has. Logged at {@code FINE} so the gap is still discoverable rather than permanent, since a body
+   * with no AST is a body the parse-time checks do not see.
    *
    * @param queryCtx   the body when it is a full query, or null when it is a bare pattern
    * @param patternCtx the pattern list of a bare-pattern body, or null
@@ -1864,20 +1874,27 @@ class CypherExpressionBuilder {
    */
   private static CypherStatement parseSubqueryBody(final Cypher25Parser.QueryWithLocalDefinitionsContext queryCtx,
       final Cypher25Parser.PatternListContext patternCtx, final Cypher25Parser.WhereClauseContext whereCtx) {
-    // A fresh builder: CypherASTBuilder holds no state across a visit, and the expression builder it owns is the one
-    // running right now, so it cannot be reused re-entrantly.
-    final CypherASTBuilder astBuilder = new CypherASTBuilder();
-
-    if (queryCtx != null)
-      return astBuilder.visitQueryWithLocalDefinitions(queryCtx);
-
-    if (patternCtx == null)
+    if (queryCtx == null && patternCtx == null)
       return null;
 
-    final StatementBuilder builder = new StatementBuilder();
-    builder.addMatch(new MatchClause(astBuilder.visitPatternList(patternCtx), false,
-        whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
-    return builder.build();
+    try {
+      // A fresh builder: CypherASTBuilder holds no state across a visit, and the expression builder it owns is the one
+      // running right now, so it cannot be reused re-entrantly.
+      final CypherASTBuilder astBuilder = new CypherASTBuilder();
+
+      if (queryCtx != null)
+        return astBuilder.visitQueryWithLocalDefinitions(queryCtx);
+
+      final StatementBuilder builder = new StatementBuilder();
+      builder.addMatch(new MatchClause(astBuilder.visitPatternList(patternCtx), false,
+          whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
+      return builder.build();
+    } catch (final Exception e) {
+      LogManager.instance().log(CypherExpressionBuilder.class, Level.FINE,
+          "Cannot build the AST of subquery body '%s': it keeps its text and escapes the parse-time checks", e,
+          CypherASTBuilder.getOriginalText(queryCtx != null ? queryCtx : patternCtx));
+      return null;
+    }
   }
 
   /**
@@ -1901,8 +1918,11 @@ class CypherExpressionBuilder {
       throw new CommandParsingException(
           "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
 
-    // No pattern/where context to pass: unlike EXISTS and COUNT, a COLLECT body has no bare-pattern form in the
-    // grammar - it has to RETURN the value being collected - so it is always a queryWithLocalDefinitions.
+    // No pattern/where context to pass, and none to miss: the grammar gives COLLECT one alternative where EXISTS and
+    // COUNT have two - "collectExpression: COLLECT LCURLY queryWithLocalDefinitions RCURLY" against
+    // "... (queryWithLocalDefinitions | matchMode? patternList whereClause?) ..." - because a COLLECT body has to
+    // RETURN the value being collected. So queryWithLocalDefinitions() is never null here, and a COLLECT body can
+    // never end up without an AST and quietly skip the checks this issue exists to reach it with.
     return new CollectExpression(subquery, text, parseSubqueryBody(ctx.queryWithLocalDefinitions(), null, null));
   }
 
