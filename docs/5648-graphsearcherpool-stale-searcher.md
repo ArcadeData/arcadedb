@@ -84,6 +84,37 @@ back the searcher bound to the replaced graph. The two guard tests passed before
 | `LSMVectorIndexSearcherPoolTest`, `LSMVectorIndexSearcherEpochTest`, `LSMVectorIndexConcurrentRebuildVisibilityTest`, `DeltaScanVectorSearchTest`, `LSMVectorIndexRebuildTest` | 24/24 pass |
 | Full `com.arcadedb.index.vector` package (benchmark/slow excluded) | 198/198 pass |
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5653
+
+### Review cycles
+
+**Cycle 1 - `22d4da2ab`** - LGTM with two optional nits and one benign edge flagged for the record.
+
+- *Reference-identity nit.* The bot reported that the records' generated `equals`/`hashCode` go unused because
+  "all comparisons are reference-based", and asked for a comment explaining that `==` on a record is intentional.
+  Checked against the code first: no `Identity` or `Pooled` instance is ever compared with `==` anywhere. The
+  comparisons are on their **fields** - an `ImmutableGraphIndex` reference and a primitive `long`. The framing was
+  therefore inaccurate, but the readability concern underneath it was real, so the comment added documents the
+  claim that is actually load-bearing: a rebuild publishes a new graph instance and a searcher's `View` is bound
+  to the exact instance it was built from, so graphs must match by reference however equal their contents.
+- *Rebuild-storm over-reclamation.* Confirmed real. The reuse loop matches against the caller's own pair rather
+  than the current published one, so if the identity moves on again mid-loop, an entry a concurrent `release`
+  queued under the newer identity is closed here even though it was still usable. Behaviour left unchanged - it
+  costs one searcher reallocation and can never return a wrong searcher, whereas re-reading the published
+  identity per iteration would put a volatile read on the search path to buy nothing but pooling efficiency. The
+  reasoning is now recorded in the loop so it reads as a deliberate trade-off.
+
+**Cycle 2 - `845434997`** - clean approval. Three non-blocking observations, none requesting a change:
+`size()`/`idleCount` is approximate under races (fine for metrics; the new tests are single-threaded so they are
+unaffected), the rebuild-storm trade-off is well documented, and `getDeclaredConstructors()[0]` is safe for a
+record because the canonical constructor is the only declared one. The bot independently confirmed that
+correctness no longer depends on the published identity at all, so every racy path degrades to an extra
+allocation rather than a wrong result.
+
+Final state: **clean-approval**.
+
 ## Notes
 
 `searcherPoolEpoch()` was made strictly monotonic separately in #5621. This change is about the publication order
