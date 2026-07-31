@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -317,6 +318,44 @@ class SQLFunctionAbsoluteValueTest {
       try (final ResultSet rs = db.query("sql", "select abs(v) as abs from Sample")) {
         assertThat(rs.next().<Byte>getProperty("abs")).isEqualTo((byte) 7);
       }
+    });
+  }
+
+  /**
+   * Issue #5545. The overflow is decided by the value the caller supplied, not by anything wrong with the
+   * server, so it has to be the same {@link ArithmeticErrorException} the Cypher operators and the Cypher
+   * {@code abs()} already raise - that subclass is what the HTTP and Bolt layers single out to answer 400
+   * instead of 500. A bare {@code CommandExecutionException} is indistinguishable from a genuine internal
+   * fault, which is why the SQL side kept answering 500 after #5602 fixed the Cypher side.
+   */
+  @Test
+  void everyIntegralMinValueOverflowIsAnArithmeticError() {
+    final Object[] minValues = { Long.MIN_VALUE, Integer.MIN_VALUE, Short.MIN_VALUE, Byte.MIN_VALUE };
+    final String[] messages = { "long overflow", "integer overflow", "short overflow", "byte overflow" };
+
+    for (int i = 0; i < minValues.length; i++) {
+      final Object minValue = minValues[i];
+      assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { minValue }, null))
+          .isInstanceOf(ArithmeticErrorException.class)
+          .hasMessageContaining(messages[i]);
+    }
+  }
+
+  /**
+   * The same assertion end to end through the SQL engine, where the value arrives as a stored property
+   * because a {@code Long.MIN_VALUE} literal never survives the SQL parser.
+   */
+  @Test
+  void fromQueryOverStoredLongMinValueIsAnArithmeticError() throws Exception {
+    TestHelper.executeInNewDatabase("./target/databases/testAbsFunctionArithmeticError", db -> {
+      db.getSchema().createDocumentType("Sample").createProperty("v", Type.LONG);
+      db.transaction(() -> db.newDocument("Sample").set("v", Long.MIN_VALUE).save());
+
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = db.query("sql", "select abs(v) as abs from Sample")) {
+          rs.next().getProperty("abs");
+        }
+      }).isInstanceOf(ArithmeticErrorException.class).hasMessageContaining("long overflow");
     });
   }
 }
