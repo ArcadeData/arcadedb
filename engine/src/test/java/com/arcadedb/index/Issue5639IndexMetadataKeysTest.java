@@ -103,7 +103,9 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
           "inactivityRebuildTimeoutMs": 7000,
           "neighborOverflowFactor": 1.4,
           "alphaDiversityRelaxation": 1.3,
-          "mutationsBeforeRebuild": 4242
+          "mutationsBeforeRebuild": 4242,
+          "pqClusters": 128,
+          "pqCenterGlobally": false
         }""");
 
     reopenDatabase();
@@ -116,6 +118,10 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     assertThat(metadata.neighborOverflowFactor).isEqualTo(1.4f);
     assertThat(metadata.alphaDiversityRelaxation).isEqualTo(1.3f);
     assertThat(metadata.mutationsBeforeRebuild).isEqualTo(4242);
+    // The PQ knobs are only meaningful under PRODUCT quantization, but they are persisted unconditionally so that
+    // "the persisted definition carries every setting" holds without an exception.
+    assertThat(metadata.pqClusters).isEqualTo(128);
+    assertThat(metadata.pqCenterGlobally).isFalse();
   }
 
   /**
@@ -183,6 +189,13 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
           .isInstanceOf(CommandSQLParsingException.class);
 
     assertThat(database.getSchema().existsIndex("Doc[embedding]")).isFalse();
+
+    // An overflow is reported as an overflow: "must be a whole number" is true of 3000000000 and useless to whoever
+    // wrote it.
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {\"dimensions\": 8, \"mutationsBeforeRebuild\": 3000000000}"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("must be between");
 
     // The quoted form of a number stays valid, on every numeric key and not just the ones read with getInt().
     database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA "

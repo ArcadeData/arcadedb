@@ -131,9 +131,15 @@ public class IndexMetadata {
    */
   protected static int metadataInt(final JSONObject json, final String key) {
     final Number number = metadataNumber(json, key, "a whole number");
-    if (number.doubleValue() != Math.rint(number.doubleValue()) || number.doubleValue() != number.intValue())
+    final double value = number.doubleValue();
+    if (value != Math.rint(value))
       throw new IllegalArgumentException(
           "Index metadata '" + key + "' must be a whole number, got: " + json.get(key));
+    // Report an overflow as an overflow. Sharing the "must be a whole number" message here would be technically true
+    // of 3000000000 and useless to whoever wrote it.
+    if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+      throw new IllegalArgumentException("Index metadata '" + key + "' must be between " + Integer.MIN_VALUE + " and "
+          + Integer.MAX_VALUE + ", got: " + json.get(key));
     return number.intValue();
   }
 

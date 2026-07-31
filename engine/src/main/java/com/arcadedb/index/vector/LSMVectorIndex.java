@@ -4848,13 +4848,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("buildState", metadata.buildState);
     json.put("version", CURRENT_VERSION);
 
-    // Product Quantization (PQ) configuration
-    if (metadata.quantizationType == VectorQuantizationType.PRODUCT) {
-      json.put("pqSubspaces", metadata.pqSubspaces);
-      json.put("pqClusters", metadata.pqClusters);
-      json.put("pqCenterGlobally", metadata.pqCenterGlobally);
-      json.put("pqTrainingLimit", metadata.pqTrainingLimit);
-    }
+    // Product Quantization (PQ) configuration. Written whatever the quantization is: these are only meaningful under
+    // PRODUCT, but emitting them conditionally left one exception to "the persisted definition carries every setting"
+    // for a reader to work out, and four small integers are not worth the exception.
+    json.put("pqSubspaces", metadata.pqSubspaces);
+    json.put("pqClusters", metadata.pqClusters);
+    json.put("pqCenterGlobally", metadata.pqCenterGlobally);
+    json.put("pqTrainingLimit", metadata.pqTrainingLimit);
 
     return json;
   }
