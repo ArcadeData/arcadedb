@@ -62,7 +62,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -713,7 +715,7 @@ public abstract class ContainersTestTemplate {
       return;
     }
     for (final GenericContainer<?> container : containers) {
-      final String name = container.getContainerName().replace("/", "");
+      final String name = containerLabel(container);
       final Path file = target.resolve(label + "-" + name + ".log");
       try {
         Files.writeString(file, container.getLogs());
@@ -752,22 +754,51 @@ public abstract class ContainersTestTemplate {
    * @return total occurrences across every container
    */
   protected int countInContainerLogs(final String marker) {
-    int total = 0;
+    return countInContainerLogs(new String[] { marker }).get(marker);
+  }
+
+  /**
+   * Counts several markers in one pass over each container's stdout.
+   * <p>
+   * {@code getLogs()} pulls the container's entire stdout over the Docker API and materializes it as a String, which
+   * on a diverging run is megabytes. Counting markers one call at a time re-fetches and re-scans all of it per marker,
+   * so every marker a caller wants belongs in a single call.
+   *
+   * @param markers substrings to look for, each matched literally
+   *
+   * @return per-marker total occurrences across every container, in the order given
+   */
+  protected Map<String, Integer> countInContainerLogs(final String... markers) {
+    final Map<String, Integer> totals = new LinkedHashMap<>();
+    for (final String marker : markers)
+      totals.put(marker, 0);
+
     for (final GenericContainer<?> container : containers) {
-      final String name = container.getContainerName();
-      int occurrences = 0;
+      final String name = containerLabel(container);
+      final String logs;
       try {
-        final String logs = container.getLogs();
-        for (int from = logs.indexOf(marker); from >= 0; from = logs.indexOf(marker, from + marker.length()))
-          ++occurrences;
+        logs = container.getLogs();
       } catch (final Exception e) {
-        logger.warn("Could not read logs of container {} looking for '{}': {}", name, marker, e.getMessage());
+        logger.warn("Could not read logs of container {}: {}", name, e.getMessage());
         continue;
       }
-      logger.info("Container {}: '{}' x{}", name, marker, occurrences);
-      total += occurrences;
+      for (final String marker : markers) {
+        int occurrences = 0;
+        for (int from = logs.indexOf(marker); from >= 0; from = logs.indexOf(marker, from + marker.length()))
+          ++occurrences;
+        logger.info("Container {}: '{}' x{}", name, marker, occurrences);
+        totals.merge(marker, occurrences, Integer::sum);
+      }
     }
-    return total;
+    return totals;
+  }
+
+  /**
+   * Container name without the leading slash Docker prefixes it with, so log lines and dumped file names agree.
+   */
+  private String containerLabel(final GenericContainer<?> container) {
+    final String name = container.getContainerName();
+    return name != null && name.startsWith("/") ? name.substring(1) : name;
   }
 
   /**

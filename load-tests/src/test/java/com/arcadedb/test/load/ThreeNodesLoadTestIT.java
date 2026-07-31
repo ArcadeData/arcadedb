@@ -35,14 +35,17 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 class ThreeNodesLoadTestIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST             = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
-  private static final int    SCHEMA_TIMEOUT_SECONDS  = 60;
+  private static final String SERVER_LIST            = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+  private static final int    SCHEMA_TIMEOUT_SECONDS = 60;
+  /** Logged exactly once by every server that starts, so it proves the log scan itself is working. */
+  private static final String CANARY_MARKER          = "ArcadeDB Server started";
 
   @AfterEach
   @Override
@@ -248,12 +251,33 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
     // Match the text the servers actually log. The exception's class name never reaches the log, and the phrase
     // "snapshot resync required" belongs to the exception message rather than to any logged line - grepping for
     // either reports a clean run against a log holding tens of thousands of gaps.
-    logger.info("Total page version gaps: {}", countInContainerLogs("does not match with existent version"));
-    logger.info("Total gap-triggered resyncs: {}", countInContainerLogs("triggering snapshot resync"));
-    logger.info("Total resyncs completed: {}", countInContainerLogs("Snapshot resync completed"));
-    // Counted on the leader, which serves one snapshot per resync cycle. The 503 a resyncing follower returns is not
-    // logged server-side, so the client-side error counters below are what stands in for the deflected writes.
-    logger.info("Total snapshots served: {}", countInContainerLogs("Serving database snapshot for"));
+    //
+    // All four in one call: each one re-pulls every container's full stdout, which on a diverging run is megabytes.
+    // "Serving database snapshot for" is counted on the leader, which serves one snapshot per resync cycle; the 503 a
+    // resyncing follower returns is not logged server-side, so the client-side counters below stand in for the
+    // writes it deflected.
+    final Map<String, Integer> markers = countInContainerLogs(
+        "does not match with existent version",
+        "triggering snapshot resync",
+        "Snapshot resync completed",
+        "Serving database snapshot for",
+        CANARY_MARKER);
+    logger.info("Total page version gaps: {}", markers.get("does not match with existent version"));
+    logger.info("Total gap-triggered resyncs: {}", markers.get("triggering snapshot resync"));
+    logger.info("Total resyncs completed: {}", markers.get("Snapshot resync completed"));
+    logger.info("Total snapshots served: {}", markers.get("Serving database snapshot for"));
+
+    // The four counters above read zero both when the cluster is healthy and when the scan is broken - a marker that
+    // no longer matches what the servers log is indistinguishable from a clean run, and that already happened once on
+    // this harness. The canary appears exactly once per container in every run, so a zero here means the numbers above
+    // carry no information rather than good news.
+    final int canary = markers.get(CANARY_MARKER);
+    if (canary < containers.size())
+      logger.error("Log scan is unreliable: canary '{}' found {} times across {} containers, expected one each. "
+          + "Treat the counters above as unmeasured, not as zero.", CANARY_MARKER, canary, containers.size());
+    else
+      logger.info("Log scan self-check: canary '{}' found {} times across {} containers", CANARY_MARKER, canary,
+          containers.size());
     logger.info("Failed user writes: {}", sumCounter("arcadedb.test.inserted.users.error"));
     logger.info("Failed photo writes: {}", sumCounter("arcadedb.test.inserted.photos.error"));
     // Authoritative per-node record counts. countType() reads a cached counter that drifts independently of
