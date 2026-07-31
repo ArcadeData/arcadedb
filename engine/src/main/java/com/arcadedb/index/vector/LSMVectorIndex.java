@@ -2058,6 +2058,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // at any efSearch (issue #5615). Collect those vectors here, before the write lock, so neither the O(V+E)
       // walk nor the vector reads stall concurrent searches; they are re-queued into the delta buffer below and
       // stay searchable through the delta scan until the next rebuild wires them into the graph.
+      //
+      // Only the from-scratch build needs this. Vectors ingested through the live builder are already in the
+      // delta buffer from the moment they are inserted, so an orphan there is served by the delta scan until a
+      // rebuild absorbs it - at which point this check runs over it.
+      //
+      // Re-queueing deliberately does not bump mutationsSinceSerialize: a re-queued vector is not a mutation, and
+      // counting it would let an index whose last build orphaned a node rebuild itself forever. The cost is that
+      // on an otherwise idle index those entries are scanned by every search until the next real mutation.
       final List<DeltaVectorEntry> unreachableEntries = new ArrayList<>();
       for (final int ordinal : findUnreachableOrdinals(builtGraph)) {
         if (ordinal >= finalActiveVectorIds.length)
@@ -2070,9 +2078,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
         if (loc == null || loc.deleted)
           continue;
+        // getVector() resolves the location through the build snapshot and never returns null: an unreadable
+        // ordinal comes back as the sentinel, which would pair a real RID with a meaningless distance in the
+        // delta scan. The location check above cannot stand in for this - it reads the live index, not the
+        // snapshot, and says nothing about the six document-read failures that also yield the sentinel.
         final VectorFloat<?> vector = vectors.getVector(ordinal);
-        if (vector != null)
-          unreachableEntries.add(new DeltaVectorEntry(vectorId, loc.rid, vector));
+        if (vector == null || (vectors instanceof final ArcadePageVectorValues pageValues
+            && pageValues.isDeletedSentinel(vector)))
+          continue;
+        unreachableEntries.add(new DeltaVectorEntry(vectorId, loc.rid, vector));
       }
       if (!unreachableEntries.isEmpty())
         LogManager.instance().log(this, Level.WARNING,

@@ -19,11 +19,14 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Type;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.NodesIterator;
 import io.github.jbellis.jvector.util.Bits;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
+import io.github.jbellis.jvector.vector.types.VectorFloat;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -78,6 +81,28 @@ class LSMVectorIndexGraphConnectivityTest extends TestHelper {
   @Test
   void anEmptyGraphReportsNothing() {
     assertThat(index().findUnreachableOrdinals(new FixedGraph(new int[0][], 0))).isEmpty();
+  }
+
+  /**
+   * An unreadable ordinal must not be re-queued into the delta buffer. {@code getVector} never returns null - it
+   * hands back a sentinel - so the recovery path has to ask whether the vector is real, otherwise it pairs a
+   * genuine RID with a meaningless distance and the delta scan reports a hit at the wrong distance.
+   */
+  @Test
+  void theSentinelIsDistinguishableFromARealVector() {
+    final VectorLocationIndex locations = new VectorLocationIndex();
+    final ArcadePageVectorValues values = new ArcadePageVectorValues((DatabaseInternal) database, 4, "vector", locations, new int[] { 7 });
+
+    // Ordinal 0 maps to vectorId 7, which has no location at all, so the read cannot succeed.
+    final VectorFloat<?> unreadable = values.getVector(0);
+    assertThat(unreadable).as("getVector never returns null").isNotNull();
+    assertThat(values.isDeletedSentinel(unreadable)).as("an unreadable ordinal yields the sentinel").isTrue();
+
+    // Anything out of range is the sentinel too, and a genuine vector is not.
+    assertThat(values.isDeletedSentinel(values.getVector(99))).isTrue();
+    assertThat(values.isDeletedSentinel(
+        VectorizationProvider.getInstance().getVectorTypeSupport().createFloatVector(new float[] { 1, 2, 3, 4 })))
+        .as("a real vector is not the sentinel").isFalse();
   }
 
   private LSMVectorIndex index() {

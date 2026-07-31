@@ -77,12 +77,24 @@ In addition to the six already recorded on the issue:
 3. **The build reads a sentinel vector.** `ArcadePageVectorValues.getVector` returns `deletedSentinelVector` on
    eight paths, three of them silent. Instrumented all three: zero hits on a failing run.
 
+## Review notes
+
+- The walk runs on every rebuild, including the common no-orphan case: an O(V+E) pass plus a transient
+  `boolean[upper]` + `int[upper]`. It is off the write lock and bounded by the graph the build just produced,
+  which is far more expensive, so it is not worth pooling the arrays unless profiling says otherwise.
+- `getVector` never returns null - an unreadable ordinal comes back as the sentinel - so the recovery path
+  explicitly rejects the sentinel. The location check ahead of it cannot stand in: it reads the live index
+  rather than the build snapshot, and says nothing about the document-read failures that also yield a sentinel.
+- Only the from-scratch path needs this. Vectors ingested through the live builder are already in the delta
+  buffer from insertion, so an orphan there is served by the delta scan until a rebuild absorbs it.
+
 ## Tests
 
 - `LSMVectorIndexGraphConnectivityTest` - deterministic coverage of the detection primitive against graphs
   whose shape is fixed by the test: a fully connected chain, a node with out-edges and no in-edges, several
-  orphans at once, a disconnected cycle, and an empty graph. Stubbing `findUnreachableOrdinals` to a no-op
-  fails 3 of the 5, confirming they bind.
+  orphans at once, a disconnected cycle, and an empty graph, plus one case pinning that the sentinel is
+  distinguishable from a real vector. Stubbing `findUnreachableOrdinals` to a no-op fails 3 of the 6, and
+  stubbing `isDeletedSentinel` to `false` fails 1 more, confirming they bind.
 - `LSMVectorIndexConcurrentRebuildVisibilityTest` - the end-to-end reproducer, which on a miss now reports
   whether the vector is reachable from the entry node at all.
 
@@ -91,7 +103,7 @@ In addition to the six already recorded on the issue:
 ```
 mvn -pl engine test -Dtest=LSMVectorIndexGraphConnectivityTest
 mvn -pl engine test -Dtest=LSMVectorIndexConcurrentRebuildVisibilityTest -Dgroups=slow -DexcludedGroups=
-mvn -pl engine test -Dtest='com.arcadedb.index.vector.*Test'
+mvn -pl engine test -Dtest='com.arcadedb.index.vector.*Test'   # 246 tests, 0 failures
 ```
 
 The concurrency reproducer is inherently probabilistic - its flake rate on unfixed code swung between 1 run in

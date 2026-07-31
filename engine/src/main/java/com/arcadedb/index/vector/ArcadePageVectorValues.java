@@ -123,6 +123,15 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
 
+  /**
+   * Whether this is the placeholder handed back for a vector that could not be read. {@link #getVector} never
+   * returns null - a deleted, missing or unreadable ordinal yields the sentinel so JVector's traversal does not
+   * NPE (issue #3715) - so a caller that needs a genuine vector has to ask.
+   */
+  boolean isDeletedSentinel(final VectorFloat<?> vector) {
+    return vector == deletedSentinelVector;
+  }
+
   @Override
   public int size() {
     return ordinalToVectorId != null ? ordinalToVectorId.length : 0;
