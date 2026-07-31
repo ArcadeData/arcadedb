@@ -1790,6 +1790,14 @@ public class CypherSemanticValidator {
    * implicit {@code CALL { ... }} imports nothing, so it inherits kinds for names its body cannot legally reference -
    * harmless, because {@link #validateVariableScope} runs first and reports such a reference as the undefined variable
    * it is, before this phase gets to read a kind for it.
+   * <p>
+   * What comes back is the body's <i>end</i> state, one map applied to every expression in it wherever that expression
+   * sits - deliberately, because it is the same approximation the top-level statement already runs on ({@code varTypes}
+   * is one map for the whole statement), and answering a body more precisely than the query around it would put back a
+   * clause-dependent asymmetry of exactly the kind #5602 and this issue exist to remove. It errs one way only: a name a
+   * later {@code WITH} re-binds to something kindless loses its kind for the clauses before it too, so a check is
+   * missed, never invented. It cannot err the other way, because the only rebinding Cypher allows on a bound name is a
+   * {@code WITH} projection, which can drop a kind but never turn a name into a path.
    */
   private static Map<String, VarType> nestedVarTypes(final Map<String, VarType> outer, final CypherStatement nested) {
     // A UNION declares nothing of its own - each branch is a scope of its own and is entered as a nested statement
@@ -1826,6 +1834,10 @@ public class CypherSemanticValidator {
       case WITH -> applyWithProjection(entry.getTypedClause(), scope);
       case UNWIND -> scope.remove(((UnwindClause) entry.getTypedClause()).getVariable());
       case LOAD_CSV -> scope.remove(((LoadCSVClause) entry.getTypedClause()).getVariable());
+      // Only the FOREACH variable itself: what the clause's inner CREATE/MERGE bind lives and dies inside the loop
+      // and is not in scope after it, so declaring those kinds here would be declaring them where they cannot be
+      // referenced. The walk still descends into the inner clauses - that is walkClause's FOREACH arm - and checks
+      // their expressions against the scope the loop was entered with.
       case FOREACH -> scope.remove(((ForeachClause) entry.getTypedClause()).getVariable());
       case CALL -> {
         final CallClause callClause = entry.getTypedClause();

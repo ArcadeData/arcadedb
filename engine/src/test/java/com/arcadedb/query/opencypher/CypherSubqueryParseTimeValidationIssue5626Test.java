@@ -21,12 +21,20 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.WithClause;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
+import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -334,6 +342,39 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
       assertThat(((Number) row.getProperty("c")).longValue()).isEqualTo(1L);
       assertThat((List<Object>) row.getProperty("names")).containsExactly("b");
     }
+  }
+
+  // ===================== the walker visits each expression exactly once =====================
+
+  /**
+   * A {@code WITH} can be registered on the ordered clause list, on the statement, or on both, and the walk has to
+   * cover all three without visiting one twice - which is what lets a visitor accumulate rather than only assert.
+   * The precondition is asserted first: without a query whose WITH really is registered on both, the count below
+   * would pass for the trivial reason that there was nothing to double-visit.
+   */
+  @Test
+  void everyExpressionIsVisitedExactlyOnce() {
+    final CypherStatement statement = new Cypher25AntlrParser().parse(
+        "MATCH (n:P) WITH n, abs(n.age) AS a WHERE a > 0 "
+            + "CALL { MATCH (m:P) WITH m WHERE m.age > 0 RETURN m.name AS b } RETURN a, b ORDER BY a");
+
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    final List<WithClause> ordered = clauses.stream()
+        .filter(entry -> entry.getType() == ClauseEntry.ClauseType.WITH)
+        .map(entry -> (WithClause) entry.getTypedClause())
+        .toList();
+    assertThat(ordered).isNotEmpty();
+    assertThat(statement.getWithClauses()).isNotEmpty();
+    assertThat(statement.getWithClauses().stream().anyMatch(w -> ordered.stream().anyMatch(o -> o == w)))
+        .as("the query must have a WITH registered on both collections, or this test proves nothing")
+        .isTrue();
+
+    final Map<Expression, Integer> visits = new IdentityHashMap<>();
+    CypherExpressionWalker.walk(statement, expression -> visits.merge(expression, 1, Integer::sum));
+
+    assertThat(visits).isNotEmpty();
+    assertThat(visits.entrySet().stream().filter(entry -> entry.getValue() > 1).map(entry -> entry.getKey().getText())
+        .toList()).isEmpty();
   }
 
   private List<String> names(final String query) {

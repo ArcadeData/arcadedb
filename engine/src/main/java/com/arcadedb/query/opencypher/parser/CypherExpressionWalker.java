@@ -117,7 +117,10 @@ public final class CypherExpressionWalker {
   @FunctionalInterface
   public interface Visitor {
     /**
-     * Called once per expression node, parents before children.
+     * Called once per expression node, parents before children. Once means once: a node the AST makes reachable by
+     * two routes is still visited a single time, so a visitor that accumulates - a counter, a collector - is safe.
+     * The same expression object appearing at two genuinely different places in the query is two nodes and is
+     * visited twice, which is what a check of any kind wants.
      */
     void visit(Expression expression);
 
@@ -169,8 +172,9 @@ public final class CypherExpressionWalker {
 
     // A WITH can be registered on the ordered list, on the statement, or on both, depending on the builder path that
     // produced it, and every one of them has to be covered. Which ones the ordered walk already reached is tracked by
-    // identity so the second pass adds only what it missed: visiting an expression exactly once is what lets a
-    // visitor keep state, and a visitor that could not would be a trap for the next one written.
+    // identity so the second pass adds only what it missed - the one place in this traversal where the same expression
+    // was otherwise reachable twice. Everywhere else once-only falls out of each arm below walking a part of the tree
+    // no other arm does, which is a property to preserve when adding one, not something enforced here.
     Set<WithClause> alreadyWalked = null;
 
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
