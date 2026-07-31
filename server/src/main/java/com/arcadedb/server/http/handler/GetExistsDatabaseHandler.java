@@ -26,8 +26,6 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.Deque;
-import java.util.HashSet;
-import java.util.Set;
 
 public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
   public GetExistsDatabaseHandler(final HttpServer httpServer) {
@@ -43,13 +41,14 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.exists-database").increment();
 
-    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
-    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
-
-    if (!allowedDatabases.contains("*"))
-      installedDatabases.retainAll(allowedDatabases);
-
-    final boolean existsDatabase = installedDatabases.contains(databaseName.getFirst());
+    // Deliberately not filterAuthorizedDatabases(): this route tests a single name, so building the whole
+    // authorized set to look one entry up would allocate proportionally to the number of databases on the
+    // server for a constant-time question. The conjuncts below are the same predicate that helper applies -
+    // installed, and accessible to the caller - just evaluated for one name, including its null-user
+    // contract, so the two paths cannot drift on what an unauthenticated route is allowed to report.
+    final String requested = databaseName.getFirst();
+    final boolean existsDatabase = server.getDatabaseNames().contains(requested)
+        && (user == null || user.canAccessToDatabase(requested));
 
     final JSONObject response = new JSONObject();
     response.put("result", existsDatabase);

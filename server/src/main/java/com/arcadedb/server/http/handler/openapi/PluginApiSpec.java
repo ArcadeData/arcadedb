@@ -122,11 +122,16 @@ public class PluginApiSpec implements OpenApiContributor {
         """
             Reports this server's Raft role, the current leader, and per-peer replication health \
             including match and next index, lag, and round-trip latency. Answers 503 until Raft has \
-            started, because the route is registered before the Raft server comes up. """
+            started, because the route is registered before the Raft server comes up.
+
+            The cluster and peer fields are server-level and readable by any authenticated user. The \
+            'databases' array and the database-scoped 'alerts' are restricted to the databases the \
+            caller is authorized for, so a user granted one database does not learn the others. """
             + RAFT_REQUIRED);
     get.addParametersItem(SpecBuilders.queryParam("presence",
         "When present with no value, 'true' or '1', includes the per-database x per-peer presence "
-            + "matrix in the 'databasePresence' field. Built only on the leader; a follower ignores it.",
+            + "matrix in the 'databasePresence' field. Restricted to the root user, because it fans a "
+            + "bootstrap-state RPC out to every peer. Built only on the leader; a follower ignores it.",
         false, "boolean"));
     get.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Cluster status", "ClusterStatus"),
@@ -260,7 +265,10 @@ public class PluginApiSpec implements OpenApiContributor {
             Reports this peer's fingerprint and last transaction id for every database. Used by the \
             bootstrap leader at first cluster formation to decide which copy of each database wins. \
             A database this peer cannot read is reported with an 'error' and a last transaction id of \
-            -1 rather than omitted. """ + RAFT_REQUIRED);
+            -1 rather than omitted.
+
+            Restricted to the root user; peers satisfy this by forwarding as root with the cluster \
+            token. """ + RAFT_REQUIRED);
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Bootstrap state", "BootstrapStateResponse"),
         "400", "401", "403", "500"));
