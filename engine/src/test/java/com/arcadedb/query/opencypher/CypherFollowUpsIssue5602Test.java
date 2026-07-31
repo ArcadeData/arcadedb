@@ -244,6 +244,29 @@ class CypherFollowUpsIssue5602Test extends TestHelper {
     }
   }
 
+  /**
+   * Asserted through EXPLAIN, which parses and plans without executing, so a rejection here can only have come from
+   * the parse-time walk. The plain form of these queries would pass either way: SKIP/LIMIT are evaluated even when
+   * the match yields no row, so the function's own runtime guard catches them regardless - which is exactly why
+   * asserting the parse-time guarantee needs a query that never runs.
+   * <p>
+   * The top-level SKIP/LIMIT hang off the statement rather than off a clause entry, so they are reached by a
+   * different walk from the WITH ones, and were the last place where the same call was judged differently depending
+   * on where it sat.
+   */
+  @Test
+  void skipAndLimitAreValidatedAtParseTimeWhereverTheySit() {
+    for (final String query : new String[] { //
+        "EXPLAIN MATCH (n:" + TYPE + ") RETURN n LIMIT abs('x')", //
+        "EXPLAIN MATCH (n:" + TYPE + ") RETURN n SKIP abs('x') LIMIT 1", //
+        "EXPLAIN MATCH (n:" + TYPE + ") WITH n LIMIT abs('x') RETURN n", //
+        "EXPLAIN MATCH (n:" + TYPE + ") WHERE abs('x') > 0 RETURN n" }) {
+      assertThatThrownBy(() -> consume(query)).as("%s", query)
+          .isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("abs");
+    }
+  }
+
   @Test
   void theWrongArgumentCountIsAlsoRejectedOutsideReturn() {
     assertThatThrownBy(() -> run("MATCH (n:" + TYPE + ") WHERE substring('abc', 1, 2, 3) = 'x' RETURN n"))

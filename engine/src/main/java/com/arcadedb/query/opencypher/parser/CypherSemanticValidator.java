@@ -1752,6 +1752,11 @@ public class CypherSemanticValidator {
       for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
         CypherExpressionWalker.walk(item.getExpression(), checks);
     walkOrderBy(statement.getOrderByClause(), checks);
+    // The top-level ORDER BY / SKIP / LIMIT belong to the statement rather than to any clause entry, and are walked
+    // here for the same reason walkWith() walks a WITH's: leaving them out is the clause-dependent asymmetry this
+    // widening exists to remove.
+    CypherExpressionWalker.walk(statement.getSkip(), checks);
+    CypherExpressionWalker.walk(statement.getLimit(), checks);
 
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses != null)
