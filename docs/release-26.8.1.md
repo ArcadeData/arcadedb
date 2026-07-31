@@ -933,4 +933,48 @@ Two cluster endpoints move behind the root check that the seven mutating Raft en
 `GET /api/v1/cluster` also stops listing reserved internal databases such as the Raft control directory
 `.raft`, matching what the presence matrix and the bootstrap-state RPC already did.
 
+## Cypher: a subquery body is validated like the query around it
+
+The widening of #5602 left one place the walk could not reach, and the class it was written on said so in the
+opposite direction: the bodies of `EXISTS { }`, `COUNT { }` and `COLLECT { }` were "parsed on their own and
+validated then". They were not. Each of the three keeps its body as text and re-parses it once per outer row, and
+a body that cannot run is absorbed into the expression's neutral value - `false`, `0`, an empty list. A `CALL { }`
+body was never handed to this phase at all ([#5626](https://github.com/ArcadeData/arcadedb/issues/5626)).
+
+So `MATCH (n:P) WHERE abs('x') > 0 RETURN n` was rejected before it started, while the identical call one level in,
+`MATCH (n:P) WHERE EXISTS { MATCH (m:P) WHERE abs('x') > 0 RETURN m } RETURN n`, was accepted - the very
+clause-dependent asymmetry #5602 set out to remove. Neo4j type-checks a subquery body exactly as it does the query
+around it.
+
+The three expressions now carry their body as an AST alongside the text, built from the parse tree ANTLR already
+produced for it rather than by re-lexing, and the traversal descends into it - as it does into a `CALL { }` body.
+Crossing into a body changes the variable scope, so a check that reads variable kinds (`type()` wants a
+relationship, `p.name` needs `p` not to be a path) re-binds itself to the kinds the body declares, over the ones it
+inherits; an implicit `CALL { }` imports nothing, so a name the body binds for itself shadows the outer one rather
+than answering for it. A body's kinds are built by walking its clauses in order, so the two spellings of the same
+import - `CALL (p) { ... }` and a leading `WITH p` - answer alike, while `WITH 1 AS p` stops `p` being a path. Each
+branch of a `UNION` is a scope in its own right: a variable only one branch declares is checked against the kind
+that branch gives it, instead of being dropped for the branches disagreeing about it.
+
+Two expression positions that were leaves for the same reason are covered too: an `EXISTS { }` written as a bare
+`WHERE` predicate, and a function call used as one (`WHERE isEmpty(x)`), each used to get an anonymous
+`BooleanExpression` adapter that the traversal could only treat as a leaf. Both are now the ordinary
+`BooleanCoercionExpression` - byte-for-byte the same behaviour, minus the blind spot. Procedure `CALL` arguments
+and the `LOAD CSV FROM` url expression are walked as well.
+
+Working out what a name is - a node, a relationship, a path - was written twice, once for a statement and once
+for a subquery body, and the two had already drifted. They are one construction now, which closed an asymmetry
+older than this issue: the statement's copy dropped every kind at a `WITH *`, because it kept only what the
+projection names, while the body's copy passed the incoming scope through.
+
+> **Potentially breaking, in the same way #5602 was.** A query whose bad call sits inside a subquery body is now
+> rejected before it starts rather than failing at runtime - or, where the subquery matched no row, rather than
+> quietly answering `false` / `0` / `[]`. The call was always wrong. One shape worth calling out: `type(b)` where
+> `b` is a node, written inside a subquery, is now the type error it already was outside one.
+>
+> A second shape comes from the shared scope construction: a kind now survives `WITH *`, so
+> `MATCH p = (a)-[:KNOWS]->(b) WITH * RETURN p.name` is rejected as the path-property access it always was,
+> where before the `WITH *` made the engine forget `p` was a path and the query failed at runtime instead. A
+> projection that names what it keeps is unaffected - `WITH 1 AS p` still stops `p` being a path.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

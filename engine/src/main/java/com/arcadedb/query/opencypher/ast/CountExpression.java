@@ -40,12 +40,14 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CountExpression implements Expression {
-  private final String subquery;
-  private final String text;
+  private final String          subquery;
+  private final String          text;
+  private final CypherStatement parsedSubquery;
 
-  public CountExpression(final String subquery, final String text) {
+  public CountExpression(final String subquery, final String text, final CypherStatement parsedSubquery) {
     this.subquery = subquery;
     this.text = text;
+    this.parsedSubquery = parsedSubquery;
   }
 
   @Override
@@ -98,5 +100,14 @@ public class CountExpression implements Expression {
 
   public String getSubquery() {
     return subquery;
+  }
+
+  /**
+   * The body as an AST. The body still executes from {@link #getSubquery()}, because what runs is the text after
+   * {@link CorrelatedSubqueryRewriter} has correlated it to the outer row, which differs row by row. This AST is the
+   * body as written, and exists so that the parse-time checks reach inside it (issue #5626).
+   */
+  public CypherStatement getParsedSubquery() {
+    return parsedSubquery;
   }
 }
