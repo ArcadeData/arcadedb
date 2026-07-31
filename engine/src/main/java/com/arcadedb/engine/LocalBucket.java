@@ -940,27 +940,40 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
       final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newRecordPositionInPage;
+      final boolean singleSlotInsert = !createNewPage && !isPlaceHolder && spaceNeeded <= spaceAvailableInCurrentPage;
 
-      // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
-      selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
-              newRecordPositionInPage);
+      // #5596: a plain insert into a free slot of a REUSED page is exactly what the disjoint-slot merge replays
+      // (writeRecordAtSlot writes the same three things: the slot pointer, the record count and the record itself),
+      // so declare those bytes covered by it. Everything else here - a multi-page record, a placeholder, a record on
+      // a brand-new page - stays undeclared, which is what makes a forgotten poison call harmless.
+      final int previousCoverage = selectedPage.beginCoveredWrite(singleSlotInsert ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+      final short recordCountInPage;
+      try {
+        // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
+        selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
+                newRecordPositionInPage);
 
-      short recordCountInPage = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-      if (availablePositionIndex + 1 > recordCountInPage) {
-        // UPDATE RECORD NUMBER
-        recordCountInPage = (short) (availablePositionIndex + 1);
-        selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, recordCountInPage);
-      }
+        short currentRecordCountInPage = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+        if (availablePositionIndex + 1 > currentRecordCountInPage) {
+          // UPDATE RECORD NUMBER
+          currentRecordCountInPage = (short) (availablePositionIndex + 1);
+          selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, currentRecordCountInPage);
+        }
+        recordCountInPage = currentRecordCountInPage;
 
-      if (spaceNeeded > spaceAvailableInCurrentPage) {
-        // MULTI-PAGE RECORD
-        writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage);
+        if (spaceNeeded > spaceAvailableInCurrentPage) {
+          // MULTI-PAGE RECORD
+          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage);
 
-      } else {
-        final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage, isPlaceHolder ? (-1L * bufferSize) : bufferSize);
-        selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(),
-                bufferSize);
-        updatePageStatistics(selectedPage.pageId.getPageNumber(), spaceAvailableInCurrentPage, -spaceNeeded);
+        } else {
+          final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage,
+                  isPlaceHolder ? (-1L * bufferSize) : bufferSize);
+          selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(),
+                  bufferSize);
+          updatePageStatistics(selectedPage.pageId.getPageNumber(), spaceAvailableInCurrentPage, -spaceNeeded);
+        }
+      } finally {
+        selectedPage.endCoveredWrite(previousCoverage);
       }
 
       LogManager.instance()
@@ -979,7 +992,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final TransactionContext slotTx = database.getTransactionIfExists();
       if (slotTx != null && slotTx.isSlotMergeEnabled() && !createNewPage) {
         final int slotPageNumber = selectedPage.getPageId().getPageNumber();
-        if (isPlaceHolder || spaceNeeded > spaceAvailableInCurrentPage)
+        if (!singleSlotInsert)
           slotTx.poisonSlotRebasePage(fileId, slotPageNumber);
         // Skip the record-image copy on a page that is already poisoned (it would be discarded anyway).
         else if (!slotTx.isSlotRebasePagePoisoned(fileId, slotPageNumber))
@@ -1477,6 +1490,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (slotMergeOn && !slotCandidate)
         slotTx.poisonSlotRebasePage(fileId, pageId);
 
+      // #5596: an in-chunk edge append is invisible to the slot map on purpose - the commutative edge-append merge
+      // owns it - so the in-place rewrite of the segment below is declared covered by THAT merge instead. Only when
+      // the append was really registered (TransactionContext.trackEdgeAppend) and the page is not already
+      // excluded: a segment write nobody tracked (an edge removal, addAll, a bulk load) stays undeclared and can
+      // therefore never be rebased away, whether or not its writer remembered to poison the page.
+      final boolean edgeAppendReplayable = !slotCandidate && slotTx != null && slotTx.isEdgeAppendMergeEnabled()//
+              && slotTx.isEdgeAppendTracked(rid) && !slotTx.isEdgeAppendPagePoisoned(fileId, pageId);
+
       boolean isPlaceHolder = false;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
 
@@ -1547,8 +1568,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         } else
           growBaseBody = null;
 
-        if (growRecordInPage(page, pageId, recordCountInPage, recordPositionInPage, lastRecordPositionInPage, recordSize,
-                isPlaceHolder, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize)) {
+        // #5596: the in-page growth (the shift of the following records plus their recomputed offsets) is exactly
+        // what rebaseRecordOnPage re-does on the newer committed page, so those bytes are covered by the slot merge.
+        // A growth that does NOT fit writes nothing here and falls through to the spill branch below, undeclared.
+        final int growCoverage = page.beginCoveredWrite(growRebasable ?
+                MutablePage.COVERAGE_SLOT_MERGE :
+                (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
+        final boolean grown;
+        try {
+          grown = growRecordInPage(page, pageId, recordCountInPage, recordPositionInPage, lastRecordPositionInPage, recordSize,
+                  isPlaceHolder, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+        } finally {
+          page.endCoveredWrite(growCoverage);
+        }
+
+        if (grown) {
           if (slotCandidate) {
             if (growRebasable) {
               final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
@@ -1612,11 +1646,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // at commit it lets the rebase tell a false page conflict (concurrent write to ANOTHER slot) from a true
         // one (a concurrent write to THIS record). Placeholder content lives behind a pointer on another page, so
         // rebasing this page in isolation would be unsound: poison it instead.
+        final boolean slotTracked = slotCandidate && !isPlaceHolder && !slotTx.isSlotRebasePagePoisoned(fileId, pageId);
         if (slotCandidate) {
           if (isPlaceHolder)
             slotTx.poisonSlotRebasePage(fileId, pageId);
           // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
-          else if (!slotTx.isSlotRebasePagePoisoned(fileId, pageId)) {
+          else if (slotTracked) {
             final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
                     buffer.getContentBeginOffset() + bufferSize);
             if (slotInsertedHere)
@@ -1631,9 +1666,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
         }
 
-        recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * bufferSize : bufferSize);
-        final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
-        page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+        // #5596: the overwrite of ONE record's size marker and content is what the slot merge replays (or, for a
+        // tracked in-chunk edge append, what the edge-append merge re-derives). Declare exactly those bytes.
+        final int previousCoverage = page.beginCoveredWrite(slotTracked ?
+                MutablePage.COVERAGE_SLOT_MERGE :
+                (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
+        try {
+          recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * bufferSize : bufferSize);
+          final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
+          page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+        } finally {
+          page.endCoveredWrite(previousCoverage);
+        }
 
         LogManager.instance()
                 .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
@@ -1752,6 +1796,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // is not an append: exclude the page from it, whatever the record shape turns out to be.
     if (slotTx != null)
       slotTx.poisonEdgeAppendPage(fileId, pageId);
+
+    // #5596: the merges this delete's page writes may be replayed by. Raised to COVERAGE_SLOT_MERGE only once the
+    // record turns out to be a plain in-place one whose delete really was tracked; every other shape leaves it 0, so
+    // the writes stay undeclared and no merge can re-derive the page from them.
+    int deleteCoverage = 0;
 
     database.getTransaction().removeRecordFromCache(rid);
 
@@ -1893,24 +1942,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
               slotTx.trackRebasableDelete(fileId, pageId, positionInPage, baseBody);
+              // #5596: from here on the two writes this delete makes - the content wipe-out and the slot-pointer
+              // zeroing below - are exactly what rebaseRecordDeleteOnPage re-applies, so declare them covered.
+              deleteCoverage = MutablePage.COVERAGE_SLOT_MERGE;
             }
           }
 
           if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
             // WIPE OUT RECORD CONTENT
+            final int previousCoverage = page.beginCoveredWrite(deleteCoverage);
             try {
               page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
             } catch (Exception e) {
               // IGNORE IT
               LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
+            } finally {
+              page.endCoveredWrite(previousCoverage);
             }
           }
         } else if (slotMergeOn)
           // AN UNKNOWN NEGATIVE MARKER: NOT A PLAIN SINGLE-SLOT RECORD, KEEP THE PAGE OUT OF THE MERGE
           slotTx.poisonSlotRebasePage(fileId, pageId);
 
-        // POINTER = 0 MEANS DELETED
-        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+        // POINTER = 0 MEANS DELETED. deleteCoverage is COVERAGE_SLOT_MERGE only for the tracked plain-record delete
+        // above; every other shape leaves it 0, so the page cannot be slot-rebased (#5596).
+        final int previousCoverage = page.beginCoveredWrite(deleteCoverage);
+        try {
+          page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+        } finally {
+          page.endCoveredWrite(previousCoverage);
+        }
 
         // Track deleted RID to prevent reuse within the same transaction
         database.getTransaction().addDeletedRecord(rid);
@@ -1963,7 +2024,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Defragments the page in place, closing the holes an update or a delete left behind.
+   * <p>
+   * #5596: with {@code forceWipeOut=false} every byte written here is declared covered by ALL the commit-time page
+   * merges. That is sound - and necessary to keep them effective - because the commit path re-runs exactly this call
+   * on the page a merge re-derived, so the compression is reproduced rather than lost: it is a layout-only
+   * transformation of whatever records the page ends up holding, not a change of this transaction's own. A FORCED
+   * wipe-out (the database checker) is not re-run by the merge path, so it declares nothing and disqualifies the page.
+   */
   public void compressPage(final MutablePage page, final boolean forceWipeOut) throws IOException {
+    final int previousCoverage = page.beginCoveredWrite(forceWipeOut ? 0 : MutablePage.COVERAGE_ALL_MERGES);
+    try {
+      compressPageInternal(page, forceWipeOut);
+    } finally {
+      page.endCoveredWrite(previousCoverage);
+    }
+  }
+
+  private void compressPageInternal(final MutablePage page, final boolean forceWipeOut) throws IOException {
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
     final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, false);

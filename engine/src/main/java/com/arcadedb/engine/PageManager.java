@@ -64,6 +64,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
+  private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
@@ -94,6 +95,8 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
+    public long mergesDeclinedByCoverage;
     public long evictionRuns;
     public long pagesEvicted;
     public int  readCachePages;
@@ -325,6 +328,24 @@ public class PageManager extends LockContext {
    */
   public void incrementTxPageSlotMerges() {
     totalTxPageSlotMerges.incrementAndGet();
+  }
+
+  /**
+   * Counts a page merge declined because the page could not PROVE that every byte this transaction wrote to it was
+   * replayable by that merge (#5596). The transaction falls back to an ordinary retry, so this is never a
+   * correctness problem - but a non-zero and growing value means some writer is dirtying a mergeable page without
+   * declaring it ({@code MutablePage.beginCoveredWrite}), i.e. contention that used to be absorbed is now being
+   * retried. Watch it next to {@link PPageManagerStats#edgeAppendMerges}/{@link PPageManagerStats#txPageSlotMerges}: a jump here with a dip
+   * there is exactly the shape of a forgotten declaration.
+   * <p>
+   * COUNTING SEMANTICS: this is "commit attempts that FAILED on a coverage decline", not "pages declined". The
+   * report is made from the commit loop's terminal branch, which then rethrows, so a transaction whose commit
+   * touched several undeclared pages contributes exactly one - and a retry that fails the same way contributes one
+   * more. That is the right granularity for the question the metric answers (is a writer missing a declaration, and
+   * is it costing retries?); do not read it as a page count or divide it by anything.
+   */
+  public void incrementMergesDeclinedByCoverage() {
+    totalMergesDeclinedByCoverage.incrementAndGet();
   }
 
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
@@ -574,6 +595,7 @@ public class PageManager extends LockContext {
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
+    stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.evictionRuns = evictionRuns.get();
     stats.pagesEvicted = pagesEvicted.get();
     return stats;

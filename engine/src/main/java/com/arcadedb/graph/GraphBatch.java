@@ -1121,10 +1121,11 @@ public class GraphBatch implements AutoCloseable {
       final long vertexKey = packVertexKey(srcBucket, srcPos);
       final EdgeSegment outChunk = getOrCreateOutSegmentDeferred(srcBucket, srcPos, vertexKey, totalBytesNeeded);
 
-      // NOTE (edge-append merge): this bulk path intentionally neither tracks (trackEdgeAppend) nor poisons
-      // its chunk pages. That is safe only because a GraphBatch transaction never also drives
-      // EdgeLinkedList.add on the same page, so a bulk-written page can't coexist with a tracked append in one
-      // tx and be wrongly rebased at commit. If that ever changes, poison these pages. See docs/supernode.md §3.
+      // NOTE (edge-append merge): this bulk path intentionally neither tracks (trackEdgeAppend) nor poisons its
+      // chunk pages. Since #5596 that needs no side condition: the merge accepts a page only when EVERY byte this
+      // transaction wrote to it was declared replayable, and these bulk writes declare nothing - so a page this
+      // path touched can never be rebased, even if the same transaction also drove EdgeLinkedList.add on it.
+      // See docs/supernode.md §3.
       if (lastSegmentIsNew) {
         // New segment: fill FIRST, then persist ONCE (no updateRecord needed)
         outChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
