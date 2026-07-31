@@ -72,8 +72,8 @@ In addition to the six already recorded on the issue:
    snapshotted). Dead: `graphSize == mapLen` on every failure, and the miss survives a retry.
 2. **Stale searcher handed back across a graph swap.** `GraphSearcherPool.borrow` calls `drain()` *before*
    publishing `pooledGraph`/`pooledEpoch`, so a concurrent `release` reading the still-old matching pair can
-   re-pool a searcher bound to the old graph. This is a **real race worth filing separately**, but it is not
-   this bug - the reproducer has one searching thread per index.
+   re-pool a searcher bound to the old graph. A **real race, filed as #5648**, but not this bug - the
+   reproducer has one searching thread per index.
 3. **The build reads a sentinel vector.** `ArcadePageVectorValues.getVector` returns `deletedSentinelVector` on
    eight paths, three of them silent. Instrumented all three: zero hits on a failing run.
 
@@ -145,8 +145,9 @@ https://github.com/ArcadeData/arcadedb/pull/5633
 ### Follow-ups not taken here
 
 - **Upstream:** why `GraphIndexBuilder.build()` leaves a node unreferenced despite calling `cleanup()`.
-- **Separate defect, unfiled:** `GraphSearcherPool.borrow` calls `drain()` *before* publishing `pooledGraph` /
-  `pooledEpoch`, so a concurrent `release` reading the still-old matching pair can return a searcher bound to
-  the old graph to the idle queue. Needs two searching threads on one index, so it is not #5615.
+- **Separate defect, filed as #5648:** `GraphSearcherPool.borrow` calls `drain()` *before* publishing
+  `pooledGraph` / `pooledEpoch`, so a concurrent `release` reading the still-old matching pair can return a
+  searcher bound to the old graph to the idle queue. Needs two searching threads on one index, so it is not
+  #5615, but it produces the same silent wrong-result symptom.
 - **Possible enhancement:** a bounded self-heal (one deferred rebuild when orphans are found) if orphan counts
   are ever observed to be large in practice.
