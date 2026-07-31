@@ -922,6 +922,14 @@ public class LocalDocumentType implements DocumentType {
    * Called from {@link TypeIndexBuilder}, which runs once per {@code CREATE INDEX}. The obvious hook,
    * {@link #addIndexInternal}, runs once per BUCKET, so it would multiply every line by the bucket count and fire
    * during schema reload as well.
+   * <p>
+   * <b>{@code DROP INDEX} deliberately does not call this, which leaves one case reported only on the next open.</b>
+   * Recollating an index is a drop followed by a create, so a hook on the drop would announce "there is no unique
+   * automatic index on the partition properties" in the middle of a sequence that is about to put one back - a line
+   * that is true for the instant it is printed, misleading by the time it is read, and printed ahead of the accurate
+   * one the create emits. That leaves a drop with no create after it saying nothing until the database is reopened,
+   * where the blocker is reported and then repeats on every open. Closing that properly means deferring the
+   * diagnosis to the end of the enclosing transaction rather than moving the hook, which is tracked as issue #5646.
    */
   void reportPartitionSuitabilityAfterSchemaChange() {
     if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
