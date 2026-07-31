@@ -16,18 +16,19 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.http.handler;
+package com.arcadedb.server.http.handler.openapi;
 
-import com.arcadedb.server.http.HttpServer;
+import io.swagger.v3.oas.models.OpenAPI;
 
 /**
- * Alias for GetOpenApiHandler to match test expectations.
- * This class extends GetOpenApiHandler to provide backward compatibility
- * with test expectations while maintaining consistent naming conventions.
+ * Contributes the path items and component schemas of one API domain to a specification under
+ * construction. Implementations are stateless and hold no server reference, so they can be
+ * composed and asserted on without a running server.
  */
-public class OpenApiHandler extends GetOpenApiHandler {
-
-  public OpenApiHandler(final HttpServer httpServer) {
-    super(httpServer);
-  }
+public interface OpenApiContributor {
+  /**
+   * Adds this domain's path items and component schemas to the given specification. Implementations
+   * must not replace the specification's existing paths, components, or security declarations.
+   */
+  void contribute(OpenAPI openAPI);
 }
