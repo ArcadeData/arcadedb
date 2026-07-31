@@ -175,8 +175,15 @@ jobs:
           # covered by deny-licenses below and by the `license-checker --onlyAllow` step of this workflow;
           # an allow-list cannot be used here anyway, since the action rejects allow-licenses and
           # deny-licenses together and the project's allowed set is wider than any short list.
-          deny-licenses: "GPL-2.0, GPL-3.0, AGPL-3.0"
-          config-file: ".github/dependency-review-config.yml"
+          #
+          # #5636: no config-file either. `.github/dependency-review-config.yml` was passed here but written in a
+          # schema of its own invention (`security:` / `licensing:` / `packages:` / `notifications:` ...), none of
+          # which this action reads - so every policy in it was inert while reading as though it were enforced, and
+          # its `licensing.deny` list contradicted CLAUDE.md by denying EPL-1.0/2.0 and LGPL-2.1+, which the project
+          # explicitly ALLOWS. The file is gone; the enforceable half of it lives on this line, widened to the rest
+          # of CLAUDE.md's forbidden set. GPL/AGPL/LGPL-2.0 only - SSPL and Commons Clause have no SPDX identifier
+          # for the action to match on, and are caught in review.
+          deny-licenses: "GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0, LGPL-2.0"
 
   codeql-analysis:
     name: "CodeQL Security Analysis"

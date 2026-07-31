@@ -594,6 +594,13 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
+  public RemoteBucket getBucketByNameIfExists(final String name) {
+    checkSchemaIsLoaded();
+    return buckets.get(name);
+  }
+
+  @Deprecated
+  @Override
   public Component getFileByIdIfExists(final int id) {
     throw new UnsupportedOperationException();
   }
@@ -608,6 +615,12 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public LocalBucket getBucketById(final int id) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Deprecated
+  @Override
+  public LocalBucket getBucketByIdIfExists(final int id) {
     throw new UnsupportedOperationException();
   }
 

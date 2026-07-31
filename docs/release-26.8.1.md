@@ -878,4 +878,71 @@ The underlying contract was loose in three places, and all three are tightened:
   `NumberFormatException`), an unknown `similarity` or `quantization` name, or an out-of-range `pqClusters` is a
   client mistake. They are reported as parsing errors now, the same treatment the `GEOSPATIAL` metadata gets.
 
+## BREAKING: the monotonic engine metrics are Prometheus counters now, and no longer rewind on a database close
+
+Every never-decreasing engine total - page-cache hits and misses, pages read and written, WAL bytes, MVCC
+conflicts, the three page-merge counters, transactions, queries, commands - was registered with Micrometer as a
+**gauge** ([#5636](https://github.com/ArcadeData/arcadedb/issues/5636)). In Prometheus that means no `_total`
+suffix and no type hint that `rate()` and `increase()` are the correct functions over the series, so a dashboard
+built on `arcadedb_engine_mvcc_conflicts` showed a line that only goes up and said nothing about whether contention
+was rising *now*. They are `FunctionCounter`s from this release, which renames the exported series:
+
+| before | after |
+| --- | --- |
+| `arcadedb_engine_page_cache_hits` | `arcadedb_engine_page_cache_hits_total` |
+| `arcadedb_engine_page_cache_misses` | `arcadedb_engine_page_cache_misses_total` |
+| `arcadedb_engine_pages_read` | `arcadedb_engine_pages_read_total` |
+| `arcadedb_engine_pages_written` | `arcadedb_engine_pages_written_total` |
+| `arcadedb_engine_wal_bytes_written` | `arcadedb_engine_wal_bytes_written_total` |
+| `arcadedb_engine_mvcc_conflicts` | `arcadedb_engine_mvcc_conflicts_total` |
+| `arcadedb_engine_page_merges_edge_append` | `arcadedb_engine_page_merges_edge_append_total` |
+| `arcadedb_engine_page_merges_slot` | `arcadedb_engine_page_merges_slot_total` |
+| `arcadedb_engine_page_merges_declined` | `arcadedb_engine_page_merges_declined_total` |
+| `arcadedb_engine_tx_write` | `arcadedb_engine_tx_write_total` |
+| `arcadedb_engine_tx_read` | `arcadedb_engine_tx_read_total` |
+| `arcadedb_engine_tx_rollbacks` | `arcadedb_engine_tx_rollbacks_total` |
+| `arcadedb_engine_queries` | `arcadedb_engine_queries_total` |
+| `arcadedb_engine_commands` | `arcadedb_engine_commands_total` |
+
+**Existing dashboards and alerts on those names need updating.** The three genuinely instantaneous readings -
+`arcadedb_engine_wal_files`, `arcadedb_engine_files_open` and `arcadedb_engine_databases` - go up and down, so they
+stay gauges and keep their names.
+
+The rename would have made things worse on its own, because six of those totals were not actually monotonic. The
+per-database counters (`tx.write`, `tx.read`, `tx.rollbacks`, `queries`, `commands`, `wal.bytes.written`) were
+summed over the **currently open** databases only, so closing or dropping one made the JVM-wide total go
+*backwards* - which Prometheus reads as a counter reset, fabricating a rate spike on the next scrape. `Profiler`
+now folds a departing database's counters into a retained baseline, so the totals only ever grow for the lifetime
+of the JVM. The same fix removes a smaller long-standing oddity: Studio's query and transaction counters visibly
+dropped when a database was dropped. `Profiler.unregisterDatabase()` is also synchronized now, having been mutating
+a plain `LinkedHashSet` that the synchronized `toJSON()` iterates.
+
+## Studio shows a profiler counter sitting at zero instead of hiding it
+
+The profiler-details table skipped any stat whose `count` or `space` was `0`, so an operator could not tell "this
+is zero" from "this is not reported" ([#5636](https://github.com/ArcadeData/arcadedb/issues/5636)). For a health
+signal whose good state *is* zero - page merges declined, transaction rollbacks - that is backwards. Zero renders
+as zero now; only a stat that reports no numeric member at all is still omitted.
+
+## The "not found" message for a missing bucket reaches the user again
+
+`Schema.getBucketById(int)` and `getBucketByName(String)` raise a `SchemaException` in exactly the cases a caller
+would test for `null`, so every `if (bucket == null)` written after one of them was dead code
+([#5636](https://github.com/ArcadeData/arcadedb/issues/5636)). #5608 fixed one such branch; it had siblings, and
+one of them cost a real diagnosis:
+
+- **Reading an `EXTERNAL` property whose paired bucket is not loaded.** The dead branch held guidance written for
+  exactly that situation - *"if the bucket was tiered to a secondary path, set `arcadedb.externalPropertyBucketPath`
+  to the same value used at creation time and reopen the database"*. A user who hit it got a bare `Bucket with id
+  'N' was not found` instead. The write path had no check at all and raised the same bare exception; both paths
+  now share one lookup and one message.
+- **`TRUNCATE BUCKET`** reported a missing bucket twice (`Bucket not found: Bucket with id '9999' was not found`).
+- **`SELECT FROM schema:types`** raised outright when any type mapped a primary bucket to an external bucket that
+  was not loaded, instead of skipping that one mapping as the surrounding code intended.
+- **`MATCH {bucket: unknown}`** lost its own message and paid for two schema lookups to do it.
+
+The API shape is what kept inviting the mistake, so the pattern is closed rather than the instances: `Schema` now
+exposes null-returning `getBucketByIdIfExists(int)` and `getBucketByNameIfExists(String)` - named after the
+`getFileByIdIfExists(int)` already on the interface - and the throwing forms document that they throw.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

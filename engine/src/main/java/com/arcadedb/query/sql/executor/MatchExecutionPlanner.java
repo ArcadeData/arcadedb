@@ -830,10 +830,14 @@ public class MatchExecutionPlanner {
         result.put(alias, upperBound);
       } else if (bucketName != null) {
         final Database db = context.getDatabase();
-        if (db.getSchema().getBucketByName(bucketName) == null) {
+        // #5636: one null-tolerant lookup instead of two throwing ones. getBucketByName(String) raises on an unknown
+        // name, so the guard was dead and the MATCH-specific message never reached the user.
+        // FQN: the parser's Bucket is already imported in this file under the same simple name.
+        final com.arcadedb.engine.Bucket namedBucket = db.getSchema().getBucketByNameIfExists(bucketName);
+        if (namedBucket == null) {
           throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
         }
-        final int bucketId = db.getSchema().getBucketByName(bucketName).getFileId();
+        final int bucketId = namedBucket.getFileId();
         final DocumentType oClass = db.getSchema().getTypeByBucketId(bucketId);
         if (oClass != null) {
           final long upperBound;

@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.sun.management.OperatingSystemMXBean;
@@ -31,11 +32,59 @@ import javax.management.ObjectName;
 import java.io.*;
 import java.lang.management.*;
 import java.util.*;
+import java.util.logging.*;
 
 public class Profiler {
   public static final Profiler INSTANCE = new Profiler();
 
+  /**
+   * Keys of the per-database counters that only ever grow while a database is open, in the order of the accumulator
+   * array below. Read from {@link DatabaseInternal#getStats()}.
+   */
+  private static final String[] DB_STAT_KEYS = { "writeTx", "readTx", "txRollbacks", "createRecord", "readRecord",
+      "updateRecord", "deleteRecord", "queries", "commands", "scanType", "scanBucket", "iterateType", "iterateBucket",
+      "countType", "countBucket", "indexCompactions" };
+
+  // Indexes into the per-database accumulator array. Entries [0, MONOTONIC_STATS) are the ones carried across a
+  // database close (see retainedStats); the rest are instantaneous and are re-read from the open databases only.
+  private static final int STAT_WRITE_TX          = 0;
+  private static final int STAT_READ_TX           = 1;
+  private static final int STAT_TX_ROLLBACKS      = 2;
+  private static final int STAT_CREATE_RECORD     = 3;
+  private static final int STAT_READ_RECORD       = 4;
+  private static final int STAT_UPDATE_RECORD     = 5;
+  private static final int STAT_DELETE_RECORD     = 6;
+  private static final int STAT_QUERIES           = 7;
+  private static final int STAT_COMMANDS          = 8;
+  private static final int STAT_SCAN_TYPE         = 9;
+  private static final int STAT_SCAN_BUCKET       = 10;
+  private static final int STAT_ITERATE_TYPE      = 11;
+  private static final int STAT_ITERATE_BUCKET    = 12;
+  private static final int STAT_COUNT_TYPE        = 13;
+  private static final int STAT_COUNT_BUCKET      = 14;
+  private static final int STAT_INDEX_COMPACTIONS = 15;
+  private static final int STAT_WAL_PAGES_WRITTEN = 16;
+  private static final int STAT_WAL_BYTES_WRITTEN = 17;
+  private static final int MONOTONIC_STATS        = 18;
+  private static final int STAT_WAL_TOTAL_FILES   = 18;
+  private static final int STAT_OPEN_FILES        = 19;
+  private static final int STAT_MAX_OPEN_FILES    = 20;
+  private static final int STAT_ASYNC_QUEUE       = 21;
+  private static final int STAT_ASYNC_PARALLEL    = 22;
+  private static final int STATS_COUNT            = 23;
+
   private final Set<DatabaseInternal> databases = new LinkedHashSet<>();
+
+  /**
+   * The monotonic contribution of every database that has been closed or dropped since JVM start.
+   * <p>
+   * #5636: summing only the currently registered databases made the JVM-wide totals go BACKWARDS on a close, and a
+   * Prometheus counter that decreases is read as a counter <i>reset</i> - so every database close fabricated a rate()
+   * spike on the next scrape, and Studio showed the query/transaction counters visibly drop. Folding the departing
+   * database's counters in here keeps each exported total monotonic for the JVM's lifetime, which is what
+   * {@code arcadedb.engine.*} being exported as Micrometer counters requires.
+   */
+  private final long[] retainedStats = new long[MONOTONIC_STATS];
 
   protected Profiler() {
   }
@@ -44,70 +93,98 @@ public class Profiler {
     databases.add(database);
   }
 
-  public void unregisterDatabase(final DatabaseInternal database) {
-    databases.remove(database);
+  /**
+   * Synchronized like the rest of the class: {@code databases} is a plain {@link LinkedHashSet}, so removing from it
+   * while {@link #toJSON()} iterates it was a data race.
+   * <p>
+   * This does mean a close can now wait on an in-flight snapshot. That exposure is not new in kind - the paired
+   * {@link #registerDatabase} on the open path has always had it - and every stat source read under the monitor is
+   * lock-free, so no database lock can be on the other side of the wait.
+   */
+  public synchronized void unregisterDatabase(final DatabaseInternal database) {
+    if (!databases.remove(database))
+      // ALREADY UNREGISTERED: DO NOT FOLD ITS COUNTERS IN TWICE
+      return;
+
+    try {
+      final long[] departing = new long[STATS_COUNT];
+      accumulateMonotonic(departing, database);
+      for (int i = 0; i < MONOTONIC_STATS; i++)
+        retainedStats[i] += departing[i];
+    } catch (final Exception e) {
+      // THE CALLER IS MID-CLOSE: A STAT SOURCE ALREADY TORN DOWN MUST NOT TAKE THE CLOSE PATH DOWN WITH IT. THE ONLY
+      // COST IS THAT THIS DATABASE'S CONTRIBUTION IS LOST, WHICH IS THE PRE-#5636 BEHAVIOUR FOR EVERY DATABASE.
+      LogManager.instance()
+          .log(this, Level.FINE, "Could not retain the profiler counters of a closing database", e);
+    }
+  }
+
+  /**
+   * Sums the per-database counters of every open database on top of the retained baseline of the closed ones.
+   * Shared by {@link #toJSON()} and {@link #dumpMetrics(PrintStream)} so the two cannot drift apart.
+   */
+  private long[] collectDatabaseStats() {
+    final long[] acc = new long[STATS_COUNT];
+    System.arraycopy(retainedStats, 0, acc, 0, MONOTONIC_STATS);
+
+    for (final DatabaseInternal db : databases) {
+      accumulateMonotonic(acc, db);
+
+      acc[STAT_WAL_TOTAL_FILES] += (Long) db.getTransactionManager().getStats().get("logFiles");
+
+      final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
+      acc[STAT_OPEN_FILES] += fStats.totalOpenFiles;
+      acc[STAT_MAX_OPEN_FILES] += fStats.maxOpenFiles;
+
+      acc[STAT_ASYNC_QUEUE] += ((DatabaseAsyncExecutorImpl) db.async()).getStats().queueSize;
+      acc[STAT_ASYNC_PARALLEL] = db.async().getParallelLevel();
+    }
+    return acc;
+  }
+
+  /**
+   * Adds one database's monotonic counters into {@code acc}. Deliberately touches only the two stat sources that stay
+   * readable after a close ({@link DatabaseInternal#getStats()} reads a plain counter holder, and
+   * {@code TransactionManager.getStats()} guards a retired WAL pool), so {@link #unregisterDatabase} can reuse it.
+   */
+  private void accumulateMonotonic(final long[] acc, final DatabaseInternal db) {
+    final Map<String, Object> dbStats = db.getStats();
+    for (int i = 0; i < DB_STAT_KEYS.length; i++)
+      acc[i] += ((Number) dbStats.get(DB_STAT_KEYS[i])).longValue();
+
+    final Map<String, Object> walStats = db.getTransactionManager().getStats();
+    acc[STAT_WAL_PAGES_WRITTEN] += (Long) walStats.get("pagesWritten");
+    acc[STAT_WAL_BYTES_WRITTEN] += (Long) walStats.get("bytesWritten");
   }
 
   public synchronized JSONObject toJSON() {
     final JSONObject json = new JSONObject();
 
-    long totalOpenFiles = 0;
-    long maxOpenFiles = 0;
-    long walPagesWritten = 0;
-    long walBytesWritten = 0;
-    long walTotalFiles = 0;
-    long asyncQueueLength = 0;
-    int asyncParallelLevel = 0;
+    final long[] dbStats = collectDatabaseStats();
+    final long totalOpenFiles = dbStats[STAT_OPEN_FILES];
+    final long maxOpenFiles = dbStats[STAT_MAX_OPEN_FILES];
+    final long walPagesWritten = dbStats[STAT_WAL_PAGES_WRITTEN];
+    final long walBytesWritten = dbStats[STAT_WAL_BYTES_WRITTEN];
+    final long walTotalFiles = dbStats[STAT_WAL_TOTAL_FILES];
+    final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
+    final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
 
-    long writeTx = 0;
-    long readTx = 0;
-    long txRollbacks = 0;
-    long createRecord = 0;
-    long readRecord = 0;
-    long updateRecord = 0;
-    long deleteRecord = 0;
-    long queries = 0;
-    long commands = 0;
-    long scanType = 0;
-    long scanBucket = 0;
-    long iterateType = 0;
-    long iterateBucket = 0;
-    long countType = 0;
-    long countBucket = 0;
-    long indexCompactions = 0;
-
-    for (final DatabaseInternal db : databases) {
-      final Map<String, Object> dbStats = db.getStats();
-      writeTx += (long) dbStats.get("writeTx");
-      readTx += (long) dbStats.get("readTx");
-      txRollbacks += (long) dbStats.get("txRollbacks");
-      createRecord += (long) dbStats.get("createRecord");
-      readRecord += (long) dbStats.get("readRecord");
-      updateRecord += (long) dbStats.get("updateRecord");
-      deleteRecord += (long) dbStats.get("deleteRecord");
-      queries += (long) dbStats.get("queries");
-      commands += (long) dbStats.get("commands");
-      scanType += (long) dbStats.get("scanType");
-      scanBucket += (long) dbStats.get("scanBucket");
-      iterateType += (long) dbStats.get("iterateType");
-      iterateBucket += (long) dbStats.get("iterateBucket");
-      countType += (long) dbStats.get("countType");
-      countBucket += (long) dbStats.get("countBucket");
-      indexCompactions += (long) dbStats.get("indexCompactions");
-
-      final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
-      totalOpenFiles += fStats.totalOpenFiles;
-      maxOpenFiles += fStats.maxOpenFiles;
-
-      final DatabaseAsyncExecutorImpl.DBAsyncStats aStats = ((DatabaseAsyncExecutorImpl) db.async()).getStats();
-      asyncQueueLength += aStats.queueSize;
-      asyncParallelLevel = db.async().getParallelLevel();
-
-      final Map<String, Object> walStats = db.getTransactionManager().getStats();
-      walPagesWritten += (Long) walStats.get("pagesWritten");
-      walBytesWritten += (Long) walStats.get("bytesWritten");
-      walTotalFiles += (Long) walStats.get("logFiles");
-    }
+    final long writeTx = dbStats[STAT_WRITE_TX];
+    final long readTx = dbStats[STAT_READ_TX];
+    final long txRollbacks = dbStats[STAT_TX_ROLLBACKS];
+    final long createRecord = dbStats[STAT_CREATE_RECORD];
+    final long readRecord = dbStats[STAT_READ_RECORD];
+    final long updateRecord = dbStats[STAT_UPDATE_RECORD];
+    final long deleteRecord = dbStats[STAT_DELETE_RECORD];
+    final long queries = dbStats[STAT_QUERIES];
+    final long commands = dbStats[STAT_COMMANDS];
+    final long scanType = dbStats[STAT_SCAN_TYPE];
+    final long scanBucket = dbStats[STAT_SCAN_BUCKET];
+    final long iterateType = dbStats[STAT_ITERATE_TYPE];
+    final long iterateBucket = dbStats[STAT_ITERATE_BUCKET];
+    final long countType = dbStats[STAT_COUNT_TYPE];
+    final long countBucket = dbStats[STAT_COUNT_BUCKET];
+    final long indexCompactions = dbStats[STAT_INDEX_COMPACTIONS];
 
     // PageManager is a JVM-wide singleton; counters are global, not per-DB.
     // Reading them once outside the loop avoids multiplying by databases.size().
@@ -240,64 +317,32 @@ public class Profiler {
     final long freeSpaceInMB = new File(".").getFreeSpace();
     final long totalSpaceInMB = new File(".").getTotalSpace();
 
-    long asyncQueueLength = 0;
-    int asyncParallelLevel = 0;
-    long totalOpenFiles = 0;
-    long maxOpenFiles = 0;
-    long walPagesWritten = 0;
-    long walBytesWritten = 0;
-    long walTotalFiles = 0;
-
-    long writeTx = 0;
-    long readTx = 0;
-    long txRollbacks = 0;
-    long createRecord = 0;
-    long readRecord = 0;
-    long updateRecord = 0;
-    long deleteRecord = 0;
-    long queries = 0;
-    long commands = 0;
-    long scanType = 0;
-    long scanBucket = 0;
-    long iterateType = 0;
-    long iterateBucket = 0;
-    long countType = 0;
-    long countBucket = 0;
-    long indexCompactions = 0;
-
     try {
-      for (final DatabaseInternal db : databases) {
-        final Map<String, Object> dbStats = db.getStats();
-        writeTx += (long) dbStats.get("writeTx");
-      readTx += (long) dbStats.get("readTx");
-        txRollbacks += (long) dbStats.get("txRollbacks");
-        createRecord += (long) dbStats.get("createRecord");
-        readRecord += (long) dbStats.get("readRecord");
-        updateRecord += (long) dbStats.get("updateRecord");
-        deleteRecord += (long) dbStats.get("deleteRecord");
-        queries += (long) dbStats.get("queries");
-        commands += (long) dbStats.get("commands");
-        scanType += (long) dbStats.get("scanType");
-        scanBucket += (long) dbStats.get("scanBucket");
-        iterateType += (long) dbStats.get("iterateType");
-        iterateBucket += (long) dbStats.get("iterateBucket");
-        countType += (long) dbStats.get("countType");
-        countBucket += (long) dbStats.get("countBucket");
-        indexCompactions += (long) dbStats.get("indexCompactions");
+      final long[] dbStats = collectDatabaseStats();
+      final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
+      final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
+      final long totalOpenFiles = dbStats[STAT_OPEN_FILES];
+      final long maxOpenFiles = dbStats[STAT_MAX_OPEN_FILES];
+      final long walPagesWritten = dbStats[STAT_WAL_PAGES_WRITTEN];
+      final long walBytesWritten = dbStats[STAT_WAL_BYTES_WRITTEN];
+      final long walTotalFiles = dbStats[STAT_WAL_TOTAL_FILES];
 
-        final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
-        totalOpenFiles += fStats.totalOpenFiles;
-        maxOpenFiles += fStats.maxOpenFiles;
-
-        final DatabaseAsyncExecutorImpl.DBAsyncStats aStats = ((DatabaseAsyncExecutorImpl) db.async()).getStats();
-        asyncQueueLength += aStats.queueSize;
-        asyncParallelLevel = db.async().getParallelLevel();
-
-        final Map<String, Object> walStats = db.getTransactionManager().getStats();
-        walPagesWritten += (Long) walStats.get("pagesWritten");
-        walBytesWritten += (Long) walStats.get("bytesWritten");
-        walTotalFiles += (Long) walStats.get("logFiles");
-      }
+      final long writeTx = dbStats[STAT_WRITE_TX];
+      final long readTx = dbStats[STAT_READ_TX];
+      final long txRollbacks = dbStats[STAT_TX_ROLLBACKS];
+      final long createRecord = dbStats[STAT_CREATE_RECORD];
+      final long readRecord = dbStats[STAT_READ_RECORD];
+      final long updateRecord = dbStats[STAT_UPDATE_RECORD];
+      final long deleteRecord = dbStats[STAT_DELETE_RECORD];
+      final long queries = dbStats[STAT_QUERIES];
+      final long commands = dbStats[STAT_COMMANDS];
+      final long scanType = dbStats[STAT_SCAN_TYPE];
+      final long scanBucket = dbStats[STAT_SCAN_BUCKET];
+      final long iterateType = dbStats[STAT_ITERATE_TYPE];
+      final long iterateBucket = dbStats[STAT_ITERATE_BUCKET];
+      final long countType = dbStats[STAT_COUNT_TYPE];
+      final long countBucket = dbStats[STAT_COUNT_BUCKET];
+      final long indexCompactions = dbStats[STAT_INDEX_COMPACTIONS];
 
       // PageManager is a JVM-wide singleton; read once, not per-DB.
       final PageManager.PPageManagerStats pStats = PageManager.INSTANCE.getStats();

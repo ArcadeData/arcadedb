@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies the {@link EngineMetricsBinder} gauges are bound into the global registry by the running
+ * Verifies the {@link EngineMetricsBinder} meters are bound into the global registry by the running
  * server when metrics are enabled, alongside the executor-pool gauges.
  */
 class EngineMetricsExposedIT extends BaseGraphServerTest {
@@ -36,8 +36,9 @@ class EngineMetricsExposedIT extends BaseGraphServerTest {
   }
 
   @Test
-  void engineGaugesRegisteredInGlobalRegistry() {
-    assertThat(Metrics.globalRegistry.find("arcadedb.engine.page.cache.hits").gauge()).isNotNull();
+  void engineMetersRegisteredInGlobalRegistry() {
+    // #5636: the monotonic total is a FunctionCounter, the instantaneous reading stays a Gauge.
+    assertThat(Metrics.globalRegistry.find("arcadedb.engine.page.cache.hits").functionCounter()).isNotNull();
     assertThat(Metrics.globalRegistry.find("arcadedb.engine.files.open").gauge()).isNotNull();
   }
 }

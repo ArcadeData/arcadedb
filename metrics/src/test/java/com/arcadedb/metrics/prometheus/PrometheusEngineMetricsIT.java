@@ -31,8 +31,8 @@ import java.net.http.HttpResponse;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Retro-compatibility guard: {@code /prometheus} still serves the pre-existing series and now also
- * renders the additive {@link com.arcadedb.server.monitor.EngineMetricsBinder} engine gauges.
+ * Retro-compatibility guard: {@code /prometheus} still serves the pre-existing series and also renders the
+ * {@link com.arcadedb.server.monitor.EngineMetricsBinder} engine meters.
  */
 class PrometheusEngineMetricsIT extends BaseGraphServerTest {
 
@@ -57,7 +57,7 @@ class PrometheusEngineMetricsIT extends BaseGraphServerTest {
   }
 
   @Test
-  void prometheusStillServesAndExposesEngineGauges() throws Exception {
+  void prometheusStillServesAndExposesEngineMeters() throws Exception {
     // Exercise the engine so non-zero engine counters exist.
     getServerDatabase(0, getDatabaseName()).query("sql", "select 1 as one");
 
@@ -73,8 +73,12 @@ class PrometheusEngineMetricsIT extends BaseGraphServerTest {
     assertThat(response.statusCode()).isEqualTo(200);
     // Pre-existing series still present (retro-compat):
     assertThat(response.body()).contains("system_cpu_usage");
-    // New engine gauge present:
-    assertThat(response.body()).contains("arcadedb_engine_page_cache_hits");
+    // #5636: the monotonic engine totals render as Prometheus COUNTERS - _total suffix plus the type hint that
+    // tells a dashboard author rate()/increase() are the right functions over the series. As gauges they had
+    // neither. The instantaneous readings keep the untyped gauge form.
+    assertThat(response.body()).contains("# TYPE arcadedb_engine_page_cache_hits_total counter");
+    assertThat(response.body()).contains("# TYPE arcadedb_engine_queries_total counter");
+    assertThat(response.body()).contains("# TYPE arcadedb_engine_databases gauge");
     // New RED timer series present (HTTP request timer is always-on):
     assertThat(response.body()).contains("arcadedb_http_requests");
   }
