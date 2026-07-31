@@ -65,6 +65,13 @@ public final class EngineMetricsBinder implements MeterBinder {
     gauge(registry, "arcadedb.engine.wal.bytes.written", "WAL bytes written", "walBytesWritten");
     gauge(registry, "arcadedb.engine.wal.files", "WAL files", "walTotalFiles");
     gauge(registry, "arcadedb.engine.mvcc.conflicts", "Concurrent modification exceptions", "concurrentModificationExceptions");
+    // #5608: the commit-time page merges are what keeps the conflict counter above from exploding under contention
+    // (super-node edge appends, concurrent writes to disjoint slots of one page). A collapse of the merge rate, or a
+    // rise in the declines, is a throughput regression no correctness signal catches - so it has to be alertable.
+    gauge(registry, "arcadedb.engine.page.merges.edge.append", "Commit-time edge-append page merges", "edgeAppendMerges");
+    gauge(registry, "arcadedb.engine.page.merges.slot", "Commit-time disjoint-slot page merges", "txPageSlotMerges");
+    gauge(registry, "arcadedb.engine.page.merges.declined", "Page merges declined for lack of declared coverage",
+        "mergesDeclinedByCoverage");
     gauge(registry, "arcadedb.engine.files.open", "Open file descriptors", "totalOpenFiles");
     gauge(registry, "arcadedb.engine.tx.write", "Write transactions", "writeTx");
     gauge(registry, "arcadedb.engine.tx.read", "Read transactions", "readTx");

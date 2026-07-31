@@ -43,4 +43,25 @@ class ProfilerTest {
     assertThat(json.has("updateRecord")).isTrue();
     assertThat(json.has("totalDatabases")).isTrue();
   }
+
+  /**
+   * #5608: the three commit-time page-merge counters must be reachable by an operator, not only from a debugger or a
+   * unit test holding a {@code PageManager}. {@code mergesDeclinedByCoverage} in particular is documented (#5596) as
+   * THE signal that a writer is dirtying a mergeable page without declaring it, and the advice on it is to watch it
+   * next to the two merge counters - which is impossible while none of them leaves the process.
+   */
+  @Test
+  void pageMergeCountersAreExposed() {
+    final JSONObject json = Profiler.INSTANCE.toJSON();
+    assertThat(json.has("edgeAppendMerges")).isTrue();
+    assertThat(json.has("txPageSlotMerges")).isTrue();
+    assertThat(json.has("mergesDeclinedByCoverage")).isTrue();
+    // Same nesting as every other counter, which is what the Micrometer binder and Studio read.
+    assertThat(json.getJSONObject("mergesDeclinedByCoverage").has("count")).isTrue();
+
+    final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
+    final String dump = out.toString();
+    assertThat(dump).contains("edgeAppendMerges=").contains("txPageSlotMerges=").contains("mergesDeclinedByCoverage=");
+  }
 }
