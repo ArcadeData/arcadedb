@@ -618,6 +618,12 @@ public class RemoteSchema implements Schema {
     throw new UnsupportedOperationException();
   }
 
+  /**
+   * Throws rather than returning {@code null}, matching {@link #getBucketById(int)} and
+   * {@link #getFileByIdIfExists(int)} on this class: a remote schema carries buckets by name only, so it cannot
+   * resolve an id at all. Returning {@code null} would claim "no such bucket", which is a different and wrong
+   * answer to "I cannot tell".
+   */
   @Deprecated
   @Override
   public LocalBucket getBucketByIdIfExists(final int id) {

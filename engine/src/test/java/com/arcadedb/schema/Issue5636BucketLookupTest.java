@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.serializer.BinarySerializerTestHelper;
@@ -150,6 +151,60 @@ class Issue5636BucketLookupTest extends TestHelper {
 
     assertThatThrownBy(() -> database.query("sql", "match {bucket: NoSuchBucket, as: v} return v").stream().toList())
         .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("NoSuchBucket");
+        // "not defined" and not just the bucket name: the generic SchemaException this replaces also quotes the
+        // name, so asserting on the name alone would not notice a regression back to it.
+        .hasMessageContaining("Bucket 'NoSuchBucket' not defined");
+  }
+
+  /**
+   * The fifth instance of the pattern, and the one easiest to miss: {@code handleInsertSelect} has no
+   * {@code else bucket = null} arm - unlike {@code handleInsertInto} in the same class, whose guard IS reachable -
+   * so both lookups raised before its own message could run.
+   */
+  @Test
+  void insertIntoAnUnknownBucketFromASelectReportsTheTargetMessage() {
+    database.getSchema().createDocumentType("Doc");
+
+    assertThatThrownBy(
+        () -> database.command("sql", "insert into bucket:NoSuchBucket from select from Doc").close())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Target bucket not found");
+
+    assertThatThrownBy(
+        () -> database.command("sql", "insert into bucket:" + UNLOADED_BUCKET_ID + " from select from Doc").close())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Target bucket not found");
+  }
+
+  /**
+   * The sibling guard in {@code handleCreateRecord} looked reachable - it has an {@code else bucket = null} arm - but
+   * that arm only covers "no bucket named at all"; an unknown name or id still raised out of the throwing lookup
+   * first. So the branch was dead for exactly the input its message describes, and once made live the message itself
+   * had to change: "Target not specified" is untrue when the target was specified and simply does not exist.
+   */
+  @Test
+  void insertIntoAnUnknownBucketNamesTheBucketItCouldNotFind() {
+    database.getSchema().createDocumentType("Doc");
+
+    assertThatThrownBy(() -> database.command("sql", "insert into bucket:NoSuchBucket set k = 1").close())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Target bucket 'NoSuchBucket' not found");
+
+    assertThatThrownBy(() -> database.command("sql", "insert into bucket:" + UNLOADED_BUCKET_ID + " set k = 1").close())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Target bucket with id " + UNLOADED_BUCKET_ID + " not found");
+  }
+
+  /**
+   * A real bucket must still insert: the null-tolerant lookups must not have broken the happy path.
+   */
+  @Test
+  void insertIntoAKnownBucketStillWorks() {
+    database.getSchema().createDocumentType("Doc", 1);
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+
+    database.transaction(() -> database.command("sql", "insert into bucket:" + bucketName + " set k = 1").close());
+
+    assertThat(database.countType("Doc", false)).isEqualTo(1);
   }
 }

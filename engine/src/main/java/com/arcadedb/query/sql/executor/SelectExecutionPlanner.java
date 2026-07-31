@@ -2140,7 +2140,7 @@ public class SelectExecutionPlanner {
     if (!result.isEmpty()) {
       final IntHashSet bucketFileIds = new IntHashSet(result.size());
       for (final String bucketName : result) {
-        final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByName(bucketName);
+        final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByNameIfExists(bucketName);
         if (bucket != null)
           bucketFileIds.add(bucket.getFileId());
       }
@@ -3841,7 +3841,7 @@ public class SelectExecutionPlanner {
         name = db.getSchema().getBucketById(bucketId).getName();
 
       if (bucketId == null && name != null) {
-        final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(name);
+        final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByNameIfExists(name);
         if (bucket != null)
           bucketId = bucket.getFileId();
       }
@@ -3895,7 +3895,7 @@ public class SelectExecutionPlanner {
       if (bucketId == null) {
         final String resolvedName = resolveBucketName(parserBucket, context);
         if (resolvedName != null) {
-          final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(resolvedName);
+          final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByNameIfExists(resolvedName);
           if (bucket != null)
             bucketId = bucket.getFileId();
         }
@@ -3919,7 +3919,7 @@ public class SelectExecutionPlanner {
         if (bucketId == null) {
           final String resolvedName = resolveBucketName(parserBucket, context);
           if (resolvedName != null) {
-            final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(resolvedName);
+            final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByNameIfExists(resolvedName);
             if (bucket != null)
               bucketId = bucket.getFileId();
           }

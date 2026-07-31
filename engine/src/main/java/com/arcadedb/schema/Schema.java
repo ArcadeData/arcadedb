@@ -79,6 +79,9 @@ public interface Schema {
   /**
    * Returns the bucket with the given id, or {@code null} if the id is out of range or does not identify a bucket. The
    * null-tolerant counterpart of {@link #getBucketById(int)}.
+   * <p>
+   * An implementation that cannot resolve buckets by id at all may throw {@link UnsupportedOperationException}
+   * instead - as the remote schema does, where {@code null} would claim "no such bucket" rather than "I cannot tell".
    */
   Bucket getBucketByIdIfExists(int id);
 
