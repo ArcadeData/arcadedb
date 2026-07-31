@@ -201,7 +201,12 @@ public class MCPDispatcher {
     if (!isValidRequestId(id))
       return error(null, -32600, "Invalid Request: 'id' must be a string or an integer", 200);
 
-    final String method = request.getString("method", "");
+    final String method;
+    try {
+      method = stringMember(request, "method", "");
+    } catch (final IllegalArgumentException e) {
+      return error(id, -32600, "Invalid Request: " + e.getMessage(), 200);
+    }
     final JSONObject params = request.getJSONObject("params", new JSONObject());
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] %s (user=%s)", transport, method, user.getName());
@@ -258,7 +263,12 @@ public class MCPDispatcher {
   }
 
   private MCPResponse resourcesRead(final Object id, final JSONObject params, final ServerSecurityUser user) {
-    final String uri = params.getString("uri", "");
+    final String uri;
+    try {
+      uri = stringMember(params, "uri", "");
+    } catch (final IllegalArgumentException e) {
+      return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
+    }
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read '%s' (user=%s)", transport, uri, user.getName());
 
@@ -290,7 +300,7 @@ public class MCPDispatcher {
     // only for an absent or null member, so a member of the wrong JSON shape raises instead. That is a malformed
     // request rather than a server fault, and answering it needs the -32602 mapping below.
     try {
-      final String name = params.getString("name", "");
+      final String name = stringMember(params, "name", "");
       final JSONObject args = params.getJSONObject("arguments", new JSONObject());
 
       LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get '%s' (user=%s)", transport, name, user.getName());
@@ -309,7 +319,14 @@ public class MCPDispatcher {
 
   private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
       final EffectiveToolProfile profile) {
-    final String toolName = params.getString("name", "");
+    final String toolName;
+    try {
+      toolName = stringMember(params, "name", "");
+    } catch (final IllegalArgumentException e) {
+      // A malformed member is a protocol-level fault, so it answers with a JSON-RPC error rather than the isError
+      // tool envelope the try below produces: no tool was named, so no tool can have failed.
+      return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
+    }
     final JSONObject args = params.getJSONObject("arguments", new JSONObject());
 
     LogManager.instance()
@@ -506,6 +523,28 @@ public class MCPDispatcher {
     result.put("content", content);
     result.put("isError", true);
     return result(id, result);
+  }
+
+  /**
+   * Reads a member that the protocol types as a string, deciding on the value's own JSON type rather than on what
+   * a converting accessor makes of it. {@link JSONObject#getString(String, String)} delegates to Gson, which
+   * unwraps a one-element array to that element and stringifies a bare number or boolean, raising only for any
+   * other shape. Array arity would then decide whether a request is executed or refused. {@link JSONObject#opt}
+   * maps each JSON type to its Java counterpart without converting between them, so comparing the result against
+   * String admits the JSON strings and nothing else.
+   *
+   * @return the member's value, or defaultValue when the member is absent or JSON null.
+   *
+   * @throws IllegalArgumentException when the member is present with any other JSON type. Callers translate this
+   *                                  into the JSON-RPC error that fits where the member sits.
+   */
+  private static String stringMember(final JSONObject json, final String name, final String defaultValue) {
+    final Object value = json.opt(name);
+    if (value == null)
+      return defaultValue;
+    if (value instanceof String string)
+      return string;
+    throw new IllegalArgumentException("'" + name + "' must be a string");
   }
 
   /**
