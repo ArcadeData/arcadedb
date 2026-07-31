@@ -23,6 +23,8 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorEncoding;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketLSMVectorIndexBuilder;
 import com.arcadedb.schema.FullTextIndexMetadata;
@@ -283,6 +285,58 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
         .withMetadata(plain))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("requires LSMSparseVectorIndexMetadata");
+  }
+
+  /**
+   * Every fluent setter of the bucket-level builder, each with a distinct non-default value, asserted against the field
+   * it is supposed to write. The setters are one-line delegations now that the builder keeps no fields of its own, and a
+   * delegation that writes the neighbouring field - {@code withBeamWidth} landing on {@code maxConnections}, say - would
+   * be invisible: the index would simply run with a setting nobody asked for, which is the failure this issue is about.
+   */
+  @Test
+  void everyBucketBuilderSetterWritesItsOwnField() {
+    createVectorType("Doc");
+
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+    final BucketLSMVectorIndexBuilder builder = (BucketLSMVectorIndexBuilder) database.getSchema()
+        .buildBucketIndex("Doc", bucketName, new String[] { "embedding" })
+        .withType(Schema.INDEX_TYPE.LSM_VECTOR);
+
+    builder.withDimensions(8)
+        .withSimilarity("DOT_PRODUCT")
+        .withMaxConnections(24)
+        .withBeamWidth(150)
+        .withEfSearch(250)
+        .withNeighborOverflowFactor(1.4f)
+        .withAlphaDiversityRelaxation(1.3f)
+        .withIdProperty("docId")
+        .withQuantization("PRODUCT")
+        .withEncoding(VectorEncoding.FLOAT32)
+        .withPQSubspaces(4)
+        .withPQClusters(128)
+        .withPQCenterGlobally(false)
+        .withPQTrainingLimit(4096);
+
+    final LSMVectorIndexMetadata metadata = builder.getVectorMetadata();
+    assertThat(metadata.dimensions).isEqualTo(8);
+    assertThat(metadata.similarityFunction.name()).isEqualTo("DOT_PRODUCT");
+    assertThat(metadata.maxConnections).isEqualTo(24);
+    assertThat(metadata.beamWidth).isEqualTo(150);
+    assertThat(metadata.efSearch).isEqualTo(250);
+    assertThat(metadata.neighborOverflowFactor).isEqualTo(1.4f);
+    assertThat(metadata.alphaDiversityRelaxation).isEqualTo(1.3f);
+    assertThat(metadata.idPropertyName).isEqualTo("docId");
+    assertThat(metadata.quantizationType.name()).isEqualTo("PRODUCT");
+    assertThat(metadata.encoding).isEqualTo(VectorEncoding.FLOAT32);
+    assertThat(metadata.pqSubspaces).isEqualTo(4);
+    assertThat(metadata.pqClusters).isEqualTo(128);
+    assertThat(metadata.pqCenterGlobally).isFalse();
+    assertThat(metadata.pqTrainingLimit).isEqualTo(4096);
+
+    // The string and enum overloads of the two paired setters must agree.
+    assertThat(builder.withQuantization(VectorQuantizationType.INT8).getVectorMetadata().quantizationType)
+        .isEqualTo(VectorQuantizationType.INT8);
+    assertThat(builder.withEncoding("FLOAT32").getVectorMetadata().encoding).isEqualTo(VectorEncoding.FLOAT32);
   }
 
   @Test

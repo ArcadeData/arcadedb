@@ -151,7 +151,13 @@ public class IndexMetadata {
    * why the raw JSON getters are not enough.
    */
   protected static float metadataFloat(final JSONObject json, final String key) {
-    return metadataNumber(json, key, "a number").floatValue();
+    final float value = metadataNumber(json, key, "a number").floatValue();
+    // A magnitude no float can hold arrives as an infinity, and an infinite tuning factor is not a value the caller can
+    // have meant. Report it for the same reason metadataInt reports an overflow instead of truncating.
+    if (!Float.isFinite(value))
+      throw new IllegalArgumentException(
+          "Index metadata '" + key + "' must be a finite number, got: " + json.get(key));
+    return value;
   }
 
   /**

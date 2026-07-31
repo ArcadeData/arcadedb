@@ -1026,6 +1026,16 @@ projection names, while the body's copy passed the incoming scope through.
 
 ## An index `METADATA` key is now either applied or reported, and a reopened vector index keeps its metric
 
+> **Upgrading? Two things change behaviour.** Both are detailed below, in full, but in short:
+>
+> 1. **A `CREATE INDEX ... METADATA` clause carrying an unknown or malformed key is now refused** (HTTP 400 from SQL,
+>    `IllegalArgumentException` from the Java builders' `withMetadata(JSONObject)`). Such a key never did anything, but a
+>    statement that used to succeed can now fail. Existing indexes are untouched and reading a persisted definition
+>    stays tolerant.
+> 2. **An existing `EUCLIDEAN` or `DOT_PRODUCT` vector index changes its search results on the first reopen** - it has
+>    been scoring with COSINE since the restart after it was created, and now scores with the metric it was created
+>    with. Nothing to re-create or rebuild. COSINE indexes are unaffected.
+
 `CREATE INDEX ... METADATA {...}` read the keys it knew with `if (json.has(...))` and dropped the rest, on every
 index type except `GEOSPATIAL` ([#5639](https://github.com/ArcadeData/arcadedb/issues/5639)). A typo was therefore
 indistinguishable from a correct clause:
@@ -1102,5 +1112,11 @@ The policy is now written in the schema the action reads (`fail-on-severity`, `f
 `deny-packages`), aligned with the allowed/forbidden lists in `CLAUDE.md`, and the workflow step no longer passes
 inline inputs that would override the file. The per-package minimum versions moved to the workflow's existing
 `Validate Package.json` step, which is the only place they can actually be enforced.
+
+Deliberately, **nothing that currently passes CI starts failing**: `fail-on-scopes` stays at `runtime`, the action's
+default and therefore what this job has effectively been enforcing all along. The old file asked for `development` too,
+and expressing that would have been faithful to its intent, but it would have tightened a shared gate as a side effect
+of repairing a config that enforced nothing - a decision worth taking on its own merits. Development dependencies are
+still covered by the `npm audit --audit-level=moderate` step of the same workflow.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

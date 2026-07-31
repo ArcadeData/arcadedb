@@ -21,10 +21,17 @@
 # Fail the job on a vulnerability of this severity or above.
 fail-on-severity: moderate
 
-# Review both runtime and development dependencies: a compromised build-time package is a supply-chain problem too.
+# Runtime only, which is the action's default and therefore what this job has effectively been enforcing all along.
+#
+# The previous (inert) version of this file asked for `development` as well, and expressing it here would have been
+# faithful to that intent - but it would also have made the gate STRICTER than what the repository enforces today, so a
+# dev-only moderate advisory could start failing PRs that have nothing to do with it. Tightening a shared gate is a
+# decision worth taking on its own merits rather than as a side effect of repairing a config that enforced nothing, so
+# this file restores the intended policy without changing what passes. Development dependencies are not unguarded
+# meanwhile: the `Run npm Security Audit` step of this same workflow runs `npm audit --audit-level=moderate` across the
+# whole tree, dev dependencies included.
 fail-on-scopes:
   - runtime
-  - development
 
 # Licences CLAUDE.md forbids outright. Both the current SPDX ids and their deprecated spellings are listed, because a
 # dependency may declare either form and the deny check compares the declared expression against these entries.
