@@ -54,6 +54,7 @@ import org.apache.lucene.spatial.prefix.tree.GeohashPrefixTree;
 import org.apache.lucene.spatial.prefix.tree.SpatialPrefixTree;
 import org.apache.lucene.spatial.query.SpatialArgs;
 import org.apache.lucene.spatial.query.SpatialOperation;
+import org.apache.lucene.util.BytesRef;
 import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Shape;
 
@@ -679,13 +680,17 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   private void forEachCoveringCell(final Shape shape, final int detailLevel, final CellVisitor visitor) {
     final CellIterator cellIter = grid.getTreeCellIterator(shape, detailLevel);
 
+    // Retargeted at each cell's own bytes rather than allocating one BytesRef per cell; the token is turned into a
+    // String immediately, so nothing outlives the next call.
+    final BytesRef scratch = new BytesRef();
+
     String pendingToken = null;
     int pendingLevel = -1;
 
     while (cellIter.hasNext()) {
       final Cell cell = cellIter.next();
       final int level = cell.getLevel();
-      final String token = cell.getTokenBytesNoLeaf(null).utf8ToString();
+      final String token = cell.getTokenBytesNoLeaf(scratch).utf8ToString();
 
       if (pendingToken != null && !visitor.visit(pendingToken, level <= pendingLevel))
         return;
@@ -723,9 +728,10 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
       // complete set of siblings and the frontier is simply the deepest cell: skip the bookkeeping and its allocations.
       // Lucene takes the same shortcut, as isGridAlignedShape().
       final CellIterator pointIter = grid.getTreeCellIterator(shape, detailLevel);
+      final BytesRef pointScratch = new BytesRef();
       String deepest = null;
       while (pointIter.hasNext()) {
-        final String token = pointIter.next().getTokenBytesNoLeaf(null).utf8ToString();
+        final String token = pointIter.next().getTokenBytesNoLeaf(pointScratch).utf8ToString();
         if (!token.isEmpty())
           deepest = token;
       }
@@ -742,9 +748,12 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final PruneFrame[] path = new PruneFrame[detailLevel + 1];
     int depth = 0;
 
+    // One BytesRef retargeted per cell instead of one allocated per cell: this is the ingest path.
+    final BytesRef scratch = new BytesRef();
+
     while (cellIter.hasNext()) {
       final Cell cell = cellIter.next();
-      final String token = cell.getTokenBytesNoLeaf(null).utf8ToString();
+      final String token = cell.getTokenBytesNoLeaf(scratch).utf8ToString();
       if (token.isEmpty())
         // The world cell: it is not a storable token and has no parent to account it to.
         continue;

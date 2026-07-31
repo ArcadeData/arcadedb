@@ -645,4 +645,10 @@ asserted directly against Lucene in `LSMTreeGeoIndexCellPruningTest`.
 This changes what a **new** index writes for area shapes; an index already in the `FULL` layout is untouched, and
 `FRONTIER` has not shipped in any release, so no published database holds the unpruned form.
 
+> Running a **nightly 26.8.1-SNAPSHOT** build from between the `FRONTIER` change and this one is the one case that
+> needs attention: a geospatial index written by those builds holds unpruned cells for its area shapes, while this
+> build recomputes the pruned - smaller - set when a record is deleted, which would leave the extra entries behind.
+> `REBUILD INDEX` on such an index rewrites it in the current layout. Point-only indexes are unaffected, since
+> pruning never applies to them.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
