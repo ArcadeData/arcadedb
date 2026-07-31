@@ -63,11 +63,12 @@ class Issue5608CoverageDeclineDiagnosticTest extends TestHelper {
     try {
       final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
-      // A tracked edge append whose segment claims a bucket id that does not exist. trackEdgeAppend itself never
+      // A tracked edge append whose segment claims a bucket id no bucket answers to. trackEdgeAppend itself never
       // resolves the page key (that is what keeps the append hot path allocation-free), so the transaction is left
       // holding a tracked segment nobody can locate - the state the diagnostic then walks into.
-      final RID unresolvableSegment = new RID(30_000, 0);
-      tx.trackEdgeAppend(unresolvableSegment, new RID(30_000, 1), new RID(30_000, 2));
+      final int unmappedBucketId = firstUnmappedBucketId();
+      final RID unresolvableSegment = new RID(unmappedBucketId, 0);
+      tx.trackEdgeAppend(unresolvableSegment, new RID(unmappedBucketId, 1), new RID(unmappedBucketId, 2));
 
       // The setup is genuinely hostile, and NOT with a retryable exception: pin it, so the test cannot quietly
       // degrade into asserting that a no-op does not throw.
@@ -88,5 +89,18 @@ class Issue5608CoverageDeclineDiagnosticTest extends TestHelper {
 
     // The database is untouched by the probe above.
     database.transaction(() -> assertThat(database.countType("Diag", false)).isEqualTo(1));
+  }
+
+  /**
+   * The lowest file id the single-argument {@code getBucketById} refuses - either past the end of the file list, or a
+   * component that is not a bucket (the schema dictionary, an index). Derived rather than hard-coded to a large
+   * constant, so the fixture cannot quietly grow into the id the test assumed was free.
+   */
+  private int firstUnmappedBucketId() {
+    int id = 0;
+    // The two-argument form returns null for exactly the ids the single-argument one raises on.
+    while (database.getSchema().getEmbedded().getBucketById(id, false) != null)
+      ++id;
+    return id;
   }
 }
