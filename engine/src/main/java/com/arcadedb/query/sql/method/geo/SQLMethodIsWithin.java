@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.geo;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import org.locationtech.spatial4j.shape.Shape;
@@ -46,14 +47,23 @@ public class SQLMethodIsWithin extends AbstractSQLMethod {
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (value == null)
       return null;
-    else if (!(value instanceof Shape))
-      return null;
 
     if (params.length != 1 || params[0] == null)
       throw new IllegalArgumentException("isWithin() requires a shape as parameter");
 
-    final Shape shape = (Shape) params[0];
+    // A geometry is accepted as a Shape, as WKT text or as a Cypher point map: the deserializer no longer turns a
+    // WKT string into a Shape behind everyone's back (issue #5600), so the conversion happens where it is asked for.
+    final Shape target;
+    final Shape shape;
+    try {
+      target = GeoUtils.parseGeometry(value);
+      shape = GeoUtils.parseGeometry(params[0]);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+    if (target == null || shape == null)
+      return null;
 
-    return ((Shape) value).relate(shape) == SpatialRelation.WITHIN;
+    return target.relate(shape) == SpatialRelation.WITHIN;
   }
 }

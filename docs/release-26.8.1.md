@@ -552,4 +552,65 @@ slower:
   (Bucket counts that are a power of two up to 32 hid this by arithmetic accident: flipping the case of an ASCII
   letter shifts the Java string hash by a multiple of 32.)
 
+## A `STRING` property no longer reads back as a geometry
+
+Deserializing any string looked at its first characters and, when they were `POINT`, `CIRCLE`, `LINESTRING`,
+`POLYGON`, `ENVELOPE` or `BUFFER`, parsed the value as WKT and handed back a spatial4j `Shape` instead of the
+`String` that had been written ([#5600](https://github.com/ArcadeData/arcadedb/issues/5600)). A property declared
+`STRING` therefore did not round-trip: `getString()` returned spatial4j's `Pt(x=..,y=..)` form, which is not valid
+WKT, so feeding it back into a geo function failed. The trigger was a prefix match on arbitrary user text, not a
+schema decision, so a `description` column holding `"POLYGON shaped, see attached"` went through it too - and the
+prefix chain ran on **every** string read in the database.
+
+The storage layer no longer changes the declared type of a value: a string reads back as the string that was
+written. The conversion happens where a geometry is actually asked for - `GeoUtils.parseGeometry()`,
+`GeoUtils.parseJtsGeometry()` and the geospatial index all accept a WKT string - so a database written before
+26.2.1, when shapes were stored as WKT text, keeps working unchanged; `geo.point()` likewise still returns WKT and
+is still indexable and queryable. Only code that relied on `document.get("wktColumn") instanceof Shape` sees a
+difference, and it now gets the type the schema declares.
+
+## GEOSPATIAL: `precision` is settable from SQL, and an ignored `METADATA` is now an error
+
+`CREATE INDEX ... GEOSPATIAL METADATA {"precision": 6}` parsed, ran, and silently built the index at the default
+precision of 11: `CreateIndexStatement` forwarded `METADATA` for `LSM_VECTOR`, `FULL_TEXT` and `LSM_SPARSE_VECTOR`
+and fell through to a bare `create()` for everything else, so only the Java API could set it. Precision drives cell
+resolution (11 is about 2.4 m, 6 about 1.2 km) and therefore index size and query selectivity.
+
+`GEOSPATIAL` now has a builder of its own, `TypeGeoIndexBuilder`, in the same shape as the full-text and vector
+ones, and `withType(GEOSPATIAL)` returns it - so `precision` and `tokenization` are settable from SQL and from the
+Java API alike:
+
+```sql
+CREATE INDEX ON Location (coords) GEOSPATIAL METADATA {"precision": 6}
+```
+
+Two related sharp edges went with it:
+
+- **An unusable `METADATA` clause is rejected instead of dropped.** An unknown key (`{"precisin": 6}`), an
+  out-of-range precision, an invalid tokenization, or a `METADATA` on an index type that has no settings at all
+  now raise a `CommandSQLParsingException`. Silently ignoring the clause is what kept the gap invisible.
+- **`withType()` no longer leaves the original builder unconfigured.** It returns a specialised subclass for
+  `LSM_VECTOR`, `FULL_TEXT`, `LSM_SPARSE_VECTOR` and now `GEOSPATIAL`, so a caller that ignored the return value
+  (`builder.withType(X); builder.create();`) hit `indexType was not specified`. The type is recorded on the
+  original builder as well.
+
+## GEOSPATIAL: an area shape indexes fewer cells
+
+The FRONTIER layout introduced above stores the cells a shape's decomposition stops at. A complete set of sibling
+cells is now collapsed into its parent, recursively - the reduction Lucene calls `pruneLeafyBranches` and applies
+by default on its own indexing path. A parent covers the union of its children, so the cover can only grow and a
+match is never lost; the `geo.*` predicate post-filters the superset either way. Measured on the frontier cell
+count: 57% fewer for a small square, 74% fewer for a jagged outline, and unchanged for a linestring or a wide
+rectangle. A point decomposes into a chain of single-child cells and is never affected, so the one-entry-per-point
+guarantee stands.
+
+Lucene's own implementation buffers the entire decomposition in a list, which is why its javadoc warns against the
+option "for high precision (low distErrPct) shapes". ArcadeDB's is a streaming walk: only the frontier tokens on
+the current root-to-leaf path can still be revoked by an ancestor collapsing, bounding what is held to
+`subCellsSize * detailLevel` tokens regardless of shape size. The two produce identical token sets, which is
+asserted directly against Lucene in `LSMTreeGeoIndexCellPruningTest`.
+
+This changes what a **new** index writes for area shapes; an index already in the `FULL` layout is untouched, and
+`FRONTIER` has not shipped in any release, so no published database holds the unpruned form.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

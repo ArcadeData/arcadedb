@@ -707,21 +707,12 @@ public class BinarySerializer {
       value = null;
       break;
     case BinaryTypes.TYPE_STRING:
-      final String str = content.getString();
-      // Backward compatibility: parse WKT geometry strings from old databases
-      Object parsedValue = str;
-      if (str != null && (str.startsWith("POINT") || str.startsWith("CIRCLE") ||
-          str.startsWith("LINESTRING") || str.startsWith("POLYGON") ||
-          str.startsWith("ENVELOPE") || str.startsWith("BUFFER"))) {
-        try {
-          final SpatialContext ctx = GeoUtils.getSpatialContext();
-          parsedValue = ctx.getFormats().getWktReader().read(str);
-        } catch (Exception e) {
-          // If WKT parsing fails, return as string
-          parsedValue = str;
-        }
-      }
-      value = parsedValue;
+      // A string reads back as the string that was written, always. This used to sniff the first characters and return
+      // a spatial4j Shape when they looked like the head of a WKT geometry, which broke the identity of a declared
+      // STRING property and mangled any free text starting with POINT/POLYGON/... (issue #5600). Databases written
+      // before 26.2.1 - where shapes were stored as WKT text under TYPE_STRING - keep working because every geometry
+      // consumer accepts WKT: see GeoUtils.parseGeometry(), GeoUtils.parseJtsGeometry() and LSMTreeGeoIndex.toShape().
+      value = content.getString();
       break;
     case BinaryTypes.TYPE_COMPRESSED_STRING:
       value = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());

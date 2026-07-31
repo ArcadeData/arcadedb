@@ -48,18 +48,23 @@ import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.spatial.prefix.RecursivePrefixTreeStrategy;
 import org.apache.lucene.spatial.prefix.tree.Cell;
+import org.apache.lucene.spatial.prefix.tree.CellCanPrune;
 import org.apache.lucene.spatial.prefix.tree.CellIterator;
 import org.apache.lucene.spatial.prefix.tree.GeohashPrefixTree;
+import org.apache.lucene.spatial.prefix.tree.SpatialPrefixTree;
 import org.apache.lucene.spatial.query.SpatialArgs;
 import org.apache.lucene.spatial.query.SpatialOperation;
+import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Shape;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -75,7 +80,8 @@ import java.util.logging.Level;
  *       cells of the decomposition - one single token for a point - and answers a query with a GeoHash prefix RANGE
  *       SCAN over each covering cell of the search shape, plus an exact lookup on the covering cells that still have
  *       children (they can only match a shape indexed at a coarser resolution). The underlying LSM-Tree is a sorted
- *       store, so "every cell below C" is literally the key range {@code [C, C+\uFFFF]}.</li>
+ *       store, so "every cell below C" is literally the key range {@code [C, C+\uFFFF]}. On an area shape a complete
+ *       set of sibling cells additionally collapses into its parent, see {@link #forEachPrunedFrontierCell}.</li>
  *   <li>{@link GeoIndexMetadata.TOKENIZATION#FULL} is the original layout: the whole ancestor chain of every covering
  *       cell, resolved with one exact lookup per covering cell of the search shape. Kept for indexes created before
  *       26.8.1, whose entries are already written that way.</li>
@@ -623,12 +629,9 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         SpatialArgs.calcDistanceFromErrPct(shape, strategy.getDistErrPct(), GeoUtils.getSpatialContext()));
 
     final List<String> tokens = new ArrayList<>();
-    forEachCoveringCell(shape, detailLevel, (token, frontier) -> {
-      if (frontier) {
-        assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
-        tokens.add(token);
-      }
-      return true;
+    forEachPrunedFrontierCell(grid, shape, detailLevel, token -> {
+      assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
+      tokens.add(token);
     });
     return tokens;
   }
@@ -693,6 +696,135 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     if (pendingToken != null)
       visitor.visit(pendingToken, true);
+  }
+
+  /**
+   * Walks the same cells as {@link #forEachCoveringCell} but emits only the FRONTIER ones, collapsing a COMPLETE set of
+   * sibling frontier cells into their parent, recursively. This is what Lucene calls {@code pruneLeafyBranches} and
+   * enables by default on the indexing path: the parent rectangle is the union of its children, so the cover can only
+   * grow and a match can never be lost, while an area shape costs measurably fewer index entries - measured at 57% and
+   * 74% fewer on a small square and on a jagged polygon respectively (issue #5600).
+   * <p>
+   * Deliberately NOT shared with the query path: {@link #get} needs every ancestor cell of the search shape so it can
+   * look up the shallower cells an indexed shape may have stopped at.
+   * <p>
+   * Unlike {@link org.apache.lucene.spatial.prefix.RecursivePrefixTreeStrategy#createCellIteratorToIndex}, which
+   * materialises every cell of the decomposition in an {@code ArrayList} - the reason its javadoc warns against the
+   * option for high precision shapes - this streams: only the frontier tokens on the current root-to-leaf path can
+   * still be revoked by an ancestor pruning, which bounds what is held to {@code subCellsSize * detailLevel} tokens.
+   *
+   * @param emit receives each token to index (order is unspecified: a pruned parent is decided only once all of
+   *             its children have been visited)
+   */
+  static void forEachPrunedFrontierCell(final SpatialPrefixTree grid, final Shape shape, final int detailLevel,
+      final Consumer<String> emit) {
+    if (shape instanceof Point) {
+      // The hot ingest path of #5478. A point decomposes into a chain of SINGLE-child cells, so no cell can ever hold a
+      // complete set of siblings and the frontier is simply the deepest cell: skip the bookkeeping and its allocations.
+      // Lucene takes the same shortcut, as isGridAlignedShape().
+      final CellIterator pointIter = grid.getTreeCellIterator(shape, detailLevel);
+      String deepest = null;
+      while (pointIter.hasNext()) {
+        final String token = pointIter.next().getTokenBytesNoLeaf(null).utf8ToString();
+        if (!token.isEmpty())
+          deepest = token;
+      }
+      if (deepest != null)
+        emit.accept(deepest);
+      return;
+    }
+
+    final CellIterator cellIter = grid.getTreeCellIterator(shape, detailLevel);
+
+    // One frame per level of the current path. Level is 1-based and never exceeds detailLevel.
+    final PruneFrame[] path = new PruneFrame[detailLevel + 1];
+    int depth = 0;
+
+    while (cellIter.hasNext()) {
+      final Cell cell = cellIter.next();
+      final String token = cell.getTokenBytesNoLeaf(null).utf8ToString();
+      if (token.isEmpty())
+        // The world cell: it is not a storable token and has no parent to account it to.
+        continue;
+
+      final int level = cell.getLevel();
+
+      // A cell at this level closes every still-open cell at the same level or deeper: the walk is pre-order.
+      while (depth > 0 && path[depth].level >= level)
+        closeFrame(path, depth--, emit);
+
+      ++depth;
+      // The walk descends one level at a time, so the stack depth IS the cell level - which is what sizes the array.
+      assert depth == level : "unexpected GeoHash traversal: level " + level + " reached at depth " + depth;
+
+      final PruneFrame frame = path[depth] != null ? path[depth] : (path[depth] = new PruneFrame());
+      frame.reset(token, level, cell instanceof CellCanPrune p ? p.getSubCellsSize() : -1);
+    }
+
+    while (depth > 0)
+      closeFrame(path, depth--, emit);
+  }
+
+  /**
+   * Resolves the cell held in {@code path[depth]} into either a frontier token accounted to its parent, or a flush of
+   * the frontier tokens its subtree accumulated.
+   */
+  private static void closeFrame(final PruneFrame[] path, final int depth, final Consumer<String> emit) {
+    final PruneFrame frame = path[depth];
+    final PruneFrame parent = depth > 1 ? path[depth - 1] : null;
+
+    // A cell with no visited child is where the decomposition stopped; one whose children ALL turned out to be
+    // frontier cells covers exactly what they cover, so it replaces them.
+    final boolean frontier = frame.childCount == 0
+        || (frame.subCellsSize > 0 && frame.frontierChildren == frame.subCellsSize);
+
+    if (frontier) {
+      // Whatever the children contributed is subsumed by this cell's own token.
+      frame.pendingCount = 0;
+      if (parent == null)
+        emit.accept(frame.token);
+      else
+        parent.addFrontierChild(frame.token);
+    } else {
+      for (int i = 0; i < frame.pendingCount; i++)
+        emit.accept(frame.pending[i]);
+      frame.pendingCount = 0;
+      if (parent != null)
+        // A non-frontier child means the parent can no longer be a complete set of leaves.
+        parent.childCount++;
+    }
+  }
+
+  /**
+   * Per-level bookkeeping of {@link #forEachPrunedFrontierCell}. Reused across cells of the same level so a walk
+   * allocates at most one frame per level.
+   */
+  private static final class PruneFrame {
+    private String   token;
+    private int      level;
+    /** Number of sub-cells the grid gives this cell, or -1 when the cell cannot be pruned into. */
+    private int      subCellsSize;
+    private int      childCount;
+    private int      frontierChildren;
+    private String[] pending = new String[0];
+    private int      pendingCount;
+
+    private void reset(final String token, final int level, final int subCellsSize) {
+      this.token = token;
+      this.level = level;
+      this.subCellsSize = subCellsSize;
+      this.childCount = 0;
+      this.frontierChildren = 0;
+      this.pendingCount = 0;
+    }
+
+    private void addFrontierChild(final String childToken) {
+      childCount++;
+      frontierChildren++;
+      if (pendingCount == pending.length)
+        pending = Arrays.copyOf(pending, Math.max(8, pending.length * 2));
+      pending[pendingCount++] = childToken;
+    }
   }
 
   @FunctionalInterface
