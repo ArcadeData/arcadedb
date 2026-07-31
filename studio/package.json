@@ -4,6 +4,7 @@
   "description": "ArcadeDB Studio Frontend - Multi-Model Database Administration Interface",
   "main": "src/main/resources/static/index.html",
   "scripts": {
+    "test": "node scripts/run-tests.js",
     "audit": "npm audit",
     "audit-fix": "npm audit fix",
     "update": "npm update",
@@ -59,7 +60,7 @@
     "ajv": "^8.20.0"
   },
   "engines": {
-    "node": ">=18.12.0",
+    "node": ">=20.0.0",
     "npm": ">=8.0.0"
   },
   "repository": {
