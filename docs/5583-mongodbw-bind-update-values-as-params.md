@@ -1,0 +1,146 @@
+# 5583 - mongodbw: bind $set and replacement values as parameters
+
+Follow-up to #5579 / PR #5581. After #5581 every **filter** value is a bound SQL parameter, but the **update**
+values (`$set` and full replacement) were still spelled into the statement as a JSON literal, relying on
+`JSONObject.toString()` escaping. This closes that last gap so the "unreachable by construction" property covers
+the whole statement.
+
+## The open question the issue posed: can the grammar bind there?
+
+**Yes.** The issue flagged this as needing checking first, and possibly being the bulk of the work. It is not -
+the engine already supports both forms.
+
+`GlobalConfiguration` line 474 records that the JavaCC parser is dead: *"Deprecated, has no effect. The
+ANTLR4-based SQL parser is always used."* `StatementCache` only ever calls `SQLAntlrParser.parse`. So the
+authority is `engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLParser.g4`:
+
+```
+    | MERGE expression
+    | CONTENT (json | jsonArray | inputParameter)
+```
+
+- `MERGE expression` accepts `:p0` as an ordinary expression. `SQLASTBuilder.visitUpdateOperation` recognises
+  that the expression is not a JSON literal and stores it in `UpdateOperations.expression`;
+  `UpdateExecutionPlanner` chains `UpdateMergeStep(expression)`, whose `resolveExpression` resolves the value and
+  accepts a `Map` with String keys directly (`checkStringKeys`).
+- `CONTENT ... inputParameter` is an explicit grammar alternative. `SQLASTBuilder` stores it in
+  `UpdateOperations.inputParam` and `UpdateContentStep` handles a `Map` value via `doc.fromMap(...)`.
+
+Nothing in the engine had to change. Note the JavaCC `SqlParser.java` production still only accepts `Json()`
+after MERGE/CONTENT, but that parser is unreachable, so it is left alone rather than hand-edited (there is no
+javacc plugin in the build; the generated file is checked in).
+
+## Change
+
+`MongoDBDatabaseWrapper`:
+
+- `documentToJson` / `toJsonValue` (BSON -> `JSONObject` / `JSONArray`) become `documentToMap` / `toMapValue`
+  (BSON -> `LinkedHashMap` / `ArrayList`). The nested `Document` and `List` recursion and the `ObjectId` ->
+  hex-string conversion are preserved exactly; only the container type changes. Insertion order is kept with
+  `LinkedHashMap` so the replacement document reaches the record in wire order.
+- `appendUpdateOperations` binds instead of spelling:
+
+  ```java
+  sql.append(" CONTENT ");                            // was: .append(documentToJson(u))
+  MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(u));
+
+  case "$set" -> {                                    // was: .append(documentToJson(operand))
+    sql.append(" MERGE ");
+    MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(operand));
+  }
+  ```
+
+  It becomes package-private `static` (it never used instance state) so a unit test in `com.arcadedb.mongo` can
+  read the generated SQL directly, the same way `MongoDBToSqlTranslatorParamsTest` drives the `protected static`
+  translator builders.
+
+Unchanged, deliberately: `$unset` and `$inc` **field names** stay on `quoteFieldPath()`. SQL cannot bind a
+property name, so that half of #5575 is untouched, same as in #5581. `$inc` already binds its operand.
+
+`JSONObject` / `JSONArray` stay imported: `handleQuery` and `json2Document` still use them on an unrelated path.
+
+## Side effect: value fidelity
+
+Same class of latent defect #5581 uncovered on the filter path. Going through `JSONObject` meant a value was
+reshaped by JSON serialisation before it reached the record. Binding hands the engine the original Java object:
+
+- `java.util.Date` was serialised by `JSONObject`'s date handling; it now arrives as a `Date`.
+- a large `Double` was written in scientific notation; it now arrives as a `Double`.
+
+Neither was a *security* hole - `JSONObject` escapes correctly, and #5581 added two round-trip tests proving it -
+but both were fidelity losses, and both are now gone.
+
+## Verification
+
+New unit tests, `MongoDBUpdateValueBindingTest` (no server, reads the generated SQL directly):
+
+| test | pins |
+|---|---|
+| `aSetOperandIsBoundRatherThanSpelledAsJson` | `MERGE :p0`, operand in the param map |
+| `aReplacementDocumentIsBoundRatherThanSpelledAsJson` | `CONTENT :p0`, document in the param map |
+| `aQuoteBearingSetValueNeverAppearsInTheStatementText` | payload text absent from the SQL |
+| `aQuoteBearingReplacementValueNeverAppearsInTheStatementText` | same for the replacement path |
+| `aNestedDocumentIsBoundAsANestedMap` | `Document` -> `Map` recursion survives |
+| `aListValueIsBoundAsAList` | `List` recursion survives, nested `Document`s inside it too |
+| `anObjectIdIsBoundAsItsHexString` | the `ObjectId` -> hex conversion is preserved |
+| `aDateIsBoundAsADateInsteadOfBeingSerialised` | fidelity, was reshaped by `JSONObject` |
+| `updateValuesAndFilterValuesShareOneParameterNumbering` | `MERGE :p0 ... WHERE ... :p1`, no collision |
+| `unsetStillSpellsFieldNamesAsQuotedIdentifiers` | the deliberate #5575 carve-out is unchanged |
+| `incStillBindsItsOperandAndQuotesItsFieldName` | #5581 behaviour unchanged |
+| `aCraftedFieldNameInASetOperandCannotBreakOutOfTheStatement` | field names inside the bound map are data now |
+
+New wire-level tests added to `MongoDBParameterBindingTest` (real server through the Mongo driver):
+
+| test | pins |
+|---|---|
+| `aNestedDocumentSurvivesBeingSetByAnUpdate` | nested map round-trips through the bound parameter |
+| `anArraySurvivesBeingSetByAnUpdate` | list round-trips |
+| `aNestedDocumentSurvivesAFullReplacement` | same on the CONTENT path |
+
+The two pre-existing round-trip tests the issue named (`aQuoteBearingValueSurvivesBeingSetByAnUpdate`,
+`aQuoteBearingValueSurvivesAFullReplacement`) are unchanged and must stay green: they are the observable contract
+and are indifferent to which mechanism provides it.
+
+### Proving the tests can fail
+
+Run in this order deliberately, so the red was recorded against the *old* implementation rather than assumed.
+`appendUpdateOperations` was first made package-private `static` with its body still on `documentToJson`, and the
+new unit test class was run against it:
+
+```
+Tests run: 12, Failures: 6, Errors: 4, Skipped: 0
+```
+
+10 of 12 red. The 2 that passed are `unsetStillSpellsFieldNamesAsQuotedIdentifiers` and
+`incStillBindsItsOperandAndQuotesItsFieldName`, which is correct: they pin behaviour this change deliberately
+leaves alone, so they must be green on both sides.
+
+The binding was applied only after that run.
+
+## Test results
+
+Whole module, after the change:
+
+```
+mvn -pl mongodbw verify
+Tests run: 67, Failures: 0, Errors: 0, Skipped: 0
+```
+
+67 up from 52 (+12 unit, +3 wire). No engine module was touched, so nothing outside `mongodbw` is in scope.
+
+The wire-level tests matter more than usual here: they are what proves the engine actually accepts `MERGE :p0`
+and `CONTENT :p0` at runtime, not just that the grammar file contains the alternatives.
+
+## Note on the two existing tests' comments
+
+`aQuoteBearingValueSurvivesBeingSetByAnUpdate` and `aQuoteBearingValueSurvivesAFullReplacement` are unchanged in
+behaviour and assertions. Their **comments** were updated: each described the value as travelling "as a JSON
+literal", which this change makes false. Leaving a comment asserting the opposite of what the code does is worse
+than the edit. Nothing was weakened - the assertions still pin the same observable contract.
+
+## Follow-ups not taken
+
+- `{field: null}` binds `field = :p0` with null, which does not match missing fields the way MongoDB does.
+  Carried over from #5581, unfiled, not a regression.
+- `executeUpsert` / `applyOperatorsToDocument` build a record through the API rather than through SQL, so they
+  never had this exposure and are untouched.

@@ -199,8 +199,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   void aQuoteBearingValueSurvivesBeingSetByAnUpdate() {
     collection.insertOne(new Document("name", "target"));
 
-    // $set values travel as a JSON literal rather than as a bound parameter, so their escaping is a separate mechanism
-    // from the WHERE clause: this pins that it actually holds
+    // $set values are bound as the payload of MERGE, so this is the observable contract the binding has to preserve
     final String awkward = "it's a \"quoted\" C:\\path";
     collection.updateOne(eq("name", "target"), new Document("$set", new Document("note", awkward)));
 
@@ -211,11 +210,44 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   void aQuoteBearingValueSurvivesAFullReplacement() {
     collection.insertOne(new Document("name", "target"));
 
-    // a replacement document goes out as SQL CONTENT <json>, another inlined-JSON path
+    // a replacement document goes out as SQL CONTENT :p<n>, bound the same way
     final String awkward = "replaced' with \"quotes\"";
     collection.replaceOne(eq("name", "target"), new Document("name", "target").append("note", awkward));
 
     assertThat(collection.find(eq("name", "target")).first().getString("note")).isEqualTo(awkward);
+  }
+
+  @Test
+  void aNestedDocumentSurvivesBeingSetByAnUpdate() {
+    collection.insertOne(new Document("name", "target"));
+
+    // the bound payload is a nested Map rather than JSON text, so the nesting has to survive the parameter round trip
+    collection.updateOne(eq("name", "target"),
+        new Document("$set", new Document("address", new Document("city", "Rome").append("zip", 145))));
+
+    final Document address = (Document) collection.find(eq("name", "target")).first().get("address");
+    assertThat(address.getString("city")).isEqualTo("Rome");
+    assertThat(address.getInteger("zip")).isEqualTo(145);
+  }
+
+  @Test
+  void anArraySurvivesBeingSetByAnUpdate() {
+    collection.insertOne(new Document("name", "target"));
+
+    collection.updateOne(eq("name", "target"), new Document("$set", new Document("tags", List.of("a", "b' c"))));
+
+    assertThat(collection.find(eq("name", "target")).first().getList("tags", String.class)).containsExactly("a", "b' c");
+  }
+
+  @Test
+  void aNestedDocumentSurvivesAFullReplacement() {
+    collection.insertOne(new Document("name", "target"));
+
+    collection.replaceOne(eq("name", "target"),
+        new Document("name", "target").append("address", new Document("city", "Rome' \"quoted\"")));
+
+    final Document address = (Document) collection.find(eq("name", "target")).first().get("address");
+    assertThat(address.getString("city")).isEqualTo("Rome' \"quoted\"");
   }
 
   @Test
