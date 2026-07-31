@@ -51,6 +51,12 @@ public class GeoIndexMetadata extends IndexMetadata {
      * Stores only the deepest cells of the decomposition - exactly ONE for a point - and resolves queries with a GeoHash
      * prefix range scan over the covering cells plus an exact lookup on their ancestors (issue #5478). Same results,
      * {@code precision} times fewer entries to write, replicate and compact, and no hot key.
+     * <p>
+     * On an AREA shape a COMPLETE set of sibling cells is additionally collapsed into its parent, recursively - the
+     * reduction Lucene calls {@code pruneLeafyBranches} and applies by default on its own indexing path (issue #5600).
+     * A parent covers the union of its children, so the cover can only grow and a match is never lost; the SQL geo.*
+     * predicate post-filters the superset either way. A point decomposes into a chain of single-child cells and is
+     * therefore never affected.
      */
     FRONTIER
   }

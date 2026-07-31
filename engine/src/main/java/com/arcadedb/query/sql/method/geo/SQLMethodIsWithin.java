@@ -18,10 +18,6 @@
  */
 package com.arcadedb.query.sql.method.geo;
 
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
@@ -29,31 +25,21 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLMethodIsWithin extends AbstractSQLMethod {
+public class SQLMethodIsWithin extends AbstractSQLGeoRelationMethod {
 
   public static final String NAME = "iswithin";
 
   public SQLMethodIsWithin() {
-    super(NAME, 0, 1);
+    super(NAME, "isWithin");
+  }
+
+  @Override
+  protected boolean matches(final SpatialRelation relation) {
+    return relation == SpatialRelation.WITHIN;
   }
 
   @Override
   public String getSyntax() {
     return "isWithin( <shape> )";
-  }
-
-  @Override
-  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
-    if (value == null)
-      return null;
-    else if (!(value instanceof Shape))
-      return null;
-
-    if (params.length != 1 || params[0] == null)
-      throw new IllegalArgumentException("isWithin() requires a shape as parameter");
-
-    final Shape shape = (Shape) params[0];
-
-    return ((Shape) value).relate(shape) == SpatialRelation.WITHIN;
   }
 }
