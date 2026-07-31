@@ -71,8 +71,11 @@ import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Visits every expression a statement contains, wherever it appears: inside another expression, inside a predicate,
@@ -119,10 +122,11 @@ public final class CypherExpressionWalker {
     void visit(Expression expression);
 
     /**
-     * Called when the walk is about to descend into the body of a nested statement - a {@code CALL { ... }} clause or
-     * an {@code EXISTS}/{@code COUNT}/{@code COLLECT} subquery expression. Returning {@code this} keeps the same
-     * check running inside the body; returning a different visitor is how a check whose meaning depends on the
-     * variable scope re-binds itself to the inner one; returning {@code null} skips the body.
+     * Called when the walk is about to descend into a statement that binds its own variables - the body of a
+     * {@code CALL { ... }} clause or of an {@code EXISTS}/{@code COUNT}/{@code COLLECT} subquery expression, and each
+     * branch of a {@code UNION}. Returning {@code this} keeps the same check running inside it; returning a different
+     * visitor is how a check whose meaning depends on the variable scope re-binds itself to the inner one; returning
+     * {@code null} skips it.
      */
     default Visitor forNestedStatement(final CypherStatement statement) {
       return this;
@@ -142,9 +146,12 @@ public final class CypherExpressionWalker {
     if (statement == null)
       return;
 
+    // Each branch of a UNION binds its own variables, so each is entered as a nested statement in its own right:
+    // a check that reads variable kinds gets the kinds of the branch it is looking at, not an intersection over all
+    // of them, which would silently skip a variable only one branch declares.
     if (statement instanceof UnionStatement union) {
       for (final CypherStatement query : union.getQueries())
-        walk(query, visitor);
+        walkNested(query, visitor);
       return;
     }
 
@@ -160,15 +167,27 @@ public final class CypherExpressionWalker {
     walk(statement.getSkip(), visitor);
     walk(statement.getLimit(), visitor);
 
+    // A WITH can be registered on the ordered list, on the statement, or on both, depending on the builder path that
+    // produced it, and every one of them has to be covered. Which ones the ordered walk already reached is tracked by
+    // identity so the second pass adds only what it missed: visiting an expression exactly once is what lets a
+    // visitor keep state, and a visitor that could not would be a trap for the next one written.
+    Set<WithClause> alreadyWalked = null;
+
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses != null)
-      for (int i = 0; i < clauses.size(); i++)
-        walkClause(clauses.get(i), visitor);
+      for (int i = 0; i < clauses.size(); i++) {
+        final ClauseEntry entry = clauses.get(i);
+        if (entry.getType() == ClauseEntry.ClauseType.WITH) {
+          if (alreadyWalked == null)
+            alreadyWalked = Collections.newSetFromMap(new IdentityHashMap<>());
+          alreadyWalked.add(entry.getTypedClause());
+        }
+        walkClause(entry, visitor);
+      }
 
-    // A WITH not present in the ordered list (some builder paths register it only on the statement) still has to be
-    // covered, and walking one twice is harmless - a visitor of this phase is pure.
     for (final WithClause withClause : statement.getWithClauses())
-      walkWith(withClause, visitor);
+      if (alreadyWalked == null || !alreadyWalked.contains(withClause))
+        walkWith(withClause, visitor);
   }
 
   /**

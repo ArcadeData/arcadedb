@@ -172,6 +172,26 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
         .hasMessageContaining("abs()");
   }
 
+  /**
+   * Each branch of a {@code UNION} binds its own variables and is entered as a scope of its own, so a check that
+   * reads variable kinds sees the branch it is looking at. Merging the branches into one scope instead would keep
+   * only what they agree on, and a variable declared by a single branch would escape - asserted from both branch
+   * positions, since a scope taken from one branch would still answer for that one.
+   */
+  @Test
+  void aKindIsReadFromTheUnionBranchThatDeclaresIt() {
+    assertThatThrownBy(() -> explain("CALL { MATCH (a:P) RETURN a.name AS x "
+        + "UNION MATCH q = (m:P)-->() RETURN q.name AS x } RETURN x"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+    assertThatThrownBy(() -> explain("CALL { MATCH q = (m:P)-->() RETURN q.name AS x "
+        + "UNION MATCH (a:P) RETURN a.name AS x } RETURN x"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+    assertThatCode(() -> explain("CALL { MATCH (a:P) RETURN a.name AS x "
+        + "UNION MATCH (b:P) RETURN b.name AS x } RETURN x")).doesNotThrowAnyException();
+  }
+
   @Test
   void subqueryBodyOfAWithWhereIsValidated() {
     assertThatThrownBy(() -> explain("MATCH (n:P) WITH n WHERE EXISTS { MATCH (m:P) WHERE abs('x') > 0 RETURN m } "
@@ -283,6 +303,11 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
   @Test
   void anUnimportedReferenceIsReportedAsUndefinedNotAsAKindError() {
     assertThatThrownBy(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL { RETURN p.name } RETURN *"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'p'");
+    // The explicit empty scope list imports nothing either, and is answered the same way.
+    assertThatThrownBy(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL () { RETURN p.name AS n } RETURN n"))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("UndefinedVariable")
         .hasMessageContaining("'p'");

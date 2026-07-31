@@ -1792,18 +1792,12 @@ public class CypherSemanticValidator {
    * it is, before this phase gets to read a kind for it.
    */
   private static Map<String, VarType> nestedVarTypes(final Map<String, VarType> outer, final CypherStatement nested) {
-    if (nested instanceof UnionStatement union) {
-      // One map has to serve every branch, so a name survives only where the branches agree on its kind.
-      Map<String, VarType> merged = null;
-      for (final CypherStatement branch : union.getQueries()) {
-        final Map<String, VarType> branchTypes = nestedVarTypes(outer, branch);
-        if (merged == null)
-          merged = branchTypes;
-        else
-          merged.entrySet().removeIf(entry -> entry.getValue() != branchTypes.get(entry.getKey()));
-      }
-      return merged != null ? merged : new HashMap<>(outer);
-    }
+    // A UNION declares nothing of its own - each branch is a scope of its own and is entered as a nested statement
+    // in its own right, so it is the branch, not the union, that builds a scope over what is inherited here.
+    // (UnionStatement.getClausesInOrder() answers with its FIRST branch's clauses, which is why this returns before
+    // the loop below rather than falling through an empty one.)
+    if (nested instanceof UnionStatement)
+      return new HashMap<>(outer);
 
     final Map<String, VarType> scope = new HashMap<>(outer);
     final List<ClauseEntry> clauses = nested.getClausesInOrder();
