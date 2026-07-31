@@ -734,5 +734,8 @@ and for division or modulo by zero (including `duration(...) / 0`, which used to
   IEEE 754 and Neo4j require.
 - **A retryable conflict still wins over it** in the Bolt classification, so a driver's managed-transaction retry
   is not lost.
+- **HTTP and Bolt only.** The other wire protocols (Postgres, MongoDB, Redis, GraphQL, Gremlin) still report an
+  arithmetic error through their generic execution-error handling; only the two paths a Cypher statement normally
+  arrives on make the distinction.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

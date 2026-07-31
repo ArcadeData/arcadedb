@@ -477,7 +477,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      } else if (isArithmeticError(e)) {
+      } else if (arithmeticError(e) != null) {
         // An integer overflow or a division by zero is decided by the values the caller supplied, not by anything
         // wrong with the server, and Neo4j classifies the whole category as a client error
         // (Neo.ClientError.Statement.ArithmeticError). Reported as 400 with the arithmetic message rather than the
@@ -560,7 +560,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      } else if (isArithmeticError(e)) {
+      } else if (arithmeticError(e) != null) {
         // Symmetric with the un-wrapped arithmetic arm above (#5602): the auto-commit wrapper in
         // DatabaseAbstractHandler re-wraps the failure as a TransactionException, and without this branch the
         // client error would degrade back to 500.
@@ -1004,27 +1004,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Whether the failure is an arithmetic error - a 64-bit overflow or a division by zero (issue #5602). The whole
-   * cause chain is searched rather than only the outermost throwable and its immediate cause, because the
+   * The arithmetic error - a 64-bit overflow or a division by zero (issue #5602) - anywhere in the cause chain, or
+   * {@code null} when there is none. Returning the exception itself rather than a boolean lets the caller report
+   * ArcadeDB's message ({@code long overflow}) instead of whatever the wrapper happened to say.
+   * <p>
+   * The whole chain is searched rather than only the outermost throwable and its immediate cause, because the
    * exception is wrapped differently depending on how the request arrived: directly, inside the auto-commit
-   * {@code TransactionException} wrapper, or with the JDK {@code ArithmeticException} it came from as its own
-   * cause. The depth cap guards against a self-referential chain, matching {@code BoltNetworkExecutor}.
-   */
-  private static boolean isArithmeticError(final Throwable error) {
-    return arithmeticError(error) != null;
-  }
-
-  /**
-   * The {@link ArithmeticErrorException} in the cause chain, or {@code null} when there is none. Returning the
-   * exception itself rather than a boolean lets the caller report ArcadeDB's message ({@code long overflow}) instead
-   * of whatever the wrapper happened to say.
+   * {@code TransactionException} wrapper, or with the JDK {@code ArithmeticException} it came from as its own cause.
    */
   private static ArithmeticErrorException arithmeticError(final Throwable error) {
-    Throwable t = error;
-    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++)
-      if (t instanceof ArithmeticErrorException arithmetic)
-        return arithmetic;
-    return null;
+    return CauseChain.find(error, ArithmeticErrorException.class);
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,

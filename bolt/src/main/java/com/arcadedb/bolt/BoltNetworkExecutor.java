@@ -40,6 +40,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
@@ -1771,12 +1772,7 @@ public class BoltNetworkExecutor extends Thread {
    * and carries the JDK {@code ArithmeticException} it came from as its own cause.
    */
   static boolean isArithmeticError(final Throwable error) {
-    Throwable t = error;
-    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++) {
-      if (t instanceof ArithmeticErrorException)
-        return true;
-    }
-    return false;
+    return CauseChain.contains(error, ArithmeticErrorException.class);
   }
 
   /**
@@ -1799,13 +1795,7 @@ public class BoltNetworkExecutor extends Thread {
    * driver, so callers both classify them as transient and log them at a lower level.
    */
   static boolean isRetryableConflict(final Throwable error) {
-    // Bounded walk: the depth cap guards against a self-referential / cyclic cause chain spinning forever.
-    Throwable t = error;
-    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++) {
-      if (t instanceof NeedRetryException)
-        return true;
-    }
-    return false;
+    return CauseChain.contains(error, NeedRetryException.class);
   }
 
   /**
