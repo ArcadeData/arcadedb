@@ -51,9 +51,11 @@ This matters as soon as any index has been compacted: an LSM index with a compac
 
 To disable auto-compaction reliably mid-test: set the config, `database.async().waitCompletion()`, then force `scheduleCompaction()` + `compact()` on each LSM index (this creates a fresh mutable that reads the new value), then `waitCompletion()` again.
 
-## `countEntries()` is not O(1) on vector indexes
+## `countEntries()` is O(1) only on `HASH`
 
-On a dense `LSM_VECTOR`, `countEntries()` streams the entire location map filtering deleted entries, and on the bounded backend does so while holding the `locations` monitor, so concurrent callers serialize. On a sparse `LSM_SPARSE_VECTOR` it returns **postings**, not records: a 2-record fixture with 2 dimensions each reports 4. `TypeIndex.countEntries()` sums over buckets and inherits whichever applies.
+On an LSM index it is a full ascending cursor walk. It counts LIVE entries - the value that survives a `next()`, not the call - so tombstones are excluded whether or not a compaction has purged them (#5601). Getting that wrong is easy in this codebase: `LSMTreeIndexCursor.hasNext()` is optimistic, so `next()` answers `null` at the tail of a scan whose remaining keys are all dead, and any `while (hasNext()) { next(); ++n; }` over-counts.
+
+On a dense `LSM_VECTOR`, `countEntries()` streams the entire location map filtering deleted entries, and on the bounded backend does so while holding the `locations` monitor, so concurrent callers serialize. On a sparse `LSM_SPARSE_VECTOR` it returns **postings**, not records: a 2-record fixture with 2 dimensions each reports 4. A full-text index counts one entry per analyzed token and a geospatial one per covering cell. `TypeIndex.countEntries()` sums over buckets and inherits whichever applies.
 
 Never call it on a query path. If you need an "is there more?" signal, derive it from the result window or the candidate budget you already have.
 
