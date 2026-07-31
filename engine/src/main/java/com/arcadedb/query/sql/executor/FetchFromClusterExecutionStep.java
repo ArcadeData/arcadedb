@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.Iterator;
@@ -59,10 +61,14 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
-        if (order == ORDER_DESC)
-          iterator = context.getDatabase().getSchema().getBucketById(bucketId).inverseIterator();
-        else
-          iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
+        // #5636: report an unknown bucket the way the by-name path does. Targeting one by id (SELECT FROM
+        // bucket:9999) escaped as a raw SchemaException from the lookup, while SELECT FROM bucket:unknown got
+        // "Bucket 'x' does not exist" from the planner - the same mistake, two different error contracts.
+        final Bucket bucket = context.getDatabase().getSchema().getBucketByIdIfExists(bucketId);
+        if (bucket == null)
+          throw new CommandExecutionException("Bucket with id " + bucketId + " does not exist");
+
+        iterator = order == ORDER_DESC ? bucket.inverseIterator() : bucket.iterator();
 
         //TODO check how to support ranges
 //        long minClusterPosition = calculateMinClusterPosition();

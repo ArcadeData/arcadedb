@@ -196,6 +196,38 @@ class Issue5636BucketLookupTest extends TestHelper {
   }
 
   /**
+   * Targeting a bucket by id and by name are the same user mistake, and used to get two different error contracts:
+   * {@code SELECT FROM bucket:NoSuchBucket} reached the planner's own "does not exist", while
+   * {@code SELECT FROM bucket:9999} escaped as a raw {@link SchemaException} from whichever of the four id lookups
+   * on that path ran first (two planner probes, the target calculation, then the fetch step).
+   */
+  @Test
+  void selectFromAnUnknownBucketReportsTheSameWayByIdAndByName() {
+    database.getSchema().createDocumentType("Doc", 1);
+
+    assertThatThrownBy(() -> database.query("sql", "select from bucket:" + UNLOADED_BUCKET_ID).stream().toList())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("Bucket with id " + UNLOADED_BUCKET_ID + " does not exist");
+
+    assertThatThrownBy(() -> database.query("sql", "select from bucket:NoSuchBucket").stream().toList())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("does not exist");
+  }
+
+  /**
+   * ...and a real bucket must still be selectable by id, which is the path all four of those lookups normally take.
+   */
+  @Test
+  void selectFromAKnownBucketByIdStillWorks() {
+    database.getSchema().createDocumentType("Doc", 1);
+    final int bucketId = database.getSchema().getType("Doc").getBuckets(false).getFirst().getFileId();
+
+    database.transaction(() -> database.newDocument("Doc").set("k", 1).save());
+
+    assertThat(database.query("sql", "select from bucket:" + bucketId).stream().toList()).hasSize(1);
+  }
+
+  /**
    * A real bucket must still insert: the null-tolerant lookups must not have broken the happy path.
    */
   @Test
