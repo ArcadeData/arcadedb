@@ -92,7 +92,13 @@ Both directions were run, so the job is known to fail as well as to pass.
 
 **Passes on the fixed manifest, on every supported interpreter.** `uv pip compile` and `pip-audit` both exit
 0 for 3.10, 3.11, 3.12, 3.13 and 3.14 (30 / 27 / 27 / 27 / 26 pinned requirements), each reporting
-"No known vulnerabilities found". Confirmed in CI as well: the job resolved 27 packages and passed in 16s.
+"No known vulnerabilities found".
+
+Confirmed in CI on the final commit, not only locally: the job logged
+`auditing declared floors for: 3.10 3.11 3.12 3.13 3.14` and the same 30 / 27 / 27 / 27 / 26 counts, all
+clean, in 27s. That run also settles the assumption the loop rests on, since the runner has only 3.12
+installed: `--python-version` drives marker and `requires-python` evaluation rather than interpreter
+selection, so no interpreter beyond the runner's own is needed.
 
 **Fails on a regressed manifest.** Reverting the two floors PR #5548 raised (`py7zr>=0.20.0`,
 `numpy>=1.20.0`) makes `pip-audit` exit 1 and name exactly the advisories the issue cites:
@@ -135,6 +141,10 @@ unnoticed in the first place.
 The gap this does not close: an advisory affecting only releases above the floor. The floor stays clean, so
 the job stays green, while a user installing today gets the newest release. Meterian would cover that if it
 could read the folder.
+
+`pip-audit` queries the advisory service over the network, so an outage there reddens the job independently
+of the manifest. That is inherent to any advisory check and the reason the tool itself is pinned while the
+database stays live: the version of the checker should not move on its own, but its data must.
 
 ## Review
 
@@ -189,6 +199,30 @@ only in the `dev` extra, which is excluded for the reasons above, and the Bandit
 regardless, so `>=1.9.1` is purely declarative. It is still worth correcting: `1.9.0` was never published to
 PyPI, so the old floor named a release that does not exist. This is a specific instance of the `dev` extra
 follow-up below.
+
+### Cycle 3 - `b163362e0`
+
+`claude[bot]` reviewed again, nothing blocking. Two points were acted on, two need no change.
+
+**1. "The trailing dot in the classifier prefix is load-bearing and worth an inline note" - applied.**
+Verified: the classifiers carry a bare `Programming Language :: Python :: 3` alongside the five versioned
+ones, and dropping the dot yields `3 3.10 3.11 3.12 3.13 3.14`, whose first element becomes
+`--python-version 3` and fails. The review is right that this breaks silently under tidying, so the prefix
+now carries a comment saying why the dot is there.
+
+**2. "The loop is verified only locally; a wrong `--python-version` assumption would break every cell except
+3.12" - applied.** The concern was fair: the CI figure quoted in this document came from the earlier
+single-interpreter version of the job. The loop has now run in CI on the final commit and the section above
+quotes that run instead, which also confirms `--python-version` needs no interpreter beyond the runner's.
+
+**3. "`pip-audit` depends on the network, so the job can flake on an advisory-service outage" - no change,
+noted.** Recorded under Impact. Inherent to any advisory check, and the reason the checker is pinned while
+its data is not.
+
+**4. "The uv installer is pinned but not checksum-verified" - declined, and the review expects no change.**
+Consistent with every other `curl | sh` install in this repo. Adding a checksum here alone would not raise
+the floor for the workflows that surround it, and pinning the version already removes the drift that
+mattered for this job's output.
 
 ## Follow-ups
 

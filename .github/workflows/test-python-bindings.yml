@@ -111,6 +111,9 @@ jobs:
       - name: Audit declared dependency floors on every supported interpreter
         working-directory: bindings/python
         run: |
+          # The trailing dot in the prefix is load-bearing: the classifiers also
+          # carry a bare "Programming Language :: Python :: 3", which without it
+          # yields --python-version 3 and fails.
           versions=$(python -c 'import tomllib;p="Programming Language :: Python :: 3.";print(" ".join(c.rsplit(" ",1)[1] for c in tomllib.load(open("pyproject.toml","rb"))["project"]["classifiers"] if c.startswith(p)))')
           # No classifiers would audit nothing and still pass, which is the kind
           # of silent gap this job exists to close.
