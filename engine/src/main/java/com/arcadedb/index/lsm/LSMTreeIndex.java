@@ -487,9 +487,22 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public long countEntries() {
     checkIsValid();
     long total = 0;
-    for (final IndexCursor it = iterator(true); it.hasNext(); ) {
-      it.next();
-      ++total;
+    final IndexCursor it = iterator(true);
+    try {
+      while (it.hasNext()) {
+        // #5601: the returned value MUST be tested. LSMTreeIndexCursor.hasNext() is optimistic - it answers on the
+        // number of live underlying cursors, not on whether they still hold a surviving RID - so next() legitimately
+        // answers null once a trailing run of tombstones leaves nothing to emit. Counting the call instead of the
+        // value made a delete-heavy index report a residual (a fully emptied type still counted 1) that only a full
+        // compaction cleared. Dead keys consumed in the middle of the scan are already skipped by the cursor and are
+        // accounted separately in the deadEntriesSkipped stat, so what survives here is exactly the live entries.
+        if (it.next() != null)
+          ++total;
+      }
+    } finally {
+      // releases the compacted-series retire guards and flushes the scan stats: a full walk of every index is the
+      // last place that should leak either
+      it.close();
     }
     return total;
   }

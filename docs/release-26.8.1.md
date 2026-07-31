@@ -651,6 +651,43 @@ This changes what a **new** index writes for area shapes; an index already in th
 > `REBUILD INDEX` on such an index rewrites it in the current layout. Point-only indexes are unaffected, since
 > pruning never applies to them.
 
+## `countEntries()` no longer counts tombstones as live entries
+
+On any LSM index, deleting records did not bring `countEntries()` back down to the number of live entries: the
+count settled on a residual that only a full compaction cleared. Deleting every record of a type left the index
+reporting `1` with zero records in the database ([#5601](https://github.com/ArcadeData/arcadedb/issues/5601)).
+
+The tombstones were not the problem - the cursor already skips dead keys, and the work it skipped is accounted in
+the `deadEntriesSkipped` stat. The count incremented once per `next()` call, and an LSM index cursor answers
+`hasNext()` optimistically: it reports on how many underlying page cursors are still live, not on whether any of
+them still holds a surviving RID, so `next()` legitimately returns `null` once a trailing run of tombstones leaves
+nothing to emit. That `null` was counted as an entry.
+
+`countEntries()` now counts values rather than calls, and closes its cursor when it is done - a full walk of every
+index being the last place that should leak a compacted-series retire guard. The contract is now stated on
+`Index.countEntries()`: it is the number of LIVE entries, "entry" is the index's own unit (one per analyzed token
+for full-text, one per posting for sparse vectors, one per covering cell for geospatial), and only `HASH` answers
+in constant time.
+
+## Geospatial queries stream instead of materialising every candidate
+
+A geospatial query decomposes its search shape into covering cells - a 10x10-degree box resolves into roughly 4,200
+of them - and answers each with one prefix range scan or one exact lookup on the underlying LSM-Tree. Every one of
+those scans was drained into a candidate set, which was then copied into a list of index entries, before the caller
+saw the first row; the SQL layer then loaded every candidate RECORD of every bucket into a second list before the
+`geo.*` predicate re-checked the first one. A `LIMIT 10` over a wide-area query paid for the entire candidate set
+([#5601](https://github.com/ArcadeData/arcadedb/issues/5601)).
+
+The whole chain is now lazy. The index cursor opens one cell scan at a time and closes it as soon as it is drained,
+the SQL function chains the per-bucket cursors the same way, and a consumer that stops early stops the covering-cell
+walk with it. Deduplication is still a set of RIDs - a polygon decomposes into many cells, so the same record can be
+reached through several of them - but it now holds only what has actually been emitted rather than a second parallel
+copy of the whole candidate set. Results are unchanged: the index still answers with a superset that the `geo.*`
+predicate re-checks, and a row limit is still never applied to the candidates.
+
+Because an abandoned cursor now can leave an underlying scan open, `FETCH FROM INDEXED FUNCTION` releases it on
+`close()` and `reset()`, matching what the regular index fetch step already did: a compacted-series cursor registers
+with its file so a full compaction defers dropping it.
 ## Studio can create a vector index, and a vector index can no longer be created without `dimensions`
 
 Studio's "Add Index" dialog offered `LSM_VECTOR` in the algorithm list but built the statement without a
