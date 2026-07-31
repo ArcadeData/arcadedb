@@ -63,9 +63,11 @@ boolean, so a type legitimately named `123` or `true` would reach `quoteSqlName(
 The repartition button from #4087 was folded into the same mechanism, and its bespoke
 `.js-repartition-btn` wiring removed, so the file now has exactly one pattern.
 
-Section-header buttons (`createType`, `createMaterializedView`, `createGraphAnalyticalView`,
-`createTimeSeriesType`) keep their inline `onclick`: they pass no argument, so they never enter the
-nested-context problem. The tests assert this distinction rather than banning `onclick` outright.
+Section-header buttons keep their inline `onclick`, because none of them carries a user-controlled name.
+`createTimeSeriesType()`, `createMaterializedView()` and `createGraphAnalyticalView()` pass no argument at
+all. `createType(sec.key)` does pass one, but `sec.key` is a fixed section constant from the hardcoded
+`sections` array (`vertex` / `edge` / `document`), never schema-derived, so it cannot contain a quote. The
+tests assert the no-argument shape on the renderers they cover rather than banning `onclick` outright.
 
 Small extractions were made so the generated HTML is reachable from tests without a DOM:
 `renderTypeLink`, `renderTypeSidebarBadge` (which also de-duplicates two near-identical badge loops),
@@ -124,6 +126,22 @@ the current behaviour is right, not requests to change it.
 The fourth was worth acting on: because the dispatch is bound to `document`, the `data-action` values form a
 page-wide namespace, and a future control elsewhere in Studio reusing one of these names would be routed
 here too. **Applied** - the registry comment now spells that out for the next contributor.
+
+### Cycle 3 - `664bcbb1d`
+
+**LGTM**, with four minor notes. Two were acted on:
+
+- `schemaActionAttrs` does not escape its `action` parameter. Safe today because every caller passes a
+  string literal, and the registry-coverage test fails at CI if that ever changes - but the assumption was
+  undocumented. **Applied** as a comment.
+- The writeup claimed section-header buttons "pass no argument". Checked against the code: **the bot is
+  right and the claim was inaccurate**. `createType(sec.key)` at `studio-database.js:3497` does pass one.
+  It is benign - `sec.key` is a fixed constant from the hardcoded `sections` array, never schema-derived -
+  but the blanket statement was wrong. **Corrected** above and in the PR description.
+
+The other two (delete the dead `renderMaterializedViewsSidebarSection`; open a tracking issue for the
+`studio-security.js` `.data()` coercion) are follow-ups outside this change. No issue was filed, since
+opening one is outside this task's mandate - see the list below.
 
 ### Unrelated CI
 

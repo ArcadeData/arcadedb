@@ -3355,6 +3355,10 @@ function fetchSchemaTypes(callback) {
 // attribute has one context: the value is HTML-escaped once and read back through dataset, which the browser
 // returns as a plain string with no further interpretation. `parent` carries the owning type for the actions
 // that need two names (drop-property, drop-index).
+//
+// `action` is deliberately not escaped: it is always a string literal chosen from the registries below,
+// never a runtime value. `name` and `parent` are the untrusted halves. The "every emitted data-action is
+// covered by a dispatch registry" test fails at CI if a caller ever passes something else.
 function schemaActionAttrs(action, name, parent) {
   let attrs = " data-action='" + action + "' data-name='" + escapeHtml(name) + "'";
   if (parent != null) attrs += " data-parent='" + escapeHtml(parent) + "'";
