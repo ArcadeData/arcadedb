@@ -463,7 +463,7 @@ public class MCPDispatcher {
   static String formatArgs(final String toolName, final JSONObject args) {
     if (args.length() == 0)
       return "{}";
-    final boolean maskValue = "set_server_setting".equals(toolName) && isHiddenSetting(args.getString("key", null));
+    final boolean maskValue = "set_server_setting".equals(toolName) && isHiddenSetting(settingKey(args));
     final StringBuilder sb = new StringBuilder("{");
     boolean first = true;
     for (final String key : args.keySet()) {
@@ -487,6 +487,21 @@ public class MCPDispatcher {
         sb.append(key).append("=").append(value);
     }
     return sb.append("}").toString();
+  }
+
+  /**
+   * Reads the setting key for the mask decision without letting a malformed member raise. This runs while the log
+   * line is built, which is above the handler's try, so a raise here would escape the dispatcher and reach the
+   * transport as a bodiless HTTP 500. The read deliberately keeps the coercion the tool itself applies, so a key the
+   * tool will resolve is still recognised as secret; narrowing it to a plain string would leave the value unmasked
+   * for a key shape the tool nevertheless writes.
+   */
+  private static String settingKey(final JSONObject args) {
+    try {
+      return args.getString("key", null);
+    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      return null;
+    }
   }
 
   /**
