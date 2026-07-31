@@ -38,6 +38,12 @@ const JS_DIR = path.join(__dirname, "..", "src", "main", "resources", "static", 
 const dbSrc = fs.readFileSync(path.join(JS_DIR, "studio-database.js"), "utf8");
 const utilsSrc = fs.readFileSync(path.join(JS_DIR, "studio-utils.js"), "utf8");
 
+// Pulls one top-level `function name(...) {...}` out of a Studio source file.
+//
+// The brace matcher counts every { and } it sees, including any inside a string literal, a regular
+// expression or a comment, so a function extracted this way must not contain one. That constraint is
+// checked rather than assumed: the extracted text is parsed here, so violating it fails with a message
+// naming the function instead of a bare SyntaxError from the eval below.
 function extractFn(src, name) {
   const start = src.indexOf("function " + name + "(");
   if (start < 0) throw new Error("function not found: " + name);
@@ -50,7 +56,18 @@ function extractFn(src, name) {
     else if (c === "}") depth--;
     i++;
   }
-  return src.substring(start, i);
+  if (depth !== 0) throw new Error("unbalanced braces while extracting " + name + ": reached end of file");
+
+  const source = src.substring(start, i);
+  try {
+    new Function("return (" + source + ")");
+  } catch (e) {
+    throw new Error(
+      "the extracted source of " + name + " does not parse, which happens when that function contains a brace " +
+        "inside a string literal, a regex or a comment: " + e.message
+    );
+  }
+  return source;
 }
 
 eval(extractFn(utilsSrc, "quoteSqlName"));
