@@ -738,7 +738,20 @@ public class LocalDocumentType implements DocumentType {
     checkForSchemaMutation();
     final BucketSelectionStrategy previous = this.bucketSelectionStrategy;
     this.bucketSelectionStrategy = selectionStrategy;
-    this.bucketSelectionStrategy.setType(this);
+    try {
+      // The field is assigned before this so the strategy can read back the type it is being bound to, which means
+      // anything thrown from here would otherwise leave the type carrying a strategy the DDL went on to reject.
+      // Both validations live inside the try: the unique-index requirement, and the suitability check that refuses a
+      // partition which could never prune (issue #5603).
+      this.bucketSelectionStrategy.setType(this);
+      if (selectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
+        reportPartitionSuitability(partitioned);
+    } catch (final RuntimeException e) {
+      // Restoring the reference is the whole rollback: previous was bound to this type when it was assigned, and
+      // nothing here unbinds it, so re-invoking previous.setType(this) would be a no-op.
+      this.bucketSelectionStrategy = previous;
+      throw e;
+    }
     // Strategy-change flag flip (issue #4087). Switching the bucket-selection strategy on a
     // populated type can leave existing records in buckets that no longer match the new
     // strategy's hash. Two cases set the flag:
@@ -762,7 +775,65 @@ public class LocalDocumentType implements DocumentType {
       // every other site that mutates this flag. Direct field assignment would only work because
       // the wrapping DDL happens to save the schema afterward; relying on that is brittle.
       setNeedsRepartition(true);
+
     return this;
+  }
+
+  /**
+   * Reports what the partition configuration will actually do, at the moment it is chosen rather than at the first
+   * query that comes up short (issue #5603).
+   * <p>
+   * Both #5589 and #5595 were the same story from the user's side: the strategy attached without complaint and the
+   * damage - missing rows, duplicates in a UNIQUE index, an unexplained slowdown - surfaced much later at read time,
+   * with nothing tying it back to the {@code ALTER TYPE}. The read side is fixed; this is the other half, saying so
+   * up front.
+   * <p>
+   * <b>Refuse a new assignment, only warn on reload.</b> A blocker means the strategy can never prune, so accepting
+   * it is accepting pure cost, and the DDL that asks for it is refused. The identical state read back out of
+   * {@code schema.json} is only logged: an existing database has records placed under that strategy already and must
+   * still open - a refusal there would turn a slow database into an unopenable one. Note the asymmetry is in the
+   * reaction, not the diagnosis; both paths run the same check.
+   * <p>
+   * Warnings never refuse. A second index on non-partition properties is a perfectly reasonable schema, it just does
+   * not benefit from the partitioning, and it is common enough that refusing it would be hostile. They are reported
+   * last so a configuration that is about to be refused outright does not first draw advice on how to speed it up.
+   * <p>
+   * <b>Warnings are assignment-time advice, so they are not repeated on reload.</b> They say "this is not the shape
+   * you probably meant", which is worth one line at the moment the shape is chosen and nothing at all on every
+   * subsequent open of a database whose schema has not changed since. Left unconditional they would put a WARNING
+   * per startup, forever, against a schema that was accepted and is working as designed - the kind of line operators
+   * learn to filter out, taking the blockers below with it. Blockers do repeat on every open, deliberately: those
+   * describe a database that is still paying for a strategy it cannot use, and that stays worth saying until
+   * somebody acts on it.
+   */
+  private void reportPartitionSuitability(final PartitionedBucketSelectionStrategy partitioned) {
+    final PartitionedBucketSelectionStrategy.Suitability suitability = partitioned.checkSuitability();
+
+    if (!suitability.canPrune()) {
+      final String reasons = String.join("; ", suitability.blockers());
+
+      if (!schema.isReadingFromFile())
+        throw new SchemaException(
+            "Cannot use the partitioned bucket selection strategy on " + partitioned.getProperties() + " for type '"
+                + name + "': " + reasons
+                + ". Every lookup would fan out across all buckets, so the partitioning would cost the placement "
+                + "constraints and return nothing. Use `round-robin` instead, or change the partition key.");
+
+      LogManager.instance().log(this, Level.WARNING, """
+          Type '%s' is configured with the partitioned bucket selection strategy on %s, but it can never prune a \
+          lookup to one bucket because %s. Queries stay correct - every lookup fans out across all %d buckets - but \
+          the partitioning buys nothing. Switch the type back to `round-robin`, or fix the configuration and run \
+          `REBUILD TYPE %s WITH repartition = true`.""", null, name, partitioned.getProperties(), reasons,
+          buckets.size(), name);
+    }
+
+    if (schema.isReadingFromFile())
+      return;
+
+    for (final String warning : suitability.warnings())
+      LogManager.instance().log(this, Level.WARNING,
+          "Type '%s' uses the partitioned bucket selection strategy on %s, but %s", null, name,
+          partitioned.getProperties(), warning);
   }
 
   /**

@@ -19,6 +19,7 @@
 package com.arcadedb.database.bucketselectionstrategy;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -30,8 +31,15 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -45,9 +53,17 @@ import java.util.logging.Level;
  * coerced and stored; a lookup ({@link #getBucketIdByKeys}) is handed the caller's raw key. Since {@code hashCode()} is
  * type-dependent, the lookup side normalises its key to the declared property type before hashing (issue #5595), and
  * declines to prune - answering -1, which callers read as "search every bucket" - whenever it cannot reproduce the
- * stored form: an undeclared property, a value that will not coerce, or a case-insensitive partition index, whose two
- * spellings are one index key but were placed in two different buckets. Placement itself is never altered, so no
- * existing database needs a repartition.
+ * stored form. Placement itself is never altered, so no existing database needs a repartition.
+ * <p>
+ * <b>The bucket must be a function of the index key.</b> Pruning is only half of what the modulus buys: a UNIQUE index
+ * on a partitioned type is a set of per-bucket sub-indexes, so the constraint is global only while every record
+ * carrying one index key lands in one bucket. Where the hash disagrees with the way the index decides two keys are
+ * equal, the same key lives in several buckets and each of them accepts its own copy - a UNIQUE index that silently
+ * holds duplicates. Measured on {@code BINARY} (a {@code byte[]} hashes by identity), {@code DECIMAL} ({@code 1.1} and
+ * {@code 1.10} are one index key but two hash codes) and a {@code DATE}/{@code DATETIME} key read back through a
+ * zone-carrying implementation (the writer's zone is hashed, only the instant is stored). Those partitions are
+ * therefore never pruned either, which restores the constraint by making the check fan out; see
+ * {@link #checkSuitability()}, which the schema layer uses to refuse such a configuration outright (issue #5603).
  *
  * @author Luca Garulli
  */
@@ -88,7 +104,62 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
 
     final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
     if (index == null || !index.isAutomatic() || !index.isUnique())
-      throw new IllegalArgumentException("Cannot find a unique index on properties " + propertyNames);
+      throw new IllegalArgumentException(
+          "cannot find a unique automatic index on the partition properties " + propertyNames);
+  }
+
+  /**
+   * A verdict on the partition configuration, split by what it costs.
+   * <p>
+   * A {@code blocker} is a state in which {@link #getBucketIdByKeys} can never answer anything but -1, so the type
+   * pays the strategy's constraints - a partition key that must not be updated, an uneven bucket fill - and gets
+   * nothing back. Assigning the strategy into such a state is refused; finding an existing database in one is only
+   * warned about, so it still opens.
+   * <p>
+   * A {@code warning} is a configuration that prunes, just less than the wording suggests. Today that is a second
+   * index on properties the partition does not cover: those lookups cannot be pruned (issue #5589) and fan out
+   * across every bucket, which is correct but no faster than not partitioning at all.
+   */
+  public record Suitability(List<String> blockers, List<String> warnings) {
+    public boolean canPrune() {
+      return blockers.isEmpty();
+    }
+  }
+
+  /**
+   * Diagnoses the partition configuration for the schema layer. Cold path only - called when the strategy is assigned
+   * and when a database is reopened, never per query, so it is free to allocate the messages it reports.
+   * <p>
+   * The rules are the ones {@link #getBucketIdByKeys} enforces silently, said out loud: a configuration reported here
+   * as a blocker is exactly one in which that method returns -1 for every key it will ever be handed.
+   */
+  public Suitability checkSuitability() {
+    final Database database = type.getSchema().getEmbedded().getDatabase();
+    final List<String> blockers = new ArrayList<>();
+    final List<String> warnings = new ArrayList<>();
+
+    for (final String propertyName : propertyNames) {
+      final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+      if (property == null)
+        blockers.add("partition property '" + propertyName + "' is not declared in the schema, so a record keeps "
+            + "whatever Java type its writer happened to use and no lookup key can be normalised to match it");
+      else if (!hashAgreesWithIndexKeyIdentity(database, property.getType()))
+        blockers.add("partition property '" + propertyName + "' is declared " + property.getType()
+            + ", whose stored form does not hash the way the index compares keys, so one key would be spread over "
+            + "several buckets and a UNIQUE index on it would admit duplicates");
+    }
+
+    if (partitionKeyIsCaseInsensitive())
+      blockers.add("the index on " + propertyNames + " is declared COLLATE CI, and case folding is an index-level "
+          + "normalisation that placement never applies, so the two spellings of one key sit in two buckets");
+
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (!coversPartitionProperties(index.getPropertyNames()))
+        warnings.add("index '" + index.getName() + "' is on " + index.getPropertyNames() + " rather than the "
+            + "partition properties " + propertyNames + ", so lookups through it cannot be pruned to one bucket and "
+            + "fan out across all of them");
+
+    return new Suitability(Collections.unmodifiableList(blockers), Collections.unmodifiableList(warnings));
   }
 
   @Override
@@ -185,6 +256,11 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
     if (property == null)
       return UNKNOWN_STORED_FORM;
 
+    // Reproducing the stored form is not enough on its own: the hash of that form has to agree with the way the
+    // index decides two keys are equal, or one key spans several buckets. See hashAgreesWithIndexKeyIdentity.
+    if (!hashAgreesWithIndexKeyIdentity(database, property.getType()))
+      return UNKNOWN_STORED_FORM;
+
     try {
       final Object converted = Type.convert(database, value, property.getType().getJavaImplementation(database), property);
       return converted != null ? converted : UNKNOWN_STORED_FORM;
@@ -201,6 +277,79 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
   }
 
   /**
+   * Whether {@code Object.hashCode()} on the stored form of a {@code propertyType} value is a faithful stand-in for
+   * the way the index decides two keys are equal. Only then does one index key map to exactly one bucket, which is
+   * what both the pruning and - more importantly - the global reach of a UNIQUE constraint rest on.
+   * <p>
+   * Deliberately an ALLOW-list. A type that is not named here declines to prune, so a {@code Type} added later is
+   * merely slower until someone confirms it belongs, rather than silently placing one key in several buckets.
+   * <p>
+   * The exclusions, each measured against a round-robin control that rejects the duplicate every time:
+   * <ul>
+   *   <li>{@code BINARY} - the stored form is a {@code byte[]}, which inherits identity {@code hashCode}, so every
+   *       single write of the same bytes draws a fresh bucket.</li>
+   *   <li>{@code DECIMAL} - {@code BigDecimal.hashCode} folds in the scale, so {@code 1.1} and {@code 1.10} hash
+   *       apart while the index compares them equal.</li>
+   *   <li>{@code LIST}, {@code MAP}, {@code EMBEDDED} and the {@code ARRAY_OF_*} family - structurally the same
+   *       identity-hash problem as {@code BINARY} (and not indexable today, so this is a guard, not a fix).</li>
+   *   <li>{@code DATE}/{@code DATETIME*} read back as a {@link Calendar}, {@link ZonedDateTime} or
+   *       {@link OffsetDateTime} - only the instant reaches disk, so the writer's zone is hashed at placement and
+   *       lost on the way back. Two records for the same instant written from different zones are one index key in
+   *       two buckets. The zone-free implementations ({@code java.util.Date}, {@code Instant}, {@code LocalDate},
+   *       {@code LocalDateTime}) round-trip unchanged and stay prunable.</li>
+   * </ul>
+   */
+  private static boolean hashAgreesWithIndexKeyIdentity(final Database database, final Type propertyType) {
+    return switch (propertyType) {
+      case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, STRING, LINK -> true;
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> isZoneFree(readBackClass(database, propertyType));
+      default -> false;
+    };
+  }
+
+  /**
+   * The class the binary deserializer will hand a temporal property back as, which is what decides whether the zone a
+   * record was placed under survives a round trip.
+   * <p>
+   * Asked of the serializer directly rather than through {@link Type#getJavaImplementation}, which resolves the
+   * configured implementation for {@code DATE} and {@code DATETIME} only and answers the static default
+   * ({@code LocalDateTime}) for the three precision subtypes. {@code BinarySerializer.deserializeValue} passes the
+   * configured {@code dateTimeImplementation} for all four datetime binary types, so reading the subtypes through that
+   * helper would report every one of them zone-free and admit exactly the configuration this guard exists to catch -
+   * measured: a {@code DATETIME_NANOS} partition key under {@code ZonedDateTime} let 3 of 6 writes of a single instant
+   * into a UNIQUE index.
+   * <p>
+   * {@code getJavaImplementation} is left alone deliberately. Its other caller is the write path's
+   * {@code convertValueToSchemaType}, where the same mismatch is inert - {@code Type.convert} returns an
+   * already-temporal value untouched, so the conversion target is never consulted for one - and changing it would
+   * alter the class a subtype property converts a String or a Long to, a wider behaviour change than this guard needs.
+   */
+  private static Class<?> readBackClass(final Database database, final Type propertyType) {
+    if (!(database instanceof DatabaseInternal internal))
+      return propertyType.getJavaImplementation(database);
+
+    return propertyType == Type.DATE ?
+        internal.getSerializer().getDateImplementation() :
+        internal.getSerializer().getDateTimeImplementation();
+  }
+
+  /**
+   * Whether a temporal implementation carries nothing beyond the instant that reaches disk, so that a value hashes
+   * the same before and after a round trip.
+   * <p>
+   * An allow-list, like the {@code Type} switch above and for the same reason: a deny-list of the zone-carrying
+   * classes would silently pass any implementation nobody thought to name - including one configured by a user -
+   * which is exactly the failure this guard exists to prevent. These four are the zone-free half of what
+   * {@code DateUtils.dateTime}/{@code DateUtils.date} can construct; the rest ({@link Calendar},
+   * {@link ZonedDateTime}, {@link OffsetDateTime}) carry a zone that placement hashes and the deserializer cannot
+   * give back.
+   */
+  private static boolean isZoneFree(final Class<?> implementation) {
+    return implementation == Date.class || implementation == Instant.class || implementation == LocalDate.class
+        || implementation == LocalDateTime.class;
+  }
+
+  /**
    * Whether {@code lookupProperties} is exactly this strategy's partition property set, with one key value each.
    * <p>
    * Order is deliberately NOT required: the hash both sides compute is a SUM over the per-value hash codes, which
@@ -214,12 +363,21 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
    * keys hold one to three properties, and this runs on a per-query path.
    */
   private boolean coversPartitionProperties(final List<String> lookupProperties, final Object[] keyValues) {
+    return keyValues.length == propertyNames.size() && coversPartitionProperties(lookupProperties);
+  }
+
+  /**
+   * The property-set half of {@link #coversPartitionProperties(List, Object[])}, without the arity check on the key
+   * values. Also used to tell a type's own partition index apart from its other indexes, which is the same question:
+   * does this property set hash to the bucket placement chose?
+   */
+  private boolean coversPartitionProperties(final List<String> lookupProperties) {
     if (lookupProperties == null)
       // THE CALLER COULD NOT SAY WHICH PROPERTIES THE KEYS BELONG TO: UNVERIFIABLE, SO NOT A MATCH
       return false;
 
     final int size = propertyNames.size();
-    if (lookupProperties.size() != size || keyValues.length != size)
+    if (lookupProperties.size() != size)
       return false;
 
     for (int i = 0; i < size; i++) {
