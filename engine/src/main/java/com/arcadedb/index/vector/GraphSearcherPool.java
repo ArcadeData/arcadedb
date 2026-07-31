@@ -45,16 +45,35 @@ import java.util.logging.Level;
  * {@code ConcurrentGraphIndexView} pins a completion timestamp), so it may only be recycled while both the graph
  * instance and the index's mutation counter are unchanged. Any insert, delete or graph rebuild moves the epoch and
  * the pooled searchers are closed instead of being handed out again.
+ * <p>
+ * Every queued searcher carries the identity it was pooled under, and {@link #borrow} checks it on the way out
+ * (issue #5648). Emptying the queue when the identity changes cannot be relied on by itself: a {@code release}
+ * that read the outgoing identity a moment earlier can still land its searcher after that sweep has passed, and
+ * the next borrow would then hand out a searcher whose {@code View} walks the replaced graph while the caller
+ * scores through the new one - wrong neighbours, silently, with nothing left behind to attribute them to. The
+ * sweep and the identity check in {@code release} are therefore only there to reclaim searchers early; what makes
+ * the pool safe is that a borrower never trusts what it polled.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphSearcherPool {
-  private final ConcurrentLinkedQueue<GraphSearcher> idle      = new ConcurrentLinkedQueue<>();
-  private final AtomicInteger                        idleCount = new AtomicInteger();
-  private final int                                  maxIdle;
+  /**
+   * The (graph, epoch) pair the pool currently serves. Held as one value so it can never be read half-updated.
+   */
+  private record Identity(ImmutableGraphIndex graph, long epoch) {
+  }
 
-  private volatile ImmutableGraphIndex pooledGraph;
-  private volatile long                pooledEpoch;
+  /**
+   * A queued searcher together with the identity it was pooled under, so {@link #borrow} can reject it.
+   */
+  private record Pooled(GraphSearcher searcher, ImmutableGraphIndex graph, long epoch) {
+  }
+
+  private final ConcurrentLinkedQueue<Pooled> idle      = new ConcurrentLinkedQueue<>();
+  private final AtomicInteger                 idleCount = new AtomicInteger();
+  private final int                           maxIdle;
+
+  private volatile Identity pooled;
 
   /**
    * @param maxIdle maximum number of searchers kept alive between queries; values below 1 disable pooling
@@ -71,20 +90,23 @@ public class GraphSearcherPool {
     if (maxIdle < 1)
       return new GraphSearcher(graph);
 
-    if (pooledGraph != graph || pooledEpoch != epoch) {
-      // The graph was swapped (rebuild) or the index mutated: nothing already pooled may be reused.
+    final Identity current = pooled;
+    if (current == null || current.graph != graph || current.epoch != epoch) {
+      // The graph was swapped (rebuild) or the index mutated: nothing already pooled may be reused. Publish first
+      // so a release still running under the outgoing identity rejects its searcher instead of re-pooling it.
+      pooled = new Identity(graph, epoch);
       drain();
-      pooledGraph = graph;
-      pooledEpoch = epoch;
       return new GraphSearcher(graph);
     }
 
-    final GraphSearcher searcher = idle.poll();
-    if (searcher == null)
-      return new GraphSearcher(graph);
-
-    idleCount.decrementAndGet();
-    return searcher;
+    for (Pooled entry; (entry = poll()) != null; ) {
+      if (entry.graph == graph && entry.epoch == epoch)
+        return entry.searcher;
+      // Pooled under an identity this caller does not share: it was queued by a release racing an identity
+      // change, after the sweep for that change had already passed. Reclaim it and keep looking.
+      close(entry.searcher);
+    }
+    return new GraphSearcher(graph);
   }
 
   /**
@@ -95,7 +117,8 @@ public class GraphSearcherPool {
     if (searcher == null)
       return;
 
-    if (maxIdle < 1 || pooledGraph != graph || pooledEpoch != epoch) {
+    final Identity current = pooled;
+    if (maxIdle < 1 || current == null || current.graph != graph || current.epoch != epoch) {
       close(searcher);
       return;
     }
@@ -107,7 +130,7 @@ public class GraphSearcherPool {
     }
 
     idleCount.incrementAndGet();
-    idle.offer(searcher);
+    idle.offer(new Pooled(searcher, graph, epoch));
   }
 
   /**
@@ -115,7 +138,7 @@ public class GraphSearcherPool {
    * replaced.
    */
   public void clear() {
-    pooledGraph = null;
+    pooled = null;
     drain();
   }
 
@@ -127,11 +150,15 @@ public class GraphSearcherPool {
   }
 
   private void drain() {
-    GraphSearcher searcher;
-    while ((searcher = idle.poll()) != null) {
+    for (Pooled entry; (entry = poll()) != null; )
+      close(entry.searcher);
+  }
+
+  private Pooled poll() {
+    final Pooled entry = idle.poll();
+    if (entry != null)
       idleCount.decrementAndGet();
-      close(searcher);
-    }
+    return entry;
   }
 
   private static void close(final GraphSearcher searcher) {
