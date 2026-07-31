@@ -895,7 +895,11 @@ Two cluster endpoints move behind the root check that the seven mutating Raft en
   the cluster token forwarded as root.
 - **`GET /api/v1/cluster?presence=true`** fans that RPC out to every peer to build the presence matrix. The
   matrix answers a whole-cluster question, and every remedy it points to (resync, transfer leadership) is
-  itself root-only. The cheap `GET /api/v1/cluster` poll without the parameter is unchanged.
+  itself root-only. The cheap `GET /api/v1/cluster` poll without the parameter is unchanged. Note the root
+  check runs before the leader check, so a non-root caller passing the parameter to a **follower** now gets
+  `403` where it previously got a `200` with no matrix in it - tooling that polls followers with the flag
+  will see the change. In Studio the matrix is loaded by an explicit button, not by the cluster tab's
+  auto-poll, so a non-root operator's tab keeps working.
 
 `GET /api/v1/cluster` also stops listing reserved internal databases such as the Raft control directory
 `.raft`, matching what the presence matrix and the bootstrap-state RPC already did.
