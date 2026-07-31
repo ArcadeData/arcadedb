@@ -19,6 +19,9 @@
 package com.arcadedb.partitioning;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
@@ -243,6 +246,64 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
         .as("an unusable strategy falls back to the default").isEqualTo("round-robin");
     assertThat(database.getSchema().getExtension("lifecycle-probe"))
         .as("and everything the loader reads after the strategies is still there").isNotNull();
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // 4. Inheritance, which reaches the assignment path without any ALTER TYPE.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * {@code addSuperType} copies the super type's strategy onto the subtype, which now routes through the same
+   * refusal as an explicit {@code ALTER TYPE} rather than through the check that used to live in
+   * {@code setType}. The happy path has to keep working: the subtype gets the parent's index first, so the
+   * inherited partition is suitable, prunes, and is persisted on the subtype in its own right.
+   * <p>
+   * The subtype declares the same bucket count as its parent deliberately. A partitioned type whose subtype has a
+   * DIFFERENT one crashes on the first indexed insert, because {@code TypeIndex.getIndexesByKeys} applies the bucket
+   * index it derived from the parent's modulus to {@code s.getBuckets(false)} of each subtype. That is unrelated to
+   * this issue - the line predates the whole partitioned-strategy series and nothing here touches it - so it is
+   * reported separately rather than pinned by a test that would fail for a different reason than it claims.
+   */
+  @Test
+  void aSubtypeInheritsAPartitionedStrategyAndItStillPrunes() throws IOException {
+    createPartitionedType("Base");
+    database.transaction(() -> database.command("sql", "CREATE DOCUMENT TYPE Derived EXTENDS Base BUCKETS " + BUCKETS));
+
+    final LocalDocumentType derived = (LocalDocumentType) database.getSchema().getType("Derived");
+    assertThat(derived.getBucketSelectionStrategy().getName()).isEqualTo("partitioned");
+    assertThat(persistedType("Derived").has("bucketSelectionStrategy"))
+        .as("an inherited strategy is the subtype's own state and has to be persisted as such").isTrue();
+
+    final PartitionedBucketSelectionStrategy strategy =
+        (PartitionedBucketSelectionStrategy) derived.getBucketSelectionStrategy();
+    assertThat(strategy.getBucketIdByKeys(List.of("k"), new Object[] { "acme" }, false))
+        .as("the inherited partition must be suitable, not merely attached").isNotEqualTo(-1);
+
+    database.transaction(() -> database.newDocument("Derived").set("k", "acme").save());
+    assertThat(database.query("sql", "SELECT FROM Derived WHERE k = 'acme'").stream().count()).isEqualTo(1);
+  }
+
+  /**
+   * The other order, which is how a subtype can reach the inheritance copy without the parent's index having been
+   * created for it: the subtype exists before the parent is partitioned, so nothing re-runs on it until a
+   * {@code DROP TYPE} in the middle of the hierarchy re-attaches it to the grandparent and copies the strategy
+   * down. This is the one caller that passes {@code createIndexes = false}.
+   */
+  @Test
+  void droppingAPartitionedTypeInTheMiddleOfAHierarchyDoesNotBreakTheSubtype() {
+    createPartitionedType("Grand");
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Middle EXTENDS Grand");
+      database.command("sql", "CREATE DOCUMENT TYPE Leaf EXTENDS Middle");
+      database.command("sql", "DROP TYPE Middle");
+    });
+
+    assertThat(database.getSchema().existsType("Leaf")).isTrue();
+    assertThat(database.getSchema().getType("Leaf").getSuperTypes())
+        .as("the leaf is re-attached to the grandparent")
+        .extracting(DocumentType::getName).containsExactly("Grand");
+    assertThat(database.getSchema().getType("Leaf").getBucketSelectionStrategy().getName())
+        .isEqualTo("partitioned");
   }
 
   @Override

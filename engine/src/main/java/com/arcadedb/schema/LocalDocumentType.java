@@ -692,14 +692,20 @@ public class LocalDocumentType implements DocumentType {
    * survives a server restart. During schema load that call is a no-op (the schema's own
    * {@code readingFromFile} guard postpones the write), so this is safe to call regardless of
    * the load state.
+   *
+   * @return {@code true} when the value transitioned and the schema was therefore saved. Lets a caller that was
+   * going to save anyway skip a second full rewrite of {@code schema.json} in the same call; every other caller is
+   * free to ignore it.
    */
-  public void setNeedsRepartition(final boolean needsRepartition) {
+  public boolean setNeedsRepartition(final boolean needsRepartition) {
     // CAS guarantees that the save fires exactly once per real transition: only the thread that
     // observes the opposite value and successfully flips it proceeds; any concurrent caller
     // requesting the same target value either loses the race (CAS returns false) or finds the
     // value already at the target. Both cases skip the {@code schema.saveConfiguration()} call.
-    if (this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition))
-      schema.saveConfiguration();
+    if (!this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition))
+      return false;
+    schema.saveConfiguration();
+    return true;
   }
 
   /**
@@ -768,6 +774,7 @@ public class LocalDocumentType implements DocumentType {
     // LocalSchema right after this call, and {@code hasAnyRecord()} would walk every bucket
     // and call {@code count()} (per-bucket I/O) producing a value that's about to be
     // overwritten anyway.
+    boolean alreadySaved = false;
     if (!schema.isReadingFromFile()
         && selectionStrategy instanceof PartitionedBucketSelectionStrategy newPartitioned
         && partitionShapeChanged(previous, newPartitioned)
@@ -775,7 +782,10 @@ public class LocalDocumentType implements DocumentType {
       // Use the typed setter so the schema-save-on-transition contract fires consistently with
       // every other site that mutates this flag. Direct field assignment would only work because
       // the wrapping DDL happens to save the schema afterward; relying on that is brittle.
-      setNeedsRepartition(true);
+      // Its answer says whether that contract already wrote the file, which is the same write the
+      // block below would make - the strategy field was assigned before this, so the flag's save
+      // carries it. Only a real transition saves, so this stays false when the flag was already set.
+      alreadySaved = setNeedsRepartition(true);
 
     // Persist the strategy itself (issue #5637). This is the one schema mutator that used to leave the write to
     // somebody else - every sibling either calls saveConfiguration() directly (setAliases, LocalProperty's setters)
@@ -796,8 +806,9 @@ public class LocalDocumentType implements DocumentType {
     // memory and round-robin in schema.json - exactly the shape this issue is about. A skip-if-unchanged guard would
     // read the in-memory value, conclude nothing changed, and turn that repair into a silent no-op. The cost of not
     // guarding is one rewrite of schema.json per redundant DDL statement, on a path measured in statements per
-    // database lifetime.
-    if (!schema.isReadingFromFile())
+    // database lifetime. What IS skipped is the write the needsRepartition flip just made in this same call, which
+    // is a different redundancy: same call, same file, same content.
+    if (!schema.isReadingFromFile() && !alreadySaved)
       schema.saveConfiguration();
 
     return this;
