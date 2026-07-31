@@ -43,10 +43,12 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
 
     // Deliberately not filterAuthorizedDatabases(): this route tests a single name, so building the whole
     // authorized set to look one entry up would allocate proportionally to the number of databases on the
-    // server for a constant-time question. The two conjuncts are the same predicate that helper applies -
-    // installed, and accessible to the caller - just evaluated for one name.
+    // server for a constant-time question. The conjuncts below are the same predicate that helper applies -
+    // installed, and accessible to the caller - just evaluated for one name, including its null-user
+    // contract, so the two paths cannot drift on what an unauthenticated route is allowed to report.
     final String requested = databaseName.getFirst();
-    final boolean existsDatabase = server.getDatabaseNames().contains(requested) && user.canAccessToDatabase(requested);
+    final boolean existsDatabase = server.getDatabaseNames().contains(requested)
+        && (user == null || user.canAccessToDatabase(requested));
 
     final JSONObject response = new JSONObject();
     response.put("result", existsDatabase);

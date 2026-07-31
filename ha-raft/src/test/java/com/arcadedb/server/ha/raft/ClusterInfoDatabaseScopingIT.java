@@ -59,6 +59,10 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
   private static final String OTHER_TENANT_DATABASE = "zzsecretdb79wq";
   private static final String OTHER_TENANT_TYPE     = "ZzSecretType79wq";
 
+  /** A reserved internal name (leading dot) registered at runtime, which no caller should be shown. */
+  private static final String RESERVED_DATABASE = ".zzreserved79wq";
+  private static final String RESERVED_TYPE     = "ZzReservedType79wq";
+
   private static final String TENANT_USER     = "tenant79wq";
   private static final String TENANT_PASSWORD = "tenantpassword79wq";
 
@@ -98,7 +102,19 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
       assertThat(rootView).as("root keeps the unfiltered operator view")
           .contains(getDatabaseName(), OTHER_TENANT_DATABASE);
       assertThat(rootView).as("reserved internal databases are not operator-visible state")
-          .noneMatch(name -> name.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX));
+          .noneMatch(ArcadeDBServer::isReservedDatabaseName);
+
+      // The databases array and the alerts payload are built from one set, so they must agree on what
+      // exists. Guarded by the precondition below: the single-bucket alert has to be live for its silence
+      // about the reserved database to mean anything.
+      assertThat(singleBucketAlertDatabases(root.json()))
+          .as("precondition: the single-bucket-types alert must actually be firing")
+          .contains(OTHER_TENANT_DATABASE);
+      assertThat(singleBucketAlertDatabases(root.json()))
+          .as("alerts must not name a reserved database the databases array already excludes")
+          .noneMatch(ArcadeDBServer::isReservedDatabaseName);
+      assertThat(root.body).as("nor may its schema leak through the alert payload")
+          .doesNotContain(RESERVED_TYPE);
     });
   }
 
@@ -192,35 +208,50 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Runs {@code body} with a second database holding one single-bucket type, so the
-   * {@code single-bucket-types} alert has a type name to disclose. The database is created on every node
-   * before the type is added: the schema DDL runs through the Raft-wrapped handle and replicates, and a
-   * peer that does not hold the database would quarantine the entry and churn snapshot resyncs. The
-   * database and the tenant user are always removed afterwards, whatever the outcome.
+   * Runs {@code body} with two extra databases present, each holding one single-bucket type so the
+   * {@code single-bucket-types} alert has a type name to disclose for it:
+   * <ul>
+   *   <li>{@link #OTHER_TENANT_DATABASE} - another tenant's database, which the scoped user must not see;</li>
+   *   <li>{@link #RESERVED_DATABASE} - a reserved internal name, which nobody, root included, should see.
+   *       Only the startup directory scan filters reserved names; {@code createDatabase} does not, so a
+   *       reserved name genuinely reaches the registry at runtime and the assertion on it is not vacuous.</li>
+   * </ul>
+   * Both are created on every node before their type is added: the schema DDL runs through the Raft-wrapped
+   * handle and replicates, and a peer that does not hold the database would quarantine the entry and churn
+   * snapshot resyncs. Everything, including the tenant user, is removed afterwards whatever the outcome.
    */
   private void withOtherTenantDatabase(final int serverIndex, final ThrowingRunnable body) throws Exception {
-    for (int i = 0; i < getServerCount(); i++)
-      getServer(i).createDatabase(OTHER_TENANT_DATABASE, ComponentFile.MODE.READ_WRITE);
+    createOnEveryNode(OTHER_TENANT_DATABASE, OTHER_TENANT_TYPE, serverIndex);
     try {
-      final ServerDatabase other = getServer(serverIndex).getDatabase(OTHER_TENANT_DATABASE);
-      other.getSchema().createDocumentType(OTHER_TENANT_TYPE, 1);
-      body.run();
+      createOnEveryNode(RESERVED_DATABASE, RESERVED_TYPE, serverIndex);
+      try {
+        body.run();
+      } finally {
+        dropFromEveryNode(RESERVED_DATABASE);
+      }
     } finally {
       dropTenantUser(serverIndex);
-      dropOtherTenantDatabase();
+      dropFromEveryNode(OTHER_TENANT_DATABASE);
     }
   }
 
-  private void dropOtherTenantDatabase() {
+  private void createOnEveryNode(final String databaseName, final String typeName, final int serverIndex) {
+    for (int i = 0; i < getServerCount(); i++)
+      getServer(i).createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = getServer(serverIndex).getDatabase(databaseName);
+    db.getSchema().createDocumentType(typeName, 1);
+  }
+
+  private void dropFromEveryNode(final String databaseName) {
     for (int i = 0; i < getServerCount(); i++) {
       final ArcadeDBServer server = getServer(i);
-      if (server == null || !server.existsDatabase(OTHER_TENANT_DATABASE))
+      if (server == null || !server.existsDatabase(databaseName))
         continue;
       // ServerDatabase refuses drop()/close() because the handle is shared, and dropping through the
       // Raft-wrapped handle would replicate the drop; go through the embedded instance so each node
       // cleans up its own copy, then unregister it from that server's registry.
-      server.getDatabase(OTHER_TENANT_DATABASE).getEmbedded().drop();
-      server.removeDatabase(OTHER_TENANT_DATABASE);
+      server.getDatabase(databaseName).getEmbedded().drop();
+      server.removeDatabase(databaseName);
     }
   }
 
@@ -238,6 +269,17 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
     final ServerSecurity security = getServer(serverIndex).getSecurity();
     if (security.getUser(TENANT_USER) != null)
       security.dropUser(TENANT_USER);
+  }
+
+  /** The database names the {@code single-bucket-types} alert reports, or an empty list when it is absent. */
+  private static List<String> singleBucketAlertDatabases(final JSONObject response) {
+    final JSONArray alerts = response.getJSONArray("alerts");
+    for (int i = 0; i < alerts.length(); i++) {
+      final JSONObject alert = alerts.getJSONObject(i);
+      if ("single-bucket-types".equals(alert.getString("id", "")))
+        return new ArrayList<>(alert.getJSONObject("details").getJSONObject("databases").keySet());
+    }
+    return List.of();
   }
 
   private static List<String> databaseNames(final JSONArray databases) {

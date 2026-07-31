@@ -151,14 +151,15 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // "Resync from Leader" control on followers) and to surface bootstrap baselines when present.
     // Scoped to the caller: the cluster status is server-level, but a database row carries that
     // database's transaction id and bootstrap fingerprint, which belong to its tenant alone.
+    // Reserved internal databases (the Raft control directory '.raft') are not operator-visible state: the
+    // presence matrix and the bootstrap-state RPC both skip them, and offering Studio a per-database action
+    // row for one would be meaningless. Dropped once, here, rather than inside the loop below, so that the
+    // databases array and the alerts payload built from the same set agree on what exists.
     final Set<String> authorizedDatabases = filterAuthorizedDatabases(user, httpServer.getServer().getDatabaseNames());
+    authorizedDatabases.removeIf(ArcadeDBServer::isReservedDatabaseName);
+
     final JSONArray databases = new JSONArray();
     for (final String dbName : authorizedDatabases) {
-      // Reserved internal databases (the Raft control directory '.raft') are not operator-visible state:
-      // the presence matrix and the bootstrap-state RPC both skip them, and offering Studio a per-database
-      // action row for one would be meaningless.
-      if (ArcadeDBServer.isReservedDatabaseName(dbName))
-        continue;
       final JSONObject dbJson = new JSONObject();
       dbJson.put("name", dbName);
       final ArcadeStateMachine.BootstrapBaseline baseline = stateMachine.getBootstrapBaseline(dbName);
