@@ -922,7 +922,10 @@ produced for it rather than by re-lexing, and the traversal descends into it - a
 Crossing into a body changes the variable scope, so a check that reads variable kinds (`type()` wants a
 relationship, `p.name` needs `p` not to be a path) re-binds itself to the kinds the body declares, over the ones it
 inherits; an implicit `CALL { }` imports nothing, so a name the body binds for itself shadows the outer one rather
-than answering for it.
+than answering for it. A body's kinds are built by walking its clauses in order, so the two spellings of the same
+import - `CALL (p) { ... }` and a leading `WITH p` - answer alike, while `WITH 1 AS p` stops `p` being a path. Each
+branch of a `UNION` is a scope in its own right: a variable only one branch declares is checked against the kind
+that branch gives it, instead of being dropped for the branches disagreeing about it.
 
 Two expression positions that were leaves for the same reason are covered too: an `EXISTS { }` written as a bare
 `WHERE` predicate, and a function call used as one (`WHERE isEmpty(x)`), each used to get an anonymous
