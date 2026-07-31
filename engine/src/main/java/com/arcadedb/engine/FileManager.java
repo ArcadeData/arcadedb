@@ -242,6 +242,11 @@ public class FileManager {
     }
   }
 
+  /**
+   * <b>Must stay lock-free (#5636.)</b> {@code Profiler.toJSON()} reads this while holding its own monitor, which a
+   * closing database can be waiting on, so a lock taken here would sit on the other side of that wait. Note this is
+   * deliberately NOT {@code synchronized}, unlike {@link #getFiles()} just below.
+   */
   public FileManagerStats getStats() {
     final FileManagerStats stats = new FileManagerStats();
     stats.maxOpenFiles = maxFilesOpened.get();

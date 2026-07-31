@@ -22,6 +22,17 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Per-session counters for one open database instance.
+ * <p>
+ * <b>These are per-session and must stay that way.</b> They are never persisted and never reloaded: a close followed
+ * by a reopen of the same path builds a new {@code LocalDatabase} with a new {@code DatabaseStats}, so the counters
+ * restart at zero. {@link com.arcadedb.Profiler} depends on that contract (#5636) - it folds a departing database's
+ * counters into a retained baseline to keep the JVM-wide totals monotonic, and if a reopened database re-reported
+ * what it had accumulated before the close, every one of those totals would double-count against that baseline and
+ * the engine metrics exported as Prometheus counters would step forward for no reason. Making any counter here
+ * survive a reopen therefore needs a matching change in {@code Profiler.unregisterDatabase}.
+ */
 public class DatabaseStats {
   public final AtomicLong writeTx       = new AtomicLong();
   public final AtomicLong readTx        = new AtomicLong();

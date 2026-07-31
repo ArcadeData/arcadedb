@@ -193,17 +193,23 @@ public class InsertExecutionPlanner {
     // If targetType is null but targetBucket is specified, derive the type from the bucket
     Identifier effectiveTargetType = targetType;
     if (effectiveTargetType == null && targetBucket != null) {
-      // #5636: null-tolerant lookups. Unlike handleInsertInto below, this branch has no `else bucket = null` arm,
-      // so both throwing forms raised before the guard could run and INSERT INTO BUCKET:<unknown> SELECT ... lost
-      // its own message to a generic SchemaException.
+      // #5636: null-tolerant lookups, and the same three-way shape as handleCreateRecord above. Before, this branch
+      // had no `else bucket = null` arm at all, so INSERT INTO BUCKET:<unknown> SELECT ... lost its own message to a
+      // generic SchemaException - and a target with neither a name nor a number unboxed null on getBucketNumber().
       final com.arcadedb.engine.Bucket bucket;
       if (targetBucket.getBucketName() != null)
         bucket = context.getDatabase().getSchema().getBucketByNameIfExists(targetBucket.getBucketName());
-      else
+      else if (targetBucket.getBucketNumber() != null)
         bucket = context.getDatabase().getSchema().getBucketByIdIfExists(targetBucket.getBucketNumber());
+      else
+        bucket = null;
 
       if (bucket == null)
-        throw new CommandSQLParsingException("Target bucket not found");
+        throw new CommandSQLParsingException(targetBucket.getBucketName() != null ?
+            "Target bucket '" + targetBucket.getBucketName() + "' not found" :
+            targetBucket.getBucketNumber() != null ?
+                "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
+                "Target bucket not specified");
 
       effectiveTargetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }

@@ -168,12 +168,30 @@ class Issue5636BucketLookupTest extends TestHelper {
     assertThatThrownBy(
         () -> database.command("sql", "insert into bucket:NoSuchBucket from select from Doc").close())
         .isInstanceOf(CommandSQLParsingException.class)
-        .hasMessageContaining("Target bucket not found");
+        .hasMessageContaining("Target bucket 'NoSuchBucket' not found");
 
     assertThatThrownBy(
         () -> database.command("sql", "insert into bucket:" + UNLOADED_BUCKET_ID + " from select from Doc").close())
         .isInstanceOf(CommandSQLParsingException.class)
-        .hasMessageContaining("Target bucket not found");
+        .hasMessageContaining("Target bucket with id " + UNLOADED_BUCKET_ID + " not found");
+  }
+
+  /**
+   * ...and the INSERT ... SELECT form must still work against a real bucket, which is the path both lookups above
+   * normally take.
+   */
+  @Test
+  void insertIntoAKnownBucketFromASelectStillWorks() {
+    database.getSchema().createDocumentType("Doc", 1);
+    database.getSchema().createDocumentType("Copy", 1);
+    final String target = database.getSchema().getType("Copy").getBuckets(false).getFirst().getName();
+
+    database.transaction(() -> {
+      database.newDocument("Doc").set("k", 1).save();
+      database.command("sql", "insert into bucket:" + target + " from select from Doc").close();
+    });
+
+    assertThat(database.countType("Copy", false)).isEqualTo(1);
   }
 
   /**

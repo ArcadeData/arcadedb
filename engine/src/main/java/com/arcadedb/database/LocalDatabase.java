@@ -428,6 +428,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return async;
   }
 
+  /**
+   * <b>Must stay lock-free, and must stay callable on a closed database (#5636.)</b> {@code Profiler} reads this
+   * while holding its own monitor - both on a metrics scrape and from {@code unregisterDatabase} on the close path -
+   * so acquiring a database lock here would put a database lock on the other side of a wait for that monitor, which
+   * is a deadlock. It reads plain atomics today; keep it that way.
+   */
   @Override
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();

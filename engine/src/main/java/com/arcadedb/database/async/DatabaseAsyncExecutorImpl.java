@@ -319,6 +319,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     createThreads(database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
   }
 
+  /**
+   * <b>Must stay lock-free (#5636.)</b> {@code Profiler.toJSON()} reads this while holding its own monitor, which a
+   * closing database can be waiting on, so a lock taken here would sit on the other side of that wait. The volatile
+   * read of {@code executorThreads} plus the queue sizes below is deliberately all it does.
+   */
   public DBAsyncStats getStats() {
     final DBAsyncStats stats = new DBAsyncStats();
 
