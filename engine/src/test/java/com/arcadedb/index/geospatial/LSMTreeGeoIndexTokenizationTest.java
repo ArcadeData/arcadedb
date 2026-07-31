@@ -175,6 +175,63 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
   }
 
   /**
+   * Same, for an AREA shape: that is the one the cell pruning of #5600 changes, and a pruned parent has to be written
+   * and removed alike or a delete would leave the parent cell pointing at a gone record.
+   */
+  @Test
+  void polygonDeleteRemovesEveryEntryOfTheRecord() {
+    createType("AreaDel");
+    database.command("sql", "CREATE INDEX ON AreaDel (coords) GEOSPATIAL");
+
+    final String[] areas = { //
+        "north:POLYGON ((8.0 44.0, 12.0 44.0, 12.0 46.0, 8.0 46.0, 8.0 44.0))", //
+        "centre:POLYGON ((11.5 41.5, 13.0 41.5, 13.0 42.5, 11.5 42.5, 11.5 41.5))", //
+        "south:POLYGON ((14.0 38.0, 16.0 38.0, 16.0 40.0, 14.0 40.0, 14.0 38.0))" };
+
+    database.transaction(() -> {
+      for (final String area : areas) {
+        final String[] parts = area.split(":", 2);
+        database.command("sql", "INSERT INTO AreaDel SET name = '" + parts[0] + "', coords = '" + parts[1] + "'");
+      }
+    });
+
+    final Shape italy = GeoUtils.getSpatialContext().getShapeFactory().rect(6.0, 18.0, 36.0, 47.0);
+    assertThat(lookup("AreaDel", italy)).hasSize(areas.length);
+
+    for (int i = 0; i < areas.length; i++) {
+      final String name = areas[i].split(":", 2)[0];
+      database.transaction(() -> database.command("sql", "DELETE FROM AreaDel WHERE name = '" + name + "'"));
+      assertThat(lookup("AreaDel", italy)).hasSize(areas.length - i - 1);
+    }
+  }
+
+  /**
+   * A jagged outline is where the cell pruning of #5600 bites hardest (measured at ~74% fewer entries): the collapsed
+   * parents must still answer a query at any resolution, and must not start matching a point far outside the shape.
+   */
+  @Test
+  void prunedJaggedPolygonIsStillFoundAtEveryResolution() throws Exception {
+    createType("Jagged");
+    database.command("sql", "CREATE INDEX ON Jagged (coords) GEOSPATIAL");
+
+    final StringBuilder wkt = new StringBuilder("POLYGON ((");
+    for (int i = 0; i <= 100; i++)
+      wkt.append(12.0 + i * 0.01).append(' ').append(41.0 + (i % 2 == 0 ? 0.0 : 0.004)).append(", ");
+    wkt.append("13.0 41.5, 12.0 41.5, 12.0 41.0))");
+
+    database.transaction(
+        () -> database.command("sql", "INSERT INTO Jagged SET name = 'coast', coords = '" + wkt + "'"));
+
+    // Coarser than the indexed cells
+    assertThat(lookup("Jagged", GeoUtils.getSpatialContext().getShapeFactory().rect(10.0, 15.0, 40.0, 44.0))).hasSize(1);
+    // A point well inside the outline
+    assertThat(lookup("Jagged", GeoUtils.getSpatialContext().getFormats().getWktReader().read("POINT (12.5 41.3)")))
+        .hasSize(1);
+    // Far away: the enlarged cover must not reach here
+    assertThat(lookup("Jagged", GeoUtils.getSpatialContext().getShapeFactory().rect(20.0, 21.0, 20.0, 21.0))).isEmpty();
+  }
+
+  /**
    * Same, on the legacy layout: it must keep removing the whole chain it wrote.
    */
   @Test
