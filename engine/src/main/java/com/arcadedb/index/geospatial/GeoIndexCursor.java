@@ -57,6 +57,9 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class GeoIndexCursor implements IndexCursor {
+  /** Shared: {@link #getBinaryKeyTypes()} is on the cursor surface, so it must not allocate per call. */
+  private static final byte[] NO_KEY_TYPES = new byte[0];
+
   private final Object[]            keys;
   private final GeoCoveringCellWalk walk;
   private final CellCursorFactory   cellCursorFactory;
@@ -176,7 +179,7 @@ class GeoIndexCursor implements IndexCursor {
   /** Empty for the same reason as {@link #getKeys()}: the cell tokens are not a key type a caller can interpret. */
   @Override
   public byte[] getBinaryKeyTypes() {
-    return new byte[0];
+    return NO_KEY_TYPES;
   }
 
   /**
