@@ -39,6 +39,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Asserted through HTTP because the classification only exists at that boundary, and over both the read and the
  * write path because the auto-commit wrapper re-wraps the failure as a {@code TransactionException}, the shape that
  * historically degraded a client error back to 500.
+ * <p>
+ * The {@code detail} assertions below depend on the server not running in production mode:
+ * {@code AbstractServerHttpHandler.buildErrorBody} emits {@code detail} only when verbose, to avoid leaking the
+ * cause chain to a client probing endpoints. {@code SERVER_MODE} defaults to development, so it is present here.
+ * The status code and the {@code exception} field are asserted independently of that, and they are the actual
+ * subject of this test - {@code detail} only confirms which arithmetic error was reported.
  */
 class Issue5545SqlArithmeticErrorHttpStatusIT extends BaseGraphServerTest {
 
@@ -73,6 +79,7 @@ class Issue5545SqlArithmeticErrorHttpStatusIT extends BaseGraphServerTest {
       // UPDATE puts the statement on the auto-commit write path, where the failure arrives inside a
       // TransactionException wrapper instead of directly.
       final JSONObject json = executeSql(serverIndex, "UPDATE Issue5545Write SET w = abs(v)", 400);
+      assertThat(json.getString("exception")).isEqualTo(ArithmeticErrorException.class.getName());
       assertThat(json.getString("detail")).contains("long overflow");
       assertThat(json.getString("error")).doesNotContain("Error on transaction commit");
     });
