@@ -19,8 +19,6 @@
 package com.arcadedb.partitioning;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
@@ -31,9 +29,8 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.logging.Level;
 
+import static com.arcadedb.partitioning.WarningCapture.captureWarnings;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -253,63 +250,4 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
     return "target/databases/PartitionedStrategyLifecycleTest";
   }
 
-  /**
-   * Runs {@code action} with the engine's own {@link Logger} swapped for one that records, and returns the WARNING
-   * (or worse) messages it saw. Deliberately not a {@code java.util.logging} handler: the test resources set
-   * {@code com.arcadedb.level=SEVERE}, so whether a WARNING reaches a JUL handler depends on which loggers the rest
-   * of the suite happened to reconfigure first.
-   */
-  private static List<String> captureWarnings(final Runnable action) {
-    final CapturingLogger capturing = new CapturingLogger(LogManager.instance().getLogger());
-    LogManager.instance().setLogger(capturing);
-    try {
-      action.run();
-    } finally {
-      LogManager.instance().setLogger(capturing.delegate);
-    }
-    return capturing.messages;
-  }
-
-  private static final class CapturingLogger implements Logger {
-    private final Logger       delegate;
-    private final List<String> messages = new CopyOnWriteArrayList<>();
-
-    private CapturingLogger(final Logger delegate) {
-      this.delegate = delegate;
-    }
-
-    private void record(final Level level, final String message, final Object... args) {
-      if (message == null || level.intValue() < Level.WARNING.intValue())
-        return;
-      try {
-        messages.add(args.length > 0 ? message.formatted(args) : message);
-      } catch (final Exception ignored) {
-        messages.add(message);
-      }
-    }
-
-    @Override
-    public void log(final Object requester, final Level level, final String message, final Throwable exception,
-        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-        final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
-        final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
-        final Object arg15, final Object arg16, final Object arg17) {
-      record(level, message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-          arg15, arg16, arg17);
-      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
-          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
-    }
-
-    @Override
-    public void log(final Object requester, final Level level, final String message, final Throwable exception,
-        final String context, final Object... args) {
-      record(level, message, args);
-      delegate.log(requester, level, message, exception, context, args);
-    }
-
-    @Override
-    public void flush() {
-      delegate.flush();
-    }
-  }
 }

@@ -419,7 +419,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // index on other properties adds a lookup that fans out (issue #5637). Reported from here rather than from
     // LocalDocumentType.addIndexInternal, which runs once per BUCKET and also during schema reload, so the same lines
     // would be multiplied by the bucket count and repeated on every open.
-    // <p>
+    //
     // Never refuses, unlike the identical diagnosis at assignment time: there the strategy was what the user asked
     // for and a blocked one is pure cost, whereas here the INDEX is what was asked for and it is useful, so the
     // partitioning is what gives way. Outside the try/catch above on purpose - a diagnostic must not be able to undo

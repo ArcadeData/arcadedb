@@ -788,6 +788,15 @@ public class LocalDocumentType implements DocumentType {
     // Skipped while the schema is being read back, where the value being assigned is the one just read from
     // schema.json: saveConfiguration() would only mark the schema dirty, and LocalSchema flushes that at the end of
     // load, rewriting an identical file on every single open of any partitioned database.
+    //
+    // Deliberately NOT also skipped when the new strategy is equivalent to the previous one, which several sibling
+    // mutators do guard on. Re-issuing the same `ALTER TYPE ... BucketSelectionStrategy` is the operator's way of
+    // forcing the in-memory strategy back onto disk, and the two can genuinely diverge: saveConfiguration() reports
+    // an IOException by logging SEVERE and returning, so a transient disk failure leaves a type partitioned in
+    // memory and round-robin in schema.json - exactly the shape this issue is about. A skip-if-unchanged guard would
+    // read the in-memory value, conclude nothing changed, and turn that repair into a silent no-op. The cost of not
+    // guarding is one rewrite of schema.json per redundant DDL statement, on a path measured in statements per
+    // database lifetime.
     if (!schema.isReadingFromFile())
       schema.saveConfiguration();
 
@@ -815,6 +824,14 @@ public class LocalDocumentType implements DocumentType {
      * A later schema change (an index created on an already-partitioned type) has just re-decided the answer
      * (issue #5637). Everything is reported and nothing is refused: the index is what the user asked for and it is
      * useful, whereas at assignment time the strategy was what was asked for and a blocked one is pure cost.
+     * <p>
+     * <b>The whole current picture is reported, not the delta.</b> A type already carrying a fan-out advisory for an
+     * index on {@code code} draws it again when a third index is created, even though that DDL did not cause it. The
+     * alternative - work out which lines the new index is responsible for - would mean either matching on message
+     * text or teaching {@code checkSuitability()} to attribute each finding to an index, and it would report a state
+     * as partly acceptable while the enclosing paragraph says it is not. This says the same thing every time it is
+     * asked, which is what makes the answer worth reading; a {@code CREATE INDEX} is rare, deliberate DDL, and the
+     * line count is bounded by the number of indexes on the type.
      */
     SCHEMA_CHANGE
   }
