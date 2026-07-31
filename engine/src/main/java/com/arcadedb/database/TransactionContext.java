@@ -710,7 +710,12 @@ public class TransactionContext implements Transaction {
 
   /** Packs the (fileId, pageNumber) of the page holding {@code segmentRID} into a long key (no allocation). */
   private long edgeSegmentPageKey(final RID segmentRID) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
+    // #5608: the null-tolerant two-arg lookup, deliberately. The single-arg getBucketById raises SchemaException for an
+    // unknown id (and for a component that is not a bucket) BEFORE it can return null, which made the branch below
+    // dead code and silently defeated the retryable-conflict contract it states: the SchemaException that escaped
+    // instead is not a NeedRetryException, so a commit reaching it failed hard where it was meant to retry. Asking for
+    // the null the branch was written against makes the contract true again.
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(segmentRID.getBucketId(), false);
     if (bucket == null)
       // The edge bucket cannot vanish under the held commit lock; treat a missing one as a retryable conflict
       // rather than NPE.
@@ -1114,14 +1119,16 @@ public class TransactionContext implements Transaction {
    * <p>
    * #5608: TOTAL by construction. It runs inside the {@code catch (ConcurrentModificationException)} of the commit
    * loop, one statement before {@code throw e}, so anything thrown here would REPLACE the conflict the caller is
-   * propagating. That is worse than a misleading message: {@link #hasReplayableEdgeAppends(PageId)} reaches
-   * {@link #edgeSegmentPageKey(RID)}, whose bucket lookup raises {@code SchemaException} for an unknown id - the
-   * {@code bucket == null} branch under it never fires, because {@code LocalSchema.getBucketById(id)} throws before
-   * it can return null - and a {@code SchemaException} is NOT a {@link NeedRetryException}: the commit's generic
-   * {@code catch (Exception)} would have wrapped it into a plain {@code TransactionException}, turning a conflict
-   * the caller would have retried into a hard failure. Swallowing here, rather than making that one call
-   * non-throwing, is deliberate: it also covers whatever a future diagnostic adds to this method. A diagnostic must
-   * never be able to change what the caller reports.
+   * propagating with a different one - {@link #hasReplayableEdgeAppends(PageId)} alone reaches
+   * {@link #edgeSegmentPageKey(RID)}, which raises on a bucket it cannot resolve. Swallowing here, rather than making
+   * that one call non-throwing, is deliberate: it also covers whatever a future diagnostic adds to this method. A
+   * diagnostic must never be able to change what the caller reports.
+   * <p>
+   * Auditing that path is what exposed the bug fixed alongside this guard: the lookup used to raise
+   * {@code SchemaException}, which is NOT a {@link NeedRetryException}, so the commit's generic
+   * {@code catch (Exception)} would have wrapped it into a plain {@code TransactionException} - a hard failure where
+   * a retry was intended. That is fixed at the source now (see {@code edgeSegmentPageKey}), and this guard remains
+   * the reason a diagnostic cannot rewrite the caller's verdict whatever it starts throwing next.
    */
   private void reportCoverageDecline(final MutablePage page) {
     try {

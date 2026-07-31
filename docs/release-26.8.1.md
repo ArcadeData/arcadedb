@@ -602,9 +602,14 @@ Two smaller hardenings shipped with it:
   no correctness assertion would have caught. A regression test now asserts a merged page is committed hole-free.
 - **A diagnostic can no longer replace the conflict it is reporting.** `reportCoverageDecline` runs inside the
   commit loop's `catch (ConcurrentModificationException)`, one statement before the rethrow, and reached a bucket
-  lookup that raises `SchemaException` for an unknown id. Escaping there, it would have been wrapped as a plain
+  lookup that raised `SchemaException` for an unknown id. Escaping there, it would have been wrapped as a plain
   `TransactionException` - turning a conflict the caller would have retried into a hard failure. The diagnostic is
   now total by construction.
+- **An unresolvable edge bucket is the retryable conflict it always claimed to be.** The lookup above sat under a
+  `bucket == null` branch documented to "treat a missing one as a retryable conflict", which could never run: the
+  single-argument `getBucketById` raises before it can return null, so the `ConcurrentModificationException` that
+  branch promised was never the exception anyone actually got. The lookup now asks for the null its own contract
+  was written against, and every caller of it - tracking, poisoning and the rebase itself - retries as designed.
 
 ## A `STRING` property no longer reads back as a geometry
 

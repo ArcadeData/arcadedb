@@ -22,7 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
-import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.NeedRetryException;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -36,14 +37,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * runs from INSIDE the commit loop's {@code catch (ConcurrentModificationException e)}, one statement before
  * {@code throw e}. Anything it throws therefore replaces the conflict the caller is propagating.
  * <p>
- * That was not merely a misleading message. The diagnostic reaches {@code edgeSegmentPageKey}, whose bucket lookup
- * raises {@code SchemaException} for an unknown bucket id - the {@code bucket == null} branch below it never fires,
- * because {@code LocalSchema.getBucketById(id)} throws before returning null. A {@code SchemaException} escaping there
- * is NOT a {@code NeedRetryException}: the commit's generic {@code catch (Exception)} would have wrapped it into a
- * plain {@code TransactionException}, turning a conflict the caller would have retried into a hard failure.
+ * That was not merely a misleading message. The diagnostic reaches {@code edgeSegmentPageKey}, and its bucket lookup
+ * used to raise {@code SchemaException} for an unknown id - the {@code bucket == null} branch below it never fired,
+ * because the single-argument {@code LocalSchema.getBucketById(id)} throws before it can return null. A
+ * {@code SchemaException} is NOT a {@code NeedRetryException}, so the commit's generic {@code catch (Exception)} would
+ * have wrapped it into a plain {@code TransactionException}, turning a conflict the caller would have retried into a
+ * hard failure. Both halves are fixed: the lookup now asks for the null its own contract was written against, so a
+ * bucket it cannot resolve is the retryable conflict it always claimed to be.
  * <p>
- * The diagnostic is now total by construction, which is what this test pins: the setup is verified to be one where
- * resolving the segment's page key really does raise, and the report still returns quietly.
+ * The diagnostic is total by construction on top of that, which is what this test pins: the setup is verified to be
+ * one where resolving the segment's page key really does raise, and the report still returns quietly.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -70,10 +73,12 @@ class Issue5608CoverageDeclineDiagnosticTest extends TestHelper {
       final RID unresolvableSegment = new RID(unmappedBucketId, 0);
       tx.trackEdgeAppend(unresolvableSegment, new RID(unmappedBucketId, 1), new RID(unmappedBucketId, 2));
 
-      // The setup is genuinely hostile, and NOT with a retryable exception: pin it, so the test cannot quietly
-      // degrade into asserting that a no-op does not throw.
+      // The setup is genuinely hostile: pin it, so the test cannot quietly degrade into asserting that a no-op does
+      // not throw. And pin the KIND - a bucket the edge merge cannot resolve is a retryable conflict by contract, so
+      // a regression back to the bare SchemaException (non-retryable, hard-failing the commit) fails here too.
       assertThatThrownBy(() -> tx.poisonEdgeAppendPage(unresolvableSegment))
-          .as("resolving the segment's page key must really raise").isInstanceOf(SchemaException.class);
+          .as("resolving the segment's page key must really raise").isInstanceOf(ConcurrentModificationException.class)
+          .isInstanceOf(NeedRetryException.class);
 
       final MutablePage page = tx.getPageToModify(new PageId(database, bucket.getFileId(), 0), bucket.getPageSize(), false);
 
