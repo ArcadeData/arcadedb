@@ -1447,6 +1447,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } catch (final Exception e) {
             continue;
           }
+          // Skip one node rather than letting an NPE unwind to the outer catch, which would abandon the walk and
+          // silently treat every remaining node as reachable.
+          if (neighbors == null)
+            continue;
           while (neighbors.hasNext()) {
             final int next = neighbors.nextInt();
             if (next >= 0 && next < upper && !reached[next]) {
@@ -2079,8 +2083,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // rebuild absorbs it - at which point this check runs over it.
       //
       // Re-queueing deliberately does not bump mutationsSinceSerialize: a re-queued vector is not a mutation, and
-      // counting it would let an index whose last build orphaned a node rebuild itself forever. The cost is that
-      // on an otherwise idle index those entries are scanned by every search until the next real mutation.
+      // counting it would let an index whose last build orphaned a node rebuild itself forever. Two consequences,
+      // both accepted:
+      //  - the decrement just above may take the counter to zero and cancel the inactivity rebuild timer, so an
+      //    otherwise idle index has no self-scheduled path out of scanning these entries until the next real
+      //    mutation. That is the price of not spinning on rebuilds;
+      //  - deltaVectors is in-memory, so a restart drops the re-queue. The persisted graph still physically holds
+      //    the orphan and reports the same node count as the ordinal map, so the staleness check on load sees an
+      //    up-to-date graph and the vector is unsearchable again until some mutation triggers a rebuild. Closing
+      //    that would mean persisting the orphan set; it is left open because any rebuild re-detects it.
       final List<DeltaVectorEntry> unreachableEntries = new ArrayList<>();
       for (final int ordinal : findUnreachableOrdinals(builtGraph)) {
         if (ordinal >= finalActiveVectorIds.length)

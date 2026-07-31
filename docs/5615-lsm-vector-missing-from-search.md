@@ -88,6 +88,19 @@ In addition to the six already recorded on the issue:
 - Only the from-scratch path needs this. Vectors ingested through the live builder are already in the delta
   buffer from insertion, so an orphan there is served by the delta scan until a rebuild absorbs it.
 
+## Known limitations
+
+- **The recovery does not survive a restart.** `deltaVectors` is in-memory, so a restart drops the re-queued
+  entries. The persisted graph still physically contains the orphan and reports the same node count as the
+  ordinal map, so the staleness check on load (`graphSize < ordinalMap.length`) sees an up-to-date graph and
+  the vector is unsearchable again until some mutation triggers a rebuild. Closing this would mean persisting
+  the orphan set alongside the graph; it is left open because the builder defect is rare and any rebuild
+  re-detects it.
+- **An idle index keeps scanning the re-queued entries.** Re-queueing does not bump `mutationsSinceSerialize`
+  (counting it would let an orphaned index rebuild itself forever), and the decrement at the end of a rebuild
+  may cancel the inactivity timer, so there is no self-scheduled rebuild to clear them until the next real
+  mutation.
+
 ## Tests
 
 - `LSMVectorIndexGraphConnectivityTest` - deterministic coverage of the detection primitive against graphs
