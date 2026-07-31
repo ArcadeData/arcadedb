@@ -129,11 +129,26 @@ class GeoIndexCursor implements IndexCursor {
         cellCursor = null;
       }
 
-      if (!walk.advance())
+      if (!walk.advance()) {
+        // The walk is over, so nothing more can be emitted and the seen-set has no reader left. Release it here rather
+        // than waiting for close(): on a wide-area query it holds one entry per candidate, and a cursor that empties
+        // itself on exhaustion does not depend on every caller remembering to close a fully drained scan.
+        closed = true;
+        seen.clear();
         return;
+      }
 
       cellCursor = cellCursorFactory.open(walk.getToken(), walk.isFrontier());
     }
+  }
+
+  /**
+   * Number of RIDs the dedup set is currently holding - the cursor's only unbounded footprint. Package-private
+   * introspection: the retained size is a property worth asserting on, since a cursor that keeps it after the walk is
+   * over would hold one entry per candidate of a wide-area query for as long as the caller keeps the cursor.
+   */
+  int seenSize() {
+    return seen.size();
   }
 
   @Override

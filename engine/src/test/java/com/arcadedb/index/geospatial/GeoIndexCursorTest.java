@@ -192,6 +192,26 @@ class GeoIndexCursorTest {
   }
 
   @Test
+  void anExhaustedCursorReleasesItsSeenSetWithoutWaitingForClose() {
+    final String wkt = "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))";
+    final RecordingCellCursorFactory factory = new RecordingCellCursorFactory();
+    factory.contents.put(firstToken(wkt), List.of(new RID(1, 1)));
+
+    final GeoIndexCursor cursor = new GeoIndexCursor(KEYS, newWalk(wkt), factory);
+    while (cursor.hasNext())
+      cursor.next();
+
+    // the walk is over, so the dedup set has no reader left: on a wide-area query it holds one entry per candidate,
+    // and it must not linger waiting for a close() that a caller holding a fully drained cursor may never issue
+    assertThat(cursor.seenSize()).isZero();
+    assertThat(cursor.hasNext()).isFalse();
+
+    // closing an already-exhausted cursor stays a no-op
+    cursor.close();
+    assertThat(cursor.hasNext()).isFalse();
+  }
+
+  @Test
   void aNullFromAnOptimisticCellScanIsSkipped() {
     final String wkt = "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))";
     final RID live = new RID(4, 9);

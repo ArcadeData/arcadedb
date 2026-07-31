@@ -34,6 +34,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.locationtech.spatial4j.shape.Shape;
 
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -183,7 +184,10 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     // every bucket - the full content, not just the RID - before the first row reached the geo.* re-check, so a
     // `LIMIT 10` over a wide-area query paid for the whole candidate set. The index cursor is itself lazy, so the
     // whole chain now streams and a consumer that stops early stops the covering-cell walk with it.
-    final List<Index> bucketIndexes = List.of(geoTypeIndex.getIndexesOnBuckets());
+    // Arrays.asList, not List.of: the array comes from a live list and the eager loop this replaced simply skipped a
+    // null element (it is not an LSMTreeGeoIndex), so tolerate one here too rather than turning a schema anomaly into
+    // an NPE on the query path. It also wraps instead of copying an array that is already freshly allocated.
+    final List<Index> bucketIndexes = Arrays.<Index>asList(geoTypeIndex.getIndexesOnBuckets());
     return () -> new GeoCandidateIterator(bucketIndexes, searchShape);
   }
 
