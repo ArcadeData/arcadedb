@@ -188,3 +188,23 @@ notes:
 3. Dotted `$set` keys - agreed out of scope, already disclosed above.
 
 Module total after cycle 2: **69 green** (+2).
+
+### Cycle 3 - `4f3b0891a`
+
+`claude[bot]`: **LGTM**, no blocking issues. It additionally verified that `quoteFieldPath()` ->
+`Identifier.quote()` escapes both backtick and backslash, so the deliberately-unbindable field-name half is safe
+rather than merely out of scope. Two non-blocking observations:
+
+1. *`appendUpdateOperations` is now an independently-callable seam, so it should restate `buildValue`'s
+   "params must start empty" precondition in its own Javadoc.* **Applied.** Previously the invariant was
+   guaranteed only by the single caller and pinned by one test. Stated as an invariant with no issue references,
+   per repo convention.
+2. Dotted `$set` keys deserve their own issue - agreed, and left for the developer to file rather than opened
+   unilaterally. Recorded under "Follow-ups not taken" above.
+
+## Final state
+
+Three review cycles, all `LGTM` with no blocking issues at any point. Two of the seven non-blocking notes were
+applied (map presizing, precondition Javadoc), one was a real coverage gap that was filled (combined
+`$set` + `$inc`), one was declined with reasoning (`params.size()` counter), and three were pre-existing gaps
+recorded as follow-ups rather than changed.

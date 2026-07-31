@@ -623,6 +623,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
   }
 
+  /**
+   * Appends the update clauses for a BSON update document, binding every value it carries into {@code params} rather than
+   * spelling it into {@code sql}. Field names are the exception: SQL cannot bind a property name, so {@code $unset} and
+   * {@code $inc} quote theirs as identifiers.
+   * <p>
+   * {@code params} must be empty on entry and hold only generated placeholders afterwards: names are derived from the map's
+   * current size, so a pre-seeded map would silently reuse one. A caller that also appends a WHERE clause must share this
+   * same map, which continues the numbering instead of colliding with it.
+   */
   static void appendUpdateOperations(final StringBuilder sql, final Map<String, Object> params, final Document u) {
     if (isReplacement(u)) {
       sql.append(" CONTENT ");
