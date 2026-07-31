@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -28,6 +29,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -336,7 +338,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                   // Standard path: load edges (needs full Vertex)
                   if (sourceVertex == null)
                     sourceVertex = (Vertex) sourceObj;
-                  currentEdges = getEdges(sourceVertex);
+                  currentEdges = getEdges(sourceVertex, lastResult);
                   currentVertices = null;
                   currentGavNeighborIds = null;
                   seenEdges = getEffectiveDirection() == Direction.BOTH ? new RidHashSet() : null;
@@ -711,17 +713,41 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   /**
    * Gets edges from a vertex based on the relationship pattern.
    */
-  private Iterator<Edge> getEdges(final Vertex vertex) {
+  private Iterator<Edge> getEdges(final Vertex vertex, final Result lastResult) {
     final Direction direction = getEffectiveDirection();
     final String[] types = pattern.hasTypes() ?
         pattern.getTypes().toArray(new String[0]) :
         null;
+
+    // When the far end of the hop is already pinned - the shape every "is A linked to B" guard has,
+    // for instance the NOT EXISTS a loader wraps around each insert - the edge list can be filtered on
+    // the neighbour pointer held in the segment. Without this the step materialises every edge of the
+    // source and only rejects it at the bound-target check below, which on a super-node means hundreds
+    // of thousands of record loads to answer a question about one edge.
+    final RID boundTarget = getBoundTargetRID(lastResult);
+    if (boundTarget != null && vertex instanceof VertexInternal internalVertex)
+      return ((DatabaseInternal) context.getDatabase()).getGraphEngine()
+          .getEdgesConnectedTo(internalVertex, direction.toArcadeDirection(), boundTarget,
+              types == null ? new String[0] : types);
 
     if (types == null || types.length == 0) {
       return vertex.getEdges(direction.toArcadeDirection()).iterator();
     } else {
       return vertex.getEdges(direction.toArcadeDirection(), types).iterator();
     }
+  }
+
+  /**
+   * Returns the RID the target variable is already pinned to, or {@code null} when it is still free.
+   * <p>
+   * Deliberately accepts exactly what the bound-target identity check in {@code processStandardPath}
+   * accepts, so pre-filtering the edge list can never drop a row that check would have kept.
+   */
+  private RID getBoundTargetRID(final Result lastResult) {
+    if (lastResult == null || boundVariableNames == null || !boundVariableNames.contains(targetVariable))
+      return null;
+    final Object boundValue = lastResult.getProperty(targetVariable);
+    return boundValue instanceof Vertex boundVertex ? boundVertex.getIdentity() : null;
   }
 
   /**

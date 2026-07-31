@@ -765,6 +765,68 @@ public class GraphEngine {
   }
 
   /**
+   * Returns the edges between two known vertices, without materialising the ones that do not reach the target.
+   * <p>
+   * This is the iterating counterpart of {@link #isVertexConnectedTo(VertexInternal, Identifiable, Vertex.DIRECTION, String)}:
+   * use it when the far end of the pattern is already pinned and the edges still have to be inspected - typically to
+   * apply a filter on the edge's own properties. Compared to walking {@link #getEdges(VertexInternal, Vertex.DIRECTION,
+   * String...)} and comparing endpoints afterwards, the rejection happens on the pointers held in the edge segment, so
+   * the cost per non-matching edge drops from a record load plus a property deserialization to two integer comparisons.
+   * On a super-node that is the difference between the probe being unusable and being free.
+   *
+   * @param target the vertex the returned edges must reach; must not be null
+   */
+  public Iterator<Edge> getEdgesConnectedTo(final VertexInternal vertex, final Vertex.DIRECTION direction,
+                                            final Identifiable target, final String... edgeTypes) {
+    if (direction == null)
+      throw new IllegalArgumentException("Direction is null");
+    if (target == null)
+      throw new IllegalArgumentException("Target vertex is null");
+
+    final RID targetRID = target.getIdentity();
+    // The edge-list head pointers live in the vertex record, so they have to be read from the instance the
+    // running transaction has, not from whatever snapshot the caller happens to hold: a vertex loaded before
+    // an edge was appended still points at the previous head and would hide the newest edges. The public
+    // Vertex.getEdges() does this resolution for its callers; a caller reaching the engine directly does not.
+    final VertexInternal source = getMostUpdatedVertex(vertex);
+
+    switch (direction) {
+      case BOTH: {
+        final MultiIterator<Edge> result = new MultiIterator<>();
+        final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
+        if (outEdges != null)
+          result.addIterator(outEdges.edgeIteratorConnectedTo(targetRID, edgeTypes));
+        final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
+        if (inEdges != null)
+          result.addIterator(inEdges.edgeIteratorConnectedTo(targetRID, edgeTypes));
+        return result;
+      }
+
+      case OUT: {
+        final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
+        return outEdges != null ? outEdges.edgeIteratorConnectedTo(targetRID, edgeTypes) : Collections.emptyIterator();
+      }
+
+      case IN: {
+        final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
+        return inEdges != null ? inEdges.edgeIteratorConnectedTo(targetRID, edgeTypes) : Collections.emptyIterator();
+      }
+
+      default:
+        throw new IllegalArgumentException("Invalid direction " + direction);
+    }
+  }
+
+  /** Returns the instance of the vertex the running transaction has already loaded, or the given one. */
+  private VertexInternal getMostUpdatedVertex(final VertexInternal vertex) {
+    if (!database.isTransactionActive())
+      return vertex;
+    return database.getTransaction().getRecordFromCache(vertex.getIdentity()) instanceof VertexInternal cached ?
+        cached :
+        vertex;
+  }
+
+  /**
    * Returns all the connected vertices, both directions, any edge type.
    *
    * @return An iterator of PVertex instances

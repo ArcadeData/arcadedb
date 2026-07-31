@@ -69,6 +69,24 @@ public class EdgeLinkedList {
     return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes);
   }
 
+  /**
+   * Same as {@link #edgeIterator(String...)} but yielding only the edges that reach the given
+   * neighbour vertex.
+   * <p>
+   * The filter is applied to the neighbour pointer stored beside each edge pointer in the segment,
+   * so a non-matching edge is discarded without its record being loaded. Use this instead of
+   * iterating every edge and comparing endpoints whenever the far end is already known.
+   */
+  public Iterator<Edge> edgeIteratorConnectedTo(final RID neighbor, final String... edgeTypes) {
+    final ResettableIteratorBase<Edge> iterator;
+    if (edgeTypes == null || edgeTypes.length == 0)
+      iterator = new EdgeIterator(lastSegment, vertex.getIdentity(), direction);
+    else
+      iterator = new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes);
+    iterator.setNeighborVertexFilter(neighbor);
+    return iterator;
+  }
+
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
       return new VertexIterator((DatabaseInternal) vertex.getDatabase(), lastSegment);

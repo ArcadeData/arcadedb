@@ -18,11 +18,13 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -30,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -131,7 +134,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
        */
       private boolean isConnectedOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-        for (final Edge edge : source.getEdges(arcadeDirection, edgeTypes)) {
+        for (final Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection); edges.hasNext(); ) {
+          final Edge edge = edges.next();
           try {
             if (arcadeDirection == Vertex.DIRECTION.BOTH) {
               // source can be either endpoint, so check both sides
@@ -147,6 +151,20 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           }
         }
         return false;
+      }
+
+      /**
+       * Narrows the fallback to the edges that actually reach the target, using the neighbour pointer
+       * stored in the edge segment. The endpoint check below still runs and still reports ghosts, but
+       * it now runs on the handful of candidate edges instead of on the source's whole edge list -
+       * which is what keeps this fallback usable when the source is a super-node.
+       */
+      private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection) {
+        if (source instanceof VertexInternal internalSource)
+          return ((DatabaseInternal) source.getDatabase()).getGraphEngine()
+              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(),
+                  edgeTypes == null ? new String[0] : edgeTypes);
+        return source.getEdges(arcadeDirection, edgeTypes).iterator();
       }
 
       @Override

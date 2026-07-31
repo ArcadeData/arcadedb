@@ -66,8 +66,8 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
         nextEdge = currentContainer.getRID(currentPosition);
         nextVertex = currentContainer.getRID(currentPosition);
 
-        if (!validBuckets.contains(nextEdge.getBucketId())) {
-          // FILTER IT OUT
+        if (!validBuckets.contains(nextEdge.getBucketId()) || !matchesNeighborFilter(nextVertex)) {
+          // FILTER IT OUT. BOTH CHECKS RUN ON THE POINTERS READ FROM THE SEGMENT, BEFORE ANY RECORD IS TOUCHED
           nextEdge = null;
           nextVertex = null;
           next = null;
