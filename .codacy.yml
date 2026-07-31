@@ -9,7 +9,10 @@ exclude_paths:
   - "**/*.sh"
   - "**/*.bat"
   - "**/*.md"
-  - "**/src/test/*"
+  # Recursive: the single-star form only matched the direct children of src/test (i.e. the `java`
+  # directory itself), so test sources were in practice excluded only when their name happened to end
+  # in Test.java or IT.java. A test-support class named anything else was analysed as production code.
+  - "**/src/test/**"
   - "**/*Test.java"
   - "**/*IT.java"
   - "**/*CharStream.java"

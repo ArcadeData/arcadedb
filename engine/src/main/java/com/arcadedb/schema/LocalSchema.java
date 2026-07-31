@@ -1889,7 +1889,36 @@ public class LocalSchema implements Schema {
               new Object[0];
 
           final DocumentType type = getType(typeName);
-          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
+          try {
+            type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
+          } catch (final Exception e) {
+            // One type's strategy must not take the rest of the load down with it (issue #5637). This block sits
+            // near the end of readConfiguration, so an exception escaping here aborts every remaining type's
+            // strategy AND everything the loader has not reached yet - triggers, function libraries, extensions,
+            // and the compaction file-migration map WAL recovery redirects through - while the outer catch reports
+            // the whole schema as "reset". The type stays on its default round-robin strategy, which loses the
+            // partition pruning but leaves a database that opens and says why.
+            //
+            // The catch has to be broad to give that guarantee, so the LEVEL carries what the type cannot: a
+            // SchemaException or IllegalArgumentException is the strategy declining to be restored - an
+            // unresolvable implementation class, a configuration the suitability check refuses - which is a
+            // property of this database and worth a WARNING. Anything else reaching here is a fault in the bind
+            // path itself, and would otherwise be indistinguishable from an expected refusal in the log of a
+            // database that opens successfully.
+            // IllegalArgumentException is listed alongside SchemaException for the strategies this engine does not
+            // ship: a custom BucketSelectionStrategy named by class in schema.json runs its own setType() here, and
+            // rejecting the type it is handed is what that exception is for. The engine's own strategies no longer
+            // raise it from the bind path - that is the change this issue made - so on a stock database only the
+            // SchemaException arm fires.
+            final boolean expected = e instanceof SchemaException || e instanceof IllegalArgumentException;
+            LogManager.instance().log(this, expected ? Level.WARNING : Level.SEVERE,
+                "Cannot restore the '%s' bucket selection strategy on type '%s': %s. The type falls back to `%s`",
+                // Falling back to toString() because the failures this catch is broad enough to reach include the
+                // ones that carry no message - an NPE most of all - and "...: null" names neither what went wrong
+                // nor where, on the one line an operator is likely to read.
+                e, bucketSelectionStrategy.getString("name"), typeName,
+                e.getMessage() != null ? e.getMessage() : e.toString(), RoundRobinBucketSelectionStrategy.NAME);
+          }
         }
         // Restore the persisted needsRepartition flag AFTER the strategy is set. We always force
         // the flag to the persisted value (true OR false), because {@link

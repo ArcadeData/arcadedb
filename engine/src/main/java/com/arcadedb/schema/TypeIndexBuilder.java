@@ -359,6 +359,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (sortedBuild)
       validateSortedBuildPreconditions();
 
+    final TypeIndex created;
     try {
       final long recordFileChangesStarted = System.nanoTime();
       schema.recordFileChanges(() -> {
@@ -395,7 +396,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
             System.nanoTime() - sortedBuildStarted);
         emitSortedBuildMetrics(completed);
       }
-      return type.getIndexByProperties(metadata.propertyNames);
+
+      created = type.getIndexByProperties(metadata.propertyNames);
     } catch (final NeedRetryException e) {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
@@ -411,6 +413,30 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames
           + (e.getMessage() != null ? ": " + e.getMessage() : ""), e);
     }
+
+    // An index is half of what decides whether a partition is any use, so one created after the strategy was assigned
+    // can undo the check that accepted it: recollating the partition index COLLATE CI makes it unprunable, and an
+    // index on other properties adds a lookup that fans out (issue #5637). Reported from here rather than from
+    // LocalDocumentType.addIndexInternal, which runs once per BUCKET and also during schema reload, so the same lines
+    // would be multiplied by the bucket count and repeated on every open.
+    //
+    // Never refuses, unlike the identical diagnosis at assignment time: there the strategy was what the user asked
+    // for and a blocked one is pure cost, whereas here the INDEX is what was asked for and it is useful, so the
+    // partitioning is what gives way. Outside the try/catch above on purpose - a diagnostic must not be able to undo
+    // an index that was built successfully by falling into the cleanup arm.
+    try {
+      type.reportPartitionSuitabilityAfterSchemaChange();
+    } catch (final RuntimeException e) {
+      // Same reasoning one step further. By this point the index is built, committed and registered on the type, so
+      // letting anything unexpected out of the diagnosis would fail the command over an index that exists - and the
+      // obvious retry then fails again with "already exists". SCHEMA_CHANGE mode cannot raise the refusal, so this
+      // only catches a genuine fault in the check or the logging, which is worth a line and nothing more.
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot report the partition suitability of type '%s' after creating the index on %s. The index itself was "
+              + "created successfully", e, metadata.typeName, metadata.propertyNames);
+    }
+
+    return created;
   }
 
   protected Index createBucketIndex(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,

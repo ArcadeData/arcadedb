@@ -933,6 +933,53 @@ Two cluster endpoints move behind the root check that the seven mutating Raft en
 `GET /api/v1/cluster` also stops listing reserved internal databases such as the Raft control directory
 `.raft`, matching what the presence matrix and the bootstrap-state RPC already did.
 
+## Partitioned types survive a restart, and a later `CREATE INDEX` says what it cost the partitioning
+
+Two loose ends of the partitioned-strategy series, both about what happens to a type *after* it has been configured
+([#5637](https://github.com/ArcadeData/arcadedb/issues/5637)).
+
+**`ALTER TYPE ... BucketSelectionStrategy` is persisted.** The strategy was set in memory and nothing wrote it out,
+so a type partitioned by that DDL alone came back **`round-robin` after a restart** - unless some later, unrelated
+schema mutation happened to flush the configuration first. This hit *correctly* configured types, which is what
+makes it worse than the states #5603 refuses: new records were placed round-robin among rows the partition hash had
+placed, every partition-aware lookup silently fanned out, and nothing warned. It is the one schema mutator that
+left the write to somebody else - the flag *about* the partitioning (`needsRepartition`) saved itself while the
+partitioning did not. Databases whose strategy never reached `schema.json` simply need the `ALTER TYPE` re-issued;
+placement of existing records is unaffected either way, since the hash is the same one.
+
+The fix is on the mutator, not on `partitioned`, so `thread` stops being lost across a restart on the same terms.
+`round-robin` is the default and is deliberately still absent from `schema.json`, which is how reverting to it
+persists.
+
+**An index created on an already-partitioned type is diagnosed when it is created.** #5603 refuses an unsuitable
+partition at assignment time, but the same state was reachable by reordering the DDL - attach the strategy first,
+then create the index that makes it unprunable:
+
+```sql
+ALTER TYPE T BucketSelectionStrategy `partitioned('name')`;   -- accepted
+DROP INDEX `T[name]`;
+CREATE INDEX ON T (name COLLATE CI) UNIQUE;                   -- used to be silent
+```
+
+Correctness always held - the strategy declines to prune, so lookups fan out and `UNIQUE` stays global - but
+between the `CREATE INDEX` and the next restart nothing said the partitioning had stopped doing anything. The same
+applied to an index on non-partition properties, which drew the fan-out advisory at assignment time and nothing
+when it arrived later. `CREATE INDEX` now re-runs the same check and reports the result. It never refuses: at
+assignment time the strategy is what was asked for and a blocked one is pure cost, whereas here the index is what
+was asked for and it is useful, so the partitioning is what gives way. An index change that leaves the partition
+exactly as suitable as it was stays quiet.
+
+**A partitioned type whose index has been dropped opens again.** Binding the strategy demanded the unique automatic
+index on the partition properties, and it did so on every rebind - including the one the schema loader performs on
+every open. With the strategy now reaching `schema.json`, a `DROP INDEX` on the partition key made the next open
+throw *from inside the loader*, which aborts everything it has not reached yet: the remaining types' strategies,
+the triggers, the function libraries, the extensions, and the compaction file-migration map WAL recovery redirects
+through - reported only as `Error on loading schema. The schema will be reset`. Binding no longer validates
+anything; the requirement moved to the suitability check, which refuses it at assignment time exactly as before and
+warns about it on load. The type keeps its partitioned placement, so records written after the index was dropped
+still land where a lookup would look for them. Any other unusable strategy - an implementation class that no longer
+resolves, say - now falls back to `round-robin` for that one type with a warning naming it, instead of costing the
+rest of the schema.
 ## Cypher: a subquery body is validated like the query around it
 
 The widening of #5602 left one place the walk could not reach, and the class it was written on said so in the
