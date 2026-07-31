@@ -101,6 +101,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.Timer;
@@ -3922,7 +3923,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         @Override
         public Identifiable next() {
           if (!hasNext())
-            return null;
+            // #5635: an exhausted IndexCursor throws, it does not hand the caller a null element
+            throw new NoSuchElementException();
           return resultRIDs.get(position++);
         }
 

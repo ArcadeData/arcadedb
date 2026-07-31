@@ -18,7 +18,6 @@
  */
 package com.arcadedb.index.fulltext;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.text.TextLevenshteinDistance;
 import com.arcadedb.index.IndexCursor;
@@ -502,12 +501,13 @@ public class FullTextQueryExecutor {
    */
   private void collectAllIndexedRids(final Map<RID, AtomicInteger> scoreMap) {
     final IndexCursor cursor = index.iterateUnderlying(true, null, true);
-    while (cursor.hasNext()) {
-      // next() may return null after hasNext()==true (deleted/tombstoned entry, issue #5118); skip it.
-      final Identifiable record = cursor.next();
-      if (record == null)
-        continue;
-      scoreMap.computeIfAbsent(record.getIdentity(), k -> new AtomicInteger(1));
+    try {
+      while (cursor.hasNext())
+        scoreMap.computeIfAbsent(cursor.next().getIdentity(), k -> new AtomicInteger(1));
+    } finally {
+      // a compacted-series cursor registers with its file, so an abandoned one keeps a retired file alive for the
+      // lifetime of the database
+      cursor.close();
     }
     // A pure-negative query (only MUST_NOT clauses) has no candidate set, so the whole index must be materialized to subtract the
     // excluded RIDs and form the complement. This is O(index) in time and memory; warn (throttled) when the materialized universe
@@ -533,14 +533,11 @@ public class FullTextQueryExecutor {
     final IndexCursor cursor = index.getPostings(searchKey);
     long df = 0L;
     while (cursor.hasNext()) {
-      // next() may return null after hasNext()==true (deleted/tombstoned entry, issue #5118); skip it.
-      final Identifiable record = cursor.next();
-      if (record == null)
-        continue;
+      final RID rid = cursor.next().getIdentity();
       // Deletion markers carry a negative bucket id: they are not live documents and must not inflate the document frequency.
-      if (record.getIdentity().getBucketId() >= 0)
+      if (rid.getBucketId() >= 0)
         ++df;
-      scoreMap.computeIfAbsent(record.getIdentity(), k -> new AtomicInteger(0)).incrementAndGet();
+      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
     }
     recordDocumentFrequency(searchKey, df);
   }
@@ -568,14 +565,11 @@ public class FullTextQueryExecutor {
       final IndexCursor cursor = index.getPostings(term.text());
       long df = 0L;
       while (cursor.hasNext()) {
-        // next() may return null after hasNext()==true (deleted/tombstoned entry, issue #5118); skip it.
-        final Identifiable record = cursor.next();
-        if (record == null)
-          continue;
+        final RID rid = cursor.next().getIdentity();
         // Deletion markers carry a negative bucket id and must not inflate the document frequency.
-        if (record.getIdentity().getBucketId() >= 0)
+        if (rid.getBucketId() >= 0)
           ++df;
-        termMatches.put(record.getIdentity(), new AtomicInteger(1));
+        termMatches.put(rid, new AtomicInteger(1));
       }
       recordDocumentFrequency(term.text(), df);
 
@@ -700,27 +694,28 @@ public class FullTextQueryExecutor {
     // Per-expanded-key document frequency for this walk, accumulated in a primitive cell (one allocation per distinct key
     // rather than a boxed Long per posting) and flushed once the range has been consumed.
     final Map<String, long[]> walkFrequencies = new HashMap<>();
-    while (cursor.hasNext()) {
-      // LSMTreeIndexCursor.next() can legitimately return null after hasNext()==true (a full-key tombstone / deleted entry it
-      // steps over while its internal iterators are still considered alive - issue #5118). Skip it instead of dereferencing.
-      final Identifiable record = cursor.next();
-      if (record == null)
-        continue;
-      final RID rid = record.getIdentity();
-      final Object[] keys = cursor.getKeys();
-      if (keys == null || keys.length == 0 || keys[0] == null)
-        continue;
-      final String key = keys[0].toString();
-      if (matcher.matches(key)) {
-        recordScoringToken(key, boost);
-        // Deletion markers carry a negative bucket id and must not inflate the document frequency.
-        if (rid.getBucketId() >= 0)
-          ++walkFrequencies.computeIfAbsent(key, k -> new long[1])[0];
-        if (!tokensOnly)
-          scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
-      } else if (rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
-        break;
+    try {
+      while (cursor.hasNext()) {
+        final RID rid = cursor.next().getIdentity();
+        final Object[] keys = cursor.getKeys();
+        if (keys == null || keys.length == 0 || keys[0] == null)
+          continue;
+        final String key = keys[0].toString();
+        if (matcher.matches(key)) {
+          recordScoringToken(key, boost);
+          // Deletion markers carry a negative bucket id and must not inflate the document frequency.
+          if (rid.getBucketId() >= 0)
+            ++walkFrequencies.computeIfAbsent(key, k -> new long[1])[0];
+          if (!tokensOnly)
+            scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+        } else if (rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
+          break;
+        }
       }
+    } finally {
+      // the walk usually stops on the prefix boundary rather than on exhaustion, so this is the common path, not the
+      // exceptional one: a compacted-series cursor left registered would keep a retired file alive until restart
+      cursor.close();
     }
 
     for (final Map.Entry<String, long[]> frequency : walkFrequencies.entrySet())

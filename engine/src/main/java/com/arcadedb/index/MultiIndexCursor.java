@@ -150,11 +150,13 @@ public class MultiIndexCursor implements IndexCursor {
 
     final Identifiable nextValue = cursorsNextValues.set(nextCursorIndex, null);
     currentRecord = nextValue;
-    if (cursors.get(nextCursorIndex).hasNext()) {
-      final Identifiable next = cursors.get(nextCursorIndex).next();
-      if (next != null)
-        cursorsNextValues.set(nextCursorIndex, next);
-    }
+
+    // #5635: refill this cursor's lookahead slot. An IndexCursor whose hasNext() answered true always yields a
+    // non-null element, so a live cursor's slot is never left empty - which used to happen with the optimistic
+    // hasNext() of LSMTreeIndexCursor and propagated the null straight out of this next().
+    final IndexCursor consumed = cursors.get(nextCursorIndex);
+    if (consumed.hasNext())
+      cursorsNextValues.set(nextCursorIndex, consumed.next());
 
     return nextValue;
   }
