@@ -131,8 +131,10 @@ public class Profiler {
       // THE CALLER IS MID-CLOSE: A STAT SOURCE ALREADY TORN DOWN MUST NOT TAKE THE CLOSE PATH DOWN WITH IT. The
       // database still has to leave the registry - keeping it would make every later toJSON() throw on the same
       // dead source - so this one case genuinely does decrease the totals, and on a typed counter that reads as a
-      // reset. Logged at WARNING, not FINE: it is the only path that can still produce the artifact, and an
-      // operator seeing an unexplained rate spike needs this line to explain it.
+      // reset. The loss is PERMANENT, not transient: this database's contribution never enters the baseline, so
+      // every later total is lower by it forever. That is still monotonic - the totals only ever grow from there -
+      // so it costs accuracy, not the counter contract. Logged at WARNING, not FINE: it is the only path that can
+      // still produce the artifact, and an operator seeing an unexplained rate spike needs this line to explain it.
       LogManager.instance()
           .log(this, Level.WARNING, "Could not retain the profiler counters of a closing database: the engine "
               + "totals will step back by its contribution, which appears as a counter reset in Prometheus", e);

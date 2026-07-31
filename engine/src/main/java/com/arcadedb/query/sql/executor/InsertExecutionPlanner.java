@@ -193,20 +193,23 @@ public class InsertExecutionPlanner {
     // If targetType is null but targetBucket is specified, derive the type from the bucket
     Identifier effectiveTargetType = targetType;
     if (effectiveTargetType == null && targetBucket != null) {
-      // #5636: null-tolerant lookups, and the same three-way shape as handleCreateRecord above. Before, this branch
-      // had no `else bucket = null` arm at all, so INSERT INTO BUCKET:<unknown> SELECT ... lost its own message to a
-      // generic SchemaException - and a target with neither a name nor a number unboxed null on getBucketNumber().
+      // #5636: identical in shape to handleCreateRecord above, which it had drifted from in three ways. It read
+      // getBucketName() directly instead of resolveBucketName(), so a PARAMETERIZED target - INSERT INTO bucket:?
+      // FROM SELECT ... - never resolved its parameter and failed even for a bucket that exists. It had no
+      // `else bucket = null` arm, so an unknown bucket lost its message to a generic SchemaException and a target
+      // with neither name nor number unboxed null on getBucketNumber(). And its message named nothing.
       final com.arcadedb.engine.Bucket bucket;
-      if (targetBucket.getBucketName() != null)
-        bucket = context.getDatabase().getSchema().getBucketByNameIfExists(targetBucket.getBucketName());
+      final String resolvedName = resolveBucketName(targetBucket, context);
+      if (resolvedName != null)
+        bucket = context.getDatabase().getSchema().getBucketByNameIfExists(resolvedName);
       else if (targetBucket.getBucketNumber() != null)
         bucket = context.getDatabase().getSchema().getBucketByIdIfExists(targetBucket.getBucketNumber());
       else
         bucket = null;
 
       if (bucket == null)
-        throw new CommandSQLParsingException(targetBucket.getBucketName() != null ?
-            "Target bucket '" + targetBucket.getBucketName() + "' not found" :
+        throw new CommandSQLParsingException(resolvedName != null ?
+            "Target bucket '" + resolvedName + "' not found" :
             targetBucket.getBucketNumber() != null ?
                 "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
                 "Target bucket not specified");

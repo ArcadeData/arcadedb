@@ -100,6 +100,12 @@ public final class EngineMetricsBinder implements MeterBinder {
     gauge(registry, "arcadedb.engine.databases", "Open databases", "totalDatabases");
   }
 
+  /**
+   * Registers a monotonic total. The caller is asserting the underlying value never decreases: the per-database
+   * counters get that from {@code Profiler}'s retained baseline, the {@code PageManager} globals from simply never
+   * being reset (a note at their declarations says so). Break either and the reset artifact this change removed
+   * comes straight back.
+   */
   private void counter(final MeterRegistry registry, final String name, final String description, final String jsonKey) {
     // No baseUnit(): Micrometer's Prometheus renderer splices the base unit INTO the series name
     // (arcadedb_engine_wal_bytes_written_bytes_total), which is a second, gratuitous rename on top of the _total

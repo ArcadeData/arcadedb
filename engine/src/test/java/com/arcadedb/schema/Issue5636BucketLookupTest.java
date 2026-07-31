@@ -28,6 +28,8 @@ import com.arcadedb.serializer.BinarySerializerTestHelper;
 import com.arcadedb.serializer.BinaryTypes;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -174,6 +176,39 @@ class Issue5636BucketLookupTest extends TestHelper {
         () -> database.command("sql", "insert into bucket:" + UNLOADED_BUCKET_ID + " from select from Doc").close())
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Target bucket with id " + UNLOADED_BUCKET_ID + " not found");
+  }
+
+  /**
+   * A target with neither a name nor a number is reachable through a bound parameter, and used to unbox {@code null}
+   * from {@code getBucketNumber()}. It now says so instead of throwing NPE.
+   */
+  @Test
+  void insertFromASelectIntoAnUnnamedTargetSaysSoInsteadOfThrowingNpe() {
+    database.getSchema().createDocumentType("Doc", 1);
+
+    assertThatThrownBy(() -> database.command("sql", "insert into bucket:? from select from Doc",
+        Map.of("0", "NoSuchBucket")).close())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Target bucket 'NoSuchBucket' not found");
+  }
+
+  /**
+   * The same drift hid a functional bug, not just a message one: {@code handleInsertSelect} read
+   * {@code getBucketName()} directly rather than calling {@code resolveBucketName()} like its sibling, so a
+   * PARAMETERIZED target never resolved its parameter and the statement failed even for a bucket that exists.
+   */
+  @Test
+  void insertFromASelectResolvesAParameterizedBucketName() {
+    database.getSchema().createDocumentType("Doc", 1);
+    database.getSchema().createDocumentType("Copy", 1);
+    final String target = database.getSchema().getType("Copy").getBuckets(false).getFirst().getName();
+
+    database.transaction(() -> {
+      database.newDocument("Doc").set("k", 1).save();
+      database.command("sql", "insert into bucket:? from select from Doc", Map.of("0", target)).close();
+    });
+
+    assertThat(database.countType("Copy", false)).isEqualTo(1);
   }
 
   /**
