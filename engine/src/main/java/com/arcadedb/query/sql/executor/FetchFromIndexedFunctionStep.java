@@ -121,7 +121,28 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   }
 
   @Override
+  public void close() {
+    // Release the underlying index cursors even when the scan did not run to exhaustion (e.g. a LIMIT was reached or
+    // the result set was closed early). The geospatial function now answers with a LAZY chain of index cursors
+    // (#5601), and a compacted-series cursor registers with its file so a full compaction defers dropping it: an
+    // unclosed cursor would keep the retired file alive. Mirrors FetchFromIndexStep.close().
+    releaseResult();
+    super.close();
+  }
+
+  @Override
   public void reset() {
-    this.fullResult = null;
+    releaseResult();
+  }
+
+  private void releaseResult() {
+    if (fullResult instanceof final AutoCloseable closeable) {
+      try {
+        closeable.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Error on closing the indexed function result iterator", e);
+      }
+    }
+    fullResult = null;
   }
 }

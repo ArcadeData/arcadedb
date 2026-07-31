@@ -737,5 +737,68 @@ and for division or modulo by zero (including `duration(...) / 0`, which used to
 - **HTTP and Bolt only.** The other wire protocols (Postgres, MongoDB, Redis, GraphQL, Gremlin) still report an
   arithmetic error through their generic execution-error handling; only the two paths a Cypher statement normally
   arrives on make the distinction.
+## `countEntries()` no longer counts tombstones as live entries
+
+On any LSM index, deleting records did not bring `countEntries()` back down to the number of live entries: the
+count settled on a residual that only a full compaction cleared. Deleting every record of a type left the index
+reporting `1` with zero records in the database ([#5601](https://github.com/ArcadeData/arcadedb/issues/5601)).
+
+The tombstones were not the problem - the cursor already skips dead keys, and the work it skipped is accounted in
+the `deadEntriesSkipped` stat. The count incremented once per `next()` call, and an LSM index cursor answers
+`hasNext()` optimistically: it reports on how many underlying page cursors are still live, not on whether any of
+them still holds a surviving RID, so `next()` legitimately returns `null` once a trailing run of tombstones leaves
+nothing to emit. That `null` was counted as an entry.
+
+`countEntries()` now counts values rather than calls, and closes its cursor when it is done - a full walk of every
+index being the last place that should leak a compacted-series retire guard. The contract is now stated on
+`Index.countEntries()`: it is the number of LIVE entries, "entry" is the index's own unit (one per analyzed token
+for full-text, one per posting for sparse vectors, one per covering cell for geospatial), and only `HASH` answers
+in constant time.
+
+## Geospatial queries stream instead of materialising every candidate
+
+A geospatial query decomposes its search shape into covering cells - a 10x10-degree box resolves into roughly 4,200
+of them - and answers each with one prefix range scan or one exact lookup on the underlying LSM-Tree. Every one of
+those scans was drained into a candidate set, which was then copied into a list of index entries, before the caller
+saw the first row; the SQL layer then loaded every candidate RECORD of every bucket into a second list before the
+`geo.*` predicate re-checked the first one. A `LIMIT 10` over a wide-area query paid for the entire candidate set
+([#5601](https://github.com/ArcadeData/arcadedb/issues/5601)).
+
+The whole chain is now lazy. The index cursor opens one cell scan at a time and closes it as soon as it is drained,
+the SQL function chains the per-bucket cursors the same way, and a consumer that stops early stops the covering-cell
+walk with it. Deduplication is still a set of RIDs - a polygon decomposes into many cells, so the same record can be
+reached through several of them - but it now holds only what has actually been emitted rather than a second parallel
+copy of the whole candidate set. Results are unchanged: the index still answers with a superset that the `geo.*`
+predicate re-checks, and a row limit is still never applied to the candidates.
+
+Because an abandoned cursor now can leave an underlying scan open, `FETCH FROM INDEXED FUNCTION` releases it on
+`close()` and `reset()`, matching what the regular index fetch step already did: a compacted-series cursor registers
+with its file so a full compaction defers dropping it.
+## Studio can create a vector index, and a vector index can no longer be created without `dimensions`
+
+Studio's "Add Index" dialog offered `LSM_VECTOR` in the algorithm list but built the statement without a
+`METADATA` clause, which the engine refuses outright - and the dialog had no input for the settings the error
+message asked for. Creating a dense vector index from the UI was simply impossible
+([#5607](https://github.com/ArcadeData/arcadedb/issues/5607)). The dialog now collects **dimensions** (required),
+**similarity**, **max connections**, **beam width** and **quantization**, and the sparse branch gained the
+matching **weight quantization** selector.
+
+The underlying contract was loose in three places, and all three are tightened:
+
+- **`dimensions` is now enforced, everywhere.** It is the one vector setting with no usable default: every write
+  and every graph build compares the candidate vector's length against it, so an index created with `dimensions`
+  unset accepted writes and indexed nothing, forever, without a single warning. `CREATE INDEX ... LSM_VECTOR
+  METADATA {}` and the equivalent builder call are now refused at creation time. Indexes created before this
+  release are untouched - the check runs only when a new index is built.
+- **The `CREATE INDEX` error message told the truth about only one of the four settings it named.** It asked for
+  `dimensions`, `similarity`, `maxConnections` and `beamWidth`; the last three have defaults (`COSINE`, `32`,
+  `100`). It now names `dimensions` as the requirement and lists the rest as optional with their defaults.
+- **Index creation failures carry their reason again.** Any error raised while building an index was rewrapped
+  as a bare `Error on creating index on type 'X', properties [y]`, discarding the cause's message on the way to
+  the SQL and HTTP layers. The reason is now part of the message.
+- **A `METADATA` value the vector builder cannot read is a 400, not a 500.** Every value in that clause comes
+  from the statement, so an unparsable number (`{"dimensions": "abc"}` escaped as a raw
+  `NumberFormatException`), an unknown `similarity` or `quantization` name, or an out-of-range `pqClusters` is a
+  client mistake. They are reported as parsing errors now, the same treatment the `GEOSPATIAL` metadata gets.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

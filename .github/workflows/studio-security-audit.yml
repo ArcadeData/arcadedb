@@ -41,7 +41,10 @@ jobs:
       - name: "Setup Node.js"
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "18"
+          # Must match the node.version pinned in studio/pom.xml: the "Test Build Process" step below runs
+          # the same webpack build Maven runs, and copy-webpack-plugin 14 calls Array.prototype.toSorted,
+          # which does not exist before Node 20. On Node 18 the build died with "toSorted is not a function".
+          node-version: "20"
           cache: "npm"
           cache-dependency-path: "studio/package-lock.json"
 
@@ -67,23 +70,39 @@ jobs:
       - name: "Validate Package.json"
         run: |
           echo "📋 Validating package.json..."
-          # Check for known vulnerable packages
-          if grep -q "jquery.*1\." package.json; then
-            echo "❌ Vulnerable jQuery 1.x detected!"
-            exit 1
-          fi
-
-          if grep -q "bootstrap.*[1-4]\." package.json; then
-            echo "❌ Vulnerable Bootstrap 4.x or earlier detected!"
-            exit 1
-          fi
-
-          if grep -q "sweetalert2.*1[0-1]\.[0-5]" package.json; then
-            echo "❌ Potentially vulnerable SweetAlert2 version detected!"
-            exit 1
-          fi
-
-          echo "✅ Package versions look secure"
+          # Compare the MAJOR version of each declared range instead of grepping the raw line. The
+          # previous greps matched any digit anywhere after the package name, so `"bootstrap": "^5.3.8"`
+          # tripped `bootstrap.*[1-4]\.` through its "3." and `"sweetalert2": "^11.26.25"` tripped
+          # `sweetalert2.*1[0-1]\.[0-5]` through its "11.2": the step failed on perfectly current,
+          # non-vulnerable dependencies and would have kept doing so on every future patch bump.
+          node -e '
+            const pkg = require("./package.json");
+            const declared = { ...pkg.dependencies, ...pkg.devDependencies };
+            // package -> lowest major considered safe, with the reason it is the floor
+            const floors = {
+              jquery: [3, "jQuery 1.x/2.x carry unpatched XSS advisories"],
+              bootstrap: [5, "Bootstrap 4.x and earlier are EOL with known XSS issues"],
+              sweetalert2: [11, "SweetAlert2 below 11 is unmaintained"]
+            };
+            let failed = false;
+            for (const [name, [floor, reason]] of Object.entries(floors)) {
+              const range = declared[name];
+              if (range === undefined)
+                continue;
+              const major = Number.parseInt(String(range).replace(/^[^0-9]*/, ""), 10);
+              if (Number.isNaN(major)) {
+                console.log(`⚠️  ${name}: cannot read a major version out of "${range}", not checked`);
+                continue;
+              }
+              if (major < floor) {
+                console.log(`❌ ${name} ${range} is below the required major ${floor}: ${reason}`);
+                failed = true;
+              }
+            }
+            if (failed)
+              process.exit(1);
+            console.log("✅ Package versions look secure");
+          '
 
       - name: "Test Build Process"
         run: |
@@ -149,7 +168,13 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
-          allow-dependencies-licenses: "MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD"
+          # No allow-dependencies-licenses here: that input takes package URLs of dependencies to exempt
+          # from the license check ("pkg:npm/foo@1.2.3"), not a list of acceptable licenses, so the SPDX
+          # ids that used to sit here failed the action's own input validation ("package-url must start
+          # with pkg:") and the job errored out before reviewing anything. The acceptable-license side is
+          # covered by deny-licenses below and by the `license-checker --onlyAllow` step of this workflow;
+          # an allow-list cannot be used here anyway, since the action rejects allow-licenses and
+          # deny-licenses together and the project's allowed set is wider than any short list.
           deny-licenses: "GPL-2.0, GPL-3.0, AGPL-3.0"
           config-file: ".github/dependency-review-config.yml"
 

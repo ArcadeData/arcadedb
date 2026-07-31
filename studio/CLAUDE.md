@@ -143,14 +143,11 @@ The app includes a shim that maps Bootstrap 4 `data-toggle` / `data-dismiss` att
 
 ## Testing
 
-**There are currently no frontend tests.** No test framework (Jest, Mocha, etc.) is configured. No `test/` directories exist.
+Frontend unit tests live in `studio/test/*.test.js` and run on Node's built-in test runner (`node:test` + `node:assert`) - no Jest/Mocha dependency. Run them with `npm test` from `studio/`, or through Maven: the `test` phase of the `arcadedb-studio` module runs `npm test` (skipped by `-DskipTests`).
 
-Backend integration with the Studio is tested through the server module's Java test suite (HTTP endpoint tests).
+Because there is no bundler for application JS, the tests read the relevant `studio-*.js` file, extract the functions under test with a brace matcher and `eval` them. Keep the logic worth testing in **pure functions** that take plain values instead of reading the DOM (e.g. `buildCreateIndexCommand()` / `validateCreateIndexOptions()`); the jQuery handler then only collects inputs and delegates.
 
-If adding tests, they would need to:
-1. Add a test framework to `devDependencies` in `package.json`
-2. Add a `test` script to `package.json`
-3. Create a test directory structure
+Backend integration with the Studio is tested through the server module's Java test suite (HTTP endpoint tests), and end-to-end through the `e2e-studio` module.
 
 ## Development Workflow
 

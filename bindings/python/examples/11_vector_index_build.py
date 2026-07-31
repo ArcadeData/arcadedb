@@ -609,12 +609,23 @@ def create_index_arcadedb(
     )
 
 
+def hnsw_m_from_max_connections(max_connections) -> int:
+    """Convert an ArcadeDB per-layer degree into the equivalent hnswlib M.
+
+    ArcadeDB applies maxConnections verbatim to every layer including the base
+    layer. hnswlib-derived backends allocate 2*M links at the base layer, so an
+    M of half the ArcadeDB degree produces the same base-layer density and keeps
+    the comparison degree-matched.
+    """
+    return max(1, int(max_connections) // 2)
+
+
 def create_index_faiss(dim: int, max_connections: int, beam_width: int):
     import faiss
 
     index_hnsw = faiss.IndexHNSWFlat(
         int(dim),
-        int(max_connections),
+        hnsw_m_from_max_connections(max_connections),
         faiss.METRIC_INNER_PRODUCT,
     )
     index_hnsw.hnsw.efConstruction = int(beam_width)
@@ -693,10 +704,11 @@ def create_index_lancedb(
     max_connections: int,
     beam_width: int,
 ) -> dict:
+    hnsw_m = hnsw_m_from_max_connections(max_connections)
     common_kwargs = {
         "metric": "cosine",
         "vector_column_name": "vector",
-        "m": int(max_connections),
+        "m": hnsw_m,
         "ef_construction": int(beam_width),
     }
     attempts = [
@@ -715,7 +727,7 @@ def create_index_lancedb(
             config = {
                 "metric": "cosine",
                 "index_type": index_type,
-                "hnsw_m": int(max_connections),
+                "hnsw_m": hnsw_m,
                 "hnsw_ef_construct": int(beam_width),
             }
             if "num_partitions" in extra_kwargs:
@@ -840,7 +852,7 @@ def ingest_vectors_pgvector(
 
 
 def create_index_pgvector(conn, max_connections: int, beam_width: int) -> None:
-    m_val = int(max_connections)
+    m_val = hnsw_m_from_max_connections(max_connections)
     ef_val = int(beam_width)
     with conn.cursor() as cur:
         cur.execute(
@@ -864,7 +876,7 @@ def create_collection_qdrant(
             distance=models.Distance.COSINE,
         ),
         hnsw_config=models.HnswConfigDiff(
-            m=int(max_connections),
+            m=hnsw_m_from_max_connections(max_connections),
             ef_construct=int(beam_width),
         ),
     )
@@ -1296,7 +1308,7 @@ def create_collection_milvus(collection, max_connections: int, beam_width: int) 
         "index_type": "HNSW",
         "metric_type": "COSINE",
         "params": {
-            "M": int(max_connections),
+            "M": hnsw_m_from_max_connections(max_connections),
             "efConstruction": int(beam_width),
         },
     }
@@ -1884,8 +1896,12 @@ def main() -> None:
     parser.add_argument(
         "--max-connections",
         type=int,
-        default=16,
-        help="HNSW max connections / m (default: 16)",
+        default=32,
+        help=(
+            "ArcadeDB per-layer graph degree (default: 32). hnswlib-derived "
+            "backends receive half this value as M, so every backend builds at "
+            "the same base-layer density"
+        ),
     )
     parser.add_argument(
         "--beam-width",
@@ -2636,7 +2652,7 @@ def main() -> None:
             "qdrant": {
                 "data_dir": str(db_path / "qdrant-data"),
                 "collection": "vectordata",
-                "hnsw_m": args.max_connections,
+                "hnsw_m": hnsw_m_from_max_connections(args.max_connections),
                 "hnsw_ef_construct": args.beam_width,
             },
             "milvus": {
@@ -2645,13 +2661,13 @@ def main() -> None:
                 "compose_version": args.milvus_compose_version,
                 "compose_file": str(db_path / "milvus-compose" / "docker-compose.yml"),
                 "collection": args.milvus_collection,
-                "hnsw_m": args.max_connections,
+                "hnsw_m": hnsw_m_from_max_connections(args.max_connections),
                 "hnsw_ef_construct": args.beam_width,
             },
             "faiss": {
                 "index_file": str(db_path / "faiss.index"),
                 "metric": "cosine_via_inner_product_normalized",
-                "hnsw_m": args.max_connections,
+                "hnsw_m": hnsw_m_from_max_connections(args.max_connections),
                 "hnsw_ef_construct": args.beam_width,
             },
             "lancedb": {
@@ -2669,7 +2685,7 @@ def main() -> None:
                 ),
                 "num_partitions": ((lancedb_index_config or {}).get("num_partitions")),
                 "quantization": ((lancedb_index_config or {}).get("quantization")),
-                "hnsw_m": args.max_connections,
+                "hnsw_m": hnsw_m_from_max_connections(args.max_connections),
                 "hnsw_ef_construct": args.beam_width,
             },
         },

@@ -26,6 +26,7 @@ import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.responses.ApiResponses;
+import io.swagger.v3.oas.models.tags.Tag;
 import io.swagger.v3.parser.OpenAPIV3Parser;
 import io.swagger.v3.parser.core.models.ParseOptions;
 import io.swagger.v3.parser.core.models.SwaggerParseResult;
@@ -36,9 +37,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -223,11 +227,12 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
             .isNotNull()
             .isNotEmpty();
 
-        // Should at least have a 200 response
+        // Should at least have a success response (200 or 204)
         ApiResponses responses = getOp.getResponses();
-        assertThat(responses.get("200"))
-            .as("GET operation for %s should have 200 response defined", path)
-            .isNotNull();
+        boolean hasSuccessResponse = responses.get("200") != null || responses.get("204") != null;
+        assertThat(hasSuccessResponse)
+            .as("GET operation for %s should have success response (200 or 204)", path)
+            .isTrue();
       }
 
       // Check POST operations
@@ -238,11 +243,12 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
             .isNotNull()
             .isNotEmpty();
 
-        // Should at least have a success response (200 or 201)
+        // Should at least have a success response (200, 201, or 204)
         ApiResponses responses = postOp.getResponses();
-        boolean hasSuccessResponse = responses.get("200") != null || responses.get("201") != null;
+        boolean hasSuccessResponse = responses.get("200") != null || responses.get("201") != null
+            || responses.get("204") != null;
         assertThat(hasSuccessResponse)
-            .as("POST operation for %s should have success response (200 or 201)", path)
+            .as("POST operation for %s should have success response (200, 201, or 204)", path)
             .isTrue();
       }
     }
@@ -306,17 +312,239 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void openApiHandlerClassExists() {
-    // This test verifies that the OpenApiHandler class can be instantiated
-    // This will fail until we implement the class
-    try {
-      Class<?> handlerClass = Class.forName("com.arcadedb.server.http.handler.OpenApiHandler");
-      assertThat(handlerClass)
-          .as("OpenApiHandler class should exist")
-          .isNotNull();
-    } catch (ClassNotFoundException e) {
-      fail("OpenApiHandler class not found. Expected at: com.arcadedb.server.http.handler.OpenApiHandler");
+  void rootSecurityDeclaresBasicAndBearer() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    assertThat(openAPI.getSecurity())
+        .as("root security should offer basicAuth and bearerAuth as alternatives")
+        .hasSize(2);
+    assertThat(openAPI.getSecurity().stream().flatMap(r -> r.keySet().stream()).toList())
+        .containsExactlyInAnyOrder("basicAuth", "bearerAuth");
+  }
+
+  @Test
+  void livenessAndReadinessAreDeclaredPublic() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    for (final String path : List.of("/api/v1/health", "/api/v1/ready")) {
+      assertThat(openAPI.getPaths().get(path).getGet().getSecurity())
+          .as("%s requires no authentication, so it must override root security with an empty list", path)
+          .isNotNull()
+          .isEmpty();
     }
+  }
+
+  @Test
+  void apiTokenAuthenticatesAgainstTheDeclaredBearerScheme() throws Exception {
+    // Mint a real API token through the documented endpoint.
+    final HttpRequest createToken = HttpRequest.newBuilder()
+        .uri(new URI("http://localhost:2480/api/v1/server/api-tokens"))
+        .header("Content-Type", "application/json")
+        .setHeader("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"openapi-bearer-test\"}"))
+        .build();
+
+    final HttpResponse<String> created = client.send(createToken, BodyHandlers.ofString());
+    assertThat(created.statusCode())
+        .as("token creation should succeed: %s", created.body())
+        .isIn(200, 201);
+
+    // PostApiTokenHandler wraps the token payload under a "result" object rather than
+    // returning it at the top level.
+    final String token = new JSONObject(created.body()).getJSONObject("result").getString("token");
+    assertThat(token).startsWith("at-");
+
+    // The server accepts it as a bearer token on an ordinary documented operation.
+    final HttpRequest listDatabases = HttpRequest.newBuilder()
+        .uri(new URI("http://localhost:2480/api/v1/databases"))
+        .GET()
+        .setHeader("Authorization", "Bearer " + token)
+        .build();
+
+    final HttpResponse<String> listed = client.send(listDatabases, BodyHandlers.ofString());
+    assertThat(listed.statusCode())
+        .as("an 'at-' API token must authenticate as a bearer token: %s", listed.body())
+        .isEqualTo(200);
+
+    // And the spec says so: root security offers bearerAuth, and this operation does not override it.
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+    assertThat(openAPI.getComponents().getSecuritySchemes().get("bearerAuth").getScheme())
+        .isEqualTo("bearer");
+    assertThat(openAPI.getPaths().get("/api/v1/databases").getGet().getSecurity())
+        .as("listDatabases must inherit root security rather than override it")
+        .isNull();
+    assertThat(openAPI.getSecurity().stream().flatMap(r -> r.keySet().stream()).toList())
+        .contains("bearerAuth");
+  }
+
+  /**
+   * Every operation the specification must document, as "METHOD path". Deliberately exhaustive and
+   * deliberately hand-written: a list derived from the specification under test would assert nothing.
+   */
+  private static final List<String> EXPECTED_OPERATIONS = List.of(
+      // Core
+      "GET /api/v1/server", "POST /api/v1/server",
+      "GET /api/v1/ready", "GET /api/v1/health",
+      "GET /api/v1/databases", "GET /api/v1/exists/{database}",
+      "GET /api/v1/query/{database}/{language}/{command}", "POST /api/v1/query/{database}",
+      "POST /api/v1/command/{database}", "POST /api/v1/batch/{database}",
+      "GET /api/v1/progress/{database}",
+      "POST /api/v1/begin/{database}", "POST /api/v1/commit/{database}",
+      "POST /api/v1/rollback/{database}",
+      // Auth
+      "POST /api/v1/login", "POST /api/v1/logout", "GET /api/v1/sessions",
+      // Security admin
+      "GET /api/v1/server/users", "POST /api/v1/server/users",
+      "PUT /api/v1/server/users", "DELETE /api/v1/server/users",
+      "GET /api/v1/server/groups", "POST /api/v1/server/groups", "DELETE /api/v1/server/groups",
+      "GET /api/v1/server/api-tokens", "POST /api/v1/server/api-tokens",
+      "DELETE /api/v1/server/api-tokens",
+      // Time-series
+      "POST /api/v1/ts/{database}/write", "POST /api/v1/ts/{database}/query",
+      "GET /api/v1/ts/{database}/latest",
+      // Grafana
+      "GET /api/v1/ts/{database}/grafana/health", "GET /api/v1/ts/{database}/grafana/metadata",
+      "POST /api/v1/ts/{database}/grafana/query",
+      // Prometheus and PromQL
+      "POST /api/v1/ts/{database}/prom/write", "POST /api/v1/ts/{database}/prom/read",
+      "GET /api/v1/ts/{database}/prom/api/v1/query",
+      "GET /api/v1/ts/{database}/prom/api/v1/query_range",
+      "GET /api/v1/ts/{database}/prom/api/v1/labels",
+      "GET /api/v1/ts/{database}/prom/api/v1/label/{name}/values",
+      "GET /api/v1/ts/{database}/prom/api/v1/series",
+      // MCP
+      "POST /api/v1/mcp", "GET /api/v1/mcp/config", "POST /api/v1/mcp/config",
+      // AI
+      "GET /api/v1/ai/config", "POST /api/v1/ai/activate", "POST /api/v1/ai/chat",
+      "POST /api/v1/ai/analyze-profiler", "GET /api/v1/ai/chats",
+      "GET /api/v1/ai/chats/{id}", "PUT /api/v1/ai/chats/{id}", "DELETE /api/v1/ai/chats/{id}",
+      // Plugin-contributed
+      "GET /prometheus",
+      "GET /api/v1/cluster", "POST /api/v1/cluster/peer", "DELETE /api/v1/cluster/peer/{peerId}",
+      "POST /api/v1/cluster/leader", "POST /api/v1/cluster/stepdown", "POST /api/v1/cluster/leave",
+      "POST /api/v1/cluster/verify/{database}", "POST /api/v1/cluster/resync/{database}",
+      "POST /api/v1/cluster/bootstrap-state",
+      "GET /api/v1/ha/snapshot/{database}", "GET /api/v1/ha/snapshot/{database}/checksums");
+
+  private static List<String> declaredOperations(final OpenAPI openAPI) {
+    final List<String> declared = new ArrayList<>();
+    openAPI.getPaths().forEach((path, item) -> {
+      if (item.getGet() != null)
+        declared.add("GET " + path);
+      if (item.getPost() != null)
+        declared.add("POST " + path);
+      if (item.getPut() != null)
+        declared.add("PUT " + path);
+      if (item.getDelete() != null)
+        declared.add("DELETE " + path);
+      if (item.getPatch() != null)
+        declared.add("PATCH " + path);
+      if (item.getHead() != null)
+        declared.add("HEAD " + path);
+      if (item.getOptions() != null)
+        declared.add("OPTIONS " + path);
+    });
+    return declared;
+  }
+
+  @Test
+  void specDocumentsExactlyTheExpectedSixtyThreeOperations() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+    final List<String> declared = declaredOperations(openAPI);
+
+    assertThat(EXPECTED_OPERATIONS)
+        .as("the inventory itself must hold no duplicate")
+        .doesNotHaveDuplicates()
+        .hasSize(63);
+
+    assertThat(declared)
+        .as("operations missing from the specification")
+        .containsAll(EXPECTED_OPERATIONS);
+
+    assertThat(declared)
+        .as("operations in the specification with no registered handler: reverse drift")
+        .containsExactlyInAnyOrderElementsOf(EXPECTED_OPERATIONS);
+  }
+
+  @Test
+  void specDoesNotDocumentItselfOrTheWebSocketUpgrade() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+    assertThat(openAPI.getPaths().keySet())
+        .as("self-documentation, the Swagger UI page, the WebSocket upgrade, and the Studio static-content "
+            + "fallback all stay out")
+        .doesNotContain("/api/v1/openapi.json", "/api/v1/docs", "/ws", "/");
+  }
+
+  @Test
+  void everyOperationIdIsUniqueAcrossTheWholeSpec() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    final List<String> ids = new ArrayList<>();
+    openAPI.getPaths().values().forEach(item ->
+        item.readOperations().forEach(op -> ids.add(op.getOperationId())));
+
+    assertThat(ids)
+        .as("client generators derive a method name per operationId, so a collision breaks codegen")
+        .doesNotHaveDuplicates()
+        .doesNotContainNull()
+        .hasSize(63);
+  }
+
+  @Test
+  void everyOperationCarriesExactlyOneDeclaredTag() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+    final Set<String> declaredTags = openAPI.getTags().stream()
+        .map(Tag::getName).collect(Collectors.toSet());
+
+    openAPI.getPaths().forEach((path, item) -> item.readOperations().forEach(op -> {
+      assertThat(op.getTags())
+          .as("%s %s: generators derive an API class from the first tag", path, op.getOperationId())
+          .hasSize(1);
+      assertThat(declaredTags)
+          .as("%s uses tag %s, which is not in the root tag vocabulary", op.getOperationId(),
+              op.getTags().getFirst())
+          .contains(op.getTags().getFirst());
+    }));
+  }
+
+  @Test
+  void everyReferenceResolvesAndTheDocumentValidatesClean() throws Exception {
+    final ParseOptions options = new ParseOptions();
+    options.setResolve(true);
+    options.setResolveFully(true);
+    options.setValidateExternalRefs(false);
+
+    final SwaggerParseResult result = new OpenAPIV3Parser().readContents(getOpenApiSpec(), null, options);
+
+    assertThat(result.getMessages())
+        .as("an unresolved $ref or a malformed schema shows up here: %s", result.getMessages())
+        .isEmpty();
+  }
+
+  @Test
+  void everyOperationDeclaresASuccessAndAnAuthFailureResponse() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    openAPI.getPaths().forEach((path, item) -> item.readOperations().forEach(op -> {
+      assertThat(op.getResponses())
+          .as("%s %s has no responses", path, op.getOperationId())
+          .isNotNull().isNotEmpty();
+
+      final boolean hasSuccess = op.getResponses().keySet().stream()
+          .anyMatch(code -> code.startsWith("2"));
+      assertThat(hasSuccess)
+          .as("%s %s declares no 2xx response", path, op.getOperationId())
+          .isTrue();
+
+      // Health and readiness are declared public, so 401 would be a lie for them.
+      final boolean isPublic = op.getSecurity() != null && op.getSecurity().isEmpty();
+      if (!isPublic) {
+        assertThat(op.getResponses().keySet())
+            .as("%s %s is authenticated, so it must declare 401", path, op.getOperationId())
+            .contains("401");
+      }
+    }));
   }
 
   /**

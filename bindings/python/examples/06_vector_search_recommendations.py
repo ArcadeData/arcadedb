@@ -250,7 +250,6 @@ def create_sql_vector_index(db, property_suffix=""):
     num_movies = len(result_list)
 
     print(f"\nCreating HNSW (JVector) index for {embedding_prop}...")
-    print("  metric=cosine, max_connections=32, beam_width=256")
 
     start_time = time.time()
 
@@ -267,6 +266,15 @@ def create_sql_vector_index(db, property_suffix=""):
     )
 
     elapsed = time.time() - start_time
+
+    # The METADATA above sets only dimensions and similarity, so the rest comes from
+    # the engine defaults; read them back rather than restating them here.
+    index_meta = db.schema.get_vector_index("Movie", embedding_prop).get_metadata()
+    print(
+        f"  metric={index_meta['similarity_function']},"
+        f" max_connections={index_meta['max_connections']},"
+        f" beam_width={index_meta['beam_width']} (engine defaults)"
+    )
     print(f"✓ Created and indexed {num_movies:,} movies in {elapsed:.1f}s")
 
 

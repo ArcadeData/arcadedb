@@ -3191,6 +3191,223 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(payload.getJSONArray("records").getJSONObject(0).getString("note")).isEqualTo(malicious);
   }
 
+  @Test
+  void initializeAdvertisesPromptsCapability() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 500)
+        .put("method", "initialize")
+        .put("params", new JSONObject()));
+
+    final JSONObject capabilities = response.getJSONObject("result").getJSONObject("capabilities");
+    assertThat(capabilities.has("prompts")).isTrue();
+    assertThat(capabilities.getJSONObject("prompts").getBoolean("listChanged")).isFalse();
+  }
+
+  @Test
+  void promptsListReturnsBothPromptsWhenWritesEnabled() throws Exception {
+    saveMCPConfig(new JSONObject().put("allowInsert", true).put("allowUpdate", true));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 501)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+
+    final JSONArray prompts = response.getJSONObject("result").getJSONArray("prompts");
+    final Set<String> names = new HashSet<>();
+    for (int i = 0; i < prompts.length(); i++) {
+      names.add(prompts.getJSONObject(i).getString("name"));
+      assertThat(prompts.getJSONObject(i).getJSONArray("arguments").length()).isEqualTo(2);
+    }
+
+    assertThat(names).containsExactlyInAnyOrder("graphrag_query", "build_knowledge_graph");
+  }
+
+  @Test
+  void promptsListHidesTheWritePromptWithoutWritePermissions() throws Exception {
+    saveMCPConfig(new JSONObject().put("allowInsert", false).put("allowUpdate", false));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 502)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+
+    final JSONArray prompts = response.getJSONObject("result").getJSONArray("prompts");
+    assertThat(prompts.length()).isEqualTo(1);
+    assertThat(prompts.getJSONObject(0).getString("name")).isEqualTo("graphrag_query");
+  }
+
+  @Test
+  void promptsListIsEmptyUnderTheAdminProfile() throws Exception {
+    saveMCPConfig(new JSONObject().put("profile", "admin"));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 503)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+
+    assertThat(response.getJSONObject("result").getJSONArray("prompts").length()).isZero();
+  }
+
+  @Test
+  void promptsGetRendersTheSubstitutedTemplate() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 504)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject()
+                .put("database", "graph")
+                .put("question", "Which papers cite Codd?"))));
+
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getString("description")).isNotEmpty();
+
+    final JSONArray messages = result.getJSONArray("messages");
+    assertThat(messages.length()).isEqualTo(1);
+    assertThat(messages.getJSONObject(0).getString("role")).isEqualTo("user");
+
+    final String text = messages.getJSONObject(0).getJSONObject("content").getString("text");
+    assertThat(text)
+        .contains("'graph'")
+        .contains("Which papers cite Codd?")
+        .contains("vector_search")
+        .doesNotContain("{database}", "{question}");
+  }
+
+  @Test
+  void promptsGetRefusesAPromptHiddenByTheProfile() throws Exception {
+    saveMCPConfig(new JSONObject().put("profile", "admin"));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 505)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject()
+                .put("database", "graph")
+                .put("question", "Which papers cite Codd?"))));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+    assertThat(response.getJSONObject("error").getString("message")).contains("graphrag_query");
+  }
+
+  @Test
+  void promptsGetRejectsAMissingArgument() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 506)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject().put("database", "graph"))));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.getJSONObject("error").getString("message")).contains("question");
+  }
+
+  @Test
+  void promptsGetRejectsAnUnknownPromptName() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 507)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "nope")
+            .put("arguments", new JSONObject())));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.getJSONObject("error").getString("message")).contains("Unknown prompt");
+  }
+
+  /**
+   * A malformed 'arguments' member is a client mistake, so it must answer -32602 rather than -32603: the request
+   * never reaches the prompt, so nothing internal went wrong. Reading it defaults only on an absent or null
+   * member, so a JSON value of the wrong shape raises instead, which is why the read happens where the handler
+   * can answer for it.
+   */
+  @Test
+  void promptsGetRejectsNonObjectArguments() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 508)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONArray().put("database").put("graph"))));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  /**
+   * Mirrors {@link #principalProfilesDifferentiateNamedUsersOnOneHttpEndpoint()} for the Prompts surface: the
+   * global profile alone is "all", under which both prompts name only tools that are reachable, so root sees
+   * both. The principal's own profile is "admin", which registers neither the search tools graphrag_query names
+   * nor the upsert tools build_knowledge_graph names. If prompts/list consulted only the global profile, the
+   * principal would see the same two prompts as root; proving the principal sees none shows the effective
+   * profile is the intersection, not the global profile alone.
+   */
+  @Test
+  void principalProfilesFilterPromptsListByTheIntersectedProfile() throws Exception {
+    final String principalName = "mcp-prompt-admin";
+    final String password = "principalPromptPass1!";
+    if (getServer(0).getSecurity().existsUser(principalName))
+      getServer(0).getSecurity().dropUser(principalName);
+    getServer(0).getSecurity().createUser(new JSONObject()
+        .put("name", principalName)
+        .put("password", getServer(0).getSecurity().encodePassword(password))
+        .put("databases", new JSONObject().put("graph", new JSONArray().put("admin"))));
+
+    try {
+      saveMCPConfig(new JSONObject()
+          .put("profile", "all")
+          .put("allowReads", true)
+          .put("allowInsert", true)
+          .put("allowUpdate", true)
+          .put("allowedUsers", new JSONArray().put("root").put(principalName))
+          .put("principalProfiles", new JSONObject().put(principalName, "admin")));
+
+      final JSONObject request = new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 508)
+          .put("method", "prompts/list")
+          .put("params", new JSONObject());
+
+      final JSONArray rootPrompts = mcpRequest(request).getJSONObject("result").getJSONArray("prompts");
+      final Set<String> rootNames = new HashSet<>();
+      for (int i = 0; i < rootPrompts.length(); i++)
+        rootNames.add(rootPrompts.getJSONObject(i).getString("name"));
+      assertThat(rootNames).containsExactlyInAnyOrder("graphrag_query", "build_knowledge_graph");
+
+      final String principalAuth = getBasicAuth(principalName, password);
+      final JSONArray principalPrompts = mcpRequest(request, principalAuth).getJSONObject("result").getJSONArray("prompts");
+      assertThat(principalPrompts.length()).isZero();
+
+      final JSONObject denied = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 509)
+          .put("method", "prompts/get")
+          .put("params", new JSONObject()
+              .put("name", "graphrag_query")
+              .put("arguments", new JSONObject()
+                  .put("database", "graph")
+                  .put("question", "Which papers cite Codd?"))), principalAuth);
+      assertThat(denied.has("error")).isTrue();
+      assertThat(denied.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+    } finally {
+      getServer(0).getSecurity().dropUser(principalName);
+    }
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {

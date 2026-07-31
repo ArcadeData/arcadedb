@@ -45,6 +45,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -54,7 +55,10 @@ import java.util.logging.Level;
 public class MCPDispatcher {
   public static final  String    MCP_PROTOCOL_VERSION = "2025-03-26";
   private static final JSONArray TOOLS_LIST;
-  private static final Set<String> REGISTERED_TOOL_NAMES;
+  // Package-private, not private: MCPPromptsTest asserts that every tool a prompt's text names is a tool
+  // this server actually registers, which is what makes a rename or a removal fail a test instead of
+  // silently shipping a prompt that instructs the model to call something that no longer exists.
+  static final Set<String> REGISTERED_TOOL_NAMES;
 
   private static final String INSTRUCTIONS =
       """
@@ -63,7 +67,8 @@ public class MCPDispatcher {
       2. Prefer Cypher (language: 'cypher') for graph queries unless SQL is explicitly requested.
       3. Use the 'query' tool for read-only operations (SELECT, MATCH, RETURN) and 'execute_command' for writes (CREATE, INSERT, UPDATE, DELETE, MERGE).
       4. Call get_schema before writing queries against an unfamiliar database to understand its types and properties. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead: it carries the same content without spending a tool call.
-      5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.""";
+      5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.
+      6. Guided prompt templates may be available for retrieval and knowledge-graph construction: call prompts/list to see which ones your profile exposes.""";
 
   private static final String RAG_INSTRUCTIONS =
       """
@@ -73,7 +78,8 @@ public class MCPDispatcher {
       3. Use query for custom read-only SQL or Cypher retrieval.
       4. Prefer the dedicated vector, hybrid, full-text, or sampling tools shown by tools/list when they match the task.
       5. Use upsert_entity and upsert_relationship to maintain agent memory when the corresponding write permissions are enabled.
-      6. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.""";
+      6. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.
+      7. Call prompts/list for guided templates: graphrag_query for retrieval, build_knowledge_graph for writing extracted entities and relationships.""";
 
   private static final String RESTRICTED_INSTRUCTIONS =
       """
@@ -195,8 +201,20 @@ public class MCPDispatcher {
     if (!isValidRequestId(id))
       return error(null, -32600, "Invalid Request: 'id' must be a string or an integer", 200);
 
-    final String method = request.getString("method", "");
-    final JSONObject params = request.getJSONObject("params", new JSONObject());
+    // Read both members under a guard rather than inline. The defaulting accessors substitute the default only for
+    // an absent or null member, so a member that is present but of another JSON type raises out of the read
+    // instead. These two reads sit above the try below, whose only block is a finally, so an unguarded raise here
+    // escapes dispatch entirely and reaches the transport as a bodiless HTTP 500 rather than a JSON-RPC envelope.
+    // Both members belong to the request object itself, which makes a wrong shape an invalid request rather than
+    // invalid params.
+    final String method;
+    final JSONObject params;
+    try {
+      method = request.getString("method", "");
+      params = request.getJSONObject("params", new JSONObject());
+    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32600, "Invalid Request: 'method' must be a string and 'params' an object", 200);
+    }
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] %s (user=%s)", transport, method, user.getName());
 
@@ -207,6 +225,8 @@ public class MCPDispatcher {
         case "tools/call" -> toolsCall(id, params, user, effectiveProfile(user));
         case "resources/list" -> resourcesList(id, user);
         case "resources/read" -> resourcesRead(id, params, user);
+        case "prompts/list" -> promptsList(id, effectiveProfile(user)::allows);
+        case "prompts/get" -> promptsGet(id, params, user, effectiveProfile(user)::allows);
         case "ping" -> result(id, new JSONObject());
         default -> error(id, -32601, "Method not found: " + method, 200);
       };
@@ -232,6 +252,7 @@ public class MCPDispatcher {
     final JSONObject capabilities = new JSONObject();
     capabilities.put("tools", new JSONObject().put("listChanged", false));
     capabilities.put("resources", new JSONObject().put("listChanged", false).put("subscribe", false));
+    capabilities.put("prompts", new JSONObject().put("listChanged", false));
     result.put("capabilities", capabilities);
 
     result.put("instructions", instructionsForProfile(profile));
@@ -249,7 +270,15 @@ public class MCPDispatcher {
   }
 
   private MCPResponse resourcesRead(final Object id, final JSONObject params, final ServerSecurityUser user) {
-    final String uri = params.getString("uri", "");
+    // Guarded for the same reason as the request members in dispatch: a 'uri' present but of another JSON type
+    // raises out of the read, which sits above the try below. A wrong shape is invalid params, distinct from the
+    // resource-not-found the try answers with for a URI that is well formed but names nothing readable.
+    final String uri;
+    try {
+      uri = params.getString("uri", "");
+    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32602, "Invalid params: 'uri' must be a string", 200);
+    }
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read '%s' (user=%s)", transport, uri, user.getName());
 
@@ -266,10 +295,51 @@ public class MCPDispatcher {
     }
   }
 
+  private MCPResponse promptsList(final Object id, final Predicate<String> toolAllowed) {
+    try {
+      return result(id, MCPPrompts.list(config, toolAllowed));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/list -> error: %s", transport, e.getMessage());
+      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+    }
+  }
+
+  private MCPResponse promptsGet(final Object id, final JSONObject params, final ServerSecurityUser user,
+      final Predicate<String> toolAllowed) {
+    // Both members are read inside the try because reading them can itself fail: the defaulting accessors fall back
+    // only for an absent or null member, so a member of the wrong JSON shape raises instead. That is a malformed
+    // request rather than a server fault, and answering it needs the -32602 mapping below.
+    try {
+      final String name = params.getString("name", "");
+      final JSONObject args = params.getJSONObject("arguments", new JSONObject());
+
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get '%s' (user=%s)", transport, name, user.getName());
+
+      return result(id, MCPPrompts.get(config, toolAllowed, name, args));
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, e.getMessage());
+      return error(id, -32600, e.getMessage(), 200);
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
+      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+    }
+  }
+
   private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
       final EffectiveToolProfile profile) {
-    final String toolName = params.getString("name", "");
-    final JSONObject args = params.getJSONObject("arguments", new JSONObject());
+    // Guarded for the same reason as the request members in dispatch: a member present but of the wrong JSON type
+    // raises out of the read, and these reads sit above the try below. A malformed member here is invalid params
+    // rather than a failed tool call, so it answers with a JSON-RPC error rather than an isError tool envelope.
+    final String toolName;
+    final JSONObject args;
+    try {
+      toolName = params.getString("name", "");
+      args = params.getJSONObject("arguments", new JSONObject());
+    } catch (final IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32602, "Invalid params: 'name' must be a string and 'arguments' an object", 200);
+    }
 
     LogManager.instance()
         .log(this, Level.INFO, "MCP[%s] tools/call '%s' %s (user=%s)", transport, toolName, formatArgs(toolName, args), user.getName());
@@ -481,7 +551,11 @@ public class MCPDispatcher {
     if (message == null || message.has("method") || !message.has("id") || !isValidRequestId(message.opt("id")))
       return false;
 
-    return "2.0".equals(message.getString("jsonrpc", null))
+    // Compared through opt rather than read as a string. This probe runs before anything else in dispatch, so it
+    // is the one member read that cannot sit under a guard: it decides whether a reply is owed at all, and a raise
+    // here would escape as a transport failure with no envelope. opt maps any JSON shape to an object instead of
+    // demanding one, so a 'jsonrpc' that is not the string "2.0" simply means this payload is not a response.
+    return "2.0".equals(message.opt("jsonrpc"))
         && message.has("result") != message.has("error");
   }
 

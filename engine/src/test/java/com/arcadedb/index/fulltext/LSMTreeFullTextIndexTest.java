@@ -641,8 +641,8 @@ class LSMTreeFullTextIndexTest extends TestHelper {
   /**
    * Mirror test for {@link LSMTreeFullTextIndex#removeReplay}: an already-analyzed storage
    * token carried through commit replay must reach the underlying index verbatim. Verifies
-   * via {@code idx.get} (which honors per-RID tombstones) instead of {@code countEntries}
-   * (which would still count tombstoned entries).
+   * via {@code idx.get}, which reports the surviving RIDs of the key under test rather than the
+   * whole index.
    */
   @Test
   void removeReplayForwardsTokenVerbatimWithoutTokenizing() {

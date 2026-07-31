@@ -34,6 +34,16 @@ public interface IndexableSQLFunction {
 
   long estimate(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext context, Expression[] oExpressions);
 
+  /**
+   * Answers the records an indexed function matches.
+   * <p>
+   * The result MAY BE LAZY, and its {@link java.util.Iterator} may then hold an open index scan - the geospatial
+   * predicates chain one per bucket rather than loading every candidate up front (#5601). <b>A caller that stops
+   * iterating before exhaustion must close an iterator that implements {@link AutoCloseable}</b>: a compacted-series
+   * cursor registers with its file, and {@code LSMTreeIndex.dropRetiredCompactedIndexes} skips a retired file that
+   * still has one, so an abandoned scan pins that file for the lifetime of the database. Draining the iterator fully
+   * releases everything without a close. {@link FetchFromIndexedFunctionStep}, the only consumer today, does both.
+   */
   Iterable<Record> searchFromTarget(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext context, Expression[] oExpressions);
 
   /**

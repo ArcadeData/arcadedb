@@ -296,6 +296,51 @@ class TestVectorParams:
 
         assert str(idx_to_check.getMetadata().quantizationType) == "PRODUCT"
 
+    @staticmethod
+    def _engine_default_max_connections() -> int:
+        """Read maxConnections off a freshly constructed engine metadata object.
+
+        The field initializer is the engine default, so the value tracks the
+        bundled jars rather than a number copied into the Python layer.
+        """
+        import jpype
+
+        java_string = jpype.JClass("java.lang.String")
+        property_names = jpype.JArray(java_string)(["embedding"])
+        metadata = jpype.JPackage("com").arcadedb.schema.LSMVectorIndexMetadata(
+            "DefaultProbe", property_names, 0
+        )
+        return int(metadata.maxConnections)
+
+    def test_wrapper_default_matches_engine_default(self, test_db):
+        """The Python default must equal the engine default, not a copy of it.
+
+        create_vector_index always calls withMaxConnections, so the wrapper
+        default fully shadows the engine default for callers who omit it.
+        """
+        import inspect
+
+        signature = inspect.signature(type(test_db).create_vector_index)
+        wrapper_default = signature.parameters["max_connections"].default
+
+        assert wrapper_default == self._engine_default_max_connections()
+
+    def test_omitted_max_connections_reaches_the_index(self, test_db):
+        """Omitting the argument must land the engine default on the index."""
+        engine_default = self._engine_default_max_connections()
+
+        test_db.command("sql", "CREATE VERTEX TYPE DefaultDegreeDoc")
+        test_db.command(
+            "sql", "CREATE PROPERTY DefaultDegreeDoc.embedding ARRAY_OF_FLOATS"
+        )
+
+        index = test_db.create_vector_index(
+            "DefaultDegreeDoc", "embedding", dimensions=4
+        )
+
+        metadata = self._get_primary_metadata(index)
+        assert int(metadata.maxConnections) == engine_default
+
     def test_jvm_heap_check(self):
         """Verify JVM memory settings from Java level."""
         import jpype

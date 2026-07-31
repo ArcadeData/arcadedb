@@ -1328,7 +1328,7 @@ def create_sql_vector_index(db, vertex_type: str) -> float:
         METADATA {{
             "dimensions": 384,
             "similarity": "COSINE",
-            "maxConnections": 16,
+            "maxConnections": 32,
             "beamWidth": 100,
             "quantization": "INT8",
             "storeVectorsInGraph": false,
