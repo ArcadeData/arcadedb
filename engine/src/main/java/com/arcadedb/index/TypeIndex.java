@@ -189,18 +189,24 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
       return new TempIndexCursor(entries);
     } else {
-      // For non-full-text indexes, use the original implementation
+      // For non-full-text indexes, use the original implementation.
+      // An index whose results are APPROXIMATE (a spatial grid: a cell hit is a candidate, not a match) cannot have a
+      // row limit applied to its output - truncating candidates before the caller's predicate re-checks them silently
+      // drops rows that would have survived it. Such an index is asked for, and returns, everything.
+      final int effectiveLimit = isResultApproximate() ? -1 : limit;
+
       Set<Identifiable> result = null;
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final IndexCursor cursor = index.get(keys, limit > -1 ? (result != null ? result.size() : 0) - limit : -1);
+        final IndexCursor cursor = index.get(keys,
+            effectiveLimit > -1 ? (result != null ? result.size() : 0) - effectiveLimit : -1);
         while (cursor.hasNext()) {
           if (result == null)
-            result = new HashSet<>(limit);
+            result = effectiveLimit > -1 ? new HashSet<>(effectiveLimit) : new HashSet<>();
 
           result.add(cursor.next());
 
-          if (limit > -1 && result.size() >= limit)
+          if (effectiveLimit > -1 && result.size() >= effectiveLimit)
             return new IndexCursorCollection(result);
         }
       }
@@ -297,6 +303,18 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public JSONObject toJSON() {
     return getFirstUnderlyingIndex().toJSON();
+  }
+
+  @Override
+  public String getUpgradeWarning() {
+    // Every bucket sub-index of a type index shares one definition, so the first one answers for all of them.
+    return getFirstUnderlyingIndex().getUpgradeWarning();
+  }
+
+  @Override
+  public boolean isResultApproximate() {
+    // Same definition across every bucket sub-index, so the first one answers for all of them.
+    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.getFirst().isResultApproximate();
   }
 
   @Override
@@ -585,13 +603,17 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return indexesOnBuckets;
     }
 
-    final int bucketIndex = type.getBucketIndexByKeys(keys,
+    // Pass the properties these keys belong to, NOT just the values: a record is placed by hashing the type's
+    // PARTITION properties, so pruning to the hash of an arbitrary key set lands on an unrelated bucket and the
+    // record is silently missed (issue #5589). The strategy compares the two and returns -1 when they differ,
+    // which falls through to the full fan-out below.
+    final List<String> propNames = getPropertyNames();
+
+    final int bucketIndex = type.getBucketIndexByKeys(propNames, keys,
         DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).asyncMode);
 
     if (bucketIndex > -1) {
       // USE THE SHARDED INDEX
-      final List<String> propNames = getPropertyNames();
-
       List<IndexInternal> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(
           type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
 

@@ -196,10 +196,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   /**
    * Verifies geo.contains with stored polygons using inline full-scan evaluation.
    * geo.contains(coords, point) finds which stored polygon contains Rome.
-   * No GEOSPATIAL index is created here because the index is optimised for searching
-   * stored points inside a query polygon (geo.within direction); geo.contains queries
-   * a small containee shape against large stored containers and the GeoHash detail
-   * level for a point query is too coarse to locate polygon tokens reliably.
+   * No GEOSPATIAL index is created here: this pins the inline full-scan fallback on its own. The indexed path for a
+   * point search shape is covered by LSMTreeGeoIndexTokenizationTest.
    */
   @Test
   void stContainsFallback() {
@@ -229,8 +227,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   /**
    * Verifies geo.equals using inline full-scan evaluation.
    * Only the record at exactly (12.5, 41.9) matches the equality query.
-   * No GEOSPATIAL index is created here because the GeoHash detail level for a point
-   * query shape is too coarse to retrieve the stored point token at full precision.
+   * No GEOSPATIAL index is created here: this pins the inline full-scan fallback on its own. The indexed path for a
+   * point search shape is covered by LSMTreeGeoIndexTokenizationTest.
    */
   @Test
   void stEqualsFallback() {

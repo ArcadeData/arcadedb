@@ -118,6 +118,7 @@ import com.arcadedb.function.vector.VectorSimilarityEuclideanFunction;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -191,7 +192,7 @@ public class CypherFunctionFactory {
    * Check if a function is available (either as SQL function or Cypher-specific).
    */
   public boolean hasFunction(final String cypherFunctionName) {
-    final String functionName = cypherFunctionName.toLowerCase();
+    final String functionName = cypherFunctionName.toLowerCase(Locale.ROOT);
 
     // Check for sql. prefix - explicit SQL function access
     if (functionName.startsWith(SQL_PREFIX)) {
@@ -236,7 +237,7 @@ public class CypherFunctionFactory {
    * @param distinct           true if DISTINCT keyword was used
    */
   public StatelessFunction getFunctionExecutor(final String cypherFunctionName, final boolean distinct) {
-    final String functionName = cypherFunctionName.toLowerCase();
+    final String functionName = cypherFunctionName.toLowerCase(Locale.ROOT);
 
     // Handle sql. prefix - explicit SQL function access
     if (functionName.startsWith(SQL_PREFIX)) {
@@ -405,7 +406,9 @@ public class CypherFunctionFactory {
       case "haversin" -> new MathUnaryFunction("haversin", v -> (1.0 - Math.cos(v)) / 2.0);
       // Logarithmic functions
       case "exp" -> new MathUnaryFunction("exp", Math::exp);
-      case "log", "ln" -> new MathUnaryFunction("log", Math::log);
+      // ln() is an alias of log(), but each keeps its own name so a type error echoes the one the client wrote (#5484).
+      case "log" -> new MathUnaryFunction("log", Math::log);
+      case "ln" -> new MathUnaryFunction("ln", Math::log);
       case "log10" -> new MathUnaryFunction("log10", Math::log10);
       // General functions
       case "coalesce" -> new CoalesceFunction();

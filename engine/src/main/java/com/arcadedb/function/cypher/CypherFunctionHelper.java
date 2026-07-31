@@ -42,12 +42,58 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Utility class with shared static helper methods for Cypher functions.
  */
 public final class CypherFunctionHelper {
+
+  /**
+   * Input domain shared by every function declared as {@code f(input :: INTEGER | FLOAT)}, phrased for error messages.
+   */
+  public static final String NUMERIC_DOMAIN = "an INTEGER or a FLOAT";
+
+  /**
+   * Value of {@link NumericSignature#numericArgs()} meaning "every argument this function takes is numeric", which is the
+   * case for the whole family except {@code round()}.
+   */
+  public static final int ALL_ARGUMENTS = Integer.MAX_VALUE;
+
+  /**
+   * A numeric Cypher function: its canonical spelling - the one the runtime check uses, so both the parse-time and the
+   * runtime path phrase an error identically - and how many of its leading arguments are declared {@code INTEGER | FLOAT}.
+   * All of them for the whole family except {@code round(value, precision, mode)}, whose third argument is the STRING name
+   * of a rounding mode.
+   *
+   * @param name        canonical function name, without parentheses
+   * @param numericArgs number of leading arguments that must be numeric, or {@link #ALL_ARGUMENTS}
+   */
+  public record NumericSignature(String name, int numericArgs) {
+  }
+
+  /**
+   * The numeric Cypher functions, keyed by the lower-case name the parser produces, so that an argument already readable in
+   * the query text can be rejected before the query runs, as Neo4j does. Kept in step with the numeric entries of
+   * {@code CypherFunctionFactory.createCypherSpecificExecutor()}, which is what supplies the matching runtime check - a test
+   * asserts the two agree in both directions. See issue #5484.
+   */
+  public static final Map<String, NumericSignature> NUMERIC_ARGUMENT_FUNCTIONS = Stream.concat(//
+          allArgumentsNumeric(//
+              "abs", "ceil", "ceiling", "floor", "sqrt", "sign", "isNaN", //
+              "exp", "log", "ln", "log10", //
+              "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cot", "coth", "sinh", "cosh", "tanh", //
+              "degrees", "radians", "haversin"), //
+          // round(value, precision, mode): only the first two arguments are numeric.
+          Stream.of(new NumericSignature("round", 2)))//
+      .collect(Collectors.toUnmodifiableMap(signature -> signature.name().toLowerCase(Locale.ROOT), signature -> signature));
+
+  private static Stream<NumericSignature> allArgumentsNumeric(final String... names) {
+    return Stream.of(names).map(name -> new NumericSignature(name, ALL_ARGUMENTS));
+  }
 
   private CypherFunctionHelper() {
     // utility class
@@ -127,6 +173,50 @@ public final class CypherFunctionHelper {
     }
 
     return null;
+  }
+
+  /**
+   * Resolves the argument of a numeric Cypher function - {@code abs()}, {@code sqrt()}, {@code sign()}, {@code round()},
+   * the trigonometric and logarithmic ones - to a Number.
+   * <p>
+   * Cypher declares those functions as {@code f(input :: INTEGER | FLOAT)}, so anything else is a client-facing type error
+   * in Neo4j ({@code Neo.ClientError.Statement.TypeError}). Reporting it as a {@link CommandExecutionException} instead made
+   * the HTTP layer answer 500 "internal server error" for what is the caller's mistake (issue #5484). {@code null} is the one
+   * exception, because Cypher null semantics propagate it through every function.
+   *
+   * @return the argument as a Number, or {@code null} when the argument itself is {@code null}
+   *
+   * @throws CommandSemanticException when the argument is neither {@code null} nor a number
+   */
+  public static Number requireNumberArgument(final Object value, final String functionName) {
+    if (value == null)
+      return null;
+    if (value instanceof Number number)
+      return number;
+
+    throw typeMismatch(functionName, NUMERIC_DOMAIN, value);
+  }
+
+  /**
+   * The one wording for "wrong number of arguments", shared by the parse-time check in {@code FunctionValidator} and by the
+   * functions' own runtime guards so that a client never sees the same mistake described two different ways. See issue
+   * #5484.
+   *
+   * @param functionName function name without parentheses, e.g. {@code "abs"}
+   * @param expectedArgs the accepted count, phrased for the message, e.g. {@code "1 argument"} or {@code "1-3 arguments"}
+   * @param actualArgs   how many arguments the call actually carried
+   */
+  public static String arityMessage(final String functionName, final String expectedArgs, final int actualArgs) {
+    return "Function '" + functionName + "' expects " + expectedArgs + " but got " + actualArgs;
+  }
+
+  /**
+   * The exception form of {@link #arityMessage}: a wrong argument count is the caller's mistake, so it is a client error
+   * (HTTP 400) rather than an internal failure.
+   */
+  public static CommandSemanticException arityMismatch(final String functionName, final String expectedArgs,
+      final int actualArgs) {
+    return new CommandSemanticException(arityMessage(functionName, expectedArgs, actualArgs));
   }
 
   /**

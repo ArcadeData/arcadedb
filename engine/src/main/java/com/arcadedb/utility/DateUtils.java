@@ -452,7 +452,13 @@ public class DateUtils {
         return time.atZone(ZoneId.of(timeZone)).format(getFormatter(format));
       else
         return getFormatter(format).format(time);
-    } else if (obj instanceof TemporalAccessor accessor)
+    } else if (obj instanceof Instant instant)
+      // An Instant carries no date/time fields on its own, so a pattern like `yyyy-MM-dd HH:mm:ss`
+      // throws UnsupportedTemporalTypeException unless it is first anchored to a zone. UTC is the
+      // anchor used everywhere else in this class (see dateTime() and dateTimeToTimestamp()), so
+      // `arcadedb.dateTimeImplementation=java.time.Instant` renders exactly like LocalDateTime.
+      return getFormatter(format).format(LocalDateTime.ofInstant(instant, timeZone != null ? ZoneId.of(timeZone) : UTC_ZONE_ID));
+    else if (obj instanceof TemporalAccessor accessor)
       return getFormatter(format).format(accessor);
     return null;
   }

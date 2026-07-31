@@ -31,8 +31,9 @@ import java.util.stream.IntStream;
 
 /**
  * Lightweight index that stores only vector location metadata (absolute file offset, RID)
- * instead of the full vector data. This dramatically reduces memory usage:
- * ~24 bytes per vector vs ~3KB for a 768-dimension vector.
+ * instead of the full vector data. This dramatically reduces memory usage: the payload of one location is ~24
+ * bytes, and it retains {@link #APPROX_RETAINED_BYTES_PER_LOCATION} once the map and object overheads around it
+ * are counted, against ~3KB for a 768-dimension vector.
  * <p>
  * Uses absolute file offsets for direct random access without loading full pages.
  * <p>
@@ -42,10 +43,26 @@ import java.util.stream.IntStream;
  * rebuild - 1.2MB for the 9.3M ids that used to cost 970MB.
  * <p>
  * Used by LSMVectorIndex to implement lazy-loading of vectors from disk.
+ * <p>
+ * The bounded ({@code maxSize > 0}) backend below evicts, and {@link LSMVectorIndex} deliberately never asks for
+ * it (issue #5568): there is no vector id to offset index on disk, so an evicted location cannot be recovered, and
+ * every reader reads "no location" as "deleted". Bounding it made the index under-report its size and exposed any
+ * reader resolving an evicted id to a false "deleted". Do not wire {@code arcadedb.vectorIndex.locationCacheSize}
+ * back into the constructor without first giving the file a lookup that makes a miss recoverable.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class VectorLocationIndex {
+  /**
+   * Approximate retained heap of one live location, and the single figure every caller and document should quote.
+   * Enumerated in issue #5516: the {@link VectorLocation} and the {@link RID} it points at, the boxed
+   * {@code Integer} key, the map node and its table slot, and the entry the id owns in the RID reverse index. The
+   * 24 bytes of payload it carries are only a fraction of that, which is why sizing an index off the payload
+   * under-estimates it several-fold. An estimate, not a measurement: the exact layout depends on the JVM and on
+   * whether compressed oops are in play.
+   */
+  public static final int APPROX_RETAINED_BYTES_PER_LOCATION = 90;
+
   private final Map<Integer, VectorLocation> locations;
   // Reverse index RID -> vector ids, mirroring the keys stored in `locations`. Lets remove(keys, rid) resolve the
   // vector ids for a single RID in O(k) instead of scanning every id in the index (issue #5318). Kept perfectly in
@@ -480,9 +497,23 @@ public class VectorLocationIndex {
   }
 
   /**
-   * Get the total number of vectors (including deleted).
+   * Whether this map evicts. Always false today - {@link LSMVectorIndex} never asks for the bounded backend since
+   * issue #5568 - and asking the map is the point: it is what {@link #size()} being the live count depends on, so a
+   * caller that needs that guarantee can check the thing itself rather than a setting that no longer decides it.
    *
-   * @return Total number of vectors
+   * @return true when locations are capped and can be evicted
+   */
+  public boolean isBounded() {
+    return maxSize > 0;
+  }
+
+  /**
+   * Number of resident locations. Deleted vectors are not among them: {@link #markDeleted} drops the location and
+   * keeps only the id in the tombstone set, so on the unbounded backend this is the live-vector count and callers
+   * such as {@code LSMVectorIndex.estimatePagesForLiveSet} rely on that. A bounded cache evicts, so there it is a
+   * lower bound instead. Constant time either way, unlike {@link #getActiveCount()}.
+   *
+   * @return Number of vectors whose location is currently held
    */
   public int size() {
     return locations.size();

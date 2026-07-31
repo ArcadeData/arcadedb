@@ -30,6 +30,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -177,6 +178,11 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                 propRes.setProperty("unique", typeIndex.isUnique());
                 propRes.setProperty("properties", typeIndex.getPropertyNames());
                 propRes.setProperty("automatic", typeIndex.isAutomatic());
+                // Advisory only, and absent on a healthy index: the reason this one should be rebuilt (see
+                // IndexInternal#getUpgradeWarning). Studio flags the row on it.
+                final String upgradeWarning = ((IndexInternal) typeIndex).getUpgradeWarning();
+                if (upgradeWarning != null)
+                  propRes.setProperty("upgradeWarning", upgradeWarning);
                 return propRes;
               }).collect(Collectors.toList());
           r.setProperty("indexes", indexes);

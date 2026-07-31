@@ -78,7 +78,8 @@ public final class PartitionPruning {
       keyValues[i] = value;
     }
 
-    final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
+    // keyValues was filled in partitionProperties order right above, so the strategy's own check is satisfied.
+    final int bucketIndex = partitioned.getBucketIdByKeys(partitionProperties, keyValues, false);
     final List<? extends Bucket> typeBuckets = type.getBuckets(false);
     if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
       return null;

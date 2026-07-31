@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -184,7 +185,7 @@ public class ExpressionOptimizer {
    * Checks if a function is deterministic (always returns the same result for the same inputs).
    */
   private static boolean isDeterministicFunction(final String functionName) {
-    return switch (functionName.toLowerCase()) {
+    return switch (functionName.toLowerCase(Locale.ROOT)) {
       // Non-deterministic functions
       case "rand", "randomuuid", "timestamp" -> false;
       // Date/time functions that return current time are non-deterministic

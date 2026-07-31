@@ -499,7 +499,7 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public int getBucketIndexByKeys(Object[] keys, boolean async) {
+  public int getBucketIndexByKeys(List<String> propertyNames, Object[] keys, boolean async) {
     throw new UnsupportedOperationException();
   }
 

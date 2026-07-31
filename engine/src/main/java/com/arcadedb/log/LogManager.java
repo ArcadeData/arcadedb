@@ -171,6 +171,15 @@ public class LogManager {
     this.logger = logger;
   }
 
+  /**
+   * Returns the installed logger, so a caller that temporarily replaces it (a test asserting on what was logged, a
+   * decorator wrapping it) can put the original back instead of guessing which implementation
+   * {@code createLogger()} had chosen for this JVM.
+   */
+  public Logger getLogger() {
+    return logger;
+  }
+
   public void log(final Object requester, final Level level, final String message) {
     logger.log(requester, level, message, null, CONTEXT_INSTANCE.get());
   }

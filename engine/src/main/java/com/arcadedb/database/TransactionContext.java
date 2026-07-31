@@ -676,6 +676,10 @@ public class TransactionContext implements Transaction {
    * way that does not commute with a concurrent append (edge removal, new-chunk allocation, bulk load). Tracked
    * appends on that page are ignored at commit (the conflict check below excludes poisoned pages), so a rebase
    * can never silently re-derive the page from committed-state + appends. No-op when the feature is off.
+   * <p>
+   * Since #5596 this is the fast, precise opt-OUT, no longer the only line of defence: the merge additionally
+   * requires the page to PROVE that every byte this transaction wrote there was declared replayable by it (see
+   * {@link MutablePage#beginCoveredWrite(int)}), so a forgotten call here costs a retry, not a lost write.
    */
   public void poisonEdgeAppendPage(final RID segmentRID) {
     if (!edgeAppendMerge)
@@ -684,6 +688,21 @@ public class TransactionContext implements Transaction {
     if (edgeAppendPoisonedPages == null)
       edgeAppendPoisonedPages = new LongHashSet();
     edgeAppendPoisonedPages.add(edgeSegmentPageKey(segmentRID));
+  }
+
+  /**
+   * Same as {@link #poisonEdgeAppendPage(RID)} for a caller that already knows the (fileId, pageNumber) of the page,
+   * so no bucket lookup is needed. Used by the delete path: freeing a slot is not an edge append, and the edge merge
+   * re-derives the page from the committed image plus the tracked appends ALONE - so a delete left on a page that
+   * also received a tracked append would simply vanish at rebase time.
+   */
+  public void poisonEdgeAppendPage(final int fileId, final int pageNumber) {
+    if (!edgeAppendMerge)
+      return;
+
+    if (edgeAppendPoisonedPages == null)
+      edgeAppendPoisonedPages = new LongHashSet();
+    edgeAppendPoisonedPages.add(packPageKey(fileId, pageNumber));
   }
 
   /** Packs the (fileId, pageNumber) of the page holding {@code segmentRID} into a long key (no allocation). */
@@ -702,7 +721,29 @@ public class TransactionContext implements Transaction {
     return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
   }
 
-  private boolean isRebasableEdgeAppendPage(final PageId pageId) {
+  /**
+   * True when an in-chunk append to {@code segmentRID} was registered by {@link #trackEdgeAppend} in this
+   * transaction, i.e. the commit-time edge-append merge is able to replay it. Used by the writer
+   * ({@link LocalBucket}) to declare the segment's page write as covered by that merge (#5596).
+   */
+  public boolean isEdgeAppendTracked(final RID segmentRID) {
+    return edgeAppendMerge && edgeAppendsBySegment != null && edgeAppendsBySegment.containsKey(segmentRID);
+  }
+
+  /**
+   * True when an edge-append merge write to page (fileId, pageNumber) has already been poisoned in this transaction.
+   */
+  public boolean isEdgeAppendPagePoisoned(final int fileId, final int pageNumber) {
+    return edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(packPageKey(fileId, pageNumber));
+  }
+
+  /**
+   * True when this transaction registered at least one in-chunk append on {@code pageId} that the edge-append merge
+   * could replay, ignoring whether the page can PROVE the rest of its changes are replayable too. Split out from
+   * {@link #isRebasableEdgeAppendPage(MutablePage)} so the coverage verdict can be reported exactly once, at the
+   * point the transaction actually fails.
+   */
+  private boolean hasReplayableEdgeAppends(final PageId pageId) {
     if (!edgeAppendMerge || edgeAppendsBySegment == null)
       return false;
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
@@ -716,11 +757,21 @@ public class TransactionContext implements Transaction {
     return false;
   }
 
+  private boolean isRebasableEdgeAppendPage(final MutablePage page) {
+    // #5596: the rebase drops this transaction's whole image of the page, so it is sound only when every byte this
+    // transaction wrote there was declared replayable by THIS merge. A writer that forgot to poison the page (or
+    // never knew the merge exists) leaves at least one undeclared byte behind and is refused here - a retry instead
+    // of a silently lost write. See reportCoverageDecline for the counter and the log.
+    return hasReplayableEdgeAppends(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
+  }
+
   /**
    * Replays this transaction's tracked in-chunk appends for {@code pageId} on top of the current committed
    * version of that page, resolving a version conflict that was caused solely by concurrent appends to the
    * same edge-list chunk(s). Runs only on the leader/embedded commit, while the edge file's commit lock is
-   * held (so the current version is stable), and only for pages whose every modification was a tracked append.
+   * held (so the current version is stable), and only for pages whose every modification was a tracked append -
+   * an eligibility {@link #isRebasableEdgeAppendPage(MutablePage)} verifies against the page itself rather than
+   * trusting every writer to have excluded itself (#5596).
    *
    * @return the freshly rebased page, ready to be version-checked and committed.
    *
@@ -790,9 +841,11 @@ public class TransactionContext implements Transaction {
    * while the feature is on. Released on {@link #reset()}.
    */
   private static final class SlotRebaseBuffer {
-    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins.
+    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins. A NULL value
+    // is the third kind (#5569): the slot was DELETED by this transaction, so the replay frees it instead of writing
+    // a body. HashMap allows null values, so one map still describes every tracked slot of the page.
     private final Map<Integer, byte[]> finalBody     = new HashMap<>();
-    // slot -> the record body this transaction started from (UPDATES only; absent for inserts).
+    // slot -> the record body this transaction started from (UPDATES and DELETES only; absent for inserts).
     private final Map<Integer, byte[]> baseBody      = new HashMap<>();
     // slots holding a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
     // transaction stays an insert (base absent) rather than being mistaken for an in-place update.
@@ -871,6 +924,15 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    if (buffer.finalBody.containsKey(slot) && buffer.finalBody.get(slot) == null && !buffer.insertedSlots.contains(slot)) {
+      // DELETE followed by an INSERT on the SAME slot within one transaction. LocalBucket.getFreeSpaceInPage never
+      // hands back a slot this transaction has just freed (guarded by
+      // Issue5279ConcurrentInsertTest.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
+      // replaying it as a plain insert would skip the pre-image check the delete relies on, so if that allocation
+      // policy ever changes the page must fall back to a normal retry instead of silently mis-merging.
+      poisonSlotRebasePage(fileId, pageNumber);
+      return;
+    }
     final byte[] prev = buffer.finalBody.put(slot, finalBody);
     buffer.insertedSlots.add(slot);
     // Account the NET change in retained bytes: a repeated write to the same slot replaces its image, it does not
@@ -906,10 +968,42 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Records the DELETE of a plain in-place record - a single-slot change (zero the slot-table entry, optionally wipe
+   * the content) that commutes with writes to every other slot of the page, exactly like the insert and the in-page
+   * update above (#5569). {@code baseBody} is the pre-image captured BEFORE the optional content wipe-out, so the
+   * replay can still tell a false page conflict from a concurrent write to THIS record. No-op when the feature is off
+   * or the page is poisoned; the caller ({@link com.arcadedb.engine.LocalBucket}) keeps every other delete shape
+   * (placeholder pointer or content, chunk chain, corrupted slot) poisoning the page.
+   */
+  public void trackRebasableDelete(final int fileId, final int pageNumber, final int slot, final byte[] baseBody) {
+    if (!slotMerge)
+      return;
+    final long key = packPageKey(fileId, pageNumber);
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return;
+    if (slotRebaseByPage == null)
+      slotRebaseByPage = new HashMap<>();
+    final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    // A null final image marks the slot as deleted. The image the slot held so far (if any) is released.
+    final byte[] prevFinal = buffer.finalBody.put(slot, null);
+    long delta = -(prevFinal != null ? prevFinal.length : 0);
+    // First-touch base wins, as for an update: a record this transaction already updated must still be diffed
+    // against the COMMITTED pre-image, not against the intermediate image it wrote itself. A slot this transaction
+    // INSERTED has no committed pre-image at all: it stays an insert-and-delete, replayed as nothing.
+    if (!buffer.insertedSlots.contains(slot) && buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+      delta += baseBody.length;
+    accountTrackedBytes(delta);
+  }
+
+  /**
    * Marks the bucket page (fileId, pageNumber) as NOT rebasable via the slot merge: this transaction changed it in
-   * a way that is not a single-slot insert or an in-page update (delete, multi-page/placeholder record, a record
-   * that had to spill out of the page). Any tracked slots on it are dropped so a rebase can never silently
-   * re-derive the page from committed-state + our slot writes. No-op when the feature is off.
+   * a way that is not a single-slot insert, in-page update or plain-record delete (a placeholder or multi-page
+   * record, a record that had to spill out of the page). Any tracked slots on it are dropped so a rebase can never
+   * silently re-derive the page from committed-state + our slot writes. No-op when the feature is off.
+   * <p>
+   * As on the edge-append side, since #5596 this is the fast, precise opt-OUT and not the only line of defence:
+   * {@link #isRebasableSlotPage(MutablePage)} also requires the page to prove that every byte this transaction
+   * wrote there was declared replayable by this merge (see {@link MutablePage#beginCoveredWrite(int)}).
    */
   public void poisonSlotRebasePage(final int fileId, final int pageNumber) {
     if (!slotMerge)
@@ -962,13 +1056,47 @@ public class TransactionContext implements Transaction {
     return slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(packPageKey(fileId, pageNumber));
   }
 
-  private boolean isRebasableSlotPage(final PageId pageId) {
+  /**
+   * True when this transaction registered at least one slot write on {@code pageId} that the disjoint-slot merge
+   * could replay, ignoring whether the page can PROVE the rest of its changes are replayable too. See
+   * {@link #hasReplayableEdgeAppends(PageId)}.
+   */
+  private boolean hasReplayableSlotWrites(final PageId pageId) {
     if (!slotMerge || slotRebaseByPage == null)
       return false;
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
     if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
       return false;
     return slotRebaseByPage.containsKey(key);
+  }
+
+  private boolean isRebasableSlotPage(final MutablePage page) {
+    // #5596: same coverage proof as the edge-append merge - the page is re-derived from the tracked slot writes
+    // alone, so any byte written outside a slot-merge declaration disqualifies it.
+    return hasReplayableSlotWrites(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
+  }
+
+  /**
+   * Reports, ONCE per page and only when the transaction is really about to fail, that a merge which had tracked
+   * writes on {@code page} was refused solely because the page could not prove the rest of its changes replayable
+   * (#5596). Counting inside the {@code isRebasable*} predicates instead would double-count a page both merges
+   * looked at, and could even count a decline for a page the other merge went on to rebase - which would make the
+   * one statistic meant to expose a forgotten declaration untrustworthy.
+   */
+  private void reportCoverageDecline(final MutablePage page) {
+    final PageId pageId = page.getPageId();
+    final boolean edgeDeclined = hasReplayableEdgeAppends(pageId)//
+        && !page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
+    final boolean slotDeclined = hasReplayableSlotWrites(pageId)//
+        && !page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
+    if (!edgeDeclined && !slotDeclined)
+      // An ordinary conflict on a page no merge ever tracked: nothing to do with coverage.
+      return;
+
+    database.getPageManager().incrementMergesDeclinedByCoverage();
+    LogManager.instance().log(this, Level.FINE,
+        "%s merge declined page %s: it carries changes no tracked write accounts for",
+        edgeDeclined && slotDeclined ? "Edge-append and slot" : edgeDeclined ? "Edge-append" : "Slot", pageId);
   }
 
   /**
@@ -998,8 +1126,23 @@ public class TransactionContext implements Transaction {
 
     for (final Map.Entry<Integer, byte[]> entry : buffer.finalBody.entrySet()) {
       final int slot = entry.getKey();
-      final byte[] baseBody = buffer.insertedSlots.contains(slot) ? null : buffer.baseBody.get(slot);
-      if (!bucket.rebaseRecordOnPage(committed, slot, entry.getValue(), baseBody))
+      final byte[] finalBody = entry.getValue();
+      final boolean insertedHere = buffer.insertedSlots.contains(slot);
+
+      if (finalBody == null) {
+        // DELETE (#5569). A slot this transaction both CREATED and deleted never existed on the committed page: its
+        // net effect there is nothing, so it must be skipped entirely - looking for a pre-image that cannot be there
+        // would turn a perfectly mergeable transaction into a conflict.
+        if (insertedHere)
+          continue;
+        if (!bucket.rebaseRecordDeleteOnPage(committed, slot, buffer.baseBody.get(slot)))
+          throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
+              + " (concurrent change to the record being deleted). Please retry the operation");
+        continue;
+      }
+
+      final byte[] baseBody = insertedHere ? null : buffer.baseBody.get(slot);
+      if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
     }
@@ -1379,20 +1522,24 @@ public class TransactionContext implements Transaction {
           // committed version instead of failing the whole transaction. The edge file's commit lock is held
           // here, so the current version stays stable across the rebase performed after the loop (rebasing here
           // would structurally modify modifiedPages while iterating it).
-          if (isLeader && isRebasableEdgeAppendPage(p.getPageId())) {
+          if (isLeader && isRebasableEdgeAppendPage(p)) {
             if (pagesToRebase == null)
               pagesToRebase = new ArrayList<>();
             pagesToRebase.add(p.getPageId());
             it.remove();
-          } else if (isLeader && isRebasableSlotPage(p.getPageId())) {
+          } else if (isLeader && isRebasableSlotPage(p)) {
             // Disjoint-slot merge (#5381): the conflict is only because a concurrent commit touched OTHER slots
             // of this page; replay this transaction's slot writes on the newer committed page (after the loop).
             if (slotPagesToRebase == null)
               slotPagesToRebase = new ArrayList<>();
             slotPagesToRebase.add(p.getPageId());
             it.remove();
-          } else
+          } else {
+            if (isLeader)
+              // #5596 diagnostics: exactly one report, for a page a merge would have taken but for its coverage.
+              reportCoverageDecline(p);
             throw e;
+          }
         }
       }
 

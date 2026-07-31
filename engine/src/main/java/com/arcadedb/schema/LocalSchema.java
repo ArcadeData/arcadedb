@@ -37,6 +37,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
+import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -125,6 +126,12 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
+  /**
+   * Logical index names whose {@link IndexInternal#getUpgradeWarning()} has already been logged. The schema is
+   * re-read on every DDL and on every HA SCHEMA_ENTRY apply, and one logical index is N bucket sub-indexes, so
+   * without this the advice would be repeated N times per reload forever.
+   */
+  private final       Set<String>                            reportedUpgradeWarnings       = ConcurrentHashMap.newKeySet();
   private              MaterializedViewScheduler              materializedViewScheduler;
   private              TimeSeriesMaintenanceScheduler         timeSeriesMaintenanceScheduler;
 
@@ -150,6 +157,8 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(SparseSegmentComponent.FILE_EXT,
         new SparseSegmentComponent.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(TimeSeriesTagDictionary.DICT_EXT,
+        new TimeSeriesTagDictionary.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(HashIndexBucket.UNIQUE_INDEX_EXT,
         new HashIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(HashIndexBucket.NOTUNIQUE_INDEX_EXT,
@@ -1739,7 +1748,9 @@ public class LocalSchema implements Schema {
                     indexMap.put(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
-                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision);
+                    // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
+                    // the full ancestor chain: reading it as anything else would make put/remove miss them.
+                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON));
                     indexMap.put(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
@@ -1765,8 +1776,10 @@ public class LocalSchema implements Schema {
                 LogManager.instance()
                     .log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName,
                         index.getName());
-              } else
+              } else {
                 type.addIndexInternal(index, bucket.getFileId(), properties, null);
+                reportUpgradeWarning(index, typeName, properties);
+              }
 
             } else {
               orphanIndexes.put(indexName, indexJSON);
@@ -2391,6 +2404,36 @@ public class LocalSchema implements Schema {
   protected void updateSecurity() {
     if (security != null)
       security.updateSchema(database);
+  }
+
+  /**
+   * Logs, once per opened database and per LOGICAL index, the reason an index should be rebuilt. An index whose
+   * on-disk layout predates a change the engine cannot apply in place keeps working exactly as it did, so this is
+   * advice and never an error; it is the only moment an operator would otherwise have no way of learning that a
+   * `REBUILD INDEX` is worth running. The same text reaches Studio through {@code schema:indexes}.
+   *
+   * @see IndexInternal#getUpgradeWarning()
+   */
+  private void reportUpgradeWarning(final IndexInternal index, final String typeName, final String[] properties) {
+    final String warning;
+    try {
+      warning = index.getUpgradeWarning();
+    } catch (final Exception e) {
+      // Never let advisory reporting break a schema load
+      return;
+    }
+    if (warning == null)
+      return;
+
+    // Report the LOGICAL index once, not each of its bucket sub-indexes: the name below is the one REBUILD INDEX takes.
+    final TypeIndex typeIndex = index.getTypeIndex();
+    final String logicalName = typeIndex != null ? typeIndex.getName() : typeName + Arrays.toString(properties);
+    if (!reportedUpgradeWarnings.add(logicalName))
+      return;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Index '%s' of database '%s' should be rebuilt: %s. Run: REBUILD INDEX `%s`", null, logicalName,
+        database.getName(), warning, logicalName);
   }
 
   /**

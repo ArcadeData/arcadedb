@@ -68,13 +68,24 @@ class TimeSeriesIngestBatchAppendIT extends BaseGraphServerTest {
     assertThat(postLineProtocol(0, body.toString())).isEqualTo(204);
     final long delta = writeTxCount() - before;
 
-    // One shard, one measurement: a single batched append transaction. Allow one extra commit of slack
-    // for incidental bookkeeping; the pre-fix per-sample shape produced SAMPLES transactions, so the
-    // bound separates the two shapes unambiguously.
+    // One shard, one measurement: a single batched append transaction, plus one commit for the tag
+    // dictionary the first time it sees "h1" (issue #5519), plus one of slack for incidental
+    // bookkeeping. The pre-fix per-sample shape produced SAMPLES transactions, so the bound still
+    // separates the two shapes unambiguously.
     assertThat(delta).as("append transactions for %d samples in one measurement", SAMPLES)
-        .isLessThanOrEqualTo(2);
+        .isLessThanOrEqualTo(3);
 
     assertThat(rowCount("batched")).isEqualTo(SAMPLES);
+
+    // The dictionary commit is a warm-up cost and nothing more: posting the same tag again interns
+    // nothing, so the second request cannot cost more transactions than the first.
+    final long beforeSecond = writeTxCount();
+    assertThat(postLineProtocol(0, body.toString())).isEqualTo(204);
+    final long secondDelta = writeTxCount() - beforeSecond;
+
+    assertThat(secondDelta).as("append transactions for a repeat post, dictionary already warm")
+        .isLessThanOrEqualTo(2);
+    assertThat(rowCount("batched")).isEqualTo(SAMPLES * 2);
   }
 
   @Test
@@ -93,8 +104,11 @@ class TimeSeriesIngestBatchAppendIT extends BaseGraphServerTest {
     assertThat(postLineProtocol(0, body.toString())).isEqualTo(204);
     final long delta = writeTxCount() - before;
 
+    // Two measurements: one append transaction each, plus one tag-dictionary commit each for the first
+    // sighting of "h1" (the dictionary is per type, so the two do not share one), plus a commit of
+    // slack. Still far below the SAMPLES transactions the per-sample shape produced.
     assertThat(delta).as("append transactions for %d samples across 2 measurements", SAMPLES)
-        .isLessThanOrEqualTo(3);
+        .isLessThanOrEqualTo(5);
 
     assertThat(rowCount("batched_a")).isEqualTo(SAMPLES / 2);
     assertThat(rowCount("batched_b")).isEqualTo(SAMPLES / 2);

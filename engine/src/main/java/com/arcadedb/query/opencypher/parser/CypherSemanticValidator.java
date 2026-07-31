@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.parser;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.query.opencypher.ast.*;
 
 import java.util.*;
@@ -1752,14 +1753,25 @@ public class CypherSemanticValidator {
       return;
     if (expr instanceof FunctionCallExpression) {
       final FunctionCallExpression func = (FunctionCallExpression) expr;
-      final String name = func.getFunctionName().toLowerCase();
+      final String name = func.getFunctionName().toLowerCase(Locale.ROOT);
       // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
       if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
         throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
       final List<Expression> args = func.getArguments();
+      // The wrong number of arguments is the primary defect and must be reported as such, before the single-argument type
+      // check below decides that e.g. atan2('x') - a binary function called with one argument - is a type error (#5484).
+      final String arityError = FunctionValidator.validateArgumentCount(name, args.size());
+      if (arityError != null)
+        throw new CommandSemanticException(arityError);
+      // The numeric family is checked at every argument position, so atan2('hello', 1) and round(x, 2, 'SIDEWAYS') are
+      // rejected before the query runs just like the single-argument abs('hello') is.
+      final CypherFunctionHelper.NumericSignature numeric = CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS.get(name);
+      if (numeric != null)
+        checkStaticallyKnownNumericArgs(numeric, args);
       if (args.size() == 1) {
         final Expression arg = args.get(0);
-        checkStaticallyKnownArgType(name, arg);
+        if (numeric == null)
+          checkStaticallyKnownArgType(name, arg);
         final VarType argType = getExpressionType(arg);
         if (argType != null) {
           switch (name) {
@@ -1817,7 +1829,8 @@ public class CypherSemanticValidator {
    * outside the function's input domain. The functions repeat the check at runtime for values known only then; doing it here
    * as well matches Neo4j, which fails {@code MATCH (n:Nothing) RETURN size(42)} even though the query matches no row and the
    * function would never run. Same message and same exception as the runtime check, so the client sees one behaviour.
-   * See issues #5477 (size) and #5476 (head, last, tail).
+   * See issues #5477 (size) and #5476 (head, last, tail). The numeric family is handled by
+   * {@link #checkStaticallyKnownNumericArgs}, which covers every argument rather than only a single one.
    */
   private void checkStaticallyKnownArgType(final String functionName, final Expression arg) {
     final boolean isMap = arg instanceof MapExpression;
@@ -1825,6 +1838,7 @@ public class CypherSemanticValidator {
     final Object literal = arg instanceof LiteralExpression ? ((LiteralExpression) arg).getValue() : null;
     if (!isMap && literal == null)
       return;
+
     // A literal holding a collection is a LIST, which every function handled below accepts.
     if (literal instanceof Collection || (literal != null && literal.getClass().isArray()))
       return;
@@ -1842,6 +1856,43 @@ public class CypherSemanticValidator {
         throw CypherFunctionHelper.typeMismatch(functionName, "a LIST<ANY>", isMap ? Map.of() : literal);
       default:
         break;
+    }
+  }
+
+  /**
+   * Rejects a statically-known argument of a numeric function - {@code abs()}, {@code atan2()}, {@code round()}, ... - that
+   * falls outside {@code INTEGER | FLOAT}. Unlike {@link #checkStaticallyKnownArgType} this walks every argument, so the
+   * parse-time guarantee covers the binary and ternary members of the family and not only the unary ones: without it
+   * {@code MATCH (n:Nothing) RETURN atan2('hello', 1)} succeeded silently because the projection never ran, while the
+   * single-argument {@code abs('hello')} failed. See issue #5484.
+   * <p>
+   * The trailing rounding mode of {@code round(value, precision, mode)} is not numeric; it is validated against the same
+   * mode names the function itself accepts.
+   */
+  private void checkStaticallyKnownNumericArgs(final CypherFunctionHelper.NumericSignature signature,
+      final List<Expression> args) {
+    for (int i = 0; i < args.size(); i++) {
+      final Expression arg = args.get(i);
+      final boolean isMap = arg instanceof MapExpression;
+      // A bracketed list is a ListExpression rather than a literal holding a Collection, so it has to be recognised
+      // separately or abs([1,2]) would reach the parse-time check looking like a value of unknown type and be let
+      // through, leaving it to fail only on a query that matches a row.
+      final boolean isList = arg instanceof ListExpression;
+      // A null literal is legal everywhere: null propagation is not a type error.
+      final Object literal = arg instanceof LiteralExpression ? ((LiteralExpression) arg).getValue() : null;
+      if (!isMap && !isList && literal == null)
+        continue;
+
+      // Stands in for the literal purely so the message names the type: a MAP or a LIST<ANY>.
+      final Object rendered = isMap ? Map.of() : isList ? List.of() : literal;
+
+      if (i < signature.numericArgs()) {
+        if (isMap || isList || !(literal instanceof Number))
+          throw CypherFunctionHelper.typeMismatch(signature.name(), CypherFunctionHelper.NUMERIC_DOMAIN, rendered);
+      } else if ("round".equals(signature.name()))
+        // A map or list literal names no rounding mode either, so it is rejected here too rather than only once the
+        // query runs.
+        RoundFunction.parseRoundingMode(rendered);
     }
   }
 

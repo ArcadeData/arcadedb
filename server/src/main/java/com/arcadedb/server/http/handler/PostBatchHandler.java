@@ -30,6 +30,7 @@ import com.arcadedb.server.http.handler.batch.BatchRecord;
 import com.arcadedb.server.http.handler.batch.BatchRecordStream;
 import com.arcadedb.server.http.handler.batch.CsvBatchRecordStream;
 import com.arcadedb.server.http.handler.batch.JsonlBatchRecordStream;
+import com.arcadedb.server.http.handler.batch.MalformedBatchRecordException;
 import com.arcadedb.server.http.handler.batch.OrdinalVertexRefResolver;
 import com.arcadedb.server.http.handler.batch.TempIdVertexRefResolver;
 import com.arcadedb.server.http.handler.batch.VertexRefResolver;
@@ -77,6 +78,24 @@ import java.util.logging.Level;
  * Response: {@code verticesCreated}, {@code edgesCreated}, {@code elapsedMs}, {@code bytesRead} and, when temporary
  * ids were used, {@code idMapping} - replaced by {@code idMappingOmitted} / {@code idMappingSize} past
  * {@link #MAX_ID_MAPPING_IN_RESPONSE} entries, unless {@code idMapping=true} demands it.
+ * <p>
+ * Giving up early: a load that fails on the payload is answered as soon as the verdict is reached, without reading
+ * the rest of the upload. That is not an optimisation - closing Undertow's request stream reads the body to the end
+ * first, so waiting meant a 25M-line load sat silent for fifteen minutes and then could not be answered at all
+ * ({@code UT000002}), turning an exact diagnosis into an unexplained hang (issue #5470). The connection is marked
+ * non-persistent instead, and only a record that failed to PARSE is checked against
+ * {@link #bodyEndedEarly} first, since a cut body can fabricate one of those; a well-formed record with invalid
+ * content is final and reported at once. See {@link CountingInputStream#close()} and
+ * {@link com.arcadedb.server.http.handler.batch.MalformedBatchRecordException}.
+ * <p>
+ * The trade-off that buys: declining to read a body means closing a connection the client may still be writing to,
+ * and the TCP reset that follows can discard bytes the peer had already received - the response among them. A client
+ * that is no longer mid-upload always gets the error; one that reads while it uploads (any ordinary HTTP client)
+ * usually does, though not reliably - measured at about four times in five against the JDK client - and one that
+ * writes its whole payload before reading anything sees the reset instead. That is the better failure: it is immediate rather than a quarter of an
+ * hour, it cannot be mistaken for success, and the exact reason is in the server log either way. The alternative -
+ * reading a multi-gigabyte remainder to keep the socket well-mannered - is the bug this replaced, and it pinned a
+ * worker thread for the duration.
  * <p>
  * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
  * failure mid-stream leaves earlier chunks durably committed. On a client-input error the response
@@ -142,6 +161,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   private static final int        MAX_PRESIZED_VERTICES      = 1 << 24;
   /** How far the tail of a short body is drained before deciding it is a live client rather than a cut upload. */
   private static final int        TRUNCATION_PROBE_BYTES     = 64 * 1024;
+  /**
+   * How much of an abandoned request body is consumed to keep its connection reusable. Only bytes that have already
+   * arrived are read (see {@link CountingInputStream#close()}), so this bounds work, not waiting: past it the
+   * connection is retired instead, because a bulk upload's remainder is not worth a keep-alive.
+   */
+  private static final int        MAX_ABANDONED_BODY_DRAIN   = 64 * 1024;
   private static final HttpClient HTTP_CLIENT                = HttpClient.newHttpClient();
 
   public PostBatchHandler(final HttpServer httpServer) {
@@ -195,7 +220,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // The counter is what tells a body that ended early from one that ended (issue #5470): not every premature
     // end of a request body surfaces as an IOException, and a load that silently stops half-way must never be
     // answered with a 200.
-    final CountingInputStream inputStream = new CountingInputStream(exchange.getInputStream());
+    final CountingInputStream inputStream = new CountingInputStream(exchange, exchange.getInputStream());
 
     // Applies to the forwarding path too: while the leader is busy the follower cannot drain the client
     // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
@@ -332,7 +357,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // from its own connection buffer once the peer is gone, which surfaces as a "malformed record" on a line the
       // client never sent. Answering 400 there sends the user hunting through a file that is perfectly valid, so
       // the missing bytes are checked first (issue #5470).
-      if (bodyEndedEarly(exchange, inputStream))
+      //
+      // Only for a record that failed to PARSE, though. A well-formed record carrying invalid content - a temporary
+      // id no vertex declared, an unparseable RID, a vertex after the first edge - is a final verdict: the record
+      // was read in full, so no number of further bytes can make it valid, and the client is answered at once. That
+      // distinction is the difference between naming the offending line and reporting the load as truncated with
+      // "the last record read is not part of the payload", which was untrue and unfixable: the line WAS in the file.
+      if (e instanceof MalformedBatchRecordException && bodyEndedEarly(exchange, inputStream))
         return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated,
             "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
                 + " announced bytes were received, the last record read (" + message + ") is not part of the payload",
@@ -414,33 +445,60 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * Whether the request body provably stopped before the announced {@code Content-Length}, i.e. whether the load
    * that just ended (successfully or on a malformed record) was working on a truncated payload.
    * <p>
-   * Fewer bytes than announced is not enough on its own - a parse error also stops the reader early - so what is
-   * left of the stream is drained: reaching the end of it before the announced length proves the rest will never
-   * arrive. The drain is bounded because a genuinely malformed record can be followed by any amount of body the
-   * client is still sending; a truncated one is followed by at most what the server already has buffered. A chunked
-   * upload announces no length and is not checked here: it fails loudly by itself, because an unterminated chunked
-   * body IS an I/O error.
+   * Fewer bytes than announced is not enough on its own - a parse error also stops the reader early - so what the
+   * server already holds is consumed to look for the end of the body: reaching it before the announced length proves
+   * the rest will never arrive. A chunked upload announces no length and is not checked here: it fails loudly by
+   * itself, because an unterminated chunked body IS an I/O error.
+   * <p>
+   * The probe never BLOCKS. What it is here to catch is a peer that has gone away while Undertow still had bytes of
+   * its own buffered - the parser then fails on a line the client never sent - and a peer that has gone away is at
+   * end of stream, which needs no waiting to observe. Blocking instead would mean waiting for bytes that, in the one
+   * case where the answer matters, are never coming: on a client that is merely slow the handler would stall, and on
+   * a client still uploading it would read up to the probe budget for nothing (issue #5470). So the loop stops at
+   * the first read that would have to wait, and the load is then reported as what it looks like from here - a
+   * payload the client really sent - rather than guessed to be truncated.
    */
   private boolean bodyEndedEarly(final HttpServerExchange exchange, final CountingInputStream inputStream) {
     final long declaredLength = exchange.getRequestContentLength();
+    // A declared length only bounds the bytes ON THE WIRE, so with a Content-Encoding it says nothing about how
+    // much payload the parser should have seen and this check would compare two different quantities. The endpoint
+    // does not decode either - the body is handed to the parser as it arrives - so a compressed upload fails as a
+    // malformed record or an I/O error, which is answered on its own terms.
     if (declaredLength < 0 || inputStream.getBytesRead() >= declaredLength
         || exchange.getRequestHeaders().getFirst("Content-Encoding") != null)
       return false;
 
-    final byte[] drain = new byte[8192];
-    long drained = 0;
-    try {
-      while (drained < TRUNCATION_PROBE_BYTES && inputStream.getBytesRead() < declaredLength) {
-        final int read = inputStream.read(drain, 0, drain.length);
-        if (read < 0)
-          return true;
-        drained += read;
-      }
-    } catch (final IOException e) {
-      // The connection is already gone: the announced bytes are not coming either way.
+    // The parser already hit the end of a body shorter than announced: nothing more to establish. Note this is
+    // often settled BEFORE this method runs: try-with-resources closes the record stream on the way out of the
+    // load, so CountingInputStream.close() has already consumed any buffered remainder and, if that reached the
+    // end, recorded it here. The drain deliberately runs ahead of this probe - the two agree because a remainder
+    // that ends the body sets endOfBody, and one that does not leaves the question open for the loop below.
+    if (inputStream.isEndOfBody())
       return true;
-    }
-    return false;
+
+    // Consume no further than the announced length: reaching it means the body was whole after all, which is a
+    // spent budget rather than an end of stream.
+    final BufferedDrain outcome = inputStream.drainAlreadyBuffered(
+        Math.min(TRUNCATION_PROBE_BYTES, declaredLength - inputStream.getBytesRead()));
+
+    // A broken connection settles it the same way an end of stream does: the announced bytes are not coming.
+    return outcome == BufferedDrain.END_OF_BODY || outcome == BufferedDrain.BROKEN;
+  }
+
+  /**
+   * Why {@link CountingInputStream#drainAlreadyBuffered} stopped. The distinction that matters is between reaching
+   * the END of the request body - which proves what is left will never arrive - and merely running out of bytes that
+   * had already arrived, which proves nothing either way.
+   */
+  private enum BufferedDrain {
+    /** The request body is finished. */
+    END_OF_BODY,
+    /** Nothing more has arrived yet; the client may still be sending. */
+    EXHAUSTED,
+    /** The caller's budget ran out before either of the above. */
+    BUDGET_SPENT,
+    /** The connection failed while reading; nothing more is coming through it. */
+    BROKEN
   }
 
   /**
@@ -542,13 +600,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Counts the bytes handed to the parser, so the handler can compare them with the announced {@code Content-Length}.
+   * Counts the bytes handed to the parser, so the handler can compare them with the announced
+   * {@code Content-Length} - and makes sure that giving up on a load never means reading the rest of it first.
    */
   private static class CountingInputStream extends FilterInputStream {
-    private long bytesRead;
+    private final HttpServerExchange exchange;
+    private       long              bytesRead;
+    private       boolean           endOfBody;
 
-    CountingInputStream(final InputStream in) {
+    CountingInputStream(final HttpServerExchange exchange, final InputStream in) {
       super(in);
+      this.exchange = exchange;
     }
 
     @Override
@@ -556,6 +618,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final int read = super.read();
       if (read >= 0)
         ++bytesRead;
+      else
+        endOfBody = true;
       return read;
     }
 
@@ -564,11 +628,96 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final int read = super.read(b, off, len);
       if (read > 0)
         bytesRead += read;
+      else if (read < 0)
+        endOfBody = true;
       return read;
+    }
+
+    /**
+     * Releases the request body WITHOUT reading whatever is left of it.
+     * <p>
+     * {@code UndertowInputStream.close()} loops on {@code readIntoBuffer()} until the request body is finished: it
+     * exists so a keep-alive connection can serve the next request, and on any other endpoint the leftovers are a
+     * few bytes. Here they are the rest of a bulk upload. So a batch that stopped reading early - on a record it
+     * will not accept, or because the client announced more than it sent - would sit waiting for the entire
+     * remaining payload before the client could be told anything: on the 25M-line load of issue #5470 that was
+     * fifteen minutes, after which the response could no longer even be sent
+     * ({@code UT000002: The response has already been started}), so a precise diagnosis the server had reached in
+     * two minutes never arrived at all.
+     * <p>
+     * Nothing needs those bytes. Undertow owns this stream and closes it when the exchange ends, so closing it
+     * here buys only the drain, and the drain is exactly what has to be skipped: the connection is marked
+     * non-persistent instead, which makes {@code HttpServerConnection.terminateRequestChannel} close the read side
+     * before {@code endExchange} touches the stream. The response is written before that happens.
+     * <p>
+     * A body that WAS read to the end keeps the connection alive as before: there is nothing to drain, so an
+     * ordinary client loading an ordinary payload sees no change.
+     * <p>
+     * Nor does a client whose payload had ALREADY ARRIVED when the load gave up on it - a small batch, fully sent,
+     * rejected on a record in the middle. Its remainder is sitting in a buffer, so it is consumed here without ever
+     * waiting for the network: the body reaches its end, the connection stays reusable, and - because the client is
+     * no longer mid-upload when the socket closes - the answer is not at risk of being lost to a reset. Only a
+     * remainder that has NOT arrived, or is larger than {@link #MAX_ABANDONED_BODY_DRAIN}, costs the connection.
+     */
+    @Override
+    public void close() {
+      if (endOfBody || drainAlreadyBuffered(MAX_ABANDONED_BODY_DRAIN) == BufferedDrain.END_OF_BODY)
+        return;
+
+      // Retiring a connection is invisible from the outside, and it is also where an unexpected cost would show up
+      // if a body that HAD arrived stopped being recognised as complete: this is the line to raise to see it.
+      LogManager.instance().log(this, Level.FINE,
+          "Batch load did not read its request body to the end (%d of %s announced bytes); the connection is closed "
+              + "rather than reused, so the rest of the upload is not read first", null, bytesRead,
+          exchange.getRequestContentLength() >= 0 ? exchange.getRequestContentLength() : "an unannounced number of");
+
+      exchange.setPersistent(false);
+    }
+
+    /**
+     * Consumes up to {@code budget} bytes of the request body that have ALREADY arrived, and reports why it stopped.
+     * <p>
+     * Never blocks. {@code available()} bounds every read, so the cost is only what the server already holds and a
+     * client that still owes bytes ends this at once with {@link BufferedDrain#EXHAUSTED}. Undertow reports a
+     * finished body as -1 available rather than 0, which is the end-of-body signal both callers are looking for;
+     * that is Undertow's own convention, not the {@link InputStream} contract (which says >= 0). An upgrade that
+     * changed it would not go unnoticed - {@code Issue5470BatchErrorDeliveryIT}'s
+     * {@code aRecordCutInHalfIsStillReportedAsATruncatedUpload} and
+     * {@code aRejectedButCompletePayloadKeepsItsConnection} both fail when it reports 0 at end of body (verified by
+     * mutation) - and if it ever does, the degradation is a worse diagnosis, never a wrong answer.
+     */
+    BufferedDrain drainAlreadyBuffered(final long budget) {
+      final byte[] drain = new byte[8192];
+      long drained = 0;
+      try {
+        while (drained < budget) {
+          final int available = in.available();
+          if (available < 0)
+            return BufferedDrain.END_OF_BODY;
+          if (available == 0)
+            return BufferedDrain.EXHAUSTED;
+
+          final int read = read(drain, 0, (int) Math.min(Math.min(available, drain.length), budget - drained));
+          if (read < 0)
+            return BufferedDrain.END_OF_BODY;
+          if (read == 0)
+            // Cannot happen for a blocking stream asked for len >= 1, but never spin on it either.
+            return BufferedDrain.EXHAUSTED;
+          drained += read;
+        }
+      } catch (final IOException e) {
+        return BufferedDrain.BROKEN;
+      }
+      return BufferedDrain.BUDGET_SPENT;
     }
 
     long getBytesRead() {
       return bytesRead;
+    }
+
+    /** Whether the parser reached the end of the request body. */
+    boolean isEndOfBody() {
+      return endOfBody;
     }
   }
 
