@@ -36,6 +36,8 @@ import java.time.Duration;
  * Because the result keeps the argument's type, every fixed-width signed type
  * has exactly one input - its MIN_VALUE - whose magnitude it cannot represent;
  * those fail the query rather than returning a negative "absolute value".
+ * Duration has the same single unrepresentable input at Long.MIN_VALUE seconds
+ * with no nanos, and is treated the same way.
  *
  * @author Michael MacFadden
  */
@@ -69,13 +71,7 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
     } else if (inputValue instanceof Float float1) {
       result = Math.abs(float1);
     } else if (inputValue instanceof Duration duration) {
-      final int seconds = duration.toSecondsPart();
-      final long nanos = duration.toNanosPart();
-      if (seconds > -1 && nanos > -1)
-        result = inputValue;
-      else {
-        result = Duration.ofSeconds(Math.abs(seconds), Math.abs(nanos));
-      }
+      result = absExact(duration);
     } else {
       throw new IllegalArgumentException("Argument to absolute value must be a number");
     }
@@ -102,6 +98,28 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
     if (value == minValue)
       throw new ArithmeticErrorException(typeName + " overflow");
     return Math.abs(value);
+  }
+
+  /**
+   * A {@code Duration} carries its sign on the whole, not on its components: it is normalized as a possibly
+   * negative seconds field plus an always non-negative nanos adjustment, and {@code toSecondsPart()} reports
+   * the seconds within the minute rather than the total. Neither part is therefore a usable signal on its own,
+   * and taking the two magnitudes independently does not reconstruct the magnitude of the whole.
+   * <p>
+   * The range is symmetric apart from a single value: negating a duration of exactly {@code Long.MIN_VALUE}
+   * seconds and no nanos would need {@code Long.MAX_VALUE + 1} seconds. That is the same unrepresentable
+   * magnitude the integral types have at their MIN_VALUE, so it is reported the same way rather than being
+   * allowed to escape as a raw {@link ArithmeticException}.
+   */
+  private static Duration absExact(final Duration duration) {
+    if (!duration.isNegative())
+      return duration;
+
+    try {
+      return duration.negated();
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("duration overflow", e);
+    }
   }
 
   public boolean aggregateResults() {
