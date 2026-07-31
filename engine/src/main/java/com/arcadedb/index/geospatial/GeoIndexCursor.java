@@ -163,19 +163,31 @@ class GeoIndexCursor implements IndexCursor {
     return currentRID;
   }
 
+  /**
+   * A geospatial cursor exposes NO comparator, like the {@code TempIndexCursor} it replaced: its rows come from many
+   * cell scans merged by a hash set, so they carry no index order a caller could compare them in. Callers that need to
+   * order geo results must do so on the records, after the {@code geo.*} predicate has re-checked them.
+   */
   @Override
   public BinaryComparator getComparator() {
     return null;
   }
 
+  /** Empty for the same reason as {@link #getKeys()}: the cell tokens are not a key type a caller can interpret. */
   @Override
   public byte[] getBinaryKeyTypes() {
     return new byte[0];
   }
 
+  /**
+   * Unknown - it would take walking every covering cell, which is exactly what this cursor exists not to do up front.
+   * <p>
+   * No cardinality estimator can see this {@code -1}: the only reader of {@code estimateSize()} in the engine is
+   * {@code WhereClause.estimateFromIndex}, which is gated on {@code supportsOrderedIterations()} - false for a
+   * geospatial index - and reaches the cursor through {@code range()}, which this index does not implement at all.
+   */
   @Override
   public long estimateSize() {
-    // Unknown without walking every covering cell, which is exactly what this cursor exists not to do up front.
     return -1L;
   }
 
