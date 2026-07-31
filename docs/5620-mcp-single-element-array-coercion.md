@@ -53,22 +53,50 @@ JSON array of any size, so the arity coercion never applied to them.
 
 ## Relationship to #5619
 
-PR #5619 (issue #5585) is open on `issue-5585-mcp-malformed-params` and wraps the same four reads in
-`try`/`catch (IllegalStateException | UnsupportedOperationException)` so a wrong-shaped member produces a
-JSON-RPC envelope instead of a bodiless HTTP 500. This change and that one overlap on the string-typed
-members and will conflict textually.
+PR #5619 (issue #5585) merged to main as `bfdc3a837` while this branch was already open, so `origin/main`
+was merged in and the overlap resolved here rather than left for the maintainer. #5619 wraps the same reads
+in `try`/`catch (IllegalStateException | UnsupportedOperationException)` so a wrong-shaped member produces a
+JSON-RPC envelope instead of a bodiless HTTP 500.
 
-They are not redundant, and the resolution is mechanical. Type-checking subsumes catching *for the string
-members*: once `stringMember` refuses every non-string shape up front, nothing in those reads can raise
-`IllegalStateException` or `UnsupportedOperationException`, so the #5619 guards around them become dead.
-What #5619 still carries and this change does not touch:
+The two are complementary, and the merged result keeps both:
 
-- the object-typed reads (`params`, `params.arguments`), where the raise is still the only signal
-- the `isResponse` probe reading `jsonrpc` through `opt`
-- the widened `UnsupportedOperationException` catch in `promptsGet`
+- **Where a member is string-typed** (`method`, `params.uri`, `params.name`) the read now goes through
+  `stringMember`. Its guard placement, error codes and messages are #5619's; only the read itself changed.
+  `IllegalArgumentException` was added to each catch, since that is what `stringMember` raises.
+- **Where a member is object-typed** (`params`, `params.arguments`) #5619's accessor and catch are kept
+  untouched. `getAsJsonObject()` raises for a JSON array of any size, so arity never decided anything there
+  and there is nothing for a type check to add.
+- **`isResponse`** keeps #5619's `opt("jsonrpc")` comparison unchanged.
+- **`promptsGet`** keeps #5619's widened catch, which already covers `IllegalArgumentException`.
 
-Whichever merges second should keep the `stringMember` reads and keep #5619's guards only on the
-object-typed members and `isResponse`.
+Both test suites are kept in full: `MCPTransportConformanceTest` now runs 36 methods, the 24 that predate
+both changes plus 6 from #5619 and 6 from this one. One comment carried over from #5619 needed correcting
+rather than moving: `requestWithNonStringMethodIsRejected` explained its use of `{}` by noting that
+`"method":["ping"]` "would silently succeed", which this change makes untrue. It now points at the test that
+pins the array shape instead.
+
+## Why the string members are narrowed and `arguments.key` is not
+
+`feedback_guard_a_json_read_without_narrowing_its_coercion` records that PR #5622 rejected a proposal to
+rewrite `formatArgs`' read of `arguments.key` as `opt` plus `instanceof String`. That hazard is real and it
+is specifically a *divergence* hazard: `formatArgs` reads `arguments.key` to decide whether to mask a secret
+`value` in the request log, and `SetServerSettingTool` reads the same member to decide what to write.
+Narrowing one reader while the other still coerces means `"key":["arcadedb.server.rootPassword"]` stops
+being recognised as a hidden setting and the secret is logged in clear, while the tool still applies it -
+reopening what #5508 closed.
+
+Every member narrowed here was checked against that test, by grepping for other readers of the same member:
+
+| member | other readers | coercing? |
+|---|---|---|
+| `method` | `has("method")` in `dispatch` and `isResponse` | existence checks only |
+| `params.uri` | none (`MCPResources` writes `uri`, never reads it from params) | - |
+| `params.name` (tools/call) | `formatArgs(toolName, args)` | receives the value resolved here, not a second read |
+| `params.name` (prompts/get) | none | - |
+
+Each has exactly one coercing reader, which is the one narrowed, so no two readers can disagree.
+`arguments.key` is deliberately left alone: it is the member with two readers, and it is #5622's to fix by
+catching.
 
 ## Tests
 
@@ -93,8 +121,9 @@ while proving nothing.
 
 - Before the fix: `Tests run: 30, Failures: 5` - the five new malformed-member tests, and only those.
 - After the fix: `Tests run: 30, Failures: 0`.
+- After merging `origin/main` (which brought #5619's six tests in): `Tests run: 36, Failures: 0`.
 - Regression sweep over the MCP surface (`MCP*Test`, `HybridSearch*Test`, `GetServerSettings*`):
-  `Tests run: 276, Failures: 0, Errors: 0, Skipped: 0`.
+  `Tests run: 276, Failures: 0` before the merge, `Tests run: 282, Failures: 0, Errors: 0, Skipped: 0` after.
 
 ## Impact
 
@@ -108,6 +137,8 @@ that did strictly more work.
 
 ## Follow-ups
 
-- Reconcile with #5619 at merge time as described above.
+- PR #5622 is still open and fixes `formatArgs`' read of `arguments.key` by catching. It does not conflict
+  with this change, which leaves that member alone.
 - Other handlers reading request JSON through `getString(name, default)` inherit the same coercion. Nothing
-  outside `MCPDispatcher` was surveyed here; a sweep of the HTTP handler surface would be a separate change.
+  outside `MCPDispatcher` was surveyed here; a sweep of the HTTP handler surface would be a separate change,
+  and each site needs the two-reader check above before anything is narrowed.

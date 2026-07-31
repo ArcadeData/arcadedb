@@ -107,6 +107,21 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
   }
 
   /**
+   * A member of the wrong JSON type must still produce a JSON-RPC envelope. The defaulting accessors fall back only
+   * for an absent or null member, so a member that is present but of another shape raises out of the read, and a
+   * read placed where nothing can answer for it reaches the transport as an HTTP 500 with no envelope at all.
+   */
+  @Test
+  void requestWithNonObjectParamsIsRejected() throws Exception {
+    final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":[\"a\"]}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+  }
+
+  /**
    * JSON-RPC 2.0 types 'method' as a String, but the value used to be read through an accessor that delegates to
    * Gson, which unwraps a one-element array to that element and raises only for any other size. Array arity
    * therefore decided whether the request was executed or rejected: {@code ["ping"]} dispatched ping while
@@ -151,6 +166,68 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     assertThat(response.status).isEqualTo(200);
     final JSONObject json = new JSONObject(response.body);
     assertThat(json.has("result")).isFalse();
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  @Test
+  void requestWithNonStringMethodIsRejected() throws Exception {
+    // An object rather than a one-element array. Both are refused now, but they were not always: the array shape
+    // used to be unwrapped into a call to ping, which is what requestWithSingleElementArrayMethodIsRejected pins.
+    final Response response = post("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":{}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+  }
+
+  @Test
+  void toolsCallWithNonObjectArgumentsIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+            + "\"params\":{\"name\":\"list_databases\",\"arguments\":[\"a\"]}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  @Test
+  void resourcesReadWithNonStringUriIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"resources/read\",\"params\":{\"uri\":{}}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.has("error")).isTrue();
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  /**
+   * The response probe reads 'jsonrpc' before any other member is examined, so it is the one read that cannot be
+   * placed under a guard: it decides whether a reply is owed at all. It therefore compares the member without
+   * demanding a string, and a non-string one simply means the payload is not a response.
+   */
+  @Test
+  void nonStringJsonrpcMemberIsAnsweredRatherThanFailed() throws Exception {
+    for (final String jsonrpc : new String[] { "{}", "[\"2.0\",\"x\"]" }) {
+      final Response response = post("{\"jsonrpc\":" + jsonrpc + ",\"id\":1}", null);
+
+      assertThat(response.status).as("payload with jsonrpc=%s", jsonrpc).isEqualTo(200);
+      final JSONObject json = new JSONObject(response.body);
+      assertThat(json.has("error")).as("payload with jsonrpc=%s", jsonrpc).isTrue();
+    }
+  }
+
+  @Test
+  void promptsGetWithNonStringNameIsRejected() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"prompts/get\",\"params\":{\"name\":{}}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
     assertThat(json.has("error")).isTrue();
     assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32602);
   }

@@ -201,13 +201,24 @@ public class MCPDispatcher {
     if (!isValidRequestId(id))
       return error(null, -32600, "Invalid Request: 'id' must be a string or an integer", 200);
 
+    // Read both members under a guard rather than inline. The defaulting accessors substitute the default only for
+    // an absent or null member, so a member that is present but of another JSON type raises out of the read
+    // instead. These two reads sit above the try below, whose only block is a finally, so an unguarded raise here
+    // escapes dispatch entirely and reaches the transport as a bodiless HTTP 500 rather than a JSON-RPC envelope.
+    // Both members belong to the request object itself, which makes a wrong shape an invalid request rather than
+    // invalid params.
+    // The two members are read differently on purpose. 'method' goes through stringMember, which decides on the
+    // value's own JSON type and so raises IllegalArgumentException for every non-string shape alike; the accessor
+    // it replaces would have unwrapped a one-element array instead. 'params' keeps the accessor, whose
+    // getAsJsonObject raises for an array of any size, so arity never decided anything there.
     final String method;
+    final JSONObject params;
     try {
       method = stringMember(request, "method", "");
-    } catch (final IllegalArgumentException e) {
-      return error(id, -32600, "Invalid Request: " + e.getMessage(), 200);
+      params = request.getJSONObject("params", new JSONObject());
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32600, "Invalid Request: 'method' must be a string and 'params' an object", 200);
     }
-    final JSONObject params = request.getJSONObject("params", new JSONObject());
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] %s (user=%s)", transport, method, user.getName());
 
@@ -263,11 +274,16 @@ public class MCPDispatcher {
   }
 
   private MCPResponse resourcesRead(final Object id, final JSONObject params, final ServerSecurityUser user) {
+    // Guarded for the same reason as the request members in dispatch: a 'uri' present but of another JSON type
+    // raises out of the read, which sits above the try below. A wrong shape is invalid params, distinct from the
+    // resource-not-found the try answers with for a URI that is well formed but names nothing readable.
+    // stringMember raises IllegalArgumentException for every non-string shape, including the one-element array the
+    // accessor it replaces would have unwrapped into a readable URI.
     final String uri;
     try {
       uri = stringMember(params, "uri", "");
     } catch (final IllegalArgumentException e) {
-      return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
+      return error(id, -32602, "Invalid params: 'uri' must be a string", 200);
     }
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read '%s' (user=%s)", transport, uri, user.getName());
@@ -309,7 +325,7 @@ public class MCPDispatcher {
     } catch (final SecurityException e) {
       LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, e.getMessage());
       return error(id, -32600, e.getMessage(), 200);
-    } catch (final IllegalArgumentException | IllegalStateException e) {
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
       return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
@@ -319,15 +335,23 @@ public class MCPDispatcher {
 
   private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
       final EffectiveToolProfile profile) {
+    // Guarded for the same reason as the request members in dispatch: a member present but of the wrong JSON type
+    // raises out of the read, and these reads sit above the try below. A malformed member here is invalid params
+    // rather than a failed tool call, so it answers with a JSON-RPC error rather than an isError tool envelope.
+    // 'name' goes through stringMember so that a one-element array naming a real tool is refused here instead of
+    // being unwrapped and executed; 'arguments' keeps the accessor, which already refuses an array of any size.
+    // Only the name is narrowed. The members inside 'arguments' are left to the accessor on purpose: formatArgs
+    // reads 'arguments.key' to decide whether to mask a secret value in the request log while SetServerSettingTool
+    // reads the same member to decide what to write, and two readers of one member must agree on its coercion or
+    // the masking can be bypassed. 'name' has no second reader - formatArgs receives the value resolved here.
     final String toolName;
+    final JSONObject args;
     try {
       toolName = stringMember(params, "name", "");
-    } catch (final IllegalArgumentException e) {
-      // A malformed member is a protocol-level fault, so it answers with a JSON-RPC error rather than the isError
-      // tool envelope the try below produces: no tool was named, so no tool can have failed.
-      return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
+      args = params.getJSONObject("arguments", new JSONObject());
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
+      return error(id, -32602, "Invalid params: 'name' must be a string and 'arguments' an object", 200);
     }
-    final JSONObject args = params.getJSONObject("arguments", new JSONObject());
 
     LogManager.instance()
         .log(this, Level.INFO, "MCP[%s] tools/call '%s' %s (user=%s)", transport, toolName, formatArgs(toolName, args), user.getName());
@@ -561,7 +585,11 @@ public class MCPDispatcher {
     if (message == null || message.has("method") || !message.has("id") || !isValidRequestId(message.opt("id")))
       return false;
 
-    return "2.0".equals(message.getString("jsonrpc", null))
+    // Compared through opt rather than read as a string. This probe runs before anything else in dispatch, so it
+    // is the one member read that cannot sit under a guard: it decides whether a reply is owed at all, and a raise
+    // here would escape as a transport failure with no envelope. opt maps any JSON shape to an object instead of
+    // demanding one, so a 'jsonrpc' that is not the string "2.0" simply means this payload is not a response.
+    return "2.0".equals(message.opt("jsonrpc"))
         && message.has("result") != message.has("error");
   }
 
