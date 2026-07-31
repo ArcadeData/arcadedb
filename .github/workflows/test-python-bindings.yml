@@ -56,6 +56,81 @@ jobs:
         working-directory: bindings/python
         run: python -m bandit -c pyproject.toml -r examples --severity-level medium --confidence-level high
 
+  # Meterian cannot scan this folder: `uv lock` refuses on a project carrying
+  # `[tool.uv] managed = false`, so it produces no lockfile to read (see #5616).
+  # This audits the dependency floors declared in pyproject.toml instead.
+  dependency-floors:
+    name: Dependency floor audit (bindings/python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Pinned rather than tracking latest, unlike the other uv installs in this
+      # repo: this job's own output depends on how uv resolves, so a silent
+      # resolver change would silently change what gets audited.
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/0.12.0/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+
+      - name: Install pip-audit
+        run: python -m pip install "pip-audit==2.10.1"
+
+      # --resolution lowest-direct pins every declared dependency to the oldest
+      # release its own constraint admits, which is the version this manifest
+      # actually promises to work with. The default resolution would pick the
+      # newest instead, and a floor left open to a vulnerable release would
+      # never show up.
+      #
+      # The dev extra is excluded on purpose: black, isort, mypy and pytest-cov
+      # declare no lower bound, so lowest-direct drops them onto their earliest
+      # PyPI releases (mypy 0.1, which pulls Python 2-era sdists that fail to
+      # build). It is contributor tooling and is never installed from the wheel.
+      #
+      # Every interpreter the package claims to support is resolved, because the
+      # closure is interpreter-dependent even though the declared floors are not:
+      # 3.10 pulls exceptiongroup, tomli and typing-extensions that 3.12 does not,
+      # and 3.14 drops one more. --python-version selects the resolution target
+      # without installing anything, so this stays one job rather than a matrix.
+      # The list is read from the classifiers rather than repeated here, so adding
+      # an interpreter to the package cannot leave it unaudited.
+      #
+      # --disable-pip reads the pinned file directly rather than asking pip to
+      # resolve it. Without it, a floor whose version has no wheel for the
+      # running interpreter fails as an sdist build error instead of reporting
+      # the advisory that caused the regression.
+      - name: Audit declared dependency floors on every supported interpreter
+        working-directory: bindings/python
+        run: |
+          # The trailing dot in the prefix is load-bearing: the classifiers also
+          # carry a bare "Programming Language :: Python :: 3", which without it
+          # yields --python-version 3 and fails.
+          versions=$(python -c 'import tomllib;p="Programming Language :: Python :: 3.";print(" ".join(c.rsplit(" ",1)[1] for c in tomllib.load(open("pyproject.toml","rb"))["project"]["classifiers"] if c.startswith(p)))')
+          # No classifiers would audit nothing and still pass, which is the kind
+          # of silent gap this job exists to close.
+          [ -n "$versions" ] || { echo "no Python version classifiers found in pyproject.toml"; exit 1; }
+          echo "auditing declared floors for: $versions"
+          for v in $versions; do
+            echo "::group::Resolve floors for Python $v"
+            uv pip compile pyproject.toml \
+              --extra test --extra vector --extra examples \
+              --resolution lowest-direct \
+              --python-version "$v" \
+              -o "$RUNNER_TEMP/floors-$v.txt"
+            cat "$RUNNER_TEMP/floors-$v.txt"
+            echo "::endgroup::"
+            pip-audit --no-deps --disable-pip -r "$RUNNER_TEMP/floors-$v.txt"
+          done
+
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
     name: Download ArcadeDB JARs
