@@ -1905,8 +1905,11 @@ public class LocalSchema implements Schema {
             final boolean expected = e instanceof SchemaException || e instanceof IllegalArgumentException;
             LogManager.instance().log(this, expected ? Level.WARNING : Level.SEVERE,
                 "Cannot restore the '%s' bucket selection strategy on type '%s': %s. The type falls back to `%s`",
-                e, bucketSelectionStrategy.getString("name"), typeName, e.getMessage(),
-                RoundRobinBucketSelectionStrategy.NAME);
+                // Falling back to toString() because the failures this catch is broad enough to reach include the
+                // ones that carry no message - an NPE most of all - and "...: null" names neither what went wrong
+                // nor where, on the one line an operator is likely to read.
+                e, bucketSelectionStrategy.getString("name"), typeName,
+                e.getMessage() != null ? e.getMessage() : e.toString(), RoundRobinBucketSelectionStrategy.NAME);
           }
         }
         // Restore the persisted needsRepartition flag AFTER the strategy is set. We always force

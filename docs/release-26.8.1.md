@@ -918,6 +918,10 @@ left the write to somebody else - the flag *about* the partitioning (`needsRepar
 partitioning did not. Databases whose strategy never reached `schema.json` simply need the `ALTER TYPE` re-issued;
 placement of existing records is unaffected either way, since the hash is the same one.
 
+The fix is on the mutator, not on `partitioned`, so `thread` stops being lost across a restart on the same terms.
+`round-robin` is the default and is deliberately still absent from `schema.json`, which is how reverting to it
+persists.
+
 **An index created on an already-partitioned type is diagnosed when it is created.** #5603 refuses an unsuitable
 partition at assignment time, but the same state was reachable by reordering the DDL - attach the strategy first,
 then create the index that makes it unprunable:

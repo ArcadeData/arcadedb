@@ -424,7 +424,17 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // for and a blocked one is pure cost, whereas here the INDEX is what was asked for and it is useful, so the
     // partitioning is what gives way. Outside the try/catch above on purpose - a diagnostic must not be able to undo
     // an index that was built successfully by falling into the cleanup arm.
-    type.reportPartitionSuitabilityAfterSchemaChange();
+    try {
+      type.reportPartitionSuitabilityAfterSchemaChange();
+    } catch (final RuntimeException e) {
+      // Same reasoning one step further. By this point the index is built, committed and registered on the type, so
+      // letting anything unexpected out of the diagnosis would fail the command over an index that exists - and the
+      // obvious retry then fails again with "already exists". SCHEMA_CHANGE mode cannot raise the refusal, so this
+      // only catches a genuine fault in the check or the logging, which is worth a line and nothing more.
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot report the partition suitability of type '%s' after creating the index on %s. The index itself was "
+              + "created successfully", e, metadata.typeName, metadata.propertyNames);
+    }
 
     return created;
   }
