@@ -80,6 +80,26 @@ class Issue5602ArithmeticErrorHttpStatusIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * A wrong argument count reaching the runtime guard through {@code CALL} must be the same 400 an expression gives.
+   * <p>
+   * It is the double-wrap that makes this worth its own test: {@code CallStep} used to flatten the client error into
+   * a {@code CommandExecutionException}, and on the auto-commit path the chain became
+   * {@code TransactionException -> CommandExecutionException -> CommandSemanticException} - one level deeper than the
+   * handler unwraps, so the same mistake answered 500 here while answering 400 in a plain read. {@code CallStep} now
+   * rethrows a client error untouched.
+   */
+  @Test
+  void aWrongArgumentCountThroughCallReturns400OnTheWritePath() throws Exception {
+    testEachServer(serverIndex -> {
+      // text.hammingDistance declares 2 arguments; the CREATE puts the statement on the auto-commit write path.
+      final JSONObject json = executeCypher(serverIndex,
+          "CREATE (n:Issue5602Call) WITH n CALL text.hammingDistance('a') YIELD * RETURN n", 400);
+      assertThat(json.getString("detail")).contains("hammingDistance").contains("2 arguments");
+      assertThat(json.getString("error")).doesNotContain("Error on transaction commit");
+    });
+  }
+
   @Test
   void arithmeticThatDoesNotOverflowStillReturns200() throws Exception {
     testEachServer(serverIndex -> {

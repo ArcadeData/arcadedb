@@ -56,7 +56,9 @@ public class LocalDateTimeConstructorFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args.length == 0)
+    // No argument means "now". checkArity() lets a null array through for a zero-minimum function, so treat it as empty
+    // rather than dereferencing it (issue #5602).
+    if (args == null || args.length == 0)
       return CypherFunctionHelper.getStatementTime(context).get("localdatetime");
     if (args[0] == null)
       return null;

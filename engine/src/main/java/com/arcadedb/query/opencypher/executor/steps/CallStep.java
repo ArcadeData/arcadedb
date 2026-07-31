@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
@@ -333,14 +334,10 @@ public class CallStep extends AbstractExecutionStep {
       return procedure.execute(args, inputRow, context)
           .map(this::convertProcedureResultToInternal)
           .iterator();
-    } catch (final IllegalArgumentException e) {
-      if (callClause.isOptional())
-        return null;
-      throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
-      throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
+      throw rethrowPreservingClientErrors("Error executing procedure: " + procedure.getName(), e);
     }
   }
 
@@ -366,15 +363,32 @@ public class CallStep extends AbstractExecutionStep {
     try {
       function.validateArgs(args);
       return function.execute(args, context);
-    } catch (final IllegalArgumentException e) {
-      if (callClause.isOptional())
-        return null;
-      throw new CommandExecutionException("Error executing function: " + function.getName(), e);
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
-      throw new CommandExecutionException("Error executing function: " + function.getName(), e);
+      throw rethrowPreservingClientErrors("Error executing function: " + function.getName(), e);
     }
+  }
+
+  /**
+   * Wraps a failure as a {@link CommandExecutionException} naming what was being called, <b>except</b> when it is
+   * already a client error - a wrong argument count, a bad argument type, an unknown name - which is rethrown
+   * untouched.
+   * <p>
+   * Wrapping used to be unconditional, which threw the classification away: {@code CALL f(<wrong count>)} became a
+   * {@code CommandExecutionException} carrying the real {@code CommandSemanticException} as its cause. The HTTP layer
+   * unwraps one level, so a plain request still answered 400 - but on the auto-commit path the chain is
+   * {@code TransactionException -> CommandExecutionException -> CommandSemanticException}, one level too deep, and
+   * the same mistake answered 500. Rethrowing here fixes it for every consumer at once (HTTP, Bolt, and embedded
+   * callers) rather than teaching each wire layer to dig further. See issue #5602.
+   *
+   * @return never returns; declared so callers can write {@code throw rethrowPreservingClientErrors(...)} and let the
+   * compiler see the method ends
+   */
+  private static RuntimeException rethrowPreservingClientErrors(final String context, final Exception e) {
+    if (e instanceof CommandParsingException clientError)
+      throw clientError;
+    throw new CommandExecutionException(context, e);
   }
 
   /**
