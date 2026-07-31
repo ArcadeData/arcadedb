@@ -203,6 +203,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     private       IndexCursor   cursor;
     /** Lookahead, named for what it holds rather than for next(): fetchNext() fills it, next() drains it. */
     private       Identifiable  pending;
+    private       boolean       closed;
 
     GeoCandidateIterator(final List<Index> bucketIndexes, final Shape searchShape) {
       this.bucketIndexes = bucketIndexes;
@@ -229,6 +230,10 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     }
 
     private void fetchNext() {
+      if (closed)
+        // explicit, so re-entry after close() does not rest on nextBucket having been pushed past the last bucket
+        return;
+
       while (true) {
         if (cursor != null) {
           while (cursor.hasNext()) {
@@ -258,12 +263,12 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
      */
     @Override
     public void close() {
+      closed = true;
       if (cursor != null) {
         cursor.close();
         cursor = null;
       }
       pending = null;
-      nextBucket = bucketIndexes.size();
     }
   }
 
