@@ -377,6 +377,63 @@ class MCPStdioServerTest extends BaseGraphServerTest {
     assertThat(schema.getJSONArray("types").length()).isGreaterThan(0);
   }
 
+  @Test
+  void initializeAdvertisesPromptsCapability() throws Exception {
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 500)
+        .put("method", "initialize")
+        .put("params", new JSONObject());
+
+    final JSONObject response = sendSingleRequest(request);
+
+    final JSONObject capabilities = response.getJSONObject("result").getJSONObject("capabilities");
+    assertThat(capabilities.has("prompts")).isTrue();
+    assertThat(capabilities.getJSONObject("prompts").getBoolean("listChanged")).isFalse();
+  }
+
+  @Test
+  void promptsList() throws Exception {
+    config.setAllowInsert(true);
+    config.setAllowUpdate(true);
+
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 501)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject());
+
+    final JSONObject response = sendSingleRequest(request);
+
+    final JSONArray prompts = response.getJSONObject("result").getJSONArray("prompts");
+    final Set<String> names = new HashSet<>();
+    for (int i = 0; i < prompts.length(); i++)
+      names.add(prompts.getJSONObject(i).getString("name"));
+
+    assertThat(names).containsExactlyInAnyOrder("graphrag_query", "build_knowledge_graph");
+  }
+
+  @Test
+  void promptsGet() throws Exception {
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 502)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject()
+                .put("database", "graph")
+                .put("question", "Which papers cite Codd?")));
+
+    final JSONObject response = sendSingleRequest(request);
+
+    final JSONArray messages = response.getJSONObject("result").getJSONArray("messages");
+    assertThat(messages.length()).isEqualTo(1);
+    assertThat(messages.getJSONObject(0).getJSONObject("content").getString("text"))
+        .contains("'graph'")
+        .contains("Which papers cite Codd?");
+  }
+
   // ---- Helpers ----
 
   private JSONObject sendSingleRequest(final JSONObject request) {
