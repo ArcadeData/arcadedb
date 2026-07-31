@@ -97,6 +97,22 @@ The non-obvious calls, recorded because the reasoning is not visible in the diff
   1.1 s. Neither comparable sibling (`Issue5602ArithmeticErrorHttpStatusIT`,
   `Issue5484AbsNonNumericHttpStatusIT`) is tagged, and only 9 of 117 server ITs are. Tagging it would
   wrongly drop a fast regression test out of the regular CI run.
+- **The `detail` field is mode-dependent, and that is now documented.** `buildErrorBody` emits `detail`
+  only when verbose, so the assertions on it depend on `SERVER_MODE` not being production (it defaults to
+  development). Recorded in the IT's class Javadoc, and the write-path test now also asserts the
+  `exception` field, so the strongest assertion in each test no longer rests on a mode-dependent field.
+
+### Review cycle log
+
+| Cycle | Head | Reviewer verdict | Applied |
+|---|---|---|---|
+| 1 | `97dd04e51` | approve, "nothing blocking" | removed the misattributed `@author` tag |
+| 2 | `c867f1c96` | approve, "nothing blocking" | deleted the review-cycle scratch note; `@Tag("slow")` verified inapplicable and skipped |
+| 3 | `cd05a5917` | LGTM | documented the `detail`/`SERVER_MODE` coupling; write path now asserts `exception` |
+| 4 | `be0179620` | pending at hand-off | - |
+
+The engine change itself was never modified after the first commit; every review cycle touched only tests,
+Javadoc and docs.
 
 ## Follow-ups (not in scope)
 
