@@ -164,6 +164,29 @@ class CypherFollowUpsIssue5602Test extends TestHelper {
   }
 
   @Test
+  void normalizeRejectsANonStringTheSameWayItsCounterpartDoes() {
+    // The pair has to agree on its input domain, not only on the form names: normalize() used to toString() whatever
+    // arrived, so normalize(123) answered '123' instead of raising the type error Neo4j raises.
+    assertThatThrownBy(() -> consume("RETURN normalize(42) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("normalize")
+        .hasMessageContaining("STRING");
+    // Null still propagates, in both.
+    assertThat(single("RETURN normalize(null) AS r")).isNull();
+    assertThat(single("RETURN normalize('" + NFD + "') AS r")).isEqualTo(NFC);
+  }
+
+  @Test
+  void aBridgedFunctionEnforcesItsOwnArityAtRuntime() {
+    // distance() reaches a SQL function through SQLFunctionBridge, which now runs the same runtime guard every
+    // other executor does, from the bounds the wrapped function declares (2-3).
+    assertThatThrownBy(() -> consume("RETURN distance(point({latitude: 0, longitude: 0})) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("distance")
+        .hasMessageContaining("2-3 arguments");
+  }
+
+  @Test
   void charAtIsRejectedUpFrontInsteadOfFailingAtExecution() {
     // It named no function in ArcadeDB and names none in Neo4j either, so the honest answer is the ordinary
     // unknown-function error at parse time rather than a late "Unknown function" from the executor lookup.

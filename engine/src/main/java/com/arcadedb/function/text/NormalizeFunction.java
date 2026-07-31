@@ -20,6 +20,7 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.text.Normalizer;
@@ -53,6 +54,12 @@ public class NormalizeFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
+
+    // STRING-only, as Cypher declares it and as isNormalized() already did: toString()-ing whatever arrived turned
+    // normalize(123) into the string "123" rather than the type error Neo4j raises, so a wrong query looked like a
+    // successful one - the failure mode #5476 and #5477 were about. See issue #5602.
+    if (!(args[0] instanceof CharSequence))
+      throw CypherFunctionHelper.typeMismatch("normalize", "a STRING", args[0]);
 
     return Normalizer.normalize(args[0].toString(), parseNormalForm(args.length > 1 ? args[1] : null, "normalize"));
   }

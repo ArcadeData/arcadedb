@@ -676,6 +676,15 @@ row) - and the pin itself is asserted to still bite.
   point the `CALL` path uses - runs the same check rather than its own, so calling a function through `CALL` with
   the wrong number of arguments no longer reports a different message, or a `500` where an expression gave `400`.
 
+  > **The exception type changed, not only the status.** A wrong argument count now raises
+  > `CommandSemanticException`, which extends `CommandParsingException` - a different branch of the hierarchy from
+  > the `CommandExecutionException` the old runtime guards threw (and from the `IllegalArgumentException`
+  > `validateArgs()` threw). Embedded code that catches `CommandExecutionException` around a call in order to catch
+  > a bad argument count will no longer see it, and should catch `CommandParsingException` instead. This is the
+  > opposite of the arithmetic change below, which deliberately stayed inside `CommandExecutionException`: an
+  > arithmetic failure genuinely happens while executing, whereas a wrong argument count is a property of the query
+  > text that the parser already rejects, so the two belong on different branches.
+
 **Parse-time argument validation is no longer confined to `RETURN` and `WITH`.** `MATCH (n:Nothing) WHERE
 abs('x') > 0 RETURN n` ran to completion - and, matching no row, looked like a success - while the identical call
 in a `RETURN` was rejected before the query started. The clause an expression sits in has no bearing on whether
@@ -697,6 +706,11 @@ already-implemented `char_length`, `isNormalized(input[, normalForm])` is implem
 of `normalize()` (same `NFC, NFD, NFKC, NFKD` form names, same error for an unknown one), and `charAt` - which
 names no function in Neo4j either - is unregistered, so it is rejected up front with the ordinary unknown-function
 error. An unknown-function error now also echoes the spelling you wrote rather than the folded one.
+
+`normalize()` also becomes STRING-only, matching both its new counterpart and Neo4j's `f(input :: STRING)`
+declaration: it used to `toString()` whatever arrived, so `normalize(123)` quietly answered `'123'` instead of
+raising the type error. A non-STRING argument is now a client error, the same treatment `size()` and `head()` got
+in #5477 and #5476.
 
 **Case folding no longer depends on the server's default locale.** #5484 fixed this for function names, where a
 Turkish default made `"ISNAN".toLowerCase()` the dotless `"ısnan"` and `RETURN ISNAN(1.0)` an unknown function.

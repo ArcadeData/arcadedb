@@ -71,6 +71,11 @@ public class SQLFunctionBridge implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // Held to the same declaration every other executor is, so "each function's runtime guard reads its own bounds"
+    // has no exception here either. The bounds are the wrapped SQL function's own, so this can only reject a call
+    // that function could not have served anyway; one that declares none (the SQLFunctionAbstract defaults) is
+    // unaffected.
+    checkArity(args);
     // SQL functions expect (self, currentRecord, currentResult, params, context)
     // For now, we pass nulls for self, currentRecord, currentResult
     return sqlFunction.execute(null, null, null, args, context);
