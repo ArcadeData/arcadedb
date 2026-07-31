@@ -855,6 +855,9 @@ public class TransactionContext implements Transaction {
     if (bucket != null)
       bucket.compressPage(rebased, false);
 
+    // Counted AFTER the compression, so an IOException there leaves the merge uncounted: the commit fails anyway, and
+    // a counter this PR is about to put in front of operators should report merges that actually happened. Deliberate
+    // - before the move the increment ran first and a failed compress still counted.
     database.getPageManager().incrementEdgeAppendMerges();
     return rebased;
   }
@@ -1117,12 +1120,17 @@ public class TransactionContext implements Transaction {
    * looked at, and could even count a decline for a page the other merge went on to rebase - which would make the
    * one statistic meant to expose a forgotten declaration untrustworthy.
    * <p>
-   * #5608: TOTAL by construction. It runs inside the {@code catch (ConcurrentModificationException)} of the commit
-   * loop, one statement before {@code throw e}, so anything thrown here would REPLACE the conflict the caller is
-   * propagating with a different one - {@link #hasReplayableEdgeAppends(PageId)} alone reaches
+   * #5608: TOTAL IN PRODUCTION by construction. It runs inside the {@code catch (ConcurrentModificationException)} of
+   * the commit loop, one statement before {@code throw e}, so anything thrown here would REPLACE the conflict the
+   * caller is propagating with a different one - {@link #hasReplayableEdgeAppends(PageId)} alone reaches
    * {@link #edgeSegmentPageKey(RID)}, which raises on a bucket it cannot resolve. Swallowing here, rather than making
-   * that one call non-throwing, is deliberate: it also covers whatever a future diagnostic adds to this method. A
-   * diagnostic must never be able to change what the caller reports.
+   * that one call non-throwing, is deliberate: it also covers whatever a future diagnostic adds to this method.
+   * <p>
+   * "In production" is the precise claim, and the assertion in the catch block is exactly where it stops holding: an
+   * {@code AssertionError} is not a {@code RuntimeException}, so under {@code -ea} (surefire's default) a genuine bug
+   * on this path DOES escape and replace the caller's conflict. That is the point - a defect in the diagnostic must
+   * fail a test loudly rather than hide behind the guarantee - and it costs nothing where the guarantee matters,
+   * since assertions are off in a production JVM and the swallow is then unconditional.
    * <p>
    * Auditing that path is what exposed the bug fixed alongside this guard: the lookup used to raise
    * {@code SchemaException}, which is NOT a {@link NeedRetryException}, so the commit's generic
@@ -1220,6 +1228,8 @@ public class TransactionContext implements Transaction {
     // this call, would vouch for a defrag the rebase silently dropped). Pinned by Issue5608RebasedPageCompressionTest.
     bucket.compressPage(committed, false);
 
+    // Counted AFTER the compression, for the reason given at the end of rebaseEdgeAppends: only a merge that really
+    // produced a committable page belongs in the statistic operators watch.
     database.getPageManager().incrementTxPageSlotMerges();
     return committed;
   }
