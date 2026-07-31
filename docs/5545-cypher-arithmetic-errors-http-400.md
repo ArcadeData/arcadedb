@@ -79,6 +79,25 @@ just on paper.
 - HTTP: SQL `abs()` on a MIN_VALUE moves 500 -> 400, and stops writing a stack trace per request.
 - Bolt: the same call now maps through the client-error branch in `BoltNetworkExecutor`.
 
+## Review decisions
+
+PR https://github.com/ArcadeData/arcadedb/pull/5631. Both review cycles approved with no blocking items.
+The non-obvious calls, recorded because the reasoning is not visible in the diff:
+
+- **`@author` tag removed from the new IT rather than reassigned.** The reviewer called it a copy-paste
+  artifact. That premise is wrong - `@author Luca Garulli` is house convention, on 76 of 235 files under
+  `server/src/test/java`, including both siblings this test is modeled on. The conclusion still holds:
+  naming a real person as the author of a file they did not write is a misattribution however common the
+  tag is. Removed rather than reassigned, since the remaining ~2/3 of server test files carry no `@author`
+  at all, so omitting it claims nothing false.
+- **The `executeSql` helper is deliberately not hoisted into `BaseGraphServerTest`.** Its existing
+  `command()` / `executeCommand()` hardcode a 200 assertion and cannot serve the 400 cases. Changing a
+  widely-inherited fixture for one caller is the worse trade; revisit if a third error-status IT lands.
+- **No `@Tag("slow")` on the new IT.** CLAUDE.md's bar is "multi-second elapsed time"; this class runs in
+  1.1 s. Neither comparable sibling (`Issue5602ArithmeticErrorHttpStatusIT`,
+  `Issue5484AbsNonNumericHttpStatusIT`) is tagged, and only 9 of 117 server ITs are. Tagging it would
+  wrongly drop a fast regression test out of the regular CI run.
+
 ## Follow-ups (not in scope)
 
 - SQL arithmetic operators wrap silently on overflow instead of failing like their Cypher counterparts. Worth
