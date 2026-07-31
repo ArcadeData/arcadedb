@@ -96,11 +96,13 @@ jobs:
       # PyPI releases (mypy 0.1, which pulls Python 2-era sdists that fail to
       # build). It is contributor tooling and is never installed from the wheel.
       #
-      # Every interpreter in requires-python is resolved, because the closure is
-      # interpreter-dependent even though the declared floors are not: 3.10 pulls
-      # exceptiongroup, tomli and typing-extensions that 3.12 does not, and 3.14
-      # drops one more. --python-version selects the resolution target without
-      # installing anything, so this stays one job rather than a matrix.
+      # Every interpreter the package claims to support is resolved, because the
+      # closure is interpreter-dependent even though the declared floors are not:
+      # 3.10 pulls exceptiongroup, tomli and typing-extensions that 3.12 does not,
+      # and 3.14 drops one more. --python-version selects the resolution target
+      # without installing anything, so this stays one job rather than a matrix.
+      # The list is read from the classifiers rather than repeated here, so adding
+      # an interpreter to the package cannot leave it unaudited.
       #
       # --disable-pip reads the pinned file directly rather than asking pip to
       # resolve it. Without it, a floor whose version has no wheel for the
@@ -109,16 +111,21 @@ jobs:
       - name: Audit declared dependency floors on every supported interpreter
         working-directory: bindings/python
         run: |
-          for v in 3.10 3.11 3.12 3.13 3.14; do
-            echo "::group::Python $v"
+          versions=$(python -c 'import tomllib;p="Programming Language :: Python :: 3.";print(" ".join(c.rsplit(" ",1)[1] for c in tomllib.load(open("pyproject.toml","rb"))["project"]["classifiers"] if c.startswith(p)))')
+          # No classifiers would audit nothing and still pass, which is the kind
+          # of silent gap this job exists to close.
+          [ -n "$versions" ] || { echo "no Python version classifiers found in pyproject.toml"; exit 1; }
+          echo "auditing declared floors for: $versions"
+          for v in $versions; do
+            echo "::group::Resolve floors for Python $v"
             uv pip compile pyproject.toml \
               --extra test --extra vector --extra examples \
               --resolution lowest-direct \
               --python-version "$v" \
               -o "$RUNNER_TEMP/floors-$v.txt"
             cat "$RUNNER_TEMP/floors-$v.txt"
-            pip-audit --no-deps --disable-pip -r "$RUNNER_TEMP/floors-$v.txt"
             echo "::endgroup::"
+            pip-audit --no-deps --disable-pip -r "$RUNNER_TEMP/floors-$v.txt"
           done
 
   # First job: Download ArcadeDB JARs (platform-agnostic)

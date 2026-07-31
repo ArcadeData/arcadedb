@@ -60,12 +60,17 @@ an sdist when no wheel matches the runner's interpreter. A regressed `numpy>=1.2
 testing, with `Cannot import 'setuptools.build_meta'` instead of the advisory that caused it. Since the file
 is fully pinned there is nothing to resolve, and `--disable-pip` reads it directly.
 
-**Every interpreter in `requires-python` is resolved.** The declared floors do not vary by interpreter, but
-their transitive closure does: Python 3.10 pulls `exceptiongroup`, `tomli` and `typing-extensions` that 3.12
-does not need, and 3.14 drops one package further, so the audited set is 30 / 27 / 27 / 27 / 26 packages
-across 3.10 to 3.14. Auditing only one of them would leave the transitive half of the claim untested for the
-rest of the supported range. `--python-version` selects the resolution target without installing anything,
-which keeps this a single job rather than a five-cell matrix.
+**Every interpreter the package claims to support is resolved.** The declared floors do not vary by
+interpreter, but their transitive closure does: Python 3.10 pulls `exceptiongroup`, `tomli` and
+`typing-extensions` that 3.12 does not need, and 3.14 drops one package further, so the audited set is
+30 / 27 / 27 / 27 / 26 packages across 3.10 to 3.14. Auditing only one of them would leave the transitive
+half of the claim untested for the rest of the supported range. `--python-version` selects the resolution
+target without installing anything, which keeps this a single job rather than a five-cell matrix.
+
+The list is read from the `Programming Language :: Python :: 3.x` classifiers rather than repeated in the
+workflow, so adding an interpreter to the package cannot leave it unaudited. Reading it back has its own
+failure mode, and it is guarded: an empty result exits 1 rather than looping zero times and reporting
+success, which would be exactly the silent gap this job exists to close.
 
 ### Floors raised
 
@@ -161,6 +166,29 @@ address it, for both jobs at once.
 **4. "`export PATH` in the Setup UV step only affects that step shell" - no action, and the review agrees.**
 That block is copied verbatim from the existing uv setup in this same workflow. It is correct as written:
 `$GITHUB_PATH` carries uv to later steps and the export exists so `uv --version` works in the same step.
+
+### Cycle 2 - `e291992d8`
+
+`claude[bot]` reviewed again, nothing blocking, three observations. Two were applied, one needs no change.
+
+**1. "The hardcoded `3.10 3.11 3.12 3.13 3.14` can drift from `requires-python`" - applied, more strongly
+than suggested.** The review proposed a "keep in sync" comment next to the classifiers. A comment rots on
+the same schedule as the list it guards, and the drift it warns about is silent: the job stays green while
+covering less. The loop now reads the versions from the classifiers, which removes the coupling rather than
+documenting it. That substitutes one silent-failure mode for another, so the empty result is guarded and
+exits 1; verified by stripping the classifiers from a copy of the manifest and confirming the step fails
+with `no Python version classifiers found`.
+
+**2. "`::endgroup::` is skipped on failure, leaving the group unclosed" - applied.** The group now closes
+after the resolve and the `cat`, which is the verbose part worth collapsing, and `pip-audit` runs outside
+it. A failure is therefore never inside an open group, and its output is not collapsed on a red run, which
+is when it most needs reading.
+
+**3. "The `bandit` floor bump is the one floor this job cannot check" - correct, no change.** `bandit` lives
+only in the `dev` extra, which is excluded for the reasons above, and the Bandit job pins `bandit==1.9.4`
+regardless, so `>=1.9.1` is purely declarative. It is still worth correcting: `1.9.0` was never published to
+PyPI, so the old floor named a release that does not exist. This is a specific instance of the `dev` extra
+follow-up below.
 
 ## Follow-ups
 
