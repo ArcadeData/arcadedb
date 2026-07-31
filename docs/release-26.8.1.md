@@ -878,4 +878,35 @@ The underlying contract was loose in three places, and all three are tightened:
   `NumberFormatException`), an unknown `similarity` or `quantization` name, or an out-of-range `pqClusters` is a
   client mistake. They are reported as parsing errors now, the same treatment the `GEOSPATIAL` metadata gets.
 
+## Cypher: a subquery body is validated like the query around it
+
+The widening of #5602 left one place the walk could not reach, and the class it was written on said so in the
+opposite direction: the bodies of `EXISTS { }`, `COUNT { }` and `COLLECT { }` were "parsed on their own and
+validated then". They were not. Each of the three keeps its body as text and re-parses it once per outer row, and
+a body that cannot run is absorbed into the expression's neutral value - `false`, `0`, an empty list. A `CALL { }`
+body was never handed to this phase at all ([#5626](https://github.com/ArcadeData/arcadedb/issues/5626)).
+
+So `MATCH (n:P) WHERE abs('x') > 0 RETURN n` was rejected before it started, while the identical call one level in,
+`MATCH (n:P) WHERE EXISTS { MATCH (m:P) WHERE abs('x') > 0 RETURN m } RETURN n`, was accepted - the very
+clause-dependent asymmetry #5602 set out to remove. Neo4j type-checks a subquery body exactly as it does the query
+around it.
+
+The three expressions now carry their body as an AST alongside the text, built from the parse tree ANTLR already
+produced for it rather than by re-lexing, and the traversal descends into it - as it does into a `CALL { }` body.
+Crossing into a body changes the variable scope, so a check that reads variable kinds (`type()` wants a
+relationship, `p.name` needs `p` not to be a path) re-binds itself to the kinds the body declares, over the ones it
+inherits; an implicit `CALL { }` imports nothing, so a name the body binds for itself shadows the outer one rather
+than answering for it.
+
+Two expression positions that were leaves for the same reason are covered too: an `EXISTS { }` written as a bare
+`WHERE` predicate, and a function call used as one (`WHERE isEmpty(x)`), each used to get an anonymous
+`BooleanExpression` adapter that the traversal could only treat as a leaf. Both are now the ordinary
+`BooleanCoercionExpression` - byte-for-byte the same behaviour, minus the blind spot. Procedure `CALL` arguments
+and the `LOAD CSV FROM` url expression are walked as well.
+
+> **Potentially breaking, in the same way #5602 was.** A query whose bad call sits inside a subquery body is now
+> rejected before it starts rather than failing at runtime - or, where the subquery matched no row, rather than
+> quietly answering `false` / `0` / `[]`. The call was always wrong. One shape worth calling out: `type(b)` where
+> `b` is a node, written inside a subquery, is now the type error it already was outside one.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

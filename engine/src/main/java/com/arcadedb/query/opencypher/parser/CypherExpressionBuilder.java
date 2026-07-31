@@ -1838,7 +1838,42 @@ class CypherExpressionBuilder {
       subquery = subquery + " RETURN true";
     }
 
-    return new ExistsExpression(subquery, text);
+    return new ExistsExpression(subquery, text,
+        parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(), ctx.whereClause()));
+  }
+
+  /**
+   * Builds the AST of a subquery body from the parse tree ANTLR already produced for it, so that the parse-time
+   * checks of {@link CypherSemanticValidator} can walk inside it (issue #5626).
+   * <p>
+   * The three subquery expressions keep their body as text and re-parse it once per outer row - what runs is the
+   * text after {@link CorrelatedSubqueryRewriter} has correlated it to that row, so the text has to stay. This
+   * builds the body <i>as written</i> alongside it, off the existing sub-tree rather than by re-lexing the text, so
+   * the extra AST costs one tree walk and no second parse.
+   * <p>
+   * A body written as a bare pattern - {@code EXISTS { (n)-[:KNOWS]->(m) }} - has no {@code queryWithLocalDefinitions}
+   * of its own and is wrapped into the {@code MATCH} the executor synthesizes for it anyway.
+   *
+   * @param queryCtx   the body when it is a full query, or null when it is a bare pattern
+   * @param patternCtx the pattern list of a bare-pattern body, or null
+   * @param whereCtx   the trailing WHERE of a bare-pattern body, or null
+   */
+  private static CypherStatement parseSubqueryBody(final Cypher25Parser.QueryWithLocalDefinitionsContext queryCtx,
+      final Cypher25Parser.PatternListContext patternCtx, final Cypher25Parser.WhereClauseContext whereCtx) {
+    // A fresh builder: CypherASTBuilder holds no state across a visit, and the expression builder it owns is the one
+    // running right now, so it cannot be reused re-entrantly.
+    final CypherASTBuilder astBuilder = new CypherASTBuilder();
+
+    if (queryCtx != null)
+      return astBuilder.visitQueryWithLocalDefinitions(queryCtx);
+
+    if (patternCtx == null)
+      return null;
+
+    final StatementBuilder builder = new StatementBuilder();
+    builder.addMatch(new MatchClause(astBuilder.visitPatternList(patternCtx), false,
+        whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
+    return builder.build();
   }
 
   /**
@@ -1862,7 +1897,7 @@ class CypherExpressionBuilder {
       throw new CommandParsingException(
           "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
 
-    return new CollectExpression(subquery, text);
+    return new CollectExpression(subquery, text, parseSubqueryBody(ctx.queryWithLocalDefinitions(), null, null));
   }
 
   /**
@@ -1894,7 +1929,8 @@ class CypherExpressionBuilder {
       subquery = subquery + " RETURN 1";
     }
 
-    return new CountExpression(subquery, text);
+    return new CountExpression(subquery, text,
+        parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(), ctx.whereClause()));
   }
 
   /**
