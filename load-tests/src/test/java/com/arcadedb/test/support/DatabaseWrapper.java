@@ -539,6 +539,45 @@ public class DatabaseWrapper {
     assertThat(actual).isEqualTo(expectedCount);
   }
 
+  /**
+   * Asserts a per-node record count by full scan rather than through the cached bucket counter.
+   * <p>
+   * This is the assertion that has to decide the run. {@link #assertThatUserCountIs(int)} and its siblings read
+   * {@code countType()}, whose counter drifts independently of replication (#5152/#5154) - so a run that really did
+   * lose committed writes can pass it whenever the drift happens to cancel the loss out, which is precisely the
+   * failure #5492 produced. Retries on the same 30 s budget, since Raft replication is asynchronous.
+   *
+   * @param typeName      type to scan
+   * @param expectedCount records this node must hold
+   */
+  public void assertThatScannedCountIs(final String typeName, final int expectedCount) {
+    final long deadline = System.currentTimeMillis() + 30_000;
+    long actual = -1;
+    Exception lastException = null;
+    do {
+      try {
+        actual = scanCount(typeName);
+        if (actual == expectedCount)
+          return;
+        lastException = null;
+      } catch (final Exception e) {
+        lastException = e;
+      }
+      if (System.currentTimeMillis() < deadline) {
+        try {
+          Thread.sleep(2_000);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    } while (System.currentTimeMillis() < deadline);
+    if (lastException != null)
+      throw new AssertionError("Expected " + expectedCount + " scanned " + typeName
+          + " but the database was not available after 30s: " + lastException.getMessage(), lastException);
+    assertThat(actual).as("scanned %s count on this node", typeName).isEqualTo(expectedCount);
+  }
+
   public List<Integer> getUserIds(int numOfUsers, int skip) {
     ResultSet resultSet = db.query("sql", "SELECT id  FROM User ORDER BY id SKIP ? LIMIT ?", skip, numOfUsers);
     return resultSet.stream()

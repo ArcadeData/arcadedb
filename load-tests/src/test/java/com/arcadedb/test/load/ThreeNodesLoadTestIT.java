@@ -204,9 +204,48 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
     db3.assertThatFriendshipCountIs(expectedFriendshipCount);
     db3.assertThatLikesCountIs(expectedLikeCount);
 
+    // The assertions above read countType()'s cached counter, which drifts independently of replication
+    // (#5152/#5154). A run that lost committed writes passes them whenever the drift cancels the loss out - so the
+    // guard that actually decides this test is a full scan on every node. This is the shape #5492 produced: one
+    // follower held 29991 of 30000 photos by scan while the counters agreed.
+    for (final DatabaseWrapper db : List.of(db1, db2, db3)) {
+      db.assertThatScannedCountIs("User", expectedUsersCount);
+      db.assertThatScannedCountIs("Photo", expectedPhotoCount);
+    }
+
+    if (withMaterializedView)
+      assertViewConvergedAcrossNodes(db1, db2, db3);
+
     db1.close();
     db2.close();
     db3.close();
+  }
+
+  /**
+   * Requires the view to hold the same non-empty row count on every node.
+   * <p>
+   * Deliberately not an equality check against the user count: the refresh is scheduled from a post-commit callback,
+   * so the exact number of rows at the end depends on refresh timing and asserting it would trade a real guard for a
+   * flaky one. Equal-and-non-empty is the replication invariant, and it is exactly what #5492 broke - the view stood
+   * at 3000 / 3000 / 0, and earlier at 999 / 3000 / 3000.
+   */
+  private void assertViewConvergedAcrossNodes(final DatabaseWrapper db1, final DatabaseWrapper db2,
+      final DatabaseWrapper db3) {
+    Awaitility.await("materialized view converges on every node")
+        .atMost(2, TimeUnit.MINUTES)
+        .pollInterval(5, TimeUnit.SECONDS)
+        .until(() -> {
+          try {
+            final long v1 = db1.countUserStats();
+            final long v2 = db2.countUserStats();
+            final long v3 = db3.countUserStats();
+            logger.info("UserStats convergence check: {} / {} / {}", v1, v2, v3);
+            return v1 > 0 && v1 == v2 && v1 == v3;
+          } catch (final RuntimeException e) {
+            logger.debug("View convergence check transient failure: {}", e.getMessage());
+            return false;
+          }
+        });
   }
 
   private void awaitConvergence(final DatabaseWrapper db1, final DatabaseWrapper db2, final DatabaseWrapper db3) {
