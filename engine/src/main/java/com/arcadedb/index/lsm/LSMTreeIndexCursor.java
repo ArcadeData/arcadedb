@@ -36,7 +36,24 @@ import java.io.IOException;
 import java.util.*;
 
 /**
- * Index cursor doesn't remove the deleted entries.
+ * Merging cursor over the mutable pages and the compacted series of one LSM-Tree index.
+ * <p>
+ * Deleted entries are not physically removed by the index, so the merge has to step over them: a key-wide tombstone
+ * {@code (-1,-1)}, a per-RID tombstone {@code (-(bucketId+2), position)}, or a whole key group whose RIDs were all
+ * shadowed. That skip work is unbounded - compaction never purges tombstones - and it is what makes the cursor's
+ * {@link Iterator} contract non-trivial.
+ * <p>
+ * <b>#5635 - the contract.</b> {@link #hasNext()} PREFETCHES: it runs the merge until it holds a surviving RID, so it
+ * answers on what can actually be emitted rather than on how many underlying cursors are still live. {@link #next()} is
+ * then a pure drain that never returns null and throws {@link NoSuchElementException} once exhausted, like every other
+ * {@link IndexCursor} implementation. Before this, {@code hasNext()} was optimistic and a scan ending on a run of
+ * tombstoned keys handed the caller a null element - {@code IndexCursor extends Iterator<Identifiable>}, so
+ * {@code for (final Identifiable r : cursor)} yielded it. Consumers grew private guards for that null
+ * ({@code FullTextQueryExecutor} carried four); those are gone now that the contract holds here.
+ * <p>
+ * Prefetching also settles what {@link #getRecord()} and {@link #getKeys()} describe: the entry {@code next()} LAST
+ * RETURNED. The previous implementation peeked at the not-yet-consumed value at {@code currentValueIndex}, which read as
+ * "the current entry" only by accident - a caller reading them right after {@code next()} saw the FOLLOWING row.
  */
 public class LSMTreeIndexCursor implements IndexCursor {
   private final LSMTreeIndexMutable                    index;
@@ -60,6 +77,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       Object[]                               txCursorKeys;
   /** Dead (tombstone-resolved) keys skipped by this scan; flushed to the main index stats at scan end. */
   private       long                                   deadEntriesSkipped = 0;
+  /** Prefetched entry (#5635): produced by {@link #fetchNext()}, drained by {@link #next()}. Never a tombstone. */
+  private       RID                                    nextValue;
+  private       Object[]                               nextValueKeys;
+  /** The entry {@link #next()} last returned: what {@link #getRecord()} and {@link #getKeys()} describe. */
+  private       RID                                    lastReturnedValue;
+  private       Object[]                               lastReturnedKeys;
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -333,28 +356,70 @@ public class LSMTreeIndexCursor implements IndexCursor {
     return -1L;
   }
 
+  /**
+   * Exact (#5635): the merge is run up front, so this answers on a RID the cursor can actually hand out. The work it
+   * does is the work {@link #next()} used to do; nothing is done twice, since the prefetched entry is cached until
+   * drained.
+   */
   @Override
   public boolean hasNext() {
-    return validIterators > 0 || (currentValues != null && currentValueIndex < currentValues.length) || txCursor != null;
+    if (nextValue == null)
+      fetchNext();
+    return nextValue != null;
   }
 
   @Override
   public RID next() {
-    // Termination: every round either returns a value, consumes one RID from currentValues, or
-    // consumes one key by advancing every contributing cursor via advanceCursor(), which throws on
-    // the only non-terminating state (a stuck cursor); the tx overlay is a bounded collection.
-    // No iteration budget is imposed: a long tombstone run to skip is legal work (compaction never
-    // purges tombstones) and its length is unrelated to the number of cursors, so any count-based
-    // heuristic here misfires on delete-heavy workloads and fails healthy queries.
-    do {
+    if (nextValue == null)
+      fetchNext();
+
+    if (nextValue == null)
+      throw new NoSuchElementException("Index '" + index.getName() + "' cursor is exhausted");
+
+    lastReturnedValue = nextValue;
+    lastReturnedKeys = nextValueKeys;
+    nextValue = null;
+    nextValueKeys = null;
+    return lastReturnedValue;
+  }
+
+  /**
+   * Whether any SOURCE of entries is left: a live underlying cursor, the RIDs of the key group currently loaded, or the
+   * in-transaction overlay. This is what {@code hasNext()} used to answer directly - optimistic, because a live source
+   * may still hold nothing but tombstones - and it is now only the loop condition of {@link #fetchNext()}.
+   */
+  private boolean hasMoreSources() {
+    return validIterators > 0 || (currentValues != null && currentValueIndex < currentValues.length) || txCursor != null;
+  }
+
+  /**
+   * Advances the merge until it holds a surviving RID in {@link #nextValue}, or leaves it null when the scan is over.
+   * <p>
+   * Termination: every round either produces a value, consumes one RID from currentValues, or consumes one key by
+   * advancing every contributing cursor via advanceCursor(), which throws on the only non-terminating state (a stuck
+   * cursor); the tx overlay is a bounded collection. No iteration budget is imposed: a long tombstone run to skip is
+   * legal work (compaction never purges tombstones) and its length is unrelated to the number of cursors, so any
+   * count-based heuristic here misfires on delete-heavy workloads and fails healthy queries.
+   */
+  private void fetchNext() {
+    while (true) {
       if (currentValues != null && currentValueIndex < currentValues.length) {
         final RID value = currentValues[currentValueIndex++];
-        if (value != null && !index.isDeletedEntry(value))
-          return value;
+        if (value != null && !index.isDeletedEntry(value)) {
+          nextValue = value;
+          nextValueKeys = currentKeys;
+          return;
+        }
 
         continue;
       }
 
+      if (!hasMoreSources()) {
+        flushScanStats();
+        return;
+      }
+
+      currentValues = null;
       currentValueIndex = 0;
 
       Object[] minorKey = null;
@@ -408,7 +473,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (minorKey == null) {
         validIterators = 0;
         flushScanStats();
-        return null;//throw new NoSuchElementException();
+        return;
       }
 
       currentKeys = minorKey;
@@ -505,12 +570,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       if (txCursor == null || !txCursor.hasNext())
         getClosestEntryInTx(currentKeys != null ? currentKeys : fromKeys, false);
-
-    } while (
-        (currentValues == null || currentValues.length == 0 || (currentValueIndex < currentValues.length && index.isDeletedEntry(
-            currentValues[currentValueIndex]))) && hasNext());
-
-    return currentValues == null || currentValueIndex >= currentValues.length ? null : currentValues[currentValueIndex++];
+    }
   }
 
   /**
@@ -635,19 +695,16 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
   }
 
+  /** The keys of the entry {@link #next()} last returned, or null before the first one (#5635). */
   @Override
   public Object[] getKeys() {
-    return currentKeys;
+    return lastReturnedKeys;
   }
 
+  /** The entry {@link #next()} last returned, or null before the first one (#5635). */
   @Override
   public Identifiable getRecord() {
-    if (currentValues != null && currentValueIndex < currentValues.length) {
-      final RID value = currentValues[currentValueIndex];
-      if (!index.isDeletedEntry(value))
-        return value;
-    }
-    return null;
+    return lastReturnedValue;
   }
 
   @Override
@@ -656,6 +713,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (it != null)
         it.close();
     Arrays.fill(pageCursors, null);
+    // a closed cursor is exhausted: drop the prefetched entry and the merge state so hasNext() cannot resurrect it
+    validIterators = 0;
+    txCursor = null;
+    txCursorKeys = null;
+    currentValues = null;
+    currentValueIndex = 0;
+    nextValue = null;
+    nextValueKeys = null;
     flushScanStats();
   }
 

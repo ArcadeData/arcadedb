@@ -75,7 +75,7 @@ class GeoIndexCursorTest {
     }
   }
 
-  /** A cell scan that records its own close(), and can be told to answer a null like an optimistic LSM range cursor. */
+  /** A cell scan that records its own close(), so a test can assert the chaining released it. */
   private static class TrackingCursor implements IndexCursor {
     private final List<RID> rids;
     private       int       position;
@@ -211,24 +211,71 @@ class GeoIndexCursorTest {
     assertThat(cursor.hasNext()).isFalse();
   }
 
+  /**
+   * #5635: the cell scans are driven STRICTLY - {@code next()} is only ever called after {@code hasNext()} answered
+   * true - so they need no null guard. This replaces the #5609 test that fed a null through a cell scan to mimic the
+   * optimistic {@code LSMTreeIndexCursor}: since #5635 an index cursor that answers {@code hasNext()} true always
+   * yields a real element, and one that is exhausted throws. A cell scan built on that contract is used here, so an
+   * over-eager {@code next()} anywhere in the chaining logic surfaces as a {@link NoSuchElementException} rather than
+   * being silently absorbed.
+   */
   @Test
-  void aNullFromAnOptimisticCellScanIsSkipped() {
+  void cellScansAreDrivenStrictlyThroughHasNext() {
     final String wkt = "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))";
-    final RID live = new RID(4, 9);
+    final RID first = new RID(4, 9);
+    final RID second = new RID(4, 10);
 
-    final GeoIndexCursor cursor = new GeoIndexCursor(KEYS, newWalk(wkt), (token, frontier) -> {
-      // mimics LSMTreeIndexCursor: hasNext() is optimistic and next() answers null on a tombstone run
-      final List<RID> values = new ArrayList<>();
-      values.add(null);
-      values.add(live);
-      return new TrackingCursor(values);
+    final List<RID> remaining = new ArrayList<>(List.of(first, second));
+    final GeoIndexCursor cursor = new GeoIndexCursor(KEYS, newWalk(wkt), (token, frontier) -> new IndexCursor() {
+      @Override
+      public boolean hasNext() {
+        return !remaining.isEmpty();
+      }
+
+      @Override
+      public Identifiable next() {
+        if (remaining.isEmpty())
+          throw new NoSuchElementException();
+        return remaining.removeFirst();
+      }
+
+      @Override
+      public Object[] getKeys() {
+        return null;
+      }
+
+      @Override
+      public Identifiable getRecord() {
+        return null;
+      }
+
+      @Override
+      public BinaryComparator getComparator() {
+        return null;
+      }
+
+      @Override
+      public byte[] getBinaryKeyTypes() {
+        return new byte[0];
+      }
+
+      @Override
+      public long estimateSize() {
+        return -1L;
+      }
+
+      @Override
+      public Iterator<Identifiable> iterator() {
+        return this;
+      }
     });
 
     final List<Identifiable> emitted = new ArrayList<>();
     while (cursor.hasNext())
       emitted.add(cursor.next());
 
-    assertThat(emitted).containsExactly(live);
+    // the walk opens a cell scan per covering cell; only the first one holds anything, and the rest are empty
+    assertThat(emitted).containsExactly(first, second);
   }
 
   @Test
