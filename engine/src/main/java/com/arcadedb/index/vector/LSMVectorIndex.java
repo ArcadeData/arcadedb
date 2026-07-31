@@ -1402,6 +1402,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * node, so such a node can never be returned no matter how wide the beam - the graph build occasionally leaves one
    * with a full out-degree and no in-edges (issue #5615). Callers keep those vectors searchable through the delta
    * scan instead.
+   * <p>
+   * The walk unions the edges of every level, while a search descends the levels before beam-searching level 0.
+   * Union-reachability is therefore a superset of what a search can reach: this never invents an orphan, but a node
+   * reachable only through a higher-level in-edge is not reported. That suits the observed defect, which is a node
+   * with no in-edges at any level, and keeps the check conservative - a false orphan would cost a duplicate delta
+   * entry on every search.
    *
    * @return the unreachable ordinals, empty when every node is reachable
    */
@@ -1415,7 +1421,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int[] queue = new int[upper];
       int head = 0, tail = 0;
 
-      final int entry = view.entryNode().node;
+      final ImmutableGraphIndex.NodeAtLevel entryNode = view.entryNode();
+      if (entryNode == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Graph for index %s has no entry node, skipping the connectivity check", indexName);
+        return EMPTY_ORDINALS;
+      }
+      final int entry = entryNode.node;
       if (entry < 0 || entry >= upper)
         return EMPTY_ORDINALS;
       reached[entry] = true;
@@ -1427,9 +1439,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         for (int level = 0; level <= maxLevel; level++) {
           final NodesIterator neighbors;
           try {
+            // A node absent from a level yields an empty iterator rather than an exception
+            // (OnHeapGraphIndex.getNeighborsIterator returns EMPTY_NODE_ITERATOR for both an out-of-range level
+            // and an unmapped node), so this walks the levels without paying for control flow. The catch only
+            // guards View implementations that choose to throw instead.
             neighbors = view.getNeighborsIterator(level, node);
           } catch (final Exception e) {
-            // A node absent from this level is normal in a hierarchical graph.
             continue;
           }
           while (neighbors.hasNext()) {
