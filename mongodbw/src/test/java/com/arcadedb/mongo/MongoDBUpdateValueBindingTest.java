@@ -193,6 +193,21 @@ class MongoDBUpdateValueBindingTest {
   }
 
   @Test
+  void aCombinedSetAndIncUpdateChainsTwoOperationsOverOneParameterMap() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    final Document u = new Document("$set", new Document("note", "v1")).append("$inc", new Document("count", 3));
+    MongoDBDatabaseWrapper.appendUpdateOperations(sql, params, u);
+
+    // the grammar takes updateOperation+, so the two clauses chain; the payload of the first must not swallow the
+    // SET keyword that opens the second
+    assertThat(sql.toString()).isEqualTo(" MERGE :p0 SET `count` += :p1");
+    assertThat(params.get("p0")).isEqualTo(Map.of("note", "v1"));
+    assertThat(params.get("p1")).isEqualTo(3);
+  }
+
+  @Test
   void aCraftedFieldNameInASetOperandCannotBreakOutOfTheStatement() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();

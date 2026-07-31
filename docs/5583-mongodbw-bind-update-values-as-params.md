@@ -167,3 +167,24 @@ notes:
    `HashMap.newHashMap(size)` at `QuerySession:83`.
 2. Dotted `$set` keys - recorded above as a follow-up, not changed here.
 3. `{field: null}` - already recorded, carried over from #5581.
+
+### Cycle 2 - `5515db035`
+
+`claude[bot]`: **LGTM**, no blocking issues. Three non-blocking observations:
+
+1. *`buildValue` derives placeholder names from `params.size()`, so a future caller that pre-seeds the map would
+   get a silent collision; a threaded counter would make the invariant structural.* **Not applied.** This is the
+   same suggestion the cycle-4 reviewer made on #5581, declined then for the same reasons and explicitly marked
+   "not for this PR" here too: all four call sites pass a fresh empty map, the contract is documented on
+   `buildValue`, and changing its signature would touch every filter-path caller for a hazard that does not
+   exist today. It belongs with `buildValue`, not with this change.
+2. *No test covered a combined `$set` + `$inc` update.* **Applied** - a real coverage gap. The grammar takes
+   `updateOperation+`, so the two chain into `MERGE :p0 SET \`count\` += :p1`, and the concern worth settling was
+   whether the bound payload of `MERGE expression` would swallow the `SET` keyword that opens the next clause.
+   It does not. Added `aCombinedSetAndIncUpdateChainsTwoOperationsOverOneParameterMap` (unit, pins the exact
+   statement text and both placeholders) and `aCombinedSetAndIncUpdateAppliesBothOperations` (wire, seeds
+   `count: 1` and asserts `count == 4` with a quote-bearing `note` intact). Both pass, so this was a missing
+   test rather than a defect.
+3. Dotted `$set` keys - agreed out of scope, already disclosed above.
+
+Module total after cycle 2: **69 green** (+2).

@@ -251,6 +251,20 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   }
 
   @Test
+  void aCombinedSetAndIncUpdateAppliesBothOperations() {
+    collection.insertOne(new Document("name", "target").append("count", 1));
+
+    // a driver can send both operators in one update: the statement then chains MERGE :p0 with SET ... += :p1, so
+    // this is what proves the bound payload does not swallow the SET keyword that follows it
+    collection.updateOne(eq("name", "target"),
+        new Document("$set", new Document("note", "v1' \"x\"")).append("$inc", new Document("count", 3)));
+
+    final Document found = collection.find(eq("name", "target")).first();
+    assertThat(found.getString("note")).isEqualTo("v1' \"x\"");
+    assertThat(((Number) found.get("count")).intValue()).isEqualTo(4);
+  }
+
+  @Test
   void aNumericValueIsComparedAsANumberNotAsText() {
     collection.insertOne(new Document("name", "big").append("size", 10_000_000_000L));
     collection.insertOne(new Document("name", "small").append("size", 1L));
