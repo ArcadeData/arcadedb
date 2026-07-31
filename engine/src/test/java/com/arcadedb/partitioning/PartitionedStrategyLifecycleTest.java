@@ -262,7 +262,7 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
    * DIFFERENT one crashes on the first indexed insert, because {@code TypeIndex.getIndexesByKeys} applies the bucket
    * index it derived from the parent's modulus to {@code s.getBuckets(false)} of each subtype. That is unrelated to
    * this issue - the line predates the whole partitioned-strategy series and nothing here touches it - so it is
-   * reported separately rather than pinned by a test that would fail for a different reason than it claims.
+   * reported as issue #5645 rather than pinned by a test that would fail for a different reason than it claims.
    */
   @Test
   void aSubtypeInheritsAPartitionedStrategyAndItStillPrunes() throws IOException {
