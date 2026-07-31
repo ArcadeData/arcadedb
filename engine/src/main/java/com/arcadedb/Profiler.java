@@ -130,7 +130,7 @@ public class Profiler {
     for (final DatabaseInternal db : databases) {
       accumulateMonotonic(acc, db);
 
-      acc[STAT_WAL_TOTAL_FILES] += (Long) db.getTransactionManager().getStats().get("logFiles");
+      acc[STAT_WAL_TOTAL_FILES] += statOf(db.getTransactionManager().getStats(), "logFiles");
 
       final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
       acc[STAT_OPEN_FILES] += fStats.totalOpenFiles;
@@ -150,11 +150,22 @@ public class Profiler {
   private void accumulateMonotonic(final long[] acc, final DatabaseInternal db) {
     final Map<String, Object> dbStats = db.getStats();
     for (int i = 0; i < DB_STAT_KEYS.length; i++)
-      acc[i] += ((Number) dbStats.get(DB_STAT_KEYS[i])).longValue();
+      acc[i] += statOf(dbStats, DB_STAT_KEYS[i]);
 
     final Map<String, Object> walStats = db.getTransactionManager().getStats();
-    acc[STAT_WAL_PAGES_WRITTEN] += (Long) walStats.get("pagesWritten");
-    acc[STAT_WAL_BYTES_WRITTEN] += (Long) walStats.get("bytesWritten");
+    acc[STAT_WAL_PAGES_WRITTEN] += statOf(walStats, "pagesWritten");
+    acc[STAT_WAL_BYTES_WRITTEN] += statOf(walStats, "bytesWritten");
+  }
+
+  /**
+   * Reads one numeric out of a stat map. Every accumulated stat goes through here so none of them can be the one
+   * written with a hard {@code (Long)} cast: {@link #collectDatabaseStats()} is called from {@link #toJSON()}, which
+   * has no try/catch around it, so a stat source that ever changed its boxed type would take a metrics scrape down
+   * rather than misreport a number.
+   */
+  private static long statOf(final Map<String, Object> stats, final String key) {
+    final Object value = stats.get(key);
+    return value instanceof Number n ? n.longValue() : 0L;
   }
 
   public synchronized JSONObject toJSON() {
