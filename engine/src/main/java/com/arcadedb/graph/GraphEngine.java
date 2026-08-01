@@ -1098,21 +1098,29 @@ public class GraphEngine {
    * RID a moment before that head's own page becomes visible. Answering null there let the caller "successfully"
    * skip a removal it had to perform. {@link #getOrCreateEdgeList} draws the same line on the append path, and
    * {@link StripedEdgeList#addChain} on the per-stripe chains.
+   * <p>
+   * The price, taken deliberately: a chunk that is not transiently invisible but GENUINELY lost is indistinguishable
+   * from one here, so it now fails the removal on every attempt instead of completing it best-effort and leaving the
+   * back-reference. Repair belongs to {@code CHECK DATABASE}, which rebuilds an unloadable chain and drops the
+   * references into it; see issue #5680 for how this couples to the tolerance {@link #deleteVertex} keeps.
    */
   public EdgeLinkedList getEdgeHeadChunkForWrite(final VertexInternal vertex, final Vertex.DIRECTION direction) {
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
       return null;
 
-    final RID rid = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
-    if (rid == null)
-      return null;
-
+    // The head-RID read stays INSIDE the try: on a not-yet-materialised ImmutableVertex it lazy-loads the record,
+    // so a vertex deleted since the caller resolved it raises RecordNotFoundException here rather than at the chunk
+    // lookup. That is the same transient this method exists to convert - letting it escape raw would fail the
+    // transaction with an exception that is NOT retryable.
     try {
+      final RID rid = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+      if (rid == null)
+        return null;
       return buildEdgeList(vertex, direction, rid);
     } catch (final RecordNotFoundException e) {
       throw new ConcurrentModificationException(
-          "Edge list " + direction + " head chunk " + rid + " of vertex " + vertex.getIdentity()
-              + " not visible yet (concurrent commit in flight)");
+          "Edge list " + direction + " of vertex " + vertex.getIdentity()
+              + " is not fully visible yet (concurrent commit in flight): " + e.getMessage());
     }
   }
 

@@ -20,8 +20,10 @@ package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -120,6 +122,33 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
   }
 
   /**
+   * The head RID is read off the vertex INSIDE the strict lookup's try, because on a handle that has not loaded its
+   * record yet that read lazy-loads it - so an endpoint deleted since the caller resolved it surfaces here rather
+   * than at the chunk lookup. Escaping raw, that is a plain {@code RecordNotFoundException}: not a
+   * {@code NeedRetryException}, so it would fail the transaction outright instead of retrying it.
+   */
+  @Test
+  void headChunkForWriteRaisesRetryableConflictWhenTheVertexItselfVanishes() {
+    createSchema();
+    final RID hubRID = createHub();
+    createEdges(hubRID, 20);
+
+    database.begin();
+    try {
+      // A handle that has NOT materialised its record (loadContent=false): reading its head RID lazy-loads it.
+      final VertexInternal lazyHub = (VertexInternal) database.lookupByRID(hubRID, false);
+      database.getSchema().getBucketById(hubRID.getBucketId()).deleteRecord(hubRID);
+
+      assertThatThrownBy(
+          () -> ((DatabaseInternal) database).getGraphEngine().getEdgeHeadChunkForWrite(lazyHub, Vertex.DIRECTION.IN))
+          .isInstanceOf(ConcurrentModificationException.class)
+          .isInstanceOf(NeedRetryException.class);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /**
    * The reported shape (#5670): concurrent transactions that each delete one pre-existing edge of a hub and append
    * one new edge. Net degree is invariant, so the hub's IN-degree must stay at the pool size and the integrity
    * check must be clean. Before the fix this reported one edge too many - the surplus being an edge whose record
@@ -165,6 +194,9 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
                   src.newEdge("LINK", hubRID);
                 }, false, 10_000);
               } catch (final Exception e) {
+                // Nothing here is expected to surface: the retry budget above is far beyond what this contention
+                // needs, so ANY exception reaching this point is the bug, not a tolerated retry. Counted rather
+                // than rethrown only so the assertions below run on a fully drained pool.
                 failures.incrementAndGet();
               }
             }
