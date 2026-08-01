@@ -868,6 +868,29 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
+   * Counts the edges joining nodeA to nodeB, optionally filtered by edge type.
+   * <p>
+   * This is the multiplicity {@link #isConnectedTo} collapses to a boolean, and a pattern
+   * relationship matches once per edge, so a Cypher hop between two pinned vertices needs it rather
+   * than the boolean. Parallel edges sit next to each other in the sorted adjacency array, so the
+   * equal range around the binary search hit gives the count in O(log(degree) + multiplicity).
+   */
+  @Override
+  public long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final Snapshot snap = checkBuilt();
+    long total = 0;
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      for (final String edgeType : edgeTypes)
+        total += countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
+    } else {
+      for (final String edgeType : snap.csrPerType.keySet())
+        total += countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
+    }
+    return total;
+  }
+
+  /**
    * Counts common neighbors between two nodes, optionally filtered by edge types.
    */
   public int countCommonNeighbors(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
@@ -1539,6 +1562,65 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
     return false;
+  }
+
+  /**
+   * Counts the edges of one type joining nodeA to nodeB, mirroring {@link #isConnectedForType} entry
+   * by entry so the two never disagree on whether an edge is there.
+   * <p>
+   * A self-loop is held by both adjacency lists of its vertex, so a BOTH walk would see it twice; the
+   * backward side is skipped when the two nodes are the same, which is what the OLTP expansion
+   * achieves by de-duplicating on edge identity.
+   */
+  private long countBetweenForType(final Snapshot snap, final int nodeA, final int nodeB,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    final DeltaOverlay ov = snap.overlay;
+    final boolean nodeAInBase = nodeA < snap.nodeMapping.size();
+    final boolean selfLoop = nodeA == nodeB;
+    final boolean walkForward = direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH;
+    final boolean walkBackward = (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        && !(direction == Vertex.DIRECTION.BOTH && selfLoop);
+
+    long count = 0;
+
+    if (csr != null && nodeAInBase) {
+      if (walkForward && (ov == null || !ov.isEdgeDeleted(edgeType, nodeA, nodeB)))
+        count += equalRangeCount(csr.getForwardNeighbors(), csr.getForwardOffsets()[nodeA],
+            csr.getForwardOffsets()[nodeA + 1], nodeB);
+      if (walkBackward && (ov == null || !ov.isEdgeDeleted(edgeType, nodeB, nodeA)))
+        count += equalRangeCount(csr.getBackwardNeighbors(), csr.getBackwardOffsets()[nodeA],
+            csr.getBackwardOffsets()[nodeA + 1], nodeB);
+    }
+
+    if (ov != null) {
+      if (walkForward)
+        for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
+          if (neighbor == nodeB)
+            ++count;
+      if (walkBackward)
+        for (final int neighbor : ov.getAddedInNeighbors(nodeA, edgeType))
+          if (neighbor == nodeB)
+            ++count;
+    }
+
+    return count;
+  }
+
+  /**
+   * Returns how many times {@code value} occurs in the sorted range {@code [from, to)}.
+   */
+  private static int equalRangeCount(final int[] sorted, final int from, final int to, final int value) {
+    final int hit = Arrays.binarySearch(sorted, from, to, value);
+    if (hit < 0)
+      return 0;
+    int start = hit;
+    while (start > from && sorted[start - 1] == value)
+      --start;
+    int end = hit + 1;
+    while (end < to && sorted[end] == value)
+      ++end;
+    return end - start;
   }
 
   private int countCommonForType(final Snapshot snap, final int nodeA, final int nodeB,

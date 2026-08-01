@@ -26,6 +26,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -39,10 +40,15 @@ import java.util.NoSuchElementException;
 
 /**
  * CSR-backed ExpandInto that uses binary search on sorted CSR arrays for O(log(degree))
- * connectivity checks, without loading any edge objects or traversing linked lists.
+ * lookups, without loading any edge objects or traversing linked lists.
  * <p>
- * Selected when both source and target are bound, the edge variable is not captured,
- * and a matching {@link GraphTraversalProvider} is available.
+ * A pattern relationship matches once per relationship, so the pair's row is repeated once per edge
+ * joining it - the CSR holds one adjacency entry per edge, so the equal range around the search hit
+ * gives that multiplicity without materialising anything (issue #5663).
+ * <p>
+ * Selected when both source and target are bound, no edge object is needed - neither captured by the
+ * query nor required to enforce relationship uniqueness against another hop of the same MATCH clause,
+ * which adjacency ids cannot answer - and a matching {@link GraphTraversalProvider} is available.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -103,20 +109,20 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           if (sourceVertex == null || targetVertex == null)
             continue;
 
-          // CSR connectivity check: O(log(degree)) binary search
+          // CSR multiplicity lookup: O(log(degree)) binary search plus the equal range
           final int srcId = provider.getNodeId(sourceVertex.getIdentity());
           final int tgtId = provider.getNodeId(targetVertex.getIdentity());
 
-          boolean connected;
-          if (srcId < 0 || tgtId < 0) {
-            // One or both vertices not in GAV mapping — fall back to OLTP edge check
-            connected = isConnectedOLTP(sourceVertex, targetVertex);
-          } else {
-            final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-            connected = provider.isConnectedTo(srcId, tgtId, arcadeDirection, edgeTypes);
-          }
+          final long connectingEdges;
+          if (srcId < 0 || tgtId < 0)
+            // One or both vertices not in GAV mapping — fall back to the OLTP edge list
+            connectingEdges = countConnectingOLTP(sourceVertex, targetVertex);
+          else
+            connectingEdges = provider.countEdgesBetween(srcId, tgtId, direction.toArcadeDirection(), edgeTypes);
 
-          if (connected) {
+          // One row per relationship joining the pair: a pattern hop is an expansion, not a
+          // connectivity test, so parallel edges each contribute a walk
+          for (long i = 0; i < connectingEdges; i++) {
             final ResultInternal result = new ResultInternal();
             for (final String prop : inputResult.getPropertyNames())
               result.setProperty(prop, inputResult.getProperty(prop));
@@ -129,28 +135,35 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       }
 
       /**
-       * OLTP fallback: checks connectivity by iterating edges when one or both vertices
-       * are not present in the GAV mapping (created after last build).
+       * OLTP fallback: counts the relationships joining the pair by iterating edges, for when one or
+       * both vertices are not present in the GAV mapping (created after the last build).
        */
-      private boolean isConnectedOLTP(final Vertex source, final Vertex target) {
+      private long countConnectingOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-        for (final Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection); edges.hasNext(); ) {
+        Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection);
+        if (arcadeDirection == Vertex.DIRECTION.BOTH)
+          // both adjacency lists are walked, and a self-loop sits in each of them
+          edges = SelfLoops.deduplicatingEdges(edges);
+
+        long count = 0;
+        while (edges.hasNext()) {
           final Edge edge = edges.next();
           try {
             if (arcadeDirection == Vertex.DIRECTION.BOTH) {
               // source can be either endpoint, so check both sides
-              if (edge.getOutVertex().getIdentity().equals(target.getIdentity()) || edge.getInVertex().getIdentity().equals(target.getIdentity()))
-                return true;
+              if (edge.getOutVertex().getIdentity().equals(target.getIdentity())
+                  || edge.getInVertex().getIdentity().equals(target.getIdentity()))
+                ++count;
             } else {
               final Vertex other = arcadeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
               if (other.getIdentity().equals(target.getIdentity()))
-                return true;
+                ++count;
             }
           } catch (final RecordNotFoundException e) {
             GhostEdgeReporter.reportSkipped(e);
           }
         }
-        return false;
+        return count;
       }
 
       /**

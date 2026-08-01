@@ -96,6 +96,29 @@ public interface GraphTraversalProvider {
   boolean isConnectedTo(int nodeA, int nodeB, Vertex.DIRECTION direction, String... edgeTypes);
 
   /**
+   * Counts the edges joining nodeA to nodeB in the given direction and of the given edge types.
+   * <p>
+   * This is the multiplicity {@link #isConnectedTo} collapses to a boolean: a pattern relationship
+   * matches once per edge, so a pair joined by parallel edges contributes one row per edge. Under
+   * {@link Vertex.DIRECTION#BOTH} a self-loop counts once, matching how the OLTP expansion
+   * de-duplicates the relationship it reaches from both adjacency lists.
+   * <p>
+   * The default implementation counts occurrences in {@link #getNeighborIds}; a CSR-backed provider
+   * overrides it with an equal-range scan on the sorted adjacency array.
+   */
+  default long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    long count = 0;
+    for (final int neighbor : getNeighborIds(nodeA, direction, edgeTypes))
+      if (neighbor == nodeB)
+        ++count;
+    // A self-loop contributes one entry to each adjacency list, so a BOTH walk sees every one of them twice
+    if (direction == Vertex.DIRECTION.BOTH && nodeA == nodeB)
+      count /= 2;
+    return count;
+  }
+
+  /**
    * Returns a property value from columnar storage, or null if not materialized.
    */
   Object getProperty(int nodeId, String propertyName);

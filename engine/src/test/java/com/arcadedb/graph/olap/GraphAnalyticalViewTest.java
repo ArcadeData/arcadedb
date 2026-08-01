@@ -4102,6 +4102,60 @@ class GraphAnalyticalViewTest extends TestHelper {
     final int[] bothNeighbors = gav.getNeighborIds(nodeId, Vertex.DIRECTION.BOTH, "SELF_REL");
     assertThat(bothNeighbors).contains(nodeId);
 
+    // ...but counting the relationships joining the pair reports the one self-loop once, however many
+    // adjacency lists it is held by
+    assertThat(gav.countEdgesBetween(nodeId, nodeId, Vertex.DIRECTION.OUT, "SELF_REL")).isEqualTo(1);
+    assertThat(gav.countEdgesBetween(nodeId, nodeId, Vertex.DIRECTION.IN, "SELF_REL")).isEqualTo(1);
+    assertThat(gav.countEdgesBetween(nodeId, nodeId, Vertex.DIRECTION.BOTH, "SELF_REL")).isEqualTo(1);
+
+    gav.drop();
+  }
+
+  /**
+   * {@code isConnectedTo} collapses a multigraph pair to a boolean, which is the wrong answer for a Cypher
+   * hop onto a pinned target: the pattern matches once per relationship. The count has to survive parallel
+   * edges, edge-type filtering and direction (issue #5663).
+   */
+  @Test
+  void countEdgesBetweenReportsEveryParallelEdge() {
+    database.getSchema().createVertexType("Party");
+    database.getSchema().createEdgeType("PAID");
+    database.getSchema().createEdgeType("REFUNDED");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Party").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Party").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Party").set("name", "C").save();
+    a.newEdge("PAID", b);
+    a.newEdge("PAID", b);
+    a.newEdge("PAID", b);
+    b.newEdge("PAID", a);
+    a.newEdge("REFUNDED", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("parallelEdgesView")
+        .withVertexTypes("Party")
+        .withEdgeTypes("PAID", "REFUNDED")
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(3);
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.IN, "PAID")).isEqualTo(1);
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.BOTH, "PAID")).isEqualTo(4);
+
+    // the type filter still applies, and every type is counted when none is given
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "REFUNDED")).isEqualTo(1);
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT)).isEqualTo(4);
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID", "REFUNDED")).isEqualTo(4);
+
+    // a pair nothing joins counts zero, in agreement with the boolean it replaces
+    assertThat(gav.countEdgesBetween(idA, idC, Vertex.DIRECTION.BOTH, "PAID")).isZero();
+    assertThat(gav.isConnectedTo(idA, idC, Vertex.DIRECTION.BOTH, "PAID")).isFalse();
+
     gav.drop();
   }
 

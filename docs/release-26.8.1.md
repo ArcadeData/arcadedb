@@ -1189,6 +1189,47 @@ Finally, restoring a vector index from an exported definition (`IMPORT DATABASE`
 distinct entry point: an exported definition legitimately carries structural keys - `type`, `bucket`, `version`, ... -
 that the `METADATA`-clause reader has to reject as typos.
 
+## Cypher: a hop onto an already-bound vertex counts every relationship joining the pair
+
+A pattern relationship matches once per relationship. Two parallel edges between the same two vertices are two
+matches, whether or not the pattern names them - `MATCH (a)-[:R]->(b)` over a pair joined twice returns two rows,
+the same as Neo4j. The optimizer's operator for the hop whose far end is already bound did not: built as a
+semi-join ("is this pair connected?"), it answered once per input row and threw the rest of the pair away
+([#5663](https://github.com/ArcadeData/arcadedb/issues/5663)).
+
+The shape where it shows is a cycle, because the hop that closes one always has both endpoints bound:
+
+```cypher
+CREATE (a:Account {code: 'HUB'})
+CREATE (t:Txn {ref: 'SHARED'})
+CREATE (a)-[:INITIATED {kind: 'payment'}]->(t)
+CREATE (a)-[:INITIATED {kind: 'refund'}]->(t)
+CREATE (t)-[:INITIATED {ref: 'REVERSED'}]->(a)
+
+MATCH (a:Account {code: 'HUB'})-[r1:INITIATED]->(t:Txn {ref: 'SHARED'})-[r2:INITIATED]->(a)
+RETURN r1.kind
+```
+
+The cycle can be walked two ways, one per first-hop edge, each closing through the single returning edge -
+relationship uniqueness is satisfied because `r1` and `r2` bind different edges in both walks. The answer was one
+row. Anything aggregating over such a pattern (`count(*)`, `collect(r1)`, `sum`) silently under-reported wherever
+parallel edges exist between a pair, which is normal in transaction and payment graphs. The step-by-step executor
+had always got this right, so the same query could answer differently depending on which plan was chosen.
+
+The operator is an expansion now: it walks the relationships joining the pair and emits one row per relationship,
+binding the relationship variable and enforcing relationship uniqueness against the hops that precede it in the
+same `MATCH` clause - including when the hop is anonymous, whose edge a later hop in the clause must still not
+reuse. It keeps what made it fast: the source's edge list is filtered on the neighbour pointer held in the edge
+segment, so an edge that does not reach the target costs a pointer comparison rather than a record load, and only
+the edges that do reach it are ever materialised. An undirected hop reaches a self-loop from both adjacency lists
+and still reports it once. The CSR-backed variant reads the multiplicity off the sorted adjacency array instead of
+stopping at the first hit, and now steps aside for the edge-list walk when the hop has to tell one relationship
+from another - which adjacency ids cannot do.
+
+One related source of confusion is gone with it: two equally cheap hops were tie-broken by a `HashSet` iteration
+order over identity hash codes, so the same query could be planned differently from run to run. Ties now fall to
+the order the hops are written in.
+
 ## `.github/dependency-review-config.yml` expresses the policy the action actually reads
 
 The file was organised into `security:`, `licensing:`, `packages:`, `changes:`, `exemptions:`, `notifications:`,
