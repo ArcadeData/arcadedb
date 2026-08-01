@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.utility.DateUtils;
@@ -109,7 +110,7 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Number apply(final Long left, final Long right) {
-        return left * right;
+        return exactIntegerArithmetic(this, left, right);
       }
 
       @Override
@@ -137,16 +138,24 @@ public class MathExpression extends SimpleNode {
     }, SLASH(10) {
       @Override
       public Number apply(final Integer left, final Integer right) {
-        if (left % right == 0)
-          return left / right;
+        checkDivisorNotZero(this, right == 0);
 
-        return ((double) left) / right;
+        if (left % right != 0)
+          return ((double) left) / right;
+
+        // widening keeps Integer.MIN_VALUE / -1 exact, then narrows back whenever the answer fits
+        final long result = ((long) left) / right;
+        if (result >= Integer.MIN_VALUE && result <= Integer.MAX_VALUE)
+          return (int) result;
+        return result;
       }
 
       @Override
       public Number apply(final Long left, final Long right) {
+        checkDivisorNotZero(this, right == 0);
+
         if (left % right == 0)
-          return left / right;
+          return exactIntegerArithmetic(this, left, right);
 
         return ((double) left) / right;
       }
@@ -163,6 +172,7 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Number apply(final BigDecimal left, final BigDecimal right) {
+        checkDivisorNotZero(this, right.signum() == 0);
         return left.divide(right, RoundingMode.HALF_UP);
       }
 
@@ -177,11 +187,13 @@ public class MathExpression extends SimpleNode {
     }, REM(10) {
       @Override
       public Number apply(final Integer left, final Integer right) {
+        checkDivisorNotZero(this, right == 0);
         return left % right;
       }
 
       @Override
       public Number apply(final Long left, final Long right) {
+        checkDivisorNotZero(this, right == 0);
         return left % right;
       }
 
@@ -197,6 +209,7 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Number apply(final BigDecimal left, final BigDecimal right) {
+        checkDivisorNotZero(this, right.signum() == 0);
         return left.remainder(right);
       }
 
@@ -210,16 +223,17 @@ public class MathExpression extends SimpleNode {
     }, PLUS(20) {
       @Override
       public Number apply(final Integer left, final Integer right) {
-        final int sum = left + right;
-        if (sum < 0 && left > 0 && right > 0)
-          // SPECIAL CASE: UPGRADE TO LONG
-          return left.longValue() + right;
-        return sum;
+        // widen first, then narrow back when the answer fits: the sign-based guard this replaced only detected
+        // overflow of two positives, so Integer.MIN_VALUE + Integer.MIN_VALUE silently wrapped to 0
+        final long result = ((long) left) + right;
+        if (result >= Integer.MIN_VALUE && result <= Integer.MAX_VALUE)
+          return (int) result;
+        return result;
       }
 
       @Override
       public Number apply(final Long left, final Long right) {
-        return left + right;
+        return exactIntegerArithmetic(this, left, right);
       }
 
       @Override
@@ -289,17 +303,17 @@ public class MathExpression extends SimpleNode {
     MINUS(20) {
       @Override
       public Number apply(final Integer left, final Integer right) {
-        final int result = left - right;
-        if (result > 0 && left < 0 && right > 0)
-          // SPECIAL CASE: UPGRADE TO LONG
-          return left.longValue() - right;
-
+        // see PLUS: the guard this replaced never fired for a negative subtrahend, so
+        // Integer.MAX_VALUE - Integer.MIN_VALUE silently wrapped to -1
+        final long result = ((long) left) - right;
+        if (result >= Integer.MIN_VALUE && result <= Integer.MAX_VALUE)
+          return (int) result;
         return result;
       }
 
       @Override
       public Number apply(final Long left, final Long right) {
-        return left - right;
+        return exactIntegerArithmetic(this, left, right);
       }
 
       @Override
@@ -703,6 +717,51 @@ public class MathExpression extends SimpleNode {
       throw new IllegalArgumentException(
           "Cannot increment value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
 
+    }
+
+    /**
+     * Integer division and modulo by zero have no answer, and the JDK reports that as a raw
+     * {@code java.lang.ArithmeticException}. That is not something the HTTP and Bolt layers can classify, so it
+     * escaped as an internal fault (HTTP 500) even though the only thing wrong was the divisor the caller supplied.
+     * Raising an {@link ArithmeticErrorException} instead makes SQL answer 400, which is what the Cypher engine
+     * already did (issues #5163, #5602) and what Neo4j - the OpenCypher reference implementation - calls
+     * {@code Neo.ClientError.Statement.ArithmeticError}.
+     * <p>
+     * Floating-point division keeps IEEE 754 semantics ({@code ±Infinity} / {@code NaN}) and never reaches here,
+     * matching the same decision on the Cypher side.
+     *
+     * @param zero whether the divisor is zero, evaluated by the caller in the operand's own type
+     */
+    private static void checkDivisorNotZero(final Operator op, final boolean zero) {
+      if (zero)
+        throw new ArithmeticErrorException(op == REM ? "% by zero" : "/ by zero");
+    }
+
+    /**
+     * 64-bit {@code +}, {@code -}, {@code *} and {@code /} that fail on overflow instead of wrapping around with
+     * two's-complement semantics (issue #5647), mirroring what the Cypher engine has done since #5164.
+     * <p>
+     * This is deliberately confined to the {@code Long} overloads. The {@code Integer} ones widen to {@code long}
+     * on overflow and so always have a representable answer, but {@code long} has nowhere left to widen to: the
+     * wrapped value was returned as an ordinary result and an {@code UPDATE ... SET} would persist it, making this
+     * a silent data-corruption path rather than only a wrong display value.
+     * <p>
+     * {@code /} is included because {@code Long.MIN_VALUE / -1} overflows without the JDK raising anything at all -
+     * JLS 15.17.2 defines it to return the dividend. A zero divisor is rejected by
+     * {@link #checkDivisorNotZero} before this is reached, so it cannot be reported as an overflow.
+     */
+    private static long exactIntegerArithmetic(final Operator op, final long left, final long right) {
+      try {
+        return switch (op) {
+          case PLUS -> Math.addExact(left, right);
+          case MINUS -> Math.subtractExact(left, right);
+          case STAR -> Math.multiplyExact(left, right);
+          case SLASH -> Math.divideExact(left, right);
+          default -> throw new IllegalStateException("Operator " + op + " has no exact integer form");
+        };
+      } catch (final ArithmeticException e) {
+        throw new ArithmeticErrorException("long overflow", e);
+      }
     }
 
     public int getPriority() {
