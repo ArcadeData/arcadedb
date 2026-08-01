@@ -151,6 +151,28 @@ class CypherCycleCardinalityTest {
         .containsExactlyInAnyOrder("4", "5");
   }
 
+  /**
+   * A pattern is an expansion where it appears in MATCH and a question where it appears as a predicate.
+   * The two must not be confused now that the bound-target hop multiplies rows: an existence test over a
+   * pair joined twice answers once, or every guard over a multigraph would over-report.
+   */
+  @Test
+  void anExistencePredicateOverAPairJoinedTwiceStillAnswersOnce() {
+    assertThat(countOf("MATCH (a:Account {code: 'HUB'}), (t:Txn {ref: 'SHARED'}) "
+        + "WHERE (a)-[:INITIATED]->(t) RETURN count(*) AS c")).isEqualTo(1);
+
+    assertThat(countOf("MATCH (a:Account {code: 'HUB'}), (t:Txn {ref: 'SHARED'}) "
+        + "WHERE EXISTS { (a)-[:INITIATED]->(t) } RETURN count(*) AS c")).isEqualTo(1);
+
+    // and the negation of the same question still admits a pair nothing joins, exactly once
+    assertThat(countOf("MATCH (a:Account {code: 'HUB'}), (t:Txn {ref: 'SHARED'}) "
+        + "WHERE NOT EXISTS { (t)-[:SETTLED]->(a) } RETURN count(*) AS c")).isEqualTo(1);
+
+    // ...while the same pattern written in MATCH is an expansion and reports both edges
+    assertThat(countOf("MATCH (a:Account {code: 'HUB'}), (t:Txn {ref: 'SHARED'}) "
+        + "MATCH (a)-[:INITIATED]->(t) RETURN count(*) AS c")).isEqualTo(2);
+  }
+
   private long countOf(final String cypher) {
     try (final ResultSet rs = database.query("opencypher", cypher)) {
       return ((Number) rs.next().getProperty("c")).longValue();

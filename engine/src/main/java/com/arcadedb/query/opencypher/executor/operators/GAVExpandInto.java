@@ -37,6 +37,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * CSR-backed ExpandInto that uses binary search on sorted CSR arrays for O(log(degree))
@@ -121,12 +122,16 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
             connectingEdges = countConnectingOLTP(sourceVertex, targetVertex);
 
           // One row per relationship joining the pair: a pattern hop is an expansion, not a
-          // connectivity test, so parallel edges each contribute a walk
-          for (long i = 0; i < connectingEdges; i++) {
-            final ResultInternal result = new ResultInternal();
-            for (final String prop : inputResult.getPropertyNames())
-              result.setProperty(prop, inputResult.getProperty(prop));
-            buffer.add(result);
+          // connectivity test, so parallel edges each contribute a walk. The row's property names
+          // do not change between the copies, so the set is walked once however many rows it feeds.
+          if (connectingEdges > 0) {
+            final Set<String> properties = inputResult.getPropertyNames();
+            for (long i = 0; i < connectingEdges; i++) {
+              final ResultInternal result = new ResultInternal();
+              for (final String prop : properties)
+                result.setProperty(prop, inputResult.getProperty(prop));
+              buffer.add(result);
+            }
           }
         }
 
