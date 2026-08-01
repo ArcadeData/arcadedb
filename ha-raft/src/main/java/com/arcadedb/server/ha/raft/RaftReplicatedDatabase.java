@@ -1429,11 +1429,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           leaderAddr != null ? leaderAddr : "");
     }
 
+    // A recording session already open ON THIS THREAD means we are nested inside our own DDL or
+    // compaction session (schema DDL nests routinely: the outer callback creates the type, an inner one
+    // creates its buckets). The outer frame captures these file changes and ships them, so delegating is
+    // correct. A session owned by ANOTHER thread carries no such promise, which is why the shared
+    // getRecordedChanges() alone cannot decide this - see acquireRecordingSession (#5728). Both signals
+    // are required: isSchemaCommitThread is static, so on its own it would also match a thread nested in
+    // a DIFFERENT database's session, for which this database has replicated nothing.
+    if (Boolean.TRUE.equals(isSchemaCommitThread.get()) && proxied.getFileManager().getRecordedChanges() != null)
+      return proxied.recordFileChanges(callback);
+
     // On the leader, record file changes and send them via Raft immediately
     // (like the legacy HA system) so replicas have the files before WAL pages arrive
-    final boolean alreadyRecording = !proxied.getFileManager().startRecordingChanges();
-    if (alreadyRecording)
-      return proxied.recordFileChanges(callback);
+    if (!acquireRecordingSession()) {
+      final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+      throw new TimeoutException(
+          "Timeout of " + timeout + "ms waiting for the file recording session to replicate a schema change on database '"
+              + getName() + "'");
+    }
 
     final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
 
@@ -1642,6 +1655,39 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * remains as a defensive safety net for any other recorder thread that crashes mid-session; it
    * is intentionally retained, not dead code.
    */
+  /**
+   * Claims the file-manager recording session so this thread's schema change can be captured and shipped
+   * as a {@code SCHEMA_ENTRY}, waiting for a session owned by another thread (a concurrent DDL, or an LSM
+   * compaction inside {@link #runWithCompactionReplication}) to be released first.
+   * <p>
+   * The session is a single per-database slot with no owner, so a contended caller used to fall back to
+   * running the DDL straight on the inner database: applied on the leader, proposed to nobody, nothing
+   * thrown (#5728). The window it lost to is real work, not an instant - the owning session releases the
+   * database write lock when its callback returns but keeps the session until its {@code replicateSchema()}
+   * Raft round trip completes, which is why the divergence only appeared under load. Waiting is the only
+   * correct answer here: unlike a compaction, a schema change cannot be deferred and rescheduled.
+   *
+   * @return true when this thread owns the session, false if it gave up waiting
+   */
+  private boolean acquireRecordingSession() {
+    if (proxied.getFileManager().startRecordingChanges())
+      return true;
+
+    final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    final long deadline = System.currentTimeMillis() + timeout;
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        Thread.sleep(2);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+      if (proxied.getFileManager().startRecordingChanges())
+        return true;
+    }
+    return false;
+  }
+
   private void waitForActiveRecordingSession() {
     if (proxied.getFileManager().getRecordedChanges() == null)
       return;

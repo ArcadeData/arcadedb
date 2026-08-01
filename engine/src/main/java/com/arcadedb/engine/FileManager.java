@@ -44,7 +44,9 @@ public class FileManager {
   // FileManager is unchanged since their last observation - they cache the value here, compare on
   // entry, and only re-walk when it has advanced.
   private final        AtomicLong                                modificationCount = new AtomicLong();
-  private              List<FileChange>                          recordedChanges   = null;
+  // Volatile because startRecordingChanges()/stopRecordingChanges() are the handshake HA uses to decide
+  // whether a schema change still needs replicating; a stale read there loses the change silently (#5728).
+  private volatile     List<FileChange>                          recordedChanges   = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
 
   public static class FileChange {
@@ -141,10 +143,14 @@ public class FileManager {
 
   /**
    * Start recording changes in file system. Changes can be returned (before the end of the lock in database) with {@link #getRecordedChanges()}.
+   * <p>
+   * There is a single session per database and it is not re-entrant, so the check and the claim must be
+   * atomic: two callers both told they started would each install their own list, and the loser's recorded
+   * file creations would never be shipped to the followers (#5728).
    *
    * @return true if the recorded started and false if it was already started.
    */
-  public boolean startRecordingChanges() {
+  public synchronized boolean startRecordingChanges() {
     if (recordedChanges != null) {
       LogManager.instance().log(this, Level.FINE,
           "startRecordingChanges denied: a session is already active with %d entries",
@@ -162,7 +168,7 @@ public class FileManager {
     return recordedChanges;
   }
 
-  public void stopRecordingChanges() {
+  public synchronized void stopRecordingChanges() {
     if (recordedChanges != null && Logger.getLogger(getClass().getName()).isLoggable(Level.FINE)) {
       final StringBuilder dump = new StringBuilder();
       for (final FileChange c : recordedChanges) {
