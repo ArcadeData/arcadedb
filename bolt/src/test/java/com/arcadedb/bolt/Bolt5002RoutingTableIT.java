@@ -22,7 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BoltMessage;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
-import com.arcadedb.database.Database;
 import com.arcadedb.server.ha.raft.BaseRaftHATest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -39,13 +38,11 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.ByteBuffer;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 
 /**
  * Certifies that the Bolt ROUTE response reflects real HA topology: the true leader is advertised as the
@@ -136,8 +133,6 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
       });
     }
     waitForAllServers();
-    // The single CREATE above is the only write of this type in this test.
-    awaitTypeReplicatedOnEveryNode(1L);
 
     try (Session session = driver.session(SessionConfig.builder().withDatabase(getDatabaseName()).build())) {
       final long count = session.executeRead(tx ->
@@ -167,34 +162,6 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     final String newLeaderBolt = "localhost:" + (BASE_BOLT_PORT + newLeader);
     final Map<String, Object> rt = awaitRoutingTable(BASE_BOLT_PORT + newLeader, newLeaderBolt);
     assertThat(BoltRouteTestSupport.addressesForRole(rt, "WRITE")).containsExactly(newLeaderBolt);
-  }
-
-  // --- replication settling helper -------------------------------------------
-
-  /**
-   * Waits until every started node holds {@link #VERTEX_TYPE} with exactly {@code expectedRecords} records.
-   * <p>
-   * {@link #waitForAllServers()} tracks the Raft applied index, which advances before the applied schema
-   * entry is visible through the database handle these assertions read. A routed read is answered by a
-   * follower, so the read returned 0 against a node still one type behind, and the teardown's
-   * byte-for-byte comparison then reported {@code DatabaseAreNotIdentical: Types: DB1 6 <> DB2 5} on the
-   * same run (issue #5630). Polling for the replicated state settles both.
-   *
-   * @param expectedRecords how many records the caller wrote - passed in rather than hardcoded so a second
-   *                        caller writing a different number does not silently wait for the wrong count
-   */
-  private void awaitTypeReplicatedOnEveryNode(final long expectedRecords) {
-    await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofMillis(250)).untilAsserted(() -> {
-      for (int i = 0; i < getServerCount(); i++) {
-        if (getServer(i) == null || !getServer(i).isStarted())
-          continue;
-        final Database db = getServerDatabase(i, getDatabaseName());
-        assertThat(db.getSchema().existsType(VERTEX_TYPE))
-            .as("server %d must have replicated type %s", i, VERTEX_TYPE).isTrue();
-        assertThat(db.countType(VERTEX_TYPE, true))
-            .as("server %d must have replicated the routed write", i).isEqualTo(expectedRecords);
-      }
-    });
   }
 
   // --- raw Bolt ROUTE helper -------------------------------------------------

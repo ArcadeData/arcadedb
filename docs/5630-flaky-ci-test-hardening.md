@@ -13,7 +13,7 @@ its own fix:
 | `Issue3122AsyncParallelCommandsIT.databaseAsyncCommandsRunInParallel` | 26831 ms against a 3000 ms budget | wall-clock budget |
 | `Issue5470BatchStreamStallIT` | `Read timed out after 2000 milliseconds` | short read timeout |
 | `HttpRedMetricsIT.unmatchedUrisCollapseToBoundedPathTag` | counter read `49`, wanted `>= 50` | unsettled counter |
-| `Bolt5002RoutingTableIT.neo4jSchemeRoutesReadsAndWrites` | expected `1` got `0`, plus `DatabaseAreNotIdentical: Types: DB1 6 <> DB2 5` | unsettled replication |
+| `Bolt5002RoutingTableIT.neo4jSchemeRoutesReadsAndWrites` | expected `1` got `0`, plus `DatabaseAreNotIdentical: Types: DB1 6 <> DB2 5` | **not a flake - real divergence, reverted** |
 | `Issue5410AbandonedTicketReleaseIT` | HA raft, 44 s | not addressed - see below |
 | `Issue5569SlotMergeDeleteRaftIT` | HA raft, 13 s, also fails on main | not addressed - see below |
 
@@ -87,15 +87,36 @@ The client-side `setSoTimeout` in the two raw-socket tests and the `elapsedMs` b
 `60_000`. This keeps the assertion, not the client socket, as the thing that fails when the server
 wrongly waits for the streaming budget.
 
-### `Bolt5002RoutingTableIT` - a routed read hits a follower that has not applied the schema entry
+### `Bolt5002RoutingTableIT` - NOT a flake. Reverted from this change.
 
-`waitForAllServers()` tracks the Raft applied index, which advances before the applied schema entry is
-visible through the database handle the test reads. `executeRead` is routed to a follower, so it saw
-zero records. The `DatabaseAreNotIdentical: Types: DB1 6 <> DB2 5` suppressed in the same run is the
-same lag surfacing in teardown: a follower still missing the `Bolt5002Route` type.
+This test was attacked as an "unsettled replication" case, on the theory that `waitForAllServers()`
+returns before the applied schema entry is visible and a bounded poll would settle it. **That diagnosis
+was wrong, and the issue's classification of this test is wrong too.**
 
-**Fix:** `awaitRoutedWriteOnEveryNode()` polls every started node until it holds both the type and its
-single record before the routed read runs. This settles the teardown comparison as well.
+A poll was added over every started node, waiting up to 60 s for the `Bolt5002Route` type and its single
+record. CI answered unambiguously:
+
+```
+org.awaitility.core.ConditionTimeoutException:
+  [server 1 must have replicated type Bolt5002Route]
+  Expecting value to be true but was false within 1 minutes
+  Suppressed: DatabaseComparator$DatabaseAreNotIdentical: Types: DB1 6 <> DB2 5
+```
+
+Server 1 never received the type at all - not within 60 s, and the teardown comparison independently
+reported the same divergence the original issue recorded as a suppressed error. State that does not
+settle in 60 s is not lag, and no amount of polling fixes it. There is a real replication defect behind
+this test.
+
+The change was therefore **reverted**; the file is byte-identical to `main` on this branch. The remaining
+value of the experiment is diagnostic: it converts "expected 1 got 0" into evidence that a specific node
+never receives a schema entry written through the Cypher-over-Bolt path.
+
+**Follow-up:** needs its own issue and investigation. A plausible starting point - unverified, stated as a
+hypothesis only - is the `#5492`/`#5655` family: code that commits while holding the inner `LocalDatabase`
+rather than the wrapped replicated instance applies locally and replicates nothing. The Bolt write path
+should be checked against `getWrappedDatabaseInstance()`. Do not treat that as a diagnosis; it is only
+where to look first.
 
 ## Not addressed here
 
@@ -115,13 +136,26 @@ failure, and should be tracked separately.
   classpath in `bolt`; it is declared in the root POM's `<dependencies>`, not `<dependencyManagement>`,
   so every module inherits it and no new dependency was added)
 
-**The four IT classes were not run locally.** Ports 2480/2481 were held for the duration of this work
-by an ArcadeDB server running under the developer's IntelliJ debugger, which `BaseGraphServerTest`
-needs to bind. CI is the verification gate for this change, by the developer's decision.
+**The IT classes were not run locally.** Ports 2480/2481 were held for the duration of this work by an
+ArcadeDB server running under the developer's IntelliJ debugger, which `BaseGraphServerTest` needs to
+bind. CI was the verification gate, by the developer's decision.
 
-When reading that CI run, note what the issue itself records about this repo: the failing step is the
-**reporter** (`IT Tests Reporter` / `HA IT Tests Reporter`), not the test step. Maven runs with test
-failures ignored, so `Run Integration Tests with Coverage: success` does **not** mean the tests passed.
+### CI result (run 30706875826, commit `037e32702`)
+
+The `integration-tests` job reported `Run Integration Tests with Coverage: success` and
+`IT Tests Reporter: failure` - exactly the trap the issue documents. The Maven step runs with
+`--fail-never`, so its success is unconditional and carries no information; the reporter is the gate.
+
+| class | result | elapsed |
+|---|---|---|
+| `Issue3122AsyncParallelCommandsIT` | 3/3 pass | 8.1 s |
+| `HttpRedMetricsIT` | 3/3 pass | 0.5 s |
+| `Issue5470BatchStreamStallIT` | 3/3 pass | 31.0 s |
+| `Bolt5002RoutingTableIT` | 1 error - real defect, reverted | 110.6 s |
+
+The three hardening fixes are confirmed by the authoritative signal. Two incidental confirmations: the
+0.5 s on `HttpRedMetricsIT` supports having declined `@Tag("slow")` for it, and the 31 s on `Issue5470`
+is the runtime cost the reviews flagged.
 
 ### Proof that the rewritten assertion can still fail - DONE
 
