@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -356,6 +357,118 @@ class SQLFunctionAbsoluteValueTest {
           rs.next().getProperty("abs");
         }
       }).isInstanceOf(ArithmeticErrorException.class).hasMessageContaining("long overflow");
+    });
+  }
+
+  /**
+   * Issue #5649. A positive duration has to come back untouched whatever its magnitude. The
+   * one-minute-and-over cases matter because the old implementation reasoned about
+   * {@code toSecondsPart()}, which is the seconds component within the minute rather than the whole.
+   */
+  @Test
+  void positiveDurationIsReturnedUnchanged() {
+    final Duration[] positives = { Duration.ofSeconds(5), Duration.ofSeconds(90), Duration.ofNanos(500_000_000L),
+        Duration.ofSeconds(90, 500_000_000L), Duration.ofHours(3) };
+
+    for (final Duration positive : positives) {
+      function.execute(null, null, null, new Object[] { positive }, null);
+      assertThat(function.getResult()).isInstanceOf(Duration.class).isEqualTo(positive);
+    }
+  }
+
+  /**
+   * Issue #5649, the headline case: a negative duration whose magnitude is under a second. The old
+   * implementation recombined {@code Math.abs(toSecondsPart())} with {@code Math.abs(toNanosPart())},
+   * and because {@code Duration} normalizes a negative value as negative seconds plus a *positive*
+   * nanos adjustment, {@code PT-0.5S} is stored as (-1s, +500000000ns) and came back as {@code PT1.5S}.
+   */
+  @Test
+  void negativeSubSecondDurationDoesNotGainASecond() {
+    function.execute(null, null, null, new Object[] { Duration.ofNanos(-500_000_000L) }, null);
+    assertThat(function.getResult()).isEqualTo(Duration.ofNanos(500_000_000L));
+
+    function.execute(null, null, null, new Object[] { Duration.ofNanos(-1) }, null);
+    assertThat(function.getResult()).isEqualTo(Duration.ofNanos(1));
+  }
+
+  /**
+   * Issue #5649, the worst class. For an exact multiple of a minute both components are zero, so the
+   * old {@code seconds > -1 && nanos > -1} guard held for a negative input and handed it straight back:
+   * {@code abs()} returned a negative duration.
+   */
+  @Test
+  void negativeWholeMinuteDurationIsNotReturnedNegative() {
+    final Duration[] negatives = { Duration.ofSeconds(-60), Duration.ofSeconds(-120), Duration.ofHours(-2) };
+
+    for (final Duration negative : negatives) {
+      function.execute(null, null, null, new Object[] { negative }, null);
+      assertThat(function.getResult()).isEqualTo(negative.negated());
+      assertThat(((Duration) function.getResult()).isNegative()).isFalse();
+    }
+  }
+
+  /**
+   * Issue #5649. Recombining the two parts drops every whole minute of the input, so {@code PT-1M-29.5S}
+   * used to come back as {@code PT30.5S} - a magnitude a full minute short of the truth.
+   */
+  @Test
+  void negativeDurationLongerThanAMinuteKeepsItsMinutes() {
+    function.execute(null, null, null, new Object[] { Duration.ofSeconds(-90, 500_000_000L) }, null);
+    assertThat(function.getResult()).isEqualTo(Duration.ofSeconds(89, 500_000_000L));
+  }
+
+  /**
+   * Issue #5649. The cases the old branch already got right, kept so the fix is pinned as a strict
+   * improvement rather than a swap of one set of failures for another.
+   */
+  @Test
+  void negativeWholeSecondDurationUnderAMinuteStillWorks() {
+    function.execute(null, null, null, new Object[] { Duration.ofSeconds(-5) }, null);
+    assertThat(function.getResult()).isEqualTo(Duration.ofSeconds(5));
+
+    function.execute(null, null, null, new Object[] { Duration.ofSeconds(-1) }, null);
+    assertThat(function.getResult()).isEqualTo(Duration.ofSeconds(1));
+  }
+
+  @Test
+  void zeroDuration() {
+    function.execute(null, null, null, new Object[] { Duration.ZERO }, null);
+    assertThat(function.getResult()).isEqualTo(Duration.ZERO);
+  }
+
+  /**
+   * Issue #5649. {@code Duration}'s range is symmetric except for this single value: negating
+   * {@code Duration.ofSeconds(Long.MIN_VALUE, 0)} needs {@code Long.MAX_VALUE + 1} seconds, which
+   * {@code Duration} cannot hold. Left unguarded it escapes as a raw {@code java.lang.ArithmeticException}
+   * and answers HTTP 500; it has to be the same {@link ArithmeticErrorException} the four integral
+   * MIN_VALUEs already raise. Note the boundary is exactly one value - a positive nanos adjustment pulls
+   * the magnitude back inside range, which the second half of this test pins.
+   */
+  @Test
+  void durationOverflowIsAnArithmeticError() {
+    assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { Duration.ofSeconds(Long.MIN_VALUE) }, null))
+        .isInstanceOf(ArithmeticErrorException.class)
+        .hasMessageContaining("duration overflow");
+
+    final Duration representable = Duration.ofSeconds(Long.MIN_VALUE, 500_000_000L);
+    function.execute(null, null, null, new Object[] { representable }, null);
+    assertThat(function.getResult()).isEqualTo(representable.negated());
+  }
+
+  /**
+   * Issue #5649 end to end through the SQL engine, where the duration is built by {@code duration()}
+   * rather than handed to the function directly.
+   */
+  @Test
+  void fromQueryOverNegativeDuration() throws Exception {
+    TestHelper.executeInNewDatabase("./target/databases/testAbsFunctionDuration", db -> {
+      try (final ResultSet rs = db.query("sql", "select abs(duration(-90, 'second')) as abs")) {
+        assertThat(rs.next().<Duration>getProperty("abs")).isEqualTo(Duration.ofSeconds(90));
+      }
+
+      try (final ResultSet rs = db.query("sql", "select abs(duration(-500, 'millisecond')) as abs")) {
+        assertThat(rs.next().<Duration>getProperty("abs")).isEqualTo(Duration.ofMillis(500));
+      }
     });
   }
 }
