@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.VectorEncoding;
+import com.arcadedb.index.vector.VectorLocationIndex;
 import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
@@ -38,6 +39,10 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   /**
    * Keys a user may write in {@code METADATA}. Everything on this class except {@code buildState}, which is the
    * index's own lifecycle marker and not a setting.
+   * <p>
+   * {@code locationCacheSize} is still listed even though {@link #setLocationCacheSize(int)} refuses any positive
+   * value: this set only decides whether a key is RECOGNISED, so dropping it would turn the explanation into a bare
+   * "unknown metadata key".
    */
   private static final Set<String> USER_METADATA_KEYS = Set.of("dimensions", "similarity", "quantization", "encoding",
       "maxConnections", "beamWidth", "efSearch", "neighborOverflowFactor", "alphaDiversityRelaxation", "idPropertyName",
@@ -173,7 +178,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       this.idPropertyName = json.getString("idPropertyName");
 
     if (json.has("locationCacheSize"))
-      this.locationCacheSize = metadataInt(json, "locationCacheSize");
+      setLocationCacheSize(metadataInt(json, "locationCacheSize"));
 
     if (json.has("graphBuildCacheSize"))
       this.graphBuildCacheSize = metadataInt(json, "graphBuildCacheSize");
@@ -213,6 +218,36 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       throw new IndexException(
           "Invalid similarity function: " + similarity + ". Supported values: COSINE, DOT_PRODUCT, EUCLIDEAN");
     }
+  }
+
+  /**
+   * Refuses a location cache limit (issues #5559 and #5568), which is what every user-facing entrance to this
+   * setting - the {@code METADATA} clause of {@code CREATE INDEX} and
+   * {@link TypeLSMVectorIndexBuilder#withLocationCacheSize(int)} - now goes through.
+   * <p>
+   * The setting cannot be honoured. A vector location is the only mapping from a vector id to its record and to the
+   * offset of its entry in the index file; nothing on disk maps a vector id back to an offset, so evicting a
+   * location destroys it rather than spilling it to a slower tier, and every reader reads a missing location as
+   * "deleted". A capped index therefore under-reported {@code countEntries()} and dropped the evicted vectors from
+   * its searches, silently. Accepting the value and ignoring it would leave the same lie in the schema, where
+   * {@code schema:indexes} would keep echoing a bound that is not in force, so the statement is refused instead.
+   * <p>
+   * {@code -1} (and the historical {@code 0}) mean "no limit" and are accepted: they are what a metadata copy or an
+   * unset builder carries, and they ask for exactly what the index does. A definition persisted by an older version
+   * is read by {@link #fromJSON(JSONObject)}, which does not come through here - refusing there would make an
+   * existing database unopenable.
+   *
+   * @param locationCacheSize the requested limit; anything positive is refused
+   */
+  public void setLocationCacheSize(final int locationCacheSize) {
+    if (locationCacheSize > 0)
+      throw new IndexException("'locationCacheSize' is no longer supported (issues #5559 and #5568): a vector "
+          + "location is the only mapping from a vector id to its record, so capping the location index drops "
+          + "vectors from searches and from countEntries() instead of spilling them to disk. Remove the setting and "
+          + "size the heap for ~" + VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION
+          + " bytes per live vector (~90MB per million)");
+
+    this.locationCacheSize = locationCacheSize;
   }
 
   /**

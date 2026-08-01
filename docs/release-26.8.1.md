@@ -344,7 +344,7 @@ Expected parameter(s): id
 
 To keep the old behaviour for a specific query, bind the name explicitly to `null`.
 
-## Vector index: the location cache no longer evicts, and `arcadedb.vectorIndex.locationCacheSize` is ignored
+## Vector index: the location cache is gone, and `locationCacheSize` is refused
 
 **Behaviour change for operators.** `arcadedb.vectorIndex.locationCacheSize` (and the per-index
 `locationCacheSize` metadata) used to cap the in-memory location index of an `LSM_VECTOR` index and let it evict.
@@ -352,12 +352,27 @@ That was never a cache bound. A location is the only record of which record a ve
 entry sits in the index file, and nothing on disk maps a vector id back to an offset, so an evicted entry could
 not be recovered - and every reader reads a missing location as deleted. A cap of 100 over 1000 live vectors made
 `countEntries()` report 100, and a query whose neighbours had been evicted dropped them
-([#5568](https://github.com/ArcadeData/arcadedb/issues/5568)).
+([#5568](https://github.com/ArcadeData/arcadedb/issues/5568)). The same cap arriving through the `METADATA`
+clause did the same thing to a 200-vector index: 10 counted, and a search probing a vector with its own embedding
+answered with a different vertex ([#5559](https://github.com/ArcadeData/arcadedb/issues/5559)).
 
 The limit dates from when the index held one location per *write*, so it grew with the write history. Issue #5516
 removed that: a tombstoned id releases its location, so residency now follows the number of **live** vectors.
 
-- **The setting is ignored** and reported once per index at `WARNING`. The `low-ram` profile no longer sets it.
+- **`CREATE INDEX ... METADATA {"locationCacheSize": N}` now fails** for any positive `N`, with a message naming
+  the reason and the figure to size against, instead of being accepted and quietly ignored. Same for
+  `TypeLSMVectorIndexBuilder.withLocationCacheSize(N)`, which is deprecated. Accepting it would have left a bound
+  in the schema that `schema:indexes` keeps echoing while nothing enforces it - the same silence in the metadata
+  that the bug had in the data. **Remove the key from any `CREATE INDEX` script before upgrading.** `-1` and `0`
+  ("no limit") are still accepted, so an unset builder and a metadata copy keep working.
+- **The global setting is still tolerated** - a startup line carrying it must not stop a server booting - and is
+  reported once per index at `WARNING`. So is a schema written by an older version, or the database would not
+  open. Neither has any effect. The `low-ram` profile no longer sets it.
+- **The bounded backend inside `VectorLocationIndex` is deleted**, not just unused: there is one
+  `ConcurrentHashMap`-backed implementation and no `maxSize`, so truncation is structurally impossible rather
+  than prevented by policy. That also drops a mode branch from each of the ten methods that had to choose a
+  backend, and with it a `Collections.synchronizedMap` monitor that `countEntries()` and `getStats()` used to
+  serialize on.
 - **Plan for ~90 bytes per live vector** - about 90MB per million, 900MB at 10 million. This is the figure
   `getStats()` now reports as `estimatedLocationIndexBytes`; it previously quoted the 24-byte payload and so
   under-estimated the footprint several-fold.
