@@ -156,6 +156,12 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("cannot be combined with TYPE or BUCKET");
 
+    // The clause conflict is diagnosed BEFORE the RIDs are resolved, so a scope that also fails to resolve
+    // reports the combination - the outer mistake - rather than the resolution failure.
+    assertThatThrownBy(() -> database.command("sql", "CHECK DATABASE TYPE Hub RECORD {\"@rid\": null}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("cannot be combined with TYPE or BUCKET");
+
     // Each on its own still works.
     try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + hubRID)) {
       assertThat(rs.hasNext()).isTrue();
@@ -335,6 +341,32 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
         .anyMatch(w -> w.contains("1 of the record(s) given did not resolve"));
     // The valid RID was still checked: narrowing is the point, silence is not.
     assertThat((Long) result.get("totalWarnings")).isEqualTo(1L);
+  }
+
+  /**
+   * COMPRESS is not limited by the scope and cannot be - it works on buckets, not records. The combination stays
+   * legal, because "check this record, then compress the database" is a meaningful thing to ask, but naming a
+   * record sets an expectation of a bounded run and this is the one clause that breaks it. So it warns.
+   */
+  @Test
+  void checkDatabaseRecordWarnsThatCompressIsNotScoped() {
+    createSchema();
+    final RID hubRID = createHub();
+    createEdges(hubRID, 5);
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + hubRID + " COMPRESS")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("%s", row.toJSON())
+          .anyMatch(w -> w.contains("COMPRESS is not limited by the RECORD scope"));
+    }
+
+    // Without COMPRESS the same scope stays silent, so the warning tracks the clause and not the scope.
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + hubRID)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("%s", row.toJSON()).isEmpty();
+    }
   }
 
   /**

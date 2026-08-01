@@ -154,6 +154,13 @@ public class DatabaseChecker {
       if (droppedRecords > 0)
         addScopedWarning(droppedRecords + " of the record(s) given did not resolve to a RID and were not checked");
 
+      if (compress)
+        // COMPRESS is not scoped and cannot be: it works on buckets, not records. Legal and meaningful ("check
+        // this record, then compress the database"), so it is not refused - but naming a record sets an
+        // expectation of a bounded run, and this is the one clause that breaks it. Say so rather than surprise.
+        addScopedWarning(
+            "COMPRESS is not limited by the RECORD scope: the whole database will be compressed after the check");
+
       checkScopedRecords(scoped);
 
       corruptMetadataIndexes = Collections.emptySet();
@@ -446,6 +453,11 @@ public class DatabaseChecker {
    * The document arm of the RECORD scope: the same "does it load as a document" check {@link #checkDocuments} does,
    * with the {@code maxWarnings} cap the record-belongs-to-no-type branch honours (the totals still count every
    * occurrence, only the retained messages are bounded).
+   * <p>
+   * NOTE, deliberately not aligned here: the type-wide {@link #checkDocuments} adds to the warnings and
+   * corrupted-records SETS without incrementing {@code totalWarnings}/{@code totalCorruptedRecords}, so the two
+   * paths report those totals differently for a corrupt document. This arm is the correct one; changing the
+   * type-wide path is a behaviour change to a command this issue does not otherwise touch.
    */
   private void checkScopedDocuments(final DocumentType type, final List<RID> rids) {
     stepBegin("Checking records of '" + type.getName() + "'", rids.size());
@@ -540,6 +552,9 @@ public class DatabaseChecker {
   public DatabaseChecker setRecords(final Set<RID> records) {
     if (records == null || records.isEmpty()) {
       this.records = Collections.emptySet();
+      // Reset too: this is public API and can be called more than once, so a count left over from an earlier
+      // call must not survive into a run that has no record scope at all.
+      this.droppedRecords = 0;
       return this;
     }
     // LinkedHashSet: the grouping below (and so the reported step order) follows the order the RIDs were given.
