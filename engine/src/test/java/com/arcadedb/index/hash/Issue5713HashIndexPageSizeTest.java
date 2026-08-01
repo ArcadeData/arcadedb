@@ -38,6 +38,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.RandomAccessFile;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -346,6 +347,30 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
   }
 
   /**
+   * The two out-of-range directions are not the same condition and must not be reported as if they were. Above the
+   * ceiling the 16-bit offsets have wrapped and the index really is damaged; below the floor nothing has wrapped - the
+   * old creation path accepted any positive page size, so such an index may well have been working - and calling it
+   * corrupted would send an operator hunting for damage that is not there.
+   */
+  @Test
+  void anUndersizedLegacyIndexIsNotReportedAsCorrupted() throws Exception {
+    withLegacyIllegalPageSizeDatabase("Issue5713UndersizedDB", 20, HashIndexBucket.MIN_PAGE_SIZE / 2, (db, entries) -> {
+      final List<String> problems = hashIndexOf(db).checkIntegrity();
+
+      assertThat(problems).anyMatch(p -> p.contains("unsupported page size=" + (HashIndexBucket.MIN_PAGE_SIZE / 2)));
+      assertThat(problems).as("an undersized index has not wrapped anything, so it must not be called damaged")
+          .noneMatch(p -> p.contains("damaged"));
+      assertThat(problems).anyMatch(p -> p.contains("may still be working"));
+    });
+
+    withLegacyIllegalPageSizeDatabase("Issue5713OversizedDB", 20, HashIndexBucket.MAX_PAGE_SIZE * 2, (db, entries) -> {
+      assertThat(hashIndexOf(db).checkIntegrity())
+          .as("an oversized index HAS wrapped its offsets, so it must be called damaged")
+          .anyMatch(p -> p.contains("damaged"));
+    });
+  }
+
+  /**
    * {@code TRUNCATE TYPE} drops every index of the type and recreates it from a captured definition, so it has the same
    * drop-then-recreate shape as a rebuild: an unaddressable page size carried into the definition would leave the type
    * without the index it had.
@@ -406,6 +431,11 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
    */
   private void withLegacyIllegalPageSizeDatabase(final String dbName, final int entries, final LegacyDatabaseTest test)
       throws Exception {
+    withLegacyIllegalPageSizeDatabase(dbName, entries, HashIndexBucket.MAX_PAGE_SIZE * 2, test);
+  }
+
+  private void withLegacyIllegalPageSizeDatabase(final String dbName, final int entries, final int illegalPageSize,
+      final LegacyDatabaseTest test) throws Exception {
     TestHelper.dropDatabase(dbName);
 
     final String databasePath;
@@ -428,10 +458,10 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
       });
     }
 
-    declareIllegalPageSizeOnDisk(databasePath, HashIndexBucket.MAX_PAGE_SIZE * 2);
+    declareIllegalPageSizeOnDisk(databasePath, illegalPageSize);
 
     try (final Database reopened = new DatabaseFactory(databasePath).open()) {
-      assertThat(hashIndexOf(reopened).getPageSize()).isEqualTo(HashIndexBucket.MAX_PAGE_SIZE * 2);
+      assertThat(hashIndexOf(reopened).getPageSize()).isEqualTo(illegalPageSize);
       test.accept(reopened, entries);
     } finally {
       TestHelper.dropDatabase(dbName);
@@ -457,7 +487,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
     assertThat(indexFiles[0].renameTo(mangled)).isTrue();
 
     try (final RandomAccessFile raf = new RandomAccessFile(mangled, "rw")) {
-      // round the file up to a whole number of the (now larger) pages, so the page manager can read page 0
+      // round the file up to a whole number of the newly declared pages, so the page manager can read page 0
       raf.setLength(((raf.length() + illegalPageSize - 1) / illegalPageSize) * (long) illegalPageSize);
     }
   }

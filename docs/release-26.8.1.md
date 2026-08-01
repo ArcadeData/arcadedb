@@ -1533,12 +1533,22 @@ consequences for callers:
 - `CREATE INDEX ... UNIQUE_HASH` and a `HASH` index inherited from a super type used to hardcode the LSM default as
   their stand-in for "unset"; both now leave it unset, and the inherited one carries over the page size of the index it
   is propagating rather than resetting it.
-- `withPageSize(0)` (or any value below 1) now means "unset" rather than being passed through. Before, that zero
-  reached the component and made the file's page arithmetic degenerate; every index type now falls back to its own
-  default instead.
-
 Widening the on-page fields to 32 bits would lift the ceiling instead, at 2 bytes per slot on every bucket. The
 measurements in #5712 point the other way - smaller pages are consistently faster for this index - so the ceiling is
 not worth paying for.
+
+### BREAKING: `withPageSize(0)` now means "use the default", for every index type
+
+This one is not about `HASH`, and it is the change most likely to reach code that has nothing to do with this fix.
+`IndexBuilder.withPageSize()` accepted a non-positive page size and passed it through to the component, where the page
+arithmetic divides by it. It now means "unset", so **every** index type - `LSM_TREE`, `FULL_TEXT`, `GEOSPATIAL`,
+`LSM_VECTOR`, `LSM_SPARSE_VECTOR` as well as `HASH` - falls back to its own default instead.
+
+Nothing could have relied on the old behaviour usefully: a zero page size produced a broken file rather than a small
+one. But a caller that passed `0` expecting a failure now silently gets a working index at the default size, so if you
+build indexes through the embedded API with a computed page size, check that the computation cannot yield zero.
+
+An index that already exists on disk is unaffected either way - the page size is read from the component file, not from
+a builder.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
