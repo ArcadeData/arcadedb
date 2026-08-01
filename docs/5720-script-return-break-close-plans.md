@@ -64,5 +64,25 @@ stub plans:
 
 All three fail against the old `close()` (nothing is released, so the recording list is empty).
 
-Regression check: `SQLScriptLargeBatchTest`, `ScriptLineStepCloseTest`, and the SQL script/batch test classes
-in `engine`.
+Regression check: `mvn -pl engine test -Dtest='com.arcadedb.query.sql.**'` - 2345 tests, 0 failures, covering
+`SQLScriptTest`, `BatchTest`, `SQLScriptLargeBatchTest`, `ScriptLineStepCloseTest` and
+`IfStatementExecutionTest`.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5738
+
+### Review cycles
+
+- cycle 1 - `5c49345` - initial fix, test, and this document. The `claude-review` workflow run
+  (30721189108) stayed queued for over 45 minutes without a runner being assigned, so no bot review landed on
+  this head. No review feedback was received, and nothing was changed in response.
+
+### Deferred items
+
+None - no review comments were received to defer.
+
+### Final state
+
+`timeout` - the automated review loop exited without a bot review on the head commit. The change itself is
+verified by the tests above; the review is still owned by the developer.
