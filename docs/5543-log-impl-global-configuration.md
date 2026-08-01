@@ -86,6 +86,24 @@ say the same thing, so it is left as is.
 - `mvn -pl engine test`: 10690 tests, 0 failures, 0 errors, 23 skipped.
 - `mvn compile` over the full reactor: green.
 
+## Review cycles
+
+### Cycle 1 - `c4562caa`
+
+`claude[bot]` raised four points, none blocking except the first.
+
+1. **`LogManager.logger` should be `volatile`** - applied. The field is read by every `log()` overload on
+   every thread and, now that `LOG_IMPL` promotes `setLogger()` to a runtime path, written from an
+   arbitrary thread with no happens-before edge. The sibling `traceContextSupplier` in the same class is
+   already `volatile` for exactly this reason.
+2. **Stored value is not normalized** - applied, narrowed. The callback now stores the trimmed, lowercased
+   spelling, so `dumpConfiguration()` and `toJSON()` no longer report `SLF4J` or `" slf4j "`. It does
+   **not** rewrite an unrecognized value to `default`, which would hide a typo from the config dump while
+   the `System.err` warning scrolls away. Deriving a canonical name from the resolved logger was rejected:
+   it would put a second copy of the name-to-implementation mapping next to `createLogger()`.
+3. **`reset()` does not re-install a logger** - skipped, see `review-deferred-c4562caa.md`.
+4. **Lambda vs anonymous `Callable` style** - skipped, the claim is inaccurate; see the same file.
+
 ## Impact
 
 Additive. The default is `default`, which is what an unset system property already resolved to, and the

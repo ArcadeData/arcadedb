@@ -78,6 +78,15 @@ class LogImplConfigurationTest {
   }
 
   @Test
+  void theStoredValueIsNormalizedToTheSpellingTheLoggerIsSelectedBy() {
+    GlobalConfiguration.LOG_IMPL.setValue(" SLF4J ");
+
+    // Otherwise dumpConfiguration()/toJSON() report a spelling that looks different from the documented one.
+    assertThat(GlobalConfiguration.LOG_IMPL.<String>getValue()).isEqualTo("slf4j");
+    assertThat(LogManager.instance().getLogger()).isInstanceOf(Slf4jLogger.class);
+  }
+
+  @Test
   void unknownValueFallsBackToTheDefaultLoggerAndIsReported() {
     LogManager.instance().setLogger(new Slf4jLogger());
 
@@ -92,6 +101,8 @@ class LogImplConfigurationTest {
 
     assertThat(LogManager.instance().getLogger()).isInstanceOf(DefaultLogger.class);
     assertThat(captured.toString()).contains("slf4").contains(LogManager.LOG_IMPL_PROPERTY);
+    // The typo is kept as it is: rewriting it to 'default' would hide the misconfiguration from the config dump.
+    assertThat(GlobalConfiguration.LOG_IMPL.<String>getValue()).isEqualTo("slf4");
   }
 
   @Test

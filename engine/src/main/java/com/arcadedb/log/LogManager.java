@@ -44,7 +44,9 @@ public class LogManager {
   private static final LogManager                    instance             = new LogManager();
   private static volatile TraceContextSupplier       traceContextSupplier = null;
   private              boolean                        debug                = false;
-  private              Logger                         logger;
+  // VOLATILE BECAUSE setLogger() IS A RUNTIME PATH - GlobalConfiguration.LOG_IMPL SWAPS THE LOGGER FROM AN
+  // ARBITRARY THREAD WHILE OTHERS ARE LOGGING - AND EVERY log() OVERLOAD READS IT
+  private volatile     Logger                         logger;
 
   static class LogContext extends ThreadLocal<String> {
   }
