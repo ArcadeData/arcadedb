@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -25,6 +26,7 @@ import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONArray;
@@ -36,6 +38,7 @@ import io.undertow.server.HttpServerExchange;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.logging.Level;
 
 /**
  * HTTP handler for TimeSeries query endpoint.
@@ -100,7 +103,8 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited. Note
     // that here the cap governs serialization only - the engine query below materializes the whole range
     // regardless, so removing the cap does not widen an already unbounded fetch.
-    final int limit = payload.getInt("limit", getDefaultRowLimit());
+    final boolean callerSuppliedLimit = payload.has("limit");
+    final int limit = callerSuppliedLimit ? payload.getInt("limit") : getDefaultRowLimit();
 
     // Resolve field projection
     final int[] columnIndices = resolveColumnIndices(payload, columns);
@@ -134,8 +138,17 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     result.put("rows", rowsArray);
     result.put("count", count);
     // A response cut by the limit must not look like a complete one (issue #5711).
+    final boolean truncated = rows.size() > count;
     result.put("limit", limit > 0 ? limit : -1);
-    result.put("truncated", rows.size() > count);
+    result.put("truncated", truncated);
+
+    if (truncated && !callerSuppliedLimit)
+      // The caller stated no limit, so this truncation is the only one it did not ask for: an operator must be
+      // able to find it in the log, exactly as on the query and command endpoints.
+      LogManager.instance().log(this, Level.WARNING,
+          "Query on time series type '%s' returned %d rows, more than the default HTTP limit of %d: the response has been "
+              + "truncated. Set 'limit' in the request, or raise '%s'.", typeName, rows.size(), limit,
+          GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey());
 
     return new ExecutionResponse(200, result.toString());
   }

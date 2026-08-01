@@ -120,6 +120,32 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
+   * Rejection of a request row limit that is not an integer this server can apply, worded identically wherever
+   * the limit arrives from so the two surfaces report the same thing. Mapped to HTTP 400 by the
+   * {@link IllegalArgumentException} arm of {@link AbstractServerHttpHandler}.
+   */
+  protected static IllegalArgumentException unusableLimit(final String field, final Throwable cause) {
+    return new IllegalArgumentException(
+        "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE, cause);
+  }
+
+  /**
+   * Parses the textual row limit of the GET endpoint, or returns {@code null} when the parameter is absent or
+   * empty - an empty parameter states nothing, so it must not be read as a value. A value that is not an
+   * int-representable integer is a client error carrying the same message as the JSON field of the POST
+   * endpoints, instead of the raw {@link NumberFormatException} wording of the JDK.
+   */
+  protected static Integer parseLimitParameter(final String raw, final String field) {
+    if (raw == null || raw.isBlank())
+      return null;
+    try {
+      return Integer.valueOf(raw.trim());
+    } catch (final NumberFormatException e) {
+      throw unusableLimit(field, e);
+    }
+  }
+
+  /**
    * LIMIT carried by the execution plan of the given result set, or 0 when unavailable. SQL exposes it for
    * both single statements and single-statement scripts; languages that do not build an
    * {@link com.arcadedb.query.sql.executor.ExecutionPlan} (e.g. Cypher on the non-EXPLAIN path) return 0, and

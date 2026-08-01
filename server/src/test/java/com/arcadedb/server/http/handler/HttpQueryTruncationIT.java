@@ -217,6 +217,13 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   }
 
   @Test
+  void theGetEndpointRejectsAnUnusableLimitTheSameWayThePostEndpointDoes() throws Exception {
+    // Both surfaces must answer the same way to the same unusable value: a client error, not a server error.
+    assertThat(getStatus("SELECT i FROM " + TYPE_NAME, "abc")).isEqualTo(400);
+    assertThat(getStatus("SELECT i FROM " + TYPE_NAME, "3000000000")).isEqualTo(400);
+  }
+
+  @Test
   void theHttpAndTheEmbeddedSurfaceAgreeOnTheSameQuery() throws Exception {
     final String command = "SELECT i FROM " + TYPE_NAME + " LIMIT " + TOTAL_ROWS;
 
@@ -392,6 +399,16 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   }
 
   private JSONObject get(final String command, final String limit) throws Exception {
+    final HttpResponse<String> response = sendGet(command, limit);
+    assertThat(response.statusCode()).isEqualTo(200);
+    return new JSONObject(response.body());
+  }
+
+  private int getStatus(final String command, final String limit) throws Exception {
+    return sendGet(command, limit).statusCode();
+  }
+
+  private HttpResponse<String> sendGet(final String command, final String limit) throws Exception {
     // The command travels as a path segment: URLEncoder emits '+' for a space, which is only a space in a
     // query string.
     final String url = "http://127.0.0.1:2480/api/v1/query/" + getDatabaseName() + "/sql/"
@@ -405,9 +422,7 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .build();
 
-    final HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
-    assertThat(response.statusCode()).isEqualTo(200);
-    return new JSONObject(response.body());
+    return client.send(request, BodyHandlers.ofString());
   }
 
   /**

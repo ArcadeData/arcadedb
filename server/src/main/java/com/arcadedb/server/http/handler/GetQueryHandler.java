@@ -72,7 +72,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
         // Same precedence as the POST endpoint: the caller's own 'limit' parameter, then the LIMIT the query
         // carries, then the configured default - the only case that can drop rows the caller never asked to
         // drop, and it is reported back with 'truncated' (issue #5711).
-        final Integer requestLimit = limitPar == null ? null : Integer.parseInt(limitPar);
+        final Integer requestLimit = parseLimitParameter(limitPar, "limit");
         final int planLimit = getPlanLimit(qResult);
         final int limit = resolveLimit(requestLimit, planLimit);
         profile.addEngineNanos(System.nanoTime() - engineStart);

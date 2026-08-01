@@ -143,8 +143,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       // as "unlimited" - silently turning off the very cap this field governs. Out-of-range is a client error.
       final double magnitude = n.doubleValue();
       if (Double.isNaN(magnitude) || magnitude > Integer.MAX_VALUE || magnitude < Integer.MIN_VALUE)
-        throw new IllegalArgumentException(
-            "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE);
+        throw unusableLimit(field, null);
       return n.intValue();
     }
     throw new IllegalArgumentException("Field '" + field + "' must be an integer");

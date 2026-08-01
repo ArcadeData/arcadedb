@@ -1498,9 +1498,17 @@ did not.
 `truncated` is true only when the cap stopped the serialization with at least one row still pending, so a result
 that ends exactly at the cap is not flagged. The server also logs a warning naming the database, the cap and the
 query - but only when the *default* did the cutting, since truncation against a `limit` the caller asked for is
-the expected outcome. `POST /timeseries/{db}/query` reports `limit` and `truncated` the same way, reads the same
-setting instead of its own hardcoded 20,000, and no longer answers a non-positive `limit` with zero rows (it used
-to compute `min(rows, -1)`, so `limit: -1` returned nothing at all).
+the expected outcome.
+
+The flag is exact for the row-oriented serializers (`record`, `studio` and the default one), where `returned` also
+never exceeds `limit`. With `serializer: "graph"` the cap counts graph *elements* instead of rows, so two things
+differ: `returned` can come back above `limit`, because the row that reaches the cap is expanded whole; and since
+the same vertex reached twice is serialized once, `truncated` is best-effort there - a result whose rows dedup
+down to fewer elements than the cap can read `false`. A paging client should use a row-oriented serializer.
+
+`POST /timeseries/{db}/query` reports `limit` and `truncated` the same way, logs the same warning when its own
+default did the cutting, reads the same setting instead of its own hardcoded 20,000, and no longer answers a
+non-positive `limit` with zero rows (it used to compute `min(rows, -1)`, so `limit: -1` returned nothing at all).
 
 The cap is now configurable with **`arcadedb.server.httpQueryDefaultLimit`** (default 20000, `-1` for unlimited);
 it applies only to callers that state no limit of their own.
