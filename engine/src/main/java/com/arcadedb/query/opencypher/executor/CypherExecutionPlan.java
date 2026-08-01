@@ -602,20 +602,64 @@ public class CypherExecutionPlan {
     explainOutput.append("OpenCypher Native Execution Plan\n");
     explainOutput.append("=================================\n\n");
 
+    // The push-down is asked FIRST because execute() asks it first: it replaces the whole chain, so a query it
+    // claims never reaches the optimizer, and describing that query by the physical plan the optimizer built for it
+    // names a plan the engine does not run. That gap predates this issue, which widens it by routing the plainest
+    // counting queries through the fast path as well (issue #5715).
+    final AbstractExecutionStep countPushDown = countPushDownForDescription();
+    if (countPushDown != null) {
+      explainOutput.append("Using Count Push-Down\n\n");
+      explainOutput.append("Execution Plan:\n");
+      appendStepChain(explainOutput, countPushDown);
+      explainOutput.append("\n");
+    }
+
     if (canUseOptimizedPhysicalPlan()) {
-      explainOutput.append("Using Cost-Based Query Optimizer\n\n");
+      explainOutput.append(countPushDown != null
+          ? "Using Cost-Based Query Optimizer (superseded by the count push-down above)\n\n"
+          : "Using Cost-Based Query Optimizer\n\n");
       explainOutput.append("Physical Plan:\n");
       explainOutput.append(physicalPlan.getRootOperator().explain(0));
       explainOutput.append("\n");
       explainOutput.append(String.format("Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       explainOutput.append(String.format("Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
-    } else {
+    } else if (countPushDown == null) {
       explainOutput.append("Using Traditional Execution (Non-Optimized)\n\n");
       explainOutput.append("Reason: Query pattern not yet supported by optimizer\n");
       explainOutput.append("Execution will use step-by-step interpretation\n");
     }
 
     return new ExplainResultSet(new OpenCypherExplainExecutionPlan(explainOutput.toString()));
+  }
+
+  /**
+   * The count push-down this query would run, built only to be described, or null when it would not take one.
+   * <p>
+   * It builds the same steps {@link #execute()} would and pulls none of them, so nothing is counted; the one thing
+   * it does read is the schema, through the emptiness check that decides between a real push-down and a constant.
+   */
+  private AbstractExecutionStep countPushDownForDescription() {
+    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty())
+      return null;
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    setupFunctionResolver(context);
+    return tryCountPushDown(context, false);
+  }
+
+  /** Appends a step chain first-step-first, which is the order it is read in and the reverse of how it is linked. */
+  private static void appendStepChain(final StringBuilder output, final AbstractExecutionStep rootStep) {
+    final List<AbstractExecutionStep> stepChain = new ArrayList<>();
+    for (AbstractExecutionStep current = rootStep; current != null; current = (AbstractExecutionStep) current.getPrev())
+      stepChain.add(current);
+    Collections.reverse(stepChain);
+
+    for (final AbstractExecutionStep step : stepChain) {
+      output.append(step.prettyPrint(0, 2));
+      output.append("\n");
+    }
   }
 
   /**
@@ -639,6 +683,7 @@ public class CypherExecutionPlan {
     final InternalResultSet results = new InternalResultSet();
     String errorMessage = null;
     AbstractExecutionStep rootStep = null;
+    boolean countPushedDown = false;
 
     try {
       if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
@@ -650,6 +695,7 @@ public class CypherExecutionPlan {
       } else {
         // FAST PATH: Count-push-down (same logic as execute())
         rootStep = tryCountPushDown(context, false);
+        countPushedDown = rootStep != null;
 
         if (rootStep == null) {
           if (canUseOptimizedPhysicalPlan()) {
@@ -683,28 +729,25 @@ public class CypherExecutionPlan {
     if (errorMessage != null)
       profileOutput.append(String.format("\nError: %s\n", errorMessage));
 
+    // Asked before canUseOptimizedPhysicalPlan() for the reason explain() asks it first: the push-down replaced the
+    // chain, so the optimizer's physical plan is not what ran (issue #5715).
+    if (countPushedDown) {
+      profileOutput.append("\nExecution Plan (Count Push-Down):\n");
+      appendStepChain(profileOutput, rootStep);
+    }
+
     if (canUseOptimizedPhysicalPlan()) {
-      profileOutput.append("\nExecution Plan (Cost-Based Optimizer):\n");
+      profileOutput.append(countPushedDown
+          ? "\nExecution Plan (Cost-Based Optimizer, superseded by the count push-down above):\n"
+          : "\nExecution Plan (Cost-Based Optimizer):\n");
       profileOutput.append(physicalPlan.getRootOperator().explain(0));
       profileOutput.append(String.format("\nEstimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       profileOutput.append(String.format("Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
-    } else {
+    } else if (!countPushedDown) {
       profileOutput.append("\nExecution Plan (Traditional):\n");
-      if (rootStep != null) {
-        // Collect all steps in the chain from root to first
-        final List<AbstractExecutionStep> stepChain = new ArrayList<>();
-        AbstractExecutionStep current = rootStep;
-        while (current != null) {
-          stepChain.add(current);
-          current = (AbstractExecutionStep) current.getPrev();
-        }
-        // Print steps in reverse order (first step first)
-        Collections.reverse(stepChain);
-        for (final AbstractExecutionStep step : stepChain) {
-          profileOutput.append(step.prettyPrint(0, 2));
-          profileOutput.append("\n");
-        }
-      } else
+      if (rootStep != null)
+        appendStepChain(profileOutput, rootStep);
+      else
         profileOutput.append("No execution steps generated\n");
     }
 
@@ -4330,9 +4373,13 @@ public class CypherExecutionPlan {
   /**
    * Whether a type holds no record at all: either it is not declared, or its counter is 0.
    * <p>
-   * {@code countType} sums the buckets' cached counters plus the transaction delta, so this reads nothing. It is
-   * only meaningful for a type whose instances <b>are</b> records: a LIGHTWEIGHT edge type keeps no edge record, so
-   * its counter is 0 while its edges exist in the vertices' edge lists, and it answers "not empty" here.
+   * {@code countType} sums the buckets' cached counters plus the transaction delta, so in the steady state this reads
+   * nothing. A counter reading -1 - a fresh open with no statistics entry, or an unclean shutdown - is recomputed
+   * once by scanning the bucket, under its file lock; that cold start is paid by the first query to ask for the
+   * count either way, and every one after it is O(1).
+   * <p>
+   * It is only meaningful for a type whose instances <b>are</b> records: a LIGHTWEIGHT edge type keeps no edge
+   * record, so its counter is 0 while its edges exist in the vertices' edge lists, and it answers "not empty" here.
    * <p>
    * It is asked by name, and a name is not a namespace: a node label matches only vertices, but a document or edge
    * type may carry the same name, and a populated one of those answers "not empty" for a label no vertex has. That

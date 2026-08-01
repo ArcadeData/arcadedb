@@ -133,6 +133,25 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
     assertThat(countsOf("MATCH (m:Big) RETURN count(m) AS c ORDER BY c LIMIT 0")).isEmpty();
   }
 
+  /**
+   * A push-down replaces the whole chain, so the query never reaches the optimizer - and {@code EXPLAIN} described it
+   * by the physical plan the optimizer had built for it anyway, naming a plan the engine does not run. That gap
+   * predates this issue, which widens it by sending the plainest counting queries down the fast path too.
+   */
+  @Test
+  void explainDescribesThePlanThatActuallyRuns() {
+    assertThat(explainOf("MATCH (m:Big) RETURN count(m) AS c")).contains("Count Push-Down", "TYPE COUNT");
+    assertThat(explainOf("MATCH (m:Big) RETURN count(*) AS c")).contains("Count Push-Down");
+    assertThat(explainOf("MATCH (a:Q)-[:LINKS]->(b:Q) RETURN count(*) AS c")).contains("Count Push-Down", "COUNT CHAIN");
+    // The SKIP and LIMIT steps this issue added to the fast path are part of the plan, so they are described with it.
+    assertThat(explainOf("MATCH (m:Big) RETURN count(m) AS c SKIP 1 LIMIT 2")).contains("SKIP", "LIMIT");
+    // The early-out says why it can answer without reading.
+    assertThat(explainOf("MATCH (a:Lonely)-[:ISOLATED]->(b:Lonely) RETURN count(*) AS c")).contains("CONSTANT COUNT");
+
+    // A query no push-down claims is still described by whatever does run it.
+    assertThat(explainOf("MATCH (m:Big) WHERE m.k <= 5 RETURN count(*) AS c")).doesNotContain("Count Push-Down");
+  }
+
   // ===================================================================================================
   // 2. the simplest counting query there is now takes the fast path
   // ===================================================================================================
@@ -331,6 +350,14 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
     final List<Long> values = countsOf(query);
     assertThat(values).as(query).hasSize(1);
     return values.get(0);
+  }
+
+  /** The rendered execution plan of {@code EXPLAIN <query>}. */
+  private String explainOf(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(rs.hasNext()).as(query).isTrue();
+      return rs.next().getProperty("executionPlanAsString");
+    }
   }
 
   /** How many rows the query produced, whatever they hold. */
