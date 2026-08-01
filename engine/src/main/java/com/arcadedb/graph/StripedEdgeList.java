@@ -314,6 +314,19 @@ public class StripedEdgeList extends EdgeLinkedList {
     return iterator;
   }
 
+  /**
+   * #5680: unlike {@link #edgeIterator}, a stripe chain whose head cannot be read is NOT skipped here. The caller
+   * removes every edge this yields and then deletes the vertex record, so a skipped chain would leave a whole
+   * stripe's worth of edges pointing at a record that is gone - the same reasoning as {@code chainsForNeighbour}.
+   */
+  @Override
+  public Iterator<Edge> edgeIteratorForRemoval() {
+    final MultiIterator<Edge> iterator = new MultiIterator<>();
+    for (final EdgeLinkedList chain : allChains(true))
+      iterator.addIterator(chain.edgeIterator());
+    return iterator;
+  }
+
   @Override
   public Iterator<Edge> edgeIteratorConnectedTo(final RID neighbor, final String... edgeTypes) {
     final MultiIterator<Edge> iterator = new MultiIterator<>();
