@@ -40,8 +40,13 @@ import java.util.logging.Level;
  */
 public class MCPPlugin implements ServerPlugin {
 
-  private ArcadeDBServer   server;
-  private MCPConfiguration configuration;
+  // volatile: written by the startup thread in configure(), i.e. AFTER PluginManager has already published this
+  // instance into its plugin map during discovery. Readers reach them off that thread through of() and
+  // getConfiguration() (Undertow worker threads serving /api/v1/mcp/config, tests, embedding code), and
+  // getPlugins()' synchronized(plugins) gives no happens-before with a write that came after the insertion, so
+  // under the JMM those readers may observe null indefinitely.
+  private volatile ArcadeDBServer   server;
+  private volatile MCPConfiguration configuration;
 
   /**
    * Returns the installed plugin, or null when this server was built without the MCP module.

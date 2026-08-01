@@ -51,7 +51,7 @@ public class MCPToolUtils {
 
   /**
    * Resolves a database by name, throwing an {@link IllegalArgumentException} with the list of databases
-   * accessible to the user when the requested database does not exist — so the LLM can self-correct
+   * accessible to the user when the requested database does not exist, so the LLM can self-correct
    * without a separate list_databases round-trip.
    */
   public static DatabaseAccess resolveDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
@@ -96,16 +96,17 @@ public class MCPToolUtils {
   }
 
   /**
-   * Binds the authenticated MCP principal onto the current thread's {@link DatabaseContext} so the engine's
-   * per-user permission gates ({@code LocalDatabase.checkPermissionsOnDatabase} / {@code checkPermissionsOnFile})
-   * actually enforce for MCP callers, exactly as the HTTP, Bolt, Postgres and gRPC transports do. Those gates are
-   * deliberately no-ops when no user is bound (the mechanism embedded and HA-apply contexts use to skip checks), so
-   * without this binding every gate silently passes and a non-root MCP user escalates to arbitrary writes, DDL,
-   * security mutation, and (via a {@code js} query) in-JVM script execution (GHSA-6x73-v3rc-f57c).
+   * Binds the authenticated MCP principal onto the current thread's {@link com.arcadedb.database.DatabaseContext} so
+   * the engine's per-user permission gates ({@code LocalDatabase.checkPermissionsOnDatabase} /
+   * {@code checkPermissionsOnFile}) actually enforce for MCP callers, exactly as the HTTP, Bolt, Postgres and gRPC
+   * transports do. Those gates are deliberately no-ops when no user is bound (the mechanism embedded and HA-apply
+   * contexts use to skip checks), so without this binding every gate silently passes and a non-root MCP user escalates
+   * to arbitrary writes, DDL, security mutation, and (via a {@code js} query) in-JVM script execution
+   * (GHSA-6x73-v3rc-f57c).
    * <p>
    * The binding lives on the request thread and MUST be cleared once the tool completes; {@link com.arcadedb.mcp.MCPDispatcher}
-   * does this in a finally via {@link DatabaseContext#removeCurrentThreadContexts()} so the principal never leaks onto
-   * the pooled worker thread.
+   * does this in a finally via {@link com.arcadedb.database.DatabaseContext#removeCurrentThreadContexts()} so the
+   * principal never leaks onto the pooled worker thread.
    */
   public static void bindCurrentUser(final DatabaseInternal database, final ServerSecurityUser user) {
     DatabaseUserContext.bind(database, user);
