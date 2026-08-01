@@ -308,7 +308,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     // "similarity" is the name of the METADATA key; "similarityFunction" is the name LSMVectorIndex.toJSON() has always
     // written into the persisted definition. Accept both, or a reopened EUCLIDEAN index comes back up as COSINE and
-    // every search after the restart scores with the wrong metric (issue #5639).
+    // every search after the restart scores with the wrong metric (issue #5639). Only one of the two ever appears in a
+    // definition this engine wrote; should a hand-edited one carry both, "similarity" wins because it is the spelling a
+    // human would have reached for.
     if (metadata.has("similarity"))
       setSimilarity(metadata.getString("similarity"));
     else if (metadata.has("similarityFunction"))

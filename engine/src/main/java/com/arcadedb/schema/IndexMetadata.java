@@ -115,6 +115,11 @@ public class IndexMetadata {
   /**
    * Applies the recognised keys of the {@code METADATA} clause. Called only after every key has been validated, and
    * only for the keys actually present: an absent key must leave the creation-time default alone.
+   * <p>
+   * Not atomic, deliberately: a key that fails its own validation leaves the keys read before it already applied. That
+   * is safe because the metadata being written belongs to a builder whose {@code create()} the failure prevents, so the
+   * half-applied state is discarded with it - no index is ever built from it. A builder reused after a rejected clause
+   * would carry those earlier values, which is why the callers construct one per statement.
    */
   protected void applyUserMetadata(final JSONObject json) {
     // no user-facing setting on a plain index
