@@ -261,6 +261,59 @@ class CypherSubqueryBodyIssue5656Test extends TestHelper {
     assertThat(collect("RETURN COLLECT { MATCH (a:Q)-[:LINKS]->(b:Q) RETURN count(*) } AS r")).containsExactly(2L);
   }
 
+  /**
+   * A body is pulled through the step chain in batches of 100, and what {@code COUNT} and {@code COLLECT} do with it
+   * is drive the result set to exhaustion. Nothing caps that at the first batch - {@code hasNext()} re-fetches - but
+   * nothing pinned it either, and the body reaching this path at all is what this issue changed. A body wider than
+   * one batch is the assertion that a future change to the pull contract cannot silently truncate one.
+   */
+  @Test
+  void aBodyWiderThanOnePullBatchIsNotTruncated() {
+    database.command("opencypher", "UNWIND range(1, 250) AS i CREATE (:Big {k: i})");
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (n:P {name: 'a'}) RETURN COUNT { MATCH (b:Big) } AS c, "
+            + "COLLECT { MATCH (b:Big) RETURN b.k } AS l")) {
+      final Result row = rs.next();
+      assertThat(((Number) row.getProperty("c")).longValue()).isEqualTo(250L);
+      assertThat((List<Object>) row.getProperty("l")).hasSize(250);
+    }
+  }
+
+  /**
+   * The body used to be handed to {@code database.query()}, which runs the physical planner; it now runs through the
+   * step chain with no physical plan, the way a {@code CALL { }} body always has. The two engines have to agree on
+   * more than counting rows, so this drives a body through the shapes that lean on the planner: a lookup an index
+   * backs, and an {@code ORDER BY ... LIMIT} that has to sort before it truncates rather than after.
+   */
+  @Test
+  void aBodyThatLeansOnThePlannerAnswersTheSameWay() {
+    // Declared through SQL so the property has a type to index: a Cypher CREATE alone leaves it schema-less.
+    database.command("sql", "CREATE VERTEX TYPE Idx");
+    database.command("sql", "CREATE PROPERTY Idx.k INTEGER");
+    database.command("sql", "CREATE INDEX ON Idx (k) UNIQUE");
+    database.command("opencypher", "UNWIND range(1, 250) AS i CREATE (:Idx {k: i, tag: 'x'})");
+
+    // Index-backed equality lookup inside a body.
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (n:P {name: 'a'}) RETURN COUNT { MATCH (x:Idx {k: 7}) } AS c, "
+            + "COLLECT { MATCH (x:Idx) WHERE x.k = 7 RETURN x.tag } AS l")) {
+      final Result row = rs.next();
+      assertThat(((Number) row.getProperty("c")).longValue()).isEqualTo(1L);
+      assertThat((List<Object>) row.getProperty("l")).containsExactly("x");
+    }
+
+    // ORDER BY ... LIMIT has to sort the whole body and then truncate: the top 3 of 250, not the first 3 found.
+    assertThat(collect("MATCH (n:P {name: 'a'}) RETURN COLLECT { MATCH (x:Idx) RETURN x.k ORDER BY x.k DESC LIMIT 3 } "
+        + "AS r")).containsExactly(250, 249, 248);
+    // SKIP travels with it.
+    assertThat(collect("MATCH (n:P {name: 'a'}) RETURN COLLECT { MATCH (x:Idx) RETURN x.k ORDER BY x.k ASC "
+        + "SKIP 2 LIMIT 2 } AS r")).containsExactly(3, 4);
+    // DISTINCT collapses inside the body, not after it.
+    assertThat(collect("MATCH (n:P {name: 'a'}) RETURN COLLECT { MATCH (x:Idx) RETURN DISTINCT x.tag } AS r"))
+        .containsExactly("x");
+  }
+
   @Test
   void countAndCollectStillProduceTheSameValues() {
     try (final ResultSet rs = database.query("opencypher",
