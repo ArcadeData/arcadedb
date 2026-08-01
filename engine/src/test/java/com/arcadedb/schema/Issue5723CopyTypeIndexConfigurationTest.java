@@ -223,6 +223,62 @@ class Issue5723CopyTypeIndexConfigurationTest extends TestHelper {
     assertThat(database.getSchema().getType("Doc2").getAllIndexes(false).iterator().next().getName()).isEqualTo("Doc2[k]");
   }
 
+  /**
+   * The conversion that motivates {@code copyType()} in the first place is document to vertex, and that goes through
+   * the other branch of the record-copy loop ({@code database.newVertex(...)}). Every other case here copies to a
+   * document type, so this one covers the branch the reported scenario actually takes.
+   */
+  @Test
+  void copyTypeToAVertexTypeKeepsTheDefinitionAndTheRecords() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Doc").createProperty("k", Type.STRING);
+      database.getSchema().buildTypeIndex("Doc", new String[] { "k" })//
+          .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withPageSize(16_384).create();
+    });
+    database.transaction(() -> database.newDocument("Doc").set("k", "v1").save());
+
+    database.getSchema().copyType("Doc", "Doc2", LocalVertexType.class, 1, 65_536, 1_000);
+
+    assertThat(database.getSchema().getType("Doc2")).isInstanceOf(LocalVertexType.class);
+
+    final IndexInternal copied = indexOf("Doc2");
+    assertThat(copied.getPageSize()).isEqualTo(16_384);
+    assertThat(copied.countEntries()).as("the vertex copy must be populated with the copied records").isEqualTo(1);
+
+    try (final ResultSet rs = database.query("sql", "SELECT k FROM Doc2 WHERE k = 'v1'")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("k")).as("the vertex copy must carry the record content").isEqualTo("v1");
+    }
+  }
+
+  /**
+   * {@code LSMVectorIndexMetadata.copy()} carried only the collations before this change and now goes through
+   * {@code copyCommonTo()}, which also carries the user-supplied index name. That reaches one caller outside
+   * {@code copyType()} - {@code TRUNCATE TYPE}, which drops and recreates the index from its own definition - so a
+   * manually named vector index now keeps its name across a truncate instead of reverting to the auto-derived form.
+   * Asserted here rather than left to be inferred.
+   */
+  @Test
+  void truncatingAManuallyNamedVectorIndexKeepsItsName() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Doc").createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.command("sql", "CREATE INDEX myVectorIndex ON Doc (embedding) LSM_VECTOR"//
+          + " METADATA {dimensions: 4, similarity: 'EUCLIDEAN'}");
+    });
+    database.transaction(() -> database.newDocument("Doc").set("embedding", new float[] { 1f, 2f, 3f, 4f }).save());
+
+    assertThat(database.getSchema().existsIndex("myVectorIndex")).isTrue();
+
+    database.transaction(() -> database.command("sql", "TRUNCATE TYPE Doc"));
+
+    assertThat(database.getSchema().existsIndex("myVectorIndex")).as("the truncated index must keep its manual name")//
+        .isTrue();
+    final LSMVectorIndexMetadata metadata = (LSMVectorIndexMetadata) //
+        ((IndexInternal) database.getSchema().getIndexByName("myVectorIndex")).getMetadataForNewFile();
+    assertThat(metadata.dimensions).isEqualTo(4);
+    assertThat(metadata.similarityFunction).isEqualTo(VectorSimilarityFunction.EUCLIDEAN);
+  }
+
   private IndexInternal indexOf(final String typeName) {
     return (IndexInternal) database.getSchema().getType(typeName).getAllIndexes(false).iterator().next();
   }
