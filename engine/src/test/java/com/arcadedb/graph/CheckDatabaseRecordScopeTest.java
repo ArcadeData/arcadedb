@@ -315,6 +315,29 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
   }
 
   /**
+   * A PARTIAL drop narrows the scope instead of widening it, so it is not refused - but it must not be silent
+   * either. A caller who mistyped one of several RIDs would otherwise get a clean report for a check that quietly
+   * skipped it.
+   */
+  @Test
+  void checkDatabaseRecordReportsRidsItHadToDrop() {
+    createSchema();
+    final RID hubRID = createHub();
+    createEdges(hubRID, 5);
+
+    final Set<RID> scoped = new LinkedHashSet<>();
+    scoped.add(hubRID);
+    scoped.add(null);
+
+    final Map<String, Object> result = new DatabaseChecker(database).setVerboseLevel(0).setRecords(scoped).check();
+
+    assertThat((Collection<String>) result.get("warnings")).as("%s", result)
+        .anyMatch(w -> w.contains("1 of the record(s) given did not resolve"));
+    // The valid RID was still checked: narrowing is the point, silence is not.
+    assertThat((Long) result.get("totalWarnings")).isEqualTo(1L);
+  }
+
+  /**
    * The retained warnings are capped, while the totals keep counting - so a scope naming a flood of bogus RIDs
    * reports how many problems there were without holding a message for each.
    */

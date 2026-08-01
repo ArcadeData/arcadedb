@@ -447,8 +447,11 @@ public class GraphDatabaseChecker {
             progressTick();
             addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " does not exist");
           } catch (final Exception e) {
-            // Exception, not Throwable: an Error (OOM, StackOverflow) is a fact about the JVM, not about this
-            // record, and reporting it as "cannot be loaded" would have fix mode DELETE a healthy record.
+            // Exception, not Throwable, so an Error raised by the LOOKUP (OOM, StackOverflow) is not recorded as
+            // "this record is corrupt" and does not have fix mode delete a healthy record. Scope of that, stated
+            // honestly: the shared consumer below still catches Throwable around the connectivity check itself,
+            // matching the type-wide path, so an Error raised in THERE is still flagged. Narrowing that one would
+            // change the type-wide behaviour too, which is not this change's business.
             progressTick();
             addWarning(warnings, totalWarnings, maxWarnings,
                 "vertex " + rid + " cannot be loaded (error: " + describe(e) + ")");
@@ -1242,7 +1245,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
             progressTick();
             addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " does not exist");
           } catch (final Exception e) {
-            // See the vertex arm: an Error must not be recorded as record corruption.
+            // See the vertex arm, including what that guard does and does not cover.
             progressTick();
             addWarning(warnings, totalWarnings, maxWarnings,
                 "edge " + rid + " cannot be loaded (error: " + describe(e) + ")");

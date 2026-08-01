@@ -58,6 +58,8 @@ public class DatabaseChecker {
    * points operators at: its cost is the listed records plus, in fix mode, the one edge scan a rebuild needs.
    */
   private       Set<RID>            records      = Collections.emptySet();
+  /** #5680: entries {@link #setRecords} discarded because they did not resolve; reported, never silent. */
+  private       int                 droppedRecords = 0;
   private       int                 maxWarnings  = 100_000;
   private final Map<String, Object> result       = new HashMap<>();
 
@@ -148,6 +150,9 @@ public class DatabaseChecker {
 
       currentStep = 0;
       totalSteps = scoped.size() + (fix ? 1 : 0) + (compress ? 1 : 0);
+
+      if (droppedRecords > 0)
+        addScopedWarning(droppedRecords + " of the record(s) given did not resolve to a RID and were not checked");
 
       checkScopedRecords(scoped);
 
@@ -376,16 +381,22 @@ public class DatabaseChecker {
       final List<RID> rids = entry.getValue();
 
       // NOTE on currentStep: each arm below owns its own bump, deliberately. The graph arms pass a FIXED value
-      // into the nested GraphDatabaseChecker, so they bump it here; the document arm goes through stepBegin,
-      // which bumps it itself. Bumping once up front for every arm double-counted a document group and reported
-      // "step 3 of 2" as soon as the RID list contained a plain document (totalSteps budgets one step per group).
+      // into the nested GraphDatabaseChecker, so they bump it here; the no-type and document arms go through
+      // stepBegin, which bumps it itself. Bumping once up front for every arm double-counted those groups and
+      // reported "step 3 of 2" as soon as the RID list contained a plain document (totalSteps budgets one step
+      // per group).
 
       if (type == null) {
-        ++currentStep;
+        // stepBegin (which owns the currentStep bump) rather than a bare ++currentStep: this arm otherwise
+        // advanced the step counter without ever naming the step, so a progress poller saw it go by blank.
+        stepBegin("Checking records of no known type", rids.size());
         // The bucket belongs to no type (an internal file, or a RID the caller invented). Capped like every other
         // warning source: a caller passing thousands of bogus RIDs must not blow past maxWarnings.
-        for (final RID rid : rids)
+        for (final RID rid : rids) {
           addScopedWarning("record " + rid + " does not belong to any type");
+          stepTick();
+        }
+        stepComplete();
         continue;
       }
 
@@ -538,6 +549,11 @@ public class DatabaseChecker {
     for (final RID rid : records)
       if (rid != null)
         copy.add(rid);
+
+    // A PARTIAL drop narrows the scope rather than widening it, so it is not refused - but it is not swallowed
+    // either: a caller who mistyped one of several RIDs would otherwise get a clean report for a check that
+    // quietly skipped it. Surfaced as a warning by check().
+    this.droppedRecords = records.size() - copy.size();
 
     if (copy.isEmpty())
       throw new IllegalArgumentException(
