@@ -96,6 +96,28 @@ made deterministic first, and the fix was then proven against that same determin
 Test-only. No production behaviour changes. Removes one recurring source of red `unit-tests` runs
 on unrelated PRs.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5741
+
+### Review cycles
+
+| Cycle | Head SHA | Change under review | Outcome |
+|---|---|---|---|
+| 1 | `73df98f7c` | The fix itself, plus this tracking doc. | LGTM, nothing blocking. One cosmetic nit: the doc quotes `:158` in one trace and `:159` in another, read as an off-by-one. |
+| 2 | `63b24a9d7` | Explain the `:158` vs `:159` caller-line shift. | LGTM, nothing blocking. Remaining nit ("the doc is heavy for a 3-line fix") was self-resolved by the reviewer as house convention, so no action. |
+
+On cycle 1 the reviewer's premise was checked rather than accepted: the two line numbers are both
+correct and describe different file states. `:158` is the original CI trace against the unmodified
+file; `:159` is the local repro, where the injected `Thread.sleep(500)` shifts the call site down by
+one. Nothing was renumbered. What was wrong was the surrounding prose, which claimed the repro
+reproduced "the exact CI assertion and line number" - so the wording was corrected and the shift
+explained inline.
+
+No deferred items.
+
+**Final state:** clean-approval.
+
 ## Follow-ups
 
 None for this issue. Note for triage: a red board on an unrelated PR is not automatically caused by
