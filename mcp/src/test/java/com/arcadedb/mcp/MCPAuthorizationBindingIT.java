@@ -16,13 +16,13 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.security;
+package com.arcadedb.mcp;
 
-import com.arcadedb.mcp.MCPConfiguration;
-import com.arcadedb.mcp.MCPPlugin;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityTestAccess;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
@@ -44,11 +44,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * With the principal bound, a read-only MCP user is denied on both the direct write path (execute_command) and the
  * scripting escalation path (query + js), while ordinary read-only queries and an authorized user's writes still work.
- * <p>
- * Lives in the arcadedb-mcp module but keeps the {@code com.arcadedb.server.security} package on purpose: the fixture
- * grants the reader its group through {@link ServerSecurity#getDatabaseGroupsConfiguration}, which is protected, so
- * renaming the package would force the setup to be rewritten against a different API and change what this security
- * regression actually exercises.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -122,8 +117,10 @@ class MCPAuthorizationBindingIT extends BaseGraphServerTest {
   private void createReaderUser(final int serverIndex) throws Exception {
     final ServerSecurity security = getServer(serverIndex).getSecurity();
 
-    // A group that grants record reads but no database-level (admin) permission and no createRecord.
-    security.getDatabaseGroupsConfiguration(getDatabaseName()).put("mcpReader",
+    // A group that grants record reads but no database-level (admin) permission and no createRecord. The test
+    // database has no group entry of its own, so this lands on the live wildcard ("*") groups object, which is
+    // exactly where the fixture needs it to apply.
+    ServerSecurityTestAccess.databaseGroups(security, getDatabaseName()).put("mcpReader",
         new JSONObject().put("access", new JSONArray()).put("types",
             new JSONObject().put("*", new JSONObject().put("access", new JSONArray().put("readRecord")))));
     security.saveGroups();

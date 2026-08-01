@@ -901,7 +901,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     final String restrictedAuth = "Basic " + Base64.getEncoder()
         .encodeToString("restricteduser:restrictedpass".getBytes(StandardCharsets.UTF_8));
 
-    // Try to query "graph" database — user should be denied
+    // Try to query "graph" database: the user should be denied
     final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", restrictedAuth);
@@ -1276,7 +1276,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     final String tokenValue = tokenResult.getString("token");
 
     try {
-      // Configure MCP with only "root" — token name "deniedtoken" is NOT in the list
+      // Configure MCP with only "root": the token name "deniedtoken" is NOT in the list
       saveMCPConfig(new JSONObject()
           .put("enabled", true)
           .put("allowReads", true)

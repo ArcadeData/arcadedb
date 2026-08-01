@@ -18,9 +18,11 @@
  */
 package com.arcadedb.server.info;
 
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.Test;
 
@@ -59,6 +61,39 @@ class SchemaInfoTest extends BaseGraphServerTest {
     assertThatThrownBy(() -> SchemaInfo.forUser(getServer(0), rootUser(), "doesNotExist"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("doesNotExist");
+  }
+
+  /**
+   * The binding forUser installs must be balanced at the call site, not merely balanced inside the helper it
+   * delegates to. Every caller runs on a pooled thread (HTTP worker, MCP dispatcher), so a principal left behind
+   * here is handed to whatever request that thread serves next.
+   */
+  @Test
+  void resolvingForAUserLeavesNoPrincipalBoundOnTheCallingThread() {
+    final ServerDatabase database = getServer(0).getDatabase(getDatabaseName());
+    clearBinding(database);
+
+    final JSONObject schema = SchemaInfo.forUser(getServer(0), rootUser(), getDatabaseName());
+    assertThat(schema.getString("database")).isEqualTo(getDatabaseName());
+
+    assertThat(currentUserName(database))
+        .as("the schema read must not leave its principal bound on the calling thread")
+        .isNull();
+  }
+
+  private static String currentUserName(final ServerDatabase database) {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(
+        database.getDatabasePath());
+    if (context == null || context.getCurrentUser() == null)
+      return null;
+    return context.getCurrentUser().getName();
+  }
+
+  private static void clearBinding(final ServerDatabase database) {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(
+        database.getDatabasePath());
+    if (context != null)
+      context.setCurrentUser(null);
   }
 
   private ServerSecurityUser rootUser() {

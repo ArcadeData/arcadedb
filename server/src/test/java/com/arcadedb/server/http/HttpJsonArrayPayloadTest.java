@@ -87,6 +87,20 @@ class HttpJsonArrayPayloadTest extends BaseGraphServerTest {
   }
 
   @Test
+  void aBodyThatStartsAsAnArrayButDoesNotParseReachesTheHandlerEmpty() throws Exception {
+    // The pipeline decides the body kind from the first character and then parses once. When that parse fails
+    // it logs and gives up: no 400 is synthesised, and the handler is called with a null payload AND a null
+    // array. Recovering from there is the handler's job - it still has the raw body - which is how the MCP
+    // endpoint turns this same shape into a JSON-RPC parse error instead of mistaking it for an empty request.
+    final Response response = post("/api/v1/test/array", "[{\"id\":5}");
+
+    assertThat(response.status()).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body());
+    assertThat(json.getString("shape")).isEqualTo("object");
+    assertThat(json.getInt("id")).isEqualTo(-1);
+  }
+
+  @Test
   void arrayBodyOnAnObjectOnlyEndpointIsRejectedWith400() throws Exception {
     // Before the fix this ran the handler with a null payload, which surfaced as the misleading
     // "Command text is null" with no hint that the body shape was the problem.

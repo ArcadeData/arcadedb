@@ -25,34 +25,25 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Pins the plugin activation contract: a plugin found on the classpath is activated when it is named in
- * SERVER_PLUGINS, or when it declares itself auto-discovered. The second route exists so a plugin owns its
- * own activation rule instead of PluginManager matching hardcoded class names.
+ * Pins one thing only: the {@code ServerPlugin.isAutoDiscovered} default answers false, so a plugin that does
+ * not override it stays gated behind an explicit SERVER_PLUGINS entry. The default carries the whole weight
+ * here - flipping it would silently activate every ServerPlugin implementation that happens to be on the
+ * classpath, including test-only plugins and RaftHAPlugin.
+ * <p>
+ * This does NOT cover PluginManager honouring an opt-in: activation depends on what the running classpath
+ * offers to ServiceLoader, which cannot be arranged from inside the server module without registering a
+ * genuinely auto-discovered plugin in the server's own META-INF/services - and that would then start in every
+ * server test and in every module that consumes the server test-jar. The end-to-end route is covered where a
+ * real auto-discovered plugin ships, by {@code com.arcadedb.mcp.MCPPluginDiscoveryTest} in the arcadedb-mcp
+ * module.
  */
-class PluginAutoDiscoveryTest {
-
-  private static class OptInPlugin implements ServerPlugin {
-    @Override
-    public boolean isAutoDiscovered(final ContextConfiguration configuration) {
-      return true;
-    }
-
-    @Override
-    public void startService() {
-      // NO-OP
-    }
-  }
+class ServerPluginAutoDiscoveryDefaultTest {
 
   private static class ConfiguredOnlyPlugin implements ServerPlugin {
     @Override
     public void startService() {
       // NO-OP
     }
-  }
-
-  @Test
-  void aPluginThatDeclaresItselfAutoDiscoveredIsActivatedWithoutConfiguration() {
-    assertThat(new OptInPlugin().isAutoDiscovered(new ContextConfiguration())).isTrue();
   }
 
   @Test
