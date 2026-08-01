@@ -149,20 +149,20 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
 
       for (final Index bucketIndex : matchingIndex.getIndexesOnBuckets()) {
         if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
-          final IndexCursor cursor = ftIndex.searchMoreLikeThis(sourceRids, config);
+          try (final IndexCursor cursor = ftIndex.searchMoreLikeThis(sourceRids, config)) {
+            while (cursor.hasNext()) {
+              final Identifiable match = cursor.next();
+              final float score = (float) cursor.getScore();
 
-          while (cursor.hasNext()) {
-            final Identifiable match = cursor.next();
-            final float score = (float) cursor.getScore();
+              allResults.compute(match.getIdentity(), (k, v) -> {
+                if (v == null) return new float[] { score, 0f };
+                v[0] += score;
+                return v;
+              });
 
-            allResults.compute(match.getIdentity(), (k, v) -> {
-              if (v == null) return new float[] { score, 0f };
-              v[0] += score;
-              return v;
-            });
-
-            if (score > maxScore)
-              maxScore = score;
+              if (score > maxScore)
+                maxScore = score;
+            }
           }
         }
       }

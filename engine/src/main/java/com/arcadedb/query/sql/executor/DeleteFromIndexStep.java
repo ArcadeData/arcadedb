@@ -23,11 +23,13 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
 import java.util.NoSuchElementException;
+import java.util.logging.Level;
 
 /**
  * Created by luigidellaquila on 11/08/16.
@@ -101,6 +103,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     };
   }
 
+  /**
+   * #5662: an index scan that fails to initialise aborts the step. It used to print the stack trace to stdout and carry
+   * on with a null cursor, so the operator would see a {@link NullPointerException} out of {@code loadNextEntry()}
+   * instead of the {@link IOException} that said what had actually gone wrong. No branch of {@link #init(BooleanExpression)}
+   * throws it today - the catch is there because the method declares it - so this is about what happens the day one
+   * does, not about a failure reachable now.
+   */
   private synchronized void init() {
     if (initialized) {
       return;
@@ -111,12 +120,41 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       init(condition);
       nextEntry = loadNextEntry(context);
     } catch (final IOException e) {
-      e.printStackTrace();
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Error on initializing the scan of index '%s' to delete from", e, index.getName());
+      releaseCursor();
+      throw new CommandExecutionException("Error on initializing the scan of index '" + index.getName() + "' to delete from", e);
+    } catch (final RuntimeException e) {
+      // an abort AFTER the cursor was opened - an unsupported condition, or a page read failing inside
+      // loadNextEntry() - must not depend on the executor getting around to close(): release it here
+      releaseCursor();
+      throw e;
     } finally {
       if (context.isProfiling()) {
         cost += System.nanoTime() - begin;
       }
     }
+  }
+
+  @Override
+  public void close() {
+    releaseCursor();
+    super.close();
+  }
+
+  /**
+   * #5662: releases the index cursor. A DELETE stops as soon as its {@code LIMIT} is reached, so the cursor is
+   * routinely abandoned partway - and an abandoned compacted-series cursor stays registered with its file, which
+   * {@code LSMTreeIndex.dropRetiredCompactedIndexes} then refuses to drop for the lifetime of the database.
+   */
+  private void releaseCursor() {
+    if (cursor != null) {
+      cursor.close();
+      cursor = null;
+    }
+    // a closed step is finished: without this the result set handed out by syncPull would still answer hasNext() and
+    // then dereference the released cursor
+    nextEntry = null;
   }
 
   private Pair<Object, Identifiable> loadNextEntry(final CommandContext commandContext) {
@@ -176,34 +214,14 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       else
         cursor = index.range(false, new Object[]{thirdValue}, fromKeyIncluded, new Object[]{secondValue},
             toKeyIncluded);
-    } else if (additional == null && allEqualities((AndBlock) condition)) {
-
-      if (isOrderAsc())
-        cursor = index.range(true, new Object[]{secondValue}, fromKeyIncluded, new Object[]{thirdValue}, toKeyIncluded);
-      else
-        cursor = index.range(false, new Object[]{thirdValue}, fromKeyIncluded, new Object[]{secondValue},
-            toKeyIncluded);
-
-      cursor = index.iterator(isOrderAsc(), new Object[]{secondValue}, true);
     } else {
+      // #5662: an index without ordered iterations used to get a branch of its own here, which opened a range() cursor
+      // and then overwrote it with an iterator() one on the very next line. It could never have worked: the only
+      // RangeIndex that answers false to supportsOrderedIterations() is a TypeIndex over a non-ordered bucket index,
+      // and BOTH of those calls raise UnsupportedOperationException on one. Removing it costs nothing and lets the
+      // error below say which condition could not be evaluated, instead of only that the index is not ordered.
       throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
     }
-  }
-
-  private boolean allEqualities(final AndBlock condition) {
-    if (condition == null) {
-      return false;
-    }
-    for (final BooleanExpression exp : condition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition binaryCondition) {
-        if (binaryCondition.getOperator() instanceof EqualsCompareOperator) {
-          return true;
-        }
-      } else {
-        return false;
-      }
-    }
-    return true;
   }
 
   private void processBetweenCondition() {

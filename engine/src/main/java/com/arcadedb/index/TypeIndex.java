@@ -92,10 +92,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
 
     final List<IndexCursor> cursors = new ArrayList<>(indexesOnBuckets.size());
-    for (final Index index : indexesOnBuckets)
-      cursors.add(((RangeIndex) index).range(ascending, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
+    try {
+      for (final Index index : indexesOnBuckets)
+        cursors.add(((RangeIndex) index).range(ascending, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
 
-    return new MultiIndexCursor(cursors, -1, ascending);
+      return new MultiIndexCursor(cursors, -1, ascending);
+    } catch (final RuntimeException e) {
+      // #5662: nothing owns the per-bucket cursors until the MultiIndexCursor is built, so a failure partway through
+      // would abandon the ones already opened. The null guard matters: MultiIndexCursor keeps THIS list rather than
+      // copying it, and a constructor that fails has already closed the children and nulled their slots - without the
+      // guard the cleanup would throw a NullPointerException over the exception that is being propagated.
+      for (final IndexCursor cursor : cursors)
+        if (cursor != null)
+          cursor.close();
+      throw e;
+    }
   }
 
   @Override
@@ -114,11 +125,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       final List<IndexCursorEntry> entries = new ArrayList<>();
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final IndexCursor cursor = index.get(keys, -1);
-        while (cursor.hasNext()) {
-          final Identifiable record = cursor.next();
-          final int score = cursor.getScore();
-          entries.add(new IndexCursorEntry(keys, record, score));
+        try (final IndexCursor cursor = index.get(keys, -1)) {
+          while (cursor.hasNext()) {
+            final Identifiable record = cursor.next();
+            final int score = cursor.getScore();
+            entries.add(new IndexCursorEntry(keys, record, score));
+          }
         }
       }
 
@@ -134,16 +146,18 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       for (final Index index : getIndexesByKeys(keys)) {
         final boolean unique = index.isUnique();
 
-        final IndexCursor cursor = index.get(keys, unique ? 1 : -1);
-        while (cursor.hasNext()) {
-          if (unique) {
-            result = Set.of(cursor.next());
-            return new IndexCursorCollection(result);
-          }
+        // #5662: try-with-resources - the unique branch returns from inside the loop, abandoning the cursor partway
+        try (final IndexCursor cursor = index.get(keys, unique ? 1 : -1)) {
+          while (cursor.hasNext()) {
+            if (unique) {
+              result = Set.of(cursor.next());
+              return new IndexCursorCollection(result);
+            }
 
-          if (result == null)
-            result = new HashSet<>();
-          result.add(cursor.next());
+            if (result == null)
+              result = new HashSet<>();
+            result.add(cursor.next());
+          }
         }
       }
       return new IndexCursorCollection(result != null ? result : Collections.emptyList());
@@ -166,14 +180,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       final List<IndexCursorEntry> entries = new ArrayList<>();
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final IndexCursor cursor = index.get(keys, limit > -1 ? limit - entries.size() : -1);
-        while (cursor.hasNext()) {
-          final Identifiable record = cursor.next();
-          final int score = cursor.getScore();
-          entries.add(new IndexCursorEntry(keys, record, score));
+        // #5662: try-with-resources - the limit breaks out of the loop, abandoning the cursor partway
+        try (final IndexCursor cursor = index.get(keys, limit > -1 ? limit - entries.size() : -1)) {
+          while (cursor.hasNext()) {
+            final Identifiable record = cursor.next();
+            final int score = cursor.getScore();
+            entries.add(new IndexCursorEntry(keys, record, score));
 
-          if (limit > -1 && entries.size() >= limit)
-            break;
+            if (limit > -1 && entries.size() >= limit)
+              break;
+          }
         }
         if (limit > -1 && entries.size() >= limit)
           break;
@@ -198,16 +214,18 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       Set<Identifiable> result = null;
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final IndexCursor cursor = index.get(keys,
-            effectiveLimit > -1 ? (result != null ? result.size() : 0) - effectiveLimit : -1);
-        while (cursor.hasNext()) {
-          if (result == null)
-            result = effectiveLimit > -1 ? new HashSet<>(effectiveLimit) : new HashSet<>();
+        // #5662: try-with-resources - the limit returns from inside the loop, abandoning the cursor partway
+        try (final IndexCursor cursor = index.get(keys,
+            effectiveLimit > -1 ? (result != null ? result.size() : 0) - effectiveLimit : -1)) {
+          while (cursor.hasNext()) {
+            if (result == null)
+              result = effectiveLimit > -1 ? new HashSet<>(effectiveLimit) : new HashSet<>();
 
-          result.add(cursor.next());
+            result.add(cursor.next());
 
-          if (effectiveLimit > -1 && result.size() >= effectiveLimit)
-            return new IndexCursorCollection(result);
+            if (effectiveLimit > -1 && result.size() >= effectiveLimit)
+              return new IndexCursorCollection(result);
+          }
         }
       }
       return new IndexCursorCollection(result != null ? result : Collections.emptyList());

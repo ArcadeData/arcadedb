@@ -315,6 +315,14 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   @Override
+  public Iterator<Edge> edgeIteratorConnectedTo(final RID neighbor, final String... edgeTypes) {
+    final MultiIterator<Edge> iterator = new MultiIterator<>();
+    for (final EdgeLinkedList chain : allChains(false))
+      iterator.addIterator(chain.edgeIteratorConnectedTo(neighbor, edgeTypes));
+    return iterator;
+  }
+
+  @Override
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
     final MultiIterator<Vertex> iterator = new MultiIterator<>();
     for (final EdgeLinkedList chain : allChains(false))
