@@ -1,0 +1,302 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.vector;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
+import com.arcadedb.utility.Pair;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #5558: a delete does not remove the vector from the HNSW graph, it only tombstones its location - the node
+ * stays in the graph until the next rebuild, which for anything but a small index is thousands of mutations away. Two
+ * things then went wrong on every query that walked into a tombstoned neighbourhood:
+ * <ul>
+ *   <li>JVector was told (via {@code Bits.ALL}) that every node was an acceptable result, so the beam filled with
+ *       tombstones, saw a full result heap and stopped. The post-filter then dropped them one by one and the caller
+ *       got back fewer results than it asked for - down to nothing at all when the live set was small.</li>
+ *   <li>A tombstone was scored through a placeholder vector of {@code Float.MIN_NORMAL}s. Under COSINE its squared
+ *       magnitude underflows to zero in float, so the similarity came back {@code Infinity}: every tombstone
+ *       outranked every real vector in the beam, and JVector's own {@code 0 <= score <= 1} assertion tripped when
+ *       assertions were on.</li>
+ * </ul>
+ * The fixture pins both. It uses 12 well-separated clusters on an arc so the correct answer to a query aimed at a
+ * deleted cluster is not "something", it is a specific surviving cluster, and it holds the rebuild threshold above
+ * the workload so the graph keeps its tombstones for the whole test - which is the steady state of any index whose
+ * delete volume sits under the threshold.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue5558DeletedRegionSearchTest extends TestHelper {
+
+  private static final int   DIMENSIONS       = 16;
+  private static final int   CLUSTERS         = 12;
+  private static final int   PER_CLUSTER      = 100;
+  private static final int   VERTICES         = CLUSTERS * PER_CLUSTER;
+  private static final int   DELETED_CLUSTERS = 4;
+  private static final int   DELETED          = DELETED_CLUSTERS * PER_CLUSTER;
+  private static final int   K                = 5;
+  // Clusters are 0.12 rad apart and a cluster is 0.01 rad wide, so "which cluster" is never a close call.
+  private static final double CLUSTER_GAP     = 0.12;
+  private static final double JITTER          = 0.0001;
+
+  @BeforeEach
+  void freezeTheGraph() {
+    // Keep the deleted vectors in the graph for the duration of the test: a rebuild would drop them and there would
+    // be no hole left to search into. This is the configuration an index sees between rebuilds, not a special case.
+    GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD.setValue(1_000_000);
+    GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO.setValue(0f);
+    GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS.setValue(0);
+  }
+
+  @AfterEach
+  void thawTheGraph() {
+    GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD.reset();
+    GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO.reset();
+    GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS.reset();
+  }
+
+  /**
+   * The reported shape: the query lands where a block of vectors used to be. The right answer is the nearest cluster
+   * that is still there - cluster 4, the first survivor - and never an empty list.
+   */
+  @Test
+  void aQueryInsideADeletedRegionReturnsTheNearestSurvivingCluster() {
+    createSchema();
+    insertVertices();
+    deleteFirstClusters();
+
+    assertThat(vectorIndex().countEntries()).as("only the survivors are indexed").isEqualTo(VERTICES - DELETED);
+    assertThat(vectorIndex().getGraphIndex().size())
+        .as("and the graph still carries the tombstones, which is the state this test is about")
+        .isEqualTo(VERTICES);
+
+    assertNeighborClusterIs(1, DELETED_CLUSTERS);
+  }
+
+  /** The same query far from the hole. If this one ever fails, the fixture is broken rather than the search. */
+  @Test
+  void aQueryAwayFromTheDeletedRegionIsUnaffected() {
+    createSchema();
+    insertVertices();
+    deleteFirstClusters();
+
+    assertNeighborClusterIs(8, 8);
+  }
+
+  /**
+   * The pathological end of the same defect: one vector survives. The beam fills with tombstones and stops, and the
+   * brute-force safety net did not fire either - its "did we get less than 80% of what is available" guard evaluates
+   * to {@code 0 < 0} for a single live vector. The answer was an empty list with the vector sitting right there.
+   */
+  @Test
+  void aQueryAgainstASingleSurvivorFindsIt() {
+    createSchema();
+    insertVertices();
+
+    final int survivor = VERTICES - 1;
+    database.transaction(() -> {
+      for (int i = 0; i < survivor; i++)
+        database.command("sql", "DELETE FROM Doc WHERE id = ?", "doc" + i);
+    });
+    assertThat(vectorIndex().countEntries()).isEqualTo(1);
+
+    final List<Pair<RID, Float>> neighbors = vectorIndex().findNeighborsFromVector(embedding(0), K);
+    assertThat(neighbors).as("one vector survives, so one is the answer, not zero").hasSize(1);
+    assertThat(idOf(neighbors.getFirst().getFirst())).isEqualTo("doc" + survivor);
+  }
+
+  /** Same hole, through SQL, so the defect is pinned at the layer an application actually calls. */
+  @Test
+  void theSqlFunctionAnswersADeletedRegionQuery() {
+    createSchema();
+    insertVertices();
+    deleteFirstClusters();
+
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "SELECT `vector.neighbors`('Doc[embedding]', ?, " + K + ") AS neighbors FROM Doc LIMIT 1",
+          (Object) embedding(centerOf(1)));
+      assertThat(rs.hasNext()).isTrue();
+      final List<Map<String, Object>> neighbors = rs.next().getProperty("neighbors");
+      assertThat(neighbors).as("vector.neighbors must not answer an empty list while 800 vectors are live")
+          .hasSize(K);
+      for (final Map<String, Object> neighbor : neighbors)
+        assertThat(clusterOf((String) neighbor.get("id"))).isEqualTo(DELETED_CLUSTERS);
+    });
+  }
+
+  /**
+   * The grouped path shares the traversal, so the tombstone scores reached it too - with assertions on it did not
+   * return a wrong answer, it threw JVector's {@code 0 <= score <= 1} AssertionError out of the search. It has no
+   * brute-force fallback to hide behind either, so this is the raw traversal.
+   * <p>
+   * The assertion is deliberately about liveness and not about which cluster wins: the grouped path spends its
+   * distinct-group budget in traversal order rather than score order, so the groups it picks are the ones the beam
+   * met on its way in. That is out of scope here (see the {@code findNeighborsFromVectorGrouped} contract, which
+   * documents the admission as approximate) and is tracked separately.
+   */
+  @Test
+  void theGroupedSearchAnswersADeletedRegionQuery() {
+    createSchema();
+    insertVertices();
+    deleteFirstClusters();
+
+    // The resolver receives the raw (unbound) RID the location map holds, exactly as the SQL function's does, so it
+    // has to go through the database to read the record.
+    final List<Pair<RID, Float>> neighbors = vectorIndex().findNeighborsFromVectorGrouped(embedding(centerOf(1)), 3, 2,
+        -1, null, rid -> clusterOf(((Document) database.lookupByRID(rid, true)).getString("id")));
+    assertThat(neighbors).as("the grouped path has no brute-force fallback: an empty answer here is the raw defect")
+        .isNotEmpty();
+    for (final Pair<RID, Float> neighbor : neighbors)
+      assertThat(clusterOf(idOf(neighbor.getFirst()))).as("no deleted vector may come back").isGreaterThanOrEqualTo(
+          DELETED_CLUSTERS);
+  }
+
+  /**
+   * The zero-disk-I/O PQ path, which {@code select().vectorNeighbors()} uses. It scores from PQ codes, so a tombstone
+   * never produced a non-finite number there - the beam simply filled with tombstones, stopped, and the post-filter
+   * emptied the list. With no delta scan and no brute-force fallback on this path, that empty list is what the caller
+   * got: the reported symptom in its purest form.
+   */
+  @Test
+  void theApproximatePqSearchAnswersADeletedRegionQuery() {
+    createSchema(VectorQuantizationType.PRODUCT);
+    insertVertices();
+    vectorIndex().buildVectorGraphNow();
+    assertThat(vectorIndex().isPQSearchAvailable()).as("the fixture has to actually train PQ").isTrue();
+
+    deleteFirstClusters();
+
+    final List<Pair<RID, Float>> neighbors = vectorIndex().findNeighborsFromVectorApproximate(embedding(centerOf(1)), K,
+        null);
+    assertThat(neighbors).as("the PQ path has nothing to fall back on: an empty answer here is the reported defect")
+        .hasSize(K);
+    for (final Pair<RID, Float> neighbor : neighbors)
+      assertThat(clusterOf(idOf(neighbor.getFirst()))).as("no deleted vector may come back")
+          .isGreaterThanOrEqualTo(DELETED_CLUSTERS);
+  }
+
+  /** A reopen reloads the graph from disk, so the hole has to stay searchable across it. */
+  @Test
+  void theDeletedRegionStaysSearchableAfterAReopen() {
+    createSchema();
+    insertVertices();
+    deleteFirstClusters();
+
+    reopenDatabase();
+
+    assertThat(vectorIndex().countEntries()).isEqualTo(VERTICES - DELETED);
+    assertNeighborClusterIs(1, DELETED_CLUSTERS);
+  }
+
+  // ------------------------------------------------------------------------------------------------- helpers
+
+  private void assertNeighborClusterIs(final int queryCluster, final int expectedCluster) {
+    final List<Pair<RID, Float>> neighbors = vectorIndex().findNeighborsFromVector(embedding(centerOf(queryCluster)), K);
+    assertThat(neighbors).as("a query at cluster %d must find the surviving vectors", queryCluster).hasSize(K);
+
+    final List<String> ids = new ArrayList<>(K);
+    for (final Pair<RID, Float> neighbor : neighbors)
+      ids.add(idOf(neighbor.getFirst()));
+    for (final String id : ids)
+      assertThat(clusterOf(id)).as("cluster %d is the nearest surviving one, got %s", expectedCluster, ids)
+          .isEqualTo(expectedCluster);
+  }
+
+  private void createSchema() {
+    createSchema(VectorQuantizationType.INT8);
+  }
+
+  private void createSchema(final VectorQuantizationType quantization) {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.id STRING");
+      database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX ON Doc (id) UNIQUE");
+
+      final TypeLSMVectorIndexBuilder builder = (TypeLSMVectorIndexBuilder) database.getSchema()
+          .buildTypeIndex("Doc", new String[] { "embedding" }).withLSMVectorType();
+      builder.withDimensions(DIMENSIONS).withQuantization(quantization).create();
+    });
+  }
+
+  private void insertVertices() {
+    database.transaction(() -> {
+      for (int i = 0; i < VERTICES; i++)
+        database.command("sql", "INSERT INTO Doc SET id = ?, embedding = ?", "doc" + i, embedding(i));
+    });
+    // The graph is built on the first search, and it has to come out above ASYNC_REBUILD_MIN_GRAPH_SIZE or every
+    // later search would rebuild it synchronously and there would be no stale graph left to test.
+    vectorIndex().findNeighborsFromVector(embedding(centerOf(0)), 1);
+  }
+
+  private void deleteFirstClusters() {
+    database.transaction(() -> {
+      for (int i = 0; i < DELETED; i++)
+        database.command("sql", "DELETE FROM Doc WHERE id = ?", "doc" + i);
+    });
+  }
+
+  private String idOf(final RID rid) {
+    return rid.asVertex().getString("id");
+  }
+
+  private static int centerOf(final int cluster) {
+    return cluster * PER_CLUSTER + PER_CLUSTER / 2;
+  }
+
+  private static int clusterOf(final String id) {
+    return Integer.parseInt(id.substring("doc".length())) / PER_CLUSTER;
+  }
+
+  /**
+   * Points on an arc, embedded with damped harmonics so that cosine similarity is a strictly decreasing function of
+   * the angular gap: {@code sum(cos(m*delta)/m^2)} has derivative {@code -(pi-delta)/2 < 0} on {@code (0, pi)}. The
+   * nearest surviving vector to a query is therefore decidable on paper, and with the clusters an order of magnitude
+   * further apart than they are wide, INT8 quantization noise cannot move the answer to another cluster.
+   */
+  private static float[] embedding(final int vertex) {
+    final float[] v = new float[DIMENSIONS];
+    final double theta = (vertex / PER_CLUSTER) * CLUSTER_GAP + (vertex % PER_CLUSTER - PER_CLUSTER / 2.0) * JITTER;
+    for (int m = 1; m <= DIMENSIONS / 2; m++) {
+      v[(m - 1) * 2] = (float) (Math.cos(m * theta) / m);
+      v[(m - 1) * 2 + 1] = (float) (Math.sin(m * theta) / m);
+    }
+    return v;
+  }
+
+  private LSMVectorIndex vectorIndex() {
+    return (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Doc[embedding]")).getIndexesOnBuckets()[0];
+  }
+}

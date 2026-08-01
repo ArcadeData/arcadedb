@@ -56,7 +56,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final LSMVectorIndex                                   lsmIndex;         // Used for reading quantized vectors
 
   // Sentinel vector returned for deleted/missing ordinals to prevent NPE in JVector's GraphSearcher (issue #3715).
-  // Uses Float.MIN_NORMAL to avoid division-by-zero with cosine similarity while giving very low similarity scores.
+  // It is a placeholder of the right shape, NOT a low score: no vector scores low against every query, so callers
+  // that score what getVector() returns must ask isDeletedSentinel() first and substitute their own floor.
   private final VectorFloat<?> deletedSentinelVector;
 
   // Cache for graph building and search - dramatically speeds up repeated vector access.
@@ -311,13 +312,17 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   }
 
   /**
-   * Creates a sentinel vector for deleted/missing ordinals with small non-zero values.
-   * Uses Float.MIN_NORMAL to avoid division-by-zero in cosine similarity while producing
-   * very low similarity scores that effectively push deleted nodes to the bottom of results.
+   * Creates the placeholder handed back for a deleted or unreadable ordinal.
+   * <p>
+   * It only has to be a well-formed vector of the right dimension: {@link #isDeletedSentinel} is how a caller
+   * recognises it, and a caller that scores it anyway must at least get a finite number back. The value used to be
+   * {@code Float.MIN_NORMAL} on the theory that it would score very low, which it does not - cosine cancels the
+   * magnitude out, and the squared magnitude {@code dimensions * MIN_NORMAL^2} underflows to zero in float, so the
+   * similarity came back {@code Infinity} and made every tombstone the best candidate in the beam (issue #5558).
    */
   private static VectorFloat<?> createDeletedSentinelVector(final int dimensions) {
     final float[] sentinel = new float[dimensions];
-    Arrays.fill(sentinel, Float.MIN_NORMAL);
+    Arrays.fill(sentinel, 1.0f);
     return vts.createFloatVector(sentinel);
   }
 }
