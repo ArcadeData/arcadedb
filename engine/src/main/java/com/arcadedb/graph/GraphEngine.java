@@ -721,10 +721,22 @@ public class GraphEngine {
                   Cannot read the %s edge list of vertex %s while force-deleting it: its edges survive, run a \
                   database check to repair them""", e, direction, vertex.getIdentity());
     } catch (final Exception e) {
-      // LINKED LIST COULD BE BROKEN
+      // LINKED LIST COULD BE BROKEN. Not an oversight and not the case above: this arm is what is left once the
+      // TRANSIENT window has been split off into the retryable branch. What reaches here is a buffer that cannot be
+      // DECODED - a corrupted chunk body or vertex prefix raising SerializationException, BufferUnderflowException,
+      // NegativeArraySizeException and friends - which no retry can fix, and which is tolerated on purpose EVEN when
+      // force is false. That looks inconsistent with the strictness above until you follow where such a record comes
+      // from: LocalDatabase.deleteRecordNoLock catches exactly this exception family around the index cleanup and
+      // proceeds WITHOUT setting its force flag (it raises that flag only for a confirmed broken chunk chain), so a
+      // vertex whose buffer is corrupt reaches this method with force == false. Failing here would therefore make it
+      // undeletable - precisely the "records that can't be deleted" complaint issues #4420 and #4432 fixed. The cost
+      // is real and larger than the tolerated single dangling entry (everything behind the corrupt chunk is dropped,
+      // and the vertex is still deleted), which is why it is logged at WARNING: CHECK DATABASE ... FIX rebuilds the
+      // chain from the surviving edge records and is the way to delete such a vertex without losing its edges.
       LogManager.instance()
-          .log(this, Level.WARNING, "Error on deleting %s edges connected to vertex %s", e, direction,
-              vertex.getIdentity());
+          .log(this, Level.WARNING, """
+                  Cannot decode the %s edge list of vertex %s (corrupted chunk): deleting it anyway, edges behind the \
+                  damage survive - run a database check to repair them""", e, direction, vertex.getIdentity());
     }
     return edges != null;
   }
@@ -738,6 +750,12 @@ public class GraphEngine {
    * Only the CHAIN HOP surfaces here: an entry whose edge record cannot be read is skipped inside {@code hasNext}
    * itself (a dangling pointer, deliberately tolerated), so a {@link RecordNotFoundException} reaching this point
    * is always a chunk that could not be loaded.
+   * <p>
+   * "Reaching this point" is not the whole story on a promoted super-node, and the difference is only in WHERE the
+   * conflict is raised, never in whether it is: {@link StripedEdgeList#edgeIteratorForRemoval} resolves every stripe
+   * head eagerly while BUILDING the iterator, so a stripe chain that cannot be loaded raises its
+   * {@link ConcurrentModificationException} there rather than on a hop through here. Both sit inside the same
+   * {@code try} in {@link #collectEdgesToDelete} and are handled identically.
    */
   private boolean hasNextEdgeToDelete(final Iterator<Edge> iterator, final VertexInternal vertex,
       final Vertex.DIRECTION direction) {
