@@ -39,7 +39,10 @@ Two further defects came with the hand-written check:
 - `Procedure` gains `checkArity(Object[])`, mirroring `Function.checkArity`: it reads the declared
   `getMinArgs()`/`getMaxArgs()`, resolves the maximum through `FunctionArity.effectiveMax()`, counts a null
   array as zero arguments, and raises `FunctionArity.mismatch("Procedure", ...)`. `validateArgs()` is kept as
-  the name `CallStep` calls and now delegates to it.
+  the name `CallStep` and every implementation call, and now delegates to it. Nothing on the procedure side
+  calls `checkArity` independently yet, so the split is currently symmetry with `Function` rather than
+  necessity - it is the shape the issue asks for, and it is the seam a caller that wants the check without the
+  `validateArgs` name would use.
 - `Function.validateArgs`'s javadoc note recording why procedures were left out is replaced by a pointer to the
   procedure-side `checkArity`.
 
@@ -48,6 +51,22 @@ Resulting message, same sentence and same exception type as the function side:
 ```
 Procedure 'algo.dijkstra' expects 4-5 arguments but got 2
 ```
+
+### What this does *not* unify
+
+Argument **count** only, which is what #5627 asks for. Argument **value** validation on the procedure side is
+untouched and still diverges: `MergeRelationship.extractVertex`/`extractString` and the `AbstractPathProcedure`
+helpers raise a plain `IllegalArgumentException` for a null or wrongly-typed argument, which is not a
+`CommandParsingException`, so `CallStep.executeProcedure` still wraps it and the client still gets a 500.
+
+```
+CALL merge.relationship(null, ...)  -> 500  Error executing procedure: merge.relationship
+CALL merge.relationship(1, 2)       -> 400  Procedure 'merge.relationship' expects 5 arguments but got 2
+```
+
+Worth a follow-up in its own right - it is the same 500-for-a-client-mistake shape #5602 and this issue each
+removed one case of - but it is a sweep over ~80 implementations' argument extraction rather than a change to
+the `Procedure` abstraction, so it is deliberately not bundled here.
 
 ### Why "Procedure", not "Function"
 
@@ -114,5 +133,8 @@ checked with a repo-wide scan for `Error executing procedure`, `requires exactly
 - Behavioural change visible to clients: a wrong argument count on a `CALL` of a registered procedure now
   returns HTTP 400 with `Procedure 'x' expects N arguments but got M` instead of HTTP 500 with
   `Error executing procedure: x`. This is the point of the issue.
+- The message text is an external contract for anyone matching on it. The two old phrasings,
+  `x() requires exactly N argument(s), got M` and `x() requires N to M arguments, got K`, no longer appear
+  anywhere. A client parsing either breaks; a client keying off the HTTP status gets a more accurate one.
 - `OPTIONAL CALL` no longer swallows a wrong argument count, matching what #5602 already did for functions.
 - No change to any procedure implementation, to `CallStep`, or to the function side.
