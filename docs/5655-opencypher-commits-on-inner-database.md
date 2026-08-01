@@ -128,55 +128,39 @@ auto-committed or an explicit `COMMIT` ran. Off HA nothing changes:
 ## Follow-ups
 
 - The rule is recorded in `ha-raft/CLAUDE.md` under "Anything that commits must hold the WRAPPED database
-  instance, not the inner one". Two engines have now needed it. The remaining query engines (gremlin,
-  graphql, mongodbw) hold the same field shape and have not been audited against it. **Not filed** - worth
-  an issue, since this is a class of bug that stays green under smoke tests.
+  instance, not the inner one".
 - The steps that call `begin()`/`commit()` directly rather than going through `transaction()` also forgo its
   MVCC retry loop, which `CreateStep` gets for free. That is a separate concern from replication and is not
   touched here.
 
 ## PR
 
-https://github.com/ArcadeData/arcadedb/pull/5688
+https://github.com/ArcadeData/arcadedb/pull/5688 - four review cycles, all approving. Cycle-by-cycle
+process notes live in the PR thread; what follows is only the part that stayed relevant to the code.
 
-### Review cycles
+### Points settled during review
 
-**Cycle 1 - `2c6f4a4`.** `claude[bot]`: approve with one substantive finding. No inline comments; the review
-was posted as a PR issue comment.
+- **`PROFILE MATCH ... SET` is why the switch is on `isReadOnly()`.** Review asked for the design decision to
+  be pinned by a test rather than a comment, which is fair: it is the case a refactor back to entry-point
+  switching would silently break. `profiledCypherWriteThroughQueryReachesFollowers` covers it, and was
+  confirmed to fail with `executionDatabase()` stubbed to `return database`.
+- **Which read path actually carries the read-consistency barrier.** An early draft of the rationale listed
+  `lookupByRID`/`iterateType` alongside `query()`. Only `query(language, ...)` opens with
+  `waitForReadConsistency()` (`RaftReplicatedDatabase.java:1274`, `:1281`, `:1287`); the other three delegate
+  straight to the inner instance. Since `ExistsExpression`, `CountExpression` and `CollectExpression` all
+  evaluate their subqueries through `query()`, the conclusion holds - but on that one method, not on reads
+  generally.
+- **Mixed instances inside an explicit transaction are intentional.** After `START TRANSACTION` a read-only
+  `MATCH` runs on the raw instance and a write on the wrapper. Safe because the transaction lives in the
+  thread-local `DatabaseContext` keyed by database path, shared by both handles, and reads never commit.
+  Recorded in the `executionDatabase()` Javadoc.
+- **`ROLLBACK` has no dedicated replication test.** It commits nothing, so such a test could only assert an
+  absence. Deliberately skipped.
 
-Both of the bot's claims were checked against the code before acting rather than taken on trust:
+## Follow-up worth filing
 
-| Finding | Verified | Action |
-|---|---|---|
-| The `isReadOnly()`-over-entry-point decision has no regression test, and `PROFILE MATCH ... SET` is exactly what a refactor back to entry-point switching would silently break | Confirmed: `LocalDatabase.query()` applies no idempotency gate of its own, and `RaftReplicatedDatabase.query()` on a leader delegates to `proxied.query()`, so the statement does reach the engine and write | Applied: third IT `profiledCypherWriteThroughQueryReachesFollowers` |
-| `executeTransaction()` still built `ResultInternal` from the raw `database` | Confirmed harmless: `ResultInternal(Database)` only stores the reference for `getDatabase()`. But the method otherwise reads as "everything here is `txDatabase`", and leaving one raw use is the inconsistency the fix exists to remove | Applied |
-| gremlin/graphql/mongodbw hold the same field shape and deserve an audit issue | Agreed, out of scope for this PR | Recorded above as an unfiled follow-up, for the developer to file |
-
-The new test was proven to fail before trusting it: with `executionDatabase()` temporarily stubbed to
-`return database`, `profiledCypherWriteThroughQueryReachesFollowers` fails at line 199 with
-`expected: 1L but was: 0L`. The stub was then reverted and the full set re-run green.
-
-**Cycle 2 - `ee366ae`.** `claude[bot]`: approve, no blocking items.
-
-| Finding | Verified | Action |
-|---|---|---|
-| `executeDDL()` still holds the inner instance - "very likely fine", but worth closing the loop | Confirmed structurally: `LocalSchema` is built with `wrappedDatabaseInstance` at `LocalDatabase.java:2433` | Applied: added `cypherDDLReachesFollowers`. Reading a constructor is weaker than watching an index land on a follower, and the test costs one cluster start |
-| Local `executionDatabase` shadows the method name | Style only | Applied: renamed to `execDb` |
-| The "Review cycles" section will age oddly under `docs/` as a permanent file | Fair | **Not applied** - the orchestrating skill mandates this section. Kept, and raised at handoff so the developer can trim it at merge, which is the right place for that call |
-
-Note on the DDL test: it is a **guard, not a reproducer**. It passes with or without the fix, because the DDL
-path was never broken. It is here so that a future change moving DDL off the schema layer cannot do so
-silently.
-
-**Cycle 3 - `3d4e151`.** `claude[bot]`: approve, two non-blocking observations.
-
-| Finding | Verified | Action |
-|---|---|---|
-| The read-only rationale is overstated: the read-consistency barrier sits at the wrapper's top-level entry, not on the low-level reads the steps make | **Half right.** `lookupByRID`/`iterateType`/`lookupByKey` (`RaftReplicatedDatabase.java:1133-1155`) do delegate with no barrier - so naming them was wrong. But `query(language, ...)` (`:1274`, `:1281`, `:1287`) *does* open with `waitForReadConsistency()`, and `ExistsExpression`/`CountExpression`/`CollectExpression` evaluate their subqueries through exactly that call | Applied, but not as suggested. The bot proposed trimming the claim; the accurate repair was to narrow it to `query()` and say explicitly that the other three are indifferent. The conclusion stands on firmer ground than before |
-| `ROLLBACK` on the wrapper is only indirectly exercised | Correct, and self-limiting: `rollback()` commits nothing, so a replication test over it could only assert an absence | Skipped, rationale recorded. The bot rates it low risk for the same reason |
-| A tracking issue for the gremlin/graphql/mongodbw audit | Agreed | Still unfiled - the developer's call, surfaced at handoff |
-
-This is the one cycle where a bot claim did not survive checking as stated. Taking the suggested trim at face
-value would have removed a true statement about `query()` along with the false one about `lookupByRID`.
-
-No items were deferred.
+`gremlin`, `graphql` and `mongodbw` hold the same `private final DatabaseInternal database` field shape and
+have never been audited against the "anything that commits must hold the wrapped instance" rule. Two engines
+have now needed it (#5492 SQL, #5655 Cypher), and both hid the same way: nothing throws at the mistake, and
+the paths that happen to route through `database.transaction(...)` stay green and mask the ones that do not.
+Raised in review three times; not filed here because that is the maintainer's call.

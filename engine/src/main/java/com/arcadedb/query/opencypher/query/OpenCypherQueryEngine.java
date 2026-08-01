@@ -382,6 +382,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * {@link #query} does not imply read-only here: {@code PROFILE} bypasses the idempotency gate and executes, so a
    * {@code PROFILE MATCH ... SET ...} reaches this method through {@code query()} and does write.
    *
+   * One consequence worth knowing before you touch this: inside an explicit transaction the two instances are
+   * deliberately mixed. {@code START TRANSACTION} opens on the wrapper, a read-only {@code MATCH} then runs against
+   * the raw instance and a write in the same transaction against the wrapper. That is safe because the transaction
+   * lives in the thread-local {@link DatabaseContext} keyed by database path, which both handles share, and because
+   * a read never commits - so both see one transaction and only one of them can end it.
+   *
    * @param statement the statement about to be planned, whose {@code isReadOnly()} already accounts for writes
    *                  nested in a {@code CALL} subquery
    */

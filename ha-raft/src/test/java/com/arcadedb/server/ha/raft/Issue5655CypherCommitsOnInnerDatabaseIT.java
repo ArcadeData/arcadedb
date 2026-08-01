@@ -291,20 +291,30 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
     return await(expected, () -> markedCountOn(serverIndex, typeName));
   }
 
+  /**
+   * Polls until the count reaches {@code expected} or the deadline passes, then returns whatever was last read
+   * successfully.
+   * <p>
+   * On timeout it deliberately returns that last good reading rather than a sentinel, so the assertion reports the
+   * state the follower is actually stuck in - {@code but was: 0L}, the write never arrived - instead of a
+   * {@code -1L} that says only "the helper gave up" and hides which of the two happened. {@code -1} survives to the
+   * assertion only when every single attempt threw, which is itself the distinct diagnosis: the follower never
+   * became queryable at all.
+   */
   private long await(final long expected, final LongSupplier supplier) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 30_000;
-    long count = -1;
+    long lastRead = -1;
     while (System.currentTimeMillis() < deadline) {
       try {
-        count = supplier.getAsLong();
-        if (count == expected)
-          return count;
+        lastRead = supplier.getAsLong();
+        if (lastRead == expected)
+          return lastRead;
       } catch (final RuntimeException e) {
-        // Mid-resync the database is closed and being reinstalled; keep polling until the deadline.
-        count = -1;
+        // Mid-resync the database is closed and being reinstalled; keep polling until the deadline. The previous
+        // good reading is kept: it describes the follower better than the fact that one poll hit a resync window.
       }
       Thread.sleep(250);
     }
-    return count;
+    return lastRead;
   }
 }
