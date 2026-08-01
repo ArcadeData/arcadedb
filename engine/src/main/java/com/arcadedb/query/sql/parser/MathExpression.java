@@ -223,11 +223,12 @@ public class MathExpression extends SimpleNode {
     }, PLUS(20) {
       @Override
       public Number apply(final Integer left, final Integer right) {
-        final int sum = left + right;
-        if (sum < 0 && left > 0 && right > 0)
-          // SPECIAL CASE: UPGRADE TO LONG
-          return left.longValue() + right;
-        return sum;
+        // widen first, then narrow back when the answer fits: the sign-based guard this replaced only detected
+        // overflow of two positives, so Integer.MIN_VALUE + Integer.MIN_VALUE silently wrapped to 0
+        final long result = ((long) left) + right;
+        if (result >= Integer.MIN_VALUE && result <= Integer.MAX_VALUE)
+          return (int) result;
+        return result;
       }
 
       @Override
@@ -302,11 +303,11 @@ public class MathExpression extends SimpleNode {
     MINUS(20) {
       @Override
       public Number apply(final Integer left, final Integer right) {
-        final int result = left - right;
-        if (result > 0 && left < 0 && right > 0)
-          // SPECIAL CASE: UPGRADE TO LONG
-          return left.longValue() - right;
-
+        // see PLUS: the guard this replaced never fired for a negative subtrahend, so
+        // Integer.MAX_VALUE - Integer.MIN_VALUE silently wrapped to -1
+        final long result = ((long) left) - right;
+        if (result >= Integer.MIN_VALUE && result <= Integer.MAX_VALUE)
+          return (int) result;
         return result;
       }
 

@@ -85,6 +85,27 @@ class Issue5647SqlIntegerArithmeticTest {
   }
 
   /**
+   * The {@code Integer} overloads of {@code +} and {@code -} widened only for two positive operands, because their
+   * guards tested the sign of the operands rather than whether the answer fit. Overflow in the other direction was
+   * therefore returned silently - the same defect as the {@code Long} overloads, on the path the issue assumed was
+   * already correct. Unlike {@code long} these have somewhere to widen to, so the answer is a value, not an error.
+   */
+  @Test
+  void integerAdditionAndSubtractionWidenInBothDirections() {
+    assertThat(MathExpression.Operator.MINUS.apply(Integer.MAX_VALUE, Integer.MIN_VALUE)).isEqualTo(4294967295L);
+    assertThat(MathExpression.Operator.PLUS.apply(Integer.MIN_VALUE, Integer.MIN_VALUE)).isEqualTo(-4294967296L);
+
+    // the directions that already worked must keep working
+    assertThat(MathExpression.Operator.PLUS.apply(Integer.MAX_VALUE, Integer.MAX_VALUE)).isEqualTo(4294967294L);
+    assertThat(MathExpression.Operator.MINUS.apply(Integer.MIN_VALUE, Integer.MAX_VALUE)).isEqualTo(-4294967295L);
+
+    // and the ordinary case still narrows back to Integer rather than promoting everything to Long
+    assertThat(MathExpression.Operator.PLUS.apply(2, 3)).isEqualTo(5);
+    assertThat(MathExpression.Operator.PLUS.apply(2, 3).getClass()).isEqualTo(Integer.class);
+    assertThat(MathExpression.Operator.MINUS.apply(3, 2).getClass()).isEqualTo(Integer.class);
+  }
+
+  /**
    * The raw {@code java.lang.ArithmeticException} the JDK throws here is what reached the HTTP layer uncaught. It
    * has to become an {@link ArithmeticErrorException} on both overloads, since {@code 1/0} uses the {@code Integer}
    * one and a stored {@code LONG} column uses the other.

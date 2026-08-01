@@ -42,6 +42,8 @@ inconsistency this issue is about.
 `engine/src/main/java/com/arcadedb/query/sql/parser/MathExpression.java`, two new private helpers in the
 `Operator` enum plus six overload bodies rewired to them:
 
+Plus the two `Integer` overloads described in defect 3 below, rewritten to widen-then-narrow.
+
 - `exactIntegerArithmetic(op, left, right)` - `Math.addExact` / `subtractExact` / `multiplyExact` / `divideExact`,
   rethrowing the resulting `ArithmeticException` as `ArithmeticErrorException("long overflow")`. Wired into the
   `Long` overloads of `STAR`, `PLUS`, `MINUS` and `SLASH`.
@@ -57,12 +59,34 @@ correct `2147483648`, narrowing back to `Integer` whenever the answer fits. That
 `ArithmeticErrorException extends CommandExecutionException`, so embedded callers catching the broader type are
 unaffected and no HTTP or Bolt handler change was needed.
 
+### 3. The `Integer` overloads of `+` and `-` also wrapped (found in review, cycle 1)
+
+The issue states that "the `Integer` overload already does the right thing by widening to `long`". That premise
+is only half true, and the review of this PR caught it. `PLUS.apply(Integer, Integer)` guarded
+`sum < 0 && left > 0 && right > 0` and `MINUS.apply(Integer, Integer)` guarded
+`result > 0 && left < 0 && right > 0`: both test the **signs of the operands** rather than whether the answer
+fits, so each only ever detected overflow in one direction. Verified:
+
+```
+Integer.MAX_VALUE - Integer.MIN_VALUE  ->  -1   (should be  4294967295)
+Integer.MIN_VALUE + Integer.MIN_VALUE  ->   0   (should be -4294967296)
+```
+
+Both now widen first and narrow back when the answer fits, which is the idiom `STAR.apply(Integer, Integer)`
+already used a few lines above in the same enum. This is the same silent-wrap defect the PR is named for, in
+the same class, so fixing it here keeps the change honest rather than shipping "SQL integer arithmetic no longer
+wraps silently" with two counterexamples left in place. Unlike the `Long` overloads these have somewhere to
+widen to, so the result is a correct value rather than an error.
+
 ### Deliberately unchanged
 
 - Floating-point `/` and `%` keep IEEE 754 semantics (`±Infinity` / `NaN`). Only integer division has no
   representable answer for a zero divisor; this matches the decision taken on the Cypher side in #5163.
-- The `Integer` overloads of `PLUS`/`MINUS`/`STAR` keep their long-upgrade rather than gaining an exact-math
-  guard: they have a representable answer, and `MathExpressionTest:63-64` pins that upgrade.
+- The `Integer` overloads of `PLUS`/`MINUS`/`STAR` widen rather than gaining an exact-math guard: they have a
+  representable answer, and `MathExpressionTest:63-64` pins that upgrade.
+- `SLASH.apply(Long, Long)` keeps its lossy `(double) left / right` fallback for inexact division, raised in
+  review. It predates this issue and narrowing it would change division semantics for every SQL query, which
+  needs its own issue and its own regression suite.
 
 ### Known behavior change beyond the two reported defects
 
@@ -103,7 +127,11 @@ Connected suites re-run green (195 tests): `MathExpressionTest`, `Multiplication
 `CypherFollowUpsIssue5602Test`.
 
 The **full engine suite** was then run to confirm the blast radius, since these operators are shared by every
-SQL arithmetic expression in the product: **10556 tests, 0 failures, 0 errors**, BUILD SUCCESS.
+SQL arithmetic expression in the product: **10556 tests, 0 failures, 0 errors**, BUILD SUCCESS. Re-run after the
+review-cycle-1 `Integer` overload fix: **10557 tests, 0 failures, 0 errors**.
+
+The cycle-1 test was proven to fail first the same way, by stashing only the main-source change and re-running
+it: `expected: 4294967295L but was: -1`.
 
 The server IT was **not** verified locally and is left to CI. Port 2480 on the development machine is held
 permanently by a Homebrew-installed ArcadeDB service, so a `BaseGraphServerTest` server cannot bind it and the
