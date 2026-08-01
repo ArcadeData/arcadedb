@@ -78,13 +78,16 @@ class Issue5677HashIndexLinkKeyTest extends TestHelper {
     database.transaction(() -> {
       final Index index = database.getSchema().getIndexByName("INITIATED[@out,@in]");
 
-      final IndexCursor found = index.get(new Object[] { endpoints[0], endpoints[1] });
-      assertThat(found.hasNext()).isTrue();
-      found.next();
-      assertThat(found.hasNext()).isFalse();
+      try (final IndexCursor found = index.get(new Object[] { endpoints[0], endpoints[1] })) {
+        assertThat(found.hasNext()).isTrue();
+        found.next();
+        assertThat(found.hasNext()).isFalse();
+      }
 
       // THE REVERSED PAIR IS A DIFFERENT KEY
-      assertThat(index.get(new Object[] { endpoints[1], endpoints[0] }).hasNext()).isFalse();
+      try (final IndexCursor reversed = index.get(new Object[] { endpoints[1], endpoints[0] })) {
+        assertThat(reversed.hasNext()).isFalse();
+      }
 
       assertThat(database.countType("INITIATED", false)).isEqualTo(1);
     });
@@ -117,8 +120,9 @@ class Issue5677HashIndexLinkKeyTest extends TestHelper {
     database.transaction(() -> {
       final Index index = database.getSchema().getIndexByName("INITIATED[@out,@in]");
       for (int i = 1; i < vertices; i++)
-        assertThat(index.get(new Object[] { rids[0], rids[i] }).hasNext())//
-            .as("missing entry for pair (0,%d)", i).isTrue();
+        try (final IndexCursor cursor = index.get(new Object[] { rids[0], rids[i] })) {
+          assertThat(cursor.hasNext()).as("missing entry for pair (0,%d)", i).isTrue();
+        }
 
       assertThat(index.countEntries()).isEqualTo(vertices - 1L);
     });
@@ -149,9 +153,13 @@ class Issue5677HashIndexLinkKeyTest extends TestHelper {
 
     database.transaction(() -> {
       final Index index = database.getSchema().getIndexByName("Book[library]");
-      assertThat(index.get(new Object[] { libraries[1] }).hasNext()).isTrue();
+      try (final IndexCursor cursor = index.get(new Object[] { libraries[1] })) {
+        assertThat(cursor.hasNext()).isTrue();
+      }
       // A VERTEX PASSED INSTEAD OF ITS RID MUST RESOLVE TO THE SAME KEY
-      assertThat(index.get(new Object[] { database.lookupByRID(libraries[0], true) }).hasNext()).isTrue();
+      try (final IndexCursor cursor = index.get(new Object[] { database.lookupByRID(libraries[0], true) })) {
+        assertThat(cursor.hasNext()).isTrue();
+      }
     });
   }
 
@@ -176,10 +184,11 @@ class Issue5677HashIndexLinkKeyTest extends TestHelper {
       final Index index = database.getSchema().getIndexByName("Book[library]");
       for (final RID library : libraries) {
         int found = 0;
-        final IndexCursor cursor = index.get(new Object[] { library });
-        while (cursor.hasNext()) {
-          cursor.next();
-          ++found;
+        try (final IndexCursor cursor = index.get(new Object[] { library })) {
+          while (cursor.hasNext()) {
+            cursor.next();
+            ++found;
+          }
         }
         assertThat(found).isEqualTo(5);
       }
@@ -208,7 +217,9 @@ class Issue5677HashIndexLinkKeyTest extends TestHelper {
 
     database.transaction(() -> {
       final Index index = database.getSchema().getIndexByName("INITIATED[@out,@in]");
-      assertThat(index.get(new Object[] { endpoints[0], endpoints[1] }).hasNext()).isFalse();
+      try (final IndexCursor cursor = index.get(new Object[] { endpoints[0], endpoints[1] })) {
+        assertThat(cursor.hasNext()).isFalse();
+      }
 
       // AND THE PAIR CAN BE RE-CREATED
       final MutableVertex hub = database.lookupByRID(endpoints[0], true).asVertex().modify();
@@ -243,10 +254,11 @@ class Issue5677HashIndexLinkKeyTest extends TestHelper {
       assertThat(index.countEntries()).isEqualTo(20L);
 
       int found = 0;
-      final IndexCursor cursor = index.get(new Object[] { libraries[0] });
-      while (cursor.hasNext()) {
-        cursor.next();
-        ++found;
+      try (final IndexCursor cursor = index.get(new Object[] { libraries[0] })) {
+        while (cursor.hasNext()) {
+          cursor.next();
+          ++found;
+        }
       }
       assertThat(found).isEqualTo(10);
     });
