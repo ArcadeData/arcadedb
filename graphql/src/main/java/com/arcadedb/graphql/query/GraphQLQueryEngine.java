@@ -19,6 +19,7 @@
 package com.arcadedb.graphql.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.graphql.parser.Definition;
@@ -102,7 +103,10 @@ public class GraphQLQueryEngine implements QueryEngine {
     try {
       final ResultSet resultSet = graphQLSchema.execute(query);
       return resultSet;
-    } catch (final CommandParsingException e) {
+    } catch (final ArcadeDBException e) {
+      // A failure the engine already classified keeps that classification - an arithmetic error, an unknown type or
+      // a constraint violation raised by the statement this query delegates to is not a syntax problem with the
+      // GraphQL document. See issue #5628.
       throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Error on executing GraphQL query:\n" + FileUtils.printWithLineNumbers(query), e);

@@ -19,6 +19,7 @@
 package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
@@ -183,7 +184,11 @@ public class GraphQLSchema {
 
       return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
 
-    } catch (final CommandParsingException e) {
+    } catch (final ArcadeDBException e) {
+      // A failure the engine already classified keeps that classification. Rewrapping every one of them as a
+      // parsing exception told the caller their GraphQL was malformed when the real cause was an arithmetic error,
+      // an unknown type or a constraint violation raised by the statement this query delegates to, and left the
+      // wire layers nothing to report a client-vs-server verdict from. See issue #5628.
       throw e;
     } catch (final Exception e) {
       if (queryName != null)
