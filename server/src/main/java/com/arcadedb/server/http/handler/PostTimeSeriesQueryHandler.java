@@ -103,8 +103,11 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited. Note
     // that here the cap governs serialization only - the engine query below materializes the whole range
     // regardless, so removing the cap does not widen an already unbounded fetch.
-    final boolean callerSuppliedLimit = payload.has("limit");
-    final int limit = callerSuppliedLimit ? payload.getInt("limit") : getDefaultRowLimit();
+    // requireIntLimit rather than payload.getInt: the latter narrows with Number.intValue(), so a limit an int
+    // cannot hold would wrap to a negative value and be read as unlimited, exactly as on the other endpoints.
+    final Object rawLimit = payload.opt("limit");
+    final int limit = rawLimit != null ? requireIntLimit(rawLimit, "limit") : getDefaultRowLimit();
+    final boolean callerSuppliedLimit = rawLimit != null;
 
     // Resolve field projection
     final int[] columnIndices = resolveColumnIndices(payload, columns);

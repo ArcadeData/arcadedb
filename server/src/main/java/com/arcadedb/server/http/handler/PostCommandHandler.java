@@ -136,17 +136,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
    */
   private static Integer optionalIntField(final Map<String, Object> map, final String field) {
     final Object value = map.get(field);
-    if (value == null)
-      return null;
-    if (value instanceof Number n) {
-      // Number.intValue() truncates the high bits, so 3000000000 would arrive as a negative value and be read
-      // as "unlimited" - silently turning off the very cap this field governs. Out-of-range is a client error.
-      final double magnitude = n.doubleValue();
-      if (Double.isNaN(magnitude) || magnitude > Integer.MAX_VALUE || magnitude < Integer.MIN_VALUE)
-        throw unusableLimit(field, null);
-      return n.intValue();
-    }
-    throw new IllegalArgumentException("Field '" + field + "' must be an integer");
+    return value == null ? null : requireIntLimit(value, field);
   }
 
   @Override

@@ -85,6 +85,11 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
       // A non-positive limit means unlimited here too, as it does on the query/command endpoints: it used to
       // reach Math.min(rows, -1) and return no row at all while reporting the result as truncated.
+      // A limit an int cannot hold must not wrap into a negative value and be read as unlimited: it is a client
+      // error here exactly as it is on the query and command endpoints.
+      request.put("limit", 3_000_000_000L);
+      assertThat(postTsQueryRaw(serverIndex, request)).isEqualTo(400);
+
       for (final int unlimitedLimit : new int[] { -1, 0 }) {
         request.put("limit", unlimitedLimit);
         final JSONObject unlimited = postTsQuery(serverIndex, request);

@@ -527,7 +527,11 @@ public class CoreApiSpec implements OpenApiContributor {
   private Schema<?> createQueryResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Query response object");
     schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.object(null), "Query results"));
-    schema.addProperty("limit", SpecBuilders.integer("Effective row cap applied while serializing, -1 when uncapped"));
+    schema.addProperty("limit", SpecBuilders.integer(
+        """
+        Effective row cap applied while serializing, -1 when uncapped. This is the serializer's cap, not the \
+        query's own LIMIT: a query stating a LIMIT below the server default reports the default here, and \
+        'returned' with 'truncated' describe what the response actually carries."""));
     // 'executionTime' and 'recordCount' used to be documented here but no handler has ever emitted them:
     // 'returned' is the real row count, and timings are reported under 'profile' when profileExecution is set.
     schema.addProperty("returned", SpecBuilders.integer(

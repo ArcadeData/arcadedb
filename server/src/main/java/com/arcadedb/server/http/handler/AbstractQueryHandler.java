@@ -120,16 +120,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * Rejection of a request row limit that is not an integer this server can apply, worded identically wherever
-   * the limit arrives from so the two surfaces report the same thing. Mapped to HTTP 400 by the
-   * {@link IllegalArgumentException} arm of {@link AbstractServerHttpHandler}.
-   */
-  protected static IllegalArgumentException unusableLimit(final String field, final Throwable cause) {
-    return new IllegalArgumentException(
-        "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE, cause);
-  }
-
-  /**
    * Parses the textual row limit of the GET endpoint, or returns {@code null} when the parameter is absent or
    * empty - an empty parameter states nothing, so it must not be read as a value. A value that is not an
    * int-representable integer is a client error carrying the same message as the JSON field of the POST
