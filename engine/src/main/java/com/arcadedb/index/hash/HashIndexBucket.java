@@ -986,11 +986,10 @@ public class HashIndexBucket extends PaginatedComponent {
    * Validates the key types a hash index is about to be created with, so an unsupported one is refused up front with
    * a message naming it, instead of surfacing as an "unsupported key type" deep inside the first insert (#5677).
    * <p>
-   * This is called from {@code HashIndexFactoryHandler.create()}, which is the only path that reaches the creation
-   * constructor of {@link HashIndex} (and through it the creation constructor of this class) - every hash index is
-   * built by {@code IndexFactory.createIndex()}. A new construction path must call this too, or it can write a file
-   * whose declared key type the bucket cannot encode; the {@link #loadMetadata} check would then only catch it on the
-   * next open.
+   * The check is now enforced inside the bucket's creation constructor itself, matching the page-size guard
+   * of #5713, so every construction path is covered. The {@code HashIndexFactoryHandler} also calls it for
+   * defensive redundancy, but the constructor guarantee means no bypass path can write a file whose declared
+   * key type the bucket cannot encode.
    */
   static Type[] checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
     if (keyTypes == null)
