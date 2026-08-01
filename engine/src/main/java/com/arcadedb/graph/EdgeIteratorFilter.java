@@ -101,6 +101,17 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
         LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it. Error: %s", edge,
             vertex != null ? "vertex " + vertex : "", e.getMessage());
 
+      // #5694: when the caller already has an active transaction, opening a nested joined transaction
+      // is dangerous because a NeedRetryException inside the block causes LocalDatabase.transaction to
+      // roll back the JOINED (caller's) transaction, silently discarding the caller's writes. The prune
+      // is opportunistic - skip it when we cannot safely own the transaction.
+      if (database.isTransactionActive()) {
+        LogManager.instance()
+            .log(this, Level.FINE, "Skipping dangling edge %s prune from vertex %s (caller has active transaction)", edge,
+                vertex);
+        return;
+      }
+
       try {
         database.transaction(() -> {
           final EdgeLinkedList outEdges = database.getGraphEngine().getEdgeHeadChunk((VertexInternal) this.vertex, direction);
