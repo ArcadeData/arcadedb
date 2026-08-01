@@ -87,9 +87,11 @@ public class HashIndex implements IndexInternal {
       // of surfacing on the first insert as an unsupported-key-type error (issue #5677).
       HashIndexBucket.checkSupportedKeyTypes(builder.getIndexName(), builder.getKeyTypes());
 
-      // Use 64KB default page size for hash indexes (vs 256KB for LSM)
-      final int pageSize = builder.getPageSize() == LSMTreeIndexAbstract.DEF_PAGE_SIZE ?
-          HashIndexBucket.DEF_PAGE_SIZE : builder.getPageSize();
+      // Use the 64KB hash default (vs 256KB for LSM) when the caller did not ask for a page size. Asking IS
+      // distinguishable from not asking (issue #5713): the builder carries an explicit unset marker, so an explicit
+      // 262144 now reaches HashIndexBucket and is refused for exceeding the 16-bit addressing limit, instead of being
+      // silently remapped to 65536 - which used to make that one value impossible to request.
+      final int pageSize = builder.getPageSize(HashIndexBucket.DEF_PAGE_SIZE);
       return new HashIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), pageSize, builder.getNullStrategy());
     }

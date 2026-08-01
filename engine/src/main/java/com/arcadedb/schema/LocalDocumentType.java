@@ -1883,8 +1883,10 @@ public class LocalDocumentType implements DocumentType {
                   }
 
                   if (!alreadyCreated)
+                    // Inherit the page size of the index being propagated, like the createBucket() path above does.
+                    // Hardcoding the LSM default here gave a HASH index a page size it cannot address (#5713).
                     schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                        LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                        index.getPageSize(), index.getNullStrategy(), null,
                         index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
                         IndexBuilder.BUILD_BATCH_SIZE,
                         index.getMetadata());
