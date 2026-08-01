@@ -108,8 +108,9 @@ public class ScriptLineStep extends AbstractExecutionStep {
   @Override
   public void close() {
     RuntimeException error = null;
-    ScriptLineStep step = this;
-    while (true) {
+    ExecutionStepInternal current = this;
+
+    while (current instanceof ScriptLineStep step) {
       try {
         if (step.plan != null)
           step.plan.close();
@@ -117,17 +118,12 @@ public class ScriptLineStep extends AbstractExecutionStep {
         if (error == null)
           error = e;
       }
-
-      final ExecutionStepInternal previous = step.prev;
-      if (previous instanceof ScriptLineStep previousLine) {
-        step = previousLine;
-        continue;
-      }
-
-      if (previous != null)
-        previous.close();
-      break;
+      current = step.prev;
     }
+
+    // the chain can end on a step of another kind: from there it is bounded, so let it cascade
+    if (current != null)
+      current.close();
 
     if (error != null)
       throw error;
