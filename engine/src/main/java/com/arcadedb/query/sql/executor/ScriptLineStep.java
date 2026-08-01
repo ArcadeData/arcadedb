@@ -101,11 +101,19 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    try {
-      if (plan != null)
-        plan.close();
-    } finally {
-      super.close();
+    if (plan != null)
+      plan.close();
+
+    // Walk the prev chain iteratively to avoid StackOverflow on long
+    // script chains (see GH#5708). Each ScriptLineStep has its own plan
+    // that must be closed. The prev chain is a singly-linked list.
+    ExecutionStepInternal current = prev;
+    prev = null;
+    while (current instanceof ScriptLineStep step) {
+      if (step.plan != null)
+        step.plan.close();
+      current = step.prev;
+      step.prev = null;
     }
   }
 

@@ -523,4 +523,20 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
       }
     };
   }
+
+  // --- Large script close chain: GH#5708 ---
+  @Test
+  void largeScriptCloseDoesNotStackOverflow() {
+    database.getSchema().createDocumentType("LargeScript");
+    final StringBuilder script = new StringBuilder();
+    for (int i = 0; i < 2000; i++) {
+      script.append("INSERT INTO LargeScript SET val = ").append(i).append(";\n");
+    }
+    database.transaction(() -> {
+      database.command("sqlscript", script.toString());
+    });
+    final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM LargeScript");
+    assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(2000L);
+    rs.close();
+  }
 }
