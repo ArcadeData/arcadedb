@@ -786,8 +786,10 @@ public class GraphEngine {
     final RID targetRID = target.getIdentity();
     // The edge-list head pointers live in the vertex record, so they have to be read from the instance the
     // running transaction has, not from whatever snapshot the caller happens to hold: a vertex loaded before
-    // an edge was appended still points at the previous head and would hide the newest edges. The public
-    // Vertex.getEdges() does this resolution for its callers; a caller reaching the engine directly does not.
+    // an edge was appended still points at the previous head and would hide the newest edges. The Vertex-level
+    // accessors reach the engine already holding that instance - ImmutableVertex resolves it explicitly and a
+    // MutableVertex is one - but a caller reaching this method directly hands over whatever it has, so the
+    // resolution belongs here.
     final VertexInternal source = getMostUpdatedVertex(vertex);
 
     switch (direction) {
@@ -1013,6 +1015,16 @@ public class GraphEngine {
     return null;
   }
 
+  /**
+   * Tells whether the two vertices are joined, rejecting on the neighbour pointer held in the edge segment so no
+   * edge record is loaded. {@link #getEdgesConnectedTo(VertexInternal, Vertex.DIRECTION, Identifiable, String...)}
+   * is the iterating counterpart, for when the matching edges themselves have to be inspected.
+   * <p>
+   * Unlike that method this one reads the edge-list head from the vertex handle it is given, so the caller must pass
+   * the instance the running transaction holds. Every {@link Vertex} accessor does (ImmutableVertex resolves it, a
+   * MutableVertex is one); a caller reaching the engine directly with an older snapshot would miss the edges appended
+   * since that snapshot was taken.
+   */
   public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
