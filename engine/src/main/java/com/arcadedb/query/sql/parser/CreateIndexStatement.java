@@ -259,7 +259,13 @@ public class CreateIndexStatement extends DDLStatement {
       final JSONObject jsonMetadata = new JSONObject(metadataMap);
 
       final TypeFullTextIndexBuilder ftBuilder = builder.withFullTextType();
-      ftBuilder.withMetadata(jsonMetadata);
+      try {
+        ftBuilder.withMetadata(jsonMetadata);
+      } catch (final IndexException | IllegalArgumentException | JSONException e) {
+        // Same treatment as the LSM_VECTOR and GEOSPATIAL branches: every value in the clause comes from the
+        // statement, so an unknown key or an out-of-range BM25 parameter is a client mistake and must answer 400.
+        throw new CommandSQLParsingException("Invalid METADATA for FULL_TEXT index: " + e.getMessage(), e);
+      }
       ftBuilder.create();
 
     } else if (indexType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
@@ -268,7 +274,11 @@ public class CreateIndexStatement extends DDLStatement {
       if (metadata != null) {
         final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
         final JSONObject jsonMetadata = new JSONObject(metadataMap);
-        sparseBuilder.withMetadata(jsonMetadata);
+        try {
+          sparseBuilder.withMetadata(jsonMetadata);
+        } catch (final IndexException | IllegalArgumentException | JSONException e) {
+          throw new CommandSQLParsingException("Invalid METADATA for LSM_SPARSE_VECTOR index: " + e.getMessage(), e);
+        }
       }
       sparseBuilder.create();
 
@@ -279,7 +289,11 @@ public class CreateIndexStatement extends DDLStatement {
         final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
         try {
           geoBuilder.withMetadata(new JSONObject(metadataMap));
-        } catch (final IllegalArgumentException e) {
+        } catch (final IndexException | IllegalArgumentException | JSONException e) {
+          // The same three exceptions the other branches catch. Every geospatial setter happens to throw
+          // IllegalArgumentException today, so catching only that one made the HTTP 400 incidental rather than
+          // guaranteed: a future validation raising IndexException, or a JSON getter raising JSONException, would
+          // escape as a 500.
           throw new CommandSQLParsingException(e.getMessage(), e);
         }
       }
