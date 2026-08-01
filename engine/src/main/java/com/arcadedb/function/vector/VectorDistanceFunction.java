@@ -20,6 +20,7 @@ package com.arcadedb.function.vector;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -51,7 +52,9 @@ public class VectorDistanceFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null || args[1] == null)
+    // An explicitly written null metric propagates, like both vectors already do; only an omitted one selects EUCLIDEAN
+    // (issue #5629).
+    if (args[0] == null || args[1] == null || CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
 
     final float[] a = VectorUtils.toFloatArray(args[0]);

@@ -210,7 +210,9 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
     // round()'s third argument is a STRING, so the per-position check must not reject it as non-numeric.
     assertThat(single("RETURN round(3.14159, 2, 'FLOOR') AS r")).isEqualTo(3.14d);
     assertThat(single("RETURN round(3.14159, 2, 'CEILING') AS r")).isEqualTo(3.15d);
-    assertThat(single("RETURN round(3.14159, 2, null) AS r")).isEqualTo(3.14d);
+    // A null mode is not rejected as non-numeric either, which is what this test is about. What it answers was settled
+    // separately by issue #5629: an explicitly written null propagates rather than selecting the HALF_UP default.
+    assertThat(single("RETURN round(3.14159, 2, null) AS r")).isNull();
   }
 
   // ===================== the wrong number of arguments is a client error too =====================
