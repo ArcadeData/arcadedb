@@ -49,15 +49,12 @@ DEFAULT_ARTIFACT_NAME = "artifact"
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 
 
+# A matrix upload names its artifact `bolt-matrix-java-${{ matrix.version }}`; statically that is
+# `bolt-matrix-java-*`. Keeping it as a glob is what lets the check still resolve the consumer that
+# picks the whole family up with `pattern: bolt-matrix-*`, instead of reporting a family of
+# artifacts nobody uploads.
 def as_glob(value):
-    """
-    Collapse a run-time expression into the glob of names it can produce.
-
-    A matrix upload names its artifact `bolt-matrix-java-${{ matrix.version }}`; statically that is
-    `bolt-matrix-java-*`. Keeping it as a glob is what lets the check still resolve the consumer
-    that picks the whole family up with `pattern: bolt-matrix-*`, instead of reporting a family of
-    artifacts nobody uploads.
-    """
+    """Collapse a run-time expression into the glob of names it can produce."""
     return EXPRESSION.sub("*", value)
 
 
@@ -101,15 +98,12 @@ def producers_of(jobs):
     return produced
 
 
+# `name` selects one artifact, `pattern` selects every artifact matching a glob, and neither means
+# "download everything in the run" - which depends on every producing job. Both sides can be globs
+# (a matrix uploader against a family-wide consumer), so they are matched in either direction:
+# overlap in the names they can denote is enough to create the ordering requirement.
 def matching_producers(produced, name, pattern):
-    """
-    Resolve a download step's selector to the set of jobs it reads from.
-
-    `name` selects one artifact, `pattern` selects every artifact matching a glob, and neither
-    means "download everything in the run" - which depends on every producing job. Both sides can
-    be globs (a matrix uploader against a family-wide consumer), so they are matched in either
-    direction: overlap in the names they can denote is enough to create the ordering requirement.
-    """
+    """Resolve a download step's selector to the set of jobs it reads from."""
     if name is None and pattern is None:
         return {job for jobs in produced.values() for job in jobs}
 
