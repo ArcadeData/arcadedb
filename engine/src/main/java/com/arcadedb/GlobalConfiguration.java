@@ -153,7 +153,7 @@ public enum GlobalConfiguration {
     // ' slf4j '. AN UNRECOGNIZED VALUE IS KEPT VERBATIM: IT FALLS BACK TO 'default', BUT REWRITING IT WOULD HIDE THE TYPO
     final String impl = value == null || value.toString().isBlank() ?
         "default" :
-        value.toString().trim().toLowerCase(Locale.ENGLISH);
+        value.toString().trim().toLowerCase(Locale.ROOT); // SAME LOCALE createLogger() NORMALIZES WITH
 
     final LogManager logManager = LogManager.instance();
     // NULL ONLY IF THIS RUNS RE-ENTRANTLY FROM THE LOG MANAGER'S STATIC INITIALIZER, WHICH READS THE SYSTEM PROPERTY ON ITS OWN

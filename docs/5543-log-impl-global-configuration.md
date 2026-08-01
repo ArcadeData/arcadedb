@@ -86,24 +86,6 @@ say the same thing, so it is left as is.
 - `mvn -pl engine test`: 10690 tests, 0 failures, 0 errors, 23 skipped.
 - `mvn compile` over the full reactor: green.
 
-## Review cycles
-
-### Cycle 1 - `c4562caa`
-
-`claude[bot]` raised four points, none blocking except the first.
-
-1. **`LogManager.logger` should be `volatile`** - applied. The field is read by every `log()` overload on
-   every thread and, now that `LOG_IMPL` promotes `setLogger()` to a runtime path, written from an
-   arbitrary thread with no happens-before edge. The sibling `traceContextSupplier` in the same class is
-   already `volatile` for exactly this reason.
-2. **Stored value is not normalized** - applied, narrowed. The callback now stores the trimmed, lowercased
-   spelling, so `dumpConfiguration()` and `toJSON()` no longer report `SLF4J` or `" slf4j "`. It does
-   **not** rewrite an unrecognized value to `default`, which would hide a typo from the config dump while
-   the `System.err` warning scrolls away. Deriving a canonical name from the resolved logger was rejected:
-   it would put a second copy of the name-to-implementation mapping next to `createLogger()`.
-3. **`reset()` does not re-install a logger** - skipped, see `review-deferred-c4562caa.md`.
-4. **Lambda vs anonymous `Callable` style** - skipped, the claim is inaccurate; see the same file.
-
 ## Impact
 
 Additive. The default is `default`, which is what an unset system property already resolved to, and the
@@ -111,3 +93,32 @@ system property keeps being honoured through the exact same code path. Nothing i
 the value is explicitly set. `GlobalConfiguration.reset()` restores the value but does not re-install a
 logger, so a caller that swapped the implementation and wants the original back should keep the
 `LogManager.getLogger()` it replaced.
+
+## Review
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5689
+
+**`LogManager.logger` is now `volatile`.** It is read by every `log()` overload on every thread and, now
+that `LOG_IMPL` promotes `setLogger()` from an escape hatch to a runtime path, written from an arbitrary
+thread with no happens-before edge to those reads. The sibling `traceContextSupplier` in the same class
+is already `volatile` for exactly this reason.
+
+**The callback stores the trimmed, lowercased spelling** with the same `Locale.ROOT` that
+`createLogger()` normalizes with, so `dumpConfiguration()` and `toJSON()` cannot report `SLF4J` or
+`" slf4j "` for a logger selected as `slf4j`. It deliberately does **not** rewrite an unrecognized value
+to `default`: the config dump is the only lasting record of the typo once the `System.err` warning has
+scrolled away. Deriving a canonical name from the resolved logger instead was rejected, it would put a
+second copy of the name-to-implementation mapping next to `createLogger()`.
+
+**`GlobalConfiguration.LOG_IMPL.reset()` still leaves the swapped logger installed.** `reset()` runs no
+callback for any setting, so changing that means either a special case for this entry or a contract
+change across all of them. Out of scope here; the limitation is stated under Impact above.
+
+**The callback stays a lambda.** It was suggested that the file's convention is `new Callable<>() { ... }`,
+but the file has five lambda callbacks against three anonymous ones, `DUMP_CONFIG_AT_STARTUP` and both
+`DATE*_IMPLEMENTATION` entries among them.
+
+**`LogImplConfigurationTest` mutates process-global state** (the `LogManager` singleton, `System.err`) and
+restores both in `@AfterEach`. That is sound under the module's `forkCount=1` / no-parallel-execution
+surefire setup and matches how the existing `GlobalConfiguration` tests work; it would need
+`@ResourceLock` if JUnit parallel execution were ever switched on.
