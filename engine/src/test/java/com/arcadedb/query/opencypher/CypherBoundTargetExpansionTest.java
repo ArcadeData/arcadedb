@@ -155,20 +155,19 @@ class CypherBoundTargetExpansionTest {
    * pinned - the narrowing engages on a source the same statement has been traversing, and must still find the
    * one edge that closes the cycle.
    * <p>
-   * The row count is deliberately not asserted. A cycle whose first hop has two parallel edges reports one row
-   * per closing edge rather than one per (first, closing) pair, which is a pre-existing planner discrepancy
-   * unrelated to this narrowing - it reproduces with the narrowing reverted. Asserting the count here would
-   * pin a bug rather than this behaviour; it is tracked by issue #5663.
+   * The pair is joined by two parallel INITIATED edges going out and one coming back, so the cycle can be walked
+   * two ways, one per first-hop edge. The closing hop is an expansion like any other, not a "is the cycle closed?"
+   * question asked once for the pair - answering it once under-counted every such walk (issue #5663).
    */
   @Test
   void narrowingHandlesACyclePatternWhereTheLastHopReturnsToABoundVariable() {
-    // the closing hop resolves, and resolves to the only edge that can close the cycle
+    // the closing hop resolves to the only edge that can close the cycle, once per walk that reaches it
     assertThat(refsOf("MATCH (a:Account {code: 'HUB'})-[r1:INITIATED]->(t:Txn {ref: 'SHARED'})-[r2:INITIATED]->(a) "
-        + "RETURN r2.ref AS v")).isNotEmpty().containsOnly("REVERSED");
+        + "RETURN r2.ref AS v")).containsExactly("REVERSED", "REVERSED");
 
-    // and the first hop still only ever binds an edge of the HUB->SHARED pair
+    // and the first hop binds each edge of the HUB->SHARED pair exactly once
     assertThat(refsOf("MATCH (a:Account {code: 'HUB'})-[r1:INITIATED]->(t:Txn {ref: 'SHARED'})-[r2:INITIATED]->(a) "
-        + "RETURN r1.kind AS v")).isNotEmpty().isSubsetOf("payment", "refund");
+        + "RETURN r1.kind AS v")).containsExactlyInAnyOrder("payment", "refund");
 
     // a cycle that cannot close returns nothing, so the narrowing is not answering "connected" for any target
     assertThat(refsOf("MATCH (a:Account {code: 'HUB'})-[r1:INITIATED]->(t:Txn {ref: 'T0'})-[r2:INITIATED]->(a) "

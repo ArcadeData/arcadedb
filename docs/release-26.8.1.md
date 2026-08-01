@@ -1189,6 +1189,61 @@ Finally, restoring a vector index from an exported definition (`IMPORT DATABASE`
 distinct entry point: an exported definition legitimately carries structural keys - `type`, `bucket`, `version`, ... -
 that the `METADATA`-clause reader has to reject as typos.
 
+## Cypher: a hop onto an already-bound vertex counts every relationship joining the pair
+
+> **Upgrading? Row counts can go up, and that is the fix.** A pattern with a hop onto an already-bound vertex - most
+> commonly a cycle, whose closing hop always has both endpoints bound - was returning fewer rows than it should
+> wherever parallel edges join the same pair. It returns them all now, so `count(*)`, `collect()` and `sum()` over
+> such a pattern report larger numbers than they did in 26.7.2. The old numbers were under-counts, not a different
+> convention: a saved report, a golden-file test or a threshold calibrated against them is the thing to re-check. A
+> graph with at most one edge per pair per type is unaffected in every respect - there was nothing to under-count.
+
+A pattern relationship matches once per relationship. Two parallel edges between the same two vertices are two
+matches, whether or not the pattern names them - `MATCH (a)-[:R]->(b)` over a pair joined twice returns two rows,
+the same as Neo4j. The optimizer's operator for the hop whose far end is already bound did not: built as a
+semi-join ("is this pair connected?"), it answered once per input row and threw the rest of the pair away
+([#5663](https://github.com/ArcadeData/arcadedb/issues/5663)).
+
+The shape where it shows is a cycle, because the hop that closes one always has both endpoints bound:
+
+```cypher
+CREATE (a:Account {code: 'HUB'})
+CREATE (t:Txn {ref: 'SHARED'})
+CREATE (a)-[:INITIATED {kind: 'payment'}]->(t)
+CREATE (a)-[:INITIATED {kind: 'refund'}]->(t)
+CREATE (t)-[:INITIATED {ref: 'REVERSED'}]->(a)
+
+MATCH (a:Account {code: 'HUB'})-[r1:INITIATED]->(t:Txn {ref: 'SHARED'})-[r2:INITIATED]->(a)
+RETURN r1.kind
+```
+
+The cycle can be walked two ways, one per first-hop edge, each closing through the single returning edge -
+relationship uniqueness is satisfied because `r1` and `r2` bind different edges in both walks. The answer was one
+row. Anything aggregating over such a pattern (`count(*)`, `collect(r1)`, `sum`) silently under-reported wherever
+parallel edges exist between a pair, which is normal in transaction and payment graphs. The step-by-step executor
+had always got this right, so the same query could answer differently depending on which plan was chosen.
+
+The operator is an expansion now: it walks the relationships joining the pair and emits one row per relationship,
+binding the relationship variable and enforcing relationship uniqueness against the hops that precede it in the
+same `MATCH` clause - including when the hop is anonymous, whose edge a later hop in the clause must still not
+reuse. It keeps what made it fast: the source's edge list is filtered on the neighbour pointer held in the edge
+segment, so an edge that does not reach the target costs a pointer comparison rather than a record load, and only
+the edges that do reach it are ever materialised. An undirected hop reaches a self-loop from both adjacency lists
+and still reports it once. The CSR-backed variant reads the multiplicity off the sorted adjacency array instead of
+stopping at the first hit, and now steps aside for the edge-list walk when the hop has to tell one relationship
+from another - which adjacency ids cannot do.
+
+A graph analytical view keeps its pending deletions per `(source, target)` pair, because the CSR holds adjacency
+ids and has no edge identity to key on, so deleting one of several parallel edges masks all of them. That is why
+`isConnectedTo` can report a pair as gone while two of its edges remain. A boolean can absorb that; a row count
+cannot. A masked pair is therefore reported as "cannot say", and the hop falls back to the edge list, which is
+exact - so a `SYNCHRONOUS` view that has seen such a delete answers the pattern with the right number of rows
+rather than none.
+
+One related source of confusion is gone with it: two equally cheap hops were tie-broken by a `HashSet` iteration
+order over identity hash codes, so the same query could be planned differently from run to run. Ties now fall to
+the order the hops are written in.
+
 ## `.github/dependency-review-config.yml` expresses the policy the action actually reads
 
 The file was organised into `security:`, `licensing:`, `packages:`, `changes:`, `exemptions:`, `notifications:`,
@@ -1313,5 +1368,62 @@ One check widened beyond subqueries as part of this. A repeated relationship var
 pattern asking for a relationship that is two different ones at once - was rejected only when written as the query's
 own `MATCH`. It is now rejected wherever the pattern appears, including a `WHERE` pattern predicate and a subquery
 body, matching Neo4j. Those two spellings used to answer "no match" instead.
+## Deleting an edge no longer leaves its back-reference behind under concurrency
+
+Removing an edge disconnects it from both endpoints and then deletes the edge record. The disconnection walked the
+endpoint's edge-list chain with best-effort reads: the head chunk came from a helper that answers `null` when it
+cannot be loaded, the chain hops used a plain lookup, and `deleteEdge` wrapped the lot in a
+`catch (RecordNotFoundException)`. All three read "chunk unreadable" as "nothing to remove here" - and then the edge
+record was deleted anyway.
+
+Under concurrency a chunk is regularly unreadable for reasons that say nothing about the graph. A commit publishes
+its pages one at a time and a reader takes no commit lock, so a vertex page can expose a new edge-list head RID a
+moment before that head's own page becomes visible; and a chunk emptied by another transaction is relinked out of
+the chain while a walker is still following a pointer to it. Hitting either window ended the removal without having
+removed anything, so the back-reference outlived its edge: the endpoint reported one edge too many
+(`countEdges`, `both()`, `in()`/`out()`) and `check database` reported one broken link. On a hot vertex - the
+super-node shape this happens on - the window is narrow, which is why it surfaced as a rare, unexplained off-by-one
+rather than as a reproducible failure.
+
+The append path already answered exactly this window with a retryable `ConcurrentModificationException`. The removal
+path now does the same: a head chunk that is present but unreadable, and a chain hop that cannot be read, are
+retryable conflicts, so the transaction re-reads a consistent view and completes the removal instead of committing a
+half-done one. `null` from the write-side head lookup now means one thing only - the vertex has no edge list in that
+direction, so there is genuinely nothing to remove. Tolerance for an endpoint **vertex** that no longer exists is
+unchanged: there is nothing to disconnect from a vertex that is gone.
+
+**Visible effect, and it is not limited to deleting an edge.** Three operations disconnect an edge and therefore
+share the new contract:
+
+- `edge.delete()` / `DELETE EDGE`,
+- moving an edge, which disconnects it the same way,
+- **`vertex.delete()` / `DELETE VERTEX`** - the widest reach of the three. Deleting a vertex disconnects each of its
+  edges from the vertex at the *other* end, so the strict read lands on a **neighbour's** edge list. A vertex that is
+  itself perfectly healthy can now fail to delete because a neighbour's list could not be read at that moment.
+
+Any of them racing a concurrent write can now raise a `ConcurrentModificationException` where it previously
+"succeeded". That is a `NeedRetryException`, so the standard retry loop (`database.transaction(...)`, and the
+server's auto-retry for single-request commands) absorbs it. A client-managed explicit transaction spanning several
+requests sees it and should retry the transaction, which is the same contract concurrent updates have always had.
+Best-effort callers are unaffected: iteration, counting and the opportunistic pruning of an already-dangling
+reference during a read still skip a momentarily unreadable chunk rather than failing.
+
+The other side of that trade, taken deliberately: an edge list that is not transiently invisible but genuinely
+broken is indistinguishable from one at that moment, so the operations above now fail instead of completing and
+leaving the back-reference behind. For `DELETE VERTEX` that means a healthy vertex next to a corrupted one is not
+deletable by the normal path until the corruption is repaired - succeeding would delete the edge record while the
+neighbour keeps pointing at it, dangling a reference on a vertex nobody asked to touch. `CHECK DATABASE` remains the
+repair path: it rebuilds a chain that cannot be loaded and drops the references into it.
+
+**If you hit that, the recovery is `CHECK DATABASE ... FIX` and then retry the delete.** The symptom is a delete that
+keeps failing with `ConcurrentModificationException` on the same vertex however often it is retried, which is what
+tells a broken list apart from ordinary contention (that one succeeds on a retry). The repair is never blocked by the
+delete being blocked: `CHECK DATABASE` reads edge lists through the best-effort reader, so it can still walk, rebuild
+and re-link a chain that the delete path now refuses.
+
+Note also that on a hot super-node under heavy concurrent delete-and-append the transient window is now answered with
+a retry rather than passing silently, so those transactions retry slightly more often than before. That is the
+intended shift - from "quietly wrong" to "occasionally repeated" - and it lands on exactly the super-node shape the
+bug affected. `arcadedb.txRetryDelay` and `arcadedb.txRetries` are the tuning levers if a workload needs them.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

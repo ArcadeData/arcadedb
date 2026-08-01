@@ -32,10 +32,12 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
- * Execution step wrapper for ExpandInto physical operator (semi-join optimization).
- * Checks for existence of relationships between two already-bound vertices.
+ * Execution step wrapper for the ExpandInto physical operator.
+ * Walks the relationships between two already-bound vertices, one row per relationship.
  * <p>
- * This is 5-10x faster than ExpandAll when both endpoints are known.
+ * This is much faster than ExpandAll when both endpoints are known: the source's edge list is
+ * filtered on the neighbour pointer held in the segment, so an edge that does not reach the target
+ * costs a pointer comparison instead of a record load.
  * <p>
  * Example:
  * <pre>
@@ -43,9 +45,6 @@ import java.util.NoSuchElementException;
  * MATCH (a)-[r:KNOWS]->(b)
  * RETURN r
  * </pre>
- * <p>
- * Uses Vertex.isConnectedTo() for O(m) RID-level existence checks instead of
- * loading and iterating through all edges.
  */
 public class ExpandIntoStep extends AbstractExecutionStep {
   private final String sourceVariable;
@@ -221,7 +220,7 @@ public class ExpandIntoStep extends AbstractExecutionStep {
     builder.append("(").append(targetVariable).append(")");
     builder.append(" [cost=").append(String.format("%.2f", estimatedCost));
     builder.append(", rows=").append(estimatedCardinality);
-    builder.append("] ⭐ SEMI-JOIN");
+    builder.append("] ⭐ BOUND-TARGET");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
       if (rowCount > 0)

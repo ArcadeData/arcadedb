@@ -26,6 +26,7 @@ import com.arcadedb.utility.FileUtils;
 
 import com.github.dockerjava.api.model.ContainerNetwork;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.logging.LoggingRegistryConfig;
@@ -61,13 +62,20 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 public abstract class ContainersTestTemplate {
-  public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
+  /**
+   * Image under test. Override with {@code -Darcadedb.test.image=arcadedata/arcadedb:26.8.1-SNAPSHOT} to pin a locally
+   * built tag instead of whatever {@code :latest} happens to point at, so a run's result names the build it tested.
+   */
+  public static final String                    IMAGE      = System.getProperty("arcadedb.test.image",
+      "arcadedata/arcadedb:latest");
   public static final String                    PASSWORD   = "playwithdata";
   public static final String                    DATABASE   = "playwithpictures";
   protected           LoggingMeterRegistry      loggingMeterRegistry;
@@ -688,6 +696,109 @@ public abstract class ContainersTestTemplate {
         logger.info("Container {} is running", name);
       }
     }
+  }
+
+  /**
+   * Writes each container's stdout to {@code target/container-logs/<label>-<name>.log} while the containers are still
+   * up. Testcontainers removes them during teardown, taking the logs with them, so anything not written out here
+   * cannot be examined after the run - which matters when a count printed at the end raises a question the raw log is
+   * the only thing that can answer.
+   *
+   * @param label prefix identifying the scenario, so arms of the same comparison do not overwrite each other
+   */
+  protected void dumpContainerLogs(final String label) {
+    final Path target = Path.of("target", "container-logs");
+    try {
+      Files.createDirectories(target);
+    } catch (final IOException e) {
+      logger.warn("Could not create {}: {}", target, e.getMessage());
+      return;
+    }
+    for (final GenericContainer<?> container : containers) {
+      final String name = containerLabel(container);
+      final Path file = target.resolve(label + "-" + name + ".log");
+      try {
+        Files.writeString(file, container.getLogs());
+        logger.info("Wrote container log to {}", file.toAbsolutePath());
+      } catch (final Exception e) {
+        logger.warn("Could not write log of container {}: {}", name, e.getMessage());
+      }
+    }
+  }
+
+  /**
+   * Sums a counter over the per-test {@link #loggingMeterRegistry} rather than {@link Metrics#globalRegistry}.
+   * A meter on the global composite reports the value of one arbitrarily chosen child registry, not the sum, and this
+   * class adds and removes a backing registry around every test - so reading a counter off the composite can return
+   * another test method's value or zero. The per-test registry is created fresh in setup, which makes the value both
+   * unambiguous and scoped to the run being measured.
+   *
+   * @param name counter name, matched exactly
+   *
+   * @return summed count across every counter registered under that name
+   */
+  protected double sumCounter(final String name) {
+    return loggingMeterRegistry.find(name).counters().stream().mapToDouble(Counter::count).sum();
+  }
+
+  /**
+   * Counts how many times a marker appears in each container's stdout, and logs the per-container tally.
+   * Used to turn a replication failure into a number: page-version gaps and snapshot-resync cycles are the signature
+   * of #5492, and a run that converges on record counts can still have logged them.
+   * <p>
+   * Match what the servers actually log. Neither the exception class name nor the text of a message passed to a
+   * {@code throw} reaches the log, so a marker taken from either counts zero against a log full of the event.
+   *
+   * @param marker substring to look for, matched literally
+   *
+   * @return total occurrences across every container
+   */
+  protected int countInContainerLogs(final String marker) {
+    return countInContainerLogs(new String[] { marker }).get(marker);
+  }
+
+  /**
+   * Counts several markers in one pass over each container's stdout.
+   * <p>
+   * {@code getLogs()} pulls the container's entire stdout over the Docker API and materializes it as a String, which
+   * on a diverging run is megabytes. Counting markers one call at a time re-fetches and re-scans all of it per marker,
+   * so every marker a caller wants belongs in a single call.
+   *
+   * @param markers substrings to look for, each matched literally
+   *
+   * @return per-marker total occurrences across every container, in the order given
+   */
+  protected Map<String, Integer> countInContainerLogs(final String... markers) {
+    final Map<String, Integer> totals = new LinkedHashMap<>();
+    for (final String marker : markers)
+      totals.put(marker, 0);
+
+    for (final GenericContainer<?> container : containers) {
+      final String name = containerLabel(container);
+      final String logs;
+      try {
+        logs = container.getLogs();
+      } catch (final Exception e) {
+        logger.warn("Could not read logs of container {}: {}", name, e.getMessage());
+        continue;
+      }
+      for (final String marker : markers) {
+        int occurrences = 0;
+        for (int from = logs.indexOf(marker); from >= 0; from = logs.indexOf(marker, from + marker.length()))
+          ++occurrences;
+        logger.info("Container {}: '{}' x{}", name, marker, occurrences);
+        totals.merge(marker, occurrences, Integer::sum);
+      }
+    }
+    return totals;
+  }
+
+  /**
+   * Container name without the leading slash Docker prefixes it with, so log lines and dumped file names agree.
+   */
+  private String containerLabel(final GenericContainer<?> container) {
+    final String name = container.getContainerName();
+    return name != null && name.startsWith("/") ? name.substring(1) : name;
   }
 
   /**
