@@ -3612,7 +3612,7 @@ public class CypherExecutionPlan {
    * Uses O(1) database.countType() instead of O(n) iteration.
    *
    * @param context       command context
-   * @param countRowsMode see {@link #countPushDownAlias}
+   * @param countRowsMode see {@link #typeCountOutputAlias}, which is what it selects here
    *
    * @return optimized TypeCountStep if pattern matches, null otherwise
    */
@@ -4208,6 +4208,16 @@ public class CypherExecutionPlan {
    * <p>
    * An absent RETURN does (the row reaches the caller as it is), and so does any projection that neither aggregates -
    * which collapses the rows into one per group - nor is {@code DISTINCT}, which drops duplicates.
+   * <p>
+   * <b>This is a wider shape than the one the ordinary push-down accepts</b>, which is a {@code RETURN} of exactly one
+   * count item. {@code RETURN *} and a projection of several non-aggregating items are both accepted here, and both
+   * are outside what {@code CypherUncorrelatedSubqueryCountPushDownIssue5686Test} asserts
+   * {@link CypherReferencedVariables} models - that tie is about the other entry point and does not carry over to
+   * this one. What makes the widening safe is {@link #seedIsRead}, asked before this: an <b>uncorrelated</b> body's
+   * row count is its match count whatever it projects, because no projection can add or drop a row.
+   * <p>
+   * An item whose expression is null is read as "does not preserve", so an unmodelled projection costs the
+   * optimization rather than the answer.
    */
   private boolean returnPreservesRowCount() {
     final ReturnClause returnClause = statement.getReturnClause();

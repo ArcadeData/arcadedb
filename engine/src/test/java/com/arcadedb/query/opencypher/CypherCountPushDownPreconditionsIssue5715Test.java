@@ -183,6 +183,22 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
     assertThat(scalarOf(chain)).isEqualTo(2L);
   }
 
+  /**
+   * The widest bodies this accepts, pinned because they are outside the shape the other push-down takes - a
+   * {@code RETURN} of exactly one count item - and nothing else says which way they go. No projection can add or drop
+   * a row, so for an uncorrelated body the row count is the match count whatever it names.
+   */
+  @Test
+  void aBodyProjectingSeveralItemsOrEverythingIsStillOneRowPerMatch() {
+    for (final String query : List.of(
+        "RETURN COUNT { MATCH (m:Big) RETURN * } AS c",
+        "RETURN COUNT { MATCH (m:Big) RETURN m, m.k } AS c",
+        "RETURN COUNT { MATCH (m:Big) RETURN m.k AS a, m.k AS b } AS c")) {
+      assertThat(scalarOf(query)).as(query).isEqualTo(BIG);
+      assertThat(recordsReadBy(query)).as(query).isZero();
+    }
+  }
+
   /** A body whose row count is not the match count keeps the ordinary pipeline, and its answer. */
   @Test
   void countOverABodyThatDoesNotProduceOneRowPerMatchIsNotPushedDown() {
