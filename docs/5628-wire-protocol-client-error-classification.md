@@ -34,6 +34,7 @@ wire module then owns only the table that translates a category into its own voc
 | `ARITHMETIC` | `22012` division_by_zero / `22003` numeric_value_out_of_range | `ERR` | 2 `BadValue` |
 | `DUPLICATED_KEY` | `23505` unique_violation | `ERR` | 11000 `DuplicateKey` |
 | `NOT_FOUND` | `02000` no_data | `ERR` | (uncoded) |
+| `SCHEMA` | `42P01` undefined_table | `ERR` | 26 `NamespaceNotFound` |
 | `SECURITY` | `42501` insufficient_privilege | `NOPERM` | 13 `Unauthorized` |
 | `VALIDATION` | `22023` invalid_parameter_value | `ERR` | 2 `BadValue` |
 | `PARSING` | `42601` syntax_error | `ERR` | 9 `FailedToParse` |
@@ -44,7 +45,7 @@ wire module then owns only the table that translates a category into its own voc
 chain carrying both must keep the transient classification, because that is the one a driver acts on.
 
 HTTP and Bolt keep the ladders they already had. Both predate `ErrorCategory` and are covered by the
-regression suites of five shipped issues; rewriting them buys nothing this issue asks for.
+regression suites of several shipped issues; rewriting them buys nothing this issue asks for.
 
 ## Changes
 
@@ -52,8 +53,56 @@ regression suites of five shipped issues; rewriting them buys nothing this issue
 - `postgresw` - `PostgresNetworkExecutor.sqlStateFor(...)`, used by every query/parse/bind error arm
 - `redisw` - `RedisNetworkExecutor.respErrorPrefix(...)`, plus a RESP-safe single-line error reply
 - `mongodbw` - `MongoDBDatabaseWrapper.wireException(...)`, so `putLastError` can emit `code`/`codeName`
-- `graphql` - `CommandExecutionException` passthrough in `GraphQLQueryEngine` and `GraphQLSchema`
+- `graphql` - `ArcadeDBException` passthrough in `GraphQLQueryEngine` and `GraphQLSchema`
 
 ## Tests
 
-See the PR test plan.
+New: `ErrorCategoryTest` (engine), `PostgresErrorClassificationTest`, `RedisErrorClassificationTest`,
+`MongoDBErrorClassificationTest`, `GraphQLExecutionErrorClassificationTest`.
+
+Fail-first was verified where a regression test could fail: with the GraphQL passthrough reverted,
+`anExecutionFailureIsNotReportedAsASyntaxError` fails while the two guard tests still pass. The arithmetic
+GraphQL test is a pin rather than a regression proof - the projection is evaluated as rows are pulled, so
+that failure already reached the caller from outside the rewrapping block.
+
+Green: `graphql` 30/30, `mongodbw` 78/78, `postgresw` unit 258/258, `redisw` `RedisWTest` 13/13 (the RESP
+wire path), `bolt` `BoltErrorClassificationTest` 13/13, `engine` `com.arcadedb.exception` 42/42.
+
+Not verifiable locally: `RedisQueryLanguageTest` and the server-backed ITs, because a local ArcadeDB holds
+ports 2480-2482 and the tests connect to it instead of the one they start. Identical failures confirmed on
+unmodified `main`, so CI is the gate for those.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5700
+
+## Review cycles
+
+### Cycle 1 - 9ffa8e267
+
+Claude's review found one substantive gap, which I verified and fixed:
+
+- **`SchemaException` fell through to `SERVER`.** It is the exception behind `SELECT FROM NonExistentType` -
+  demonstrably the most common caller mistake there is - so it reported as Postgres `XX000` and an uncoded
+  MongoDB server fault: exactly the misdirection this change exists to remove, for a different exception.
+  Added a `SCHEMA` category. The review also correctly noted that my GraphQL test asserted only
+  `isNotEqualTo(PARSING)`, which passed while the real classification was `SERVER`; it now asserts the exact
+  category. Fail-first re-verified: removing the `SCHEMA` arm fails
+  `namingATypeTheSchemaDoesNotDefineIsTheCallersMistake` and `theRemainingClientErrorCategoriesAreRecognised`.
+
+Points assessed and answered rather than changed:
+
+- **`IllegalArgumentException -> VALIDATION` is broad.** Correct, and it is the one entry that is not
+  self-evidently a client error. Kept, because the HTTP handler has answered it with 400 since long before
+  this enum and having the two disagree would be worse than either verdict. Now recorded in the javadoc.
+- **Arithmetic split via message text.** Fragile, already acknowledged; the class-22 verdict holds either way.
+- **GraphQL passthrough drops the wrapper's context.** Accurate cost. Rewrapping is what destroyed the
+  classification, so the trade is deliberate.
+- **No end-to-end wire ITs for the Postgres/MongoDB SQLSTATE and codes.** Fair, and worth doing - but the
+  server-backed ITs cannot run on this machine (ports 2480-2482 are held locally), so writing one I cannot
+  execute would be worse than not writing it. Deferred; noted below.
+
+## Deferred
+
+- One IT per protocol asserting the SQLSTATE / MongoDB code actually reaches a driver over the wire. Redis
+  already has this coverage via `RedisWTest`; Postgres and MongoDB are unit-tested at the helper level only.

@@ -61,7 +61,9 @@ class GraphQLExecutionErrorClassificationTest extends AbstractGraphQLTest {
 
       assertThat(error).isInstanceOf(SchemaException.class);
       assertThat(error).isNotInstanceOf(CommandParsingException.class);
-      assertThat(ErrorCategory.of(error)).isNotEqualTo(ErrorCategory.PARSING);
+      // Asserting the exact category, not merely "not PARSING": the weaker form passed while this still
+      // classified as SERVER, hiding that an unknown type was being reported as a server fault.
+      assertThat(ErrorCategory.of(error)).isEqualTo(ErrorCategory.SCHEMA);
 
       return null;
     });

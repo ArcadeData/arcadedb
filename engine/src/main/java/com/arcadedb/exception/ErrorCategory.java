@@ -56,6 +56,11 @@ public enum ErrorCategory {
   NOT_FOUND,
 
   /**
+   * The caller named a type, bucket or property the schema does not define.
+   */
+  SCHEMA,
+
+  /**
    * The caller is not allowed to do this.
    */
   SECURITY,
@@ -90,6 +95,11 @@ public enum ErrorCategory {
    * {@link #PARSING} so the {@code CommandParsingException} that GraphQL and the query engines wrap execution
    * failures in cannot relabel an arithmetic error as invalid syntax, and before any test on
    * {@link CommandExecutionException} would be, since {@link ArithmeticErrorException} extends it.
+   * <p>
+   * {@link IllegalArgumentException} is the one entry that is not self-evidently the caller's fault: the engine
+   * raises it both for bad input and for internal invariant violations, so classifying it as {@link #VALIDATION}
+   * can label a server bug a client error. It is mapped anyway because the HTTP handler has answered it with 400
+   * since long before this enum, and having the two disagree would be worse than either verdict.
    */
   public static ErrorCategory of(final Throwable error) {
     if (CauseChain.contains(error, NeedRetryException.class))
@@ -100,6 +110,8 @@ public enum ErrorCategory {
       return DUPLICATED_KEY;
     if (CauseChain.contains(error, RecordNotFoundException.class))
       return NOT_FOUND;
+    if (CauseChain.contains(error, SchemaException.class))
+      return SCHEMA;
     if (CauseChain.contains(error, SecurityException.class))
       return SECURITY;
     if (CauseChain.contains(error, ValidationException.class) //

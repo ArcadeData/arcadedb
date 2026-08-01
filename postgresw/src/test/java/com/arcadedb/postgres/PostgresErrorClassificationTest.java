@@ -27,6 +27,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
@@ -95,11 +96,20 @@ class PostgresErrorClassificationTest {
     assertThat(PostgresNetworkExecutor.sqlStateFor(new DuplicatedKeyException("idx", "k", new RID(1, 1))))
         .isEqualTo("23505");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new RecordNotFoundException("gone", new RID(1, 1)))).isEqualTo("02000");
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new SchemaException("Type with name 'Nope' was not found"))).isEqualTo("42P01");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new SecurityException("denied"))).isEqualTo("42501");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new ValidationException("mandatory property"))).isEqualTo("22023");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new QueryNotIdempotentException("writes on a query"))).isEqualTo("22023");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new CommandParsingException("bad syntax"))).isEqualTo("42601");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new TimeoutException("too slow"))).isEqualTo("57014");
+  }
+
+  @Test
+  void anUnknownTypeIsNotAServerFault() {
+    // SELECT FROM NonExistentType used to report XX000 internal_error, telling the driver the server had broken.
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new SchemaException("Type with name 'DoesNotExist' was not found")))
+        .isEqualTo("42P01")
+        .isNotEqualTo("XX000");
   }
 
   @Test

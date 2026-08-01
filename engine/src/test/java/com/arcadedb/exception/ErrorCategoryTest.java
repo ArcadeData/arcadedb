@@ -78,6 +78,7 @@ class ErrorCategoryTest {
     assertThat(ErrorCategory.of(new DuplicatedKeyException("idx", "k", new RID(1, 1))))
         .isEqualTo(ErrorCategory.DUPLICATED_KEY);
     assertThat(ErrorCategory.of(new RecordNotFoundException("gone", new RID(1, 1)))).isEqualTo(ErrorCategory.NOT_FOUND);
+    assertThat(ErrorCategory.of(new SchemaException("Type with name 'Nope' was not found"))).isEqualTo(ErrorCategory.SCHEMA);
     assertThat(ErrorCategory.of(new SecurityException("denied"))).isEqualTo(ErrorCategory.SECURITY);
     assertThat(ErrorCategory.of(new ValidationException("mandatory property"))).isEqualTo(ErrorCategory.VALIDATION);
     assertThat(ErrorCategory.of(new IllegalArgumentException("bad parameter"))).isEqualTo(ErrorCategory.VALIDATION);
@@ -105,6 +106,18 @@ class ErrorCategoryTest {
   }
 
   @Test
+  void namingATypeTheSchemaDoesNotDefineIsTheCallersMistake() {
+    // SELECT FROM NonExistentType raises SchemaException. Left out of the ladder it fell through to SERVER, so the
+    // single most common caller mistake reported as "the server broke" - the misdirection this whole enum exists
+    // to remove.
+    final SchemaException missingType = new SchemaException("Type with name 'DoesNotExist' was not found");
+
+    assertThat(ErrorCategory.of(missingType)).isEqualTo(ErrorCategory.SCHEMA);
+    assertThat(ErrorCategory.of(missingType)).isNotEqualTo(ErrorCategory.SERVER);
+    assertThat(ErrorCategory.of(new TransactionException("commit failed", missingType))).isEqualTo(ErrorCategory.SCHEMA);
+  }
+
+  @Test
   void aCyclicCauseChainTerminates() {
     final CommandExecutionException a = new CommandExecutionException("a");
     final CommandExecutionException b = new CommandExecutionException("b", a);
@@ -122,6 +135,7 @@ class ErrorCategoryTest {
     assertThat(ErrorCategory.ARITHMETIC.isClientError()).isTrue();
     assertThat(ErrorCategory.DUPLICATED_KEY.isClientError()).isTrue();
     assertThat(ErrorCategory.NOT_FOUND.isClientError()).isTrue();
+    assertThat(ErrorCategory.SCHEMA.isClientError()).isTrue();
     assertThat(ErrorCategory.SECURITY.isClientError()).isTrue();
     assertThat(ErrorCategory.VALIDATION.isClientError()).isTrue();
     assertThat(ErrorCategory.PARSING.isClientError()).isTrue();

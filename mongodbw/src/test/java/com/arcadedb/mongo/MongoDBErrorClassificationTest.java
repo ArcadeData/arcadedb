@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
@@ -80,6 +81,7 @@ class MongoDBErrorClassificationTest {
     assertThat(codeOf(new DuplicatedKeyException("idx", "k", new RID(1, 1)))).isEqualTo(11000);
     assertThat(codeOf(new ValidationException("mandatory property"))).isEqualTo(2);
     assertThat(codeOf(new CommandParsingException("bad syntax"))).isEqualTo(9);
+    assertThat(codeOf(new SchemaException("Type with name 'Nope' was not found"))).isEqualTo(26);
     assertThat(codeOf(new SecurityException("denied"))).isEqualTo(13);
     assertThat(codeOf(new TimeoutException("too slow"))).isEqualTo(50);
   }

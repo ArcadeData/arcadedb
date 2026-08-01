@@ -1759,6 +1759,11 @@ public class PostgresNetworkExecutor extends Thread {
    * <p>
    * The classification itself lives in {@link ErrorCategory} so every wire protocol answers it the same way; only
    * the translation into Postgres' vocabulary is here.
+   * <p>
+   * {@code SCHEMA} reports {@code 42P01} undefined_table because the query-reachable case is overwhelmingly a
+   * missing type, which is this database's table; the same category also covers a missing bucket or property, for
+   * which a Postgres client would rather have seen {@code 42704}. As with the arithmetic split, the class - here
+   * 42, syntax error or access rule violation - carries the client-vs-server verdict either way.
    */
   static String sqlStateFor(final Throwable error) {
     return switch (ErrorCategory.of(error)) {
@@ -1766,6 +1771,7 @@ public class PostgresNetworkExecutor extends Thread {
       case ARITHMETIC -> arithmeticSqlState(error);
       case DUPLICATED_KEY -> "23505"; // unique_violation
       case NOT_FOUND -> "02000";      // no_data
+      case SCHEMA -> "42P01";         // undefined_table - a type is this database's table
       case SECURITY -> "42501";       // insufficient_privilege
       case VALIDATION -> "22023";     // invalid_parameter_value
       case PARSING -> "42601";        // syntax_error

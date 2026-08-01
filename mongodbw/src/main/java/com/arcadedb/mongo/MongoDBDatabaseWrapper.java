@@ -225,6 +225,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       case ARITHMETIC, VALIDATION -> new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(), message, e);
       case DUPLICATED_KEY ->
           new MongoServerError(ErrorCode.DuplicateKey.getValue(), ErrorCode.DuplicateKey.getName(), message, e);
+      case SCHEMA -> new MongoServerError(26, "NamespaceNotFound", message, e);
       case SECURITY -> new MongoServerError(13, "Unauthorized", message, e);
       case PARSING -> new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(), message, e);
       case TIMEOUT -> new MongoServerError(50, "MaxTimeMSExpired", message, e);
