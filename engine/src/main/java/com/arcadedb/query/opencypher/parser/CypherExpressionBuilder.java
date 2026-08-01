@@ -1853,9 +1853,14 @@ class CypherExpressionBuilder {
    * builds the body <i>as written</i> alongside it, off the existing sub-tree rather than by re-lexing the text.
    * <p>
    * What that costs is a full statement build over an existing sub-tree, not a bare tree walk: the visit goes through
-   * the same {@link CypherASTBuilder} pipeline any statement does, rewriters included. It is bounded by the size of
-   * the body, it is paid once per distinct query text since the plan is cached, and it buys the checks a body they
-   * can walk - but a reader sizing it should read it as "one more statement built", not "one traversal".
+   * the same {@link CypherASTBuilder} pipeline any statement does, rewriters included. A reader sizing it should read
+   * it as "one more statement built", not "one traversal".
+   * <p>
+   * Two things bound it. It is paid once per distinct query text, because {@code CypherStatementCache} keys the whole
+   * parse - this AST included, since it hangs off the statement - on the query string itself. And nesting adds rather
+   * than multiplies: a body reached from here is built by its own visit, and the enclosing statement holds the
+   * subquery only as an expression, so a subquery inside a subquery is built once as part of its parent's body, not
+   * again for every level above it. The total is linear in the text.
    * <p>
    * A body written as a bare pattern - {@code EXISTS { (n)-[:KNOWS]->(m) }} - has no {@code queryWithLocalDefinitions}
    * of its own and is wrapped into the {@code MATCH} the executor synthesizes for it anyway.
