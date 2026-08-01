@@ -430,6 +430,8 @@ public class CypherExecutionPlan {
    */
   private boolean seedIsRead(final Result seedRow) {
     final Set<String> seedNames = seedRow.getPropertyNames();
+    // referencesAny() answers this case too. Answering it here is what keeps a body seeded with nothing - the common
+    // one, a CALL { } importing nothing - from forcing the collection over the statement at all.
     if (seedNames.isEmpty())
       return false;
 
