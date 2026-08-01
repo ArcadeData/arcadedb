@@ -81,6 +81,9 @@ public class HashIndexBucket extends PaginatedComponent {
   // huge list (the first problems are enough to know it must be rebuilt).
   static final int MAX_REPORTED_PROBLEMS = 20;
 
+  // The schema types usable as a hash index key, listed in the creation-time refusal. Fixed for the life of the JVM.
+  private static final String SUPPORTED_KEY_TYPE_NAMES = supportedKeyTypeNames();
+
   // Bucket page header offsets (relative to PAGE_HEADER_SIZE)
   static final int BUCKET_LOCAL_DEPTH     = 0;                       // short (2)
   static final int BUCKET_ENTRY_COUNT     = 2;                       // short (2)
@@ -897,6 +900,12 @@ public class HashIndexBucket extends PaginatedComponent {
   /**
    * Validates the key types a hash index is about to be created with, so an unsupported one is refused up front with
    * a message naming it, instead of surfacing as an "unsupported key type" deep inside the first insert (#5677).
+   * <p>
+   * This is called from {@code HashIndexFactoryHandler.create()}, which is the only path that reaches the creation
+   * constructor of {@link HashIndex} (and through it the creation constructor of this class) - every hash index is
+   * built by {@code IndexFactory.createIndex()}. A new construction path must call this too, or it can write a file
+   * whose declared key type the bucket cannot encode; the {@link #loadMetadata} check would then only catch it on the
+   * next open.
    */
   static void checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
     if (keyTypes == null)
@@ -906,12 +915,13 @@ public class HashIndexBucket extends PaginatedComponent {
         throw new IndexException(
             "Cannot create index '" + indexName + "' of type HASH because "
                 + (keyType == null ? "a key column has no type" : "the key type " + keyType + " cannot be used")
-                + " as a HASH index key. Supported key types are: " + supportedKeyTypeNames()
+                + " as a HASH index key. Supported key types are: " + SUPPORTED_KEY_TYPE_NAMES
                 + ". Create the index as LSM_TREE instead");
   }
 
   /**
-   * Comma-separated list of the schema types usable as a hash index key, for the creation-time error message.
+   * Comma-separated list of the schema types usable as a hash index key, for the creation-time error message. The set
+   * is fixed at class-load time, so it is built once rather than on every refusal.
    */
   private static String supportedKeyTypeNames() {
     final StringBuilder buffer = new StringBuilder(128);
@@ -984,7 +994,7 @@ public class HashIndexBucket extends PaginatedComponent {
             + "content offset " + offset + "). Declared key types=" + formatKeyTypes()
             + ". No record data is lost: either the index metadata page is damaged, or the index was created on a "
             + "property type HASH does not support. Drop it and recreate it, as LSM_TREE if the key type is not in: "
-            + supportedKeyTypeNames());
+            + SUPPORTED_KEY_TYPE_NAMES);
   }
 
   /**
