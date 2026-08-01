@@ -20,6 +20,7 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -44,7 +45,9 @@ public class SubstringFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null || args[1] == null)
+    // An explicitly written null length propagates rather than meaning "run to the end of the string", which is what
+    // CypherSubstringFunction - the implementation Cypher actually resolves substring() to - already did (issue #5193).
+    if (args[0] == null || args[1] == null || CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
     final String str = args[0].toString();
     final int start = ((Number) args[1]).intValue();

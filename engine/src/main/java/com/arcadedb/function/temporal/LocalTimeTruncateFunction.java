@@ -18,10 +18,9 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
@@ -41,7 +40,6 @@ public class LocalTimeTruncateFunction implements StatelessFunction {
     return "localtime.truncate";
   }
 
-  @SuppressWarnings("unchecked")
   @Override
   public int getMinArgs() {
     return 2;
@@ -52,6 +50,7 @@ public class LocalTimeTruncateFunction implements StatelessFunction {
     return 3;
   }
 
+  @SuppressWarnings("unchecked")
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
@@ -68,6 +67,11 @@ public class LocalTimeTruncateFunction implements StatelessFunction {
     else
       throw new CommandExecutionException("localtime.truncate() second argument must be a temporal value with a time");
     LocalTime truncated = TemporalUtil.truncateLocalTime(time, unit);
+    // An explicitly written null adjustment map propagates, like every argument before it; only an omitted one means
+    // "no adjustment" (issue #5629). This sits after the unit and the temporal value have been validated, so a bad unit
+    // is still reported rather than being masked by the null - the same ordering round() uses.
+    if (CypherFunctionHelper.isExplicitNull(args, 2))
+      return null;
     if (args.length >= 3 && args[2] instanceof Map)
       truncated = CypherFunctionHelper.applyTimeMap(truncated, (Map<String, Object>) args[2]);
     return new CypherLocalTime(truncated);

@@ -52,7 +52,7 @@ public class NormalizeFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null)
+    if (args[0] == null || CypherFunctionHelper.isExplicitNull(args, 1))
       return null;
 
     // STRING-only, as Cypher declares it and as isNormalized() already did: toString()-ing whatever arrived turned
@@ -68,6 +68,10 @@ public class NormalizeFunction implements StatelessFunction {
    * Resolves the optional normal-form argument shared by {@code normalize()} and {@code isNormalized()}, defaulting to
    * NFC as Cypher does. Kept here rather than duplicated so the two functions accept exactly the same set of form
    * names and reject an unknown one with the same message.
+   *
+   * <p>
+   * A {@code null} here means the argument was omitted. A form written as an explicit {@code null} never reaches this
+   * method: it propagates, per {@link CypherFunctionHelper#isExplicitNull} (issue #5629).
    *
    * @param form         the argument as written, or {@code null} when the call omitted it
    * @param functionName the caller's name, so the error names the function the client actually wrote

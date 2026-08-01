@@ -464,9 +464,10 @@ class TextStatelessFunctionsTest {
     final FormatFunction fn = new FormatFunction();
 
     final CypherDate date = new CypherDate(LocalDate.of(2026, 1, 15));
-    // Null pattern returns toString()
-    final String result = (String) fn.execute(new Object[]{date, null}, null);
-    assertThat(result).isEqualTo("2026-01-15");
+    // An explicitly written null pattern propagates rather than selecting the toString() default (issue #5629).
+    assertThat(fn.execute(new Object[]{date, null}, null)).isNull();
+    // Omitting the pattern still answers the ISO string.
+    assertThat(fn.execute(new Object[]{date}, null)).isEqualTo("2026-01-15");
   }
 
   @Test

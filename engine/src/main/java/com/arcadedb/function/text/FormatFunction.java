@@ -20,6 +20,7 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -53,11 +54,12 @@ public class FormatFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null)
+    // An explicitly written null pattern propagates; only an omitted one selects the ISO string (issue #5629).
+    if (args[0] == null || CypherFunctionHelper.isExplicitNull(args, 1))
       return null;
 
     // Without pattern -> ISO string
-    if (args.length == 1 || args[1] == null)
+    if (args.length == 1)
       return args[0].toString();
 
     final String pattern = args[1].toString();
