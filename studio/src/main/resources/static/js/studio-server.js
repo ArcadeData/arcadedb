@@ -268,8 +268,11 @@ function displayMetrics() {
     var entry = p[name];
     var val = "";
     if (entry.perc != null) val = globalFormatDouble(entry.perc, 2) + "%";
-    else if (entry.count != null && entry.count != 0) val = globalFormatDouble(entry.count, 0);
-    else if (entry.space != null && entry.space != 0) val = globalFormatSpace(entry.space);
+    // #5636: no `&& entry.count != 0` here. A counter sitting at zero is DATA; skipping the whole row left the
+    // operator unable to tell "this is zero" from "this is not reported", which is backwards for a health signal
+    // whose good state IS zero. Only a stat reporting none of perc/count/space/value is genuinely absent.
+    else if (entry.count != null) val = globalFormatDouble(entry.count, 0);
+    else if (entry.space != null) val = globalFormatSpace(entry.space);
     else if (entry.value != null) val = entry.value;
     else continue;
     profilerHtml += "<tr><td>" + escapeHtml(name) + "</td><td class='text-end'>" + escapeHtml(String(val)) + "</td></tr>";

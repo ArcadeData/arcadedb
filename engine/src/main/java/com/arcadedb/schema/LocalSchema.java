@@ -432,6 +432,13 @@ public class LocalSchema implements Schema {
     return bucketMap.containsKey(bucketName);
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * @throws SchemaException if no bucket is registered under that name. Callers that want to handle the missing case
+   *                         must use {@link #getBucketByNameIfExists(String)}; a {@code null} check after this call is
+   *                         unreachable.
+   */
   @Override
   public Bucket getBucketByName(final String name) {
     final Bucket p = bucketMap.get(name);
@@ -441,8 +448,25 @@ public class LocalSchema implements Schema {
   }
 
   @Override
+  public Bucket getBucketByNameIfExists(final String name) {
+    return bucketMap.get(name);
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * @throws SchemaException if the id is out of range or the component it maps to is not a bucket. Callers that want to
+   *                         handle the missing case must use {@link #getBucketByIdIfExists(int)}; a {@code null} check
+   *                         after this call is unreachable.
+   */
+  @Override
   public LocalBucket getBucketById(final int id) {
     return getBucketById(id, true);
+  }
+
+  @Override
+  public LocalBucket getBucketByIdIfExists(final int id) {
+    return getBucketById(id, false);
   }
 
   public LocalBucket getBucketById(final int id, final boolean throwExceptionIfNotFound) {

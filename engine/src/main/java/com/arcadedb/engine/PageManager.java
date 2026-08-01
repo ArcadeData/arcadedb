@@ -55,6 +55,11 @@ public class PageManager extends LockContext {
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
   private volatile long                               maxRAM;
   final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
+  // #5636: the counters below, down to totalMergesDeclinedByCoverage, are exported as Prometheus COUNTERS (see
+  // EngineMetricsBinder), which requires them never to decrease for the lifetime of the JVM. They are deliberately
+  // reset nowhere - note close() resets only totalReadCacheRAM above, which is an instantaneous gauge. Adding a
+  // "reset stats" affordance that touched them would make each reset read as a counter reset and fabricate a rate()
+  // spike, which is the artifact #5636 exists to remove.
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
   private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();

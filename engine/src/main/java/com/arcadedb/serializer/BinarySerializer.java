@@ -1152,7 +1152,7 @@ public class BinarySerializer {
    */
   private ExternalWriteResult finalizeExternalWrite(final DatabaseInternal database, final int externalBucketId,
       final RID existingExternalRid, final Binary blob, final byte typeByte) {
-    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
+    final LocalBucket externalBucket = resolveExternalBucket(database, externalBucketId, "write");
     final RID rid;
     if (existingExternalRid == null) {
       final ExternalValueRecord rec = new ExternalValueRecord(database, null, blob);
@@ -1165,6 +1165,30 @@ public class BinarySerializer {
       rid = existingExternalRid;
     }
     return new ExternalWriteResult(rid, typeByte);
+  }
+
+  /**
+   * Resolves the paired external bucket, or explains why it is missing. Both the read and the write path go through
+   * here so a tiered bucket that was not loaded produces the same actionable message on either side (#5636): the
+   * write path used to raise a bare {@code SchemaException} while the read path carried the guidance.
+   * <p>
+   * Uses {@link com.arcadedb.schema.Schema#getBucketByIdIfExists(int)} deliberately. The throwing
+   * {@code getBucketById(int)} raises in exactly the case tested for here, which would make the message below
+   * unreachable.
+   */
+  private LocalBucket resolveExternalBucket(final DatabaseInternal database, final int externalBucketId,
+      final String operation) {
+    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketByIdIfExists(externalBucketId);
+    if (externalBucket == null)
+      // Typical cause: the paired external bucket was created on a tiered path (configured via
+      // arcadedb.externalPropertyBucketPath) and the database was reopened with that config unset or
+      // pointing elsewhere, so FileManager's secondary scan never picked the file up. The schema still
+      // references the old bucket id, but the file isn't loaded -> we'd otherwise NPE on getRecord.
+      throw new SerializationException(
+          "Cannot " + operation + " EXTERNAL property: external bucket id=" + externalBucketId + " is not loaded. "
+              + "If the bucket was tiered to a secondary path, set 'arcadedb.externalPropertyBucketPath' "
+              + "to the same value used at creation time and reopen the database.");
+    return externalBucket;
   }
 
   public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
@@ -1180,16 +1204,7 @@ public class BinarySerializer {
    */
   public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
       final EmbeddedModifier embeddedModifier, final boolean compressed) {
-    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
-    if (externalBucket == null)
-      // Typical cause: the paired external bucket was created on a tiered path (configured via
-      // arcadedb.externalPropertyBucketPath) and the database was reopened with that config unset or
-      // pointing elsewhere, so FileManager's secondary scan never picked the file up. The schema still
-      // references the old bucket id, but the file isn't loaded -> we'd otherwise NPE on getRecord.
-      throw new SerializationException(
-          "Cannot read EXTERNAL property: external bucket id=" + externalBucketId + " is not loaded. "
-              + "If the bucket was tiered to a secondary path, set 'arcadedb.externalPropertyBucketPath' "
-              + "to the same value used at creation time and reopen the database.");
+    final LocalBucket externalBucket = resolveExternalBucket(database, externalBucketId, "read");
     final RID rid = RID.create(database, externalBucketId, position);
     final Binary buffer = externalBucket.getRecord(rid).copyOfContent();
     buffer.position(Binary.BYTE_SERIALIZED_SIZE); // SKIP RECORD TYPE BYTE

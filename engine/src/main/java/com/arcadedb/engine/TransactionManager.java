@@ -445,6 +445,12 @@ public class TransactionManager {
     return fileIdsLockManager.statsSnapshot();
   }
 
+  /**
+   * <b>Must stay lock-free, and must stay callable after {@link #close} (#5636.)</b> {@code Profiler} reads this
+   * under its own monitor, including from {@code unregisterDatabase} on the close path - which runs AFTER this
+   * manager is closed - so it has to tolerate a retired WAL pool (it does, via the null guard below) and must never
+   * take a WAL or page lock, which would deadlock against a thread waiting on the Profiler monitor.
+   */
   public Map<String, Object> getStats() {
     final Map<String, Object> map = new HashMap<>();
     map.put("logFiles", logFileCounter.get());

@@ -58,9 +58,12 @@ public class TruncateBucketStatement extends DDLStatement {
 
     try {
       if (bucketNumber != null) {
-        // Bucket specified by ID
+        // Bucket specified by ID. The null-tolerant lookups here and below are deliberate (#5636): the throwing
+        // getBucketById(int) / getBucketByName(String) raise in exactly the case these branches test for, which
+        // left both unreachable and let the outer catch double the message ("Bucket not found: Bucket with id
+        // '9999' was not found").
         final int bucketId = bucketNumber.getValue().intValue();
-        bucket = schema.getBucketById(bucketId);
+        bucket = schema.getBucketByIdIfExists(bucketId);
         if (bucket == null) {
           throw new CommandExecutionException("Bucket with id " + bucketId + " not found");
         }
@@ -68,7 +71,7 @@ public class TruncateBucketStatement extends DDLStatement {
       } else if (bucketName != null) {
         // Bucket specified by name
         resolvedBucketName = bucketName.getStringValue();
-        bucket = schema.getBucketByName(resolvedBucketName);
+        bucket = schema.getBucketByNameIfExists(resolvedBucketName);
         if (bucket == null) {
           throw new CommandExecutionException("Bucket '" + resolvedBucketName + "' not found");
         }

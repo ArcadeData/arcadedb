@@ -319,6 +319,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     createThreads(database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
   }
 
+  /**
+   * <b>Must stay lock-free, and must stay callable on a shut-down executor (#5636.)</b> {@code Profiler.toJSON()}
+   * reads this while holding its own monitor, which a closing database can be waiting on, so a lock taken here would
+   * sit on the other side of that wait. The volatile read of {@code executorThreads} plus the queue sizes below is
+   * deliberately all it does - and the null check on that read is what keeps it answering during the window between
+   * a database being torn down and it reaching {@code Profiler.unregisterDatabase}, where a scrape still sees it
+   * registered. Zeros are the right answer there; throwing would take the whole snapshot down.
+   */
   public DBAsyncStats getStats() {
     final DBAsyncStats stats = new DBAsyncStats();
 

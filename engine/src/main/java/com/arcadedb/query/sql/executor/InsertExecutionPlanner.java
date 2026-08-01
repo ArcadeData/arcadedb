@@ -133,17 +133,28 @@ public class InsertExecutionPlanner {
       tot = body.getJsonArrayContent().items.size();
 
     if (targetType == null && targetBucket != null) {
+      // #5636: the `else bucket = null` arm below makes this guard reachable, but ONLY for the case where no name
+      // and no number were given at all. An unknown name or id still raised out of the throwing lookups before it
+      // could run - i.e. the guard was dead for exactly the input it reads as though it handles.
       final com.arcadedb.engine.Bucket bucket;
       final String resolvedName = resolveBucketName(targetBucket, context);
       if (resolvedName != null)
-        bucket = context.getDatabase().getSchema().getBucketByName(resolvedName);
+        bucket = context.getDatabase().getSchema().getBucketByNameIfExists(resolvedName);
       else if (targetBucket.getBucketNumber() != null)
-        bucket = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber());
+        bucket = context.getDatabase().getSchema().getBucketByIdIfExists(targetBucket.getBucketNumber());
       else
         bucket = null;
 
       if (bucket == null)
-        throw new CommandSQLParsingException("Target not specified");
+        // Now that the unknown-name / unknown-id cases actually reach this branch, "not specified" would be a lie
+        // for two of the three ways to get here: the target WAS specified, it just does not exist.
+        throw new CommandSQLParsingException(resolvedName != null ?
+            "Target bucket '" + resolvedName + "' not found" :
+            targetBucket.getBucketNumber() != null ?
+                "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
+                // Same wording as handleInsertSelect below: it is the bucket that is missing, and the two paths
+                // answer the same question.
+                "Target bucket not specified");
 
       targetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }
@@ -184,14 +195,26 @@ public class InsertExecutionPlanner {
     // If targetType is null but targetBucket is specified, derive the type from the bucket
     Identifier effectiveTargetType = targetType;
     if (effectiveTargetType == null && targetBucket != null) {
+      // #5636: identical in shape to handleCreateRecord above, which it had drifted from in three ways. It read
+      // getBucketName() directly instead of resolveBucketName(), so a PARAMETERIZED target - INSERT INTO bucket:?
+      // FROM SELECT ... - never resolved its parameter and failed even for a bucket that exists. It had no
+      // `else bucket = null` arm, so an unknown bucket lost its message to a generic SchemaException and a target
+      // with neither name nor number unboxed null on getBucketNumber(). And its message named nothing.
       final com.arcadedb.engine.Bucket bucket;
-      if (targetBucket.getBucketName() != null)
-        bucket = context.getDatabase().getSchema().getBucketByName(targetBucket.getBucketName());
+      final String resolvedName = resolveBucketName(targetBucket, context);
+      if (resolvedName != null)
+        bucket = context.getDatabase().getSchema().getBucketByNameIfExists(resolvedName);
+      else if (targetBucket.getBucketNumber() != null)
+        bucket = context.getDatabase().getSchema().getBucketByIdIfExists(targetBucket.getBucketNumber());
       else
-        bucket = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber());
+        bucket = null;
 
       if (bucket == null)
-        throw new CommandSQLParsingException("Target bucket not found");
+        throw new CommandSQLParsingException(resolvedName != null ?
+            "Target bucket '" + resolvedName + "' not found" :
+            targetBucket.getBucketNumber() != null ?
+                "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
+                "Target bucket not specified");
 
       effectiveTargetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }

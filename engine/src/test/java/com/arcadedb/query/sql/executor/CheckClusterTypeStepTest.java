@@ -58,4 +58,21 @@ class CheckClusterTypeStepTest {
       step.syncPull(context, 20);
     })).isInstanceOf(CommandExecutionException.class);
   }
+
+  /**
+   * #5636: the step carries its own "Bucket 'x' not found" message, but the guard holding it was unreachable for an
+   * unknown name - the else arm above it only covers a null bucket name, so the throwing lookup raised a raw
+   * {@code SchemaException} first. Pins both the exception type and the message the step is meant to produce.
+   */
+  @Test
+  void shouldReportAnUnknownBucketWithItsOwnMessage() throws Exception {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase(db -> {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(db);
+      final CheckClusterTypeStep step = new CheckClusterTypeStep("NoSuchBucket",
+          TestHelper.createRandomType(db).getName(), context);
+
+      step.syncPull(context, 20);
+    })).isInstanceOf(CommandExecutionException.class).hasMessageContaining("Bucket 'NoSuchBucket' not found");
+  }
 }
