@@ -794,7 +794,10 @@ public class GraphEngine {
       // handed to an exception nobody has reasoned about. The first five are the decode family LocalDatabase uses
       // for the same purpose; ClassCastException and SchemaException are the two further shapes a CORRUPT edge list
       // adds on top of it (a head RID naming a record that is not an edge segment, an edge bucket whose type is
-      // gone). Anything else - an NPE or an IllegalStateException from a future change, an I/O failure surfacing as
+      // gone). IllegalArgumentException is the loosest member and the one to re-examine first if this arm ever
+      // starts firing in the field: it earns its place because Binary raises it ("Invalid position") for a content
+      // offset that decodes past the end of the buffer, which is a genuine corruption shape and not a caller error.
+      // Anything else - an NPE or an IllegalStateException from a future change, an I/O failure surfacing as
       // DatabaseOperationException - is a bug or an environment fault, not a broken graph, and propagates so it is
       // seen rather than silently paid for with the vertex's edges. If a genuine corruption shape ever escapes here,
       // add it to this list with the reason; do not widen the catch.
