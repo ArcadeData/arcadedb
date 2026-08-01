@@ -794,6 +794,9 @@ public class GraphEngine {
 
     switch (direction) {
       case BOTH: {
+        // No countEntries override here, unlike the BOTH branch of getEdges: that one delegates to
+        // EdgeLinkedList.count, which filters by edge type only. There is no neighbour-keyed count, so an
+        // override could do nothing cheaper than the walk MultiIterator already falls back to.
         final MultiIterator<Edge> result = new MultiIterator<>();
         final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
         if (outEdges != null)
