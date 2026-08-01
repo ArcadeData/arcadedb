@@ -882,6 +882,14 @@ public class HashIndexBucket extends PaginatedComponent {
     // An index created before the creation-time check of #5713 can carry an unaddressable page size on disk. Report it
     // rather than throw: throwing here would make the whole database unopenable, while the index is still droppable and
     // rebuildable - and CHECK DATABASE surfaces the same problem through checkMetadataIntegrity().
+    //
+    // WHY WRITES ARE STILL ACCEPTED afterwards, rather than the component being marked read-only: such an index is
+    // already unusable in practice, not quietly degrading. Every offset on its bucket pages has wrapped, so the first
+    // lookup - including the unique-constraint probe an insert performs - walks the overwritten overflow pointer and
+    // raises corruptedOverflowChain(). The failure is loud on the read side, which is where it would matter, so a
+    // write-side block would mostly convert one loud error into a different loud error while removing the operator's
+    // ability to keep the type usable until the rebuild window. The rebuild itself is unaffected either way: it scans
+    // the records and populates a NEW file, never writing through this bucket.
     if (!isSupportedPageSize(pageSize))
       LogManager.instance().log(this, Level.SEVERE,
           "Hash index '%s' (fileId=%d) has an unsupported page size of %d bytes (allowed: %d..%d). Its bucket pages "

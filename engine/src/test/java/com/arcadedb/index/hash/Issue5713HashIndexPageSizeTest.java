@@ -33,6 +33,7 @@ import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -230,6 +231,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
    * from "unset" only because it happened to equal the default.
    */
   @Test
+  @Tag("slow")
   void theLargestLegalPageSizeIsAcceptedAndUsable() {
     createIndexAndFill(HashIndexBucket.MAX_PAGE_SIZE);
   }
@@ -238,6 +240,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
    * A page size smaller than the LSM default was always legal and must keep being honoured verbatim.
    */
   @Test
+  @Tag("slow")
   void aSmallPageSizeIsHonouredVerbatim() {
     createIndexAndFill(4_096);
   }
