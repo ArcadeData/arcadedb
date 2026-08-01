@@ -500,7 +500,13 @@ public class CoreApiSpec implements OpenApiContributor {
         {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
         INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
     schema.addProperty("serializer", SpecBuilders.string("Response serializer").example("json"));
-    schema.addProperty("limit", SpecBuilders.integer("Maximum number of results").example(100));
+    schema.addProperty("limit", SpecBuilders.integer(
+        """
+        Maximum number of rows to serialize into the response. When omitted, a LIMIT stated by the query is \
+        honored as written and only a query stating none is capped by the server default \
+        ('arcadedb.server.httpQueryDefaultLimit'). Use -1 for no cap. The response always reports the cap \
+        that was applied ('limit'), how many rows it carries ('returned') and whether rows were left \
+        behind ('truncated').""").example(100));
     schema.setRequired(List.of("command"));
     return schema;
   }
@@ -523,6 +529,10 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.object(null), "Query results"));
     schema.addProperty("executionTime", SpecBuilders.integer("Execution time in milliseconds"));
     schema.addProperty("recordCount", SpecBuilders.integer("Number of records returned"));
+    schema.addProperty("limit", SpecBuilders.integer("Effective row cap applied while serializing, -1 when uncapped"));
+    schema.addProperty("returned", SpecBuilders.integer("Number of rows carried by this response"));
+    schema.addProperty("truncated", SpecBuilders.bool(
+        "True when the cap stopped the serialization with rows still pending, so the response is incomplete"));
     return schema;
   }
 

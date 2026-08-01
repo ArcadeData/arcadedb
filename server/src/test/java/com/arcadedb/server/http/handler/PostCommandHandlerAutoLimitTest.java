@@ -87,6 +87,22 @@ class PostCommandHandlerAutoLimitTest {
   }
 
   @Test
+  void doesNotAppendWhenLimitIsZero() {
+    // A non-positive cap means unlimited, as it does in the serializer: appending 'limit 0' would return no row.
+    final String cmd = "select from V";
+    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", 0)).isEqualTo(cmd);
+  }
+
+  @Test
+  void probeLimitIsOneRowAboveTheCapAndSaturates() {
+    // The extra row is never serialized: it only tells a result ending at the cap from a truncated one.
+    assertThat(PostCommandHandler.truncationProbeLimit(LIMIT)).isEqualTo(LIMIT + 1);
+    assertThat(PostCommandHandler.truncationProbeLimit(Integer.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(PostCommandHandler.truncationProbeLimit(0)).isEqualTo(0);
+    assertThat(PostCommandHandler.truncationProbeLimit(-1)).isEqualTo(-1);
+  }
+
+  @Test
   void appendsWhenLimitSubstringIsNotAStandaloneClause() {
     // "limitless" must not be mistaken for an existing LIMIT clause.
     final String cmd = "select limitless from V";

@@ -1471,4 +1471,50 @@ release is not readable by an earlier build: the old loader does not recognise `
 metadata page as corrupt. The database still opens and every other index is unaffected, but that one index has to be
 dropped before going back. `LSM_TREE` indexes on the same properties are unaffected in both directions.
 
+## HTTP: a truncated query response is no longer indistinguishable from a complete one
+
+The HTTP query and command endpoints serialize at most a fixed number of rows into a response, 20,000 by default.
+The cap was applied after the engine had produced the rows and was reported nowhere: same `200`, same body shape,
+no flag and no count. A caller that paged by writing `LIMIT` into its own SQL - the obvious thing to do - got
+20,000 rows for any page larger than that and nothing in the answer said so
+([#5711](https://github.com/ArcadeData/arcadedb/issues/5711)).
+
+Two things were wrong, and both are fixed.
+
+**A limit the caller stated is now honored as written.** The row cap is the `limit` field of the request when
+there is one; otherwise it is the server default, raised to the LIMIT the query itself carries. So
+`SELECT i FROM R LIMIT 30000` now returns 30,000 rows over HTTP exactly as it does embedded, while a query
+stating no limit at all is still capped. The query's LIMIT only ever raises the cap: a smaller LIMIT is already
+enforced by the engine, so the serializer has nothing to add. This also removes an asymmetry between the two
+surfaces: `GET /query` already read the LIMIT back from the execution plan, `POST /query` and `POST /command`
+did not.
+
+**When the default cap does bite, the response says so.** The query and command endpoints now always report:
+
+```json
+{ "result": [ ... ], "limit": 20000, "returned": 20000, "truncated": true }
+```
+
+`truncated` is true only when the cap stopped the serialization with at least one row still pending, so a result
+that ends exactly at the cap is not flagged. The server also logs a warning naming the database, the cap and the
+query - but only when the *default* did the cutting, since truncation against a `limit` the caller asked for is
+the expected outcome. The `POST /timeseries/{db}/query` endpoint reports `limit` and `truncated` the same way.
+
+The cap is now configurable with **`arcadedb.server.httpQueryDefaultLimit`** (default 20000, `-1` for unlimited);
+it applies only to callers that state no limit of their own.
+
+**Java remote driver.** `RemoteDatabase` warns when the server reports a truncated result instead of handing back
+a partial `ResultSet` that looks complete, and `setMaxResultRows(Integer)` sets the cap for that connection -
+`-1` removes it, so a query with no LIMIT of its own returns every row like the embedded API does. Beware that
+removing the cap makes the server materialize the whole result set in memory before answering.
+
+**Studio** marks the row count with `(truncated)` when the result it is showing was cut short.
+
+Three smaller behaviour changes come with this. A serializer name other than `graph`, `studio` or `record` used
+to emit one row *above* the cap; it now emits exactly the cap, like the others. On `GET /query`, an explicit
+`limit` query parameter now wins over the LIMIT in the query text (it used to be the other way round), which is
+what the POST endpoints have always done. And `"limit": 0` now means unlimited everywhere, as it already did in
+the serializer: it used to be pushed down as a literal `LIMIT 0` and return no row at all for a query that
+carried no LIMIT of its own, while returning every row for a query that did.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

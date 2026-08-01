@@ -59,6 +59,32 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #5711: a response the row limit cut short must say so instead of looking like a complete one.
+   */
+  @Test
+  void rawQueryReportsTruncation() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONObject request = new JSONObject();
+      request.put("type", "weather");
+      request.put("from", 1000L);
+      request.put("to", 3000L);
+      request.put("limit", 2);
+
+      final JSONObject truncated = postTsQuery(serverIndex, request);
+      assertThat(truncated.getInt("count")).isEqualTo(2);
+      assertThat(truncated.getInt("limit")).isEqualTo(2);
+      assertThat(truncated.getBoolean("truncated")).isTrue();
+
+      request.put("limit", 3);
+      final JSONObject complete = postTsQuery(serverIndex, request);
+      assertThat(complete.getInt("count")).isEqualTo(3);
+      assertThat(complete.getBoolean("truncated")).isFalse();
+    });
+  }
+
   @Test
   void aggregatedQuery() throws Exception {
     testEachServer(serverIndex -> {

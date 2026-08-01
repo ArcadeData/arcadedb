@@ -132,6 +132,9 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     result.put("columns", colNames);
     result.put("rows", rowsArray);
     result.put("count", count);
+    // A response cut by the limit must not look like a complete one (issue #5711).
+    result.put("limit", limit > 0 ? limit : -1);
+    result.put("truncated", rows.size() > count);
 
     return new ExecutionResponse(200, result.toString());
   }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -26,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -39,22 +41,148 @@ import com.arcadedb.server.http.HttpServer;
 
 import java.util.*;
 import java.util.logging.Level;
-import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
-  public static final int DEFAULT_LIMIT = 20_000;
+  /**
+   * Default value of {@link GlobalConfiguration#SERVER_HTTP_QUERY_DEFAULT_LIMIT}, kept as a constant for the
+   * tests and the clients that referenced it before the cap became configurable. Handlers must read the
+   * effective value from the server configuration via {@link #getDefaultLimit()}, never from this constant.
+   */
+  public static final int DEFAULT_LIMIT = (Integer) GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getDefValue();
+
+  /**
+   * Name of the response field carrying the number of rows serialized into the response.
+   */
+  public static final String RETURNED_FIELD = "returned";
+
+  /**
+   * Name of the response field carrying the effective row cap applied while serializing.
+   */
+  public static final String LIMIT_FIELD = "limit";
+
+  /**
+   * Name of the response field telling whether the cap cut the result short.
+   */
+  public static final String TRUNCATED_FIELD = "truncated";
+
+  /**
+   * Upper bound on how much of a command is echoed in the truncation warning, so a large payload cannot flood
+   * the log: the leading characters are what identifies the query for an operator.
+   */
+  private static final int MAX_LOGGED_COMMAND_CHARS = 120;
+
+  /**
+   * Outcome of serializing a {@link ResultSet} into an HTTP response: how many rows reached the response and
+   * whether the effective limit cut the result short.
+   * <p>
+   * {@code truncated} is true only when the cap was reached <i>and</i> the result set still had at least one
+   * more row, so a result whose size happens to match the cap exactly is not reported as truncated. For the
+   * row-oriented serializers ({@code record}, {@code studio} and the default one) the flag is exact. For the
+   * {@code graph} serializer the cap counts graph elements rather than rows, and a last row whose expansion
+   * was cut mid-way is not reported when no further row is pending.
+   */
+  public record SerializationOutcome(int returned, boolean truncated) {
+    static final SerializationOutcome EMPTY = new SerializationOutcome(0, false);
+  }
 
   public AbstractQueryHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
-  protected void serializeResultSet(final Database database, final String serializer, final int limit, final JSONObject response,
-      final ResultSet qResult) {
+  /**
+   * Effective default row cap for this server, applied only when the caller expressed no limit of its own.
+   */
+  protected int getDefaultLimit() {
+    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT);
+  }
+
+  /**
+   * Resolves the row cap to apply while serializing, in decreasing order of explicitness:
+   * <ol>
+   * <li>the {@code limit} field of the request, when present: the caller stated the size of the page it
+   * wants, and that statement wins over everything else (a value {@code <= 0} means unlimited);</li>
+   * <li>otherwise the configured default, raised to the LIMIT the query itself carries when the engine
+   * exposes it on the execution plan: honoring it is what keeps the HTTP surface from silently returning
+   * fewer rows than the query asked for (issue #5711).</li>
+   * </ol>
+   * The plan LIMIT can only raise the cap, never lower it. A LIMIT smaller than the default is already
+   * enforced by the engine, so capping at it would be redundant - and the plan of a query whose LIMIT is a
+   * parameter can be a cached copy still carrying the value of an earlier execution, so trusting it downwards
+   * would cut a result the engine had sized correctly.
+   *
+   * @param requestLimit {@code limit} field of the request, or {@code null} when absent
+   * @param planLimit    LIMIT exposed by the execution plan, or 0 when the query carries none / the language
+   *                     does not expose it
+   */
+  protected int resolveLimit(final Integer requestLimit, final int planLimit) {
+    if (requestLimit != null)
+      return requestLimit;
+    final int defaultLimit = getDefaultLimit();
+    // A non-positive default means the operator removed the cap: nothing to raise.
+    return defaultLimit > 0 ? Math.max(planLimit, defaultLimit) : defaultLimit;
+  }
+
+  /**
+   * LIMIT carried by the execution plan of the given result set, or 0 when unavailable. SQL exposes it for
+   * both single statements and single-statement scripts; languages that do not build an
+   * {@link com.arcadedb.query.sql.executor.ExecutionPlan} (e.g. Cypher on the non-EXPLAIN path) return 0, and
+   * their results are capped by the configured default with {@code truncated} reported when it bites.
+   */
+  protected int getPlanLimit(final ResultSet qResult) {
     if (qResult == null)
+      return 0;
+    try {
+      return qResult.getExecutionPlan().map(ExecutionPlan::getLimit).orElse(0);
+    } catch (final Exception e) {
+      // A language whose plan computes the limit lazily may fail here: fall back to "no limit exposed".
+      LogManager.instance().log(this, Level.FINE, "Cannot read the LIMIT from the execution plan", e);
+      return 0;
+    }
+  }
+
+  /**
+   * Reports the effective cap, the number of rows serialized and whether the result was cut short, so a
+   * truncated response is never indistinguishable from a complete one (issue #5711). Always present on the
+   * query/command endpoints, so a client can test {@code truncated} unconditionally.
+   */
+  protected static void reportLimits(final JSONObject response, final int limit, final SerializationOutcome outcome) {
+    response.put(LIMIT_FIELD, limit > 0 ? limit : -1);
+    response.put(RETURNED_FIELD, outcome.returned());
+    response.put(TRUNCATED_FIELD, outcome.truncated());
+  }
+
+  /**
+   * Logs a warning when the result was cut by the configured default rather than by a cap the caller asked
+   * for: that is the only truncation the client did not ask for, so an operator must be able to find it in
+   * the log. Truncation against an explicit request {@code limit} (or against the query's own LIMIT) is the
+   * expected outcome and stays silent.
+   */
+  protected void logIfTruncatedByDefault(final String databaseName, final String command, final int limit,
+      final Integer requestLimit, final int planLimit, final SerializationOutcome outcome) {
+    // planLimit > limit cannot happen (resolveLimit raises the cap to it), so this only skips the queries whose
+    // own LIMIT is what the cap came from.
+    if (!outcome.truncated() || requestLimit != null || planLimit >= limit)
       return;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Query on database '%s' returned more rows than the default HTTP limit of %d: the response has been truncated to %d rows. "
+            + "Set 'limit' in the request, add an explicit LIMIT to the query, or raise '%s'. Query: %s", databaseName, limit,
+        outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(), abbreviate(command));
+  }
+
+  private static String abbreviate(final String command) {
+    if (command == null)
+      return null;
+    return command.length() <= MAX_LOGGED_COMMAND_CHARS ? command : command.substring(0, MAX_LOGGED_COMMAND_CHARS) + "...";
+  }
+
+  protected SerializationOutcome serializeResultSet(final Database database, final String serializer, final int limit,
+      final JSONObject response, final ResultSet qResult) {
+    if (qResult == null)
+      return SerializationOutcome.EMPTY;
 
     try {
     switch (serializer) {
@@ -92,7 +220,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       }
 
       response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
-      break;
+      final int serializedElements = vertices.length() + edges.length();
+      return new SerializationOutcome(serializedElements, isTruncated(qResult, limit, serializedElements));
     }
 
     case "studio": {
@@ -146,6 +275,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           break;
       }
 
+      // Probed before the edge-completion pass below, which does not consume the result set but must not be
+      // allowed to hide whether rows were left behind.
+      final boolean truncated = isTruncated(qResult, limit, records.length());
+
       // FILTER OUT NOT CONNECTED EDGES
       for (final Identifiable entry : includedVertices) {
         if (limit > 0 && vertices.length() + edges.length() >= limit)
@@ -175,38 +308,50 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       }
 
       response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges).put("records", records));
-      break;
+      return new SerializationOutcome(records.length(), truncated);
     }
 
-    case "record": {
-      final JsonSerializer serializerImpl = JsonSerializer.createJsonSerializer()
+    case "record":
+      return serializeRows(database, qResult, limit, response, JsonSerializer.createJsonSerializer()
           .setIncludeVertexEdges(false)
           .setUseCollectionSize(false)
-          .setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray();
-      while (qResult.hasNext()) {
-        final Result r = qResult.next();
-        result.put(serializerImpl.serializeResult(database, r));
-        if (limit > 0 && result.length() >= limit)
-          break;
-      }
-      response.put("result", result);
-      break;
-    }
+          .setUseCollectionSizeForEdges(false));
 
-    default: {
-      final JsonSerializer serializerImpl = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(true)
+    default:
+      return serializeRows(database, qResult, limit, response, JsonSerializer.createJsonSerializer()
+          .setIncludeVertexEdges(true)
           .setUseCollectionSize(false)
-          .setUseCollectionSizeForEdges(false);
-      final JSONArray result = new JSONArray(limit > 0 ?
-          qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()) :
-          qResult.stream().map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
-      response.put("result", result);
-    }
+          .setUseCollectionSizeForEdges(false));
     }
     } finally {
       qResult.close();
     }
+  }
+
+  /**
+   * Serializes a result set as a flat array of rows, stopping at {@code limit} rows (0 or less = unlimited).
+   * Exactly {@code limit} rows are emitted when the cap bites: the row that does not fit is left in the
+   * result set on purpose, and is what {@link #isTruncated} probes to tell a truncated response from a
+   * complete one.
+   */
+  private static SerializationOutcome serializeRows(final Database database, final ResultSet qResult, final int limit,
+      final JSONObject response, final JsonSerializer serializerImpl) {
+    final JSONArray result = new JSONArray();
+    while (qResult.hasNext()) {
+      final Result r = qResult.next();
+      result.put(serializerImpl.serializeResult(database, r));
+      if (limit > 0 && result.length() >= limit)
+        break;
+    }
+    response.put("result", result);
+    return new SerializationOutcome(result.length(), isTruncated(qResult, limit, result.length()));
+  }
+
+  /**
+   * True when the cap stopped the serialization with at least one row still pending in the result set.
+   */
+  private static boolean isTruncated(final ResultSet qResult, final int limit, final int serialized) {
+    return limit > 0 && serialized >= limit && qResult.hasNext();
   }
 
   protected void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl,
