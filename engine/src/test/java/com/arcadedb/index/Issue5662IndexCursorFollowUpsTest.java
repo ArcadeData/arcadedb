@@ -149,6 +149,13 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
    * The safety net behind the whole item: a cursor that IS leaked - because some call site nobody has read yet still
    * drops one - must stop blocking the retired-file drop once it becomes unreachable. It used to be counted, so a
    * single missed {@code close()} pinned the file with nothing left in the process that could ever release it.
+   * <p>
+   * This is the one test here that depends on the JVM rather than only on this codebase: it needs the collector to
+   * actually clear a weak referent. That is reliable on HotSpot for a genuinely unreachable object - the cursor is
+   * opened in its own frame so no local of this method keeps it on the stack - but it is a property of the runtime,
+   * not a guarantee of the spec, so a different collector under load could in principle make it flake. It is asserted
+   * rather than treated as best-effort on purpose: a test that silently passes when the safety net does not work
+   * would be worse than one that occasionally needs a re-run.
    */
   @Test
   void aLeakedCursorStopsPinningTheFileOnceItIsCollected() {
