@@ -892,9 +892,22 @@ public class HashIndexBucket extends PaginatedComponent {
     // the records and populates a NEW file, never writing through this bucket. An UNDERSIZED index is not damaged at
     // all (see describeUnsupportedPageSize), so there is nothing to protect it from.
     if (!isSupportedPageSize(pageSize))
-      LogManager.instance().log(this, Level.SEVERE,
-          "Hash index '%s' (fileId=%d) has an unsupported page size of %d bytes (allowed: %d..%d). %s",
+      // Severity follows the finding, not the fact that something was found: only the oversized case has actually
+      // damaged data. Logging SEVERE for a page size we simultaneously describe as probably still working would
+      // contradict the message on every open.
+      LogManager.instance().log(this, isPageSizeDamaging(pageSize) ? Level.SEVERE : Level.WARNING,
+          "Hash index '%s' (fileId=%d) has an unsupported page size of %d bytes (allowed: %d..%d): %s. It should be "
+              + "rebuilt (DROP and recreate it, or REBUILD INDEX) with a supported page size.",
           null, getName(), fileId, pageSize, MIN_PAGE_SIZE, MAX_PAGE_SIZE, describeUnsupportedPageSize(pageSize));
+  }
+
+  /**
+   * Whether an out-of-range page size means the index has ALREADY been damaged, as opposed to merely being outside the
+   * range this index type now accepts. Only the oversized direction wraps the 16-bit on-page offsets; see
+   * {@link #describeUnsupportedPageSize}.
+   */
+  private static boolean isPageSizeDamaging(final int pageSize) {
+    return pageSize > MAX_PAGE_SIZE;
   }
 
   /**
@@ -906,14 +919,14 @@ public class HashIndexBucket extends PaginatedComponent {
    * index may well have been working, and telling its operator it is "corrupted" would send them hunting for damage
    * that is not there. What is true in that case is only that the page is below the floor the index now requires to
    * guarantee its metadata page fits.
+   * <p>
+   * This is the ONE place that wording lives: the load-time log and {@link #checkMetadataIntegrity} both report through
+   * it, so the two cannot drift into describing the same file differently.
    */
   private static String describeUnsupportedPageSize(final int pageSize) {
-    return pageSize > MAX_PAGE_SIZE ?
-        "Its bucket pages address entries with 16-bit offsets, so this index is corrupted or will corrupt on the next "
-            + "write: rebuild it (DROP and recreate it, or REBUILD INDEX) with a supported page size." :
-        "That is below the minimum this index type now requires for its metadata page to be guaranteed to fit. The "
-            + "index may still be working, but it should be rebuilt (DROP and recreate it, or REBUILD INDEX) with a "
-            + "supported page size.";
+    return isPageSizeDamaging(pageSize) ?
+        "bucket pages address entries with 16-bit offsets, so this index is damaged" :
+        "below the minimum required for the metadata page, though the index may still be working";
   }
 
   /**
@@ -1202,9 +1215,7 @@ public class HashIndexBucket extends PaginatedComponent {
     // attributing the resulting garbage to a cyclic chain (#5713).
     if (!isSupportedPageSize(pageSize))
       problems.add("unsupported page size=" + pageSize + " (allowed: " + MIN_PAGE_SIZE + ".." + MAX_PAGE_SIZE + "): "
-          + (pageSize > MAX_PAGE_SIZE ?
-          "bucket pages address entries with 16-bit offsets, so this index is damaged" :
-          "below the minimum required for the metadata page, though the index may still be working"));
+          + describeUnsupportedPageSize(pageSize));
 
     if (declaredKeyTypes == null || declaredKeyTypes.length == 0)
       problems.add("no key types loaded (the metadata page reports an invalid key count)");
@@ -1233,9 +1244,19 @@ public class HashIndexBucket extends PaginatedComponent {
     }
 
     if (!problems.isEmpty()) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
-              + "(DROP and recreate it).", null, getName(), fileId, problems);
+      // An undersized page size is the one finding here that does NOT mean the metadata is damaged, so when it is the
+      // only thing found this must not announce corruption - the surrounding sentence would then contradict the very
+      // problem it is wrapping, which reads as "may still be working" (#5713).
+      final boolean corrupted = problems.size() > 1 || isSupportedPageSize(pageSize) || isPageSizeDamaging(pageSize);
+      if (corrupted)
+        LogManager.instance().log(this, Level.SEVERE,
+            "CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
+                + "(DROP and recreate it).", null, getName(), fileId, problems);
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "CHECK DATABASE found an unsupported configuration on hash index '%s' (fileId=%d): %s. The index should be "
+                + "rebuilt (DROP and recreate it, or REBUILD INDEX).", null, getName(), fileId, problems);
+
       // the structural walk relies on the metadata being sane: no point in running it on a corrupted page 0
       return problems;
     }
