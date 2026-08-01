@@ -57,7 +57,7 @@ The test passes locally as-is even when broken, so a plain green run proves noth
 made deterministic first, and the fix was then proven against that same deterministic schedule.
 
 1. **Reproduce.** Inserting `Thread.sleep(500)` between `countDown()` and `findStagingDirectory()`
-   fails on the pre-fix code with the exact CI assertion and line number:
+   fails on the pre-fix code with the same assertion CI reports:
 
    ```
    [ERROR] ArcadeStateMachineDeferredDropTest.theDatabaseNameIsReusableAsSoonAsApplyReturns:159
@@ -65,6 +65,10 @@ made deterministic first, and the fix was then proven against that same determin
    [exactly one staging directory expected]
    Expected size: 1 but was: 0
    ```
+
+   The caller line reads `:159` here against `:158` in the CI trace above because the injected
+   `Thread.sleep(500)` shifts the call site down by one; `findStagingDirectory:109` is unchanged, as
+   is the assertion. It is the same failure, not a different one.
 
 2. **Prove the fix closes the race.** Applying the reordering while *keeping* the 500 ms delay in
    place makes the test pass. The scheduling that previously failed deterministically now succeeds,
