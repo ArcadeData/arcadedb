@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -218,14 +219,48 @@ public class RedisNetworkExecutor extends Thread {
         }
 
       } catch (final Exception e) {
-        value.append("-");
-        value.append(e.getMessage());
+        value.append('-');
+        value.append(respErrorPrefix(e));
+        value.append(' ');
+        value.append(respErrorMessage(e));
       }
 
       appendCrLf();
 
     } else
       LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
+  }
+
+  /**
+   * The kind word a RESP error reply opens with (issue #5628). Errors used to go out as a bare {@code -<message>},
+   * which carries no kind at all: a client had nothing to branch on, and an optimistic-concurrency conflict - the
+   * one failure worth repeating the command for - looked exactly like a permanent one.
+   * <p>
+   * The classification itself lives in {@link ErrorCategory} so every wire protocol answers it the same way. RESP
+   * has no vocabulary for the client-error categories Postgres and Bolt distinguish, so they all keep Redis'
+   * generic {@code ERR}.
+   * <p>
+   * {@code TRYAGAIN} is the closest RESP2 offers, but in real Redis it is a cluster-mode error, so several client
+   * libraries will not auto-retry on it. The retry hint is therefore weaker here than Postgres' {@code 40001} or
+   * Bolt's transient status - it is the best signal the protocol has, not an equivalent one.
+   */
+  static String respErrorPrefix(final Throwable error) {
+    return switch (ErrorCategory.of(error)) {
+      case RETRY -> "TRYAGAIN";
+      case SECURITY -> "NOPERM";
+      default -> "ERR";
+    };
+  }
+
+  /**
+   * A RESP simple error is one line, so an embedded CR or LF would end the reply early and leave the remainder to
+   * be read as the start of the next one.
+   */
+  static String respErrorMessage(final Throwable error) {
+    final String message = error.getMessage();
+    if (message == null || message.isEmpty())
+      return error.getClass().getSimpleName();
+    return message.replace('\r', ' ').replace('\n', ' ');
   }
 
   private void decrBy(final List<Object> list) {

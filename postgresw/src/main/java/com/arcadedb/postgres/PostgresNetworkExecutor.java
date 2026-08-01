@@ -28,8 +28,11 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.QueryMetricsRecorder;
+import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
@@ -457,11 +460,15 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
     } catch (final CommandParsingException e) {
+      // The "Syntax error" wording assumes only genuine parse failures reach this arm, which holds because this
+      // path runs an already-parsed statement and execution failures are CommandExecutionException. If a
+      // CommandParsingException ever wraps a non-parse cause here, sqlStateFor reports that cause - correctly, and
+      // clients branch on the SQLSTATE - while this text would still read "Syntax error".
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
+      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
     } finally {
       if (portal != null)
         recordPostgresProfile(profile, portal.language, portal.query);
@@ -556,11 +563,12 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final CommandParsingException e) {
+      // See the note on the same arm in executeCommand about the "Syntax error" wording.
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
+      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
     } finally {
       writeReadyForQueryMessage();
       if (query != null)
@@ -1344,7 +1352,7 @@ public class PostgresNetworkExecutor extends Thread {
         // still goes out and the client will see the failure.
       }
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), "XX000");
+      writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), sqlStateFor(e));
     }
   }
 
@@ -1574,10 +1582,10 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), "XX000");
+      writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), sqlStateFor(e));
     }
   }
 
@@ -1746,6 +1754,48 @@ public class PostgresNetworkExecutor extends Thread {
       throw new PostgresProtocolException("Error on parsing startup message", e);
     }
     return true;
+  }
+
+  /**
+   * The SQLSTATE for a failure raised while running a statement (issue #5628). Everything used to be reported as
+   * {@code XX000} internal_error, which tells a driver the server broke - so a caller who divided by zero, hit a
+   * unique index or lost an optimistic-concurrency race got a code that made their own mistake look like ours, and
+   * a retryable conflict got a code no driver retries.
+   * <p>
+   * The classification itself lives in {@link ErrorCategory} so every wire protocol answers it the same way; only
+   * the translation into Postgres' vocabulary is here.
+   * <p>
+   * {@code SCHEMA} reports {@code 42P01} undefined_table because the query-reachable case is overwhelmingly a
+   * missing type, which is this database's table; the same category also covers a missing bucket or property, for
+   * which a Postgres client would rather have seen {@code 42704}. As with the arithmetic split, the class - here
+   * 42, syntax error or access rule violation - carries the client-vs-server verdict either way.
+   */
+  static String sqlStateFor(final Throwable error) {
+    return switch (ErrorCategory.of(error)) {
+      case RETRY -> "40001";          // serialization_failure - the code drivers auto-retry on
+      case ARITHMETIC -> arithmeticSqlState(error);
+      case DUPLICATED_KEY -> "23505"; // unique_violation
+      case NOT_FOUND -> "P0002";      // no_data_found - class 02 is a completion condition, not an error
+      case SCHEMA -> "42P01";         // undefined_table - a type is this database's table
+      case SECURITY -> "42501";       // insufficient_privilege
+      case VALIDATION -> "22023";     // invalid_parameter_value
+      case PARSING -> "42601";        // syntax_error
+      case TIMEOUT -> "57014";        // query_canceled
+      case SERVER -> "XX000";         // internal_error
+    };
+  }
+
+  /**
+   * Splits ArcadeDB's two arithmetic failures into the two SQLSTATEs Postgres uses for them. Both live in class 22
+   * (data exception), so the client-vs-server verdict does not depend on getting the split right; a message the
+   * engine grows later and this does not recognise still reports as a data exception rather than a server fault.
+   */
+  private static String arithmeticSqlState(final Throwable error) {
+    final ArithmeticErrorException arithmetic = CauseChain.find(error, ArithmeticErrorException.class);
+    final String message = arithmetic != null ? arithmetic.getMessage() : null;
+    return message != null && message.contains("by zero") ?
+        "22012" :   // division_by_zero
+        "22003";    // numeric_value_out_of_range
   }
 
   private void writeError(final ERROR_SEVERITY severity, final String errorMessage, final String errorCode) {
