@@ -104,11 +104,11 @@ public interface Procedure {
   /**
    * Rejects a call whose argument count falls outside {@link #getMinArgs()}..{@link #getMaxArgs()}.
    * <p>
-   * The counterpart of {@code Function.checkArity}, phrased through the same {@link FunctionArity}: a wrong argument
+   * The counterpart of {@code Function.checkArity}, over the same {@link FunctionArity#check} body: a wrong argument
    * count is the same mistake whether the name resolved to a function or to a procedure, so it reads the same way
-   * and carries the same status. It used to raise an {@link IllegalArgumentException} with wording of its own, which
-   * {@code CallStep.executeProcedure} then wrapped - surfacing over HTTP as 500 where the function path already gave
-   * 400 (issue #5627).
+   * and carries the same status, differing only in the noun. It used to raise an {@link IllegalArgumentException}
+   * with wording of its own, which {@code CallStep.executeProcedure} then wrapped - surfacing over HTTP as 500 where
+   * the function path already gave 400 (issue #5627).
    * <p>
    * A wrong argument count is the caller's mistake, so this is a {@link CommandSemanticException} (HTTP 400) rather
    * than an internal failure. {@code CallStep} rethrows {@code CommandParsingException}, which this extends,
@@ -119,12 +119,7 @@ public interface Procedure {
    * @throws CommandSemanticException if the argument count is outside the declared bounds
    */
   default void checkArity(final Object[] args) {
-    final int actualArgs = args == null ? 0 : args.length;
-    // effectiveMax(), not getMaxArgs(), so an implementation that spells "unbounded" the registry's way (-1) is not
-    // read as "at most -1 arguments" - which would reject every call while the message still said "at least N".
-    if (actualArgs < getMinArgs() || actualArgs > FunctionArity.effectiveMax(getMaxArgs()))
-      throw FunctionArity.mismatch("Procedure", getName(), FunctionArity.describe(getMinArgs(), getMaxArgs()),
-          actualArgs);
+    FunctionArity.check("Procedure", getName(), getMinArgs(), getMaxArgs(), args);
   }
 
   /**

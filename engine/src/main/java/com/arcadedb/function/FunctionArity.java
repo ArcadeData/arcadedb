@@ -96,6 +96,32 @@ public final class FunctionArity {
   }
 
   /**
+   * Rejects a call whose argument count falls outside {@code minArgs}..{@code maxArgs}.
+   * <p>
+   * The body behind both runtime guards - {@link Function#checkArity} and {@code Procedure.checkArity}. They were
+   * byte-identical but for the noun, which is the shape the two <em>messages</em> had before #5627 and is how they
+   * came to disagree; keeping the check itself in one place is what stops that recurring.
+   *
+   * @param kind         see {@link #message(String, String, String, int)}
+   * @param callableName the name without parentheses, used in the message
+   * @param minArgs      fewest arguments accepted
+   * @param maxArgs      most arguments accepted; {@code -1} and {@link Integer#MAX_VALUE} both mean "no limit"
+   * @param args         the arguments the call carried, {@code null} counting as none - a couple of executors used
+   *                     to defend against a null array by hand, and folding that in here keeps the count check in
+   *                     one place. Note that this only rejects the null array for a callable that requires at least
+   *                     one argument: one declaring {@code minArgs == 0} is handed it unchanged and must still
+   *                     tolerate it.
+   */
+  public static void check(final String kind, final String callableName, final int minArgs, final int maxArgs,
+      final Object[] args) {
+    final int actualArgs = args == null ? 0 : args.length;
+    // effectiveMax(), not maxArgs, so an implementation that spells "unbounded" the registry's way (-1) is not read
+    // as "at most -1 arguments" - which would reject every call while the message still said "at least N".
+    if (actualArgs < minArgs || actualArgs > effectiveMax(maxArgs))
+      throw mismatch(kind, callableName, describe(minArgs, maxArgs), actualArgs);
+  }
+
+  /**
    * The exception form of {@link #message(String, String, int)}: a wrong argument count is the caller's mistake, so
    * it is a client error (HTTP 400) rather than an internal failure.
    */

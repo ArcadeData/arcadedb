@@ -34,8 +34,12 @@ Two further defects came with the hand-written check:
 
 ## Fix
 
-- `FunctionArity` gains a kind-aware `message`/`mismatch` pair. The existing three-argument forms stay as the
-  function-flavoured shorthand, so no existing caller changes.
+- `FunctionArity` gains a kind-aware `message`/`mismatch` pair and a `check(kind, name, min, max, args)` holding
+  the guard body itself. The existing three-argument `message`/`mismatch` forms stay as the function-flavoured
+  shorthand, so no existing caller changes.
+- `Function.checkArity` and `Procedure.checkArity` are both one line over `FunctionArity.check`. The first draft
+  of this change left them as two byte-identical bodies differing only in the noun - which is exactly the shape
+  the two *messages* had before this issue, and how they came to disagree in the first place.
 - `Procedure` gains `checkArity(Object[])`, mirroring `Function.checkArity`: it reads the declared
   `getMinArgs()`/`getMaxArgs()`, resolves the maximum through `FunctionArity.effectiveMax()`, counts a null
   array as zero arguments, and raises `FunctionArity.mismatch("Procedure", ...)`. `validateArgs()` is kept as

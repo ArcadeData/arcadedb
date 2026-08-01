@@ -41,8 +41,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * and raised as a {@code CommandSemanticException} (400). {@code Procedure} kept a hand-written check of its own
  * raising {@code IllegalArgumentException}, which {@code CallStep.executeProcedure} then wrapped in a
  * {@code CommandExecutionException} - a 500 for what is entirely the caller's mistake.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class ProcedureArityIssue5627Test extends TestHelper {
 

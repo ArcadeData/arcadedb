@@ -91,11 +91,7 @@ public interface Function {
    *             declaring {@code getMinArgs() == 0} is handed it unchanged and must still tolerate it.
    */
   default void checkArity(final Object[] args) {
-    final int actualArgs = args == null ? 0 : args.length;
-    // effectiveMax(), not getMaxArgs(), so an implementation that spells "unbounded" the registry's way (-1) is not
-    // read as "at most -1 arguments" - which would reject every call while the message still said "at least N".
-    if (actualArgs < getMinArgs() || actualArgs > FunctionArity.effectiveMax(getMaxArgs()))
-      throw FunctionArity.mismatch(getName(), FunctionArity.describe(getMinArgs(), getMaxArgs()), actualArgs);
+    FunctionArity.check("Function", getName(), getMinArgs(), getMaxArgs(), args);
   }
 
   /**
