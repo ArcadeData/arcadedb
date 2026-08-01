@@ -200,6 +200,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private DeltaCollector         deltaCollector;
   public static final int        DEFAULT_COMPACTION_THRESHOLD = 10_000;
   private static final int       MAX_PENDING_DELTAS           = 100_000;
+  /**
+   * Returned by {@link #countEdgesBetween} when the overlay makes the multiplicity unknowable, which
+   * the {@link com.arcadedb.graph.GraphTraversalProvider} contract spells as any negative value.
+   */
+  private static final long      MULTIPLICITY_UNKNOWN         = -1L;
   private volatile int           compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
@@ -1814,12 +1819,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private static final int[] EMPTY_INT = new int[0];
-
-  /**
-   * Returned by {@link #countEdgesBetween} when the overlay makes the multiplicity unknowable, which
-   * the {@link com.arcadedb.graph.GraphTraversalProvider} contract spells as any negative value.
-   */
-  private static final long MULTIPLICITY_UNKNOWN = -1L;
 
   /**
    * Checks the view is built and returns a consistent snapshot for the caller to use.

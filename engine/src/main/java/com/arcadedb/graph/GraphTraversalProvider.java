@@ -112,6 +112,12 @@ public interface GraphTraversalProvider {
    * The default implementation counts occurrences in {@link #getNeighborIds} and never answers
    * unknown; a CSR-backed provider overrides it with an equal-range scan on the sorted adjacency
    * array.
+   * <p>
+   * <b>The default halves the count of a {@link Vertex.DIRECTION#BOTH} self-loop</b>, because
+   * {@link #getNeighborIds} is specified to return the raw adjacency entries and a self-loop
+   * contributes one to each of the two lists - which is why the callers of that method de-duplicate
+   * it themselves (see {@code SelfLoops.deduplicate}). A provider whose {@code getNeighborIds}
+   * already de-duplicates would halve a count that was never doubled, and must override this method.
    */
   default long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
