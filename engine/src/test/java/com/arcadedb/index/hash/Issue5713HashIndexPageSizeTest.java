@@ -305,24 +305,8 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
       });
     }
 
-    // Rewrite the component file name so it declares a page size the bucket cannot address, exactly as an index
-    // created by a version without the guard would look on disk.
     final int illegalPageSize = HashIndexBucket.MAX_PAGE_SIZE * 2;
-    final File[] indexFiles = new File(databasePath).listFiles(
-        (dir, fileName) -> fileName.endsWith("." + HashIndexBucket.UNIQUE_INDEX_EXT));
-    assertThat(indexFiles).hasSize(1);
-
-    final File mangled = new File(indexFiles[0].getPath()
-        .replace("." + HashIndexBucket.MAX_PAGE_SIZE + ".", "." + illegalPageSize + "."));
-    // fail here, not on an inscrutable assertion below, if the component-file naming scheme ever stops carrying the
-    // page size as a dot-delimited segment
-    assertThat(mangled).as("page size not found in the component file name '%s'", indexFiles[0].getName())
-        .isNotEqualTo(indexFiles[0]);
-    assertThat(indexFiles[0].renameTo(mangled)).isTrue();
-    try (final RandomAccessFile raf = new RandomAccessFile(mangled, "rw")) {
-      // round the file up to a whole number of the (now larger) pages, so the page manager can read page 0
-      raf.setLength(((raf.length() + illegalPageSize - 1) / illegalPageSize) * (long) illegalPageSize);
-    }
+    declareIllegalPageSizeOnDisk(databasePath, illegalPageSize);
 
     try (final Database reopened = new DatabaseFactory(databasePath).open()) {
       final IndexInternal index = hashIndexOf(reopened);
@@ -331,6 +315,84 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
           .anyMatch(problem -> problem.contains("unsupported page size=" + illegalPageSize));
     } finally {
       TestHelper.dropDatabase(dbName);
+    }
+  }
+
+  /**
+   * The corruption message tells the operator to rebuild the index, so a rebuild has to actually repair it. It nearly
+   * did the opposite: {@code RebuildIndexStatement} DROPS the index and then recreates it carrying the old page size
+   * over, so an unaddressable one would be refused by the new guard - deleting the index and failing to rebuild it.
+   * The rebuild now falls back to the default page size, and the entries come back from the records.
+   */
+  @Test
+  void rebuildRepairsAnIndexWithAnIllegalPageSizeInsteadOfDroppingIt() throws Exception {
+    final String dbName = "Issue5713RebuildDB";
+    TestHelper.dropDatabase(dbName);
+
+    final int entries = 200;
+    final String databasePath;
+    try (final Database db = TestHelper.createDatabase(dbName)) {
+      databasePath = db.getDatabasePath();
+      db.transaction(() -> {
+        final DocumentType type = db.getSchema().createDocumentType(TYPE_NAME);
+        type.createProperty("k", Type.STRING);
+        db.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "k" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(true)
+            .withPageSize(HashIndexBucket.MAX_PAGE_SIZE)
+            .create();
+      });
+      db.transaction(() -> {
+        for (int i = 0; i < entries; i++) {
+          final MutableDocument doc = db.newDocument(TYPE_NAME);
+          doc.set("k", "key-" + i);
+          doc.save();
+        }
+      });
+    }
+
+    declareIllegalPageSizeOnDisk(databasePath, HashIndexBucket.MAX_PAGE_SIZE * 2);
+
+    try (final Database reopened = new DatabaseFactory(databasePath).open()) {
+      assertThat(hashIndexOf(reopened).getPageSize()).isEqualTo(HashIndexBucket.MAX_PAGE_SIZE * 2);
+
+      reopened.command("sql", "REBUILD INDEX `" + hashIndexOf(reopened).getName() + "`");
+
+      final IndexInternal rebuilt = hashIndexOf(reopened);
+      assertThat(rebuilt.getPageSize()).as("the rebuild must pick a legal page size")
+          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+      assertThat(rebuilt.checkIntegrity()).isEmpty();
+      assertThat(rebuilt.countEntries()).isEqualTo(entries);
+
+      reopened.transaction(() -> {
+        for (int i = 0; i < entries; i++)
+          assertThat(rebuilt.get(new Object[] { "key-" + i }).hasNext()).as("key-%d lost by the rebuild", i).isTrue();
+      });
+    } finally {
+      TestHelper.dropDatabase(dbName);
+    }
+  }
+
+  /**
+   * Rewrites the component file name so it declares a page size the bucket cannot address, exactly as an index created
+   * by a version without the creation-time guard would look on disk. The page size lives in the file name, so this is
+   * the only way to produce one now that creation refuses it.
+   */
+  private static void declareIllegalPageSizeOnDisk(final String databasePath, final int illegalPageSize) throws Exception {
+    final File[] indexFiles = new File(databasePath).listFiles(
+        (dir, fileName) -> fileName.endsWith("." + HashIndexBucket.UNIQUE_INDEX_EXT));
+    assertThat(indexFiles).hasSize(1);
+
+    final File mangled = new File(indexFiles[0].getPath()
+        .replace("." + HashIndexBucket.MAX_PAGE_SIZE + ".", "." + illegalPageSize + "."));
+    // fail here, not on an inscrutable assertion later, if the component-file naming scheme ever stops carrying the
+    // page size as a dot-delimited segment
+    assertThat(mangled).as("page size not found in the component file name '%s'", indexFiles[0].getName())
+        .isNotEqualTo(indexFiles[0]);
+    assertThat(indexFiles[0].renameTo(mangled)).isTrue();
+
+    try (final RandomAccessFile raf = new RandomAccessFile(mangled, "rw")) {
+      // round the file up to a whole number of the (now larger) pages, so the page manager can read page 0
+      raf.setLength(((raf.length() + illegalPageSize - 1) / illegalPageSize) * (long) illegalPageSize);
     }
   }
 

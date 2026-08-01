@@ -1511,6 +1511,13 @@ illegal page size (created by an earlier release) is reported rather than refuse
 line names the index at load, and `CHECK DATABASE` lists the page size instead of the cyclic chain it causes, so the
 report points at the cause rather than the symptom.
 
+`REBUILD INDEX` is the remedy for such an index, and it repairs it: a rebuild drops the index and recreates it carrying
+the old configuration over, so an unaddressable page size would have been handed straight back to the guard that just
+started refusing it - deleting the index and then failing to build its replacement. The rebuild now asks the index for
+a page size it is legal to *create* with, which for a `HASH` index whose current one is unaddressable is the default.
+The same accessor is used when an index is propagated to a new bucket or to a sub type, so neither operation can fail
+because of a page size inherited from an older release.
+
 ### `withPageSize()` on a `HASH` index means what it says
 
 The defect had one page size it could not reach, and that is why it stayed hidden. `IndexBuilder.pageSize` was

@@ -548,6 +548,17 @@ public class HashIndex implements IndexInternal {
     return bucket.getPageSize();
   }
 
+  /**
+   * An index created before the page-size guard of #5713 can carry a page size its bucket pages cannot address. Since
+   * a rebuild drops the index before recreating it, carrying that value over would delete the index and then be
+   * refused - so the rebuild falls back to the default, which is exactly the repair the corruption message promises.
+   */
+  @Override
+  public int getRebuildPageSize() {
+    final int pageSize = getPageSize();
+    return HashIndexBucket.isSupportedPageSize(pageSize) ? pageSize : HashIndexBucket.DEF_PAGE_SIZE;
+  }
+
   @Override
   public boolean isCompacting() {
     return false;

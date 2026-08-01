@@ -110,6 +110,20 @@ public interface IndexInternal extends Index {
 
   int getPageSize();
 
+  /**
+   * Page size a rebuild of this index must be recreated with. Defaults to the current one, which is what carrying the
+   * configuration over means, but an index whose CURRENT page size is not one it would accept at creation has to
+   * answer with a legal one instead (issue #5713).
+   * <p>
+   * The distinction matters because a rebuild DROPS the index before recreating it
+   * ({@code RebuildIndexStatement.buildIndex}). Handing back a page size the creation path refuses would delete the
+   * index and then fail to build the replacement - turning the documented repair for a damaged index into the thing
+   * that loses it.
+   */
+  default int getRebuildPageSize() {
+    return getPageSize();
+  }
+
   boolean isCompacting();
 
   boolean isValid();
