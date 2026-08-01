@@ -29,6 +29,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -186,6 +187,12 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   public TypeIndex create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    // Checked before the existing-index lookup below, which needs the requested index type to decide whether an index
+    // already on those properties covers the request.
+    if (indexType == null)
+      throw new DatabaseMetadataException(
+          "Cannot create index on type '" + metadata.typeName + "' because indexType was not specified");
+
     // Wait for any running async tasks (e.g., compaction) to complete before creating new index
     // This prevents NeedRetryException when creating multiple indexes sequentially on large datasets
     while (database.isAsyncProcessing())
@@ -202,49 +209,40 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     final LocalDocumentType type = schema.getType(metadata.typeName);
-    // First try the type's own index (no hierarchy walk). If found, we may legitimately drop and
-    // recreate it when the user requested a different uniqueness / null strategy via IF NOT EXISTS.
-    // If not found locally, fall back to the polymorphic walk to detect inherited indexes - those
-    // we never drop (that would silently delete the parent type's index and leave an orphan entry
-    // in the schema JSON, which is the user-reported follow-up to issue #4083 where Studio's
-    // refresh later complains "index Investigacion[cuij] could not be created").
+    // First try the type's own index (no hierarchy walk), then fall back to the polymorphic walk so an index the type
+    // only inherits is found too. Either way the outcome below is the same: it is used to answer the request, never
+    // to make room for it.
     TypeIndex existingTypeIndex = type.getIndexByProperties(metadata.propertyNames);
-    final boolean existingIsInherited;
-    if (existingTypeIndex != null) {
-      existingIsInherited = false;
-    } else {
+    if (existingTypeIndex == null)
       existingTypeIndex = type.getPolymorphicIndexByProperties(metadata.propertyNames);
-      existingIsInherited = existingTypeIndex != null;
-    }
+
+    // Non-null only on the replacement path below: the definition to put back if the new index cannot be built.
+    ReplacedIndexDefinition replaced = null;
 
     if (existingTypeIndex != null) {
-      if (ignoreIfExists) {
-        if (existingTypeIndex.getNullStrategy() != null && existingTypeIndex.getNullStrategy() == null ||//
-            existingTypeIndex.isUnique() != unique) {
-          if (existingIsInherited) {
-            // Different index type/uniqueness on an INHERITED index. Dropping it would wipe the
-            // parent type's index. Treat as a hard schema conflict instead of silently destroying
-            // the parent's index (issue #4083 follow-up).
-            throw new IllegalArgumentException(
-                "Cannot create index on type '" + metadata.typeName + "' for properties '"
-                    + Arrays.asList(metadata.propertyNames) + "' (unique=" + unique + ") because parent type '"
-                    + existingTypeIndex.getTypeName() + "' already declares an index '" + existingTypeIndex.getName()
-                    + "' with unique=" + existingTypeIndex.isUnique()
-                    + ". Drop the parent index first or align the unique flag");
-          }
-          // DIFFERENT BUT OWN: DROP AND RECREATE IT
-          existingTypeIndex.drop();
-        } else
-          return existingTypeIndex;
-      } else
+      // "Ignore if exists" means the caller can live with what is already there - but only when what is already there
+      // provides what was asked for. A mismatch used to DROP the existing index and rebuild it with the requested
+      // definition: on an inherited index that wiped the parent type's index and left an orphan entry in the schema
+      // JSON (issue #4083), and on the type's own index it threw away a working index for a rebuild the stored data
+      // may not even allow, leaving the type with none at all (issue #5675). Only an explicit
+      // {@link #withReplaceIfIncompatible} takes an index away now, and it puts it back on failure.
+      final boolean satisfied = satisfiesRequest(existingTypeIndex, indexType, unique);
+
+      if (satisfied && ignoreIfExists)
+        return existingTypeIndex;
+
+      if (!satisfied && replaceIfIncompatible && existingTypeIndex.getTypeName().equals(metadata.typeName))
+        // Own index, and the caller explicitly asked to replace what does not fit. Recorded here and dropped further
+        // down, once everything that could still refuse the request has had its say.
+        replaced = ReplacedIndexDefinition.of(existingTypeIndex);
+      else if (!satisfied && (ignoreIfExists || replaceIfIncompatible))
+        throw conflictWithExistingIndex(existingTypeIndex, indexType, unique, metadata.typeName, metadata.propertyNames);
+      else
         throw new IllegalArgumentException(
             "Found the existent index '" + existingTypeIndex.getName() + "' defined on the properties '" + Arrays.asList(
                 metadata.propertyNames) + "' for type '" + metadata.typeName + "'");
     }
 
-    if (indexType == null)
-      throw new DatabaseMetadataException(
-          "Cannot create index on type '" + metadata.typeName + "' because indexType was not specified");
     if (metadata.propertyNames.isEmpty())
       throw new DatabaseMetadataException(
           "Cannot create index on type '" + metadata.typeName + "' because there are no property defined");
@@ -359,6 +357,12 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (sortedBuild)
       validateSortedBuildPreconditions();
 
+    // Last thing before the build: everything above can still refuse the request (an undeclared property, a BY ITEM on
+    // a non-LIST, a sorted build on a replicated database), and none of those refusals may cost the caller the index it
+    // already had.
+    if (replaced != null)
+      existingTypeIndex.drop();
+
     final TypeIndex created;
     try {
       final long recordFileChangesStarted = System.nanoTime();
@@ -402,11 +406,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
+      restoreReplacedIndex(replaced, e);
       throw e;
     } catch (final Throwable e) {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
+      restoreReplacedIndex(replaced, e);
       // Carry the root cause into the message: this exception is what the SQL/HTTP layers report back, and
       // without the reason a configuration mistake (a missing vector 'dimensions', an incompatible property
       // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607).
@@ -437,6 +443,52 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     }
 
     return created;
+  }
+
+  /**
+   * The definition of an index dropped to make room for a replacement, kept so it can be rebuilt if the replacement
+   * fails. Enough to reproduce it: the kind, the uniqueness, the null strategy, the properties, and the metadata that
+   * carries the collations plus whatever settings the index type keeps of its own (analyzers, geospatial precision,
+   * vector dimensions, ...).
+   */
+  private record ReplacedIndexDefinition(Schema.INDEX_TYPE indexType, boolean unique,
+                                         LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, String typeName,
+                                         String[] propertyNames, IndexMetadata metadata) {
+
+    static ReplacedIndexDefinition of(final TypeIndex index) {
+      final IndexInternal[] onBuckets = index.getIndexesOnBuckets();
+      return new ReplacedIndexDefinition(index.getType(), index.isUnique(), index.getNullStrategy(), index.getTypeName(),
+          index.getPropertyNames().toArray(new String[0]), onBuckets.length > 0 ? onBuckets[0].getMetadata() : null);
+    }
+  }
+
+  /**
+   * Puts back the index that {@link #withReplaceIfIncompatible(boolean)} took away, so a replacement the stored data
+   * could not satisfy - the reason the implicit rebuild was removed in the first place (issue #5675) - costs the caller
+   * an error instead of an index.
+   * <p>
+   * A failure to restore is attached to the original error rather than raised: what the caller has to act on is why the
+   * new index could not be built, and hiding that behind the second failure would leave them with neither answer.
+   */
+  private void restoreReplacedIndex(final ReplacedIndexDefinition replaced, final Throwable failure) {
+    if (replaced == null)
+      return;
+
+    try {
+      final TypeIndexBuilder restore = database.getSchema().getEmbedded()
+          .buildTypeIndex(replaced.typeName(), replaced.propertyNames()).withType(replaced.indexType());
+      restore.withUnique(replaced.unique());
+      restore.withNullStrategy(replaced.nullStrategy());
+      if (replaced.metadata() != null)
+        restore.withMetadata(replaced.metadata());
+      restore.create();
+    } catch (final Throwable restoreError) {
+      failure.addSuppressed(restoreError);
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot restore the index on type '%s' properties %s that was replaced by a failed CREATE INDEX. The type is "
+              + "left without an index on those properties", restoreError, replaced.typeName(),
+          Arrays.asList(replaced.propertyNames()));
+    }
   }
 
   protected Index createBucketIndex(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,

@@ -1660,3 +1660,66 @@ An index that already exists on disk is unaffected either way - the page size is
 a builder.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
+
+## `CREATE INDEX IF NOT EXISTS` no longer reports success for an index that is not the one asked for
+
+`IF NOT EXISTS` matched a pre-existing index on the indexed property set alone. The property set is what the index
+name is derived from, and it says nothing about what the index does, so a `NOTUNIQUE` index answered "already there"
+to a request for a `UNIQUE` one:
+
+```sql
+CREATE INDEX ON T (Scalar) NOTUNIQUE;
+CREATE INDEX IF NOT EXISTS ON T (Scalar) UNIQUE;   -- reported success, created no constraint
+INSERT INTO T SET Scalar = 'x';
+INSERT INTO T SET Scalar = 'x';                    -- accepted
+```
+
+Schema-migration DDL uses `IF NOT EXISTS` precisely so it can be re-applied, so tightening an index from `NOTUNIQUE`
+to `UNIQUE` did nothing while the application carried on believing a uniqueness constraint protected its data. Issue
+#5675. The same statement without the guard reported the clash, which is what made the guard the thing suppressing an
+error the server already knew how to raise.
+
+`IF NOT EXISTS` is now satisfied only when the existing index provides what was asked for: the same index kind, and a
+uniqueness constraint at least as strong.
+
+- A `UNIQUE` index still satisfies a `NOTUNIQUE` request. It indexes exactly the same keys, so the statement stays the
+  no-op it was, and it is never weakened into a plain index.
+- A `NOTUNIQUE` index no longer satisfies a `UNIQUE` request. The statement is refused, naming both definitions.
+- An index of a different KIND on the same properties - a `FULL_TEXT` index where a range index was asked for, or the
+  reverse - is refused for the same reason. That one was silent too.
+
+### An existing index is never dropped implicitly any more
+
+The refusal is the answer even in the case the request could technically be granted by rebuilding. Underneath,
+`TypeIndexBuilder.create()` with `withIgnoreIfExists(true)` used to drop the existing index and rebuild it with the
+requested definition. That is not a recoverable operation: if the rebuild then fails on the data already stored - two
+records sharing the key the new index has to keep unique - the type is left with **no index at all** and an error. On
+an index the type only inherited it took away the parent type's index instead, which is issue #4083.
+
+So `withIgnoreIfExists` now means only what it says. Callers that genuinely mean "make this the definition" opt in
+explicitly:
+
+```java
+database.getSchema().buildTypeIndex("T", new String[] { "Scalar" })
+    .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+    .withReplaceIfIncompatible(true)     // new: may take away the plain index on those properties
+    .create();
+```
+
+and even then the replacement is undone if the new index cannot be built, so a failed upgrade costs an error rather
+than an index. An inherited index is still never replaced.
+
+### Cypher: a uniqueness constraint over a plain index still upgrades it
+
+`CREATE CONSTRAINT ... REQUIRE ... IS UNIQUE` and `... IS NODE KEY` are statements about the data rather than requests
+to create an index if one is missing, so they are the callers that opt into the replacement above. Neo4j keeps the
+range index and the constraint as two separate objects; ArcadeDB has one index per property set and a unique index
+covers both roles, so the upgrade is the equivalent end state and a Neo4j migration script that creates indexes and
+then constraints keeps working. Cypher's own `CREATE INDEX` does not opt in: it finds a unique index sufficient and
+leaves it alone rather than replacing it with a plain one.
+
+### A manual index name that already names a different index
+
+Reachable only through `CREATE INDEX <name> IF NOT EXISTS ...`, since the auto-derived name is built from the property
+list. A name that already belongs to an index on other properties used to satisfy the guard; it is now reported, since
+two different property sets under one name are two different indexes.
