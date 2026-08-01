@@ -67,6 +67,19 @@ public class SubQueryStep extends AbstractExecutionStep {
     };
   }
 
+  /**
+   * #5662: closes the sub-plan too. Only the OUTER plan's steps used to be closed, so anything the sub-plan held was
+   * released only if the sub-plan happened to run to exhaustion - and a {@code DELETE ... WHERE} is built exactly this
+   * way, with the index scan inside the sub-plan and the {@code LIMIT} outside it. The abandoned
+   * {@link com.arcadedb.index.IndexCursor} then kept its compacted-series registration for the lifetime of the
+   * database.
+   */
+  @Override
+  public void close() {
+    subExecutionPlan.close();
+    super.close();
+  }
+
   @Override
   public List<ExecutionPlan> getSubExecutionPlans() {
     return List.of(subExecutionPlan);

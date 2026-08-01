@@ -21,11 +21,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -141,13 +143,21 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
   }
 
   /**
-   * Releases the resources associated to the iterator. The serial implementation has nothing to release; the parallel
-   * implementation ({@link SelectParallelIterator}) overrides this method to stop the background producers, so an early
-   * close does not leave async workers running (#5065). Closing an iterator is optional when it is fully consumed.
+   * Releases the resources associated to the iterator: the source index cursor when the plan was answered from one
+   * (#5662), plus, in the parallel implementation ({@link SelectParallelIterator}), the background producers, so an
+   * early close does not leave async workers running (#5065). Closing is optional when the iterator was fully
+   * consumed - a drained index cursor has already released its per-series file registrations - and required when it
+   * was not, which a LIMIT, a {@code break} or an exception all produce.
    */
   @Override
   public void close() {
-    // NOTHING TO RELEASE IN THE SERIAL IMPLEMENTATION
+    if (iterator instanceof AutoCloseable closeable) {
+      try {
+        closeable.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on closing the source iterator of a select", e);
+      }
+    }
   }
 
   public List<T> toList() {

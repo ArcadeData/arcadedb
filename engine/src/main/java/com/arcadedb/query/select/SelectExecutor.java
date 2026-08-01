@@ -71,43 +71,64 @@ public class SelectExecutor {
     return new SelectIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
   }
 
+  /**
+   * #5662: the index cursor is released even though the scan stops at the LIMIT rather than on exhaustion. Only a
+   * drained cursor releases its per-series file registrations on its own, so the early exit is exactly the case that
+   * would keep a retired compacted file undroppable until the next restart.
+   */
   long executeCount() {
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
-    final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
-    final Set<RID> filterOutRecords = iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1
-        ? ConcurrentHashMap.newKeySet() : null;
+    try {
+      final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
+      final Set<RID> filterOutRecords = iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1
+          ? ConcurrentHashMap.newKeySet() : null;
 
-    long count = 0;
-    int skipped = 0;
-    while (iterator.hasNext()) {
-      final Document record = iterator.next().asDocument();
-      if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
-        continue;
-      if (select.rootTreeElement == null || evaluateWhere(record)) {
-        if (skipped < select.skip) {
-          skipped++;
+      long count = 0;
+      int skipped = 0;
+      while (iterator.hasNext()) {
+        final Document record = iterator.next().asDocument();
+        if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
           continue;
+        if (select.rootTreeElement == null || evaluateWhere(record)) {
+          if (skipped < select.skip) {
+            skipped++;
+            continue;
+          }
+          if (filterOutRecords != null)
+            filterOutRecords.add(record.getIdentity());
+          count++;
+          if (select.limit > -1 && count >= select.limit)
+            break;
         }
-        if (filterOutRecords != null)
-          filterOutRecords.add(record.getIdentity());
-        count++;
-        if (select.limit > -1 && count >= select.limit)
-          break;
       }
+      return count;
+    } finally {
+      // only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
+      // MultiIterator over several buckets) hold no per-series file registration and are not closeable at all
+      if (iteratorFromIndexes != null)
+        iteratorFromIndexes.close();
     }
-    return count;
   }
 
+  /**
+   * #5662: same as {@link #executeCount()}, and more acutely so - this method returns on the FIRST match, so the
+   * cursor is abandoned partway on every positive answer.
+   */
   boolean executeExists() {
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
-    final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
+    try {
+      final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
 
-    while (iterator.hasNext()) {
-      final Document record = iterator.next().asDocument();
-      if (select.rootTreeElement == null || evaluateWhere(record))
-        return true;
+      while (iterator.hasNext()) {
+        final Document record = iterator.next().asDocument();
+        if (select.rootTreeElement == null || evaluateWhere(record))
+          return true;
+      }
+      return false;
+    } finally {
+      if (iteratorFromIndexes != null)
+        iteratorFromIndexes.close();
     }
-    return false;
   }
 
   @SuppressWarnings("unchecked")

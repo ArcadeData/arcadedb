@@ -37,7 +37,6 @@ import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
@@ -69,7 +68,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   /** Package-private for the same reason as {@link #nextCursors}. */
   IndexCursor                                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
-  private         Iterator<?>                                    nullKeyIterator;
   private         Pair<Object, Identifiable>                     nextEntry   = null;
   // Float so full-text BM25 scores below 1.0 are not truncated to 0 (which the `> 0` guard would then suppress). For
   // integer-scored indexes getFloatScore() returns the int value unchanged.
@@ -162,11 +160,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           if (nextEntry == null && customIterator != null && customIterator.hasNext()) {
             final Map.Entry<Object, Identifiable> entry = customIterator.next();
             nextEntry = new Pair<>(entry.getKey(), entry.getValue().getIdentity());
-            nextEntryScore = 0;
-          }
-          if (nextEntry == null && nullKeyIterator != null && nullKeyIterator.hasNext()) {
-            Identifiable nextValue = (Identifiable) nullKeyIterator.next();
-            nextEntry = new Pair<>(null, nextValue.getIdentity());
             nextEntryScore = 0;
           }
 
@@ -354,42 +347,20 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     fetchNextEntry();
   }
 
+  /**
+   * A flat scan needs NO separate pass over the NULL-keyed entries, under any {@code NULL_STRATEGY}: with
+   * {@code INDEX} they are already in the B-tree and the cursor returns them at their sorted position (first
+   * ascending, last descending); with {@code SKIP} they were never indexed; with {@code ERROR} they could not be
+   * inserted. A second iterator over {@code index.get(new Object[keyCount])} would therefore either duplicate rows
+   * or return nothing - which is why the {@code fetchNullKeys()} that built one was never called and has been
+   * removed (#5662).
+   */
   private void processFlatIteration() {
     cursor = index.iterator(isOrderAsc());
-
-    // NOTE: Do NOT call fetchNullKeys() here.
-    // When NULL_STRATEGY is INDEX, NULL-keyed entries are already stored in the B-tree
-    // and will be returned by the cursor iterator. Calling fetchNullKeys() would cause
-    // duplicate entries to be returned since it creates a separate iterator for NULL keys.
-    // The cursor will naturally return NULL entries at their sorted position:
-    // - For ASC order: NULL entries appear first (NULL < all non-null values)
-    // - For DESC order: NULL entries appear last
-    nullKeyIterator = Collections.emptyIterator();
 
     if (cursor != null) {
       fetchNextEntry();
     }
-  }
-
-  private void fetchNullKeys() {
-    if (index.getNullStrategy() != LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
-      nullKeyIterator = Collections.emptyIterator();
-      return;
-    }
-    final int keyCount = index.getPropertyNames().size();
-    final Object[] nullKeys = new Object[keyCount];
-    final IndexCursor nullCursor = index.get(nullKeys);
-    nullKeyIterator = new Iterator<>() {
-      @Override
-      public boolean hasNext() {
-        return nullCursor.hasNext();
-      }
-
-      @Override
-      public Identifiable next() {
-        return nullCursor.next();
-      }
-    };
   }
 
   private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
@@ -707,7 +678,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     inited = false;
     customIterator = null;
-    nullKeyIterator = null;
     nextEntry = null;
     nextEntryScore = 0f;
   }
