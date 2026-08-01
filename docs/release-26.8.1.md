@@ -1024,4 +1024,190 @@ Two cluster endpoints move behind the root check that the seven mutating Raft en
 `GET /api/v1/cluster` also stops listing reserved internal databases such as the Raft control directory
 `.raft`, matching what the presence matrix and the bootstrap-state RPC already did.
 
+## Partitioned types survive a restart, and a later `CREATE INDEX` says what it cost the partitioning
+
+Two loose ends of the partitioned-strategy series, both about what happens to a type *after* it has been configured
+([#5637](https://github.com/ArcadeData/arcadedb/issues/5637)).
+
+**`ALTER TYPE ... BucketSelectionStrategy` is persisted.** The strategy was set in memory and nothing wrote it out,
+so a type partitioned by that DDL alone came back **`round-robin` after a restart** - unless some later, unrelated
+schema mutation happened to flush the configuration first. This hit *correctly* configured types, which is what
+makes it worse than the states #5603 refuses: new records were placed round-robin among rows the partition hash had
+placed, every partition-aware lookup silently fanned out, and nothing warned. It is the one schema mutator that
+left the write to somebody else - the flag *about* the partitioning (`needsRepartition`) saved itself while the
+partitioning did not. Databases whose strategy never reached `schema.json` simply need the `ALTER TYPE` re-issued;
+placement of existing records is unaffected either way, since the hash is the same one.
+
+The fix is on the mutator, not on `partitioned`, so `thread` stops being lost across a restart on the same terms.
+`round-robin` is the default and is deliberately still absent from `schema.json`, which is how reverting to it
+persists.
+
+**An index created on an already-partitioned type is diagnosed when it is created.** #5603 refuses an unsuitable
+partition at assignment time, but the same state was reachable by reordering the DDL - attach the strategy first,
+then create the index that makes it unprunable:
+
+```sql
+ALTER TYPE T BucketSelectionStrategy `partitioned('name')`;   -- accepted
+DROP INDEX `T[name]`;
+CREATE INDEX ON T (name COLLATE CI) UNIQUE;                   -- used to be silent
+```
+
+Correctness always held - the strategy declines to prune, so lookups fan out and `UNIQUE` stays global - but
+between the `CREATE INDEX` and the next restart nothing said the partitioning had stopped doing anything. The same
+applied to an index on non-partition properties, which drew the fan-out advisory at assignment time and nothing
+when it arrived later. `CREATE INDEX` now re-runs the same check and reports the result. It never refuses: at
+assignment time the strategy is what was asked for and a blocked one is pure cost, whereas here the index is what
+was asked for and it is useful, so the partitioning is what gives way. An index change that leaves the partition
+exactly as suitable as it was stays quiet.
+
+**A partitioned type whose index has been dropped opens again.** Binding the strategy demanded the unique automatic
+index on the partition properties, and it did so on every rebind - including the one the schema loader performs on
+every open. With the strategy now reaching `schema.json`, a `DROP INDEX` on the partition key made the next open
+throw *from inside the loader*, which aborts everything it has not reached yet: the remaining types' strategies,
+the triggers, the function libraries, the extensions, and the compaction file-migration map WAL recovery redirects
+through - reported only as `Error on loading schema. The schema will be reset`. Binding no longer validates
+anything; the requirement moved to the suitability check, which refuses it at assignment time exactly as before and
+warns about it on load. The type keeps its partitioned placement, so records written after the index was dropped
+still land where a lookup would look for them. Any other unusable strategy - an implementation class that no longer
+resolves, say - now falls back to `round-robin` for that one type with a warning naming it, instead of costing the
+rest of the schema.
+## Cypher: a subquery body is validated like the query around it
+
+The widening of #5602 left one place the walk could not reach, and the class it was written on said so in the
+opposite direction: the bodies of `EXISTS { }`, `COUNT { }` and `COLLECT { }` were "parsed on their own and
+validated then". They were not. Each of the three keeps its body as text and re-parses it once per outer row, and
+a body that cannot run is absorbed into the expression's neutral value - `false`, `0`, an empty list. A `CALL { }`
+body was never handed to this phase at all ([#5626](https://github.com/ArcadeData/arcadedb/issues/5626)).
+
+So `MATCH (n:P) WHERE abs('x') > 0 RETURN n` was rejected before it started, while the identical call one level in,
+`MATCH (n:P) WHERE EXISTS { MATCH (m:P) WHERE abs('x') > 0 RETURN m } RETURN n`, was accepted - the very
+clause-dependent asymmetry #5602 set out to remove. Neo4j type-checks a subquery body exactly as it does the query
+around it.
+
+The three expressions now carry their body as an AST alongside the text, built from the parse tree ANTLR already
+produced for it rather than by re-lexing, and the traversal descends into it - as it does into a `CALL { }` body.
+Crossing into a body changes the variable scope, so a check that reads variable kinds (`type()` wants a
+relationship, `p.name` needs `p` not to be a path) re-binds itself to the kinds the body declares, over the ones it
+inherits; an implicit `CALL { }` imports nothing, so a name the body binds for itself shadows the outer one rather
+than answering for it. A body's kinds are built by walking its clauses in order, so the two spellings of the same
+import - `CALL (p) { ... }` and a leading `WITH p` - answer alike, while `WITH 1 AS p` stops `p` being a path. Each
+branch of a `UNION` is a scope in its own right: a variable only one branch declares is checked against the kind
+that branch gives it, instead of being dropped for the branches disagreeing about it.
+
+Two expression positions that were leaves for the same reason are covered too: an `EXISTS { }` written as a bare
+`WHERE` predicate, and a function call used as one (`WHERE isEmpty(x)`), each used to get an anonymous
+`BooleanExpression` adapter that the traversal could only treat as a leaf. Both are now the ordinary
+`BooleanCoercionExpression` - byte-for-byte the same behaviour, minus the blind spot. Procedure `CALL` arguments
+and the `LOAD CSV FROM` url expression are walked as well.
+
+Working out what a name is - a node, a relationship, a path - was written twice, once for a statement and once
+for a subquery body, and the two had already drifted. They are one construction now, which closed an asymmetry
+older than this issue: the statement's copy dropped every kind at a `WITH *`, because it kept only what the
+projection names, while the body's copy passed the incoming scope through.
+
+> **Potentially breaking, in the same way #5602 was.** A query whose bad call sits inside a subquery body is now
+> rejected before it starts rather than failing at runtime - or, where the subquery matched no row, rather than
+> quietly answering `false` / `0` / `[]`. The call was always wrong. One shape worth calling out: `type(b)` where
+> `b` is a node, written inside a subquery, is now the type error it already was outside one.
+>
+> A second shape comes from the shared scope construction: a kind now survives `WITH *`, so
+> `MATCH p = (a)-[:KNOWS]->(b) WITH * RETURN p.name` is rejected as the path-property access it always was,
+> where before the `WITH *` made the engine forget `p` was a path and the query failed at runtime instead. A
+> projection that names what it keeps is unaffected - `WITH 1 AS p` still stops `p` being a path.
+
+## An index `METADATA` key is now either applied or reported, and a reopened vector index keeps its metric
+
+> **Upgrading? Two things change behaviour.** Both are detailed below, in full, but in short:
+>
+> 1. **A `CREATE INDEX ... METADATA` clause carrying an unknown or malformed key is now refused** (HTTP 400 from SQL,
+>    `IllegalArgumentException` from the Java builders' `withMetadata(JSONObject)`). Such a key never did anything, but a
+>    statement that used to succeed can now fail. Existing indexes are untouched and reading a persisted definition
+>    stays tolerant.
+> 2. **An existing `EUCLIDEAN` or `DOT_PRODUCT` vector index changes its search results on the first reopen** - it has
+>    been scoring with COSINE since the restart after it was created, and now scores with the metric it was created
+>    with. Nothing to re-create or rebuild. COSINE indexes are unaffected.
+
+`CREATE INDEX ... METADATA {...}` read the keys it knew with `if (json.has(...))` and dropped the rest, on every
+index type except `GEOSPATIAL` ([#5639](https://github.com/ArcadeData/arcadedb/issues/5639)). A typo was therefore
+indistinguishable from a correct clause:
+
+```sql
+-- succeeded, reported success, and built a COSINE index
+CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {"dimensions": 384, "similarty": "EUCLIDEAN"}
+```
+
+An unknown key is now refused with the list of the ones the index type accepts, as an HTTP 400. This holds for
+`LSM_VECTOR`, `LSM_SPARSE_VECTOR` and `FULL_TEXT`; `GEOSPATIAL` already behaved this way, and an index type with no
+settings at all already refused a `METADATA` clause outright. A value of the wrong shape is refused the same way, and
+is no longer coerced: `{"dimensions": 8.5}` used to create an 8-dimension index, and `{"addHierarchy": "yes"}` used to
+*disable* the setting being asked for, because a string that is not `"true"` reads as `false`.
+
+**Upgrade note.** This is the one behaviour change to be aware of: a stored `CREATE INDEX` script or migration that
+carried a stray or misspelled `METADATA` key used to run and is now refused. That is the point of the change - the key
+was never doing anything - but a statement that "worked" before can now fail, so check any generated DDL against the
+accepted keys, which the error message lists. Existing indexes are untouched; only new `CREATE INDEX` statements are
+validated, and reading a persisted definition stays tolerant of the structural keys it carries.
+
+Two consequences for **embedded (Java) callers** specifically:
+
+- The strict reading applies to `TypeLSMVectorIndexBuilder.withMetadata(JSONObject)` and its full-text, sparse and
+  geospatial counterparts, not only to SQL. A caller that passed an extra key for forward compatibility now gets an
+  exception. Note in particular `buildGraphNow`, which is a directive of the SQL layer rather than an index setting: the
+  SQL path consumes and removes it before the builder sees it, so a Java caller passing it through `withMetadata` is
+  passing a key the builder has never understood, and now hears about it. Restoring an exported definition has its own
+  entry point, `withPersistedMetadata(JSONObject)`, which tolerates the structural keys such a definition carries.
+- `BucketLSMVectorIndexBuilder` no longer exposes its settings as public fields (`dimensions`, `similarityFunction`,
+  `encoding`, `maxConnections`, ...). Those fields *were* the defect - a setting added to the metadata had to be
+  remembered there too, and two never were - so they are gone rather than kept in sync. Every fluent `withX()` method is
+  preserved (with `withEfSearch` added), and `getVectorMetadata()` returns the whole configuration as one object.
+
+Four dense-vector settings were unreachable behind that silence, and are now settable and persisted:
+
+- **`efSearch`** and **`inactivityRebuildTimeoutMs`** were never read from the clause, so the search-time
+  recall/latency knob could only be set per query. Two of ArcadeDB's own tests believed they had disabled the
+  inactivity rebuild through `METADATA` and had not.
+- **`neighborOverflowFactor`** and **`alphaDiversityRelaxation`** were read, then lost one hop later: the settings
+  travelled from the type-level builder to the per-bucket index through a hand-written field-by-field copy, and that
+  copy had fallen behind. `TRUNCATE TYPE` and `REBUILD INDEX` lost the same four settings when re-creating an index.
+  Every setting now travels as one `LSMVectorIndexMetadata`, so there is no second field list to keep in sync.
+
+**A `EUCLIDEAN` or `DOT_PRODUCT` vector index came back up as `COSINE` after a restart.** The persisted definition
+names the metric `similarityFunction` while the reader looked only for `similarity`, so nothing restored it and every
+search after a reopen scored with the wrong metric against a graph built with the right one. Both spellings are read
+now. The persisted definition also carries every remaining knob, so a setting no longer silently reverts to its
+default on the next restart.
+
+**Upgrade note, and the one with visible effects.** If you have an existing `EUCLIDEAN` or `DOT_PRODUCT` vector index,
+its searches have been scoring with COSINE since the first restart after it was created. On the first reopen after this
+upgrade it scores with the metric it was created with - so **distances and result ordering will change**, and they
+change to what was asked for. Nothing needs re-creating, re-importing or rebuilding: the graph was always built with
+the correct metric, only the search side disagreed with it, and the fix is applied on open. An index created with the
+default COSINE is unaffected in every respect. If you have been compensating for the old behaviour anywhere - a tuned
+distance threshold, a golden-file test of result order - that is the thing to re-check.
+
+Finally, restoring a vector index from an exported definition (`IMPORT DATABASE` of a JSONL dump) goes through a
+distinct entry point: an exported definition legitimately carries structural keys - `type`, `bucket`, `version`, ... -
+that the `METADATA`-clause reader has to reject as typos.
+
+## `.github/dependency-review-config.yml` expresses the policy the action actually reads
+
+The file was organised into `security:`, `licensing:`, `packages:`, `changes:`, `exemptions:`, `notifications:`,
+`advanced:` and `reporting:` sections. `actions/dependency-review-action` takes a **flat** configuration and silently
+drops every key it does not know, so the whole file was inert while reading as an enforced supply-chain policy: the
+minimum versions for `jquery`, `bootstrap` and `datatables.net` and the denial of the compromised `event-stream` and
+`flatmap-stream` were never applied. Had the file been live it would also have rejected dependencies the project
+permits, since its `licensing.deny` listed `EPL-1.0`, `EPL-2.0` and `LGPL-2.1` - which `CLAUDE.md` allows and the
+current tree already ships.
+
+The policy is now written in the schema the action reads (`fail-on-severity`, `fail-on-scopes`, `deny-licenses`,
+`deny-packages`), aligned with the allowed/forbidden lists in `CLAUDE.md`, and the workflow step no longer passes
+inline inputs that would override the file. The per-package minimum versions moved to the workflow's existing
+`Validate Package.json` step, which is the only place they can actually be enforced.
+
+Deliberately, **nothing that currently passes CI starts failing**: `fail-on-scopes` stays at `runtime`, the action's
+default and therefore what this job has effectively been enforcing all along. The old file asked for `development` too,
+and expressing that would have been faithful to its intent, but it would have tightened a shared gate as a side effect
+of repairing a config that enforced nothing - a decision worth taking on its own merits. Development dependencies are
+still covered by the `npm audit --audit-level=moderate` step of the same workflow.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

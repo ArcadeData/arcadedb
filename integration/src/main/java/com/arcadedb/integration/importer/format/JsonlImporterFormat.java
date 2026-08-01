@@ -204,16 +204,13 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * populate the graph incrementally through the index {@code put} hook.
    */
   private void loadVectorIndex(final Schema databaseSchema, final String typeName, final String[] fields, final JSONObject idx) {
-    // The exporter (LSMVectorIndex.toJSON) writes the similarity function under "similarityFunction", while the
-    // builder reads "similarity"; bridge the two so the configured metric survives the round-trip.
-    final JSONObject metadata = new JSONObject(idx.toMap());
-    if (metadata.has("similarityFunction") && !metadata.has("similarity"))
-      metadata.put("similarity", metadata.getString("similarityFunction"));
-
+    // withPersistedMetadata, not withMetadata: the exported definition is what LSMVectorIndex.toJSON() wrote, so it
+    // carries structural keys (type, bucket, indexName, version, ...) that the METADATA-clause reader rejects as typos,
+    // and it names the metric "similarityFunction" rather than the clause's "similarity" (issue #5639).
     final TypeLSMVectorIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
         .withType(Schema.INDEX_TYPE.LSM_VECTOR)
         .withLSMVectorType();
-    builder.withMetadata(metadata);
+    builder.withPersistedMetadata(idx);
     builder.withIgnoreIfExists(true);
     builder.create();
   }

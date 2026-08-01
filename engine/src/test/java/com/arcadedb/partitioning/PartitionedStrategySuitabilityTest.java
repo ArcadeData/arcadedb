@@ -26,8 +26,6 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
@@ -45,9 +43,8 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Date;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.logging.Level;
 
+import static com.arcadedb.partitioning.WarningCapture.captureWarnings;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -437,11 +434,6 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON ReopenIdx(code) UNIQUE");
     });
     partition("ReopenIdx");
-    // The schema is flushed explicitly because `ALTER TYPE ... BucketSelectionStrategy` does not persist on its own -
-    // the strategy lives in memory until some later schema mutation happens to save, so without this the type would
-    // reopen as round-robin and the test would pass for the wrong reason. Pre-existing and unrelated to this change
-    // (reproduced on the unmodified sources); reported separately.
-    ((LocalSchema) database.getSchema().getEmbedded()).saveConfiguration();
     database.close();
 
     final List<String> warnings = captureWarnings(() -> database = factory.open());
@@ -516,7 +508,7 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
     strategy.setType((LocalDocumentType) database.getSchema().getType("Diag"));
 
     final PartitionedBucketSelectionStrategy.Suitability suitability = strategy.checkSuitability();
-    assertThat(suitability.canPrune()).isFalse();
+    assertThat(suitability.isUsable()).isFalse();
     assertThat(suitability.blockers()).singleElement().asString().contains("DECIMAL");
     assertThat(suitability.warnings()).singleElement().asString().contains("code");
 
@@ -601,66 +593,4 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
     return "target/databases/PartitionedStrategySuitabilityTest";
   }
 
-  /**
-   * Runs {@code action} with the engine's own {@link Logger} swapped for one that records, and returns the WARNING
-   * (or worse) messages it saw.
-   * <p>
-   * Deliberately not a {@code java.util.logging} handler. The test resources set {@code com.arcadedb.level=SEVERE},
-   * so whether a WARNING ever reaches a JUL handler depends on which loggers the rest of the suite happened to
-   * reconfigure first - a capture that passes on its own and fails in a full run. Swapping the logger sees the
-   * message before any level is consulted. {@link LogManager#getLogger()} exists for exactly this.
-   */
-  private static List<String> captureWarnings(final Runnable action) {
-    final CapturingLogger capturing = new CapturingLogger(LogManager.instance().getLogger());
-    LogManager.instance().setLogger(capturing);
-    try {
-      action.run();
-    } finally {
-      LogManager.instance().setLogger(capturing.delegate);
-    }
-    return capturing.messages;
-  }
-
-  private static final class CapturingLogger implements Logger {
-    private final Logger       delegate;
-    private final List<String> messages = new CopyOnWriteArrayList<>();
-
-    private CapturingLogger(final Logger delegate) {
-      this.delegate = delegate;
-    }
-
-    private void record(final Level level, final String message, final Object... args) {
-      if (message == null || level.intValue() < Level.WARNING.intValue())
-        return;
-      try {
-        messages.add(args.length > 0 ? message.formatted(args) : message);
-      } catch (final Exception ignored) {
-        messages.add(message);
-      }
-    }
-
-    @Override
-    public void log(final Object requester, final Level level, final String message, final Throwable exception,
-        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-        final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
-        final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
-        final Object arg15, final Object arg16, final Object arg17) {
-      record(level, message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-          arg15, arg16, arg17);
-      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
-          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
-    }
-
-    @Override
-    public void log(final Object requester, final Level level, final String message, final Throwable exception,
-        final String context, final Object... args) {
-      record(level, message, args);
-      delegate.log(requester, level, message, exception, context, args);
-    }
-
-    @Override
-    public void flush() {
-      delegate.flush();
-    }
-  }
 }

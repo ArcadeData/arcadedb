@@ -171,7 +171,9 @@ public class TruncateTypeStatement extends DDLStatement {
     // dimension 0" (issue #4359). The type-specific builder's withMetadata(IndexMetadata)
     // override reinstates the vector-specific fields.
     if (def.indexType == Schema.INDEX_TYPE.LSM_VECTOR && def.metadata instanceof LSMVectorIndexMetadata vectorMeta)
-      ((TypeLSMVectorIndexBuilder) builder).withMetadata(cloneVectorMetadata(def.typeName, def.propertyNames, vectorMeta));
+      // A copy - rather than the original reference - keeps the dropped index's per-index runtime state (notably
+      // buildState) off the rebuilt one and resets associatedBucketId so the per-bucket builder sets it during create().
+      ((TypeLSMVectorIndexBuilder) builder).withMetadata(vectorMeta.copy(def.typeName, def.propertyNames, -1));
 
     builder.create();
   }
@@ -218,40 +220,6 @@ public class TruncateTypeStatement extends DDLStatement {
       return new IndexDefinition(index.getName(), index.getTypeName(), props.toArray(new String[0]),
           index.getType(), index.isUnique(), index.getPageSize(), index.getNullStrategy(), index.getMetadata());
     }
-  }
-
-  /**
-   * Returns a fresh {@link LSMVectorIndexMetadata} carrying the vector-specific configuration of
-   * {@code source} (dimensions, similarity, HNSW parameters, ...). A copy - rather than the original
-   * reference - avoids reusing the dropped index's mutable runtime fields (e.g. {@code buildState})
-   * on the rebuilt index and resets {@code associatedBucketId} so the per-bucket builder sets it
-   * correctly during {@code create()}.
-   */
-  private static LSMVectorIndexMetadata cloneVectorMetadata(final String typeName, final String[] propertyNames,
-      final LSMVectorIndexMetadata source) {
-    final LSMVectorIndexMetadata copy = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
-    copy.dimensions = source.dimensions;
-    copy.similarityFunction = source.similarityFunction;
-    copy.quantizationType = source.quantizationType;
-    copy.encoding = source.encoding;
-    copy.maxConnections = source.maxConnections;
-    copy.beamWidth = source.beamWidth;
-    copy.efSearch = source.efSearch;
-    copy.neighborOverflowFactor = source.neighborOverflowFactor;
-    copy.alphaDiversityRelaxation = source.alphaDiversityRelaxation;
-    copy.idPropertyName = source.idPropertyName;
-    copy.locationCacheSize = source.locationCacheSize;
-    copy.graphBuildCacheSize = source.graphBuildCacheSize;
-    copy.mutationsBeforeRebuild = source.mutationsBeforeRebuild;
-    copy.inactivityRebuildTimeoutMs = source.inactivityRebuildTimeoutMs;
-    copy.storeVectorsInGraph = source.storeVectorsInGraph;
-    copy.addHierarchy = source.addHierarchy;
-    copy.pqSubspaces = source.pqSubspaces;
-    copy.pqClusters = source.pqClusters;
-    copy.pqCenterGlobally = source.pqCenterGlobally;
-    copy.pqTrainingLimit = source.pqTrainingLimit;
-    copy.collations = source.collations;
-    return copy;
   }
 
   @Override

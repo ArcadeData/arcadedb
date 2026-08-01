@@ -97,31 +97,39 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
     return copy;
   }
 
+  /**
+   * Binds the strategy to its type. Binding only: it must never throw.
+   * <p>
+   * This runs on every rebind, not just when the user asks for the strategy - {@code addIndexInternal} calls it once
+   * per bucket index, {@code addBucketInternal} on every bucket added, and the schema loader on every open - so a
+   * validation failure here is a failure of whatever operation happened to touch the type. It used to demand the
+   * unique automatic index on the partition properties, which made a database whose partition index had been dropped
+   * unopenable: the loader binds the persisted strategy inside its own try/catch, so the throw aborted the rest of
+   * the load - triggers, function libraries, extensions and the compaction file-migration map - and the schema was
+   * reported as "reset" (issue #5637). That requirement now lives in {@link #checkSuitability()}, which the schema
+   * layer refuses on at assignment time and only warns about when it reads an existing database back.
+   */
   @Override
   public void setType(final LocalDocumentType type) {
     super.setType(type);
     this.type = type;
-
-    final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
-    if (index == null || !index.isAutomatic() || !index.isUnique())
-      throw new IllegalArgumentException(
-          "cannot find a unique automatic index on the partition properties " + propertyNames);
   }
 
   /**
    * A verdict on the partition configuration, split by what it costs.
    * <p>
-   * A {@code blocker} is a state in which {@link #getBucketIdByKeys} can never answer anything but -1, so the type
-   * pays the strategy's constraints - a partition key that must not be updated, an uneven bucket fill - and gets
-   * nothing back. Assigning the strategy into such a state is refused; finding an existing database in one is only
-   * warned about, so it still opens.
+   * A {@code blocker} is a state the strategy must not be assigned into, because the type pays the strategy's
+   * constraints - a partition key that must not be updated, an uneven bucket fill - and gets nothing usable back:
+   * either {@link #getBucketIdByKeys} can never answer anything but -1, or the unique automatic index those pruned
+   * lookups would go through is not there at all. Assigning the strategy into such a state is refused; finding an
+   * existing database in one is only warned about, so it still opens.
    * <p>
    * A {@code warning} is a configuration that prunes, just less than the wording suggests. Today that is a second
    * index on properties the partition does not cover: those lookups cannot be pruned (issue #5589) and fan out
    * across every bucket, which is correct but no faster than not partitioning at all.
    */
   public record Suitability(List<String> blockers, List<String> warnings) {
-    public boolean canPrune() {
+    public boolean isUsable() {
       return blockers.isEmpty();
     }
   }
@@ -130,13 +138,21 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
    * Diagnoses the partition configuration for the schema layer. Cold path only - called when the strategy is assigned
    * and when a database is reopened, never per query, so it is free to allocate the messages it reports.
    * <p>
-   * The rules are the ones {@link #getBucketIdByKeys} enforces silently, said out loud: a configuration reported here
-   * as a blocker is exactly one in which that method returns -1 for every key it will ever be handed.
+   * Most of the rules are the ones {@link #getBucketIdByKeys} enforces silently, said out loud: a configuration
+   * reported below as a hashing blocker is exactly one in which that method returns -1 for every key it will ever be
+   * handed. The first blocker is the odd one out - a missing partition index does not stop the strategy from
+   * computing a bucket, it removes the index lookup that would have been pruned by it - and it is grouped here
+   * because it draws the same reaction: refuse the assignment, warn about a database already in that state.
    */
   public Suitability checkSuitability() {
     final Database database = type.getSchema().getEmbedded().getDatabase();
     final List<String> blockers = new ArrayList<>();
     final List<String> warnings = new ArrayList<>();
+
+    final TypeIndex partitionIndex = type.getPolymorphicIndexByProperties(propertyNames);
+    if (partitionIndex == null || !partitionIndex.isAutomatic() || !partitionIndex.isUnique())
+      blockers.add("cannot find a unique automatic index on the partition properties " + propertyNames
+          + ", which is what a pruned lookup would go through");
 
     for (final String propertyName : propertyNames) {
       final Property property = type.getPolymorphicPropertyIfExists(propertyName);

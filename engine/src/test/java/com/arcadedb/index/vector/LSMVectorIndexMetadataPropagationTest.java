@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Type;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
@@ -28,44 +29,73 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression tests for issue #4134: ensure that the consolidated {@link LSMVectorIndexConfig}
- * record propagates every field (including {@code encoding}) into the index metadata at
- * construction time, replacing the historical 17-positional-arg constructor + post-construction
- * mutation pattern. The factory handler path must keep working, and INT8 / FLOAT32 encodings must
- * survive the trip through the config record into the metadata.
+ * Regression tests for issue #4134: every construction-time setting must reach the index metadata before the instance
+ * escapes, replacing the historical 17-positional-arg constructor + post-construction mutation pattern. The settings now
+ * travel as one {@link LSMVectorIndexMetadata}: the intermediate value object that used to carry them had a field list
+ * of its own, and that list fell behind the metadata's, silently dropping four settings (issue #5639).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class LSMVectorIndexConfigTest extends TestHelper {
+class LSMVectorIndexMetadataPropagationTest extends TestHelper {
   private static final int DIMENSIONS = 32;
 
+  /**
+   * {@link LSMVectorIndexMetadata#copy} is the hop the settings take from the builder into the index, so a field it
+   * forgets is a setting the user cannot reach. Every field is given a non-default value here: a copy() that misses one
+   * fails on that field instead of being invisible until someone reports the knob does nothing.
+   */
   @Test
-  void configRecordExposesEveryField() {
-    final LSMVectorIndexConfig config = new LSMVectorIndexConfig(
-        "Doc", new String[] { "embedding" }, DIMENSIONS,
-        VectorSimilarityFunction.COSINE, VectorEncoding.INT8, VectorQuantizationType.NONE,
-        16, 100, "id",
-        -1, -1, -1, false, true,
-        8, 256, true, 4096);
+  void copyCarriesEverySetting() {
+    final LSMVectorIndexMetadata source = new LSMVectorIndexMetadata("Doc", new String[] { "embedding" }, 7);
+    source.dimensions = DIMENSIONS;
+    source.similarityFunction = VectorSimilarityFunction.DOT_PRODUCT;
+    source.quantizationType = VectorQuantizationType.PRODUCT;
+    source.encoding = VectorEncoding.INT8;
+    source.maxConnections = 24;
+    source.beamWidth = 150;
+    source.efSearch = 250;
+    source.neighborOverflowFactor = 1.4f;
+    source.alphaDiversityRelaxation = 1.3f;
+    source.idPropertyName = "docId";
+    source.locationCacheSize = 1024;
+    source.graphBuildCacheSize = 2048;
+    source.mutationsBeforeRebuild = 4242;
+    source.inactivityRebuildTimeoutMs = 7000;
+    source.storeVectorsInGraph = true;
+    source.addHierarchy = true;
+    source.pqSubspaces = 8;
+    source.pqClusters = 128;
+    source.pqCenterGlobally = false;
+    source.pqTrainingLimit = 4096;
+    source.buildState = "BUILDING";
 
-    assertThat(config.typeName()).isEqualTo("Doc");
-    assertThat(config.propertyNames()).containsExactly("embedding");
-    assertThat(config.dimensions()).isEqualTo(DIMENSIONS);
-    assertThat(config.similarityFunction()).isEqualTo(VectorSimilarityFunction.COSINE);
-    assertThat(config.encoding()).isEqualTo(VectorEncoding.INT8);
-    assertThat(config.quantizationType()).isEqualTo(VectorQuantizationType.NONE);
-    assertThat(config.maxConnections()).isEqualTo(16);
-    assertThat(config.beamWidth()).isEqualTo(100);
-    assertThat(config.idPropertyName()).isEqualTo("id");
-    assertThat(config.locationCacheSize()).isEqualTo(-1);
-    assertThat(config.graphBuildCacheSize()).isEqualTo(-1);
-    assertThat(config.mutationsBeforeRebuild()).isEqualTo(-1);
-    assertThat(config.storeVectorsInGraph()).isFalse();
-    assertThat(config.addHierarchy()).isTrue();
-    assertThat(config.pqSubspaces()).isEqualTo(8);
-    assertThat(config.pqClusters()).isEqualTo(256);
-    assertThat(config.pqCenterGlobally()).isTrue();
-    assertThat(config.pqTrainingLimit()).isEqualTo(4096);
+    final LSMVectorIndexMetadata copy = source.copy("Other", new String[] { "vector" }, -1);
+
+    assertThat(copy.typeName).isEqualTo("Other");
+    assertThat(copy.propertyNames).containsExactly("vector");
+    assertThat(copy.associatedBucketId).isEqualTo(-1);
+    assertThat(copy.dimensions).isEqualTo(DIMENSIONS);
+    assertThat(copy.similarityFunction).isEqualTo(VectorSimilarityFunction.DOT_PRODUCT);
+    assertThat(copy.quantizationType).isEqualTo(VectorQuantizationType.PRODUCT);
+    assertThat(copy.encoding).isEqualTo(VectorEncoding.INT8);
+    assertThat(copy.maxConnections).isEqualTo(24);
+    assertThat(copy.beamWidth).isEqualTo(150);
+    assertThat(copy.efSearch).isEqualTo(250);
+    assertThat(copy.neighborOverflowFactor).isEqualTo(1.4f);
+    assertThat(copy.alphaDiversityRelaxation).isEqualTo(1.3f);
+    assertThat(copy.idPropertyName).isEqualTo("docId");
+    assertThat(copy.locationCacheSize).isEqualTo(1024);
+    assertThat(copy.graphBuildCacheSize).isEqualTo(2048);
+    assertThat(copy.mutationsBeforeRebuild).isEqualTo(4242);
+    assertThat(copy.inactivityRebuildTimeoutMs).isEqualTo(7000);
+    assertThat(copy.storeVectorsInGraph).isTrue();
+    assertThat(copy.addHierarchy).isTrue();
+    assertThat(copy.pqSubspaces).isEqualTo(8);
+    assertThat(copy.pqClusters).isEqualTo(128);
+    assertThat(copy.pqCenterGlobally).isFalse();
+    assertThat(copy.pqTrainingLimit).isEqualTo(4096);
+    // buildState is per-index lifecycle state, not a setting: a rebuilt index must start from its own default.
+    assertThat(copy.buildState).isEqualTo("READY");
   }
 
   @Test

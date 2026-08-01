@@ -19,11 +19,13 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for issue #5228: in the new scoped subquery syntax {@code CALL () { ... }} /
@@ -35,9 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * This is the same defect as issue #5226 (the O(1) type-count fast path counted edges) combined
  * with the general MATCH kind guard of issue #5194; both are fixed on main. Where the #5226 suite
  * asserts the aggregated {@code count(b)} and a {@code labels(b)} probe, this suite locks down the
- * reporter's remaining diagnostic angle: returning the raw entity {@code b} and probing
- * {@code type(b)} must yield <em>no rows at all</em>, for every {@code CALL} variant reported.
- * Labels and relationship types are separate namespaces in Cypher; Neo4j returns no rows here.
+ * reporter's remaining diagnostic angle: returning the raw entity {@code b} must yield <em>no rows
+ * at all</em>, for every {@code CALL} variant reported. Labels and relationship types are separate
+ * namespaces in Cypher; Neo4j returns no rows here.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -79,11 +81,27 @@ class Issue5228CallMatchEdgeLabelEntityTest extends TestHelper {
     assertThat(rowCount("CALL () { MATCH (b:EdgeLabel) RETURN b AS b } RETURN b")).isEqualTo(0);
   }
 
-  /** The reporter's diagnostic probe: labels()/type() must not surface any relationship. */
+  /** The reporter's diagnostic probe: labels() must not surface any relationship. */
   @Test
-  void scopedCallNoImportTypeAndLabelsProbeYieldsNoRows() {
+  void scopedCallNoImportLabelsProbeYieldsNoRows() {
     assertThat(rowCount(
-        "CALL () { MATCH (b:EdgeLabel) RETURN labels(b) AS lbls, type(b) AS t } RETURN lbls, t")).isEqualTo(0);
+        "CALL () { MATCH (b:EdgeLabel) RETURN labels(b) AS lbls } RETURN lbls")).isEqualTo(0);
+  }
+
+  /**
+   * The other half of the reporter's probe, {@code type(b)}, asks a node for a relationship type and so is a type
+   * error before the query runs - the answer it was written to produce cannot exist. It reads the same inside the
+   * subquery as it does outside it: the clause an expression sits in has no bearing on whether the call is valid
+   * (issue #5626).
+   */
+  @Test
+  void typeProbeOnANodeIsRejectedInsideAndOutsideTheSubquery() {
+    assertThatThrownBy(() -> rowCount("CALL () { MATCH (b:EdgeLabel) RETURN type(b) AS t } RETURN t"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument");
+    assertThatThrownBy(() -> rowCount("MATCH (b:EdgeLabel) RETURN type(b) AS t"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument");
   }
 
   /** {@code CALL (a)} importing an outer variable, returning the entity. */

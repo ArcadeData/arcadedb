@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -67,6 +68,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
+
+  /**
+   * Fixed keys a user may write in {@code METADATA}. The key space is not closed: {@code <field>_analyzer} and
+   * {@code <field>_boost} are per-property, so {@link #isUserMetadataKey(String)} recognises those by shape. The
+   * persisted corpus counters ({@code ft_*}) are deliberately absent - they are maintained by the index, not configured.
+   */
+  private static final Set<String> USER_METADATA_KEYS = Set.of("analyzer", "index_analyzer", "query_analyzer",
+      "allowLeadingWildcard", "defaultOperator", "similarity", "bm25_k1", "bm25_b");
 
   // These scalar fields (analyzers, operator, wildcard flag, similarity, k1/b) are set once at index creation / schema load,
   // before any query-path read, so they need no volatile/synchronization (unlike the live corpus counters and the per-field
@@ -177,6 +186,97 @@ public class FullTextIndexMetadata extends IndexMetadata {
         setFieldBoost(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
+  }
+
+  @Override
+  public Set<String> getUserMetadataKeys() {
+    return USER_METADATA_KEYS;
+  }
+
+  /**
+   * Recognises the per-field keys by shape; {@link #applyUserMetadata} then checks that the field they name is one this
+   * index covers, so a typo is reported rather than stored against a property that will never match.
+   * <p>
+   * Two consequences of a suffix-based key space, both inherent and neither worth a different scheme: a property named
+   * {@code index} or {@code query} cannot take a per-field analyzer, because {@code index_analyzer} and
+   * {@code query_analyzer} are the reserved keys for the indexing and querying analyzers; and a property whose own name
+   * ends in {@code _analyzer} or {@code _boost} would be read as a per-field key for the shorter name. Both are
+   * ambiguities of the notation, not of the reader.
+   */
+  @Override
+  protected boolean isUserMetadataKey(final String key) {
+    return USER_METADATA_KEYS.contains(key) || key.endsWith(ANALYZER_SUFFIX) || key.endsWith(BOOST_SUFFIX);
+  }
+
+  @Override
+  protected String describeUserMetadataKeys() {
+    return super.describeUserMetadataKeys() + ", <field>" + ANALYZER_SUFFIX + ", <field>" + BOOST_SUFFIX;
+  }
+
+  /**
+   * Applies the {@code METADATA} clause of {@code CREATE INDEX}. Deliberately not {@link #fromJSON(JSONObject)}: that
+   * method reads a PERSISTED definition, where a missing {@code similarity} means an index written before BM25 support
+   * and therefore CLASSIC ranking. Here a missing key just means the user did not ask for anything, so an index created
+   * with a METADATA clause must keep the same BM25 default as one created without it - it used to silently drop to
+   * CLASSIC (issue #5639).
+   */
+  @Override
+  protected void applyUserMetadata(final JSONObject json) {
+    if (json.has("analyzer"))
+      this.analyzerClass = json.getString("analyzer");
+
+    if (json.has("index_analyzer"))
+      this.indexAnalyzerClass = json.getString("index_analyzer");
+
+    if (json.has("query_analyzer"))
+      this.queryAnalyzerClass = json.getString("query_analyzer");
+
+    if (json.has("allowLeadingWildcard"))
+      this.allowLeadingWildcard = metadataBoolean(json, "allowLeadingWildcard");
+
+    // Through the validating setter: the query parser understands only AND and OR, so anything else was accepted here
+    // and then quietly behaved as OR - the last silent-accept left on the full-text clause (issue #5639).
+    if (json.has("defaultOperator"))
+      setDefaultOperator(json.getString("defaultOperator"));
+
+    // Route through the validating setters so an unknown similarity or an out-of-range k1/b in METADATA {...} is
+    // reported at creation rather than silently scoring wrong.
+    if (json.has("similarity"))
+      setSimilarity(json.getString("similarity"));
+
+    if (json.has("bm25_k1"))
+      setBm25K1(metadataFloat(json, "bm25_k1"));
+
+    if (json.has("bm25_b"))
+      setBm25B(metadataFloat(json, "bm25_b"));
+
+    for (final String key : json.keySet())
+      if (key.endsWith(ANALYZER_SUFFIX) && !USER_METADATA_KEYS.contains(key))
+        setFieldAnalyzer(checkIndexedField(key, ANALYZER_SUFFIX), json.getString(key));
+      else if (key.endsWith(BOOST_SUFFIX))
+        setFieldBoost(checkIndexedField(key, BOOST_SUFFIX), metadataFloat(json, key));
+  }
+
+  /**
+   * Returns the field name a per-field {@code METADATA} key configures, having checked that this index covers it.
+   * <p>
+   * An analyzer or a boost for a property the index does not cover is dead configuration: only an indexed field is
+   * analyzed, and a boost applies to field-qualified matches, which only an indexed field can produce. Accepting
+   * {@code titel_boost} for an index on {@code title} would therefore be the same silently-dropped setting this reader
+   * exists to report (issue #5639).
+   * <p>
+   * Only the user clause is checked. {@link #fromJSON} restores a persisted definition and stays tolerant: an index
+   * whose property list changed must still open, and refusing a stale per-field entry there would cost a database its
+   * availability to report a setting that is merely inert. The check is also skipped when the property list is not
+   * known yet, since there would be nothing to check against.
+   */
+  private String checkIndexedField(final String key, final String suffix) {
+    final String fieldName = key.substring(0, key.length() - suffix.length());
+    if (propertyNames != null && !propertyNames.isEmpty() && !propertyNames.contains(fieldName))
+      throw new IllegalArgumentException("Full-text metadata key '" + key + "' names '" + fieldName
+          + "', which is not one of the indexed properties " + propertyNames
+          + ": a per-field analyzer or boost only applies to a property the index covers");
+    return fieldName;
   }
 
   /**
@@ -328,12 +428,21 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets the default operator for query parsing.
+   * Sets the default operator for query parsing: {@code "OR"} (default) or {@code "AND"}, case-insensitive.
+   * <p>
+   * Validated because the query parser recognises nothing else, so an unrecognised operator would silently behave as
+   * OR. {@link #fromJSON} deliberately does NOT route through here: it reads a PERSISTED definition, written by this
+   * setter in the first place, and refusing a value there would make a database unopenable rather than report a typo.
    *
    * @param defaultOperator "OR" or "AND"
+   *
+   * @throws IllegalArgumentException if the operator is neither
    */
   public void setDefaultOperator(final String defaultOperator) {
-    this.defaultOperator = defaultOperator;
+    if (defaultOperator == null || (!"OR".equalsIgnoreCase(defaultOperator.trim()) && !"AND".equalsIgnoreCase(
+        defaultOperator.trim())))
+      throw new IllegalArgumentException("Full-text defaultOperator must be AND or OR, got: " + defaultOperator);
+    this.defaultOperator = defaultOperator.trim().toUpperCase();
   }
 
   /**

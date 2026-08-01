@@ -1,0 +1,73 @@
+# Configuration for actions/dependency-review-action, consumed by the "Dependency Review" job of
+# .github/workflows/studio-security-audit.yml.
+#
+# HOW THIS FILE IS READ (issue #5639). The action's configuration is FLAT: it parses this YAML, strips the dashes from
+# the keys and validates the result against its own schema, which knows only the options below. Every unrecognised key
+# is silently dropped - no warning, no error. This file used to be organised into `security:`, `licensing:`,
+# `packages:`, `changes:`, `exemptions:`, `notifications:`, `advanced:` and `reporting:` sections, none of which the
+# action has ever understood, so the whole thing was inert while reading as an enforced supply-chain policy.
+#
+# The inline `with:` inputs of the workflow step OVERRIDE this file (readConfig merges `{...externalConfig,
+# ...inlineConfig}`), so the policy lives here and the step passes only `config-file`. Do not re-add a duplicate
+# `fail-on-severity` or `deny-licenses` to the workflow: it would shadow whatever is written here.
+#
+# What the action cannot express, and where it is enforced instead:
+#   - minimum versions of individual packages (jquery, bootstrap, datatables.net): the "Validate Package.json" step of
+#     the same workflow checks the declared major of each against a floor;
+#   - an allow-list of acceptable licences: `allow-licenses` and `deny-licenses` are mutually exclusive, and the
+#     project's allowed set (CLAUDE.md) is wider than a short list is worth. The "License Compliance Check" step runs
+#     `license-checker --onlyAllow` for that side.
+
+# Fail the job on a vulnerability of this severity or above.
+fail-on-severity: moderate
+
+# Runtime only, which is the action's default and therefore what this job has effectively been enforcing all along.
+#
+# The previous (inert) version of this file asked for `development` as well, and expressing it here would have been
+# faithful to that intent - but it would also have made the gate STRICTER than what the repository enforces today, so a
+# dev-only moderate advisory could start failing PRs that have nothing to do with it. Tightening a shared gate is a
+# decision worth taking on its own merits rather than as a side effect of repairing a config that enforced nothing, so
+# this file restores the intended policy without changing what passes. Development dependencies are not unguarded
+# meanwhile: the `Run npm Security Audit` step of this same workflow runs `npm audit --audit-level=moderate` across the
+# whole tree, dev dependencies included.
+fail-on-scopes:
+  - runtime
+
+# Licences CLAUDE.md forbids outright. Both the current SPDX ids and their deprecated spellings are listed, because a
+# dependency may declare either form and the deny check compares the declared expression against these entries.
+# NOT denied, deliberately: EPL-1.0/EPL-2.0 and the LGPL-2.1+ family, which CLAUDE.md ALLOWS for libraries and which the
+# current tree already ships (logback is EPL-2.0 / LGPL-2.1-only). The previous version of this file denied all three;
+# had it been live, it would have rejected dependencies the project permits.
+# "Commons Clause" and plain proprietary terms have no SPDX identifier and therefore cannot be expressed here; they are
+# caught by the `license-checker --onlyAllow` allow-list step of the workflow.
+deny-licenses:
+  - GPL-1.0
+  - GPL-1.0-only
+  - GPL-1.0-or-later
+  - GPL-2.0
+  - GPL-2.0-only
+  - GPL-2.0-or-later
+  - GPL-3.0
+  - GPL-3.0-only
+  - GPL-3.0-or-later
+  - AGPL-1.0
+  - AGPL-1.0-only
+  - AGPL-1.0-or-later
+  - AGPL-3.0
+  - AGPL-3.0-only
+  - AGPL-3.0-or-later
+  - SSPL-1.0
+
+# Packages refused whatever version resolves, in package-url form. A purl without a version denies every version.
+deny-packages:
+  # Both were published with malicious code in the 2018 event-stream incident.
+  - pkg:npm/event-stream
+  - pkg:npm/flatmap-stream
+  # 3.7.2 was a compromised release; the surrounding versions are fine.
+  - pkg:npm/eslint-scope@3.7.2
+
+# Deliberately NOT listed here: `license-check: true` and `vulnerability-check: true`. Both are already the action's
+# defaults, so a key that was silently dropped and a key that was honoured would produce identical behaviour - there is
+# no run in which the difference is observable. Carrying a setting whose effect cannot be demonstrated is how the
+# previous version of this file came to "enforce" a policy it did not have; every key above earns its place by changing
+# what the action does, visibly, in the job log.
