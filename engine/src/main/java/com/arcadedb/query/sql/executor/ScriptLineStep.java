@@ -99,14 +99,38 @@ public class ScriptLineStep extends AbstractExecutionStep {
     return false;
   }
 
+  /**
+   * A batch script chains one step per statement, so the chain is as long as the script. The
+   * cascade in {@link AbstractExecutionStep#close()} is recursive, which overflows the stack on
+   * large imports, hence the chain of script lines is walked iteratively here. A plan that fails to
+   * close does not stop the walk: the first failure is rethrown once every line has been released.
+   */
   @Override
   public void close() {
-    try {
-      if (plan != null)
-        plan.close();
-    } finally {
-      super.close();
+    RuntimeException error = null;
+    ScriptLineStep step = this;
+    while (true) {
+      try {
+        if (step.plan != null)
+          step.plan.close();
+      } catch (final RuntimeException e) {
+        if (error == null)
+          error = e;
+      }
+
+      final ExecutionStepInternal previous = step.prev;
+      if (previous instanceof ScriptLineStep previousLine) {
+        step = previousLine;
+        continue;
+      }
+
+      if (previous != null)
+        previous.close();
+      break;
     }
+
+    if (error != null)
+      throw error;
   }
 
   public ExecutionStepInternal executeUntilReturn(final CommandContext context) {
