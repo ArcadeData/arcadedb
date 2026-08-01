@@ -102,6 +102,20 @@ public class GeoIndexMetadata extends IndexMetadata {
     this.tokenization = readTokenization(metadata);
   }
 
+  /**
+   * Carries the geohash resolution AND the storage layout over. The layout is a property of what is written in the
+   * file, not a preference, so a copy that is going to be populated from the same definition keeps it; a caller that
+   * knows it is re-tokenizing every record from scratch - a rebuild - overrides it with
+   * {@link #DEFAULT_TOKENIZATION} afterwards.
+   */
+  @Override
+  public GeoIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    final GeoIndexMetadata copy = copyCommonTo(new GeoIndexMetadata(typeName, propertyNames, bucketId));
+    copy.precision = precision;
+    copy.tokenization = tokenization;
+    return copy;
+  }
+
   @Override
   public Set<String> getUserMetadataKeys() {
     return USER_METADATA_KEYS;

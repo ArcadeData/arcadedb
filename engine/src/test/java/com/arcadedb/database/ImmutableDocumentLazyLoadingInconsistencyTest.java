@@ -24,11 +24,13 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.Iterator;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /**
  * Test to verify the fix for issue #2560 - ImmutableDocument.checkForLazyLoading() consistency.
@@ -111,6 +113,8 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
             ImmutableDocument::toJSON,
             ImmutableDocument::toMap,
             ImmutableDocument::getPropertyNames,
+            ImmutableDocument::propertiesAsMap,
+            d -> d.propertiesAsMap("secretProperty"),
             d -> d.get("secretProperty")
         ).forEach(action -> {
           // Get a new instance for each test to ensure lazy loading is triggered
@@ -164,6 +168,12 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
 
         final ImmutableDocument immutableDoc6 = (ImmutableDocument) database.lookupByRID(documentRid, false);
         assertThat(immutableDoc6.getPropertyNames()).contains("secretProperty");
+
+        final ImmutableDocument immutableDoc7 = (ImmutableDocument) database.lookupByRID(documentRid, false);
+        assertThat(immutableDoc7.propertiesAsMap()).containsEntry("secretProperty", "secret_value");
+
+        final ImmutableDocument immutableDoc8 = (ImmutableDocument) database.lookupByRID(documentRid, false);
+        assertThat(immutableDoc8.propertiesAsMap("secretProperty")).containsEntry("secretProperty", "secret_value");
 
       } finally {
         // Clean up the security listener
@@ -240,6 +250,37 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
       } finally {
         database.getEvents().unregisterListener(illegalStateListener);
       }
+    });
+  }
+
+  /**
+   * Regression for issue #5723: {@code propertiesAsMap()} was the one accessor that did not lazy-load, so a record
+   * handed out by a scan - never materialised - answered an EMPTY map instead of its properties. Silently: no
+   * exception, no log, just a record that looks like it has nothing on it. {@code copyType()} read every record that
+   * way and copied their emptiness.
+   */
+  @Test
+  void propertiesAsMapLoadsARecordComingStraightFromAScan() {
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("SecurityTest");
+      doc.set("publicProperty", "public_value");
+      doc.set("secretProperty", "secret_value");
+      doc.save();
+    });
+
+    database.transaction(() -> {
+      final Iterator<Record> iterator = database.iterateType("SecurityTest", false);
+      assertThat(iterator.hasNext()).isTrue();
+      final Document scanned = (Document) iterator.next();
+
+      assertThat(scanned.propertiesAsMap())//
+          .containsEntry("publicProperty", "public_value")//
+          .containsEntry("secretProperty", "secret_value");
+    });
+
+    database.transaction(() -> {
+      final ImmutableDocument scanned = (ImmutableDocument) database.iterateType("SecurityTest", false).next();
+      assertThat(scanned.propertiesAsMap("publicProperty")).containsExactly(entry("publicProperty", "public_value"));
     });
   }
 }

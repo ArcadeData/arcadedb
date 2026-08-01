@@ -338,6 +338,26 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     return underlyingIndex.getMetadata();
   }
 
+  /**
+   * The geohash resolution and the storage layout are held here as plain fields, not on the underlying LSM-Tree, so a
+   * site carrying this definition into a new index file has to read them from this instance: through
+   * {@link #getMetadata()} a copy would silently drop to the default precision (issue #5723).
+   */
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    final IndexMetadata base = underlyingIndex.getMetadata();
+    final GeoIndexMetadata geoMetadata = new GeoIndexMetadata(base != null ? base.typeName : null,
+        base != null ? base.propertyNames.toArray(new String[0]) : new String[0],
+        base != null ? base.associatedBucketId : -1);
+    if (base != null) {
+      geoMetadata.collations = base.collations;
+      geoMetadata.typeIndexName = base.typeIndexName;
+    }
+    geoMetadata.setPrecision(precision);
+    geoMetadata.setTokenization(tokenization);
+    return geoMetadata;
+  }
+
   @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();

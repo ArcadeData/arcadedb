@@ -115,9 +115,22 @@ public class ImmutableDocument extends BaseDocument {
     return result;
   }
 
+  /**
+   * Lazy-loads before reading, like every other accessor on this class ({@link #get}, {@link #has},
+   * {@link #getPropertyNames}, {@link #toJSON}). Without it a record that had not been materialised yet - which is
+   * every record handed out by {@code iterateType()} / {@code scanBucket()} - answered an EMPTY map instead of its
+   * properties, silently. That is what made {@code copyType()} copy the right NUMBER of records and none of their
+   * content (issue #5723), and what left {@link DetachedDocument} empty when detaching a record straight off a scan.
+   * <p>
+   * The empty map remains the answer for a record that genuinely cannot be materialised: no database, no RID to load
+   * from, or an after-read event that filtered the record away.
+   */
   @Override
   public Map<String, Object> propertiesAsMap() {
-    if (database == null || buffer == null)
+    if (database == null || (buffer == null && rid == null))
+      return Collections.emptyMap();
+    checkForLazyLoading();
+    if (buffer == null)
       return Collections.emptyMap();
     buffer.position(propertiesStartingPosition);
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
@@ -132,10 +145,13 @@ public class ImmutableDocument extends BaseDocument {
    * @return map of property name to value for the requested fields only
    */
   public Map<String, Object> propertiesAsMap(final String... fieldNames) {
-    if (database == null || buffer == null)
+    if (database == null || (buffer == null && rid == null))
       return Collections.emptyMap();
     if (fieldNames == null || fieldNames.length == 0)
       return propertiesAsMap();
+    checkForLazyLoading();
+    if (buffer == null)
+      return Collections.emptyMap();
     buffer.position(propertiesStartingPosition);
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid, fieldNames);
   }

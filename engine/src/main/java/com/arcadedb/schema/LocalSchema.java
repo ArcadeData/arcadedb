@@ -610,17 +610,19 @@ public class LocalSchema implements Schema {
           }
         }
 
-        // COPY INDEXES
-        for (final Index index : oldType.getAllIndexes(false))
-          newType.createTypeIndex(index.getType(), index.isUnique(),
-              index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
-
         database.commit();
 
       } finally {
         if (database.isTransactionActive())
           database.rollback();
       }
+
+      // COPY INDEXES. Deliberately outside the record-copy transaction: each index build opens its own transaction
+      // (TypeIndexBuilder.create wraps every bucket's build in a database.transaction(..., joinCurrent=false, ...)) and
+      // has to both see the copied records and commit its own entries. Run from inside an enclosing transaction it did
+      // neither, so every index on the copy came out EMPTY - a copy whose indexed queries silently answer nothing.
+      for (final Index index : oldType.getAllIndexes(false))
+        copyIndexDefinition((IndexInternal) index, newTypeName);
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on renaming type '%s' into '%s'", e, typeName, newTypeName);
@@ -638,6 +640,43 @@ public class LocalSchema implements Schema {
     }
 
     return newType;
+  }
+
+  /**
+   * Recreates one index of the source type on the copy, carrying the WHOLE definition over rather than only the index
+   * type, the uniqueness flag and the property list.
+   * <p>
+   * Everything else used to be silently replaced by a default (issue #5723): the page size deliberately tuned at
+   * creation, the null strategy, the collations that make an index case-insensitive, and the type-specific
+   * configuration - a full-text index's analyzers and BM25 parameters, a geospatial index's resolution, a vector
+   * index's dimensions and similarity, without which the copy is not merely differently tuned but unusable.
+   * <p>
+   * The one attribute deliberately NOT carried over is a user-supplied index name: it is unique across the schema, so
+   * reusing it would collide with the index still held by the source type. The copy takes the auto-derived
+   * {@code newTypeName[properties]} form instead.
+   */
+  private void copyIndexDefinition(final IndexInternal index, final String newTypeName) {
+    final List<String> propertyNames = index.getPropertyNames();
+    final String[] properties = propertyNames.toArray(new String[propertyNames.size()]);
+
+    // withType() may swap the builder for a type-specific subclass (TypeFullTextIndexBuilder, TypeLSMVectorIndexBuilder,
+    // ...), so call it first and keep the returned reference instead of chaining off the original.
+    final TypeIndexBuilder builder = buildTypeIndex(newTypeName, properties).withType(index.getType());
+    builder.withUnique(index.isUnique());
+    // getPageSizeForNewFile(), not getPageSize(): the definition goes back through the validating creation path, and a
+    // HASH index predating #5713 can hold a page size that path refuses - which must not make copyType() fail.
+    builder.withPageSize(index.getPageSizeForNewFile());
+    builder.withNullStrategy(index.getNullStrategy());
+
+    final IndexMetadata sourceMetadata = index.getMetadataForNewFile();
+    if (sourceMetadata != null) {
+      // bucketId -1: the per-bucket builder binds each sub-index during create().
+      final IndexMetadata metadata = sourceMetadata.copy(newTypeName, properties, -1);
+      metadata.typeIndexName = null;
+      builder.withMetadata(metadata);
+    }
+
+    builder.create();
   }
 
   @Override

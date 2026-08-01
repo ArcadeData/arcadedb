@@ -1110,6 +1110,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return underlyingIndex.getMetadata();
   }
 
+  /**
+   * The analyzers, query-parser options and BM25 configuration live here, not on the underlying LSM-Tree, so a site
+   * carrying this definition into a new index file has to read them from this instance (issue #5723).
+   */
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    return ftMetadata != null ? ftMetadata : underlyingIndex.getMetadata();
+  }
+
   @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();

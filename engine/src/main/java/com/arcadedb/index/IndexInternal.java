@@ -125,6 +125,23 @@ public interface IndexInternal extends Index {
     return getPageSize();
   }
 
+  /**
+   * Configuration to replay when this index's definition is carried over into a NEW index file - a rebuild, a truncate,
+   * a propagation to a freshly added bucket or sub type, a {@code copyType()}. The companion of
+   * {@link #getPageSizeForNewFile()} for everything that is not the page size, and the value to feed
+   * {@link IndexMetadata#copy(String, String[], int)} before handing it to a builder.
+   * <p>
+   * Distinct from {@link #getMetadata()} because that one answers whatever the index stores internally, which for the
+   * wrapper index types is the UNDERLYING LSM-Tree's plain {@link IndexMetadata}: a full-text index keeps its analyzers
+   * and BM25 configuration in its own {@code FullTextIndexMetadata}, a geospatial one keeps its resolution and layout
+   * in its own fields, and neither is reachable through the underlying index. A carry-over site reading
+   * {@code getMetadata()} therefore silently recreates the index with the default configuration (issue #5723) - which
+   * for a full-text index means a different analyzer and a different ranking.
+   */
+  default IndexMetadata getMetadataForNewFile() {
+    return getMetadata();
+  }
+
   boolean isCompacting();
 
   boolean isValid();
