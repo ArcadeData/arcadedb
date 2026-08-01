@@ -1645,6 +1645,13 @@ vector index's build state or the full-text corpus counters would describe a dif
 A user-supplied index name is the one attribute not carried over. It is unique across the schema and still belongs to
 the source type, so the copy takes the auto-derived `NewType[properties]` form rather than colliding with it.
 
+**One behaviour change reaches outside `copyType()`.** `LSMVectorIndexMetadata.copy()` already existed and carried only
+the collations; routing it through the shared `copyCommonTo()` means it now also carries the user-supplied index name.
+Its other caller is `TRUNCATE TYPE`, which drops and recreates each index from its own definition - so a manually named
+`LSM_VECTOR` index now keeps its name across a truncate, where before it came back under the auto-derived
+`Type[properties]` form. Nothing else was affected: every other index type already kept its name there, because that
+path hands the original metadata object straight back rather than copying it.
+
 The other sites that rebuild an index from its own definition - `TRUNCATE TYPE`, `CHECK DATABASE FIX`, and the
 propagation to a freshly added bucket or sub type - still read `getMetadata()` and so still lose a full-text or
 geospatial configuration. They are unchanged here and tracked separately: each is a distinct user-visible operation and
