@@ -83,6 +83,10 @@ public class HashIndex implements IndexInternal {
   public static class HashIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
+      // Refuse a key type the bucket cannot encode BEFORE any file is created, so the failure names the type instead
+      // of surfacing on the first insert as an unsupported-key-type error (issue #5677).
+      HashIndexBucket.checkSupportedKeyTypes(builder.getIndexName(), builder.getKeyTypes());
+
       // Use 64KB default page size for hash indexes (vs 256KB for LSM)
       final int pageSize = builder.getPageSize() == LSMTreeIndexAbstract.DEF_PAGE_SIZE ?
           HashIndexBucket.DEF_PAGE_SIZE : builder.getPageSize();
@@ -512,7 +516,9 @@ public class HashIndex implements IndexInternal {
 
   @Override
   public byte[] getBinaryKeyTypes() {
-    return bucket.binaryKeyTypes;
+    // The types declared by the schema, not the ones the bucket writes on the page: callers compare these against
+    // other indexes' key types and use them to coerce user-supplied values.
+    return bucket.declaredKeyTypes;
   }
 
   @Override
@@ -624,7 +630,7 @@ public class HashIndex implements IndexInternal {
 
   private Object[] convertKeys(final Object[] keys) {
     if (keys != null) {
-      final byte[] keyTypes = bucket.binaryKeyTypes;
+      final byte[] keyTypes = bucket.declaredKeyTypes;
       final Object[] convertedKeys = new Object[keys.length];
       for (int i = 0; i < keys.length; ++i) {
         if (keys[i] == null)
