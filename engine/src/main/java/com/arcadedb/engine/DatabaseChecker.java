@@ -51,6 +51,12 @@ public class DatabaseChecker {
   private       boolean             compress     = false;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
+  /**
+   * #5680: {@code CHECK DATABASE RECORD} scope - visit only these records instead of scanning whole types. The
+   * cheap repair for "one vertex's edge chain is broken", which the strict {@code GraphEngine.deleteVertex}
+   * points operators at: its cost is the listed records plus, in fix mode, the one edge scan a rebuild needs.
+   */
+  private       Set<RID>            records      = Collections.emptySet();
   private       int                 maxWarnings  = 100_000;
   private final Map<String, Object> result       = new HashMap<>();
 
@@ -111,40 +117,72 @@ public class DatabaseChecker {
     }
 
     // The orphaned-segment reclaim (issue #5375) requires walking EVERY vertex to build the reachable set, so
-    // it only runs on a full-scope fix: under a type/bucket filter the unwalked vertices' segments would be
-    // misclassified as orphans.
-    final boolean reclaimOrphanedSegments =
-        fix && (types == null || types.isEmpty()) && (buckets == null || buckets.isEmpty());
+    // it only runs on a full-scope fix: under a type/bucket/record filter the unwalked vertices' segments would
+    // be misclassified as orphans.
+    final boolean recordScope = !records.isEmpty();
+    if (recordScope && ((types != null && !types.isEmpty()) || (buckets != null && !buckets.isEmpty())))
+      // #5680: RECORD is the narrowest scope there is, so combining it with TYPE/BUCKET can only mean the caller
+      // expected something this does not do. Silently letting RECORD win would run a check the caller did not ask
+      // for; an intersection would be a third semantics nobody asked for either. Refuse and say so.
+      throw new IllegalArgumentException(
+          "CHECK DATABASE RECORD cannot be combined with TYPE or BUCKET: RECORD already names the exact records to "
+              + "check. Drop the TYPE/BUCKET clause, or run the two checks separately");
 
-    currentStep = 0;
-    totalSteps = edgeTypes.size() + vertexTypes.size() + documentTypes.size() // per-type checks
-        + 3 // buckets + external properties + indexes
-        + (reclaimOrphanedSegments ? 1 : 0)
-        + (fix ? 1 : 0) // rebuild affected indexes
-        + (compress ? 1 : 0);
+    final boolean reclaimOrphanedSegments = fix && !recordScope //
+        && (types == null || types.isEmpty()) && (buckets == null || buckets.isEmpty());
 
-    checkEdges(edgeTypes);
+    final Set<Index> corruptMetadataIndexes;
 
-    checkVertices(vertexTypes);
+    if (recordScope) {
+      // #5680: RECORD scope - visit the listed records only. The database-wide passes (buckets, external
+      // properties, indexes) are deliberately skipped: they cannot be narrowed to a record, and paying for them
+      // would defeat the point of naming one. Everything a listed record is checked and repaired for is
+      // identical to the type-wide run, including the edge-list rebuild.
+      // NOTE the one cost a record scope does NOT bound: if a listed record turns out to be CORRUPTED, the shared
+      // tail below drops and rebuilds every index on its bucket, which is a full bucket scan. That matches the
+      // type-wide semantics (a corrupted record's index entries must go) and only fires on genuine corruption -
+      // an edge-list rebuild alone deletes no record and triggers none of it - but it means "scoped" bounds the
+      // CHECK, not necessarily the FIX.
+      final Map<DocumentType, List<RID>> scoped = groupRecordsByType();
 
-    if (reclaimOrphanedSegments) {
-      // AFTER checkVertices: the chain rebuilds have already re-attached every recoverable segment, so what
-      // remains unreachable in the edge-list buckets is genuine garbage.
-      ++currentStep;
-      final Map<String, Object> stats = new GraphDatabaseChecker(database)
-          .setProgress(progressCallback, "Reclaiming orphaned edge segments", currentStep, totalSteps)
-          .reclaimOrphanedEdgeSegments(verboseLevel, maxWarnings);
-      updateStats(stats);
-      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      currentStep = 0;
+      totalSteps = scoped.size() + (fix ? 1 : 0) + (compress ? 1 : 0);
+
+      checkScopedRecords(scoped);
+
+      corruptMetadataIndexes = Collections.emptySet();
+
+    } else {
+      currentStep = 0;
+      totalSteps = edgeTypes.size() + vertexTypes.size() + documentTypes.size() // per-type checks
+          + 3 // buckets + external properties + indexes
+          + (reclaimOrphanedSegments ? 1 : 0)
+          + (fix ? 1 : 0) // rebuild affected indexes
+          + (compress ? 1 : 0);
+
+      checkEdges(edgeTypes);
+
+      checkVertices(vertexTypes);
+
+      if (reclaimOrphanedSegments) {
+        // AFTER checkVertices: the chain rebuilds have already re-attached every recoverable segment, so what
+        // remains unreachable in the edge-list buckets is genuine garbage.
+        ++currentStep;
+        final Map<String, Object> stats = new GraphDatabaseChecker(database)
+            .setProgress(progressCallback, "Reclaiming orphaned edge segments", currentStep, totalSteps)
+            .reclaimOrphanedEdgeSegments(verboseLevel, maxWarnings);
+        updateStats(stats);
+        ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      }
+
+      checkDocuments(documentTypes);
+
+      checkBuckets(result);
+
+      checkExternalProperties();
+
+      corruptMetadataIndexes = checkIndexes();
     }
-
-    checkDocuments(documentTypes);
-
-    checkBuckets(result);
-
-    checkExternalProperties();
-
-    final Set<Index> corruptMetadataIndexes = checkIndexes();
 
     final Set<Integer> affectedBuckets = new HashSet<>();
     for (final RID rid : (Collection<RID>) result.get("corruptedRecords"))
@@ -311,6 +349,100 @@ public class DatabaseChecker {
     stepComplete();
   }
 
+  /**
+   * #5680: the RECORD-scoped records grouped by the type that owns their bucket, in insertion order (so the step
+   * sequence a caller sees is the order the RIDs were given). A RID whose bucket belongs to no type is grouped
+   * under a null key and reported as such by {@link #checkScopedRecords(Map)}.
+   */
+  private Map<DocumentType, List<RID>> groupRecordsByType() {
+    final Map<DocumentType, List<RID>> byType = new LinkedHashMap<>();
+    for (final RID rid : records)
+      byType.computeIfAbsent(database.getSchema().getTypeByBucketId(rid.getBucketId()), k -> new ArrayList<>()).add(rid);
+    return byType;
+  }
+
+  /**
+   * #5680: runs the per-type check over the RECORD scope only. Each group is dispatched to the same worker the
+   * type-wide run uses, so a listed vertex gets the identical connectivity check and, in fix mode, the identical
+   * rebuild of its edge list from the surviving edge records.
+   */
+  private void checkScopedRecords(final Map<DocumentType, List<RID>> scoped) {
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking %d record(s)...", null, records.size());
+
+    for (final Map.Entry<DocumentType, List<RID>> entry : scoped.entrySet()) {
+      final DocumentType type = entry.getKey();
+      final List<RID> rids = entry.getValue();
+      ++currentStep;
+
+      if (type == null) {
+        // The bucket belongs to no type (an internal file, or a RID the caller invented). Capped like every other
+        // warning source: a caller passing thousands of bogus RIDs must not blow past maxWarnings.
+        final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
+        for (final RID rid : rids) {
+          result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
+          if (warnings.size() < maxWarnings)
+            warnings.add("record " + rid + " does not belong to any type");
+        }
+        continue;
+      }
+
+      final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
+      final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
+      final GraphDatabaseChecker graphChecker = new GraphDatabaseChecker(database)
+          .setProgress(progressCallback, "Checking records of '" + type.getName() + "'", currentStep, totalSteps);
+
+      final Map<String, Object> stats;
+      if (type instanceof LocalEdgeType)
+        stats = graphChecker.checkEdges(type.getName(), rids, fix, verboseLevel,
+            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
+      else if (type instanceof LocalVertexType)
+        stats = graphChecker.checkVertices(type.getName(), rids, fix, verboseLevel,
+            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
+      else {
+        checkScopedDocuments(type, rids);
+        continue;
+      }
+
+      updateStats(stats);
+      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
+          (Map<RID, String>) stats.get("missingReferenceErrors"));
+    }
+  }
+
+  /**
+   * The document arm of the RECORD scope: the same "does it load as a document" check {@link #checkDocuments} does,
+   * with the {@code maxWarnings} cap the record-belongs-to-no-type branch honours (the totals still count every
+   * occurrence, only the retained messages are bounded).
+   */
+  private void checkScopedDocuments(final DocumentType type, final List<RID> rids) {
+    stepBegin("Checking records of '" + type.getName() + "'", rids.size());
+
+    final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
+
+    database.begin();
+    try {
+      for (final RID rid : rids) {
+        try {
+          database.lookupByRID(rid, true).asDocument(true);
+        } catch (final Exception e) {
+          if (warnings.size() < maxWarnings)
+            warnings.add("document " + rid + " cannot be loaded, removing it");
+          ((LinkedHashSet<RID>) result.get("corruptedRecords")).add(rid);
+          result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
+          result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
+        }
+        stepTick();
+      }
+    } finally {
+      database.commit();
+    }
+
+    stepComplete();
+  }
+
   private void checkEdges(final List<DocumentType> edgeTypes) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking edges...");
@@ -359,6 +491,12 @@ public class DatabaseChecker {
 
   public DatabaseChecker setVerboseLevel(final int verboseLevel) {
     this.verboseLevel = verboseLevel;
+    return this;
+  }
+
+  public DatabaseChecker setRecords(final Set<RID> records) {
+    // LinkedHashSet: the grouping below (and so the reported step order) follows the order the RIDs were given.
+    this.records = records == null || records.isEmpty() ? Collections.emptySet() : new LinkedHashSet<>(records);
     return this;
   }
 
