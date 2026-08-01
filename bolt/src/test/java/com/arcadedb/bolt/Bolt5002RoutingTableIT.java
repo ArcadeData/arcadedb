@@ -136,7 +136,8 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
       });
     }
     waitForAllServers();
-    awaitRoutedWriteOnEveryNode();
+    // The single CREATE above is the only write of this type in this test.
+    awaitTypeReplicatedOnEveryNode(1L);
 
     try (Session session = driver.session(SessionConfig.builder().withDatabase(getDatabaseName()).build())) {
       final long count = session.executeRead(tx ->
@@ -171,15 +172,18 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
   // --- replication settling helper -------------------------------------------
 
   /**
-   * Waits until every node holds the vertex type and its single record.
+   * Waits until every started node holds {@link #VERTEX_TYPE} with exactly {@code expectedRecords} records.
    * <p>
    * {@link #waitForAllServers()} tracks the Raft applied index, which advances before the applied schema
    * entry is visible through the database handle these assertions read. A routed read is answered by a
    * follower, so the read returned 0 against a node still one type behind, and the teardown's
    * byte-for-byte comparison then reported {@code DatabaseAreNotIdentical: Types: DB1 6 <> DB2 5} on the
    * same run (issue #5630). Polling for the replicated state settles both.
+   *
+   * @param expectedRecords how many records the caller wrote - passed in rather than hardcoded so a second
+   *                        caller writing a different number does not silently wait for the wrong count
    */
-  private void awaitRoutedWriteOnEveryNode() {
+  private void awaitTypeReplicatedOnEveryNode(final long expectedRecords) {
     await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofMillis(250)).untilAsserted(() -> {
       for (int i = 0; i < getServerCount(); i++) {
         if (getServer(i) == null || !getServer(i).isStarted())
@@ -188,7 +192,7 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
         assertThat(db.getSchema().existsType(VERTEX_TYPE))
             .as("server %d must have replicated type %s", i, VERTEX_TYPE).isTrue();
         assertThat(db.countType(VERTEX_TYPE, true))
-            .as("server %d must have replicated the routed write", i).isEqualTo(1L);
+            .as("server %d must have replicated the routed write", i).isEqualTo(expectedRecords);
       }
     });
   }
