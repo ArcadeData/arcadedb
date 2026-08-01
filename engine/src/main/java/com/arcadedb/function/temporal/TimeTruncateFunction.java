@@ -42,7 +42,6 @@ public class TimeTruncateFunction implements StatelessFunction {
     return "time.truncate";
   }
 
-  @SuppressWarnings("unchecked")
   @Override
   public int getMinArgs() {
     return 2;
@@ -53,6 +52,7 @@ public class TimeTruncateFunction implements StatelessFunction {
     return 3;
   }
 
+  @SuppressWarnings("unchecked")
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);

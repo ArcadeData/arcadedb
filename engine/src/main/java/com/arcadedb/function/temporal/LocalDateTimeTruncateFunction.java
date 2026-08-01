@@ -40,7 +40,6 @@ public class LocalDateTimeTruncateFunction implements StatelessFunction {
     return "localdatetime.truncate";
   }
 
-  @SuppressWarnings("unchecked")
   @Override
   public int getMinArgs() {
     return 2;
@@ -51,6 +50,7 @@ public class LocalDateTimeTruncateFunction implements StatelessFunction {
     return 3;
   }
 
+  @SuppressWarnings("unchecked")
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);

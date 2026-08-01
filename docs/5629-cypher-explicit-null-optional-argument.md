@@ -151,6 +151,24 @@ reading it, and each is a one-line change that leaves what the test was written 
    now expects `null`, and gained an assertion that *omitting* the pattern still answers the ISO string - the
    behaviour that test was really guarding.
 
+## PR and review history
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5699
+
+| cycle | head | outcome | applied |
+|---|---|---|---|
+| 1 | `5ae1ba3b7` | LGTM, 3 non-blocking | Moved the pre-existing misplaced `CypherFunctionHelper` import into the grouped block in the five truncate files. Two other points corrected rather than applied: the "redundant post-check guards" are still load-bearing (`args.length >= 3` carries the omitted-vs-present distinction; `instanceof Map` still rejects a present non-map value), and the import was not introduced by this PR. |
+| 2 | `28f6464a5` | LGTM, 3 minor | Strengthened the four truncate default-path assertions from `.isNotNull()` to the concrete truncated value, and moved `@SuppressWarnings("unchecked")` from `getMinArgs()` to `execute()` where the cast lives (in all five files, not the two reported). |
+
+CI on `28f6464a5`: `build-and-package` SUCCESS, CodeQL all languages SUCCESS, Codacy 0 new issues, Meterian SUCCESS.
+
+### Reviewer point not actioned
+
+Cycle 2 asked for a changelog/release-note line, since this changes observable output for 11 functions - most visibly
+`format(x, null)`, which now answers `null` instead of the ISO string. The repository has no `CHANGELOG` file, so
+there is nowhere to put it here. The behavioural change is documented in the PR body and in the table above;
+whoever cuts the release should carry it into the release notes.
+
 ## Follow-ups (not in this change)
 
 1. **The `*.truncate` family raises raw JDK exceptions for client mistakes.** Two cases, both surfacing as HTTP

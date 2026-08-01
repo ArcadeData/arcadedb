@@ -103,25 +103,25 @@ class CypherOptionalArgumentNullIssue5629Test extends TestHelper {
   @Test
   void datetimeTruncatePropagatesAnExplicitNullAdjustmentMap() {
     assertThat(single("RETURN datetime.truncate('year', datetime('1984-10-11T12:31:14Z'), null) AS r")).isNull();
-    assertThat(single("RETURN datetime.truncate('year', datetime('1984-10-11T12:31:14Z')) AS r")).isNotNull();
+    assertThat(single("RETURN datetime.truncate('year', datetime('1984-10-11T12:31:14Z')) AS r")).hasToString("1984-01-01T00:00Z");
   }
 
   @Test
   void localdatetimeTruncatePropagatesAnExplicitNullAdjustmentMap() {
     assertThat(single("RETURN localdatetime.truncate('year', localdatetime('1984-10-11T12:31:14'), null) AS r")).isNull();
-    assertThat(single("RETURN localdatetime.truncate('year', localdatetime('1984-10-11T12:31:14')) AS r")).isNotNull();
+    assertThat(single("RETURN localdatetime.truncate('year', localdatetime('1984-10-11T12:31:14')) AS r")).hasToString("1984-01-01T00:00");
   }
 
   @Test
   void timeTruncatePropagatesAnExplicitNullAdjustmentMap() {
     assertThat(single("RETURN time.truncate('hour', time('12:31:14Z'), null) AS r")).isNull();
-    assertThat(single("RETURN time.truncate('hour', time('12:31:14Z')) AS r")).isNotNull();
+    assertThat(single("RETURN time.truncate('hour', time('12:31:14Z')) AS r")).hasToString("12:00Z");
   }
 
   @Test
   void localtimeTruncatePropagatesAnExplicitNullAdjustmentMap() {
     assertThat(single("RETURN localtime.truncate('hour', localtime('12:31:14'), null) AS r")).isNull();
-    assertThat(single("RETURN localtime.truncate('hour', localtime('12:31:14')) AS r")).isNotNull();
+    assertThat(single("RETURN localtime.truncate('hour', localtime('12:31:14')) AS r")).hasToString("12:00");
   }
 
   @Test
