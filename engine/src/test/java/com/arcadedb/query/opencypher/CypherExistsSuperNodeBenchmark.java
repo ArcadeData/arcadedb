@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -102,7 +104,7 @@ class CypherExistsSuperNodeBenchmark {
     final long fromHub = timeGuard(HUB_ANCHORED, probeRid, true);
     final long fromLeaf = timeGuard(LEAF_ANCHORED, probeRid, true);
 
-    System.out.println("degree=" + DEGREE + " anchored on hub: " + fromHub + " ms, anchored on leaf: " + fromLeaf + " ms");
+    LogManager.instance().log(this, Level.INFO, "degree=%d anchored on hub: %d ms, anchored on leaf: %d ms", DEGREE, fromHub, fromLeaf);
 
     assertThat(fromLeaf).isLessThan(fromHub);
   }
