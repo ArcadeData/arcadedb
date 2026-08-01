@@ -99,9 +99,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return new MultiIndexCursor(cursors, -1, ascending);
     } catch (final RuntimeException e) {
       // #5662: nothing owns the per-bucket cursors until the MultiIndexCursor is built, so a failure partway through
-      // would abandon the ones already opened
+      // would abandon the ones already opened. The null guard matters: MultiIndexCursor keeps THIS list rather than
+      // copying it, and a constructor that fails has already closed the children and nulled their slots - without the
+      // guard the cleanup would throw a NullPointerException over the exception that is being propagated.
       for (final IndexCursor cursor : cursors)
-        cursor.close();
+        if (cursor != null)
+          cursor.close();
       throw e;
     }
   }

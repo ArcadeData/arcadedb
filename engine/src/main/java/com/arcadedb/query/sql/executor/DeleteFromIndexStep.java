@@ -124,6 +124,11 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           .log(this, Level.SEVERE, "Error on initializing the scan of index '%s' to delete from", e, index.getName());
       releaseCursor();
       throw new CommandExecutionException("Error on initializing the scan of index '" + index.getName() + "' to delete from", e);
+    } catch (final RuntimeException e) {
+      // an abort AFTER the cursor was opened - an unsupported condition, or a page read failing inside
+      // loadNextEntry() - must not depend on the executor getting around to close(): release it here
+      releaseCursor();
+      throw e;
     } finally {
       if (context.isProfiling()) {
         cost += System.nanoTime() - begin;

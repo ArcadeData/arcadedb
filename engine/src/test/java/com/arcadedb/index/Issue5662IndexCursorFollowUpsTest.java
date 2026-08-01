@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #5662, the follow-ups left open by #5635.
@@ -186,6 +187,29 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     }
   }
 
+  /**
+   * A {@link MultiIndexCursor} that fails to construct must not leave the children it was handed open - nothing else
+   * holds a reference to them. It also NULLS their slots in the caller's list, because it keeps that list rather than
+   * copying it, which is why {@code TypeIndex.range()} has to null-guard its own cleanup: without the guard it would
+   * throw a {@link NullPointerException} over the exception being propagated.
+   */
+  @Test
+  void aMultiIndexCursorThatFailsToConstructClosesTheChildrenAndClearsTheList() {
+    final ProbeCountingCursor healthy = new ProbeCountingCursor(new RID(1, 1));
+    final ProbeCountingCursor failing = new ProbeCountingCursor(new RID(1, 2));
+    failing.failOnHasNext = true;
+    final List<IndexCursor> children = new ArrayList<>(List.of(healthy, failing));
+
+    assertThatThrownBy(() -> new MultiIndexCursor(children, -1, true))
+        .as("the original failure must reach the caller, not a NullPointerException from the cleanup")
+        .isInstanceOf(IllegalStateException.class).hasMessage("page read failed on purpose");
+
+    assertThat(healthy.closeCalls).as("a child the caller can no longer reach must be closed").isOne();
+    assertThat(failing.closeCalls).isOne();
+    assertThat(children).as("the caller's own list is left holding nulls, hence the null guard in TypeIndex.range()")
+        .containsOnlyNulls();
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // item 4 - a cursor must iterate ITSELF
   // ---------------------------------------------------------------------------------------------------------------
@@ -325,6 +349,8 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     private final List<Identifiable> values;
     private       int                position;
     private       int                hasNextCalls;
+    private       int                closeCalls;
+    private       boolean            failOnHasNext;
 
     private ProbeCountingCursor(final Identifiable... values) {
       this.values = List.of(values);
@@ -343,7 +369,15 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     @Override
     public boolean hasNext() {
       ++hasNextCalls;
+      if (failOnHasNext)
+        // stands in for a lazy page read failing while the cursor is being wired up
+        throw new IllegalStateException("page read failed on purpose");
       return position < values.size();
+    }
+
+    @Override
+    public void close() {
+      ++closeCalls;
     }
 
     @Override
