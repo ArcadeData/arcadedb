@@ -220,6 +220,55 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
    * The arc embedding has the same magnitude at every vertex, so both metrics order the clusters exactly as cosine
    * does and the expected answer is unchanged.
    */
+  /**
+   * The score a tombstone gets, asserted directly. It cannot be asserted through search results - the
+   * {@link LiveVectorBitsFilter} keeps a tombstone out of the answer whatever it scored, which is exactly why the two
+   * halves of the fix need separate tests: set {@code UNREADABLE_NODE_SCORE} to {@code 1.0f} and every end-to-end test
+   * in this class still passes.
+   * <p>
+   * Two claims are pinned per metric. That an unreadable node scores the floor, {@code 0} - {@code Infinity} was the
+   * defect and any finite-but-high value is the same defect more quietly, because it puts the tombstone ahead of real
+   * candidates in the beam and wastes the search budget on it. And that the floor really is below every real score,
+   * which is the property that lets one constant serve all three metrics.
+   */
+  @Test
+  void anUnreadableNodeScoresTheFloorOfItsMetric() {
+    for (final String similarity : List.of("COSINE", "EUCLIDEAN", "DOT_PRODUCT")) {
+      normalizeEmbeddings = "DOT_PRODUCT".equals(similarity);
+      dropSchema();
+      createSchema(VectorQuantizationType.INT8, similarity);
+      insertVertices();
+      deleteFirstClusters();
+
+      final LSMVectorIndex index = vectorIndex();
+      final int[] ordinalMap = index.getOrdinalToVectorIdForTest();
+      final float[] query = embedding(centerOf(1));
+
+      int tombstoned = -1;
+      int live = -1;
+      for (int ordinal = 0; ordinal < ordinalMap.length && (tombstoned < 0 || live < 0); ordinal++) {
+        final VectorLocationIndex.VectorLocation loc = index.getVectorIndex().getLocation(ordinalMap[ordinal]);
+        if (loc == null || loc.deleted)
+          tombstoned = tombstoned < 0 ? ordinal : tombstoned;
+        else
+          live = live < 0 ? ordinal : live;
+      }
+
+      // Without both of these the assertions below would hold vacuously.
+      assertThat(tombstoned).as("%s: the graph has to still carry a tombstoned ordinal", similarity).isNotNegative();
+      assertThat(live).as("%s: and a live one to compare it against", similarity).isNotNegative();
+
+      final float tombstoneScore = index.scoreOrdinalForTest(query, tombstoned);
+      final float liveScore = index.scoreOrdinalForTest(query, live);
+
+      assertThat(tombstoneScore).as("%s: a node whose vector cannot be read scores the floor", similarity)
+          .isEqualTo(0.0f);
+      assertThat(liveScore).as("%s: a real vector scores a finite number", similarity).isFinite();
+      assertThat(liveScore).as("%s: and strictly above the floor, so the tombstone cannot outrank it", similarity)
+          .isGreaterThan(tombstoneScore);
+    }
+  }
+
   @Test
   void aDeletedRegionQueryUnderEuclidean() {
     createSchema(VectorQuantizationType.INT8, "EUCLIDEAN");
@@ -264,6 +313,11 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
     for (final String id : ids)
       assertThat(clusterOf(id)).as("cluster %d is the nearest surviving one, got %s", expectedCluster, ids)
           .isEqualTo(expectedCluster);
+  }
+
+  private void dropSchema() {
+    if (database.getSchema().existsType("Doc"))
+      database.transaction(() -> database.getSchema().dropType("Doc"));
   }
 
   private void createSchema() {
