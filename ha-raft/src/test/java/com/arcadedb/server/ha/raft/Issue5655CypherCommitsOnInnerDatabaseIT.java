@@ -43,6 +43,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code RemoveStep}, {@code ForeachStep} - which calls {@code begin()}/{@code commit()} directly on
  *       {@code context.getDatabase()} when no transaction is already open.</li>
  * </ul>
+ * A third test pins the entry point rather than the commit site: a write can reach execution through
+ * {@code query()} via {@code PROFILE}, which is why the fix keys off {@code isReadOnly()} instead of off
+ * {@code command()}-vs-{@code query()} as the SQL fix could.
+ * <p>
  * {@code CreateStep} is deliberately not covered: it wraps its work in {@code database.transaction(...)},
  * and {@code LocalDatabase.transaction()} drives {@code wrappedDatabaseInstance} internally, so a bare
  * {@code CREATE} already replicated. That asymmetry is why a Cypher smoke test over CREATE alone stayed
@@ -57,6 +61,7 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
 
   private static final String TYPE_EXPLICIT_TX = "CypherExplicitTxNode";
   private static final String TYPE_AUTOCOMMIT  = "CypherAutocommitNode";
+  private static final String TYPE_PROFILE     = "CypherProfileNode";
 
   @Override
   protected int getServerCount() {
@@ -138,7 +143,7 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
 
     leaderDb.command("cypher", "MATCH (n:" + TYPE_AUTOCOMMIT + " {id: 1}) SET n.marked = 1");
 
-    assertThat(markedCountOn(leaderIndex)).as("leader applied the SET").isEqualTo(1);
+    assertThat(markedCountOn(leaderIndex, TYPE_AUTOCOMMIT)).as("leader applied the SET").isEqualTo(1);
 
     waitForAllServers();
 
@@ -146,8 +151,51 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
         .as("follower must see no WAL version gap: the write step's auto-commit has to be proposed to Raft")
         .isZero();
 
-    assertThat(awaitMarkedCountOn(followerIndex, 1))
+    assertThat(awaitMarkedCountOn(followerIndex, TYPE_AUTOCOMMIT, 1))
         .as("the value written by the auto-committing SET step must reach the follower")
+        .isEqualTo(1);
+  }
+
+  /**
+   * The reason {@code executionDatabase()} switches on {@code isReadOnly()} rather than on the entry point, which is
+   * how the SQL fix (#5652) drew the same line.
+   * <p>
+   * {@code query()} does not imply read-only on this engine: {@code PROFILE} deliberately bypasses the idempotency
+   * gate so a plan can be inspected under execution, so {@code PROFILE MATCH ... SET ...} arrives through
+   * {@code query()} and writes. Switching on the entry point would leave exactly this statement committing on the
+   * inner instance, and nothing else in the suite would notice - which is what makes it worth its own test rather
+   * than a comment. It also covers the uncached branch of {@code execute()}, since profile mode never uses the plan
+   * cache.
+   */
+  @Test
+  void profiledCypherWriteThroughQueryReachesFollowers() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE VERTEX TYPE " + TYPE_PROFILE);
+    leaderDb.command("cypher", "CREATE (n:" + TYPE_PROFILE + " {id: 1, marked: 0})");
+
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, TYPE_PROFILE, 1)).as("baseline replicated before the profiled SET")
+        .isEqualTo(1);
+
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
+
+    // query(), not command(): the whole point is that a write reaches execution through the read entry point.
+    leaderDb.query("cypher", "PROFILE MATCH (n:" + TYPE_PROFILE + " {id: 1}) SET n.marked = 1").close();
+
+    assertThat(markedCountOn(leaderIndex, TYPE_PROFILE)).as("leader applied the profiled SET").isEqualTo(1);
+
+    waitForAllServers();
+
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
+        .as("follower must see no WAL version gap: a profiled write executed through query() still commits")
+        .isZero();
+
+    assertThat(awaitMarkedCountOn(followerIndex, TYPE_PROFILE, 1))
+        .as("a write that reaches execution through query() via PROFILE must replicate like any other")
         .isEqualTo(1);
   }
 
@@ -164,9 +212,9 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
         .longValue();
   }
 
-  private long markedCountOn(final int serverIndex) {
+  private long markedCountOn(final int serverIndex, final String typeName) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + TYPE_AUTOCOMMIT + " WHERE marked = 1")
+    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName + " WHERE marked = 1")
         .next().getProperty("cnt")).longValue();
   }
 
@@ -175,8 +223,9 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
     return await(expected, () -> countOn(serverIndex, typeName));
   }
 
-  private long awaitMarkedCountOn(final int serverIndex, final long expected) throws InterruptedException {
-    return await(expected, () -> markedCountOn(serverIndex));
+  private long awaitMarkedCountOn(final int serverIndex, final String typeName, final long expected)
+      throws InterruptedException {
+    return await(expected, () -> markedCountOn(serverIndex, typeName));
   }
 
   private long await(final long expected, final LongSupplier supplier) throws InterruptedException {

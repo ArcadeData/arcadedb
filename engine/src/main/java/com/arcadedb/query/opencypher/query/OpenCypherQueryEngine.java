@@ -695,13 +695,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * balance each START TRANSACTION with its own COMMIT/ROLLBACK.
    */
   private ResultSet executeTransaction(final CypherTransactionStatement txn) {
-    final InternalResultSet resultSet = new InternalResultSet();
-    final ResultInternal result = new ResultInternal(database);
-
     // The transaction this statement drives has to be the replicated one - see executionDatabase(). COMMIT is the
     // only kind where the two instances differ (begin/rollback delegate to the inner database on the Raft wrapper
     // too), but all three resolve it so the statement never straddles both.
     final DatabaseInternal txDatabase = database.getWrappedDatabaseInstance();
+
+    final InternalResultSet resultSet = new InternalResultSet();
+    final ResultInternal result = new ResultInternal(txDatabase);
 
     switch (txn.getKind()) {
     case BEGIN:

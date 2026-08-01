@@ -84,7 +84,8 @@ Not changed, and why:
 ## Test
 
 `Issue5655CypherCommitsOnInnerDatabaseIT`, a Cypher analogue of `Issue5492TruncateBatchNotReplicatedIT`:
-2-node cluster, one test per exposed path.
+2-node cluster, one test per exposed path, plus one that pins the entry-point decision
+(`PROFILE MATCH ... SET` through `query()`).
 
 Each asserts `ArcadeStateMachine.TEST_WAL_GAP_COUNTER` *before* querying the follower. A resync reinstalls
 the follower's database and a count issued after it throws `DatabaseIsClosed`, which reads like
@@ -120,7 +121,31 @@ auto-committed or an explicit `COMMIT` ran. Off HA nothing changes:
 
 - The rule is recorded in `ha-raft/CLAUDE.md` under "Anything that commits must hold the WRAPPED database
   instance, not the inner one". Two engines have now needed it. The remaining query engines (gremlin,
-  graphql, mongodbw) hold the same field shape and have not been audited against it.
+  graphql, mongodbw) hold the same field shape and have not been audited against it. **Not filed** - worth
+  an issue, since this is a class of bug that stays green under smoke tests.
 - The steps that call `begin()`/`commit()` directly rather than going through `transaction()` also forgo its
   MVCC retry loop, which `CreateStep` gets for free. That is a separate concern from replication and is not
   touched here.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5688
+
+### Review cycles
+
+**Cycle 1 - `2c6f4a4`.** `claude[bot]`: approve with one substantive finding. No inline comments; the review
+was posted as a PR issue comment.
+
+Both of the bot's claims were checked against the code before acting rather than taken on trust:
+
+| Finding | Verified | Action |
+|---|---|---|
+| The `isReadOnly()`-over-entry-point decision has no regression test, and `PROFILE MATCH ... SET` is exactly what a refactor back to entry-point switching would silently break | Confirmed: `LocalDatabase.query()` applies no idempotency gate of its own, and `RaftReplicatedDatabase.query()` on a leader delegates to `proxied.query()`, so the statement does reach the engine and write | Applied: third IT `profiledCypherWriteThroughQueryReachesFollowers` |
+| `executeTransaction()` still built `ResultInternal` from the raw `database` | Confirmed harmless: `ResultInternal(Database)` only stores the reference for `getDatabase()`. But the method otherwise reads as "everything here is `txDatabase`", and leaving one raw use is the inconsistency the fix exists to remove | Applied |
+| gremlin/graphql/mongodbw hold the same field shape and deserve an audit issue | Agreed, out of scope for this PR | Recorded above as an unfiled follow-up, for the developer to file |
+
+The new test was proven to fail before trusting it: with `executionDatabase()` temporarily stubbed to
+`return database`, `profiledCypherWriteThroughQueryReachesFollowers` fails at line 199 with
+`expected: 1L but was: 0L`. The stub was then reverted and the full set re-run green.
+
+No items were deferred.
