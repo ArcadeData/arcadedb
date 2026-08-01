@@ -319,6 +319,12 @@ public final class CypherReferencedVariables {
 
       if (statement instanceof UnionStatement union) {
         // Each branch is entered by the walk as a nested statement, and checked there. An empty UNION is not.
+        //
+        // A union's OWN ORDER BY / SKIP / LIMIT are deliberately not modelled: the walk does not reach them either,
+        // so a name referenced only there would go uncollected while this still answered complete. That is sound
+        // only because a UNION body is rejected by both push-downs, so no such statement reaches the gate. Whoever
+        // widens the push-downs to a union body has to teach the collector about those clauses here first - the same
+        // rule the statement-level WHERE below is held to.
         final List<CypherStatement> branches = union.getQueries();
         if (branches == null || branches.isEmpty())
           complete = false;
