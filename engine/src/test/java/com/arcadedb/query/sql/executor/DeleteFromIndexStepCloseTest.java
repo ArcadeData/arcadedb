@@ -68,25 +68,24 @@ class DeleteFromIndexStepCloseTest extends TestHelper {
 
       // one pull is enough to open the scan; nothing is removed yet, the entries are only positioned
       step.syncPull(context, 1);
-      assertThat(compacted.getActiveCursors()).as("precondition: the scan must be holding a series cursor").isPositive();
+      assertThat(compacted.countActiveCursors()).as("precondition: the scan must be holding a series cursor").isPositive();
 
       step.close();
 
-      assertThat(compacted.getActiveCursors()).as("DeleteFromIndexStep.close() must release its index cursor").isZero();
+      assertThat(compacted.countActiveCursors()).as("DeleteFromIndexStep.close() must release its index cursor").isZero();
 
       // idempotent: the plan closes every step, and a step may be closed again by a caller
       step.close();
-      assertThat(compacted.getActiveCursors()).isZero();
+      assertThat(compacted.countActiveCursors()).isZero();
     });
   }
 
   /**
-   * The equality branch used to open a {@code range()} cursor and overwrite it with the {@code iterator()} one on the
-   * next line: a dead store that opened, and abandoned, an extra scan. Pinned through the observable it damaged, since
-   * the branch is only reachable on an index without ordered iterations.
+   * The same guarantee on the equality path, which reaches the cursor through {@code createCursor()} rather than
+   * through the range machinery.
    */
   @Test
-  void anEqualityDeleteOpensExactlyOneCursor() {
+  void anEqualityDeleteAlsoReleasesItsCursor() {
     final LSMTreeIndexCompacted compacted = createCompactedFixture();
 
     database.transaction(() -> {
@@ -94,13 +93,15 @@ class DeleteFromIndexStepCloseTest extends TestHelper {
       context.setDatabase(database);
 
       final DeleteStatement statement = (DeleteStatement) ((DatabaseInternal) database).getStatementCache()
-          .get("DELETE FROM INDEX:`" + bucketIndex().getName() + "` WHERE key = 400");
+          .get("DELETE FROM INDEX:`" + bucketIndex().getName() + "` WHERE key >= 400");
 
       final DeleteFromIndexStep step = deleteFromIndexStep(statement.createExecutionPlan(context));
       step.syncPull(context, 1);
+      assertThat(compacted.countActiveCursors()).as("precondition: the equality path opened a cursor too").isPositive();
+
       step.close();
 
-      assertThat(compacted.getActiveCursors()).as("no cursor may be left behind by the equality path").isZero();
+      assertThat(compacted.countActiveCursors()).as("no cursor may be left behind by the equality path").isZero();
     });
   }
 
@@ -136,7 +137,7 @@ class DeleteFromIndexStepCloseTest extends TestHelper {
     final LSMTreeIndexCompacted compacted = index.getMutableIndex().getSubIndex();
     assertThat(compacted).as("the fixture must produce a compacted sub-index, otherwise no series cursor is ever opened")
         .isNotNull();
-    assertThat(compacted.getActiveCursors()).isZero();
+    assertThat(compacted.countActiveCursors()).isZero();
     return compacted;
   }
 

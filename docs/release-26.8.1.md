@@ -1150,10 +1150,13 @@ The call sites found in this pass and now releasing their cursor:
 - `SubQueryStep` never closed the plan it wraps, so closing a result set reached only the outer plan's steps. A
   `DELETE ... WHERE` is built exactly this way - the index scan inside the sub-plan, the `LIMIT` outside it - so its
   scan was released only when it happened to run to exhaustion.
-- `DeleteFromIndexStep` had no `close()` at all. Its equality branch also opened a `range()` cursor and overwrote it
-  with the `iterator()` one on the next line, a dead store that opened and abandoned an extra full scan; and an
-  `IOException` out of its initialisation printed a stack trace to stdout and carried on with a null cursor, so the
-  caller would have seen a `NullPointerException` instead of the failure that explained it.
+- `DeleteFromIndexStep` had no `close()` at all. Two smaller repairs travel with it, neither of which changes what a
+  working statement does: an `IOException` out of its initialisation printed a stack trace to stdout and carried on
+  with a null cursor, so the caller would have seen a `NullPointerException` instead of the failure that explained it;
+  and the branch for an index without ordered iterations opened a `range()` cursor and overwrote it with the
+  `iterator()` one on the next line - it could never have worked, since both of those calls raise
+  `UnsupportedOperationException` on the only index that reaches it, so it was removed in favour of the error that
+  names the condition.
 - The Gremlin index-filter step, `TypeIndex`, the unique-key check at commit time, the edge upsert lookup, and the
   full-text scoring, explain and more-like-this walks.
 

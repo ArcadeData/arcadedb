@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * tests here pin the two things that do: the call sites that were abandoning a cursor partway now release it, and a
  * cursor that is leaked anyway stops pinning its file forever once the GC gets to it.
  * <p>
- * The observable throughout is {@link LSMTreeIndexCompacted#getActiveCursors()}, the guard
+ * The observable throughout is {@link LSMTreeIndexCompacted#countActiveCursors()}, the guard
  * {@code LSMTreeIndex.dropRetiredCompactedIndexes} consults before physically dropping a file a full compaction has
  * replaced. Every test that uses it first asserts it can actually rise above zero on this fixture, because a scan too
  * small to open a series cursor would make "it went back to zero" hold vacuously.
@@ -80,10 +80,10 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     try (final IndexCursor cursor = bucketIndex().iterator(true)) {
       assertThat(cursor.hasNext()).isTrue();
       cursor.next();
-      assertThat(compacted.getActiveCursors()).as("a live scan holds a series cursor over the compacted file").isPositive();
+      assertThat(compacted.countActiveCursors()).as("a live scan holds a series cursor over the compacted file").isPositive();
     }
 
-    assertThat(compacted.getActiveCursors()).as("try-with-resources released the series cursors").isZero();
+    assertThat(compacted.countActiveCursors()).as("try-with-resources released the series cursors").isZero();
   }
 
   @Test
@@ -95,7 +95,7 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     final boolean found = database.select().fromType(TYPE_NAME).where().property("value").gt().value(1).exists();
 
     assertThat(found).as("the fixture must actually match, otherwise the scan never opened a cursor").isTrue();
-    assertThat(compacted.getActiveCursors()).as("exists() must release the index cursor it abandoned partway").isZero();
+    assertThat(compacted.countActiveCursors()).as("exists() must release the index cursor it abandoned partway").isZero();
   }
 
   @Test
@@ -105,7 +105,7 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     final long counted = database.select().fromType(TYPE_NAME).where().property("value").gt().value(1).limit(5).count();
 
     assertThat(counted).as("the limit must actually cut the scan short").isEqualTo(5);
-    assertThat(compacted.getActiveCursors()).as("count() must release the index cursor it abandoned at the limit").isZero();
+    assertThat(compacted.countActiveCursors()).as("count() must release the index cursor it abandoned at the limit").isZero();
   }
 
   @Test
@@ -115,11 +115,11 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     final var iterator = database.select().fromType(TYPE_NAME).where().property("value").gt().value(1).documents();
     assertThat(iterator.hasNext()).isTrue();
     iterator.next();
-    assertThat(compacted.getActiveCursors()).as("the iterator is mid-scan, so a series cursor is open").isPositive();
+    assertThat(compacted.countActiveCursors()).as("the iterator is mid-scan, so a series cursor is open").isPositive();
 
     iterator.close();
 
-    assertThat(compacted.getActiveCursors()).as("SelectIterator.close() must release the source index cursor").isZero();
+    assertThat(compacted.countActiveCursors()).as("SelectIterator.close() must release the source index cursor").isZero();
   }
 
   /**
@@ -135,11 +135,11 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
       try (final ResultSet result = database.command("sql", "DELETE FROM " + TYPE_NAME + " WHERE value > 1 LIMIT 3")) {
         assertThat(((Number) result.next().getProperty("count")).intValue()).as("the LIMIT must cut the scan short")
             .isEqualTo(3);
-        assertThat(compacted.getActiveCursors()).as("precondition: the abandoned scan is still holding a series cursor")
+        assertThat(compacted.countActiveCursors()).as("precondition: the abandoned scan is still holding a series cursor")
             .isPositive();
       }
 
-      assertThat(compacted.getActiveCursors()).as("closing the result set must reach the scan inside the sub-plan")
+      assertThat(compacted.countActiveCursors()).as("closing the result set must reach the scan inside the sub-plan")
           .isZero();
     });
   }
@@ -155,13 +155,13 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
 
     leakACursorMidScan();
 
-    assertThat(compacted.getActiveCursors()).as("the abandoned cursor is still reachable, so it still pins the file")
+    assertThat(compacted.countActiveCursors()).as("the abandoned cursor is still reachable, so it still pins the file")
         .isPositive();
 
     // the reference the registry holds is weak, so collecting the cursor is enough to release the file
     awaitCollection(compacted);
 
-    assertThat(compacted.getActiveCursors()).as("a collected-but-never-closed cursor must stop pinning the file").isZero();
+    assertThat(compacted.countActiveCursors()).as("a collected-but-never-closed cursor must stop pinning the file").isZero();
   }
 
   /**
@@ -175,7 +175,7 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
   }
 
   private void awaitCollection(final LSMTreeIndexCompacted compacted) {
-    for (int attempt = 0; attempt < 50 && compacted.getActiveCursors() > 0; attempt++) {
+    for (int attempt = 0; attempt < 50 && compacted.countActiveCursors() > 0; attempt++) {
       System.gc();
       try {
         Thread.sleep(20);
@@ -311,7 +311,7 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
     final LSMTreeIndexCompacted compacted = index.getMutableIndex().getSubIndex();
     assertThat(compacted).as("the fixture must produce a compacted sub-index, otherwise no series cursor is ever opened")
         .isNotNull();
-    assertThat(compacted.getActiveCursors()).as("no scan has run yet").isZero();
+    assertThat(compacted.countActiveCursors()).as("no scan has run yet").isZero();
     return compacted;
   }
 

@@ -921,8 +921,15 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     activeCursors.remove(registration);
   }
 
-  /** Live series cursors over this file; the file cannot be physically dropped while > 0. */
-  public int getActiveCursors() {
+  /**
+   * Live series cursors over this file; the file cannot be physically dropped while this is > 0.
+   * <p>
+   * Named {@code count...} rather than {@code get...} because it is NOT a plain accessor (#5662): it walks the
+   * registrations and drops the ones whose cursor has been collected, the same purge-on-read a {@code WeakHashMap}
+   * does. That makes it O(live cursors) and gives it a side effect - it can emit a warning. Both are irrelevant on the
+   * one path that calls it, the retired-file drop, and neither is what a caller would expect from a getter.
+   */
+  public int countActiveCursors() {
     purgeCollectedCursors();
     return activeCursors.size();
   }
@@ -930,8 +937,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   /**
    * Drops the registrations whose cursor has been collected without being closed, and says so: they are the only way
    * an entry can be left behind, since {@link #onCursorClosed(WeakReference)} removes its own. Called from
-   * {@link #getActiveCursors()}, which the retired-file drop consults, so an abandoned cursor delays the drop until
+   * {@link #countActiveCursors()}, which the retired-file drop consults, so an abandoned cursor delays the drop until
    * the next GC instead of forever.
+   * <p>
+   * Nothing else purges, so on a file that is never retired the cleared references sit here unreclaimed. They are
+   * empty {@link WeakReference} shells bounded by the number of cursors actually leaked over the file's lifetime -
+   * a few dozen bytes each in a case that is already a bug - and they are gone the moment a drop is attempted. Purging
+   * from {@link #onCursorOpened(Object)} instead would put that walk on the scan-open path to reclaim nothing that
+   * matters.
    */
   private void purgeCollectedCursors() {
     int leaked = 0;

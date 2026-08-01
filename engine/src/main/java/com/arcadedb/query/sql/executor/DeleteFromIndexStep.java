@@ -209,30 +209,14 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       else
         cursor = index.range(false, new Object[]{thirdValue}, fromKeyIncluded, new Object[]{secondValue},
             toKeyIncluded);
-    } else if (additional == null && allEqualities((AndBlock) condition)) {
-      // #5662: this used to open a range() cursor first and then overwrite it with the iterator() one on the very next
-      // line - a dead store that opened, and abandoned, a full index scan on every equality DELETE against an index
-      // without ordered iterations.
-      cursor = index.iterator(isOrderAsc(), new Object[]{secondValue}, true);
     } else {
+      // #5662: an index without ordered iterations used to get a branch of its own here, which opened a range() cursor
+      // and then overwrote it with an iterator() one on the very next line. It could never have worked: the only
+      // RangeIndex that answers false to supportsOrderedIterations() is a TypeIndex over a non-ordered bucket index,
+      // and BOTH of those calls raise UnsupportedOperationException on one. Removing it costs nothing and lets the
+      // error below say which condition could not be evaluated, instead of only that the index is not ordered.
       throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
     }
-  }
-
-  private boolean allEqualities(final AndBlock condition) {
-    if (condition == null) {
-      return false;
-    }
-    for (final BooleanExpression exp : condition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition binaryCondition) {
-        if (binaryCondition.getOperator() instanceof EqualsCompareOperator) {
-          return true;
-        }
-      } else {
-        return false;
-      }
-    }
-    return true;
   }
 
   private void processBetweenCondition() {
