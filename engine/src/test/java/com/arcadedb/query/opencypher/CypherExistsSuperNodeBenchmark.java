@@ -104,7 +104,8 @@ class CypherExistsSuperNodeBenchmark {
     final long fromHub = timeGuard(HUB_ANCHORED, probeRid, true);
     final long fromLeaf = timeGuard(LEAF_ANCHORED, probeRid, true);
 
-    LogManager.instance().log(this, Level.INFO, "degree=%d anchored on hub: %d ms, anchored on leaf: %d ms", DEGREE, fromHub, fromLeaf);
+    LogManager.instance().log(this, Level.INFO, "degree=%d anchored on hub: %.3f ms, anchored on leaf: %.3f ms",
+        DEGREE, fromHub / 1_000_000d, fromLeaf / 1_000_000d);
 
     assertThat(fromLeaf).isLessThan(fromHub);
   }
@@ -139,6 +140,12 @@ class CypherExistsSuperNodeBenchmark {
     return params;
   }
 
+  /**
+   * Returns the mean time per run in <b>nanoseconds</b>. Milliseconds used to be the unit, but the
+   * neighbour-pointer narrowing brought both shapes under a millisecond at this degree, so integer
+   * millisecond truncation reported them as 0 and 0 - and the comparison this test exists to make
+   * became a coin flip between "leaf is faster" and "they tie".
+   */
   private long timeGuard(final String cypher, final String target, final boolean expected) {
     final Map<String, Object> params = params(target);
 
@@ -153,6 +160,6 @@ class CypherExistsSuperNodeBenchmark {
       try (final ResultSet rs = database.query("opencypher", cypher, params)) {
         assertThat(rs.hasNext()).isEqualTo(expected);
       }
-    return (System.nanoTime() - begin) / REPEATS / 1_000_000;
+    return (System.nanoTime() - begin) / REPEATS;
   }
 }

@@ -468,7 +468,19 @@ public class CypherOptimizer {
       // Check if we should use ExpandInto (both endpoints bound)
       if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
-        currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding);
+        currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding, needsEdgeTracking.contains(rel));
+
+        // An anonymous hop still binds a relationship, and a later same-clause hop must not reuse it.
+        // Must run before anything wraps currentOp.
+        if ((rel.getVariable() == null || rel.getVariable().isEmpty())
+            && needsEdgeTracking.contains(rel)
+            && currentOp instanceof ExpandInto expandInto) {
+          final String synVar = "  anon_e_" + (syntheticEdgeVarCounter++);
+          expandInto.setEdgeTrackingVar(synVar);
+          relVarsPerClause
+              .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
+              .add(synVar);
+        }
       } else {
         // A relationship variable nobody reads is as good as anonymous: the hop can be walked
         // through the CSR adjacency view, which never materializes an edge object. The step-based
@@ -625,7 +637,8 @@ public class CypherOptimizer {
   private PhysicalOperator createExpandIntoOperator(
       final LogicalRelationship relationship,
       final PhysicalOperator input,
-      final Set<String> sameClausePrecedingRelVars) {
+      final Set<String> sameClausePrecedingRelVars,
+      final boolean needsEdgeTracking) {
     // Extract parameters from relationship
     final String sourceVariable = relationship.getSourceVariable();
     final String targetVariable = relationship.getTargetVariable();
@@ -634,14 +647,19 @@ public class CypherOptimizer {
     final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
 
     // Estimate cost and cardinality for ExpandInto
-    // ExpandInto is much cheaper than ExpandAll because it's just an existence check
+    // ExpandInto is much cheaper than ExpandAll because the edge list is filtered on the neighbour
+    // pointer, so only the edges reaching the pinned target are ever materialised
     final long inputCardinality = input.getEstimatedCardinality();
     final long outputCardinality = (long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY);
-    final double expandIntoCost = inputCardinality * 1.0; // O(1) per input row for existence check
+    final double expandIntoCost = inputCardinality * 1.0; // pointer comparisons per input row, no record load
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
 
-    // Check for GAV provider: use CSR-backed expand-into when edge variable is not captured
-    if (edgeVariable == null) {
+    // Check for GAV provider: use CSR-backed expand-into when no edge object is needed. The CSR holds
+    // adjacency ids, not edge identities, so it can count the relationships joining the pair but
+    // cannot tell one of them from an edge a preceding same-clause hop already bound. A hop that has
+    // to answer that question walks the edge list instead.
+    if (edgeVariable == null && !needsEdgeTracking
+        && (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())) {
       final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
       if (provider != null) {
         // GAV expand-into: binary search on CSR arrays, no edge loading

@@ -24,36 +24,41 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
 /**
- * Physical operator that checks for the existence of a relationship between two known vertices.
- * This is a semi-join optimization that is much more efficient than ExpandAll when both
- * the source and target vertices are already bound.
+ * Physical operator that walks the relationships between two vertices the plan has already bound.
  * <p>
- * KEY OPTIMIZATION: Uses Vertex.isConnectedTo() for O(m) RID-level existence checks
- * instead of loading and iterating through all edges. This provides 5-10x speedup
- * compared to ExpandAll for bounded patterns.
+ * KEY OPTIMIZATION: the edge list of the source is filtered on the neighbour pointer stored beside
+ * each edge pointer in the segment ({@code GraphEngine.getEdgesConnectedTo}), so an edge that does
+ * not reach the target is rejected by two primitive comparisons instead of a record load. On a hub
+ * vertex that is the difference between answering a question about one edge and reading its whole
+ * edge list.
  * <p>
  * Example query:
  * MATCH (a:Person {id: 1}), (b:Person {id: 2})
  * MATCH (a)-[r:KNOWS]->(b)
  * RETURN r
  * <p>
- * Instead of expanding all KNOWS edges from 'a' and filtering, we directly check
- * if there's a connection between 'a' and 'b'.
+ * This is an expansion, not an existence check: a pattern relationship matches once per relationship,
+ * so two parallel KNOWS edges between the pair yield two rows - whether or not the pattern names the
+ * relationship. Answering it once per input row under-counts every cycle and every multigraph pattern
+ * (issue #5663).
  * <p>
- * Cost: O(M) where M is input rows (much cheaper than ExpandAll)
- * Cardinality: Subset of input rows where connection exists
+ * Cost: O(degree(source)) pointer comparisons plus one record load per emitted row
+ * Cardinality: input rows * the number of relationships joining the pair
  */
 public class ExpandInto extends AbstractPhysicalOperator {
   private final String    sourceVariable;
@@ -64,6 +69,9 @@ public class ExpandInto extends AbstractPhysicalOperator {
   // Same-MATCH-clause relationship variable names that were bound before this hop.
   // See ExpandAll for the rationale.
   private Set<String>     sameClausePrecedingRelVars;
+  // Synthetic row property name under which to stash this hop's edge when edgeVariable is null but
+  // the edge is still needed by later same-clause hops for the uniqueness check.
+  private String          edgeTrackingVar;
 
   public ExpandInto(final PhysicalOperator child, final String sourceVariable,
                     final String targetVariable, final String edgeVariable,
@@ -85,24 +93,31 @@ public class ExpandInto extends AbstractPhysicalOperator {
     this.sameClausePrecedingRelVars = sameClausePrecedingRelVars;
   }
 
+  public void setEdgeTrackingVar(final String edgeTrackingVar) {
+    this.edgeTrackingVar = edgeTrackingVar;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     final ResultSet inputResults = child.execute(context, nRecords);
 
     return new ResultSet() {
-      private final List<Result> buffer      = new ArrayList<>();
-      private       int          bufferIndex = 0;
-      private       boolean      finished    = false;
+      private       Result         currentInputResult       = null;
+      private       Iterator<Edge> edgeIterator             = null;
+      // Edge RIDs already bound by same-clause preceding rel vars in the current input row.
+      // Computed once per input row, queried per edge.
+      private       RidHashSet     currentInputUsedEdgeRids = null;
+      private final List<Result>   buffer                   = new ArrayList<>();
+      private       int            bufferIndex              = 0;
+      private       boolean        finished                 = false;
 
       @Override
       public boolean hasNext() {
-        if (bufferIndex < buffer.size()) {
+        if (bufferIndex < buffer.size())
           return true;
-        }
 
-        if (finished) {
+        if (finished)
           return false;
-        }
 
         fetchMore(nRecords > 0 ? nRecords : 100);
         return bufferIndex < buffer.size();
@@ -110,9 +125,8 @@ public class ExpandInto extends AbstractPhysicalOperator {
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
         return buffer.get(bufferIndex++);
       }
 
@@ -120,107 +134,50 @@ public class ExpandInto extends AbstractPhysicalOperator {
         buffer.clear();
         bufferIndex = 0;
 
-        // Process input rows and check for connections
-        while (buffer.size() < n && inputResults.hasNext()) {
-          final Result inputResult = inputResults.next();
+        while (buffer.size() < n) {
+          // Move to the next input row once the current pair has no relationship left to yield
+          if (edgeIterator == null || !edgeIterator.hasNext()) {
+            if (!inputResults.hasNext()) {
+              finished = true;
+              break;
+            }
 
-          final Vertex sourceVertex = inputResult.getProperty(sourceVariable);
-          final Vertex targetVertex = inputResult.getProperty(targetVariable);
+            currentInputResult = inputResults.next();
 
-          // Skip if either vertex is null (OPTIONAL MATCH case)
-          if (sourceVertex == null || targetVertex == null) {
+            final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
+            final Vertex targetVertex = currentInputResult.getProperty(targetVariable);
+
+            // Skip if either vertex is null (OPTIONAL MATCH case)
+            if (sourceVertex == null || targetVertex == null) {
+              edgeIterator = null;
+              continue;
+            }
+
+            edgeIterator = connectingEdges(sourceVertex, targetVertex);
+            currentInputUsedEdgeRids = collectUsedEdgeRids(currentInputResult);
             continue;
           }
 
-          // Check if there's a connection between source and target
-          final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+          final Edge edge = edgeIterator.next();
 
-          // Get the edge type - if multiple types, check each
-          boolean connected = false;
-          Edge connectedEdge = null;
+          // Cypher path isomorphism: each relationship of a MATCH pattern must be a distinct edge.
+          // The set is null when no same-clause rel var is bound, so the check is free.
+          if (currentInputUsedEdgeRids != null && currentInputUsedEdgeRids.contains(edge.getIdentity()))
+            continue;
 
-          if (edgeTypes == null || edgeTypes.length == 0) {
-            // No type restriction - check for any connection
-            connected = sourceVertex.isConnectedTo(targetVertex, arcadeDirection);
-            if (connected && edgeVariable != null) {
-              // Need to get the actual edge for binding
-              connectedEdge = findEdge(sourceVertex, targetVertex, arcadeDirection, null);
-            }
-          } else {
-            // Check for specific edge types
-            for (final String edgeType : edgeTypes) {
-              connected = sourceVertex.isConnectedTo(targetVertex, arcadeDirection, edgeType);
-              if (connected) {
-                if (edgeVariable != null) {
-                  connectedEdge = findEdge(sourceVertex, targetVertex, arcadeDirection, edgeType);
-                }
-                break;
-              }
-            }
-          }
+          final ResultInternal result = new ResultInternal();
 
-          // If connected, produce output row
-          if (connected) {
-            // Cypher path isomorphism: drop rows where the discovered edge is the same
-            // as one already bound to a same-clause preceding rel var. We only resolve
-            // the connecting edge for the check when the bound set is non-empty.
-            if (connectedEdge == null && ExpandInto.this.hasUsedRels(inputResult)) {
-              connectedEdge = ExpandInto.this.findEdgeForCheck(sourceVertex, targetVertex, arcadeDirection);
-            }
-            if (connectedEdge != null && ExpandInto.this.isSameClauseEdgeReuse(inputResult, connectedEdge.getIdentity()))
-              continue;
+          // Copy all properties from input
+          for (final String prop : currentInputResult.getPropertyNames())
+            result.setProperty(prop, currentInputResult.getProperty(prop));
 
-            final ResultInternal result = new ResultInternal();
+          if (edgeVariable != null)
+            result.setProperty(edgeVariable, edge);
+          else if (edgeTrackingVar != null)
+            result.setProperty(edgeTrackingVar, edge);
 
-            // Copy all properties from input
-            for (final String prop : inputResult.getPropertyNames()) {
-              result.setProperty(prop, inputResult.getProperty(prop));
-            }
-
-            // Add edge if variable is specified
-            if (edgeVariable != null && connectedEdge != null) {
-              result.setProperty(edgeVariable, connectedEdge);
-            }
-
-            buffer.add(result);
-          }
+          buffer.add(result);
         }
-
-        if (!inputResults.hasNext()) {
-          finished = true;
-        }
-      }
-
-      /**
-       * Helper method to find the actual edge between two vertices.
-       * Only called when edge variable binding is required.
-       *
-       * Optimization: Uses GraphEngine.getFirstEdgeConnectedToVertex() which operates
-       * at the EdgeSegment level for maximum performance.
-       */
-      private Edge findEdge(final Vertex source, final Vertex target,
-                            final Vertex.DIRECTION direction, final String edgeType) {
-        final DatabaseInternal database = (DatabaseInternal) source.getDatabase();
-        final VertexInternal sourceInternal = (VertexInternal) source;
-
-        // Build edge bucket filter if edge type is specified
-        final int[] edgeBucketFilter;
-        if (edgeType != null) {
-          edgeBucketFilter = database.getSchema().getType(edgeType).getBuckets(true).stream()
-              .mapToInt(b -> b.getFileId()).toArray();
-        } else {
-          edgeBucketFilter = null;
-        }
-
-        // Use GraphEngine API for optimal performance
-        final RID edgeRID = database.getGraphEngine()
-            .getFirstEdgeConnectedToVertex(sourceInternal, target, direction, edgeBucketFilter);
-
-        if (edgeRID != null) {
-          return database.lookupByRID(edgeRID, true).asEdge();
-        }
-
-        return null;
       }
 
       @Override
@@ -231,67 +188,91 @@ public class ExpandInto extends AbstractPhysicalOperator {
   }
 
   /**
-   * True iff at least one same-clause preceding rel var holds an Edge in this row.
-   * Used as a cheap gate before falling back to a full {@code findEdge} for the check.
+   * Returns the relationships joining the two bound vertices, in the pattern's direction and of the
+   * pattern's types, each one exactly once.
+   * <p>
+   * The engine walks the source's edge segments rejecting on the neighbour pointer, so only the edges
+   * that actually reach the target are materialised.
+   * <p>
+   * The {@link Vertex#getEdges} branch is for a source handle that is not a {@link VertexInternal},
+   * which the plan does not produce today - every vertex an operator binds comes from a scan, a seek
+   * or an expansion, and all three yield engine vertices - so it exists to keep the operator total
+   * against a handle arriving from elsewhere rather than to serve a known caller. It has to compare
+   * the far endpoint of each edge, which is the work the neighbour-pointer filter avoids, so it
+   * filters lazily: the operator's batching is what bounds how much of a super-node's edge list is
+   * ever walked, and collecting into a list first would take that bound away.
+   * <p>
+   * An undirected hop walks both adjacency lists of the source, which reaches a self-loop twice - the
+   * same relationship, not two of them - so the result is de-duplicated by edge identity.
    */
-  private boolean hasUsedRels(final Result row) {
-    if (sameClausePrecedingRelVars == null)
-      return false;
-    for (final String relVar : sameClausePrecedingRelVars) {
-      if (row.getProperty(relVar) instanceof Edge)
-        return true;
-    }
-    return false;
+  private Iterator<Edge> connectingEdges(final Vertex source, final Vertex target) {
+    final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+    final Iterator<Edge> connecting;
+
+    if (source instanceof VertexInternal internalSource)
+      connecting = ((DatabaseInternal) source.getDatabase()).getGraphEngine()
+          .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
+    else
+      connecting = reachingTarget(source.getEdges(arcadeDirection, edgeTypes).iterator(),
+          target.getIdentity(), arcadeDirection);
+
+    return arcadeDirection == Vertex.DIRECTION.BOTH ? SelfLoops.deduplicatingEdges(connecting) : connecting;
   }
 
   /**
-   * True iff {@code edgeRid} matches the RID of any edge currently bound to a
-   * same-clause preceding rel var in {@code row}.
+   * Lazily keeps the edges whose far endpoint is {@code target}, one at a time.
    */
-  private boolean isSameClauseEdgeReuse(final Result row, final RID edgeRid) {
+  private static Iterator<Edge> reachingTarget(final Iterator<Edge> edges, final RID target,
+      final Vertex.DIRECTION direction) {
+    return new Iterator<>() {
+      private Edge nextEdge = null;
+
+      @Override
+      public boolean hasNext() {
+        if (nextEdge != null)
+          return true;
+        while (edges.hasNext()) {
+          final Edge candidate = edges.next();
+          final boolean reaches = direction == Vertex.DIRECTION.BOTH ?
+              candidate.getOut().equals(target) || candidate.getIn().equals(target) :
+              (direction == Vertex.DIRECTION.OUT ? candidate.getIn() : candidate.getOut()).equals(target);
+          if (reaches) {
+            nextEdge = candidate;
+            return true;
+          }
+        }
+        return false;
+      }
+
+      @Override
+      public Edge next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Edge result = nextEdge;
+        nextEdge = null;
+        return result;
+      }
+    };
+  }
+
+  /**
+   * Collects the RIDs of the edges already bound to same-clause preceding relationship variables in
+   * the input row. Returns null when no relevant binding is present, so the per-edge check stays free
+   * in the common single-hop case.
+   */
+  private RidHashSet collectUsedEdgeRids(final Result row) {
     if (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())
-      return false;
+      return null;
+    RidHashSet used = null;
     for (final String relVar : sameClausePrecedingRelVars) {
       final Object val = row.getProperty(relVar);
-      if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
-        return true;
+      if (val instanceof Edge edge) {
+        if (used == null)
+          used = new RidHashSet();
+        used.add(edge.getIdentity());
+      }
     }
-    return false;
-  }
-
-  /**
-   * Loads the connecting edge purely to perform the isomorphism check. Only invoked
-   * when {@code edgeVariable} is null (no binding required) but a same-clause check
-   * is needed and the input row has at least one edge bound.
-   */
-  private Edge findEdgeForCheck(final Vertex source, final Vertex target,
-                                final Vertex.DIRECTION direction) {
-    if (edgeTypes == null || edgeTypes.length == 0)
-      return findEdgeRaw(source, target, direction, null);
-    for (final String edgeType : edgeTypes) {
-      final Edge e = findEdgeRaw(source, target, direction, edgeType);
-      if (e != null)
-        return e;
-    }
-    return null;
-  }
-
-  private Edge findEdgeRaw(final Vertex source, final Vertex target,
-                           final Vertex.DIRECTION direction, final String edgeType) {
-    final DatabaseInternal database = (DatabaseInternal) source.getDatabase();
-    final VertexInternal sourceInternal = (VertexInternal) source;
-    final int[] edgeBucketFilter;
-    if (edgeType != null) {
-      edgeBucketFilter = database.getSchema().getType(edgeType).getBuckets(true).stream()
-          .mapToInt(b -> b.getFileId()).toArray();
-    } else {
-      edgeBucketFilter = null;
-    }
-    final RID edgeRID = database.getGraphEngine()
-        .getFirstEdgeConnectedToVertex(sourceInternal, target, direction, edgeBucketFilter);
-    if (edgeRID != null)
-      return database.lookupByRID(edgeRID, true).asEdge();
-    return null;
+    return used;
   }
 
   @Override
@@ -318,7 +299,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
     sb.append("(").append(targetVariable).append(")");
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
-    sb.append("] ⭐ SEMI-JOIN\n");
+    sb.append("] ⭐ BOUND-TARGET\n");
 
     if (child != null) {
       sb.append(child.explain(depth + 1));
