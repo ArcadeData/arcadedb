@@ -50,7 +50,8 @@ EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 
 
 def as_glob(value):
-    """Collapse a run-time expression into the glob of names it can produce.
+    """
+    Collapse a run-time expression into the glob of names it can produce.
 
     A matrix upload names its artifact `bolt-matrix-java-${{ matrix.version }}`; statically that is
     `bolt-matrix-java-*`. Keeping it as a glob is what lets the check still resolve the consumer
@@ -88,7 +89,7 @@ def needs_closure(jobs, name, seen=None):
 
 
 def producers_of(jobs):
-    """artifact glob -> the jobs that upload a name matching it."""
+    """Artifact glob -> the jobs that upload a name matching it."""
     produced = {}
     for job_name, job in jobs.items():
         for step in steps_of(job):
@@ -101,7 +102,8 @@ def producers_of(jobs):
 
 
 def matching_producers(produced, name, pattern):
-    """Resolve a download step's selector to the set of jobs it reads from.
+    """
+    Resolve a download step's selector to the set of jobs it reads from.
 
     `name` selects one artifact, `pattern` selects every artifact matching a glob, and neither
     means "download everything in the run" - which depends on every producing job. Both sides can
