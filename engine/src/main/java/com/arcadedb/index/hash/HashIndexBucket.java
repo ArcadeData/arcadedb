@@ -99,6 +99,11 @@ public class HashIndexBucket extends PaginatedComponent {
   final boolean unique;
 
   Type[]  keyTypes;
+  // Binary type declared by the schema for each key column: this is what is persisted on the metadata page and
+  // what diagnostics report. Use binaryKeyTypes (below) for anything that touches the on-page encoding.
+  byte[]  declaredKeyTypes;
+  // Binary type actually used to encode each key column on the page. It only differs from the declared one for
+  // LINK keys: see storageKeyType().
   byte[]  binaryKeyTypes;
   LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy;
 
@@ -127,9 +132,12 @@ public class HashIndexBucket extends PaginatedComponent {
     this.comparator = serializer.getComparator();
     this.unique = unique;
     this.keyTypes = keyTypes;
+    this.declaredKeyTypes = new byte[keyTypes.length];
     this.binaryKeyTypes = new byte[keyTypes.length];
-    for (int i = 0; i < keyTypes.length; i++)
-      this.binaryKeyTypes[i] = keyTypes[i].getBinaryType();
+    for (int i = 0; i < keyTypes.length; i++) {
+      this.declaredKeyTypes[i] = keyTypes[i].getBinaryType();
+      this.binaryKeyTypes[i] = storageKeyType(this.declaredKeyTypes[i]);
+    }
     this.nullStrategy = nullStrategy;
 
     // Initialize the file: metadata page + 1 directory page + 1 initial bucket
@@ -728,7 +736,7 @@ public class HashIndexBucket extends PaginatedComponent {
   // ─── INITIALIZATION ──────────────────────────────────────
 
   private void initializeNewIndex() throws IOException {
-    this.metaTailOffset = META_KEY_TYPES_START + binaryKeyTypes.length + 2 * Binary.BYTE_SERIALIZED_SIZE;
+    this.metaTailOffset = META_KEY_TYPES_START + declaredKeyTypes.length + 2 * Binary.BYTE_SERIALIZED_SIZE;
 
     // Page 0: metadata
     final MutablePage metaPage = database.getTransaction().addPage(new PageId(database, fileId, 0), pageSize);
@@ -739,10 +747,12 @@ public class HashIndexBucket extends PaginatedComponent {
     pos += Binary.INT_SERIALIZED_SIZE;
     metaPage.writeInt(pos, 0);                           // totalEntries = 0
     pos += Binary.INT_SERIALIZED_SIZE;
-    metaPage.writeByte(pos, (byte) binaryKeyTypes.length); // numberOfKeys
+    metaPage.writeByte(pos, (byte) declaredKeyTypes.length); // numberOfKeys
     pos += Binary.BYTE_SERIALIZED_SIZE;
-    for (final byte binaryKeyType : binaryKeyTypes) {
-      metaPage.writeByte(pos, binaryKeyType);
+    // Persist the SCHEMA type, not the storage type, so the metadata page keeps describing the index the same way
+    // the schema does and the storage encoding stays an internal detail of this class.
+    for (final byte declaredKeyType : declaredKeyTypes) {
+      metaPage.writeByte(pos, declaredKeyType);
       pos += Binary.BYTE_SERIALIZED_SIZE;
     }
     metaPage.writeByte(pos, (byte) nullStrategy.ordinal());
@@ -796,12 +806,14 @@ public class HashIndexBucket extends PaginatedComponent {
     boolean metadataCorrupt = numKeysCorrupt;
 
     int pos = META_KEY_TYPES_START;
+    declaredKeyTypes = new byte[numKeys];
     binaryKeyTypes = new byte[numKeys];
     keyTypes = new Type[numKeys];
     for (int i = 0; i < numKeys; i++) {
-      binaryKeyTypes[i] = metaPage.readByte(pos);
-      keyTypes[i] = Type.getByBinaryType(binaryKeyTypes[i]);
-      if (!isSupportedKeyType(binaryKeyTypes[i]))
+      declaredKeyTypes[i] = metaPage.readByte(pos);
+      binaryKeyTypes[i] = storageKeyType(declaredKeyTypes[i]);
+      keyTypes[i] = Type.getByBinaryType(declaredKeyTypes[i]);
+      if (!isSupportedKeyType(declaredKeyTypes[i]))
         metadataCorrupt = true;
       pos += Binary.BYTE_SERIALIZED_SIZE;
     }
@@ -830,9 +842,12 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Returns true if the given binary type is one this hash index can serialize/deserialize as a key
-   * component. Mirrors the supported cases in {@link #getSerializedValueSize}; used to validate the key
-   * types loaded from the metadata page so corruption is detected up front instead of deep in a search.
+   * Returns true if the given SCHEMA binary type is one this hash index can serialize/deserialize as a key
+   * component. Used to refuse an unsupported type at creation ({@link #checkSupportedKeyTypes}) and to validate the
+   * key types loaded from the metadata page, so corruption is detected up front instead of deep in a search.
+   * <p>
+   * The cases mirror those of {@link #getSerializedValueSize} after {@link #storageKeyType} has been applied, which
+   * is why {@code TYPE_RID} is accepted here but absent there: it is stored as {@code TYPE_COMPRESSED_RID}.
    */
   static boolean isSupportedKeyType(final byte type) {
     switch (type) {
@@ -851,12 +866,56 @@ public class HashIndexBucket extends PaginatedComponent {
     case BinaryTypes.TYPE_STRING:
     case BinaryTypes.TYPE_BINARY:
     case BinaryTypes.TYPE_COMPRESSED_RID:
+    case BinaryTypes.TYPE_RID:
     case BinaryTypes.TYPE_DECIMAL:
     case BinaryTypes.TYPE_UUID:
       return true;
     default:
       return false;
     }
+  }
+
+  /**
+   * Maps a schema binary type to the binary type this index actually writes on the page.
+   * <p>
+   * The only remapping is {@link BinaryTypes#TYPE_RID} (the encoding of {@link Type#LINK}, and therefore of an edge
+   * type's {@code @out}/{@code @in} endpoints) to {@link BinaryTypes#TYPE_COMPRESSED_RID}: both encodings are
+   * deterministic and injective, so hashing and byte comparison are unaffected, but the fixed 4+8 byte form costs 12
+   * bytes per column against the 2-7 of the varint form the bucket already uses for entry values. On the composite
+   * {@code (@out,@in)} key that is the point of an endpoint-keyed unique index, that is roughly half the key bytes -
+   * and hence half the pages - for free. See issue #5677.
+   */
+  static byte storageKeyType(final byte declaredBinaryType) {
+    return declaredBinaryType == BinaryTypes.TYPE_RID ? BinaryTypes.TYPE_COMPRESSED_RID : declaredBinaryType;
+  }
+
+  /**
+   * Validates the key types a hash index is about to be created with, so an unsupported one is refused up front with
+   * a message naming it, instead of surfacing as an "unsupported key type" deep inside the first insert (#5677).
+   */
+  static void checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
+    if (keyTypes == null)
+      return;
+    for (final Type keyType : keyTypes)
+      if (keyType == null || !isSupportedKeyType(keyType.getBinaryType()))
+        throw new IndexException(
+            "Cannot create index '" + indexName + "' of type HASH because the key type " + keyType
+                + " cannot be used as a HASH index key. Supported key types are: " + supportedKeyTypeNames()
+                + ". Create the index as LSM_TREE instead");
+  }
+
+  /**
+   * Comma-separated list of the schema types usable as a hash index key, for the creation-time error message.
+   */
+  private static String supportedKeyTypeNames() {
+    final StringBuilder buffer = new StringBuilder(128);
+    for (final Type type : Type.values())
+      if (isSupportedKeyType(type.getBinaryType())) {
+        if (!buffer.isEmpty())
+          buffer.append(", ");
+        buffer.append(type.name());
+      }
+    return buffer.toString();
   }
 
   /**
@@ -874,12 +933,12 @@ public class HashIndexBucket extends PaginatedComponent {
    * Formats the loaded key types as signed value + hex, flagging any that are not valid hash index key types.
    */
   private String formatKeyTypes() {
-    final StringBuilder buffer = new StringBuilder(2 + binaryKeyTypes.length * 12);
+    final StringBuilder buffer = new StringBuilder(2 + declaredKeyTypes.length * 12);
     buffer.append('[');
-    for (int i = 0; i < binaryKeyTypes.length; i++) {
+    for (int i = 0; i < declaredKeyTypes.length; i++) {
       if (i > 0)
         buffer.append(", ");
-      final byte type = binaryKeyTypes[i];
+      final byte type = declaredKeyTypes[i];
       buffer.append(type).append("(0x").append(String.format("%02X", type & 0xFF)).append(')');
       if (!isSupportedKeyType(type))
         buffer.append("=INVALID");
@@ -903,16 +962,23 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Builds a rich, actionable exception for an unrecognized key type encountered while parsing an entry.
-   * The bare type value (e.g. -108) is meaningless on its own; this adds the index identity, the loaded
-   * key types, the page/offset being parsed, and the remediation step.
+   * Builds a rich, actionable exception for a key column whose type this index cannot encode.
+   * <p>
+   * The offending type is the one loaded from the metadata page for that column, NOT a byte read out of the entry
+   * being walked, so this is never evidence that entry's bytes are damaged. Since {@link #checkSupportedKeyTypes}
+   * refuses an unsupported type at creation, reaching this point means the metadata page itself no longer describes
+   * a valid index - either it is corrupted, or the index predates that check. Both are fixed by recreating the index,
+   * so the message says so without claiming the stored records are damaged. The bare type value (e.g. -108) is
+   * meaningless on its own; the index identity, the column, the loaded types and the parse position are added.
    */
-  private IndexException unsupportedKeyType(final byte type, final int offset) {
+  private IndexException unsupportedKeyType(final byte type, final int column, final int offset) {
     return new IndexException(
-        "Unsupported key type for hash index '" + getName() + "' (fileId=" + fileId + "): " + type + " (0x"
-            + String.format("%02X", type & 0xFF) + ") while parsing entry at content offset " + offset
-            + ". Loaded key types=" + formatKeyTypes()
-            + ". This means the index metadata or a bucket page is corrupted; rebuild the index (DROP and recreate it).");
+        "Key column " + column + " of hash index '" + getName() + "' (fileId=" + fileId + ") has type " + type + " (0x"
+            + String.format("%02X", type & 0xFF) + "), which a hash index cannot encode (hit while parsing an entry at "
+            + "content offset " + offset + "). Declared key types=" + formatKeyTypes()
+            + ". No record data is lost: either the index metadata page is damaged, or the index was created on a "
+            + "property type HASH does not support. Drop it and recreate it, as LSM_TREE if the key type is not in: "
+            + supportedKeyTypeNames());
   }
 
   /**
@@ -1016,13 +1082,13 @@ public class HashIndexBucket extends PaginatedComponent {
   public List<String> checkMetadataIntegrity() {
     final List<String> problems = new ArrayList<>();
 
-    if (binaryKeyTypes == null || binaryKeyTypes.length == 0)
+    if (declaredKeyTypes == null || declaredKeyTypes.length == 0)
       problems.add("no key types loaded (the metadata page reports an invalid key count)");
     else
-      for (int i = 0; i < binaryKeyTypes.length; i++)
-        if (!isSupportedKeyType(binaryKeyTypes[i]))
-          problems.add("invalid key type at column " + i + ": " + binaryKeyTypes[i] + " (0x"
-              + String.format("%02X", binaryKeyTypes[i] & 0xFF) + ")");
+      for (int i = 0; i < declaredKeyTypes.length; i++)
+        if (!isSupportedKeyType(declaredKeyTypes[i]))
+          problems.add("invalid key type at column " + i + ": " + declaredKeyTypes[i] + " (0x"
+              + String.format("%02X", declaredKeyTypes[i] & 0xFF) + ")");
 
     try {
       final int globalDepth = readGlobalDepth();
@@ -1678,7 +1744,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final byte nullMarker = page.readByte(offset);
       offset += Binary.BYTE_SERIALIZED_SIZE;
       if (nullMarker != 0)
-        offset += getSerializedValueSize(page, offset, binaryKeyTypes[i]);
+        offset += getSerializedValueSize(page, offset, i);
     }
     return offset - startOffset;
   }
@@ -1689,7 +1755,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final byte nullMarker = data[offset];
       offset += 1;
       if (nullMarker != 0)
-        offset += getSerializedValueSizeFromBytes(data, offset, binaryKeyTypes[i]);
+        offset += getSerializedValueSizeFromBytes(data, offset, i);
     }
     return offset - startOffset;
   }
@@ -1699,9 +1765,12 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Computes how many bytes a serialized value occupies in the page.
+   * Computes how many bytes the value of the given key column occupies in the page. The column is passed rather than
+   * its type so the storage encoding is read from {@link #binaryKeyTypes} while a failure can still report the
+   * schema type from {@link #declaredKeyTypes}.
    */
-  private int getSerializedValueSize(final BasePage page, final int offset, final byte type) {
+  private int getSerializedValueSize(final BasePage page, final int offset, final int column) {
+    final byte type = binaryKeyTypes[column];
     switch (type) {
     case BinaryTypes.TYPE_BOOLEAN:
     case BinaryTypes.TYPE_BYTE:
@@ -1734,11 +1803,12 @@ public class HashIndexBucket extends PaginatedComponent {
     case BinaryTypes.TYPE_UUID:
       return 16; // Two longs
     default:
-      throw unsupportedKeyType(type, offset);
+      throw unsupportedKeyType(declaredKeyTypes[column], column, offset);
     }
   }
 
-  private int getSerializedValueSizeFromBytes(final byte[] data, final int offset, final byte type) {
+  private int getSerializedValueSizeFromBytes(final byte[] data, final int offset, final int column) {
+    final byte type = binaryKeyTypes[column];
     switch (type) {
     case BinaryTypes.TYPE_BOOLEAN:
     case BinaryTypes.TYPE_BYTE:
@@ -1769,7 +1839,7 @@ public class HashIndexBucket extends PaginatedComponent {
     case BinaryTypes.TYPE_UUID:
       return 16;
     default:
-      throw unsupportedKeyType(type, offset);
+      throw unsupportedKeyType(declaredKeyTypes[column], column, offset);
     }
   }
 
