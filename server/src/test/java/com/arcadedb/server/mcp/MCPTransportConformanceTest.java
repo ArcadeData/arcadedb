@@ -386,6 +386,17 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
   }
 
   @Test
+  void malformedArrayBodyIsReportedAsAParseError() throws Exception {
+    // A body that starts as an array but does not parse must not be mistaken for an empty request: the MCP
+    // endpoint answers the JSON-RPC parse error (-32700) over HTTP 200.
+    final Response response = post("[{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32700);
+  }
+
+  @Test
   void batchOfOnlyResponsesReturns202WithoutBody() throws Exception {
     final JSONArray batch = new JSONArray()
         .put(new JSONObject().put("jsonrpc", "2.0").put("id", 1).put("result", new JSONObject()))
