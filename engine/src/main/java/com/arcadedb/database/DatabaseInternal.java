@@ -248,4 +248,12 @@ public interface DatabaseInternal extends Database {
    * @return Map of variable name to value
    */
   Map<String, Object> getGlobalVariables();
+
+  /**
+   * Called by {@link com.arcadedb.graph.GraphBatch#close()} to signal that a batch operation has finished.
+   * The default implementation is a no-op; database implementations that guard against concurrent
+   * batches override this to release the guard.
+   */
+  default void batchFinished() {
+  }
 }

@@ -32,6 +32,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
@@ -2660,6 +2661,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
             }
           }
+        } catch (final DatabaseOperationException e) {
+          errorSent[0] = true;
+          batchRef.set(null);
+          out.onError(Status.FAILED_PRECONDITION.withDescription(
+              "graphBatchLoad: " + e.getMessage()).asException());
+          return;
         } catch (final Exception e) {
           errorSent[0] = true;
           // Null batchRef so onCompleted skips processing; skip closeQuietly to avoid blocking the

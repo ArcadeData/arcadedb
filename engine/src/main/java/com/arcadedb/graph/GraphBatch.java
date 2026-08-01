@@ -947,6 +947,10 @@ public class GraphBatch implements AutoCloseable {
         null, totalVerticesCreated, totalEdgesCreated, totalFlushes,
         totalFlushes > 0 ? (totalFlushTimeNs / totalFlushes) / 1_000_000.0 : 0.0);
 
+    // Release the concurrent-batch guard on the database (issue #5666). Must run even when
+    // flushFailure is about to be rethrown, so the database is not permanently locked.
+    database.batchFinished();
+
     if (flushFailure != null)
       throw flushFailure;
   }
