@@ -1425,5 +1425,53 @@ Note also that on a hot super-node under heavy concurrent delete-and-append the 
 a retry rather than passing silently, so those transactions retry slightly more often than before. That is the
 intended shift - from "quietly wrong" to "occasionally repeated" - and it lands on exactly the super-node shape the
 bug affected. `arcadedb.txRetryDelay` and `arcadedb.txRetries` are the tuning levers if a workload needs them.
+## Deleting a vertex no longer loses its own edges when a chunk is momentarily unreadable
+
+The change above closed that window for the edge lists a delete reaches through a *neighbour*. It left open the one
+a vertex delete reaches on its own list, which is where the loss was larger.
+
+`DELETE VERTEX` first collects the edges to remove by walking the vertex's own outgoing and incoming lists, then
+deletes each collected edge, then deletes the vertex record. That collection used the best-effort reader - the one
+that answers `null` when a head chunk cannot be loaded - and wrapped the whole walk in a blanket
+`catch (Exception)`. So a chunk that could not be read at that instant meant **no edges collected**, or only the
+ones seen before the hole, and the vertex record was deleted on top of that empty or partial view. The delete
+reported success while the edges outlived their endpoint: an edge record whose `out`/`in` names a record that no
+longer exists, and a back-reference still sitting on a neighbour nobody touched. `check database` reported them as
+invalid links.
+
+This is the same timing window as above, not a fact about the graph: a commit publishes its pages one at a time and
+the reader takes no commit lock, so a vertex page can expose a head RID before that head's own page is visible, and
+a chunk emptied by another transaction is relinked out of the chain while a walker is still following a pointer to
+it. Measured on a two-vertex graph with the source's outgoing head chunk made unreadable, the delete succeeded, the
+vertex was gone, and the edge record and the neighbour's degree were both still there.
+
+The collection now reads the list the way a removal must. An unreadable head chunk, or an unreadable hop in the
+middle of the chain, is a retryable `ConcurrentModificationException`: the transaction rolls back whole and re-reads
+a consistent view instead of deleting a vertex it never finished disconnecting. The same applies on a promoted
+super-node, whose list is several per-stripe chains: a read is allowed to skip a stripe it cannot load, and that
+skip used to cost the delete a whole stripe's worth of edges in silence. Two things stay deliberately
+tolerant. A single entry whose **edge record** cannot be resolved is still skipped - that costs one already-dangling
+pointer rather than the whole remaining list, which is how every other reader in the engine treats it. And draining
+the chunk records at the very end is still best-effort in every mode: by then each edge has been disconnected from
+both endpoints and the vertex record is about to go, so a chunk that cannot be read there leaves orphaned chunk
+records for `CHECK DATABASE` to reclaim, never a surviving reference.
+
+**Visible effect.** `vertex.delete()` / `DELETE VERTEX` can now raise a `ConcurrentModificationException` where it
+previously "succeeded" - the same contract, and the same standard retry loops, described for edge deletion above.
+As there, an edge list that is genuinely broken rather than transiently invisible is indistinguishable at that
+moment, so the delete fails once the retries are spent instead of quietly leaving ghost edges behind.
+`CHECK DATABASE ... FIX` is the repair path and is never blocked by the delete being blocked: it rebuilds an
+unloadable chain from the surviving edge records, after which the delete goes through normally.
+
+**`force` is now the escape hatch it always claimed to be.** The internal forced delete - the path that removes a
+record whose own body cannot be assembled - keeps the old tolerance for every one of these reads, and extends it to
+one place it never covered: disconnecting a collected edge from the vertex at its *other* end. Since the change
+above made that removal strict, a broken **neighbour** blocked a forced delete exactly as it blocked an ordinary
+one, which is precisely what `force` exists to override. It no longer does; the reference it could not remove is
+logged as a warning naming the edge, and `CHECK DATABASE` cleans it up.
+
+One more silent-loss route closed with it: the collection now reads the edge-list heads from the vertex instance the
+running transaction holds. A handle obtained before an edge was appended in the same transaction still named the
+previous head, so the newest edges were invisible to the walk - and, once again, the vertex was deleted anyway.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
