@@ -276,6 +276,70 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #5711: the LIMIT the caller wrote in the query must not be overridden by the serializer default, and
+   * the POST endpoint must agree with the GET one (see {@link #checkQueryInGetWithLimitAboveDefaultCut()}).
+   */
+  @Test
+  void checkQueryInPostWithLimitAboveDefaultCut() throws Exception {
+    testEachServer(serverIndex -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "select from Person limit " + (TOTAL - 1), "record", Collections.emptyMap());
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+
+        final JSONObject responseAsJson = new JSONObject(response);
+        assertThat(responseAsJson.getJSONArray("result").length()).isEqualTo(TOTAL - 1);
+        assertThat(responseAsJson.getInt("returned")).isEqualTo(TOTAL - 1);
+        assertThat(responseAsJson.getInt("limit")).isEqualTo(TOTAL - 1);
+        assertThat(responseAsJson.getBoolean("truncated")).isFalse();
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
+   * Issue #5711: when the default cap - and not the caller - is what cut the result short, the response must say
+   * so instead of looking complete.
+   */
+  @Test
+  void checkQueryInPostReportsDefaultLimitTruncation() throws Exception {
+    testEachServer(serverIndex -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "select from Person", "record", Collections.emptyMap());
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+
+        final JSONObject responseAsJson = new JSONObject(response);
+        assertThat(responseAsJson.getJSONArray("result").length()).isEqualTo(AbstractQueryHandler.DEFAULT_LIMIT);
+        assertThat(responseAsJson.getInt("returned")).isEqualTo(AbstractQueryHandler.DEFAULT_LIMIT);
+        assertThat(responseAsJson.getInt("limit")).isEqualTo(AbstractQueryHandler.DEFAULT_LIMIT);
+        assertThat(responseAsJson.getBoolean("truncated")).isTrue();
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
   @Test
   void checkQueryInGetWithDefaultLimit() throws Exception {
     testEachServer(serverIndex -> {
