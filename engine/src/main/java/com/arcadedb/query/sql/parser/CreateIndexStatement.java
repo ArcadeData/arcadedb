@@ -194,7 +194,8 @@ public class CreateIndexStatement extends DDLStatement {
 
     builder.withIgnoreIfExists(ifNotExists);
     builder.withUnique(unique);
-    builder.withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
+    // No withPageSize(): SQL has no PAGESIZE clause, so leaving it unset lets each index implementation pick its own
+    // default. Pinning it to the LSM default here forced that value on HASH too, which cannot address a 256KB page (#5713).
     builder.withNullStrategy(nullStrategy);
 
     // Pass collation settings (e.g., CI for case-insensitive)

@@ -28,12 +28,23 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class IndexBuilder<T extends Index> {
-  public static final int                    BUILD_BATCH_SIZE = 5_000;
-  final               DatabaseInternal       database;
-  final               Class<? extends Index> indexImplementation;
+  public static final int BUILD_BATCH_SIZE = 5_000;
+
+  /**
+   * Value of {@link #pageSize} meaning "the caller did not ask for a page size", so each index implementation is free
+   * to pick its own default.
+   * <p>
+   * This used to be expressed by initialising the field to {@link LSMTreeIndexAbstract#DEF_PAGE_SIZE} and having
+   * {@code HashIndex} read that exact value back as "unset". That conflated the two, and made 262144 the one page size
+   * a hash index could never actually be given - see issue #5713.
+   */
+  public static final int PAGE_SIZE_UNSET = -1;
+
+  final DatabaseInternal       database;
+  final Class<? extends Index> indexImplementation;
   Schema.INDEX_TYPE                  indexType;
   boolean                            unique;
-  int                                pageSize       = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
+  int                                pageSize       = PAGE_SIZE_UNSET;
   LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy   = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   Index.BuildIndexCallback           callback;
   boolean                            ignoreIfExists = false;
@@ -87,6 +98,12 @@ public abstract class IndexBuilder<T extends Index> {
     return this;
   }
 
+  /**
+   * Requests an explicit page size for the index file. Any value below 1 means "unset", leaving the choice to the
+   * index implementation - see {@link #getPageSize(int)}, which is the single place that resolves it. Normalising
+   * here as well would be redundant, and the builder subclasses that copy the field verbatim
+   * ({@code TypeLSMVectorIndexBuilder}, {@code TypeLSMSparseVectorIndexBuilder}) would bypass it anyway.
+   */
   public IndexBuilder<T> withPageSize(final int pageSize) {
     this.pageSize = pageSize;
     return this;
@@ -110,8 +127,20 @@ public abstract class IndexBuilder<T extends Index> {
     return nullStrategy;
   }
 
+  /**
+   * Returns the requested page size, or the LSM default when none was requested. Kept for the index implementations
+   * whose default IS the LSM one; anything with a different default must use {@link #getPageSize(int)} so it can tell
+   * "the caller asked for 262144" from "the caller asked for nothing".
+   */
   public int getPageSize() {
-    return pageSize;
+    return getPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
+  }
+
+  /**
+   * Returns the page size the caller explicitly requested, or {@code defaultIfUnset} when none was requested.
+   */
+  public int getPageSize(final int defaultIfUnset) {
+    return pageSize > 0 ? pageSize : defaultIfUnset;
   }
 
   public Schema.INDEX_TYPE getIndexType() {

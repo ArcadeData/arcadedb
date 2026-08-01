@@ -58,9 +58,41 @@ public class HashIndexBucket extends PaginatedComponent {
   public static final String UNIQUE_INDEX_EXT    = "uhashidx";
   public static final String NOTUNIQUE_INDEX_EXT = "nhashidx";
 
+  // Page size used when the caller does not ask for one. It currently coincides with MAX_PAGE_SIZE, but the two are
+  // independent: this one is a tuning choice, MAX_PAGE_SIZE is a hard limit of the on-page addressing.
   public static final int DEF_PAGE_SIZE     = 65_536;
   public static final int CURRENT_VERSION   = 1;
   public static final int NO_OVERFLOW_PAGE  = -1;
+
+  /**
+   * Largest page size a bucket page can address (issue #5713).
+   * <p>
+   * Everything inside a bucket page is addressed with 16-bit fields: the slot directory entries ({@link #SLOT_SIZE}),
+   * {@link #BUCKET_DATA_END} and {@link #BUCKET_ENTRY_COUNT} are all written as a {@code short} and read back through
+   * {@code & 0xFFFF}, so the largest offset representable is 65535. With the 8-byte {@link BasePage#PAGE_HEADER_SIZE},
+   * a 65536-byte page tops out at content offset 65528 and always fits.
+   * <p>
+   * Above this, the data offsets truncate: {@code dataEnd} wraps back to a low value, {@link #freeSpace} reports the
+   * page as almost empty, and the next entry is written over the bucket header - including the overflow pointer at
+   * {@link #BUCKET_OVERFLOW_PAGE}, which is how the failure used to surface, as the cycle detector reporting a
+   * "corrupted" chain at a wrapped page number rather than as the invalid configuration it is.
+   */
+  public static final int MAX_PAGE_SIZE = 65_536;
+
+  /**
+   * Smallest page size a hash index can be created with.
+   * <p>
+   * What this floor guarantees is that the index is DESCRIBABLE: the metadata page needs {@code PAGE_HEADER_SIZE +
+   * META_KEY_TYPES_START + numberOfKeys + 2 + 3 * INT_SERIALIZED_SIZE} bytes - 95 at the {@link #MAX_SANE_KEY_COUNT}
+   * ceiling - so a page size that cannot even hold page 0 is refused up front instead of writing metadata past the end
+   * of it.
+   * <p>
+   * It does NOT guarantee that any given key fits a bucket page. Key width is not known at creation for
+   * {@code STRING}/{@code BINARY}/{@code DECIMAL} columns, so no static floor could promise that; an entry too large
+   * for an empty page is reported at insert by {@link #entryTooLarge}, which names the usable space per page. That is
+   * a property of small pages with wide keys generally, not of this bound.
+   */
+  public static final int MIN_PAGE_SIZE = 256;
 
   // Metadata page (page 0) layout offsets (relative to PAGE_HEADER_SIZE)
   static final int META_GLOBAL_DEPTH      = 0;                      // int (4)
@@ -128,7 +160,11 @@ public class HashIndexBucket extends PaginatedComponent {
   HashIndexBucket(final HashIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique,
       final String filePath, final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) throws IOException {
-    super(database, name, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode, pageSize, CURRENT_VERSION);
+    // The page size is validated inside the super() argument list on purpose: this constructor is the ONLY path that
+    // creates the file, and super() creates it, so checking here - before super() runs - is what guarantees no hash
+    // index file can exist with a page size the bucket cannot address (#5713).
+    super(database, name, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode,
+        checkSupportedPageSize(name, pageSize), CURRENT_VERSION);
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
@@ -842,6 +878,55 @@ public class HashIndexBucket extends PaginatedComponent {
           "Corrupted metadata detected on hash index '%s' (fileId=%d): %s. The index must be rebuilt (DROP and "
               + "recreate it). Raw metadata page 0 dump (content bytes):%n%s",
           null, getName(), fileId, describeMetadata(metaPage, rawNumKeys), dumpMetadataPage(metaPage));
+
+    // An index created before the creation-time check of #5713 can carry a page size outside the supported range on
+    // disk. Report it rather than throw: throwing here would make the whole database unopenable, while the index is
+    // still droppable and rebuildable - and CHECK DATABASE surfaces the same problem through checkMetadataIntegrity().
+    //
+    // WHY WRITES ARE STILL ACCEPTED afterwards, rather than the component being marked read-only: an OVERSIZED index is
+    // already unusable in practice, not quietly degrading. Every offset on its bucket pages has wrapped, so the first
+    // lookup - including the unique-constraint probe an insert performs - walks the overwritten overflow pointer and
+    // raises corruptedOverflowChain(). The failure is loud on the read side, which is where it would matter, so a
+    // write-side block would mostly convert one loud error into a different loud error while removing the operator's
+    // ability to keep the type usable until the rebuild window. The rebuild itself is unaffected either way: it scans
+    // the records and populates a NEW file, never writing through this bucket. An UNDERSIZED index is not damaged at
+    // all (see describeUnsupportedPageSize), so there is nothing to protect it from.
+    if (!isSupportedPageSize(pageSize))
+      // Severity follows the finding, not the fact that something was found: only the oversized case has actually
+      // damaged data. Logging SEVERE for a page size we simultaneously describe as probably still working would
+      // contradict the message on every open.
+      LogManager.instance().log(this, isPageSizeDamaging(pageSize) ? Level.SEVERE : Level.WARNING,
+          "Hash index '%s' (fileId=%d) has an unsupported page size of %d bytes (allowed: %d..%d): %s. It should be "
+              + "rebuilt (DROP and recreate it, or REBUILD INDEX) with a supported page size.",
+          null, getName(), fileId, pageSize, MIN_PAGE_SIZE, MAX_PAGE_SIZE, describeUnsupportedPageSize(pageSize));
+  }
+
+  /**
+   * Whether an out-of-range page size means the index has ALREADY been damaged, as opposed to merely being outside the
+   * range this index type now accepts. Only the oversized direction wraps the 16-bit on-page offsets; see
+   * {@link #describeUnsupportedPageSize}.
+   */
+  private static boolean isPageSizeDamaging(final int pageSize) {
+    return pageSize > MAX_PAGE_SIZE;
+  }
+
+  /**
+   * Explains what an out-of-range page size means for THIS index, because the two directions are not the same problem
+   * and must not be reported as if they were.
+   * <p>
+   * Above {@link #MAX_PAGE_SIZE} the 16-bit on-page offsets have wrapped, so the index really is damaged. Below
+   * {@link #MIN_PAGE_SIZE} nothing has wrapped: the old creation path accepted any {@code pageSize > 0}, so such an
+   * index may well have been working, and telling its operator it is "corrupted" would send them hunting for damage
+   * that is not there. What is true in that case is only that the page is below the floor the index now requires to
+   * guarantee its metadata page fits.
+   * <p>
+   * This is the ONE place that wording lives: the load-time log and {@link #checkMetadataIntegrity} both report through
+   * it, so the two cannot drift into describing the same file differently.
+   */
+  private static String describeUnsupportedPageSize(final int pageSize) {
+    return isPageSizeDamaging(pageSize) ?
+        "bucket pages address entries with 16-bit offsets, so this index is damaged" :
+        "below the minimum required for the metadata page, though the index may still be working";
   }
 
   /**
@@ -919,6 +1004,31 @@ public class HashIndexBucket extends PaginatedComponent {
                 + (keyType == null ? "a key column has no type" : "the key type " + keyType.name() + " cannot be used")
                 + " as a HASH index key. Supported key types are: " + SUPPORTED_KEY_TYPE_NAMES
                 + ". Create the index as LSM_TREE instead");
+  }
+
+  /**
+   * Returns true if a bucket page of the given size can be addressed by the 16-bit on-page fields (and is large enough
+   * to hold the metadata page). See {@link #MAX_PAGE_SIZE} and {@link #MIN_PAGE_SIZE}.
+   */
+  static boolean isSupportedPageSize(final int pageSize) {
+    return pageSize >= MIN_PAGE_SIZE && pageSize <= MAX_PAGE_SIZE;
+  }
+
+  /**
+   * Validates the page size a hash index is about to be created with and returns it unchanged, so it can be used
+   * directly as a {@code super()} argument (issue #5713).
+   * <p>
+   * Refusing here rather than letting the insert path wrap makes the failure name the configuration instead of
+   * reporting the index as corrupted after the fact: an oversized page silently truncates every data offset to 16
+   * bits, and the first symptom is an overflow chain that has been overwritten into a cycle.
+   */
+  static int checkSupportedPageSize(final String indexName, final int pageSize) {
+    if (!isSupportedPageSize(pageSize))
+      throw new IndexException(
+          "Cannot create index '" + indexName + "' of type HASH with a page size of " + pageSize
+              + " bytes: a hash bucket page addresses its entries with 16-bit offsets, so the page size must be between "
+              + MIN_PAGE_SIZE + " and " + MAX_PAGE_SIZE + " bytes. Use LSM_TREE if a bigger page is required");
+    return pageSize;
   }
 
   /**
@@ -1100,6 +1210,13 @@ public class HashIndexBucket extends PaginatedComponent {
   public List<String> checkMetadataIntegrity() {
     final List<String> problems = new ArrayList<>();
 
+    // A page size outside the addressable range is a property of the file, not of page 0, but it belongs here: it makes
+    // every offset on every bucket page unreliable, so reporting it first stops the structural walk below from
+    // attributing the resulting garbage to a cyclic chain (#5713).
+    if (!isSupportedPageSize(pageSize))
+      problems.add("unsupported page size=" + pageSize + " (allowed: " + MIN_PAGE_SIZE + ".." + MAX_PAGE_SIZE + "): "
+          + describeUnsupportedPageSize(pageSize));
+
     if (declaredKeyTypes == null || declaredKeyTypes.length == 0)
       problems.add("no key types loaded (the metadata page reports an invalid key count)");
     else
@@ -1127,9 +1244,19 @@ public class HashIndexBucket extends PaginatedComponent {
     }
 
     if (!problems.isEmpty()) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
-              + "(DROP and recreate it).", null, getName(), fileId, problems);
+      // An undersized page size is the one finding here that does NOT mean the metadata is damaged, so when it is the
+      // only thing found this must not announce corruption - the surrounding sentence would then contradict the very
+      // problem it is wrapping, which reads as "may still be working" (#5713).
+      final boolean corrupted = problems.size() > 1 || isSupportedPageSize(pageSize) || isPageSizeDamaging(pageSize);
+      if (corrupted)
+        LogManager.instance().log(this, Level.SEVERE,
+            "CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
+                + "(DROP and recreate it).", null, getName(), fileId, problems);
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "CHECK DATABASE found an unsupported configuration on hash index '%s' (fileId=%d): %s. The index should be "
+                + "rebuilt (DROP and recreate it, or REBUILD INDEX).", null, getName(), fileId, problems);
+
       // the structural walk relies on the metadata being sane: no point in running it on a corrupted page 0
       return problems;
     }

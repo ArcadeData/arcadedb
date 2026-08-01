@@ -415,6 +415,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public int getPageSizeForNewFile() {
+    checkIsValid();
+    // Same definition across every bucket sub-index, so the first one answers for all of them.
+    return getFirstUnderlyingIndex().getPageSizeForNewFile();
+  }
+
+  @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
     checkIsValid();
     long total = 0;
