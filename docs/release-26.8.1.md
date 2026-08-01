@@ -1513,6 +1513,11 @@ non-positive `limit` with zero rows (it used to compute `min(rows, -1)`, so `lim
 The cap is now configurable with **`arcadedb.server.httpQueryDefaultLimit`** (default 20000, `-1` for unlimited);
 it applies only to callers that state no limit of their own.
 
+One gap is worth knowing about: a query's LIMIT raises the cap only for a language that exposes it on the
+execution plan. SQL does; Cypher on the non-EXPLAIN path builds no plan, so `MATCH ... RETURN n LIMIT 30000` is
+still cut at the default - now with `truncated: true` and a warning rather than silently. Send `limit` in the
+request for those languages.
+
 **Java remote driver.** `RemoteDatabase` warns when the server reports a truncated result instead of handing back
 a partial `ResultSet` that looks complete, and `setMaxResultRows(Integer)` sets the cap for that connection -
 `-1` removes it, so a query with no LIMIT of its own returns every row like the embedded API does. Beware that

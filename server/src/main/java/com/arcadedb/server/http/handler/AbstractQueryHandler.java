@@ -181,9 +181,13 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (!outcome.truncated() || requestLimit != null || planLimit >= limit)
       return;
 
+    // The advice deliberately leads with the request field: a LIMIT in the query text raises the cap only for a
+    // language that exposes it on the execution plan, so telling a Cypher caller to add one - it may well have
+    // one already - would send it after a fix that cannot work.
     LogManager.instance().log(this, Level.WARNING,
         "Query on database '%s' returned more rows than the default HTTP limit of %d: the response has been truncated to %d rows. "
-            + "Set 'limit' in the request, add an explicit LIMIT to the query, or raise '%s'. Query: %s", databaseName, limit,
+            + "Set 'limit' in the request or raise '%s'; a LIMIT written in the query raises the cap only for a language that "
+            + "exposes it on the execution plan, which SQL does and Cypher does not. Query: %s", databaseName, limit,
         outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(), abbreviateForLog(command));
   }
 
