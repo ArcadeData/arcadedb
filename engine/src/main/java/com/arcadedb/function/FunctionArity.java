@@ -22,9 +22,9 @@ import com.arcadedb.exception.CommandSemanticException;
 
 /**
  * The one wording for "wrong number of arguments", shared by every path that can detect it: the functions' own
- * runtime guard ({@link Function#checkArity}) and the Cypher parser's declaration gate
- * ({@code FunctionValidator}). A client is told the same thing whichever caught the mistake - the point of issue
- * #5484, extended to the runtime side in #5602.
+ * runtime guard ({@link Function#checkArity}), the procedures' ({@code Procedure.checkArity}) and the Cypher
+ * parser's declaration gate ({@code FunctionValidator}). A client is told the same thing whichever caught the
+ * mistake - the point of issue #5484, extended to the runtime side in #5602 and to procedures in #5627.
  * <p>
  * It lives beside {@link Function} rather than in the Cypher helper it started in, because nothing about counting
  * arguments is language-specific and {@link Function} is the query-language-neutral abstraction: having the base
@@ -68,6 +68,8 @@ public final class FunctionArity {
   }
 
   /**
+   * The function-flavoured shorthand for {@link #message(String, String, String, int)}.
+   *
    * @param functionName function name without parentheses, e.g. {@code "abs"}
    * @param expectedArgs the accepted count, phrased for the message, e.g. {@code "1 argument"} - usually from
    *                     {@link #describe}, but spelled out by the few functions whose accepted counts are not a
@@ -75,15 +77,38 @@ public final class FunctionArity {
    * @param actualArgs   how many arguments the call actually carried
    */
   public static String message(final String functionName, final String expectedArgs, final int actualArgs) {
-    return "Function '" + functionName + "' expects " + expectedArgs + " but got " + actualArgs;
+    return message("Function", functionName, expectedArgs, actualArgs);
   }
 
   /**
-   * The exception form of {@link #message}: a wrong argument count is the caller's mistake, so it is a client error
-   * (HTTP 400) rather than an internal failure.
+   * @param kind         what the name denotes, capitalised because it opens the sentence: {@code "Function"} or
+   *                     {@code "Procedure"}. Procedures are a separate abstraction - their own interface, their own
+   *                     registry, their own {@code CALL} handling - so telling a caller that {@code algo.dijkstra}
+   *                     is a function would be wrong. Everything after the noun is shared, which is what makes the
+   *                     same mistake read the same way whichever kind the name resolved to (#5627).
+   * @param callableName the name without parentheses, e.g. {@code "abs"} or {@code "algo.dijkstra"}
+   * @param expectedArgs the accepted count, phrased for the message, e.g. {@code "1 argument"}
+   * @param actualArgs   how many arguments the call actually carried
+   */
+  public static String message(final String kind, final String callableName, final String expectedArgs,
+      final int actualArgs) {
+    return kind + " '" + callableName + "' expects " + expectedArgs + " but got " + actualArgs;
+  }
+
+  /**
+   * The exception form of {@link #message(String, String, int)}: a wrong argument count is the caller's mistake, so
+   * it is a client error (HTTP 400) rather than an internal failure.
    */
   public static CommandSemanticException mismatch(final String functionName, final String expectedArgs,
       final int actualArgs) {
     return new CommandSemanticException(message(functionName, expectedArgs, actualArgs));
+  }
+
+  /**
+   * The exception form of {@link #message(String, String, String, int)}.
+   */
+  public static CommandSemanticException mismatch(final String kind, final String callableName,
+      final String expectedArgs, final int actualArgs) {
+    return new CommandSemanticException(message(kind, callableName, expectedArgs, actualArgs));
   }
 }

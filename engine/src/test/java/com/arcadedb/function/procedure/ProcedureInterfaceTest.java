@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.procedure;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.Test;
@@ -44,10 +45,8 @@ class ProcedureInterfaceTest {
     final Procedure proc = createProcedure("exactProc", 2, 2);
 
     assertThatThrownBy(() -> proc.validateArgs(new Object[]{"a"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("exactProc")
-        .hasMessageContaining("exactly 2")
-        .hasMessageContaining("got 1");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Procedure 'exactProc' expects 2 arguments but got 1");
   }
 
   @Test
@@ -55,10 +54,8 @@ class ProcedureInterfaceTest {
     final Procedure proc = createProcedure("exactProc", 2, 2);
 
     assertThatThrownBy(() -> proc.validateArgs(new Object[]{"a", "b", "c"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("exactProc")
-        .hasMessageContaining("exactly 2")
-        .hasMessageContaining("got 3");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Procedure 'exactProc' expects 2 arguments but got 3");
   }
 
   @Test
@@ -76,10 +73,8 @@ class ProcedureInterfaceTest {
     final Procedure proc = createProcedure("rangeProc", 2, 4);
 
     assertThatThrownBy(() -> proc.validateArgs(new Object[]{"a"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("rangeProc")
-        .hasMessageContaining("2 to 4")
-        .hasMessageContaining("got 1");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Procedure 'rangeProc' expects 2-4 arguments but got 1");
   }
 
   @Test
@@ -87,10 +82,36 @@ class ProcedureInterfaceTest {
     final Procedure proc = createProcedure("rangeProc", 1, 3);
 
     assertThatThrownBy(() -> proc.validateArgs(new Object[]{"a", "b", "c", "d"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("rangeProc")
-        .hasMessageContaining("1 to 3")
-        .hasMessageContaining("got 4");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Procedure 'rangeProc' expects 1-3 arguments but got 4");
+  }
+
+  @Test
+  void anUnboundedMaximumIsNotReadAsAnUpperLimit() {
+    // The two spellings of "no limit": the registry writes -1, Function.getMaxArgs defaults to Integer.MAX_VALUE.
+    // A raw `count > getMaxArgs()` against -1 rejects every call, since any count exceeds -1 (issue #5627).
+    for (final int unbounded : new int[] { -1, Integer.MAX_VALUE }) {
+      final Procedure proc = createProcedure("variadicProc", 1, unbounded);
+
+      proc.validateArgs(new Object[]{"a"});
+      proc.validateArgs(new Object[]{"a", "b", "c", "d"});
+
+      assertThatThrownBy(() -> proc.validateArgs(new Object[0]))
+          .as("maxArgs=%d", unbounded)
+          .isInstanceOf(CommandSemanticException.class)
+          .hasMessage("Procedure 'variadicProc' expects at least 1 argument but got 0");
+    }
+  }
+
+  @Test
+  void aNullArgumentArrayCountsAsNoArguments() {
+    // args.length on a null array raised NullPointerException, which the CALL path wraps as an internal failure.
+    assertThatThrownBy(() -> createProcedure("exactProc", 2, 2).validateArgs(null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Procedure 'exactProc' expects 2 arguments but got 0");
+
+    // A procedure accepting no arguments is handed the null array unchanged, as functions are.
+    createProcedure("zeroArgProc", 0, 0).validateArgs(null);
   }
 
   @Test

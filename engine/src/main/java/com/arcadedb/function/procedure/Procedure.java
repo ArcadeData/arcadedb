@@ -18,6 +18,8 @@
  */
 package com.arcadedb.function.procedure;
 
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -100,22 +102,47 @@ public interface Procedure {
   Stream<Result> execute(Object[] args, Result inputRow, CommandContext context);
 
   /**
-   * Validates the arguments before execution.
-   * Default implementation checks argument count.
+   * Rejects a call whose argument count falls outside {@link #getMinArgs()}..{@link #getMaxArgs()}.
+   * <p>
+   * The counterpart of {@code Function.checkArity}, phrased through the same {@link FunctionArity}: a wrong argument
+   * count is the same mistake whether the name resolved to a function or to a procedure, so it reads the same way
+   * and carries the same status. It used to raise an {@link IllegalArgumentException} with wording of its own, which
+   * {@code CallStep.executeProcedure} then wrapped - surfacing over HTTP as 500 where the function path already gave
+   * 400 (issue #5627).
+   * <p>
+   * A wrong argument count is the caller's mistake, so this is a {@link CommandSemanticException} (HTTP 400) rather
+   * than an internal failure. {@code CallStep} rethrows {@code CommandParsingException}, which this extends,
+   * untouched.
+   *
+   * @param args the arguments the call carried, {@code null} counting as none
+   *
+   * @throws CommandSemanticException if the argument count is outside the declared bounds
+   */
+  default void checkArity(final Object[] args) {
+    final int actualArgs = args == null ? 0 : args.length;
+    // effectiveMax(), not getMaxArgs(), so an implementation that spells "unbounded" the registry's way (-1) is not
+    // read as "at most -1 arguments" - which would reject every call while the message still said "at least N".
+    if (actualArgs < getMinArgs() || actualArgs > FunctionArity.effectiveMax(getMaxArgs()))
+      throw FunctionArity.mismatch("Procedure", getName(), FunctionArity.describe(getMinArgs(), getMaxArgs()),
+          actualArgs);
+  }
+
+  /**
+   * Validates the arguments before execution. Kept as the name the {@code CALL} path calls
+   * ({@code CallStep.executeProcedure}) and the name each implementation calls at the top of its {@code execute()};
+   * the check itself is {@link #checkArity}.
+   * <p>
+   * The per-implementation calls are deliberately kept rather than folded into the {@code CALL} path alone: they are
+   * not a second hand-written count check that can drift from the declared bounds - they run this very method - and
+   * {@link #execute} is public, so a direct caller would otherwise index past the end of the array instead of being
+   * told what it got wrong.
    *
    * @param args the arguments to validate
-   * @throws IllegalArgumentException if arguments are invalid
+   *
+   * @throws CommandSemanticException if the argument count is outside the declared bounds
    */
   default void validateArgs(final Object[] args) {
-    if (args.length < getMinArgs() || args.length > getMaxArgs()) {
-      if (getMinArgs() == getMaxArgs()) {
-        throw new IllegalArgumentException(
-            getName() + "() requires exactly " + getMinArgs() + " argument(s), got " + args.length);
-      } else {
-        throw new IllegalArgumentException(
-            getName() + "() requires " + getMinArgs() + " to " + getMaxArgs() + " arguments, got " + args.length);
-      }
-    }
+    checkArity(args);
   }
 
   /**
