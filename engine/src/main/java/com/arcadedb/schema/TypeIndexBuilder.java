@@ -238,9 +238,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       else if (!satisfied && (ignoreIfExists || replaceIfIncompatible))
         throw conflictWithExistingIndex(existingTypeIndex, indexType, unique, metadata.typeName, metadata.propertyNames);
       else
+        // Reached when the request was NOT guarded, whether or not the existing index satisfies it. The suffix names
+        // the guard that makes the statement idempotent: the satisfied case here is a caller asking twice for
+        // something already there - a Cypher CREATE CONSTRAINT without IF NOT EXISTS over its own unique index, say -
+        // and the bare sentence left them to work out that the guard was the missing piece. The sentence itself is
+        // unchanged: it is long-standing wording that callers may already match on.
         throw new IllegalArgumentException(
             "Found the existent index '" + existingTypeIndex.getName() + "' defined on the properties '" + Arrays.asList(
-                metadata.propertyNames) + "' for type '" + metadata.typeName + "'");
+                metadata.propertyNames) + "' for type '" + metadata.typeName + "'" + (satisfied ?
+                ". It already provides what was requested: use IF NOT EXISTS to make this statement idempotent" :
+                ". Drop it first if the definition has to change"));
     }
 
     if (metadata.propertyNames.isEmpty())

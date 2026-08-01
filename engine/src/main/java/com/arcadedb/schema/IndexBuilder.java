@@ -91,6 +91,14 @@ public abstract class IndexBuilder<T extends Index> {
    * is settable on an existing index through {@code ALTER} - so a mismatch is not a reason to refuse the statement.
    * Note that a satisfied request stays a plain no-op: the requested strategy is NOT applied to the existing index,
    * which is what {@code IF NOT EXISTS} asks for.
+   * <p>
+   * <b>Not compared either: the settings an index type keeps of its own</b> - vector {@code dimensions}, full-text
+   * analyzers, geospatial precision, collations. Two same-kind indexes configured differently still satisfy each other
+   * here, so a guarded {@code CREATE INDEX ... LSM_VECTOR} over an existing vector index with other dimensions stays a
+   * no-op. That is the same shape of surprise as issue #5675 one level down, and it is left open on purpose: those
+   * settings live in per-index-type {@link IndexMetadata} subclasses with no common notion of "provides at least what
+   * was asked for" (is a 768-dimension index acceptable to a request for 384? is a stricter analyzer?), and answering
+   * it needs a per-type rule rather than the structural comparison above.
    */
   public static boolean satisfiesRequest(final Index existing, final Schema.INDEX_TYPE requestedType,
       final boolean requestedUnique) {
