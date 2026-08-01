@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -88,6 +89,22 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
 
     assertThat(countsOf("MATCH (m:Big) RETURN count(m) AS c LIMIT 1")).containsExactly((long) BIG);
     assertThat(countsOf("MATCH (m:Big) RETURN count(m) AS c SKIP 0")).containsExactly((long) BIG);
+  }
+
+  /**
+   * The values are evaluated rather than read off the statement, so a parameter is the case that would break if the
+   * steps were built with the wrong context - and building them on the push-down path is the whole fix.
+   */
+  @Test
+  void aParametrizedSkipAndLimitApplyToo() {
+    final String query = "MATCH (a:Q)-[:LINKS]->(b:Q) RETURN count(*) AS c SKIP $s LIMIT $l";
+    assertThat(countsOf(query, Map.of("s", 0, "l", 1))).containsExactly(2L);
+    assertThat(countsOf(query, Map.of("s", 0, "l", 0))).isEmpty();
+    assertThat(countsOf(query, Map.of("s", 1, "l", 1))).isEmpty();
+
+    final String typeCount = "MATCH (m:Big) RETURN count(m) AS c SKIP $s LIMIT $l";
+    assertThat(countsOf(typeCount, Map.of("s", 0, "l", 1))).containsExactly((long) BIG);
+    assertThat(countsOf(typeCount, Map.of("s", 1, "l", 1))).isEmpty();
   }
 
   /**
@@ -297,8 +314,12 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
 
   /** The {@code c} column of every row, as longs. An empty list is a query that returned no row at all. */
   private List<Long> countsOf(final String query) {
+    return countsOf(query, Map.of());
+  }
+
+  private List<Long> countsOf(final String query, final Map<String, Object> parameters) {
     final List<Long> values = new ArrayList<>();
-    try (final ResultSet rs = database.query("opencypher", query)) {
+    try (final ResultSet rs = database.query("opencypher", query, parameters)) {
       while (rs.hasNext())
         values.add(((Number) rs.next().getProperty("c")).longValue());
     }

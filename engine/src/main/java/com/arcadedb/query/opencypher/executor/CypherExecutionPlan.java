@@ -4333,6 +4333,12 @@ public class CypherExecutionPlan {
    * {@code countType} sums the buckets' cached counters plus the transaction delta, so this reads nothing. It is
    * only meaningful for a type whose instances <b>are</b> records: a LIGHTWEIGHT edge type keeps no edge record, so
    * its counter is 0 while its edges exist in the vertices' edge lists, and it answers "not empty" here.
+   * <p>
+   * It is asked by name, and a name is not a namespace: a node label matches only vertices, but a document or edge
+   * type may carry the same name, and a populated one of those answers "not empty" for a label no vertex has. That
+   * costs the early-out and nothing else - the push-down then runs and computes the same 0, because it filters on
+   * the label's buckets, which hold no vertex either. {@link #tryCreateTypeCountOptimization} has to guard the
+   * collision because it answers <i>from</i> the counter; this only decides whether to skip work.
    */
   private static boolean typeIsProvablyEmpty(final Database db, final String name) {
     final Schema schema = db.getSchema();
