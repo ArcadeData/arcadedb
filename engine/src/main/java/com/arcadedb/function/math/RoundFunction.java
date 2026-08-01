@@ -63,7 +63,11 @@ public class RoundFunction implements StatelessFunction {
     // parse-time check applies, which examines each argument independently (issue #5484).
     final Number number = CypherFunctionHelper.requireNumberArgument(args[0], "round");
     final Number precisionArg = args.length > 1 ? CypherFunctionHelper.requireNumberArgument(args[1], "round") : null;
-    final RoundingMode mode = args.length == 3 ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
+    // An explicitly written null mode is not parsed: it propagates below, so parsing it only to discard the HALF_UP it
+    // would yield would also make parseRoundingMode's contract untrue. A mode that is present and not null is still
+    // parsed here, before propagation, so round(null, 2, 'SIDEWAYS') reports the unusable mode.
+    final RoundingMode mode =
+        args.length == 3 && !CypherFunctionHelper.isExplicitNull(args, 2) ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
 
     // An explicitly written null mode propagates, as every argument before it already does; only an omitted mode selects
     // HALF_UP (issue #5629). This sits after the checks above so that round(null, 2, 'SIDEWAYS') still reports the
@@ -94,8 +98,11 @@ public class RoundFunction implements StatelessFunction {
    * Shared with the parse-time check in {@code CypherSemanticValidator}, which applies it to a mode written as a
    * literal so that the two paths accept exactly the same set of names and word an unknown one identically.
    * <p>
-   * A {@code null} here means the argument was omitted. A mode written as an explicit {@code null} never reaches this
-   * method: it propagates, per {@link CypherFunctionHelper#isExplicitNull} (issue #5629).
+   * A {@code null} argument means the mode was omitted, and yields HALF_UP. {@code execute} does not call this method
+   * for a mode written as an explicit {@code null}: that propagates instead, per
+   * {@link CypherFunctionHelper#isExplicitNull} (issue #5629). The parse-time check in {@code CypherSemanticValidator}
+   * likewise skips null literals, so the {@code null} branch below serves callers that pass the omitted-argument
+   * sentinel directly.
    *
    * @throws CommandSemanticException when the name is not one of the supported modes: an unusable mode is the caller's
    *                                  mistake, so it must not surface as an internal 500 either (issue #5484)
