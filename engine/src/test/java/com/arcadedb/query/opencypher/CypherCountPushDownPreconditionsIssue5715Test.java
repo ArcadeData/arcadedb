@@ -196,8 +196,8 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
   /** And a correlated body is still answered against the row it is correlated to, not against the whole type. */
   @Test
   void aCorrelatedCountBodyIsStillNotAnsweredByTheGlobalCount() {
-    assertThat(scalarsPerRow("MATCH (q:Q {k: 1}) RETURN COUNT { (q)-[:LINKS]->(:Q) } AS c")).containsExactly(1L);
-    assertThat(scalarsPerRow("MATCH (q:Q {k: 1}) RETURN COUNT { MATCH (q:Q) } AS c")).containsExactly(1L);
+    assertThat(countsOf("MATCH (q:Q {k: 1}) RETURN COUNT { (q)-[:LINKS]->(:Q) } AS c")).containsExactly(1L);
+    assertThat(countsOf("MATCH (q:Q {k: 1}) RETURN COUNT { MATCH (q:Q) } AS c")).containsExactly(1L);
   }
 
   // ===================================================================================================
@@ -294,10 +294,6 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
     final List<Long> values = countsOf(query);
     assertThat(values).as(query).hasSize(1);
     return values.get(0);
-  }
-
-  private List<Long> scalarsPerRow(final String query) {
-    return countsOf(query);
   }
 
   /** How many rows the query produced, whatever they hold. */

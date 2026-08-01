@@ -120,8 +120,6 @@ import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -474,6 +472,10 @@ public class CypherExecutionPlan {
     if (seedIsRead(seedRow))
       return null;
 
+    // The outer statistics accumulator is deliberately not shared, for the reason executeWithSeedRow shares it only
+    // for a write body: getStatistics() allocates lazily, and a count push-down writes nothing there is to count.
+    // A COUNT { } body cannot write at all - the parser rejects an update clause inside one - so there is no
+    // mutation this could drop from the enclosing plan's statistics.
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
