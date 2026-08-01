@@ -438,6 +438,14 @@ public class GraphDatabaseChecker {
         for (final RID rid : scopedRecords) {
           try {
             checkConnectivity.accept(database.lookupByRID(rid, true));
+          } catch (final RecordNotFoundException e) {
+            // A RID that simply is not there is NOT corruption, and the difference is expensive: a record flagged
+            // corrupted puts its BUCKET into affectedBuckets, and CHECK DATABASE ... FIX then drops and rebuilds
+            // every index on that bucket - a full bucket scan. Since the RECORD scope exists to be hand-typed
+            // after a failed delete, a typo'd or already-deleted RID would otherwise buy exactly the cost the
+            // scope was reached for. Reported, not repaired.
+            progressTick();
+            addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " does not exist");
           } catch (final Exception e) {
             // Exception, not Throwable: an Error (OOM, StackOverflow) is a fact about the JVM, not about this
             // record, and reporting it as "cannot be loaded" would have fix mode DELETE a healthy record.
@@ -1228,6 +1236,11 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
         for (final RID rid : scopedRecords) {
           try {
             checkEndpoints.accept(database.lookupByRID(rid, true));
+          } catch (final RecordNotFoundException e) {
+            // See the vertex arm: a missing RID is reported, never flagged corrupted, so FIX does not rebuild
+            // this bucket's indexes over what is usually just a stale or mistyped RID.
+            progressTick();
+            addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " does not exist");
           } catch (final Exception e) {
             // See the vertex arm: an Error must not be recorded as record corruption.
             progressTick();

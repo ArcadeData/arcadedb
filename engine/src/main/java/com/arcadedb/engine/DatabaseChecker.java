@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphDatabaseChecker;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -373,9 +374,14 @@ public class DatabaseChecker {
     for (final Map.Entry<DocumentType, List<RID>> entry : scoped.entrySet()) {
       final DocumentType type = entry.getKey();
       final List<RID> rids = entry.getValue();
-      ++currentStep;
+
+      // NOTE on currentStep: each arm below owns its own bump, deliberately. The graph arms pass a FIXED value
+      // into the nested GraphDatabaseChecker, so they bump it here; the document arm goes through stepBegin,
+      // which bumps it itself. Bumping once up front for every arm double-counted a document group and reported
+      // "step 3 of 2" as soon as the RID list contained a plain document (totalSteps budgets one step per group).
 
       if (type == null) {
+        ++currentStep;
         // The bucket belongs to no type (an internal file, or a RID the caller invented). Capped like every other
         // warning source: a caller passing thousands of bogus RIDs must not blow past maxWarnings.
         final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
@@ -387,6 +393,13 @@ public class DatabaseChecker {
         continue;
       }
 
+      if (!(type instanceof LocalEdgeType) && !(type instanceof LocalVertexType)) {
+        checkScopedDocuments(type, rids);
+        continue;
+      }
+
+      ++currentStep;
+
       final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
       final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
       final GraphDatabaseChecker graphChecker = new GraphDatabaseChecker(database)
@@ -396,13 +409,9 @@ public class DatabaseChecker {
       if (type instanceof LocalEdgeType)
         stats = graphChecker.checkEdges(type.getName(), rids, fix, verboseLevel,
             Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
-      else if (type instanceof LocalVertexType)
+      else
         stats = graphChecker.checkVertices(type.getName(), rids, fix, verboseLevel,
             Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
-      else {
-        checkScopedDocuments(type, rids);
-        continue;
-      }
 
       updateStats(stats);
       ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
@@ -427,6 +436,12 @@ public class DatabaseChecker {
       for (final RID rid : rids) {
         try {
           database.lookupByRID(rid, true).asDocument(true);
+        } catch (final RecordNotFoundException e) {
+          // Not corruption: flagging it would put this bucket into affectedBuckets and have FIX drop and rebuild
+          // every index on it - see the same guard in GraphDatabaseChecker's scoped arms.
+          if (warnings.size() < maxWarnings)
+            warnings.add("document " + rid + " does not exist");
+          result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
         } catch (final Exception e) {
           if (warnings.size() < maxWarnings)
             warnings.add("document " + rid + " cannot be loaded, removing it");
@@ -495,8 +510,18 @@ public class DatabaseChecker {
   }
 
   public DatabaseChecker setRecords(final Set<RID> records) {
+    if (records == null || records.isEmpty()) {
+      this.records = Collections.emptySet();
+      return this;
+    }
     // LinkedHashSet: the grouping below (and so the reported step order) follows the order the RIDs were given.
-    this.records = records == null || records.isEmpty() ? Collections.emptySet() : new LinkedHashSet<>(records);
+    // Nulls are dropped rather than trusted away: this is a public API, and Rid.toRecordId() can answer null for
+    // a non-literal RID form, which groupRecordsByType would meet as an NPE on getBucketId().
+    final LinkedHashSet<RID> copy = new LinkedHashSet<>(records.size());
+    for (final RID rid : records)
+      if (rid != null)
+        copy.add(rid);
+    this.records = copy;
     return this;
   }
 

@@ -33,6 +33,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -70,7 +71,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     checker.setTypes(types.stream().map(x -> x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'") ?
         x.getStringValue().substring(1, x.getStringValue().length() - 1) :
         x.getStringValue()).collect(Collectors.toSet()));
-    checker.setRecords(records.stream().map(x -> x.toRecordId((Result) null, context))
+    // filter(Objects::nonNull): toRecordId answers null for a RID form that evaluates to nothing, and the checker
+    // must not be handed one - it groups by bucket id.
+    checker.setRecords(records.stream().map(x -> x.toRecordId((Result) null, context)).filter(Objects::nonNull)
         .collect(Collectors.toCollection(LinkedHashSet::new)));
     checker.setFix(fix);
     checker.setCompress(compress);

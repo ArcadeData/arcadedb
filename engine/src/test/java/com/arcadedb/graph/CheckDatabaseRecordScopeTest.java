@@ -150,6 +150,111 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
     }
   }
 
+  /**
+   * A RID that simply is not there is reported but NOT flagged corrupted, and that distinction has teeth: a
+   * corrupted record puts its bucket into the affected set, and {@code FIX} then drops and rebuilds every index on
+   * it - a full bucket scan, exactly the cost the RECORD scope exists to avoid. Since the scope is meant to be
+   * hand-typed after a failed delete, a stale or mistyped RID must not buy that.
+   */
+  @Test
+  void checkDatabaseRecordDoesNotTreatAMissingRidAsCorruption() {
+    createSchema();
+    final RID hubRID = createHub();
+    createEdges(hubRID, 5);
+
+    // A valid RID in a real bucket whose record is gone.
+    final RID[] goneHolder = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex doomed = database.newVertex("Src");
+      doomed.save();
+      goneHolder[0] = doomed.getIdentity();
+    });
+    database.transaction(() -> goneHolder[0].asVertex().delete());
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + goneHolder[0] + " FIX")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("%s", row.toJSON())
+          .anyMatch(w -> w.contains(goneHolder[0].toString()) && w.contains("does not exist"));
+      assertThat(longProperty(row, "totalCorruptedRecords")).as("a missing RID is not corruption: %s", row.toJSON())
+          .isEqualTo(0L);
+      // The give-away that it was not flagged: nothing was repaired, so no index on its bucket was rebuilt.
+      assertThat(longProperty(row, "autoFix")).as("%s", row.toJSON()).isEqualTo(0L);
+      assertThat((Collection<String>) row.getProperty("rebuiltIndexes")).as("%s", row.toJSON()).isEmpty();
+    }
+  }
+
+  /** An EDGE-typed RID takes the edge arm of the scope, checking its endpoints rather than an adjacency. */
+  @Test
+  void checkDatabaseRecordAcceptsAnEdgeRid() {
+    createSchema();
+    final RID hubRID = createHub();
+    final List<RID> edges = createEdges(hubRID, 5);
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + edges.get(0))) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("a healthy edge: %s", row.toJSON()).isEmpty();
+    }
+
+    // With its IN endpoint gone, the same scoped check reports the edge's dangling link.
+    database.transaction(() -> database.getSchema().getBucketById(hubRID.getBucketId()).deleteRecord(hubRID));
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + edges.get(0))) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(longProperty(row, "invalidLinks")).as("%s", row.toJSON()).isGreaterThan(0L);
+    }
+  }
+
+  /** A DOCUMENT-typed RID takes the document arm, and its progress steps must stay within the budgeted total. */
+  @Test
+  void checkDatabaseRecordAcceptsADocumentRid() {
+    createSchema();
+    database.transaction(() -> database.getSchema().createDocumentType("Doc"));
+
+    final RID[] docHolder = new RID[1];
+    database.transaction(() -> docHolder[0] = database.newDocument("Doc").set("k", 1).save().getIdentity());
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + docHolder[0])) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("a healthy document: %s", row.toJSON())
+          .isEmpty();
+      assertThat(longProperty(row, "totalCorruptedRecords")).as("%s", row.toJSON()).isEqualTo(0L);
+    }
+  }
+
+  /**
+   * Several RIDs spanning different types in one command - the whole point of grouping by type. Each group must
+   * reach the arm that matches it, and a broken vertex among them must still be repaired.
+   */
+  @Test
+  void checkDatabaseRecordAcceptsRidsSpanningSeveralTypes() {
+    createSchema();
+    database.transaction(() -> database.getSchema().createDocumentType("Doc"));
+
+    final RID hubRID = createHub();
+    final List<RID> edges = createEdges(hubRID, 200);
+    final RID[] docHolder = new RID[1];
+    database.transaction(() -> docHolder[0] = database.newDocument("Doc").set("k", 1).save().getIdentity());
+
+    deleteRecord(inChunkChain(hubRID).get(0));
+
+    final String command =
+        "CHECK DATABASE RECORD " + hubRID + ", " + edges.get(0) + ", " + docHolder[0] + " FIX";
+    try (final ResultSet rs = database.command("sql", command)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("%s", row.toJSON())
+          .anyMatch(w -> w.contains(hubRID.toString()) && w.contains("rebuilding the edge list"));
+    }
+
+    // The vertex group really was repaired, not merely reported.
+    database.transaction(
+        () -> assertThat(hubRID.asVertex().countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(edges.size()));
+  }
+
   /** A RID whose bucket belongs to no type is reported rather than silently ignored. */
   @Test
   void checkDatabaseRecordReportsARidBelongingToNoType() {

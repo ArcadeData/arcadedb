@@ -43,7 +43,7 @@ class CheckDatabaseStatementTestParserTest extends AbstractParserTest {
     checkRightSyntax("check database record #12:3, #12:9 fix");
     checkRightSyntax("check database record #12:3 fix compress");
     // Accepted by the GRAMMAR; rejected at execution, since RECORD plus TYPE/BUCKET has no sensible meaning
-    // (see Issue5680VertexDeleteGhostEdgeTest.checkDatabaseRecordRejectsBeingCombinedWithTypeOrBucket).
+    // (see CheckDatabaseRecordScopeTest.checkDatabaseRecordRejectsBeingCombinedWithTypeOrBucket).
     checkRightSyntax("check database type Customer record #12:3 fix");
 
     checkWrongSyntax("check database record");
