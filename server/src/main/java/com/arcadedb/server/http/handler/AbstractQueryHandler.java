@@ -80,9 +80,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * <p>
    * {@code truncated} is true only when the cap was reached <i>and</i> the result set still had at least one
    * more row, so a result whose size happens to match the cap exactly is not reported as truncated. For the
-   * row-oriented serializers ({@code record}, {@code studio} and the default one) the flag is exact. For the
-   * {@code graph} serializer the cap counts graph elements rather than rows, and a last row whose expansion
-   * was cut mid-way is not reported when no further row is pending.
+   * row-oriented serializers ({@code record}, {@code studio} and the default one) the flag is exact and
+   * {@code returned} never exceeds the cap. For the {@code graph} serializer the cap counts graph elements
+   * rather than rows: {@code returned} can exceed the cap, because the row that reaches it is expanded whole,
+   * and a last row whose expansion was cut mid-way is not reported when no further row is pending.
    */
   public record SerializationOutcome(int returned, boolean truncated) {
     static final SerializationOutcome EMPTY = new SerializationOutcome(0, false);
@@ -123,6 +124,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * both single statements and single-statement scripts; languages that do not build an
    * {@link com.arcadedb.query.sql.executor.ExecutionPlan} (e.g. Cypher on the non-EXPLAIN path) return 0, and
    * their results are capped by the configured default with {@code truncated} reported when it bites.
+   * <p>
+   * A multi-statement script reports 0 today, but a value belonging to one of its statements would be
+   * harmless anyway: {@link #resolveLimit} only ever raises the cap with it, so a wrong value can widen the
+   * response but never cut it below what the configured default already allows.
    */
   protected int getPlanLimit(final ResultSet qResult) {
     if (qResult == null)

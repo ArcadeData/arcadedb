@@ -115,6 +115,21 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aResultOfExactlyTheDefaultCapIsNotFlagged() throws Exception {
+    // The boundary the 'cap + 1' probe exists for: the command states no LIMIT, so the handler pushes down
+    // 'limit 51', and the engine returns exactly the 50 rows that match. Nothing was left behind, so the
+    // response must not claim otherwise - this is the false-positive guard for the probe itself.
+    final JSONObject response = query(new JSONObject()
+        .put("language", "sql")
+        .put("command", "SELECT i FROM " + TYPE_NAME + " WHERE i < " + CAP));
+
+    assertThat(response.getJSONArray("result").length()).isEqualTo(CAP);
+    assertThat(response.getInt("returned")).isEqualTo(CAP);
+    assertThat(response.getInt("limit")).isEqualTo(CAP);
+    assertThat(response.getBoolean("truncated")).isFalse();
+  }
+
+  @Test
   void theRequestLimitWinsOverTheQueryLimitAndIsReported() throws Exception {
     final JSONObject response = query(new JSONObject()
         .put("language", "sql")

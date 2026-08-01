@@ -533,7 +533,9 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("returned", SpecBuilders.integer(
         """
         Number of rows carried by this response. With the 'graph' serializer, whose cap counts graph elements \
-        rather than rows, it is the number of serialized vertices plus edges."""));
+        rather than rows, it is the number of serialized vertices plus edges, and it can exceed 'limit': a \
+        single row can expand into several elements, and the expansion of the row that reaches the cap is not \
+        cut in half."""));
     schema.addProperty("truncated", SpecBuilders.bool(
         "True when the cap stopped the serialization with rows still pending, so the response is incomplete"));
     return schema;

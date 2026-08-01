@@ -97,7 +97,9 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited.
+    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited. Note
+    // that here the cap governs serialization only - the engine query below materializes the whole range
+    // regardless, so removing the cap does not widen an already unbounded fetch.
     final int limit = payload.getInt("limit", getDefaultRowLimit());
 
     // Resolve field projection
