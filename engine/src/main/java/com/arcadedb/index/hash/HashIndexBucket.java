@@ -848,6 +848,11 @@ public class HashIndexBucket extends PaginatedComponent {
    * <p>
    * The cases mirror those of {@link #getSerializedValueSize} after {@link #storageKeyType} has been applied, which
    * is why {@code TYPE_RID} is accepted here but absent there: it is stored as {@code TYPE_COMPRESSED_RID}.
+   * <p>
+   * Two of the accepted types have no {@link Type} constant that maps to them, so they cannot be declared through the
+   * schema and never appear in {@link #supportedKeyTypeNames}: {@code TYPE_COMPRESSED_RID}, which only reaches this
+   * method as a storage type, and {@code TYPE_UUID}. They stay accepted so a metadata page carrying one is not
+   * mistaken for corruption.
    */
   static boolean isSupportedKeyType(final byte type) {
     switch (type) {
@@ -899,8 +904,9 @@ public class HashIndexBucket extends PaginatedComponent {
     for (final Type keyType : keyTypes)
       if (keyType == null || !isSupportedKeyType(keyType.getBinaryType()))
         throw new IndexException(
-            "Cannot create index '" + indexName + "' of type HASH because the key type " + keyType
-                + " cannot be used as a HASH index key. Supported key types are: " + supportedKeyTypeNames()
+            "Cannot create index '" + indexName + "' of type HASH because "
+                + (keyType == null ? "a key column has no type" : "the key type " + keyType + " cannot be used")
+                + " as a HASH index key. Supported key types are: " + supportedKeyTypeNames()
                 + ". Create the index as LSM_TREE instead");
   }
 

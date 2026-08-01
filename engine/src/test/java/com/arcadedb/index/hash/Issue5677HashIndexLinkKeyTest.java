@@ -163,6 +163,76 @@ class Issue5677HashIndexLinkKeyTest extends TestHelper {
     });
   }
 
+  /**
+   * A composite key where only SOME columns remap to a different storage encoding. The variable-width compressed RID
+   * sits next to a variable-width STRING, in both orders, so a column whose declared and storage encodings disagree
+   * has to be measured with the storage one for the following column to start at the right offset.
+   */
+  @Test
+  void compositeKeyMixingALinkWithAStringIsReadBackAtTheRightOffsets() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Library");
+
+      final VertexType book = database.getSchema().createVertexType("Book");
+      book.createProperty("library", Type.LINK);
+      book.createProperty("title", Type.STRING);
+      database.getSchema().buildTypeIndex("Book", new String[] { "library", "title" })//
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(true).create();
+
+      // AND THE MIRROR ORDER, SO THE REMAPPED COLUMN IS THE TRAILING ONE TOO
+      final VertexType loan = database.getSchema().createVertexType("Loan");
+      loan.createProperty("borrower", Type.STRING);
+      loan.createProperty("library", Type.LINK);
+      database.getSchema().buildTypeIndex("Loan", new String[] { "borrower", "library" })//
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(true).create();
+    });
+
+    final RID[] libraries = new RID[2];
+    // TITLES OF DELIBERATELY DIFFERENT LENGTHS: A MIS-MEASURED PRECEDING COLUMN WOULD MISALIGN THE STRING THAT FOLLOWS
+    final String[] titles = { "a", "a much longer title than the first one", "" };
+
+    database.transaction(() -> {
+      libraries[0] = database.newVertex("Library").set("name", "a").save().getIdentity();
+      libraries[1] = database.newVertex("Library").set("name", "b").save().getIdentity();
+
+      for (final RID library : libraries)
+        for (final String title : titles) {
+          database.newVertex("Book").set("library", library).set("title", title).save();
+          database.newVertex("Loan").set("borrower", title).set("library", library).save();
+        }
+    });
+
+    database.transaction(() -> {
+      final Index books = database.getSchema().getIndexByName("Book[library,title]");
+      final Index loans = database.getSchema().getIndexByName("Loan[borrower,library]");
+
+      for (final RID library : libraries)
+        for (final String title : titles) {
+          try (final IndexCursor cursor = books.get(new Object[] { library, title })) {
+            assertThat(cursor.hasNext()).as("Book(%s, '%s')", library, title).isTrue();
+            assertThat(cursor.next().asVertex().getString("title")).isEqualTo(title);
+          }
+          try (final IndexCursor cursor = loans.get(new Object[] { title, library })) {
+            assertThat(cursor.hasNext()).as("Loan('%s', %s)", title, library).isTrue();
+            assertThat(cursor.next().asVertex().<RID>get("library")).isEqualTo(library);
+          }
+        }
+
+      assertThat(books.countEntries()).isEqualTo((long) libraries.length * titles.length);
+      assertThat(loans.countEntries()).isEqualTo((long) libraries.length * titles.length);
+
+      // SAME LINK, DIFFERENT STRING MUST NOT COLLIDE, AND NEITHER MUST THE REVERSE
+      try (final IndexCursor cursor = books.get(new Object[] { libraries[0], "not indexed" })) {
+        assertThat(cursor.hasNext()).isFalse();
+      }
+    });
+
+    // AND THE UNIQUE CONSTRAINT STILL DISCRIMINATES ON THE LINK COLUMN ALONE
+    assertThatThrownBy(() -> database.transaction(//
+        () -> database.newVertex("Book").set("library", libraries[0]).set("title", titles[1]).save()))//
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
+
   @Test
   void nonUniqueHashIndexOnLinkPropertyGroupsRecords() {
     database.transaction(() -> {
