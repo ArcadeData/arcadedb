@@ -36,6 +36,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -44,6 +45,7 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
+import java.nio.BufferUnderflowException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -772,7 +774,8 @@ public class GraphEngine {
           .log(this, Level.WARNING, """
                   Cannot read the %s edge list of vertex %s while force-deleting it: its edges survive, run a \
                   database check to repair them""", e, direction, vertex.getIdentity());
-    } catch (final Exception e) {
+    } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
+                   | IndexOutOfBoundsException | IllegalArgumentException | ClassCastException | SchemaException e) {
       // LINKED LIST COULD BE BROKEN. Not an oversight and not the case above: this arm is what is left once the
       // TRANSIENT window has been split off into the retryable branch. What reaches here is a buffer that cannot be
       // DECODED - a corrupted chunk body or vertex prefix raising SerializationException, BufferUnderflowException,
@@ -785,6 +788,16 @@ public class GraphEngine {
       // is real and larger than the tolerated single dangling entry (everything behind the corrupt chunk is dropped,
       // and the vertex is still deleted), which is why it is logged at WARNING: CHECK DATABASE ... FIX rebuilds the
       // chain from the surviving edge records and is the way to delete such a vertex without losing its edges.
+      //
+      // The list is CLOSED, and deliberately not a blanket catch (Exception): "tolerate and delete anyway" is the
+      // behaviour this whole method exists to take away from conditions that do not deserve it, so it must not be
+      // handed to an exception nobody has reasoned about. The first five are the decode family LocalDatabase uses
+      // for the same purpose; ClassCastException and SchemaException are the two further shapes a CORRUPT edge list
+      // adds on top of it (a head RID naming a record that is not an edge segment, an edge bucket whose type is
+      // gone). Anything else - an NPE or an IllegalStateException from a future change, an I/O failure surfacing as
+      // DatabaseOperationException - is a bug or an environment fault, not a broken graph, and propagates so it is
+      // seen rather than silently paid for with the vertex's edges. If a genuine corruption shape ever escapes here,
+      // add it to this list with the reason; do not widen the catch.
       LogManager.instance()
           .log(this, Level.WARNING, """
                   Cannot decode the %s edge list of vertex %s (corrupted chunk): deleting it anyway, edges behind the \
