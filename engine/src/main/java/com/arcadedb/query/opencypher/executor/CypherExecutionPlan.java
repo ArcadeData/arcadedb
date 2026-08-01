@@ -115,6 +115,7 @@ import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.parser.CypherReferencedVariables;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -404,8 +405,7 @@ public class CypherExecutionPlan {
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     final AbstractExecutionStep rootStep;
     if (clausesInOrder != null && !clausesInOrder.isEmpty())
-      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep,
-          !seedRow.getPropertyNames().isEmpty());
+      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep, seedIsRead(seedRow));
     else
       rootStep = seedStep; // Fallback: just return the seed
 
@@ -413,6 +413,27 @@ public class CypherExecutionPlan {
       return new IteratorResultSet(new ArrayList<ResultInternal>().iterator());
 
     return rootStep.syncPull(context, 100);
+  }
+
+  /**
+   * Whether this statement could read anything the seed row carries, i.e. whether it is correlated to the enclosing
+   * query at all.
+   * <p>
+   * The question is asked because of the two count push-downs in {@link #buildExecutionStepsWithOrder}: they answer
+   * from the schema and the CSR arrays and never look at the incoming rows, so they are only valid for a body that
+   * does not read one. Asking whether the seed row <b>carries</b> a variable, rather than whether the body
+   * <b>reads</b> one, was correct but coarse - an uncorrelated body written inside a correlated query lost an O(1)
+   * count for a name it never mentions, once per outer row (issue #5686).
+   * <p>
+   * {@link CypherReferencedVariables} is deliberately unsure by default, so a shape it does not model answers "read"
+   * and the push-down is skipped exactly as before.
+   */
+  private boolean seedIsRead(final Result seedRow) {
+    final Set<String> seedNames = seedRow.getPropertyNames();
+    if (seedNames.isEmpty())
+      return false;
+
+    return statement.getReferencedVariables().referencesAny(seedNames);
   }
 
   private static String buildResultKey(final Result result) {
@@ -893,13 +914,13 @@ public class CypherExecutionPlan {
    * When initialStep is provided (e.g., for CALL subqueries), it serves as the starting point
    * of the step chain, providing input rows to the first clause.
    *
-   * @param seedBoundVariables whether the seed row binds any variable, i.e. whether this body is correlated to the
-   *                           enclosing query at all. A seed row that binds nothing cannot be referenced by the body,
-   *                           which is what lets the count push-downs below still apply.
+   * @param seedIsRead whether this body reads anything the seed row carries, i.e. whether it is correlated to the
+   *                   enclosing query at all. A body that reads none of the seeded names is answered the same way
+   *                   with the seed as without it, which is what lets the count push-downs below still apply.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder,
-      final AbstractExecutionStep initialStep, final boolean seedBoundVariables) {
+      final AbstractExecutionStep initialStep, final boolean seedIsRead) {
     AbstractExecutionStep currentStep = initialStep;
 
     // Get function factory from evaluator for steps that need it
@@ -916,10 +937,12 @@ public class CypherExecutionPlan {
     // answered with the count over every `n` in the graph. So neither is attempted then; the ordinary pipeline, which
     // consumes the seed, is used instead.
     //
-    // A seed row that binds NOTHING is a different case and keeps the push-downs: an uncorrelated body -
-    // `RETURN COUNT { MATCH (n:Person) }`, or a `CALL { }` that imports nothing - has no name it could have taken
-    // from the enclosing query, so ignoring the seed cannot change the answer, and a large type keeps its O(1) count.
-    if (initialStep == null || !seedBoundVariables) {
+    // A body that READS none of the seeded names is a different case and keeps the push-downs: an uncorrelated body -
+    // `MATCH (n:P) RETURN COLLECT { MATCH (m:Big) RETURN count(m) }`, or a `CALL { }` that imports nothing - has
+    // taken no name from the enclosing query, so ignoring the seed cannot change its answer and a large type keeps
+    // its O(1) count. What is read is decided by CypherReferencedVariables, which answers "read" for every shape it
+    // does not model, so being unsure costs the optimization rather than the correctness (issue #5686).
+    if (initialStep == null || !seedIsRead) {
       // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
       // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
       final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);

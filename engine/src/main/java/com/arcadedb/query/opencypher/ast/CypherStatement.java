@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.parser.CypherReferencedVariables;
+
 import java.util.List;
 
 /**
@@ -283,5 +285,17 @@ public interface CypherStatement {
    */
   default boolean isServerControlStatement() {
     return false;
+  }
+
+  /**
+   * The variable names this statement could read, for a caller that has to know whether it is correlated to
+   * something it is about to ignore.
+   * <p>
+   * Asked once per <b>statement</b>, not once per row: the AST is immutable and shared, while the plan that runs a
+   * subquery body is rebuilt for every outer row. {@link SimpleCypherStatement} memoizes it for that reason; the
+   * default here answers "unknown", which every caller must read as "every name is referenced" (issue #5686).
+   */
+  default CypherReferencedVariables getReferencedVariables() {
+    return CypherReferencedVariables.unknown();
   }
 }
