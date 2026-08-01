@@ -58,7 +58,14 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public void close() {
-    lastStep.close();
+    // Close all steps via the list instead of relying on lastStep's prev chain,
+    // because executeUntilReturn() can replace lastStep with a ReturnStep or
+    // BreakStep that is outside the chain (no prev link). Closing the last
+    // ScriptLineStep in the list walks the entire prev chain and closes all plans.
+    if (!steps.isEmpty()) {
+      steps.getLast().close();
+    }
+    steps.clear();
   }
 
   @Override
