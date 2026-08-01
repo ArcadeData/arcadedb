@@ -1,0 +1,198 @@
+/*
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.server.ha.raft;
+
+import com.arcadedb.database.Database;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression test for issue #5655, the Cypher half of #5492: {@code OpenCypherQueryEngine} held the inner
+ * {@code LocalDatabase} and handed it to everything it executed, so the commits that happen inside Cypher
+ * execution went to {@code LocalDatabase.commit()} on an HA leader - pages published locally, nothing
+ * proposed to Raft. Followers then trail by exactly those page versions and the next replicated entry
+ * touching one of them fails its version check with {@code WALVersionGapException}.
+ * <p>
+ * Two distinct paths reach that commit, and they fail independently, so each has its own test:
+ * <ul>
+ *   <li>the explicit {@code COMMIT} statement, which {@code executeTransaction()} runs straight against
+ *       the engine's field;</li>
+ *   <li>the auto-commit of a write step - {@code SetStep}, {@code DeleteStep}, {@code MergeStep},
+ *       {@code RemoveStep}, {@code ForeachStep} - which calls {@code begin()}/{@code commit()} directly on
+ *       {@code context.getDatabase()} when no transaction is already open.</li>
+ * </ul>
+ * {@code CreateStep} is deliberately not covered: it wraps its work in {@code database.transaction(...)},
+ * and {@code LocalDatabase.transaction()} drives {@code wrappedDatabaseInstance} internally, so a bare
+ * {@code CREATE} already replicated. That asymmetry is why a Cypher smoke test over CREATE alone stayed
+ * green while SET and the explicit COMMIT lost their writes.
+ * <p>
+ * Each test asserts the WAL gap counter <em>before</em> querying the follower: a resync reinstalls the
+ * follower's database, and a count issued after it throws {@code DatabaseIsClosed}, which reads like
+ * infrastructure noise rather than the divergence that caused it.
+ */
+@Tag("slow")
+class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
+
+  private static final String TYPE_EXPLICIT_TX = "CypherExplicitTxNode";
+  private static final String TYPE_AUTOCOMMIT  = "CypherAutocommitNode";
+
+  @Override
+  protected int getServerCount() {
+    return 2;
+  }
+
+  @AfterEach
+  void cleanupHooks() {
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = null;
+  }
+
+  /**
+   * {@code START TRANSACTION} / write / {@code COMMIT} issued through the Cypher engine. The COMMIT is the
+   * only one of the three that differs between the two instances: {@code begin()} and {@code rollback()}
+   * delegate to the inner database on the Raft wrapper too, {@code commit()} is where the proposal happens.
+   */
+  @Test
+  void explicitCypherCommitReachesFollowers() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE VERTEX TYPE " + TYPE_EXPLICIT_TX);
+    waitForAllServers();
+
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
+
+    leaderDb.command("cypher", "START TRANSACTION");
+    leaderDb.command("cypher", "CREATE (n:" + TYPE_EXPLICIT_TX + " {id: 1})");
+    leaderDb.command("cypher", "COMMIT");
+
+    assertThat(countOn(leaderIndex, TYPE_EXPLICIT_TX)).as("leader wrote the vertex").isEqualTo(1);
+
+    waitForAllServers();
+
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
+        .as("follower must see no WAL version gap: the Cypher COMMIT has to be proposed to Raft")
+        .isZero();
+
+    assertThat(awaitCountOn(followerIndex, TYPE_EXPLICIT_TX, 1))
+        .as("a write committed through the Cypher COMMIT statement must reach the follower")
+        .isEqualTo(1);
+
+    // A page bumped on the leader but not on the follower does not fail until something touches it again,
+    // so an ordinary replicated write into the same bucket is what surfaces a gap that survived the above.
+    leaderDb.command("sql", "INSERT INTO " + TYPE_EXPLICIT_TX + " SET id = 2");
+    waitForAllServers();
+
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
+        .as("no WAL version gap after a subsequent ordinary write into the same bucket")
+        .isZero();
+    assertThat(awaitCountOn(followerIndex, TYPE_EXPLICIT_TX, 2))
+        .as("follower converges with the leader after the subsequent ordinary write")
+        .isEqualTo(2);
+  }
+
+  /**
+   * Auto-commit {@code SET} with no transaction open. {@code SetStep} opens its own transaction and commits
+   * it on {@code context.getDatabase()}, which is whatever the engine handed the execution plan - so this
+   * fails even though the {@code CREATE} that seeded the vertex replicated correctly.
+   */
+  @Test
+  void autocommitCypherWriteStepReachesFollowers() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE VERTEX TYPE " + TYPE_AUTOCOMMIT);
+    leaderDb.command("cypher", "CREATE (n:" + TYPE_AUTOCOMMIT + " {id: 1, marked: 0})");
+
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, TYPE_AUTOCOMMIT, 1))
+        .as("baseline replicated before the SET: CREATE routes through database.transaction() and is unaffected")
+        .isEqualTo(1);
+
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
+
+    leaderDb.command("cypher", "MATCH (n:" + TYPE_AUTOCOMMIT + " {id: 1}) SET n.marked = 1");
+
+    assertThat(markedCountOn(leaderIndex)).as("leader applied the SET").isEqualTo(1);
+
+    waitForAllServers();
+
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
+        .as("follower must see no WAL version gap: the write step's auto-commit has to be proposed to Raft")
+        .isZero();
+
+    assertThat(awaitMarkedCountOn(followerIndex, 1))
+        .as("the value written by the auto-committing SET step must reach the follower")
+        .isEqualTo(1);
+  }
+
+  /**
+   * Counts through a freshly resolved database handle. A snapshot resync reinstalls the follower's database, so a
+   * handle cached before it throws {@code DatabaseIsClosed} - which reads like an infrastructure failure rather than
+   * the divergence that caused it.
+   */
+  private long countOn(final int serverIndex, final String typeName) {
+    // count(id) rather than count(*): the latter reads a cached per-bucket counter, which is the wrong tool
+    // when the question is whether the pages themselves arrived.
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName).next().getProperty("cnt"))
+        .longValue();
+  }
+
+  private long markedCountOn(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + TYPE_AUTOCOMMIT + " WHERE marked = 1")
+        .next().getProperty("cnt")).longValue();
+  }
+
+  private long awaitCountOn(final int serverIndex, final String typeName, final long expected)
+      throws InterruptedException {
+    return await(expected, () -> countOn(serverIndex, typeName));
+  }
+
+  private long awaitMarkedCountOn(final int serverIndex, final long expected) throws InterruptedException {
+    return await(expected, () -> markedCountOn(serverIndex));
+  }
+
+  private long await(final long expected, final LongSupplier supplier) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 30_000;
+    long count = -1;
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        count = supplier.getAsLong();
+        if (count == expected)
+          return count;
+      } catch (final RuntimeException e) {
+        // Mid-resync the database is closed and being reinstalled; keep polling until the deadline.
+        count = -1;
+      }
+      Thread.sleep(250);
+    }
+    return count;
+  }
+}

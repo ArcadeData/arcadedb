@@ -323,6 +323,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final Map<String, Object> parameters, final boolean explain, final boolean profile) {
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
     final CypherExecutionPlan plan;
+    final DatabaseInternal executionDatabase = executionDatabase(statement);
 
     if (!explain && !profile) {
       // Only use plan cache for normal execution (not explain/profile)
@@ -330,10 +331,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (physicalPlan != null) {
         // Reuse cached physical plan (avoids expensive statistics collection and optimization)
         plan = new CypherExecutionPlan(
-            database, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
+            executionDatabase, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
       } else {
         // Create new plan from scratch and cache it
-        final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters,
+        final CypherExecutionPlanner planner = new CypherExecutionPlanner(executionDatabase, statement, parameters,
             EXPRESSION_EVALUATOR);
         plan = planner.createExecutionPlan(configuration);
 
@@ -343,7 +344,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
     } else {
       // explain/profile mode: always create new plan without caching
-      final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters,
+      final CypherExecutionPlanner planner = new CypherExecutionPlanner(executionDatabase, statement, parameters,
           EXPRESSION_EVALUATOR);
       plan = planner.createExecutionPlan(configuration);
     }
@@ -353,6 +354,35 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (profile)
       return plan.profile();
     return plan.execute();
+  }
+
+  /**
+   * The database a Cypher plan executes against, and therefore the one {@code CommandContext.getDatabase()} returns.
+   * <p>
+   * The write steps auto-commit: {@code SetStep}, {@code DeleteStep}, {@code MergeStep}, {@code RemoveStep},
+   * {@code ForeachStep} and a writing {@code CALL} subquery each call {@code begin()}/{@code commit()} directly on
+   * {@code context.getDatabase()} when no transaction is already open. Handing them the raw instance sends those
+   * commits to {@code LocalDatabase.commit()}, which on an HA leader applies the pages locally and never proposes
+   * them to Raft: followers then trail by exactly those page versions and the next replicated entry touching one of
+   * them fails the version check (#5492, #5655). Off HA the wrapper is the instance itself, so this is a no-op there.
+   * <p>
+   * {@code CreateStep} would be safe either way - it wraps its work in {@code database.transaction(...)}, and
+   * {@code LocalDatabase.transaction()} drives {@code wrappedDatabaseInstance} internally rather than {@code this}.
+   * That is why a bare {@code CREATE} replicated correctly while an equally ordinary {@code SET} did not, and it is
+   * the kind of asymmetry that makes a smoke test look green.
+   * <p>
+   * A read-only statement keeps the raw instance. It cannot commit, so resolving the wrapper would change nothing
+   * about durability, while it would route the reads the steps issue ({@code query}, {@code lookupByRID},
+   * {@code iterateType}) through {@code RaftReplicatedDatabase} and subject follower-local reads to the wrapper's
+   * read-consistency barriers. The switch is on {@code isReadOnly()} rather than on the entry point because
+   * {@link #query} does not imply read-only here: {@code PROFILE} bypasses the idempotency gate and executes, so a
+   * {@code PROFILE MATCH ... SET ...} reaches this method through {@code query()} and does write.
+   *
+   * @param statement the statement about to be planned, whose {@code isReadOnly()} already accounts for writes
+   *                  nested in a {@code CALL} subquery
+   */
+  private DatabaseInternal executionDatabase(final CypherStatement statement) {
+    return statement.isReadOnly() ? database : database.getWrappedDatabaseInstance();
   }
 
   /**
@@ -668,6 +698,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final InternalResultSet resultSet = new InternalResultSet();
     final ResultInternal result = new ResultInternal(database);
 
+    // The transaction this statement drives has to be the replicated one - see executionDatabase(). COMMIT is the
+    // only kind where the two instances differ (begin/rollback delegate to the inner database on the Raft wrapper
+    // too), but all three resolve it so the statement never straddles both.
+    final DatabaseInternal txDatabase = database.getWrappedDatabaseInstance();
+
     switch (txn.getKind()) {
     case BEGIN:
       final String isolationLevel = txn.getIsolationLevel();
@@ -682,20 +717,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
           throw new CommandParsingException(
               "Invalid transaction isolation level '" + isolationLevel + "'. Valid values: " + validLevels);
         }
-        database.begin(level);
+        txDatabase.begin(level);
       } else
-        database.begin();
+        txDatabase.begin();
       result.setProperty("operation", "begin");
       break;
     case COMMIT:
-      if (!database.isTransactionActive())
+      if (!txDatabase.isTransactionActive())
         throw new CommandExecutionException("No active transaction to COMMIT (issue a START TRANSACTION first)");
-      database.commit();
+      txDatabase.commit();
       result.setProperty("operation", "commit");
       break;
     case ROLLBACK:
-      // database.rollback() is idempotent: with no active transaction it is a no-op, so ROLLBACK is lenient.
-      database.rollback();
+      // rollback() is idempotent: with no active transaction it is a no-op, so ROLLBACK is lenient.
+      txDatabase.rollback();
       result.setProperty("operation", "rollback");
       break;
     default:
