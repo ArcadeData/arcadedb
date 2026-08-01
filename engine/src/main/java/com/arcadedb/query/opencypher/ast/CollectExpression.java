@@ -71,6 +71,12 @@ public class CollectExpression implements Expression {
 
   /**
    * One entry per row: the projected value when the body returns a single item, the list of them otherwise.
+   * <p>
+   * A row with <i>no</i> visible column contributes {@code null} - the value of a projection that projected nothing -
+   * rather than an empty list, which would read as "collected a row holding no values" and is not the same statement.
+   * The grammar gives {@code COLLECT} one alternative, {@code COLLECT LCURLY queryWithLocalDefinitions RCURLY}, so the
+   * body always carries a RETURN and the case is not reachable from a parsed query; it is written out because the
+   * alternative was to leave the {@code else} branch quietly answering it.
    */
   private static List<Object> collectRows(final ResultSet resultSet) {
     final List<Object> collected = new ArrayList<>();
@@ -83,7 +89,9 @@ public class CollectExpression implements Expression {
         if (!n.startsWith(" "))
           visibleNames.add(n);
       }
-      if (visibleNames.size() == 1) {
+      if (visibleNames.isEmpty()) {
+        collected.add(null);
+      } else if (visibleNames.size() == 1) {
         collected.add(row.getProperty(visibleNames.get(0)));
       } else {
         final List<Object> rowValues = new ArrayList<>(visibleNames.size());

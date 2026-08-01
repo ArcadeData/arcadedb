@@ -119,6 +119,17 @@ public final class CorrelatedSubqueryRunner {
     if (outerRow == null)
       return new ResultInternal();
 
+    // The seed step copies the row again on its way into the chain, so a row with nothing to filter is handed over
+    // as it is rather than copied twice.
+    boolean hasInternalNames = false;
+    for (final String name : outerRow.getPropertyNames())
+      if (name.startsWith(" ")) {
+        hasInternalNames = true;
+        break;
+      }
+    if (!hasInternalNames)
+      return outerRow;
+
     final ResultInternal seed = new ResultInternal();
     for (final String name : outerRow.getPropertyNames())
       if (!name.startsWith(" "))
