@@ -166,6 +166,7 @@ public class TraverseExecutionPlanner {
         bucket.setValue(orid.getBucketId());
         final PInteger position = new PInteger(-1);
         position.setValue(orid.getPosition());
+        rid.setLegacy(true);
         rid.setBucket(bucket);
         rid.setPosition(position);
 
