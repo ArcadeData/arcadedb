@@ -20,6 +20,9 @@ package com.arcadedb.schema;
 
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Arrays;
+import java.util.Set;
+
 /**
  * Metadata class for geospatial indexes, storing the precision level for the
  * GeohashPrefixTree spatial strategy.
@@ -74,6 +77,9 @@ public class GeoIndexMetadata extends IndexMetadata {
    */
   public static final TOKENIZATION LEGACY_TOKENIZATION = TOKENIZATION.FULL;
 
+  /** The only keys a user may write in {@code METADATA}: anything else is a typo worth reporting. */
+  private static final Set<String> USER_METADATA_KEYS = Set.of("precision", "tokenization");
+
   private int          precision    = DEFAULT_PRECISION;
   private TOKENIZATION tokenization = DEFAULT_TOKENIZATION;
 
@@ -94,6 +100,31 @@ public class GeoIndexMetadata extends IndexMetadata {
       super.fromJSON(metadata);
     this.precision = metadata.getInt("precision", DEFAULT_PRECISION);
     this.tokenization = readTokenization(metadata);
+  }
+
+  @Override
+  public Set<String> getUserMetadataKeys() {
+    return USER_METADATA_KEYS;
+  }
+
+  @Override
+  protected void applyUserMetadata(final JSONObject json) {
+    // A GeoHash precision is a tree LEVEL, so 6.9 is not "6": metadataInt refuses a fractional value rather than
+    // truncating it, which would drop the very kind of typo this guard exists to report.
+    if (json.has("precision"))
+      setPrecision(metadataInt(json, "precision"));
+
+    if (json.has("tokenization")) {
+      final Object tokenization = json.get("tokenization");
+      if (!(tokenization instanceof String name))
+        throw new IllegalArgumentException("Geospatial index tokenization must be a string, got: " + tokenization);
+      try {
+        setTokenization(TOKENIZATION.valueOf(name.toUpperCase()));
+      } catch (final IllegalArgumentException e) {
+        throw new IllegalArgumentException("Invalid geospatial index tokenization '" + name + "'. Supported values: "
+            + Arrays.toString(TOKENIZATION.values()), e);
+      }
+    }
   }
 
   /**

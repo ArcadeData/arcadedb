@@ -132,7 +132,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
-   * Configures the builder from a JSON metadata object.
+   * Configures the builder from the {@code METADATA} clause of {@code CREATE INDEX}.
    * Supports the following properties:
    * <ul>
    *   <li>analyzer - default analyzer class</li>
@@ -140,13 +140,17 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    *   <li>query_analyzer - analyzer class for querying</li>
    *   <li>allowLeadingWildcard - whether to allow leading wildcards</li>
    *   <li>defaultOperator - "AND" or "OR"</li>
+   *   <li>similarity - "BM25" (default) or "CLASSIC"</li>
+   *   <li>bm25_k1 / bm25_b - BM25 tuning parameters</li>
    *   <li>[fieldName]_analyzer - per-field analyzer class</li>
+   *   <li>[fieldName]_boost - per-field BM25 boost</li>
    * </ul>
+   * Any other key is reported rather than dropped (issue #5639).
    *
    * @param json the JSON object containing metadata configuration
    */
   public void withMetadata(final JSONObject json) {
-    ftMetadata().fromJSON(json);
+    ftMetadata().fromUserMetadata(json, Schema.INDEX_TYPE.FULL_TEXT);
   }
 
   /**

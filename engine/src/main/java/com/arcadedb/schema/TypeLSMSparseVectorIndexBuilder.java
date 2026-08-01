@@ -55,6 +55,9 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
       final String[] propertyNames) {
     super(database, typeName, propertyNames);
     this.indexType = Schema.INDEX_TYPE.LSM_SPARSE_VECTOR;
+    // Install the sparse metadata here too: the superclass constructor leaves a plain IndexMetadata, and every setter
+    // on this builder writes into the sparse one.
+    this.metadata = new LSMSparseVectorIndexMetadata(typeName, propertyNames, -1);
   }
 
   /**
@@ -62,9 +65,7 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
    * and validation. A value of 0 (default) means dimensions are inferred from the data.
    */
   public TypeLSMSparseVectorIndexBuilder withDimensions(final int dimensions) {
-    if (dimensions < 0)
-      throw new IllegalArgumentException("dimensions must be >= 0");
-    ((LSMSparseVectorIndexMetadata) metadata).dimensions = dimensions;
+    sparseMetadata().setDimensions(dimensions);
     return this;
   }
 
@@ -72,11 +73,7 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
    * Sets the scoring modifier. Currently supported: NONE (default), IDF.
    */
   public TypeLSMSparseVectorIndexBuilder withModifier(final String modifier) {
-    final String normalized = modifier == null ? LSMSparseVectorIndexMetadata.MODIFIER_NONE : modifier.toUpperCase();
-    if (!LSMSparseVectorIndexMetadata.MODIFIER_NONE.equals(normalized)
-        && !LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(normalized))
-      throw new IndexException("Invalid sparse vector index modifier: " + modifier + ". Supported values: NONE, IDF");
-    ((LSMSparseVectorIndexMetadata) metadata).modifier = normalized;
+    sparseMetadata().setModifier(modifier);
     return this;
   }
 
@@ -85,7 +82,7 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
    * (4 bytes, exact scoring). Mirrors the dense vector index's {@code quantization} knob.
    */
   public TypeLSMSparseVectorIndexBuilder withWeightQuantization(final WeightQuantization weightQuantization) {
-    ((LSMSparseVectorIndexMetadata) metadata).weightQuantization =
+    sparseMetadata().weightQuantization =
         weightQuantization == null ? LSMSparseVectorIndexMetadata.DEFAULT_WEIGHT_QUANTIZATION : weightQuantization;
     return this;
   }
@@ -99,16 +96,38 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
 
   @Override
   public TypeLSMSparseVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
-    this.metadata = (LSMSparseVectorIndexMetadata) metadata;
+    // Guarded rather than cast, for the same reason as sparseMetadata(): an actionable error beats a
+    // ClassCastException attributed to an unrelated line.
+    if (metadata != null && !(metadata instanceof LSMSparseVectorIndexMetadata))
+      throw new IllegalArgumentException(
+          "An LSM_SPARSE_VECTOR index requires LSMSparseVectorIndexMetadata but got " + metadata.getClass().getName());
+    this.metadata = metadata;
     return this;
   }
 
+  /**
+   * Configures the builder from the {@code METADATA} clause of {@code CREATE INDEX}. Unknown keys are rejected rather
+   * than dropped, so a typo such as {@code {"modifer": "IDF"}} is reported instead of yielding an index with the
+   * default scoring (issue #5639).
+   *
+   * @param json the JSON object containing the metadata configuration
+   *
+   * @return this builder for chaining
+   */
   public TypeLSMSparseVectorIndexBuilder withMetadata(final JSONObject json) {
-    final LSMSparseVectorIndexMetadata meta = (LSMSparseVectorIndexMetadata) metadata;
-    meta.dimensions = json.getInt("dimensions", meta.dimensions);
-    meta.modifier = json.getString("modifier", meta.modifier).toUpperCase();
-    if (json.has("weightQuantization"))
-      meta.weightQuantization = LSMSparseVectorIndexMetadata.parseWeightQuantization(json.getString("weightQuantization"));
+    sparseMetadata().fromUserMetadata(json, Schema.INDEX_TYPE.LSM_SPARSE_VECTOR);
     return this;
+  }
+
+  /**
+   * Returns the builder's metadata as {@link LSMSparseVectorIndexMetadata}. The constructors always create one, but
+   * guard the cast so that, if the metadata were ever replaced with a non-sparse instance through
+   * {@link #withMetadata(IndexMetadata)}, callers get an actionable error instead of a {@link ClassCastException}.
+   */
+  private LSMSparseVectorIndexMetadata sparseMetadata() {
+    if (metadata instanceof LSMSparseVectorIndexMetadata m)
+      return m;
+    throw new IndexException("Sparse vector index metadata expected but was "
+        + (metadata == null ? "null" : metadata.getClass().getSimpleName()));
   }
 }
