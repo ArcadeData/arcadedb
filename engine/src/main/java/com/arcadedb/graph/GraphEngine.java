@@ -1238,6 +1238,12 @@ public class GraphEngine {
     return moveTo(vertex, vertex.getTypeName(), bucketName);
   }
 
+  // newLightEdge() is deprecated in favour of declaring LIGHTWEIGHT on the edge type, but this method must
+  // reproduce each edge with the shape it ALREADY has, which is not necessarily the shape its type declares:
+  // a database written before the flag existed can hold lightweight edges on a type that declares nothing.
+  // Routing those through newEdge() would silently materialise a record and change the storage of edges the
+  // caller only asked to move. Do not "fix" this warning by switching to newEdge().
+  @SuppressWarnings("deprecation")
   protected RID moveTo(final Vertex vertex, final String typeName, final String bucketName) {
     final Database db = vertex.getDatabase();
     boolean moveTx = !db.isTransactionActive();
