@@ -139,8 +139,45 @@ hardcoded `127.0.0.1:248X` assertions reach that other server instead of the tes
 the local environment, not of the test: the IT follows the same hardcoded-port pattern as the merged
 `Issue5545SqlArithmeticErrorHttpStatusIT` and ~117 other server ITs, all of which rely on CI having free ports.
 
-## Follow-up worth filing separately
+## Review cycles
 
+- **Cycle 1** (`a607aca0d`) - approved with observations. One was a real defect in code this PR had not
+  touched: the `Integer` overloads of `PLUS`/`MINUS` guarded on operand signs rather than on whether the answer
+  fits, so `Integer.MAX_VALUE - Integer.MIN_VALUE` returned `-1` and `Integer.MIN_VALUE + Integer.MIN_VALUE`
+  returned `0`. Verified, then fixed in `252bd7709` (defect 3 above) because the issue's premise that the
+  `Integer` path "already does the right thing" was provably false and this PR's headline claim depended on it.
+  Not applied: the lossy `double` fallback in `SLASH.apply(Long, Long)` (out of scope, see above); the
+  suggestion that the tracking doc may not belong in the tree (checked - `docs/<issue>-*.md` is the established
+  convention, 8+ prior examples including the merged #5545).
+- **Cycle 2** (`252bd7709`) - approved, no blocking items. Raised the `Type.increment` parallel path, recorded
+  as a follow-up below rather than fixed here.
+
+## Follow-ups worth filing separately
+
+### `Type.increment` has both of these defects, and it backs `sum()`
+
+Raised in review cycle 2 and confirmed empirically against the compiled class:
+
+```
+Type.increment(Long.MAX_VALUE, 1L)                    = -9223372036854775808
+Type.increment(Integer.MAX_VALUE, Integer.MIN_VALUE)  = -1
+Type.increment(Integer.MIN_VALUE, Integer.MIN_VALUE)  = 0
+```
+
+`engine/src/main/java/com/arcadedb/schema/Type.java:772` is a parallel arithmetic implementation: its
+`Long`+`Long` case is a bare `a.longValue() + b.longValue()`, and its `Integer`+`Integer` guard is the same
+one-directional sign check removed from `MathExpression` here. `SQLFunctionSum` and `SQLFunctionAverage` both
+route through it, so after this PR `select v * 2` fails cleanly on overflow while `select sum(v)` over the same
+values still wraps silently.
+
+Deliberately **not** fixed in this PR. `Type.increment` is a general-purpose utility with its own call graph,
+and making it throw changes aggregation semantics for every query language, which needs its own regression
+suite and its own release note. The existing `TypeTest.incrementIntegerOverflow` only asserts that
+`Integer.MAX_VALUE + 1` becomes a `Long`, so it does not pin the wrap and would not obstruct the fix.
+
+### HA command forwarding degrades a leader's 400 to a 500
+
+Lower confidence than the one above - this one still needs deliberate reproduction before being filed.
 While the local IT run was contending for those ports, a request landed on an unrelated multi-server cluster and
 exposed what looks like a distinct pre-existing defect on the HA command-forwarding path: when a replica forwards
 a command and the leader answers 400 with an `ArithmeticErrorException`, the replica re-wraps it as a
