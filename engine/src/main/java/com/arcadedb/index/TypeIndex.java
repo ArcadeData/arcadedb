@@ -415,10 +415,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public int getRebuildPageSize() {
+  public int getPageSizeForNewFile() {
     checkIsValid();
     // Same definition across every bucket sub-index, so the first one answers for all of them.
-    return getFirstUnderlyingIndex().getRebuildPageSize();
+    return getFirstUnderlyingIndex().getPageSizeForNewFile();
   }
 
   @Override

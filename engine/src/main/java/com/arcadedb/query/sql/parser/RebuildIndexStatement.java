@@ -313,9 +313,9 @@ public class RebuildIndexStatement extends DDLStatement {
         final boolean unique = idx.isUnique();
         final List<String> propertyNames = idx.getPropertyNames();
         // NOT getPageSize(): the index is dropped below before being recreated, so a page size the creation path would
-        // refuse (a HASH index predating #5713) would leave the index deleted and unrebuilt. getRebuildPageSize()
+        // refuse (a HASH index predating #5713) would leave the index deleted and unrebuilt. getPageSizeForNewFile()
         // answers the current page size unless it is not legal to create with, in which case it repairs it.
-        final int pageSize = ((IndexInternal) idx).getRebuildPageSize();
+        final int pageSize = ((IndexInternal) idx).getPageSizeForNewFile();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
         // Get index metadata (includes vector-specific settings like dimensions, similarity, etc.)
         IndexMetadata indexMetadata = ((IndexInternal) idx).getMetadata();

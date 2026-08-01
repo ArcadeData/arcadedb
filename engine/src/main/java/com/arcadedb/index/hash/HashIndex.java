@@ -554,12 +554,14 @@ public class HashIndex implements IndexInternal {
   }
 
   /**
-   * An index created before the page-size guard of #5713 can carry a page size its bucket pages cannot address. Since
-   * a rebuild drops the index before recreating it, carrying that value over would delete the index and then be
-   * refused - so the rebuild falls back to the default, which is exactly the repair the corruption message promises.
+   * An index created before the page-size guard of #5713 can carry a page size its bucket pages cannot address, and any
+   * new file built from that configuration would be refused. A rebuild drops the index before recreating it, so
+   * carrying the value over would delete the index and then fail to build its replacement. Falling back to the default
+   * makes the rebuild the repair the corruption message promises, and lets a bucket or a sub type be added to a type
+   * that carries such an index.
    */
   @Override
-  public int getRebuildPageSize() {
+  public int getPageSizeForNewFile() {
     final int pageSize = getPageSize();
     return HashIndexBucket.isSupportedPageSize(pageSize) ? pageSize : HashIndexBucket.DEF_PAGE_SIZE;
   }
