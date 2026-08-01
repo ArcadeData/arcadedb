@@ -301,6 +301,7 @@ public final class GAVVertex implements Vertex {
   }
 
   @Override
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
     return resolve().newLightEdge(edgeType, toVertex);
   }

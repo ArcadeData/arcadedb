@@ -161,6 +161,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
     return database.getGraphEngine().newLightEdge(this, edgeType, toVertex);
   }

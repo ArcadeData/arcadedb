@@ -380,6 +380,7 @@ public class RemoteVertex {
   /**
    * TODO
    */
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
     throw new UnsupportedOperationException("Creating light edges is not supported from remote database");
   }

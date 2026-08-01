@@ -150,6 +150,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
     return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex);
   }
