@@ -1393,7 +1393,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (attempts < 1)
       attempts = 1;
 
-    final int retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+    final int retryDelay = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY);
 
     boolean duplicatedKeyRetried = false;
 
