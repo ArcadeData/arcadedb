@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
@@ -205,6 +206,45 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
   @Test
   void aSmallPageSizeIsHonouredVerbatim() {
     createIndexAndFill(4_096);
+  }
+
+  /**
+   * The floor is not merely "does not throw": {@link HashIndexBucket#MIN_PAGE_SIZE} claims to leave a bucket page room
+   * to host entries, so the boundary value has to survive splits and an overflow chain. At 256 bytes a bucket page has
+   * 238 bytes for data plus slots, roughly 15 entries, so a few hundred keys exercise both.
+   */
+  @Test
+  void theSmallestLegalPageSizeIsGenuinelyUsable() {
+    final int entries = 300;
+    database.transaction(() -> {
+      createType();
+      database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "k" })
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(true)
+          .withPageSize(HashIndexBucket.MIN_PAGE_SIZE)
+          .create();
+    });
+
+    database.transaction(() -> {
+      for (int i = 0; i < entries; i++) {
+        final MutableDocument doc = database.newDocument(TYPE_NAME);
+        doc.set("k", "key-" + i);
+        doc.save();
+      }
+    });
+
+    final IndexInternal index = hashIndexOf(database);
+    assertThat(index.getPageSize()).isEqualTo(HashIndexBucket.MIN_PAGE_SIZE);
+    assertThat(index.countEntries()).isEqualTo(entries);
+    // 300 entries at ~15 per page cannot fit without splitting well past the initial single bucket
+    assertThat(((PaginatedComponent) index.getComponent()).getTotalPages()).isGreaterThan(20);
+    assertThat(index.getStats().get("globalDepth")).as("the bucket must have split and doubled the directory")
+        .isGreaterThan(0L);
+    assertThat(index.checkIntegrity()).isEmpty();
+
+    database.transaction(() -> {
+      for (int i = 0; i < entries; i++)
+        assertThat(index.get(new Object[] { "key-" + i }).hasNext()).as("key-%d not found", i).isTrue();
+    });
   }
 
   /**
