@@ -814,8 +814,10 @@ public class GraphEngine {
 
     final VertexInternal committed;
     try {
-      // Read AFTER the anchor, so the heads compared here are the ones on the pinned page: a read-only lookup is
-      // never tx-cached, so this goes through that page rather than through a copy taken before it.
+      // Read AFTER the anchor, so the heads compared here are the ones on the pinned page. A read never POPULATES
+      // the tx record cache - only createRecord/updateRecord do - so a vertex this transaction has merely read is
+      // resolved through that page rather than through a copy taken before it. It can still be answered FROM the
+      // cache if this transaction wrote the record earlier, which is exactly the case the guard above returns on.
       committed = (VertexInternal) database.lookupByRID(vertexRID, true);
     } catch (final RecordNotFoundException e) {
       // The vertex is already gone: a concurrent transaction deleted it while this one was disconnecting its
@@ -878,8 +880,10 @@ public class GraphEngine {
         // per edge, and pinning a whole neighbour list there would retain a page copy per visited chunk for every
         // edge removed. Pinning earns its cost exactly where the transaction writes those pages anyway - here.
         //
-        // AFTER the assignment above, not before it: a pin that fails under force must still leave a usable list
-        // behind, so the tolerant walk collects what it can and the chunk drain still runs.
+        // AFTER the assignment above, not before it. A pin that fails jumps straight to the catch below, so the
+        // walk is skipped either way and nothing is collected from this direction; what the ordering buys is that
+        // `edges` is non-null by then, so under force this method still reports the list as present and the chunk
+        // drain still runs. Pinning before the assignment would leave it null and orphan the chunks as well.
         edges.anchorForFullRemoval();
 
         final Iterator<Edge> iterator = edges.edgeIteratorForRemoval();
