@@ -83,11 +83,15 @@ public final class CypherReferencedVariables {
       RegexExpression.class, StringMatchExpression.class);
 
   /**
-   * The types that do carry a name, each read by its own arm of {@code Collector.visit}. Listed again here only so
-   * {@link #classifies} can answer for them; the arms are what actually reads the name, so a type added to one has
-   * to be added to the other.
+   * The types {@code Collector.visit} handles in an arm of its own rather than through the nameless sets. The first
+   * three carry a name it reads. The last three carry none: their arm checks that the body has an AST at all, since
+   * one that does not runs from its text and can name anything, and the names <i>inside</i> a body that does are
+   * collected by the walk descending into it.
+   * <p>
+   * Listed again here only so {@link #classifies} can answer for them, so a type added to one has to be added to
+   * the other.
    */
-  private static final Set<Class<?>> NAMED_EXPRESSIONS = Set.of(
+  private static final Set<Class<?>> SEPARATELY_HANDLED_EXPRESSIONS = Set.of(
       VariableExpression.class, PropertyAccessExpression.class, MapProjectionExpression.class,
       ExistsExpression.class, CountExpression.class, CollectExpression.class);
 
@@ -137,7 +141,7 @@ public final class CypherReferencedVariables {
    * and everywhere. This is what lets that be an assertion instead of a review habit.
    */
   public static boolean classifies(final Class<?> type) {
-    return NAMED_EXPRESSIONS.contains(type) || NAMELESS_EXPRESSIONS.contains(type)
+    return SEPARATELY_HANDLED_EXPRESSIONS.contains(type) || NAMELESS_EXPRESSIONS.contains(type)
         || NAMELESS_PREDICATES.contains(type);
   }
 

@@ -427,6 +427,12 @@ public class CypherExecutionPlan {
    * <p>
    * {@link CypherReferencedVariables} is deliberately unsure by default, so a shape it does not model answers "read"
    * and the push-down is skipped exactly as before.
+   * <p>
+   * The {@code statement} read here is <b>this plan's own</b>, and this plan is only ever built around the body -
+   * {@link #executeWithSeedRow} is what a {@code CALL { }} clause and the three subquery expressions call, each on a
+   * plan constructed over the body they hold. Asking the enclosing query instead would compare the seed against the
+   * names of whoever produced it, which every seeded row would match: the question has to be put to the statement
+   * that is about to ignore the seed.
    */
   private boolean seedIsRead(final Result seedRow) {
     final Set<String> seedNames = seedRow.getPropertyNames();
