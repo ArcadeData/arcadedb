@@ -22,9 +22,9 @@ import com.arcadedb.exception.CommandSemanticException;
 
 /**
  * The one wording for "wrong number of arguments", shared by every path that can detect it: the functions' own
- * runtime guard ({@link Function#checkArity}) and the Cypher parser's declaration gate
- * ({@code FunctionValidator}). A client is told the same thing whichever caught the mistake - the point of issue
- * #5484, extended to the runtime side in #5602.
+ * runtime guard ({@link Function#checkArity}), the procedures' ({@code Procedure.checkArity}) and the Cypher
+ * parser's declaration gate ({@code FunctionValidator}). A client is told the same thing whichever caught the
+ * mistake - the point of issue #5484, extended to the runtime side in #5602 and to procedures in #5627.
  * <p>
  * It lives beside {@link Function} rather than in the Cypher helper it started in, because nothing about counting
  * arguments is language-specific and {@link Function} is the query-language-neutral abstraction: having the base
@@ -68,6 +68,8 @@ public final class FunctionArity {
   }
 
   /**
+   * The function-flavoured shorthand for {@link #message(String, String, String, int)}.
+   *
    * @param functionName function name without parentheses, e.g. {@code "abs"}
    * @param expectedArgs the accepted count, phrased for the message, e.g. {@code "1 argument"} - usually from
    *                     {@link #describe}, but spelled out by the few functions whose accepted counts are not a
@@ -75,15 +77,64 @@ public final class FunctionArity {
    * @param actualArgs   how many arguments the call actually carried
    */
   public static String message(final String functionName, final String expectedArgs, final int actualArgs) {
-    return "Function '" + functionName + "' expects " + expectedArgs + " but got " + actualArgs;
+    return message("Function", functionName, expectedArgs, actualArgs);
   }
 
   /**
-   * The exception form of {@link #message}: a wrong argument count is the caller's mistake, so it is a client error
-   * (HTTP 400) rather than an internal failure.
+   * @param kind         what the name denotes, capitalised because it opens the sentence: {@code "Function"} or
+   *                     {@code "Procedure"}. Procedures are a separate abstraction - their own interface, their own
+   *                     registry, their own {@code CALL} handling - so telling a caller that {@code algo.dijkstra}
+   *                     is a function would be wrong. Everything after the noun is shared, which is what makes the
+   *                     same mistake read the same way whichever kind the name resolved to (#5627).
+   * @param callableName the name without parentheses, e.g. {@code "abs"} or {@code "algo.dijkstra"}
+   * @param expectedArgs the accepted count, phrased for the message, e.g. {@code "1 argument"}
+   * @param actualArgs   how many arguments the call actually carried
+   */
+  public static String message(final String kind, final String callableName, final String expectedArgs,
+      final int actualArgs) {
+    return kind + " '" + callableName + "' expects " + expectedArgs + " but got " + actualArgs;
+  }
+
+  /**
+   * Rejects a call whose argument count falls outside {@code minArgs}..{@code maxArgs}.
+   * <p>
+   * The body behind both runtime guards - {@link Function#checkArity} and {@code Procedure.checkArity}. They were
+   * byte-identical but for the noun, which is the shape the two <em>messages</em> had before #5627 and is how they
+   * came to disagree; keeping the check itself in one place is what stops that recurring.
+   *
+   * @param kind         see {@link #message(String, String, String, int)}
+   * @param callableName the name without parentheses, used in the message
+   * @param minArgs      fewest arguments accepted
+   * @param maxArgs      most arguments accepted; {@code -1} and {@link Integer#MAX_VALUE} both mean "no limit"
+   * @param args         the arguments the call carried, {@code null} counting as none - a couple of executors used
+   *                     to defend against a null array by hand, and folding that in here keeps the count check in
+   *                     one place. Note that this only rejects the null array for a callable that requires at least
+   *                     one argument: one declaring {@code minArgs == 0} is handed it unchanged and must still
+   *                     tolerate it.
+   */
+  public static void check(final String kind, final String callableName, final int minArgs, final int maxArgs,
+      final Object[] args) {
+    final int actualArgs = args == null ? 0 : args.length;
+    // effectiveMax(), not maxArgs, so an implementation that spells "unbounded" the registry's way (-1) is not read
+    // as "at most -1 arguments" - which would reject every call while the message still said "at least N".
+    if (actualArgs < minArgs || actualArgs > effectiveMax(maxArgs))
+      throw mismatch(kind, callableName, describe(minArgs, maxArgs), actualArgs);
+  }
+
+  /**
+   * The exception form of {@link #message(String, String, int)}: a wrong argument count is the caller's mistake, so
+   * it is a client error (HTTP 400) rather than an internal failure.
    */
   public static CommandSemanticException mismatch(final String functionName, final String expectedArgs,
       final int actualArgs) {
     return new CommandSemanticException(message(functionName, expectedArgs, actualArgs));
+  }
+
+  /**
+   * The exception form of {@link #message(String, String, String, int)}.
+   */
+  public static CommandSemanticException mismatch(final String kind, final String callableName,
+      final String expectedArgs, final int actualArgs) {
+    return new CommandSemanticException(message(kind, callableName, expectedArgs, actualArgs));
   }
 }

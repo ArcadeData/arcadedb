@@ -91,11 +91,7 @@ public interface Function {
    *             declaring {@code getMinArgs() == 0} is handed it unchanged and must still tolerate it.
    */
   default void checkArity(final Object[] args) {
-    final int actualArgs = args == null ? 0 : args.length;
-    // effectiveMax(), not getMaxArgs(), so an implementation that spells "unbounded" the registry's way (-1) is not
-    // read as "at most -1 arguments" - which would reject every call while the message still said "at least N".
-    if (actualArgs < getMinArgs() || actualArgs > FunctionArity.effectiveMax(getMaxArgs()))
-      throw FunctionArity.mismatch(getName(), FunctionArity.describe(getMinArgs(), getMaxArgs()), actualArgs);
+    FunctionArity.check("Function", getName(), getMinArgs(), getMaxArgs(), args);
   }
 
   /**
@@ -154,9 +150,10 @@ public interface Function {
    * read one way through an expression and another through {@code CALL} - and, because {@code CallStep} wraps what
    * it catches, surfaced over HTTP as 500 rather than the 400 the expression path gave (issue #5602).
    * <p>
-   * Note that {@code Procedure} declares a separate {@code validateArgs} of its own. Procedures are not functions -
-   * they have their own registry, their own {@code CALL} handling and around eighty implementations - so unifying
-   * the two is a change to the procedure abstraction rather than to this one, and is deliberately not done here.
+   * Note that {@code Procedure} declares a separate {@code validateArgs} of its own, over its own
+   * {@code checkArity}: procedures are not functions - they have their own registry and their own {@code CALL}
+   * handling - so the two guards stay separate. What they share is {@link FunctionArity}, so the same mistake reads
+   * the same way and carries the same status whichever kind the name resolved to (#5627).
    *
    * @param args the arguments to validate
    * @throws CommandSemanticException if the argument count is outside the declared bounds
