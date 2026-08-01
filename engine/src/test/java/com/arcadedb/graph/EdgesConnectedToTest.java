@@ -52,7 +52,11 @@ class EdgesConnectedToTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory(DB_PATH).create();
+    // a run killed mid-test leaves the directory behind, and create() would then throw on every later run
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.transaction(() -> {
       database.getSchema().createVertexType("Node");
       database.getSchema().createEdgeType("Knows");

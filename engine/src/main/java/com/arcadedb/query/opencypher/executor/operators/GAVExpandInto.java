@@ -158,6 +158,11 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
        * stored in the edge segment. The endpoint check below still runs and still reports ghosts, but
        * it now runs on the handful of candidate edges instead of on the source's whole edge list -
        * which is what keeps this fallback usable when the source is a super-node.
+       * <p>
+       * That narrows what the probe incidentally reports: a ghost edge reaching the target is still
+       * loaded and reported, but one pointing elsewhere in the source's list is no longer visited, so
+       * it goes unnoticed here. This is a connectivity probe, not a ghost scanner - CHECK DATABASE is
+       * what sweeps a whole edge list.
        */
       private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection) {
         if (source instanceof VertexInternal internalSource)

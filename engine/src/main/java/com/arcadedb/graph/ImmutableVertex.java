@@ -256,12 +256,6 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   private VertexInternal getMostUpdatedVertex(final VertexInternal vertex) {
-    if (!database.isTransactionActive())
-      return vertex;
-
-    VertexInternal mostUpdated = (VertexInternal) database.getTransaction().getRecordFromCache(vertex.getIdentity());
-    if (mostUpdated == null)
-      mostUpdated = vertex;
-    return mostUpdated;
+    return database.getGraphEngine().getMostUpdatedVertex(vertex);
   }
 }

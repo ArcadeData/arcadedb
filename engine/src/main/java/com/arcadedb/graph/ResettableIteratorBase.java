@@ -49,7 +49,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    * neighbour is already in hand when an entry is examined. Rejecting on it costs two primitive
    * comparisons and, crucially, happens <b>before</b> the edge record is materialised. That is what
    * makes an "is A connected to B" probe over a super-node cost a scan of the edge list rather than
-   * one record load - plus one property deserialization - per edge in it.
+   * one record load - plus one property deserialization - per edge in it. The scan itself is
+   * unchanged: the segment still yields an RID per entry whether or not the filter is set.
    *
    * @param neighbor the only neighbour vertex to accept, or {@code null} to iterate everything
    */

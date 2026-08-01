@@ -771,8 +771,9 @@ public class GraphEngine {
    * use it when the far end of the pattern is already pinned and the edges still have to be inspected - typically to
    * apply a filter on the edge's own properties. Compared to walking {@link #getEdges(VertexInternal, Vertex.DIRECTION,
    * String...)} and comparing endpoints afterwards, the rejection happens on the pointers held in the edge segment, so
-   * the cost per non-matching edge drops from a record load plus a property deserialization to two integer comparisons.
-   * On a super-node that is the difference between the probe being unusable and being free.
+   * a non-matching edge costs a pointer comparison instead of a record load and a property deserialization. The walk
+   * itself is not free - the segment still yields an RID per entry, as it always did - but on a super-node dropping
+   * the per-edge record load is the difference between the probe being unusable and being cheap.
    *
    * @param target the vertex the returned edges must reach; must not be null
    */
@@ -825,12 +826,16 @@ public class GraphEngine {
   /**
    * Returns the instance of the vertex the running transaction has already loaded, or the given one.
    * <p>
+   * Every read of an edge-list head has to go through this: the head is a pointer inside the vertex record, so a
+   * handle obtained before an edge was appended still points at the previous head and would hide the newest edges.
+   * The {@link Vertex} accessors call it before reaching the engine; a caller reaching the engine directly gets it
+   * from the entry point it uses.
+   * <p>
    * The cache is keyed by RID over every record shape, so the entry can legitimately be absent (the vertex was never
    * touched in this transaction) or not a vertex at all (a record loaded through a path that did not resolve its
-   * type). Neither is an error: the caller's own handle is then the best available, and it is what the pre-existing
-   * behaviour used anyway.
+   * type). Neither is an error: the caller's own handle is then the best available.
    */
-  private VertexInternal getMostUpdatedVertex(final VertexInternal vertex) {
+  VertexInternal getMostUpdatedVertex(final VertexInternal vertex) {
     if (!database.isTransactionActive())
       return vertex;
     return database.getTransaction().getRecordFromCache(vertex.getIdentity()) instanceof VertexInternal cached ?
@@ -980,10 +985,13 @@ public class GraphEngine {
     return Collections.emptyList();
   }
 
-  public RID getFirstEdgeConnectedToVertex(final VertexInternal vertex, final Identifiable toVertex,
+  public RID getFirstEdgeConnectedToVertex(VertexInternal vertex, final Identifiable toVertex,
                                            final int[] edgeBucketFilter) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
+
+    // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
+    vertex = getMostUpdatedVertex(vertex);
 
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
     if (outEdges != null) {
@@ -999,13 +1007,16 @@ public class GraphEngine {
     return null;
   }
 
-  public RID getFirstEdgeConnectedToVertex(final VertexInternal vertex, final Identifiable toVertex,
+  public RID getFirstEdgeConnectedToVertex(VertexInternal vertex, final Identifiable toVertex,
                                            final Vertex.DIRECTION direction, final int[] edgeBucketFilter) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
     if (direction == null)
       throw new IllegalArgumentException("Direction is null");
+
+    // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
+    vertex = getMostUpdatedVertex(vertex);
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
@@ -1030,14 +1041,15 @@ public class GraphEngine {
    * edge record is loaded. {@link #getEdgesConnectedTo(VertexInternal, Vertex.DIRECTION, Identifiable, String...)}
    * is the iterating counterpart, for when the matching edges themselves have to be inspected.
    * <p>
-   * Unlike that method this one reads the edge-list head from the vertex handle it is given, so the caller must pass
-   * the instance the running transaction holds. Every {@link Vertex} accessor does (ImmutableVertex resolves it, a
-   * MutableVertex is one); a caller reaching the engine directly with an older snapshot would miss the edges appended
-   * since that snapshot was taken.
+   * Like that method, and like every other probe here that walks an edge list, it resolves the vertex to the instance
+   * the running transaction holds before reading the head pointer - see {@link #getMostUpdatedVertex}.
    */
-  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex) {
+  public boolean isVertexConnectedTo(VertexInternal vertex, final Identifiable toVertex) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
+
+    // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
+    vertex = getMostUpdatedVertex(vertex);
 
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
     if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), null))
@@ -1047,13 +1059,16 @@ public class GraphEngine {
     return inEdges != null && inEdges.containsVertex(toVertex.getIdentity(), null);
   }
 
-  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex,
+  public boolean isVertexConnectedTo(VertexInternal vertex, final Identifiable toVertex,
                                      final Vertex.DIRECTION direction) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
     if (direction == null)
       throw new IllegalArgumentException("Direction is null");
+
+    // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
+    vertex = getMostUpdatedVertex(vertex);
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
@@ -1069,7 +1084,7 @@ public class GraphEngine {
     return false;
   }
 
-  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex,
+  public boolean isVertexConnectedTo(VertexInternal vertex, final Identifiable toVertex,
                                      final Vertex.DIRECTION direction,
                                      final String edgeType) {
     if (toVertex == null)
@@ -1080,6 +1095,9 @@ public class GraphEngine {
 
     if (edgeType == null)
       throw new IllegalArgumentException("Edge type is null");
+
+    // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
+    vertex = getMostUpdatedVertex(vertex);
 
     final int[] bucketFilter = vertex.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream()
         .mapToInt(x -> x.getFileId()).toArray();
