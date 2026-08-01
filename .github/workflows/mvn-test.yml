@@ -752,6 +752,11 @@ jobs:
     # most likely build-and-package failed - so there is nothing to merge, and reporting that as a
     # missing artifact would only add a second red check to an already-red build. Skipping keeps
     # the collector's failure meaning what it says: a suite that should have uploaded, and did not.
+    #
+    # This reads any one skipped suite as "none of them ran", which holds because all four hang off
+    # build-and-package and so skip together. Give one of them a path filter or a condition of its
+    # own and that stops being true: the other three would still have coverage worth publishing,
+    # and this condition would drop it. Revisit here if a suite ever gains its own gate.
     if: >-
       ${{ !cancelled()
       && needs.unit-tests.result != 'skipped'

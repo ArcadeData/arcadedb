@@ -307,8 +307,8 @@ def workflow_files(arguments):
 def main(arguments):
     files = workflow_files(arguments)
     results = [check_workflow(path) for path in files]
-    violations = [v for found, _ in results for v in found]
-    notes = [n for _, found in results for n in found]
+    violations = [violation for found, _ in results for violation in found]
+    notes = [note for _, suppressed in results for note in suppressed]
 
     for note in notes:
         print("check-workflow-artifact-deps: %s" % note)
