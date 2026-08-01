@@ -205,6 +205,18 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aRequestLimitTooLargeForAnIntIsRejected() throws Exception {
+    // Narrowing it with Number.intValue() would wrap 3000000000 to a negative value, which reads as
+    // "unlimited" and silently turns off the cap the field governs: it is a client error instead.
+    final int status = postStatus("query", new JSONObject()
+        .put("language", "sql")
+        .put("command", "SELECT i FROM " + TYPE_NAME)
+        .put("limit", 3_000_000_000L));
+
+    assertThat(status).isEqualTo(400);
+  }
+
+  @Test
   void theHttpAndTheEmbeddedSurfaceAgreeOnTheSameQuery() throws Exception {
     final String command = "SELECT i FROM " + TYPE_NAME + " LIMIT " + TOTAL_ROWS;
 
@@ -358,6 +370,16 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   }
 
   private JSONObject post(final String endpoint, final JSONObject payload) throws Exception {
+    final HttpResponse<String> response = send(endpoint, payload);
+    assertThat(response.statusCode()).isEqualTo(200);
+    return new JSONObject(response.body());
+  }
+
+  private int postStatus(final String endpoint, final JSONObject payload) throws Exception {
+    return send(endpoint, payload).statusCode();
+  }
+
+  private HttpResponse<String> send(final String endpoint, final JSONObject payload) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://127.0.0.1:2480/api/v1/" + endpoint + "/" + getDatabaseName()))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
@@ -366,9 +388,7 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .build();
 
-    final HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
-    assertThat(response.statusCode()).isEqualTo(200);
-    return new JSONObject(response.body());
+    return client.send(request, BodyHandlers.ofString());
   }
 
   private JSONObject get(final String command, final String limit) throws Exception {

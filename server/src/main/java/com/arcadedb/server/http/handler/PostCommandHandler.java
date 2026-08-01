@@ -51,20 +51,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   /**
-   * Appends an automatic trailing {@code LIMIT} to SELECT/MATCH SQL commands that do not already carry one,
-   * mirroring the historical heuristic while avoiding a full-command {@code toLowerCase} copy per request.
-   * The command is expected to be already trimmed. Only case-insensitive prefix/substring probes are used,
-   * and the last line is lowercased only when an explicit LIMIT may already be present.
-   */
-  static String appendAutomaticLimit(final String command, final String language, final int limit) {
-    return requiresAutomaticLimit(command, language, limit) ? command + " limit " + limit : command;
-  }
-
-  /**
-   * Tells whether {@link #appendAutomaticLimit} would append a trailing {@code LIMIT} to the given command,
-   * i.e. whether the command is a SELECT/MATCH that states no LIMIT of its own. The handler needs the answer
-   * separately from the rewritten text: a command that already carries a LIMIT has expressed the caller's own
-   * expectation, and that expectation - not the default cap - decides how many rows are serialized.
+   * Tells whether the given command needs an automatic trailing {@code LIMIT} pushed down, i.e. whether it is a
+   * SELECT/MATCH SQL command that states no LIMIT of its own. A command that already carries one has expressed
+   * the caller's own expectation, and that expectation - not the default cap - decides how many rows are
+   * serialized, so the text is left exactly as it arrived.
+   * <p>
+   * The historical heuristic is preserved while avoiding a full-command {@code toLowerCase} copy per request:
+   * the command is expected to be already trimmed, only case-insensitive prefix/substring probes are used, and
+   * the last line is lowercased only when an explicit LIMIT may already be present.
    */
   static boolean requiresAutomaticLimit(final String command, final String language, final int limit) {
     // A non-positive cap means unlimited, exactly as it does in the serializer: pushing 'limit 0' down would
@@ -144,8 +138,15 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final Object value = map.get(field);
     if (value == null)
       return null;
-    if (value instanceof Number n)
+    if (value instanceof Number n) {
+      // Number.intValue() truncates the high bits, so 3000000000 would arrive as a negative value and be read
+      // as "unlimited" - silently turning off the very cap this field governs. Out-of-range is a client error.
+      final double magnitude = n.doubleValue();
+      if (Double.isNaN(magnitude) || magnitude > Integer.MAX_VALUE || magnitude < Integer.MIN_VALUE)
+        throw new IllegalArgumentException(
+            "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE);
       return n.intValue();
+    }
     throw new IllegalArgumentException("Field '" + field + "' must be an integer");
   }
 
