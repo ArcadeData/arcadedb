@@ -727,8 +727,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     final RID boundTarget = getBoundTargetRID(lastResult);
     if (boundTarget != null && vertex instanceof VertexInternal internalVertex)
       return ((DatabaseInternal) context.getDatabase()).getGraphEngine()
-          .getEdgesConnectedTo(internalVertex, direction.toArcadeDirection(), boundTarget,
-              types == null ? new String[0] : types);
+          .getEdgesConnectedTo(internalVertex, direction.toArcadeDirection(), boundTarget, types);
 
     if (types == null || types.length == 0) {
       return vertex.getEdges(direction.toArcadeDirection()).iterator();

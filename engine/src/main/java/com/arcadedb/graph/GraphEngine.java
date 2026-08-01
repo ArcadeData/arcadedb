@@ -819,7 +819,14 @@ public class GraphEngine {
     }
   }
 
-  /** Returns the instance of the vertex the running transaction has already loaded, or the given one. */
+  /**
+   * Returns the instance of the vertex the running transaction has already loaded, or the given one.
+   * <p>
+   * The cache is keyed by RID over every record shape, so the entry can legitimately be absent (the vertex was never
+   * touched in this transaction) or not a vertex at all (a record loaded through a path that did not resolve its
+   * type). Neither is an error: the caller's own handle is then the best available, and it is what the pre-existing
+   * behaviour used anyway.
+   */
   private VertexInternal getMostUpdatedVertex(final VertexInternal vertex) {
     if (!database.isTransactionActive())
       return vertex;

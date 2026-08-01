@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -260,6 +261,50 @@ class EdgesConnectedToTest {
 
       assertThat(ridsOf(connectedTo(staleHandle[0], Vertex.DIRECTION.OUT, target, "Knows"))).containsExactly(appended);
     });
+  }
+
+  /**
+   * The striped super-node layout (#5156) spreads a hot vertex's edges over several chains, so it overrides the
+   * iterator factory and has to narrow every one of them. This is the layout the optimisation exists for, so it
+   * cannot be the one branch left un-asserted.
+   */
+  @Test
+  void narrowsEveryChainOfAPromotedSuperNode() {
+    final int savedThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(256);
+    try {
+      database.transaction(() -> {
+        final MutableVertex hub = newNode("hub");
+        final List<Vertex> leaves = new ArrayList<>();
+        for (int i = 0; i < 2_000; i++) {
+          final MutableVertex leaf = newNode("leaf" + i);
+          leaves.add(leaf);
+          hub.newEdge("Knows", leaf, "seq", i).save();
+        }
+
+        final EdgeLinkedList outEdges = ((DatabaseInternal) database).getGraphEngine()
+            .getEdgeHeadChunk((VertexInternal) hub, Vertex.DIRECTION.OUT);
+        // the precondition: without promotion this would exercise the plain chain again and prove nothing
+        assertThat(outEdges).isInstanceOf(StripedEdgeList.class);
+
+        // one leaf per stripe generation: first, last and a few in between
+        for (final int i : new int[] { 0, 1, 700, 1_300, 1_999 }) {
+          final Vertex leaf = leaves.get(i);
+          final List<RID> expected = new ArrayList<>();
+          for (final Edge edge : hub.getEdges(Vertex.DIRECTION.OUT, "Knows"))
+            if (edge.getIn().equals(leaf.getIdentity()))
+              expected.add(edge.getIdentity());
+
+          assertThat(expected).hasSize(1);
+          assertThat(ridsOf(connectedTo(hub, Vertex.DIRECTION.OUT, leaf, "Knows")))
+              .containsExactlyInAnyOrderElementsOf(expected);
+        }
+
+        assertThat(connectedTo(hub, Vertex.DIRECTION.OUT, newNode("stranger"), "Knows").hasNext()).isFalse();
+      });
+    } finally {
+      GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedThreshold);
+    }
   }
 
   @Test

@@ -162,8 +162,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection) {
         if (source instanceof VertexInternal internalSource)
           return ((DatabaseInternal) source.getDatabase()).getGraphEngine()
-              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(),
-                  edgeTypes == null ? new String[0] : edgeTypes);
+              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
         return source.getEdges(arcadeDirection, edgeTypes).iterator();
       }
 
