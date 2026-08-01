@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableLightEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.Index;
@@ -148,11 +149,27 @@ public class CreateEdgesStep extends AbstractExecutionStep {
             // clean schema error, not an internal ClassCastException (issue #5194)
             if (!(context.getDatabase().getSchema().getType(targetClass.getStringValue()) instanceof EdgeType edgeType))
               throw new CommandExecutionException("Type '" + targetClass.getStringValue() + "' is not an edge type");
-            edge = new MutableEdge(context.getDatabase(), edgeType, currentFrom.getIdentity(), currentTo.getIdentity());
 
-            // Set properties if provided
-            if (properties != null && properties.length > 0) {
-              edge.set(properties);
+            if (edgeType.isLightweight()) {
+              // The type says the edge lives inside the two vertices. The rest of the pipeline still works:
+              // SaveElementStep's save() is a no-op on a record-less RID, and ConnectEdgeStep does the linking.
+              if (properties != null && properties.length > 0)
+                throw new CommandExecutionException("Edge type '" + edgeType.getName()
+                    + "' is declared LIGHTWEIGHT, so its edges cannot have properties");
+
+              context.getDatabase().getGraphEngine()
+                  .checkLightEdgeUniqueness((VertexInternal) currentFrom, edgeType, currentTo.getIdentity());
+
+              edge = new MutableLightEdge(context.getDatabase(), edgeType, currentFrom.getIdentity(),
+                  currentTo.getIdentity());
+            } else {
+              edge = new MutableEdge(context.getDatabase(), edgeType, currentFrom.getIdentity(),
+                  currentTo.getIdentity());
+
+              // Set properties if provided
+              if (properties != null && properties.length > 0) {
+                edge.set(properties);
+              }
             }
 
             // Store vertices for later connection after save

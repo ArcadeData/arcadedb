@@ -23,9 +23,12 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeBuilder;
 
 public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   public boolean unidirectional = false;
+  public boolean lightweight    = false;
+  public boolean unique         = false;
 
   public CreateEdgeTypeStatement(final int id) {
     super(id);
@@ -40,15 +43,15 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   protected DocumentType createType(final Schema schema) {
     final EdgeType type;
     if (totalBucketNo != null) {
-      var builder = schema.buildEdgeType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue())
-          .withBidirectional(!unidirectional);
+      var builder = applyFlags(
+          schema.buildEdgeType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue()));
       if (pageSize != null)
         builder = builder.withPageSize(pageSize.getValue().intValue());
       type = builder.create();
     } else {
       if (buckets == null || buckets.isEmpty()) {
-        if (pageSize != null || unidirectional) {
-          var builder = schema.buildEdgeType().withName(name.getStringValue()).withBidirectional(!unidirectional);
+        if (pageSize != null || unidirectional || lightweight || unique) {
+          var builder = applyFlags(schema.buildEdgeType().withName(name.getStringValue()));
           if (pageSize != null)
             builder = builder.withPageSize(pageSize.getValue().intValue());
           type = builder.create();
@@ -57,8 +60,8 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
         }
       } else {
         // CHECK THE BUCKETS FIRST
-        var builder = schema.buildEdgeType().withName(name.getStringValue()).withBuckets(getBuckets(schema))
-            .withBidirectional(!unidirectional);
+        var builder = applyFlags(
+            schema.buildEdgeType().withName(name.getStringValue()).withBuckets(getBuckets(schema)));
         if (pageSize != null)
           builder = builder.withPageSize(pageSize.getValue().intValue());
         type = builder.create();
@@ -67,10 +70,16 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
     return type;
   }
 
+  private TypeBuilder<EdgeType> applyFlags(final TypeBuilder<EdgeType> builder) {
+    return builder.withBidirectional(!unidirectional).withLightweight(lightweight).withUnique(unique);
+  }
+
   @Override
   public CreateEdgeTypeStatement copy() {
     final CreateEdgeTypeStatement copy = (CreateEdgeTypeStatement) super.copy(new CreateEdgeTypeStatement(-1));
     copy.unidirectional = unidirectional;
+    copy.lightweight = lightweight;
+    copy.unique = unique;
     return copy;
   }
 }

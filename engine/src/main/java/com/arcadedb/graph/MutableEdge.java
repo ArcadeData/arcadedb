@@ -60,6 +60,17 @@ public class MutableEdge extends MutableDocument implements Edge {
     super(graph, type, rid);
   }
 
+  /**
+   * Builds an edge without the eagerly-allocated property map. Only for {@link MutableLightEdge}, which can never
+   * hold properties.
+   */
+  protected MutableEdge(final Database graph, final EdgeType type, final RID edgeRID, final RID out, final RID in,
+                        final boolean withoutProperties) {
+    super(graph, type, edgeRID, withoutProperties);
+    this.out = out;
+    this.in = in;
+  }
+
   public MutableEdge(final Database graph, final EdgeType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
     init();

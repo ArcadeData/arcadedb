@@ -451,6 +451,14 @@ public class LocalDocumentType implements DocumentType {
   public LocalProperty createProperty(final String propertyName, final Type propertyType, final String ofType) {
     checkForSchemaMutation();
 
+    if (this instanceof LocalEdgeType edgeType && edgeType.isLightweight())
+      // A lightweight edge is a pair of pointers inside the two vertices: there is no record to hold a value, so a
+      // declared property could never be written. Rejecting it here keeps the contract structural rather than a
+      // convention nobody reads, and stops mandatory/default-valued properties from being declared on a type whose
+      // creation path can never satisfy them.
+      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
+          + "' because the type is declared LIGHTWEIGHT and its edges cannot have properties");
+
     if (properties.containsKey(propertyName))
       throw new SchemaException(
           "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
@@ -1711,6 +1719,12 @@ public class LocalDocumentType implements DocumentType {
       kind = "e";
       if (!edgeType.isBidirectional())
         type.put("bidirectional", false);
+      // Both default to false, so only write them when set: an older engine reading this schema simply ignores the
+      // keys, and a schema written before the flags existed reads back with both off.
+      if (edgeType.isLightweight())
+        type.put("lightweight", true);
+      if (edgeType.isUnique())
+        type.put("unique", true);
     } else
       kind = "d";
     type.put("type", kind);

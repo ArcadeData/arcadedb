@@ -32,6 +32,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -168,10 +169,9 @@ public class GraphEngine {
 
     final EdgeType edgeType = getEdgeType(database, edgeTypeName);
 
-    final RID edgeRID = new RID(edgeType.getFirstBucketId(), -1l);
+    checkLightEdgeUniqueness(fromVertex, edgeType, toVertex.getIdentity());
 
-    final ImmutableLightEdge edge = new ImmutableLightEdge(database, database.getSchema().getType(edgeTypeName),
-        edgeRID,
+    final ImmutableLightEdge edge = new ImmutableLightEdge(database, edgeType, edgeType.getFirstBucketId(),
         fromVertexRID, toVertex.getIdentity());
 
     connectOutgoingEdge(fromVertex, toVertex, edge);
@@ -179,6 +179,29 @@ public class GraphEngine {
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
 
     return edge;
+  }
+
+  /**
+   * Rejects a second lightweight edge of the same type between the same ordered pair, when the type asks for it.
+   * <p>
+   * There is no index to consult - a lightweight edge has no record - so this walks the source vertex's outgoing
+   * list, which is O(degree). That is exactly why {@link EdgeType#isUnique()} is off by default: turning it on for a
+   * super-node type makes every insert scan the whole chain. A type that needs the guarantee at scale is better
+   * modelled as a regular edge type, where the constraint is a unique index on {@code (@out, @in)} and the check is
+   * a O(log n) probe.
+   */
+  public void checkLightEdgeUniqueness(final VertexInternal fromVertex, final EdgeType edgeType,
+                                        final RID toVertexRID) {
+    if (!edgeType.isUnique())
+      return;
+
+    final EdgeLinkedList outEdges = getEdgeHeadChunk(fromVertex, Vertex.DIRECTION.OUT);
+    if (outEdges == null)
+      return;
+
+    if (outEdges.containsLightEdge(edgeType.getFirstBucketId(), toVertexRID))
+      throw new DuplicatedKeyException(edgeType.getName() + "[@out,@in]",
+          "[" + fromVertex.getIdentity() + ", " + toVertexRID + "]", fromVertex.getIdentity());
   }
 
   public MutableEdge newEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex,
@@ -207,6 +230,28 @@ public class GraphEngine {
       bucketName = null;
 
     final EdgeType type = getEdgeType(database, edgeTypeName);
+
+    if (type.isLightweight()) {
+      // The storage shape is a property of the type, not of the call: on a LIGHTWEIGHT type every edge is stored
+      // inside the two vertices, so there is no record to create, save or place in a bucket.
+      if (edgeProperties != null && edgeProperties.length > 0)
+        throw new IllegalArgumentException("Edge type '" + type.getName()
+            + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
+            + "needs to carry data");
+      if (bucketName != null)
+        throw new IllegalArgumentException("Edge type '" + type.getName()
+            + "' is declared LIGHTWEIGHT, so its edges have no record and cannot be targeted at bucket '" + bucketName
+            + "'");
+
+      checkLightEdgeUniqueness(fromVertex, type, toVertex.getIdentity());
+
+      final MutableLightEdge lightEdge = new MutableLightEdge(database, type, fromVertexRID, toVertex.getIdentity());
+      connectOutgoingEdge(fromVertex, toVertex, lightEdge);
+      if (type.isBidirectional())
+        connectIncomingEdge(toVertex, fromVertexRID, lightEdge.getIdentity());
+
+      return lightEdge;
+    }
 
     final MutableEdge edge = new MutableEdge(database, type, fromVertexRID, toVertex.getIdentity());
     if (edgeProperties != null && edgeProperties.length > 0)

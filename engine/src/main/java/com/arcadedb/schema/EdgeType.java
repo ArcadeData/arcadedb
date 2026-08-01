@@ -39,4 +39,28 @@ public interface EdgeType extends DocumentType {
   }
 
   boolean isBidirectional();
+
+  /**
+   * True when every edge of this type is stored lightweight: as a pair of pointers inside the two vertices' edge
+   * lists, with no edge record and therefore no properties. Orthogonal to {@link #isBidirectional()}.
+   * <p>
+   * A lightweight edge is identified by the triple (type, out vertex, in vertex): with no properties, two of them
+   * over the same ordered pair are indistinguishable and are therefore the same edge. Declare {@link #isUnique()} to
+   * have that enforced.
+   * <p>
+   * The flag governs <b>writes only</b>. Reads never consult it: an edge-list entry whose edge position is negative
+   * is a lightweight edge whatever the type declares. That is what keeps databases written before the flag existed,
+   * and types holding both shapes, working unchanged.
+   */
+  boolean isLightweight();
+
+  /**
+   * True when at most one edge of this type may connect a given ordered pair of vertices.
+   * <p>
+   * How it is enforced depends on the storage: a regular edge type gets a unique index on {@code (@out, @in)}, so the
+   * check is a O(log n) index probe; a lightweight edge type has no records to index, so the check is a scan of the
+   * source vertex's edge list, O(degree). Uniqueness is therefore <b>cheaper on regular edges</b> than on lightweight
+   * ones, which is worth knowing before declaring it on a high-degree type.
+   */
+  boolean isUnique();
 }

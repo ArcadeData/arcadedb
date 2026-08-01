@@ -82,9 +82,9 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
         final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
 
         if (direction == Vertex.DIRECTION.OUT)
-          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID).delete();
+          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), vertex, nextVertexRID).delete();
         else
-          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex).delete();
+          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), nextVertexRID, vertex).delete();
       } else
         nextEdgeRID.asEdge().delete();
     } catch (final RecordNotFoundException e) {

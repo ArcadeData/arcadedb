@@ -658,6 +658,31 @@ public class LocalSchema implements Schema {
   public void dropIndex(final String indexName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    checkIndexIsNotBackingAConstraint(indexName);
+
+    dropIndexInternal(indexName);
+  }
+
+  /**
+   * Refuses to drop the index that materialises an edge type's {@code UNIQUE} declaration.
+   * <p>
+   * The type flag is the source of truth for the constraint, so dropping its index directly would leave the schema
+   * advertising a guarantee that nothing enforces. Withdraw the declaration instead - {@code ALTER TYPE <name> WITH
+   * unique = false} - which drops the flag and this index together.
+   */
+  private void checkIndexIsNotBackingAConstraint(final String indexName) {
+    final IndexInternal index = indexMap.get(indexName);
+    if (index == null || index.getTypeName() == null || !existsType(index.getTypeName()))
+      return;
+
+    if (getType(index.getTypeName()) instanceof LocalEdgeType edgeType && edgeType.isUnique()
+        && indexName.equals(LocalEdgeType.uniqueIndexName(edgeType.getName())))
+      throw new SchemaException("Cannot drop index '" + indexName + "' because it enforces the UNIQUE declaration of "
+          + "edge type '" + edgeType.getName() + "'. Use ALTER TYPE " + edgeType.getName()
+          + " WITH unique = false to withdraw the constraint and drop this index");
+  }
+
+  private void dropIndexInternal(final String indexName) {
     recordFileChanges(() -> {
       boolean setMultipleUpdate = !multipleUpdate;
       if (!multipleUpdate)
@@ -1329,7 +1354,7 @@ public class LocalSchema implements Schema {
 
         // DELETE ALL ASSOCIATED INDEXES
         for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
-          dropIndex(m.getName());
+          dropIndexInternal(m.getName());
 
         if (type instanceof LocalVertexType vertexType)
           // DELETE IN/OUT EDGE FILES
@@ -1385,7 +1410,7 @@ public class LocalSchema implements Schema {
         // plain REBUILD/CREATE INDEX. Both directions still need schema.json saved (finally) to be complete.
         for (final Index idx : new ArrayList<>(indexMap.values())) {
           if (idx.getAssociatedBucketId() == bucket.getFileId())
-            dropIndex(idx.getName());
+            dropIndexInternal(idx.getName());
         }
 
         database.getPageManager().deleteFile(database, bucket.getFileId());
@@ -1632,10 +1657,11 @@ public class LocalSchema implements Schema {
           type = new LocalVertexType(this, typeName);
         } else if ("e".equals(kind)) {
           type = new LocalEdgeType(this, typeName,
-              schemaType.has("bidirectional") ? schemaType.getBoolean("bidirectional") : true);
+              !schemaType.has("bidirectional") || schemaType.getBoolean("bidirectional"),
+              schemaType.getBoolean("lightweight", false), schemaType.getBoolean("unique", false));
         } else if ("d".equals(kind)) {
           type = new LocalDocumentType(this, typeName);
-        } else if("t".equals(kind) ){
+        } else if ("t".equals(kind)) {
           final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
           tsType.fromJSON(schemaType);
           try {
@@ -1646,8 +1672,7 @@ public class LocalSchema implements Schema {
           // Schedule automatic retention/downsampling if policies are defined
           getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
           type = tsType;
-        }
-        else
+        } else
           throw new ConfigurationException("Type '" + kind + "' is not supported");
 
         this.types.put(typeName, type);
@@ -2435,10 +2460,10 @@ public class LocalSchema implements Schema {
       return index;
 
     } catch (final NeedRetryException e) {
-      dropIndex(indexName);
+      dropIndexInternal(indexName);
       throw e;
     } catch (final Exception e) {
-      dropIndex(indexName);
+      dropIndexInternal(indexName);
       throw new IndexException("Error on creating index '" + indexName + "'", e);
     }
   }

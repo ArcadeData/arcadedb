@@ -5075,6 +5075,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // UNIDIRECTIONAL flag
     stmt.unidirectional = bodyCtx.UNIDIRECTIONAL() != null;
 
+    // LIGHTWEIGHT / UNIQUE modifiers, accepted in either order
+    stmt.lightweight = !bodyCtx.LIGHTWEIGHT().isEmpty();
+    stmt.unique = !bodyCtx.UNIQUE().isEmpty();
+
     // BUCKET clause (list of bucket identifiers)
     if (bodyCtx.BUCKET() != null && !bodyCtx.bucketIdentifier().isEmpty()) {
       stmt.buckets = new ArrayList<>();
@@ -5929,7 +5933,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final List<SQLParser.AlterTypeSettingContext> settingCtxs = bodyCtx.alterTypeSetting();
     if (settingCtxs != null) {
       for (final SQLParser.AlterTypeSettingContext settingCtx : settingCtxs) {
-        final Identifier key = (Identifier) visit(settingCtx.identifier());
+        // UNIQUE arrives as its own token rather than reducing to identifier - see the grammar rule.
+        final Identifier key = settingCtx.identifier() != null ?
+            (Identifier) visit(settingCtx.identifier()) :
+            new Identifier(settingCtx.UNIQUE().getText());
         final Expression value = (Expression) visit(settingCtx.expression());
         stmt.settings.put(key, value);
       }

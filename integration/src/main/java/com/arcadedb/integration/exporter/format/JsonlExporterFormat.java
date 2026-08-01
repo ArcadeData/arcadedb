@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
@@ -127,6 +128,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       exportVertices(vertexTypes, graphSerializer);
       exportDocuments(documentTypes, graphSerializer);
       exportEdges(edgeTypes, graphSerializer);
+      exportLightweightEdges(vertexTypes, graphSerializer);
     }
   }
 
@@ -170,6 +172,45 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         } catch (Exception e) {
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on exporting vertex %s", e, record != null ? record.getIdentity() : null);
+        }
+      }
+    }
+  }
+
+  /**
+   * Exports the edges of every LIGHTWEIGHT edge type.
+   * <p>
+   * {@link #exportEdges} cannot see them: it iterates the edge type's own buckets, and a lightweight edge has no
+   * record, so those buckets are empty and every such edge was silently dropped from the export. They live inside
+   * the vertices instead, so they are collected by walking each vertex's outgoing list once. Only the OUT direction
+   * is walked - the IN entry of a bidirectional edge is the same edge seen from the other end, and the importer
+   * recreates both sides from a single {@code "e"} line.
+   */
+  private void exportLightweightEdges(final List<String> vertexTypes, final JsonGraphSerializer graphSerializer)
+      throws IOException {
+    for (final String type : vertexTypes) {
+      for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
+        Vertex vertex = null;
+        try {
+          vertex = cursor.next().asVertex(true);
+
+          if (settings.includeRecords != null && !settings.includeRecords.contains(vertex.getIdentity().toString()))
+            continue;
+
+          for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT)) {
+            if (!(edge instanceof LightEdge))
+              continue;
+            if (settings.excludeTypes != null && settings.excludeTypes.contains(edge.getTypeName()))
+              continue;
+            if (settings.includeTypes != null && !settings.includeTypes.contains(edge.getTypeName()))
+              continue;
+
+            writeJsonLine("e", graphSerializer.serializeGraphElement(edge));
+            context.edges.incrementAndGet();
+          }
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on exporting lightweight edges of vertex %s", e,
+              vertex != null ? vertex.getIdentity() : null);
         }
       }
     }
