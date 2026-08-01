@@ -32,12 +32,14 @@ jobs:
         with:
           python-version: "3.13.0"
           cache: "pip"
+      # Both steps below need PyYAML, so it gets its own step rather than hiding inside the first
+      # one that happens to run - reordering those would otherwise break the second confusingly.
+      # Pinned for the same reason the actions here are pinned to a SHA: this job gates every other
+      # one, so what it installs should not change under it between runs.
+      - name: Install workflow linting dependencies
+        run: python3 -m pip install --quiet pyyaml==6.0.3
       - name: Check workflow artifact dependencies
-        # Pinned for the same reason the actions above are pinned to a SHA: this step gates every
-        # other job, so what it installs should not change under it between runs.
-        run: |
-          python3 -m pip install --quiet pyyaml==6.0.3
-          ./.github/scripts/check-workflow-artifact-deps.py
+        run: ./.github/scripts/check-workflow-artifact-deps.py
       - name: Check CI scripts
         run: ./.github/scripts/tests/test-ci-scripts.sh
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
@@ -746,8 +748,8 @@ jobs:
     # Coverage is still worth publishing when a suite reported failing tests: the suites run with
     # --fail-never, so JaCoCo writes its report and the job records the failure afterwards.
     #
-    # A suite that was *skipped* is different. It produced no report because it never ran - build
-    # and-package failed, most likely - so there is nothing to merge, and reporting that as a
+    # A suite that was *skipped* is different. It produced no report because it never ran at all -
+    # most likely build-and-package failed - so there is nothing to merge, and reporting that as a
     # missing artifact would only add a second red check to an already-red build. Skipping keeps
     # the collector's failure meaning what it says: a suite that should have uploaded, and did not.
     if: >-

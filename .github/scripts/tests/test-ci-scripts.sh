@@ -386,6 +386,50 @@ YAML
 expect "ignores a download from another workflow run" 0 "" \
     "$DEPS" "$work/cross-run"
 
+# A job delegating to a reusable workflow has no steps to read, so its uploads are invisible. The
+# check must not turn that blind spot into a hard failure on a workflow that is actually correct.
+mkdir -p "$work/reusable"
+cat >"$work/reusable/ci.yml" <<'YAML'
+name: reusable
+on: [ push ]
+jobs:
+  called:
+    uses: ./.github/workflows/build.yml
+  consume:
+    runs-on: ubuntu-latest
+    needs: called
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: built-by-the-called-workflow
+YAML
+expect "does not report an artifact a reusable workflow may upload" 0 "" \
+    "$DEPS" "$work/reusable"
+
+# The blind spot must not suppress a violation that is still visible in this file.
+mkdir -p "$work/reusable-unordered"
+cat >"$work/reusable-unordered/ci.yml" <<'YAML'
+name: reusable-unordered
+on: [ push ]
+jobs:
+  called:
+    uses: ./.github/workflows/build.yml
+  producer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@v7
+        with:
+          name: visible
+  consume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: visible
+YAML
+expect "still reports a visible violation alongside a reusable workflow" 1 "producer" \
+    "$DEPS" "$work/reusable-unordered"
+
 # The invariant on the workflows this repository actually ships.
 expect "the repository's own workflows are ordered" 0 "" "$DEPS"
 

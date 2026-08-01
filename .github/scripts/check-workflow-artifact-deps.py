@@ -24,6 +24,14 @@
 # `download-artifact` step it resolves which job uploads that artifact and asserts the producer is
 # in the consumer's transitive `needs` closure.
 #
+# Known boundary: it reads a job's `steps`, so a job that delegates to a reusable workflow
+# (`jobs.<id>.uses:`) is opaque - uploads and downloads inside the called workflow are neither
+# resolved nor checked. Because this check gates every other job, being wrong there would be
+# expensive, so a workflow containing such a job stops reporting "no job uploads this": the
+# producer may well be one of the steps it cannot see. Ordering violations it *can* see are still
+# reported. Following `uses:` into local workflows would lift the restriction; nothing in this
+# repository needs it yet.
+#
 # Usage:
 #   check-workflow-artifact-deps.py                 # check .github/workflows
 #   check-workflow-artifact-deps.py FILE|DIR ...    # check the given workflows
@@ -195,6 +203,10 @@ def check_workflow(path):
     produced = producers_of(jobs)
     violations = []
 
+    # A job that delegates to a reusable workflow has no steps to read, so an artifact this file
+    # never mentions may still be uploaded inside it. See the boundary note in the header.
+    opaque = any("uses" in job for job in jobs.values())
+
     for job_name, job in jobs.items():
         closure = None
         for step in steps_of(job):
@@ -231,10 +243,11 @@ def check_workflow(path):
 
             uploaders = matching_producers(produced, selector_names, selector_glob, is_pattern)
             if not uploaders:
-                violations.append(
-                    "%s: job '%s', step '%s' downloads '%s', which no job in this workflow uploads"
-                    % (path, job_name, step_name, selector)
-                )
+                if not opaque:
+                    violations.append(
+                        "%s: job '%s', step '%s' downloads '%s', which no job in this workflow "
+                        "uploads" % (path, job_name, step_name, selector)
+                    )
                 continue
 
             if closure is None:
