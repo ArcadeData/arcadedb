@@ -306,7 +306,7 @@ class CypherUncorrelatedSubqueryCountPushDownIssue5686Test extends TestHelper {
 
   /**
    * The tie the issue asks to be asserted rather than assumed. The collector claims completeness for a shape wider
-   * than the one the push-downs accept - {@code hasOnlyMatchAndReturnClauses()} plus a {@code RETURN} of exactly one
+   * than the one the push-downs accept - {@code isMatchReturnOnlyStatement()} plus a {@code RETURN} of exactly one
    * count item - and nothing in the code says the second is inside the first. Every body the push-downs answer is
    * asserted here to be both: made of nothing but {@code MATCH} and {@code RETURN}, and modelled.
    */
