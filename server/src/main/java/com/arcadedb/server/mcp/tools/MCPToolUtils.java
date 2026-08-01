@@ -23,7 +23,6 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -34,6 +33,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.mcp.MCPPermissions;
+import com.arcadedb.server.security.DatabaseUserContext;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 public class MCPToolUtils {
@@ -108,10 +108,7 @@ public class MCPToolUtils {
    * the pooled worker thread.
    */
   public static void bindCurrentUser(final DatabaseInternal database, final ServerSecurityUser user) {
-    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    if (context == null)
-      context = DatabaseContext.INSTANCE.init(database);
-    context.setCurrentUser(user.getDatabaseUser(database));
+    DatabaseUserContext.bind(database, user);
   }
 
   /**

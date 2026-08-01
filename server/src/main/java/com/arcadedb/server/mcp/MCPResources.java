@@ -22,7 +22,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.mcp.tools.GetSchemaTool;
+import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.mcp.tools.MCPToolUtils;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -81,7 +81,7 @@ public class MCPResources {
     // Bind the principal so engine permission gates enforce for MCP callers (GHSA-6x73-v3rc-f57c); cleared by
     // MCPDispatcher in a finally.
     MCPToolUtils.bindCurrentUser(database, user);
-    final JSONObject schema = GetSchemaTool.buildSchema(database, databaseName);
+    final JSONObject schema = SchemaInfo.toJSON(database, databaseName);
 
     final JSONArray contents = new JSONArray();
     contents.put(new JSONObject()

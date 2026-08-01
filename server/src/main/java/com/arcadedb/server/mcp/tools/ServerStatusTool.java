@@ -18,17 +18,12 @@
  */
 package com.arcadedb.server.mcp.tools;
 
-import com.arcadedb.Constants;
 import com.arcadedb.server.mcp.MCPConfiguration;
-import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.info.ServerInfo;
 import com.arcadedb.server.security.ServerSecurityUser;
-
-import java.util.Set;
-import java.util.TreeSet;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -50,23 +45,7 @@ public class ServerStatusTool {
     if (!config.isAllowReads())
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
-    final JSONObject result = new JSONObject();
-    result.put("version", Constants.getVersion());
-    result.put("serverName", server.getServerName());
-    result.put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
-    final Set<String> installedDatabases = new TreeSet<>(server.getDatabaseNames());
-    installedDatabases.removeIf(databaseName -> !MCPToolUtils.canReadDatabase(user, config, databaseName));
-    result.put("databases", new JSONArray(installedDatabases));
-
-    final HAServerPlugin ha = server.getHA();
-    if (ha != null && config.isAllowAdmin()) {
-      final JSONObject haInfo = new JSONObject();
-      haInfo.put("clusterName", ha.getClusterName());
-      haInfo.put("leader", ha.getLeaderName());
-      haInfo.put("electionStatus", ha.getElectionStatus().toString());
-      result.put("ha", haInfo);
-    }
-
-    return result;
+    return ServerInfo.toJSON(server, databaseName -> MCPToolUtils.canReadDatabase(user, config, databaseName),
+        config.isAllowAdmin());
   }
 }
