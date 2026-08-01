@@ -74,7 +74,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Every variable name a statement could read, and whether that list is known to be the whole of it.
+ * Every variable name a statement could read, and whether that list is known to be the whole of it. Not the
+ * statement's free variables - see {@link #getNames()} - but a superset of them, which is what makes it safe here.
  * <p>
  * The question is asked by {@code CypherExecutionPlan} when a statement runs from a <b>seed row</b> - the body of a
  * {@code CALL { }} clause, or of an {@code EXISTS}/{@code COUNT}/{@code COLLECT} expression, handed the outer row as
@@ -201,7 +202,16 @@ public final class CypherReferencedVariables {
     return false;
   }
 
-  /** The names collected. Empty when {@link #isComplete()} is false, where it means nothing. */
+  /**
+   * The names collected. Empty when {@link #isComplete()} is false, where it means nothing.
+   * <p>
+   * <b>This is not a free-variable set.</b> A name a statement binds for itself is collected as readily as one it
+   * takes from outside: the iteration variable of a list comprehension, an {@code UNWIND ... AS x} alias, a
+   * {@code WITH ... AS y} alias. That is deliberate for the question this class exists to answer - a body's
+   * {@code MATCH (n:Person)} written under an outer {@code n} <i>is</i> the outer {@code n}, and naming one variable
+   * too many only ever costs the caller its optimization. A caller wanting the free variables of a statement, where
+   * over-collection would be an error rather than a cost, needs a different collector.
+   */
   public Set<String> getNames() {
     return names;
   }
