@@ -1736,7 +1736,10 @@ A failed replacement restores the page size along with the rest of the definitio
 same accessor a rebuild uses, so a page size the current file carries but creation would refuse cannot turn the restore
 into a second failure (#5713).
 
-### Embedded API: `getOrCreateTypeIndex` no longer upgrades an incompatible index
+### BREAKING: `getOrCreateTypeIndex` no longer upgrades an incompatible index
+
+This one surfaces at runtime rather than at compile time, so it is the change embedded callers are most likely to meet
+without warning.
 
 `LocalSchema.getOrCreateTypeIndex(...)` sets `withIgnoreIfExists(true)`, so it inherits the change above: asked for a
 `UNIQUE` index where a `NOTUNIQUE` one already covers those properties, it used to drop and rebuild, and now raises
