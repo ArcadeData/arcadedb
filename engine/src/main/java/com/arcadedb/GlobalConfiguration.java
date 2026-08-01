@@ -146,6 +146,16 @@ public enum GlobalConfiguration {
   TEST("arcadedb.test", SCOPE.JVM,
       "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose", Boolean.class, false),
 
+  LOG_IMPL("arcadedb.log.impl", SCOPE.JVM,
+      "Logger implementation: 'default' uses java.util.logging, 'slf4j' routes the logs through the SLF4J facade so an embedding application receives them in its own backend. An unrecognized value is reported and falls back to 'default'",
+      String.class, "default", value -> {
+    final LogManager logManager = LogManager.instance();
+    // NULL ONLY IF THIS RUNS RE-ENTRANTLY FROM THE LOG MANAGER'S STATIC INITIALIZER, WHICH READS THE SYSTEM PROPERTY ON ITS OWN
+    if (logManager != null)
+      logManager.setLogger(LogManager.createLogger(value == null ? null : value.toString()));
+    return value;
+  }),
+
   MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
         @Override

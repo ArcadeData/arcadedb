@@ -14,6 +14,21 @@ exclusions**.
 
 Add exactly **one** SLF4J binding and drop in the matching config file from this folder.
 
+## Selecting the logger from your own configuration
+
+The system property has to be set before `com.arcadedb.log.LogManager` is first loaded, which a
+framework-managed application (Spring Boot, for instance) cannot always guarantee. The same choice is
+therefore a regular ArcadeDB setting, applied whenever it is set:
+
+```java
+GlobalConfiguration.LOG_IMPL.setValue("slf4j");
+```
+
+It reaches the running `LogManager` even after the class has been loaded, and being a normal setting it
+also arrives through a configuration file, `GlobalConfiguration.fromJSON(...)`, or the server settings
+API, and it shows up in `arcadedb.dumpConfigAtStartup`. An embedder that needs an implementation the
+setting cannot name still installs it directly with `LogManager.instance().setLogger(myLogger)`.
+
 ## Logback (`logback.xml`)
 
 Add the binding:
