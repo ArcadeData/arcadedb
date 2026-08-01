@@ -29,6 +29,7 @@ import com.arcadedb.utility.NumberUtils;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * It represents the logical address of a record in the database. The record id is composed by the bucket id (the bucket containing the record) and the offset
@@ -150,6 +151,24 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     return (Edge) resolveActiveDatabase("asEdge").lookupByRID(this, loadContent);
   }
 
+  /**
+   * Out-going endpoint of the edge this RID identifies, or {@code null} when the RID addresses a record. Only a
+   * record-less RID (a lightweight edge, see {@link com.arcadedb.graph.LightEdgeRID}) carries endpoints: its
+   * bucket/offset pair is a type marker shared by every lightweight edge of the type, so identity has to come from
+   * somewhere else. Returning {@code null} here is what makes a plain {@code #bucket:-1} distinguishable from a real
+   * lightweight edge in {@link #equals}.
+   */
+  public RID getOutRID() {
+    return null;
+  }
+
+  /**
+   * Incoming endpoint of the edge this RID identifies. See {@link #getOutRID()}.
+   */
+  public RID getInRID() {
+    return null;
+  }
+
   @Override
   public boolean equals(final Object obj) {
     if (this == obj)
@@ -159,12 +178,29 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
       return false;
 
     final RID o = ((Identifiable) obj).getIdentity();
-    return bucketId == o.bucketId && offset == o.offset;
+    if (bucketId != o.bucketId || offset != o.offset)
+      return false;
+
+    // A negative offset means "no record": the bucket/offset pair is then a type marker rather than an address, so
+    // equality has to fall through to the endpoints. Real records short-circuit here without a virtual call, keeping
+    // the hot path exactly as cheap as it was.
+    return offset >= 0 || sameEndpoints(o);
+  }
+
+  private boolean sameEndpoints(final RID o) {
+    return Objects.equals(getOutRID(), o.getOutRID()) && Objects.equals(getInRID(), o.getInRID());
   }
 
   @Override
   public int hashCode() {
-    return bucketId * 31 + Long.hashCode(offset);
+    final int base = bucketId * 31 + Long.hashCode(offset);
+    if (offset >= 0)
+      return base;
+    // Record-less RID: mirror equals() and fold the endpoints in, otherwise every lightweight edge of a type would
+    // land in the same hash bucket AND compare equal.
+    final RID out = getOutRID();
+    final RID in = getInRID();
+    return base * 31 + (out != null ? out.hashCode() : 0) * 31 + (in != null ? in.hashCode() : 0);
   }
 
   @Override
@@ -187,7 +223,19 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     else if (offset < otherRID.offset)
       return -1;
 
-    return 0;
+    if (offset >= 0)
+      return 0;
+
+    // Record-less RIDs: keep compareTo consistent with equals so a sorted set does not collapse distinct lightweight
+    // edges. The order itself is arbitrary but stable: by out endpoint, then by in endpoint.
+    final int byOut = compareEndpoint(getOutRID(), otherRID.getOutRID());
+    return byOut != 0 ? byOut : compareEndpoint(getInRID(), otherRID.getInRID());
+  }
+
+  private static int compareEndpoint(final RID a, final RID b) {
+    if (a == null)
+      return b == null ? 0 : -1;
+    return b == null ? 1 : a.compareTo(b);
   }
 
   public boolean isValid() {

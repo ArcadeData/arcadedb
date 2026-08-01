@@ -59,6 +59,26 @@ public interface EdgeSegment extends Record {
 
   int removeVertex(RID vertexRID);
 
+  /**
+   * True if this segment holds a lightweight edge of the given type reaching the given vertex.
+   * <p>
+   * A lightweight edge has no record, so it cannot be located by its own RID the way a regular edge is: every
+   * lightweight edge of a type shares the marker {@code #<type first bucket>:-1}. It is located instead by the triple
+   * it is made of, which here narrows to the edge-type bucket plus the far endpoint. All three terms matter:
+   * {@code edgeTypeBucketId} keeps a lightweight edge of another type out, and the record-less test keeps a
+   * <b>regular</b> edge of this same type out - both would otherwise be unlinked in its place.
+   */
+  boolean containsLightEdge(int edgeTypeBucketId, RID vertexRID);
+
+  /**
+   * Removes one lightweight edge of the given type reaching the given vertex. See {@link #containsLightEdge} for why
+   * the match needs all three terms. Removes a single entry: duplicates of one lightweight edge are the same edge, so
+   * which one goes is immaterial, and stopping at the first keeps the walk bounded.
+   *
+   * @return 1 when an entry was removed, 0 otherwise
+   */
+  int removeLightEdge(int edgeTypeBucketId, RID vertexRID);
+
   EdgeSegment getPrevious();
 
   /** Returns the RID of the previous chunk in the list without loading it, or {@code null} if this is the tail. */

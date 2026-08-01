@@ -885,6 +885,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (batchSize != null)
       builder.withBatchSize(Integer.parseInt(batchSize));
 
+    // Deprecated: declare LIGHTWEIGHT on the edge type instead. A type that declares it is stored lightweight
+    // regardless of this parameter, which now only covers types that declare nothing.
     final String lightEdges = getQueryParameter(exchange, "lightEdges");
     if (lightEdges != null)
       builder.withLightEdges(Boolean.parseBoolean(lightEdges));

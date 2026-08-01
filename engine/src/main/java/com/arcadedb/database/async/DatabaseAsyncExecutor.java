@@ -241,6 +241,7 @@ public interface DatabaseAsyncExecutor {
    * @param callback             Callback invoked when the edge is created
    * @param properties           Initial properties to set to the new edge as a variable argument array with key/value pairs
    */
+  @Deprecated
   void newEdge(Vertex sourceVertex, String edgeType, RID destinationVertexRID, boolean light, NewEdgeCallback callback,
       Object... properties);
 

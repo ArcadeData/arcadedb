@@ -363,6 +363,16 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   @Override
+  public boolean containsLightEdge(final int edgeTypeBucketId, final RID vertexRID) {
+    // Only the stripes that can hold this neighbour, same narrowing removeEdge uses: a lightweight edge is located
+    // by its far endpoint, and the stripe is chosen from that endpoint.
+    for (final EdgeLinkedList chain : chainsForNeighbour(vertexRID))
+      if (chain.containsLightEdge(edgeTypeBucketId, vertexRID))
+        return true;
+    return false;
+  }
+
+  @Override
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     for (final EdgeLinkedList chain : chainsForNeighbour(rid))
       if (chain.containsVertex(rid, edgeBucketFilter))

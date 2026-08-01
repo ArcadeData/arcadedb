@@ -47,10 +47,19 @@ public interface Vertex extends Document {
   @Deprecated
   MutableEdge newEdge(String edgeType, Identifiable toVertex, boolean bidirectional, final Object... properties);
 
+  /**
+   * @deprecated Declare the storage shape on the edge type instead - {@code CREATE EDGE TYPE <name> LIGHTWEIGHT},
+   * or {@code buildEdgeType().withLightweight(true)} - and use {@link #newEdge(String, Identifiable, Object...)}.
+   * A per-call flag cannot be honoured by SQL, Cypher, the exporter or the UNIQUE constraint, all of which have to
+   * know the shape from the schema. Still supported; a type that does not declare LIGHTWEIGHT keeps working as
+   * before, with no uniqueness enforcement available.
+   */
+  @Deprecated
   ImmutableLightEdge newLightEdge(String edgeType, Identifiable toVertex);
 
   /**
-   * Deprecated use of bidirectional, now defined at schema level on the edge type.
+   * @deprecated Both the bidirectional and the lightweight decisions now live on the edge type. See
+   * {@link #newLightEdge(String, Identifiable)}.
    */
   @Deprecated
   ImmutableLightEdge newLightEdge(String edgeType, Identifiable toVertex, boolean bidirectional);

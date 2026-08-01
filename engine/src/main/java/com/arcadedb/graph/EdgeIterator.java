@@ -97,9 +97,9 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
       final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
 
       if (direction == Vertex.DIRECTION.OUT)
-        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID);
+        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), vertex, nextVertexRID);
       else
-        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
+        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), nextVertexRID, vertex);
     }
 
     ++browsed;
@@ -128,9 +128,9 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
 
         if (direction == Vertex.DIRECTION.OUT)
-          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID).delete();
+          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), vertex, nextVertexRID).delete();
         else
-          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex).delete();
+          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), nextVertexRID, vertex).delete();
       } else
         ((Edge) currentContainer.getDatabase().lookupByRID(nextEdgeRID, false)).delete();
     } catch (final RecordNotFoundException e) {

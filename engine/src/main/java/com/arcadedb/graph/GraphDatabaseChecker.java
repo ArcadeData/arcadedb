@@ -377,6 +377,7 @@ public class GraphDatabaseChecker {
       final int maxWarnings, final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
     final AtomicLong invalidLinks = new AtomicLong();
+    final AtomicLong duplicateLightEdges = new AtomicLong();
     final AtomicLong totalWarnings = new AtomicLong();
     final AtomicLong totalCorrupted = new AtomicLong();
     final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
@@ -419,7 +420,7 @@ public class GraphDatabaseChecker {
 
           vertex = checkOutgoingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
               corruptedRecords, totalCorrupted, maxCorrupted, reconnectOutEdges, reconnectInEdges, missingReferences,
-              missingReferenceErrors);
+              missingReferenceErrors, duplicateLightEdges);
 
           checkIncomingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
               corruptedRecords, totalCorrupted, maxCorrupted, reconnectInEdges, reconnectOutEdges, missingReferences,
@@ -471,7 +472,8 @@ public class GraphDatabaseChecker {
     } finally {
       stats.put("autoFix", autoFix.get());
       stats.put("corruptedRecords", corruptedRecords);
-      stats.put("invalidLinks", invalidLinks.get());
+stats.put("duplicateLightEdges", duplicateLightEdges.get());
+            stats.put("invalidLinks", invalidLinks.get());
       stats.put("warnings", warnings);
       stats.put("totalWarnings", totalWarnings.get());
       stats.put("totalCorruptedRecords", totalCorrupted.get());
@@ -783,7 +785,7 @@ public class GraphDatabaseChecker {
       final AtomicLong totalWarnings, final int maxWarnings, final RID vertexIdentity, final AtomicLong invalidLinks,
       final LinkedHashSet<RID> corruptedRecords, final AtomicLong totalCorrupted, final int maxCorrupted,
       final Set<RID> reconnectOutEdges, final Set<RID> reconnectInEdges, final Map<RID, Long> missingReferences,
-      final Map<RID, String> missingReferenceErrors) {
+      final Map<RID, String> missingReferenceErrors, final AtomicLong duplicateLightEdges) {
     // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
     if (((VertexInternal) vertex).getOutEdgesHeadChunk() != null) {
       EdgeLinkedList outEdges = null;
@@ -803,6 +805,8 @@ public class GraphDatabaseChecker {
         }
       } else {
         Iterator<Pair<RID, RID>> out = null;
+        // Lazily created: only a vertex that actually has lightweight edges pays for it.
+        EdgeIdentitySet seenLightEdges = null;
         boolean chainBroken = false;
         String chainError = null;
         try {
@@ -844,9 +848,29 @@ public class GraphDatabaseChecker {
               invalidLinks.incrementAndGet();
             } else {
               try {
-                if (edgeRID.getPosition() < 0)
-                  // LIGHTWEIGHT EDGE
+                if (edgeRID.getPosition() < 0) {
+                  // LIGHTWEIGHT EDGE: there is no record to validate. What CAN go wrong is the same edge appearing
+                  // twice - a lightweight edge is the triple (type, out, in), so two entries with the same edge-type
+                  // bucket and the same destination are one edge stored twice. That state is reachable because the
+                  // uniqueness check is opt-in (it is O(degree)), and it is harmless to read, but it makes
+                  // traversals yield the edge twice and makes delete() need repeating.
+                  //
+                  // Reported, never auto-fixed. The duplicate exists in the source vertex's OUT list and in the
+                  // target's IN list, which are walked in separate passes, so collapsing one side here could leave
+                  // the two sides holding different counts - a worse state than the one being repaired. Removing
+                  // the extra copy is a one-line application fix (delete the edge once per copy).
+                  if (seenLightEdges == null)
+                    seenLightEdges = new EdgeIdentitySet();
+
+                  if (!seenLightEdges.add(new LightEdgeRID(vertex.getDatabase(), edgeRID.getBucketId(), vertexIdentity,
+                      vertexRID)))
+                    // Counted, not warned: warnings mean "something is wrong with this database", and a duplicate
+                    // lightweight edge is a modelling advisory, not damage. It reads fine, it just yields the edge
+                    // twice. Counted once per duplicated EDGE - only the OUT lists are scanned, and every edge
+                    // appears in exactly one of them, so the IN side would only double the same finding.
+                    duplicateLightEdges.incrementAndGet();
                   continue;
+                }
 
                 final Edge edge = edgeRID.asEdge(true);
 

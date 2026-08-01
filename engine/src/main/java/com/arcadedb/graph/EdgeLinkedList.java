@@ -81,6 +81,28 @@ public class EdgeLinkedList {
     return new RIDIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
   }
 
+  /**
+   * True if the list already holds a lightweight edge of the given type reaching the given vertex. Backs the
+   * {@link com.arcadedb.schema.EdgeType#isUnique()} check, which has no index to consult and therefore walks the
+   * whole chain: O(degree).
+   */
+  public boolean containsLightEdge(final int edgeTypeBucketId, final RID vertexRID) {
+    EdgeSegment current = lastSegment;
+    while (current != null) {
+      if (current.containsLightEdge(edgeTypeBucketId, vertexRID))
+        return true;
+
+      final EdgeSegment prev = current.getPrevious();
+      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
+        // CURRENT POINT TO ITSELF, AVOID LOOPS
+        break;
+
+      current = prev;
+    }
+
+    return false;
+  }
+
   public boolean containsEdge(final RID rid) {
     EdgeSegment current = lastSegment;
     while (current != null) {
@@ -293,7 +315,10 @@ public class EdgeLinkedList {
   public void removeEdge(final Edge edge) {
     final RID rid = edge.getIdentity();
     final boolean byEdgeRID = rid.getPosition() > -1;
-    // DELETE BY VERTEX RID: resolve the target vertex once, outside the walk.
+    // A lightweight edge has no record to point at, so it is located by (edge type bucket, far endpoint) instead -
+    // never by the far endpoint alone, which would unlink whichever other edge happens to reach the same neighbour
+    // first, of any type, regular ones included.
+    final int edgeTypeBucketId = rid.getBucketId();
     final RID targetVertexRID = byEdgeRID ? null : (direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
 
     RID prevBrowsedRID = null;
@@ -303,14 +328,16 @@ public class EdgeLinkedList {
       // anchoring it (loadChunkForWrite -> fetchPageInTransaction -> page.modify()) would copy its whole page
       // buffer into the tx for nothing (churn/GC on wide super-nodes; the copy is dropped again at commit
       // because an unwritten page is pruned before the version check). Anchor a chunk ONLY once a read-only
-      // probe proves it holds the target, right before the mutating removeEdge/removeVertex.
+      // probe proves it holds the target, right before the mutating removeEdge/removeLightEdge.
       final boolean present = byEdgeRID ?
           current.containsEdge(rid) :
-          current.getFirstEdgeConnectedToVertex(targetVertexRID, null) != null;
+          current.containsLightEdge(edgeTypeBucketId, targetVertexRID);
 
       if (present) {
         final EdgeSegment modifiable = loadChunkForWrite(current.getIdentity());
-        final int deleted = byEdgeRID ? modifiable.removeEdge(rid) : modifiable.removeVertex(targetVertexRID);
+        final int deleted = byEdgeRID ?
+            modifiable.removeEdge(rid) :
+            modifiable.removeLightEdge(edgeTypeBucketId, targetVertexRID);
         if (deleted > 0) {
           updateSegment(modifiable, prevBrowsedRID);
           break;

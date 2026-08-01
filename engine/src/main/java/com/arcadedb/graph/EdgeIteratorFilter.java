@@ -59,9 +59,9 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
         final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdge.getBucketId());
 
         if (direction == Vertex.DIRECTION.OUT)
-          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge, vertex.getIdentity(), nextVertex);
+          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), vertex.getIdentity(), nextVertex);
         else
-          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge, nextVertex, vertex.getIdentity());
+          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), nextVertex, vertex.getIdentity());
       }
 
       // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE

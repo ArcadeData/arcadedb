@@ -40,7 +40,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import com.arcadedb.utility.RidHashSet;
+import com.arcadedb.graph.EdgeIdentitySet;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -216,7 +216,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       // (predecessor might create the edge type via CREATE/FOREACH/MERGE)
       private Boolean schemaShortCircuit = null;
       private boolean useFastPath = false;
-      private RidHashSet seenEdges = null;
+      private EdgeIdentitySet seenEdges = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -339,7 +339,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                   currentEdges = getEdges(sourceVertex);
                   currentVertices = null;
                   currentGavNeighborIds = null;
-                  seenEdges = getEffectiveDirection() == Direction.BOTH ? new RidHashSet() : null;
+                  seenEdges = getEffectiveDirection() == Direction.BOTH ? new EdgeIdentitySet() : null;
                 }
               } else {
                 // Source is not a vertex, skip
