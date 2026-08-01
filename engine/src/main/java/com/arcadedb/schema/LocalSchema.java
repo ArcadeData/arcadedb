@@ -645,7 +645,10 @@ public class LocalSchema implements Schema {
         copyIndexDefinition((IndexInternal) index, newTypeName);
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on renaming type '%s' into '%s'", e, typeName, newTypeName);
+      // "copying", not "renaming": nothing here renames anything, and the source type is still there afterwards. The
+      // old wording is why issue #5723 was filed against a renameType() that does not exist - a rename goes through
+      // LocalDocumentType.rename(), which renames buckets in place and never recreates an index.
+      LogManager.instance().log(this, Level.SEVERE, "Error on copying type '%s' into '%s'", e, typeName, newTypeName);
 
       if (newType != null)
         try {
