@@ -384,12 +384,8 @@ public class DatabaseChecker {
         ++currentStep;
         // The bucket belongs to no type (an internal file, or a RID the caller invented). Capped like every other
         // warning source: a caller passing thousands of bogus RIDs must not blow past maxWarnings.
-        final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
-        for (final RID rid : rids) {
-          result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
-          if (warnings.size() < maxWarnings)
-            warnings.add("record " + rid + " does not belong to any type");
-        }
+        for (final RID rid : rids)
+          addScopedWarning("record " + rid + " does not belong to any type");
         continue;
       }
 
@@ -422,14 +418,26 @@ public class DatabaseChecker {
   }
 
   /**
+   * Records a RECORD-scope warning: always counted, retained only while under {@code maxWarnings}, and - like
+   * {@code GraphDatabaseChecker.addWarning} - LOGGED when it has to be dropped, so a capped run does not lose the
+   * message silently.
+   */
+  private void addScopedWarning(final String warning) {
+    result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
+    final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
+    if (warnings.size() < maxWarnings)
+      warnings.add(warning);
+    else if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.WARNING, "- " + warning);
+  }
+
+  /**
    * The document arm of the RECORD scope: the same "does it load as a document" check {@link #checkDocuments} does,
    * with the {@code maxWarnings} cap the record-belongs-to-no-type branch honours (the totals still count every
    * occurrence, only the retained messages are bounded).
    */
   private void checkScopedDocuments(final DocumentType type, final List<RID> rids) {
     stepBegin("Checking records of '" + type.getName() + "'", rids.size());
-
-    final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
 
     database.begin();
     try {
@@ -439,14 +447,10 @@ public class DatabaseChecker {
         } catch (final RecordNotFoundException e) {
           // Not corruption: flagging it would put this bucket into affectedBuckets and have FIX drop and rebuild
           // every index on it - see the same guard in GraphDatabaseChecker's scoped arms.
-          if (warnings.size() < maxWarnings)
-            warnings.add("document " + rid + " does not exist");
-          result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
+          addScopedWarning("document " + rid + " does not exist");
         } catch (final Exception e) {
-          if (warnings.size() < maxWarnings)
-            warnings.add("document " + rid + " cannot be loaded, removing it");
+          addScopedWarning("document " + rid + " cannot be loaded, removing it");
           ((LinkedHashSet<RID>) result.get("corruptedRecords")).add(rid);
-          result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
           result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
         }
         stepTick();

@@ -20,6 +20,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
@@ -73,8 +74,15 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
         x.getStringValue()).collect(Collectors.toSet()));
     // filter(Objects::nonNull): toRecordId answers null for a RID form that evaluates to nothing, and the checker
     // must not be handed one - it groups by bucket id.
-    checker.setRecords(records.stream().map(x -> x.toRecordId((Result) null, context)).filter(Objects::nonNull)
-        .collect(Collectors.toCollection(LinkedHashSet::new)));
+    final Set<RID> scopedRecords = records.stream().map(x -> x.toRecordId((Result) null, context))
+        .filter(Objects::nonNull).collect(Collectors.toCollection(LinkedHashSet::new));
+    if (!records.isEmpty() && scopedRecords.isEmpty())
+      // An empty scope means "no scope", and the checker would then run a FULL database check. Widening a command
+      // that explicitly named records into a whole-database scan is the one outcome the caller cannot have wanted,
+      // and on a large database it is enormously more expensive than what was asked for. Refuse instead.
+      throw new IllegalArgumentException(
+          "CHECK DATABASE RECORD was given " + records.size() + " record(s) but none of them resolves to a RID");
+    checker.setRecords(scopedRecords);
     checker.setFix(fix);
     checker.setCompress(compress);
 

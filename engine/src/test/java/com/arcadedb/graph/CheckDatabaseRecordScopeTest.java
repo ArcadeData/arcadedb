@@ -269,6 +269,25 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
     }
   }
 
+  /**
+   * A `RECORD` list that names records but resolves to none must be refused, not quietly widened. An empty scope
+   * reads as "no scope" to the checker, which would then run a FULL database check - the one outcome a caller who
+   * explicitly named records cannot have wanted, and on a large database enormously more expensive than what was
+   * asked for. Not reachable through the literal-RID grammar (a literal always resolves), so this drives the
+   * checker directly, which is also the public API surface where it IS reachable.
+   */
+  @Test
+  void anEmptyResolvedRecordScopeIsRefusedRatherThanWidenedToTheWholeDatabase() {
+    createSchema();
+    createHub();
+
+    // The non-literal RID form resolves through an expression, and an expression can answer null - so unlike the
+    // `#n:n` literal this IS reachable from SQL.
+    assertThatThrownBy(() -> database.command("sql", "CHECK DATABASE RECORD {\"@rid\": null}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("none of them resolves to a RID");
+  }
+
   private void createSchema() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Hub", 1);
