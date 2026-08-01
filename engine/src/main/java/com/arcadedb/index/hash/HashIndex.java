@@ -87,9 +87,11 @@ public class HashIndex implements IndexInternal {
       // of surfacing on the first insert as an unsupported-key-type error (issue #5677).
       HashIndexBucket.checkSupportedKeyTypes(builder.getIndexName(), builder.getKeyTypes());
 
-      // Use 64KB default page size for hash indexes (vs 256KB for LSM)
-      final int pageSize = builder.getPageSize() == LSMTreeIndexAbstract.DEF_PAGE_SIZE ?
-          HashIndexBucket.DEF_PAGE_SIZE : builder.getPageSize();
+      // Use the 64KB hash default (vs 256KB for LSM) when the caller did not ask for a page size. Asking IS
+      // distinguishable from not asking (issue #5713): the builder carries an explicit unset marker, so an explicit
+      // 262144 now reaches HashIndexBucket and is refused for exceeding the 16-bit addressing limit, instead of being
+      // silently remapped to 65536 - which used to make that one value impossible to request.
+      final int pageSize = builder.getPageSize(HashIndexBucket.DEF_PAGE_SIZE);
       return new HashIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), pageSize, builder.getNullStrategy());
     }
@@ -117,6 +119,12 @@ public class HashIndex implements IndexInternal {
 
   /**
    * Called at creation time.
+   * <p>
+   * {@code pageSize} must already be resolved: "the caller did not ask for one" is a state of {@link IndexBuilder},
+   * not of this constructor, and {@code HashIndexFactoryHandler} turns it into {@link HashIndexBucket#DEF_PAGE_SIZE}
+   * before getting here. A value this class cannot use is therefore an error rather than a request for the default,
+   * and {@link HashIndexBucket#checkSupportedPageSize} reports it naming the legal range. Keeping a second silent
+   * fallback here would put the default in two layers and hide such a call (#5713).
    */
   public HashIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
@@ -124,8 +132,7 @@ public class HashIndex implements IndexInternal {
     try {
       this.name = name;
       this.metadata = new IndexMetadata(null, null, -1);
-      this.bucket = new HashIndexBucket(this, database, name, unique, filePath, mode, keyTypes,
-          pageSize > 0 ? pageSize : HashIndexBucket.DEF_PAGE_SIZE, nullStrategy);
+      this.bucket = new HashIndexBucket(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
     } catch (final IOException e) {
       throw new IndexException("Error on creating hash index '" + name + "'", e);
     }
@@ -544,6 +551,19 @@ public class HashIndex implements IndexInternal {
   @Override
   public int getPageSize() {
     return bucket.getPageSize();
+  }
+
+  /**
+   * An index created before the page-size guard of #5713 can carry a page size its bucket pages cannot address, and any
+   * new file built from that configuration would be refused. A rebuild drops the index before recreating it, so
+   * carrying the value over would delete the index and then fail to build its replacement. Falling back to the default
+   * makes the rebuild the repair the corruption message promises, and lets a bucket or a sub type be added to a type
+   * that carries such an index.
+   */
+  @Override
+  public int getPageSizeForNewFile() {
+    final int pageSize = getPageSize();
+    return HashIndexBucket.isSupportedPageSize(pageSize) ? pageSize : HashIndexBucket.DEF_PAGE_SIZE;
   }
 
   @Override

@@ -1388,7 +1388,11 @@ public class LocalDocumentType implements DocumentType {
     if (!existentIndexes.isEmpty()) {
       schema.getDatabase().transaction(() -> {
         for (TypeIndex idx : existentIndexes) {
-          schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(),
+          // getPageSizeForNewFile(), not getPageSize(): this creates a NEW index file, so the page size carried over has
+          // to be one the creation path accepts. A HASH index predating #5713 can hold an unaddressable one, and
+          // adding a bucket to its type must not fail because of it (#5713).
+          schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(),
+              idx.getPageSizeForNewFile(),
               idx.getNullStrategy(), null, idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx,
               IndexBuilder.BUILD_BATCH_SIZE,
               idx.getMetadata());
@@ -1883,8 +1887,11 @@ public class LocalDocumentType implements DocumentType {
                   }
 
                   if (!alreadyCreated)
+                    // Inherit the page size of the index being propagated, like the createBucket() path above does.
+                    // Hardcoding the LSM default here gave a HASH index a page size it cannot address (#5713), and
+                    // getPageSizeForNewFile() is the accessor that guarantees the value is legal to create with.
                     schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                        LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                        index.getPageSizeForNewFile(), index.getNullStrategy(), null,
                         index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
                         IndexBuilder.BUILD_BATCH_SIZE,
                         index.getMetadata());

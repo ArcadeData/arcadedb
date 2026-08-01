@@ -1425,6 +1425,54 @@ Note also that on a hot super-node under heavy concurrent delete-and-append the 
 a retry rather than passing silently, so those transactions retry slightly more often than before. That is the
 intended shift - from "quietly wrong" to "occasionally repeated" - and it lands on exactly the super-node shape the
 bug affected. `arcadedb.txRetryDelay` and `arcadedb.txRetries` are the tuning levers if a workload needs them.
+## Deleting a vertex no longer loses its own edges when a chunk is momentarily unreadable
+
+The change above closed that window for the edge lists a delete reaches through a *neighbour*. It left open the one
+a vertex delete reaches on its own list, which is where the loss was larger.
+
+`DELETE VERTEX` first collects the edges to remove by walking the vertex's own outgoing and incoming lists, then
+deletes each collected edge, then deletes the vertex record. That collection used the best-effort reader - the one
+that answers `null` when a head chunk cannot be loaded - and wrapped the whole walk in a blanket
+`catch (Exception)`. So a chunk that could not be read at that instant meant **no edges collected**, or only the
+ones seen before the hole, and the vertex record was deleted on top of that empty or partial view. The delete
+reported success while the edges outlived their endpoint: an edge record whose `out`/`in` names a record that no
+longer exists, and a back-reference still sitting on a neighbour nobody touched. `check database` reported them as
+invalid links.
+
+This is the same timing window as above, not a fact about the graph: a commit publishes its pages one at a time and
+the reader takes no commit lock, so a vertex page can expose a head RID before that head's own page is visible, and
+a chunk emptied by another transaction is relinked out of the chain while a walker is still following a pointer to
+it. Measured on a two-vertex graph with the source's outgoing head chunk made unreadable, the delete succeeded, the
+vertex was gone, and the edge record and the neighbour's degree were both still there.
+
+The collection now reads the list the way a removal must. An unreadable head chunk, or an unreadable hop in the
+middle of the chain, is a retryable `ConcurrentModificationException`: the transaction rolls back whole and re-reads
+a consistent view instead of deleting a vertex it never finished disconnecting. The same applies on a promoted
+super-node, whose list is several per-stripe chains: a read is allowed to skip a stripe it cannot load, and that
+skip used to cost the delete a whole stripe's worth of edges in silence. Two things stay deliberately
+tolerant. A single entry whose **edge record** cannot be resolved is still skipped - that costs one already-dangling
+pointer rather than the whole remaining list, which is how every other reader in the engine treats it. And draining
+the chunk records at the very end is still best-effort in every mode: by then each edge has been disconnected from
+both endpoints and the vertex record is about to go, so a chunk that cannot be read there leaves orphaned chunk
+records for `CHECK DATABASE` to reclaim, never a surviving reference.
+
+**Visible effect.** `vertex.delete()` / `DELETE VERTEX` can now raise a `ConcurrentModificationException` where it
+previously "succeeded" - the same contract, and the same standard retry loops, described for edge deletion above.
+As there, an edge list that is genuinely broken rather than transiently invisible is indistinguishable at that
+moment, so the delete fails once the retries are spent instead of quietly leaving ghost edges behind.
+`CHECK DATABASE ... FIX` is the repair path and is never blocked by the delete being blocked: it rebuilds an
+unloadable chain from the surviving edge records, after which the delete goes through normally.
+
+**`force` is now the escape hatch it always claimed to be.** The internal forced delete - the path that removes a
+record whose own body cannot be assembled - keeps the old tolerance for every one of these reads, and extends it to
+one place it never covered: disconnecting a collected edge from the vertex at its *other* end. Since the change
+above made that removal strict, a broken **neighbour** blocked a forced delete exactly as it blocked an ordinary
+one, which is precisely what `force` exists to override. It no longer does; the reference it could not remove is
+logged as a warning naming the edge, and `CHECK DATABASE` cleans it up.
+
+One more silent-loss route closed with it: the collection now reads the edge-list heads from the vertex instance the
+running transaction holds. A handle obtained before an edge was appended in the same transaction still named the
+previous head, so the newest edges were invisible to the walk - and, once again, the vertex was deleted anyway.
 
 ## A `HASH` index can key on a `LINK`, and an unsupported key type is refused at creation
 
@@ -1531,5 +1579,84 @@ to emit one row *above* the cap; it now emits exactly the cap, like the others. 
 what the POST endpoints have always done. And `"limit": 0` now means unlimited everywhere, as it already did in
 the serializer: it used to be pushed down as a literal `LIMIT 0` and return no row at all for a query that
 carried no LIMIT of its own, while returning every row for a query that did.
+## A `HASH` index refuses a page size its bucket pages cannot address
+
+A `HASH` index accepted any page size:
+
+```java
+database.getSchema().buildTypeIndex("Entry", new String[] { "k" })
+    .withType(Schema.INDEX_TYPE.HASH).withUnique(true)
+    .withPageSize(131_072)     // accepted without complaint
+    .create();
+```
+
+and then corrupted itself on insert:
+
+```
+com.arcadedb.index.IndexException: Detected cycle in hash index 'Entry_0_...' (fileId=2)
+  overflow chain at page 17328897 (totalPages=3). The index is corrupted, please rebuild it
+  (DROP and recreate it).
+```
+
+The page number in that message is not a page. Everything inside a hash bucket page - the slot directory entries, the
+`dataEnd` marker, the entry count - is written as a `short` and read back through `& 0xFFFF`, so the largest offset a
+bucket page can address is 65535. Above a 65536-byte page the offsets truncate: `dataEnd` wraps to a low value, the
+free-space calculation reports the page as almost empty, and the next entry is written over the page header - including
+the overflow pointer. The cycle detector then reports the resulting garbage pointer as a corrupted chain, which is a
+true statement about a database that a legal-looking configuration had already destroyed.
+
+The page size is now validated where the file is created, so no `HASH` index file can exist with a size its own reader
+cannot address:
+
+```
+Cannot create index 'Entry_0_...' of type HASH with a page size of 131072 bytes: a hash bucket page addresses its
+entries with 16-bit offsets, so the page size must be between 256 and 65536 bytes. Use LSM_TREE if a bigger page is
+required
+```
+
+The floor is checked too - below it the metadata page itself does not fit - and an index whose file already declares an
+illegal page size (created by an earlier release) is reported rather than refused: the database still opens, a `SEVERE`
+line names the index at load, and `CHECK DATABASE` lists the page size instead of the cyclic chain it causes, so the
+report points at the cause rather than the symptom.
+
+`REBUILD INDEX` is the remedy for such an index, and it repairs it: a rebuild drops the index and recreates it carrying
+the old configuration over, so an unaddressable page size would have been handed straight back to the guard that just
+started refusing it - deleting the index and then failing to build its replacement. The rebuild now asks the index for
+a page size it is legal to *create* with, which for a `HASH` index whose current one is unaddressable is the default.
+The same accessor is used when an index is propagated to a new bucket or to a sub type, so neither operation can fail
+because of a page size inherited from an older release.
+
+### `withPageSize()` on a `HASH` index means what it says
+
+The defect had one page size it could not reach, and that is why it stayed hidden. `IndexBuilder.pageSize` was
+initialised to the LSM default (262144), and the hash factory read that exact value back as "the caller did not ask for
+one", remapping it to the hash default of 65536. So the most natural oversized value to try was the single value that
+was silently made safe, while 131072 or 100000 corrupted.
+
+The builder now carries an explicit unset marker, so asking for a page size is distinguishable from not asking. Two
+consequences for callers:
+
+- `withPageSize(262_144)` on a `HASH` index is now refused with the message above, where before it silently produced a
+  65536-byte index. Not passing a page size still yields the hash default, unchanged.
+- `CREATE INDEX ... UNIQUE_HASH` and a `HASH` index inherited from a super type used to hardcode the LSM default as
+  their stand-in for "unset"; both now leave it unset, and the inherited one carries over the page size of the index it
+  is propagating rather than resetting it.
+Widening the on-page fields to 32 bits would lift the ceiling instead, at 2 bytes per slot on every bucket. The
+measurements in #5712 point the other way - smaller pages are consistently faster for this index - so the ceiling is
+not worth paying for.
+
+### BREAKING: `withPageSize(0)` now means "use the default", for every index type
+
+This one is not about `HASH`, and it is the change most likely to reach code that has nothing to do with this fix.
+`IndexBuilder.withPageSize()` accepted a non-positive page size and passed it through to the component, where the page
+arithmetic divides by it. It now means "unset", so **every** index type - `LSM_TREE`, `FULL_TEXT`, `GEOSPATIAL`,
+`LSM_VECTOR`, `LSM_SPARSE_VECTOR` as well as `HASH` - falls back to its own default instead.
+
+Nothing could have relied on the old behaviour usefully: a zero page size produced a broken file rather than a small
+one. But a caller that passed `0` expecting a failure now silently gets a working index at the default size, so if you
+build indexes through the embedded API with a computed page size, check that the computation cannot yield zero.
+
+An index that already exists on disk is unaffected either way - the page size is read from the component file, not from
+a builder.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

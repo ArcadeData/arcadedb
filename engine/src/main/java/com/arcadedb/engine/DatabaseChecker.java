@@ -176,7 +176,10 @@ public class DatabaseChecker {
         final boolean unique = idx.isUnique();
         final List<String> propNames = idx.getPropertyNames();
         final String typeName = idx.getTypeName();
-        final int pageSize = ((IndexInternal) idx).getPageSize();
+        // getPageSizeForNewFile(), not getPageSize(): the index is dropped just below and rebuilt through the creation
+        // path. Carrying over a page size that path refuses would make FIX destroy the very index the check flagged -
+        // and an unaddressable HASH page size is exactly one of the things checkIntegrity() now reports (#5713).
+        final int pageSize = ((IndexInternal) idx).getPageSizeForNewFile();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
         database.getSchema().dropIndex(idx.getName());

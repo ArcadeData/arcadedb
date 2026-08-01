@@ -217,8 +217,10 @@ public class TruncateTypeStatement extends DDLStatement {
 
     static IndexDefinition from(final TypeIndex index) {
       final List<String> props = index.getPropertyNames();
+      // getPageSizeForNewFile(), not getPageSize(): this definition is replayed through the creation path after the
+      // index has been dropped, so a page size creation refuses would leave the type without the index it had (#5713).
       return new IndexDefinition(index.getName(), index.getTypeName(), props.toArray(new String[0]),
-          index.getType(), index.isUnique(), index.getPageSize(), index.getNullStrategy(), index.getMetadata());
+          index.getType(), index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(), index.getMetadata());
     }
   }
 
