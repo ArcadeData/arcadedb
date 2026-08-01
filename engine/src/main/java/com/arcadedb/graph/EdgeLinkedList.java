@@ -71,6 +71,21 @@ public class EdgeLinkedList {
   }
 
   /**
+   * #5680: {@link #edgeIterator} for a caller that is about to REMOVE every edge it yields (today,
+   * {@code GraphEngine.deleteVertex}), so a part of the list that cannot be read must surface rather than be
+   * skipped - the caller deletes the vertex record on top of whatever this walk returned, and an entry silently
+   * dropped here outlives its endpoint.
+   * <p>
+   * On the classic layout the walk is a single chain and the two are the same iterator: an unreadable hop already
+   * escapes, and the caller maps it to a retryable conflict. The distinction exists for the striped layout, where
+   * {@link StripedEdgeList} composes one iterator per stripe chain and a chain whose head cannot be read is
+   * legitimately skipped on a READ - see {@code StripedEdgeList.addChain}.
+   */
+  public Iterator<Edge> edgeIteratorForRemoval() {
+    return edgeIterator();
+  }
+
+  /**
    * Same as {@link #edgeIterator(String...)} but yielding only the edges that reach the given
    * neighbour vertex.
    * <p>
