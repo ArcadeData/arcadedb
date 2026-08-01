@@ -122,3 +122,8 @@ but the file has five lambda callbacks against three anonymous ones, `DUMP_CONFI
 restores both in `@AfterEach`. That is sound under the module's `forkCount=1` / no-parallel-execution
 surefire setup and matches how the existing `GlobalConfiguration` tests work; it would need
 `@ResourceLock` if JUnit parallel execution were ever switched on.
+
+**Not covered by a test:** that the setting reaches the server settings API. It follows from `SCOPE.JVM`,
+which is the only condition `GetServerHandler` filters on, so the assertion would restate the filter.
+
+Reviewed over four cycles, ending LGTM with no blocking items.
