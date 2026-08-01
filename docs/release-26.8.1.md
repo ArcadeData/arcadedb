@@ -948,6 +948,17 @@ one of them cost a real diagnosis:
 - **`SELECT FROM schema:types`** raised outright when any type mapped a primary bucket to an external bucket that
   was not loaded, instead of skipping that one mapping as the surrounding code intended.
 - **`MATCH {bucket: unknown}`** lost its own message and paid for two schema lookups to do it.
+- **`SELECT FROM bucket:<id>`** raised a raw `SchemaException` for an unknown id while `SELECT FROM bucket:<name>`
+  reported `Bucket 'x' does not exist` - the same mistake with two error contracts.
+- **`INSERT INTO bucket:? FROM SELECT ...`** never resolved its parameter at all: it read the literal bucket name
+  where its sibling calls the parameter resolver, so the statement failed even for a bucket that exists.
+
+**Watch this if you assert on exception types.** Making those messages reachable also changes what is thrown on
+these paths. An unknown bucket in SQL now raises `CommandExecutionException` or `CommandSQLParsingException`
+carrying the specific message, where several of these paths previously let a `SchemaException` escape from the
+schema layer; an `EXTERNAL` property whose bucket is not loaded raises `SerializationException` with the recovery
+instructions on both the read and the write side. This is the intended outcome - a schema-internal exception
+reaching the SQL layer was the defect - but code catching `SchemaException` around these calls needs updating.
 
 The API shape is what kept inviting the mistake, so the pattern is closed rather than the instances: `Schema` now
 exposes null-returning `getBucketByIdIfExists(int)` and `getBucketByNameIfExists(String)` - named after the
