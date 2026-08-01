@@ -914,7 +914,9 @@ public class HashIndexBucket extends PaginatedComponent {
       if (keyType == null || !isSupportedKeyType(keyType.getBinaryType()))
         throw new IndexException(
             "Cannot create index '" + indexName + "' of type HASH because "
-                + (keyType == null ? "a key column has no type" : "the key type " + keyType + " cannot be used")
+                // name(), not toString(): the supported set below is built from name(), and an implicit dependency on
+                // Type not overriding toString() would silently report the two in different spellings.
+                + (keyType == null ? "a key column has no type" : "the key type " + keyType.name() + " cannot be used")
                 + " as a HASH index key. Supported key types are: " + SUPPORTED_KEY_TYPE_NAMES
                 + ". Create the index as LSM_TREE instead");
   }

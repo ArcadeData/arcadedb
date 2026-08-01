@@ -1297,4 +1297,11 @@ The runtime error that remains - reachable only from a damaged metadata page, or
 now names the key column, states that no record data is lost, and distinguishes the two causes instead of asserting
 corruption.
 
+**Downgrade note.** Nothing needs migrating on upgrade: the metadata page records the same byte it always did, and a
+`LINK` HASH index created before this release cannot hold data anyway - it failed on the first insert - so an existing
+one simply starts working. The compatibility runs one way only, though. A `LINK` HASH index created *with* this
+release is not readable by an earlier build: the old loader does not recognise `TYPE_RID` as a key type and flags the
+metadata page as corrupt. The database still opens and every other index is unaffected, but that one index has to be
+dropped before going back. `LSM_TREE` indexes on the same properties are unaffected in both directions.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
