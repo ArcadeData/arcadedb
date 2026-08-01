@@ -119,6 +119,12 @@ public class HashIndex implements IndexInternal {
 
   /**
    * Called at creation time.
+   * <p>
+   * {@code pageSize} must already be resolved: "the caller did not ask for one" is a state of {@link IndexBuilder},
+   * not of this constructor, and {@code HashIndexFactoryHandler} turns it into {@link HashIndexBucket#DEF_PAGE_SIZE}
+   * before getting here. A value this class cannot use is therefore an error rather than a request for the default,
+   * and {@link HashIndexBucket#checkSupportedPageSize} reports it naming the legal range. Keeping a second silent
+   * fallback here would put the default in two layers and hide such a call (#5713).
    */
   public HashIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
@@ -126,8 +132,7 @@ public class HashIndex implements IndexInternal {
     try {
       this.name = name;
       this.metadata = new IndexMetadata(null, null, -1);
-      this.bucket = new HashIndexBucket(this, database, name, unique, filePath, mode, keyTypes,
-          pageSize > 0 ? pageSize : HashIndexBucket.DEF_PAGE_SIZE, nullStrategy);
+      this.bucket = new HashIndexBucket(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
     } catch (final IOException e) {
       throw new IndexException("Error on creating hash index '" + name + "'", e);
     }
