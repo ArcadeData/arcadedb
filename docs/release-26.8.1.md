@@ -1260,6 +1260,14 @@ running page reads and tombstone skips inside two plain accessors; both now answ
 and the key types no longer come back null once the cursor is exhausted.
 ## Cypher: a subquery body is now part of the query rather than a string it carries
 
+> **Upgrade note - behaviour change.** A query whose `EXISTS { }`, `COUNT { }` or `COLLECT { }` body **fails on real
+> data** now returns that error instead of a wrong answer. Until now any exception raised while the body ran was
+> swallowed and answered with the expression's neutral value - `false`, `0`, `[]` - so a body that failed on some rows
+> and not others produced results that looked complete. If a body of yours errors on a subset of rows (an `abs()` over
+> a property that is occasionally a string or null is the usual shape), the query that used to return rows will now
+> raise. That is the point: the old answer was wrong, not merely quiet. Neo4j raises here too. The failures worth
+> knowing about are below.
+
 `EXISTS { }`, `COUNT { }` and `COLLECT { }` did not hold their body as part of the query. They held it as **text**,
 edited that text once per outer row to correlate it, ran it through `database.query("opencypher", ...)` as a
 standalone statement, and absorbed any failure into the expression's neutral value. Three things follow from that,
