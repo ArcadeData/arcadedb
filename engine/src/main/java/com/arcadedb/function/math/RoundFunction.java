@@ -65,7 +65,10 @@ public class RoundFunction implements StatelessFunction {
     final Number precisionArg = args.length > 1 ? CypherFunctionHelper.requireNumberArgument(args[1], "round") : null;
     final RoundingMode mode = args.length == 3 ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
 
-    if (number == null)
+    // An explicitly written null mode propagates, as every argument before it already does; only an omitted mode selects
+    // HALF_UP (issue #5629). This sits after the checks above so that round(null, 2, 'SIDEWAYS') still reports the
+    // unusable mode rather than answering null.
+    if (number == null || CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
 
     final double value = number.doubleValue();
@@ -87,9 +90,12 @@ public class RoundFunction implements StatelessFunction {
   }
 
   /**
-   * Resolves the optional third argument of {@code round()} to a rounding mode, defaulting to HALF_UP when it is absent or
-   * null. Shared with the parse-time check in {@code CypherSemanticValidator}, which applies it to a mode written as a
+   * Resolves the optional third argument of {@code round()} to a rounding mode, defaulting to HALF_UP when it is absent.
+   * Shared with the parse-time check in {@code CypherSemanticValidator}, which applies it to a mode written as a
    * literal so that the two paths accept exactly the same set of names and word an unknown one identically.
+   * <p>
+   * A {@code null} here means the argument was omitted. A mode written as an explicit {@code null} never reaches this
+   * method: it propagates, per {@link CypherFunctionHelper#isExplicitNull} (issue #5629).
    *
    * @throws CommandSemanticException when the name is not one of the supported modes: an unusable mode is the caller's
    *                                  mistake, so it must not surface as an internal 500 either (issue #5484)

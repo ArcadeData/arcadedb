@@ -70,6 +70,11 @@ public class LocalDateTimeTruncateFunction implements StatelessFunction {
     else
       throw new CommandExecutionException("localdatetime.truncate() second argument must be a temporal value");
     LocalDateTime truncated = TemporalUtil.truncateLocalDateTime(dt, unit);
+    // An explicitly written null adjustment map propagates, like every argument before it; only an omitted one means
+    // "no adjustment" (issue #5629). This sits after the unit and the temporal value have been validated, so a bad unit
+    // is still reported rather than being masked by the null - the same ordering round() uses.
+    if (CypherFunctionHelper.isExplicitNull(args, 2))
+      return null;
     if (args.length >= 3 && args[2] instanceof Map)
       truncated = CypherFunctionHelper.applyDateTimeMap(truncated, (Map<String, Object>) args[2]);
     return new CypherLocalDateTime(truncated);

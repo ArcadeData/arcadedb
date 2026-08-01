@@ -54,8 +54,8 @@ public class IsNormalizedFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
     // Cypher null semantics: a null input propagates rather than answering false, which would make "not normalized"
-    // indistinguishable from "no value".
-    if (args[0] == null)
+    // indistinguishable from "no value". The normal form propagates for the same reason (issue #5629).
+    if (args[0] == null || CypherFunctionHelper.isExplicitNull(args, 1))
       return null;
 
     // STRING-only, like normalize(): asking whether a number is in NFC form is a type error, not a false.
