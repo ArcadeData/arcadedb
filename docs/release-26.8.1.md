@@ -1298,4 +1298,15 @@ an edge touches the vertex at the other end: deleting a healthy vertex whose *ne
 now reports a conflict rather than succeeding, since succeeding would delete the edge record while the neighbour
 keeps pointing at it - dangling a reference on a vertex nobody asked to touch.
 
+**If you hit that, the recovery is `CHECK DATABASE ... FIX` and then retry the delete.** The symptom is a delete that
+keeps failing with `ConcurrentModificationException` on the same vertex however often it is retried, which is what
+tells a broken list apart from ordinary contention (that one succeeds on a retry). The repair is never blocked by the
+delete being blocked: `CHECK DATABASE` reads edge lists through the best-effort reader, so it can still walk, rebuild
+and re-link a chain that the delete path now refuses.
+
+Note also that on a hot super-node under heavy concurrent delete-and-append the transient window is now answered with
+a retry rather than passing silently, so those transactions retry slightly more often than before. That is the
+intended shift - from "quietly wrong" to "occasionally repeated" - and it lands on exactly the super-node shape the
+bug affected. `arcadedb.txRetryDelay` and `arcadedb.txRetries` are the tuning levers if a workload needs them.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

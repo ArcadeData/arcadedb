@@ -545,6 +545,11 @@ public class GraphEngine {
   private VertexInternal resolveEndpointToDisconnect(final Edge edge, final Vertex.DIRECTION direction) {
     final RID endpointRID = direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn();
     try {
+      // NOT redundant with the resolution below, however much it looks it: Edge.getOutVertex/getInVertex load with
+      // loadContent=false, which hands back a LAZY handle without touching the bucket. A deleted endpoint therefore
+      // does not surface here at all - it surfaces later, inside getEdgeHeadChunkForWrite, which maps it to a
+      // retryable conflict. This check is what keeps the two apart: vertex gone = nothing to disconnect (tolerated),
+      // vertex present but its list unreadable = a conflict to retry. Removing it turns the first into the second.
       if (!edge.getDatabase().existsRecord(endpointRID))
         return null;
       final Vertex endpoint = direction == Vertex.DIRECTION.OUT ? edge.getOutVertex() : edge.getInVertex();
