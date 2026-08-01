@@ -72,6 +72,13 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
   /**
    * A pair of commands executed sequentially costs about twice the single-command baseline; executed in
    * parallel it costs about the baseline. The threshold sits midway, far from both outcomes.
+   * <p>
+   * Do not raise it to buy margin against a stray pause. Writing {@code o} for the fixed per-request
+   * overhead, the sequential ratio is {@code (2*SLEEP + o) / (SLEEP + o)}, which <em>falls</em> toward 1.0
+   * as {@code o} grows: it is 2.0 only when the overhead is negligible, and already 1.5 once the overhead
+   * reaches a whole SLEEP. Every increase of this constant therefore buys false-failure margin by giving
+   * up false-pass margin, and a regression guard that silently passes is the worse of the two. The
+   * baseline-validity assertion below is the cheaper way to protect the same property.
    */
   private static final double SEQUENTIAL_COST_FRACTION = 1.5;
 
@@ -100,6 +107,14 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
 
       LogManager.instance().log(this, Level.INFO,
           "One async SLEEP command (%d ms each): %d ms; two concurrently: %d ms", SLEEP_DURATION, singleMs, pairMs);
+
+      // The threshold below is only meaningful if the baseline actually waited out its SLEEP. Were
+      // waitCompletion to return before the command was picked up, singleMs would collapse to the HTTP
+      // round trip and the comparison would silently stop testing anything.
+      assertThat(singleMs)
+          .as("The single-command baseline must have waited out its SLEEP, otherwise the ratio below is "
+              + "measured against nothing (baseline: %d ms, SLEEP: %d ms)", singleMs, SLEEP_DURATION)
+          .isGreaterThanOrEqualTo(SLEEP_DURATION);
 
       assertThat(pairMs)
           .as("Two concurrent async commands must cost far less than two sequential ones "

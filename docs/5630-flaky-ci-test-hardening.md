@@ -121,17 +121,55 @@ When reading that CI run, note what the issue itself records about this repo: th
 **reporter** (`IT Tests Reporter` / `HA IT Tests Reporter`), not the test step. Maven runs with test
 failures ignored, so `Run Integration Tests with Coverage: success` does **not** mean the tests passed.
 
-### Open item: proving the hardened assertions can still fail
+### Proof that the rewritten assertion can still fail - DONE
 
-A hardening change is only worth anything if the assertion it leaves behind still detects the
-regression it guards, and a green CI run does not establish that - a test that can no longer fail is
-also green. Two checks are worth running before this is trusted, neither of which CI performs:
+A green CI run does not establish this: a test that can no longer fail is also green. The largest
+rewrite in this change is the completion-gap assertion, and it was verified directly.
 
-1. `Issue3122AsyncParallelCommandsIT` - force `setParallelLevel(1)` so execution is sequential. The
-   completion-gap assertion must fail, with a reported gap of at least `SLEEP_DURATION`. This is the
-   important one: it is the assertion that was rewritten most substantially.
-2. `HttpRedMetricsIT` - the polls are wrapped around assertions that were already there and are
-   unchanged in substance, so the risk is lower, but a run with the path-collapsing behaviour reverted
-   should still fail on `rawUnmatchedMeters`.
+`databaseAsyncCommandsRunInParallel` drives `database.async()`, which lives in the engine and needs no
+server, so the occupied port was not an obstacle. A throwaway harness ran the exact assertion logic
+against a real embedded database at both parallel levels:
 
-Recorded as an explicit gap rather than left implied.
+| `parallelLevel` | measured gap | `gap < SLEEP_DURATION` |
+|---|---|---|
+| 1 (sequential) | 2001 ms | **fails** - correct |
+| 2 (parallel) | 0 ms | passes - correct |
+
+The sequential result is not merely empirical. With one worker the second command's 2000 ms sleep
+cannot begin until the first has completed, so the gap has a hard floor of `SLEEP_DURATION`; the
+assertion is `isLessThan(SLEEP_DURATION)`, which fails at the boundary as well as above it. The
+parallel side has the whole of `SLEEP_DURATION` as margin. The assertion discriminates.
+
+The harness was deleted after the run; it is not part of this branch.
+
+### Remaining verification gap
+
+`HttpRedMetricsIT`, `Issue5470BatchStreamStallIT` and `Bolt5002RoutingTableIT` were not exercised
+against their failure modes. Their assertions are unchanged in substance - the polls wrap conditions
+that were already being asserted, and the timeout constants were scaled without altering the ordering
+under test - so the risk is materially lower than for the Issue3122 rewrite. CI green plus the review
+spot-check is the evidence for those three.
+
+## Review cycle 1 (`ec04ad3fe`)
+
+Bot review raised five points. Outcomes:
+
+1. **Accepted - `Issue5470` client `soTimeout` equalled the streaming budget.** The comment claimed the
+   client timeout outlives the budget so that a server which wrongly waits is caught by the elapsed-time
+   assertion, but the value was set *equal* to it, making the two race. Introduced
+   `CLIENT_SO_TIMEOUT_MS = STREAMING_BUDGET_MS + 30_000` so the assertion, not a `SocketTimeoutException`,
+   is what reports the failure. Correct catch.
+2. **Declined - widening `SEQUENTIAL_COST_FRACTION` from 1.5 to 1.6-1.7.** The suggestion treats the
+   threshold as trading only against false failures, but the sequential ratio is
+   `(2*SLEEP + o) / (SLEEP + o)` for per-request overhead `o`, which *decreases* toward 1.0 as `o` grows -
+   it is 2.0 only when overhead is negligible and already 1.5 once overhead reaches one SLEEP. Raising the
+   constant therefore buys false-failure margin by surrendering false-pass margin, and a regression guard
+   that silently passes is the worse failure. Kept at 1.5, with the reasoning recorded in the constant's
+   javadoc so it is not re-litigated.
+   **However**, the review was pointing at something real next to it: the ratio is meaningless if the
+   baseline is degenerate. Added an assertion that `singleMs >= SLEEP_DURATION`, which closes the case
+   where `waitCompletion` returns before the command is picked up and the threshold collapses to the HTTP
+   round trip. That is the cheaper protection for the property the suggestion was reaching for.
+3. **Point 5 (treat the negative check as blocking, not a follow-up)** - agreed and discharged; see the
+   proof table above.
+4. Points 3 and 4 were confirmations of existing reasoning; no change needed.

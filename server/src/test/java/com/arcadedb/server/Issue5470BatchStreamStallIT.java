@@ -65,6 +65,12 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
   private static final int READ_TIMEOUT_MS      = 10_000;
   private static final int STALL_MS             = 20_000;
   private static final int STREAMING_BUDGET_MS  = 120_000;
+  /**
+   * Strictly greater than the streaming budget. A server that wrongly waits out the whole budget must be
+   * caught by an elapsed-time assertion, not by the client's own read timeout firing first: at equal
+   * values the two race and the failure surfaces as a SocketTimeoutException instead.
+   */
+  private static final int CLIENT_SO_TIMEOUT_MS = STREAMING_BUDGET_MS + 30_000;
   /** More than one server-side vertex batch (PostBatchHandler flushes every 10,000 vertices). */
   private static final int TOTAL_VERTICES   = 25_000;
 
@@ -146,9 +152,7 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
 
     try (final Socket socket = new Socket("127.0.0.1", 2480)) {
-      // Outlive the streaming budget, so that a server which did wait for it is caught by the elapsed-time
-      // assertion below rather than by a read timeout on this socket.
-      socket.setSoTimeout(STREAMING_BUDGET_MS);
+      socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
 
       final OutputStream out = socket.getOutputStream();
       // Announce far more bytes than are ever sent, then go silent.
@@ -196,7 +200,7 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
 
     try (final Socket socket = new Socket("127.0.0.1", 2480)) {
-      socket.setSoTimeout(STREAMING_BUDGET_MS);
+      socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
 
       final OutputStream out = socket.getOutputStream();
       // vertexBatchSize=1 commits every record, so the reported counts are exactly what reached the database.
