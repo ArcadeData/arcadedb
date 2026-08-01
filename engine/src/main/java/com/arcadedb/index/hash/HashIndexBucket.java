@@ -170,7 +170,7 @@ public class HashIndexBucket extends PaginatedComponent {
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
-    this.keyTypes = keyTypes;
+    this.keyTypes = checkSupportedKeyTypes(name, keyTypes);
     this.declaredKeyTypes = new byte[keyTypes.length];
     this.binaryKeyTypes = new byte[keyTypes.length];
     for (int i = 0; i < keyTypes.length; i++) {
@@ -992,9 +992,9 @@ public class HashIndexBucket extends PaginatedComponent {
    * whose declared key type the bucket cannot encode; the {@link #loadMetadata} check would then only catch it on the
    * next open.
    */
-  static void checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
+  static Type[] checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
     if (keyTypes == null)
-      return;
+      return null;
     for (final Type keyType : keyTypes)
       if (keyType == null || !isSupportedKeyType(keyType.getBinaryType()))
         throw new IndexException(
@@ -1004,6 +1004,7 @@ public class HashIndexBucket extends PaginatedComponent {
                 + (keyType == null ? "a key column has no type" : "the key type " + keyType.name() + " cannot be used")
                 + " as a HASH index key. Supported key types are: " + SUPPORTED_KEY_TYPE_NAMES
                 + ". Create the index as LSM_TREE instead");
+    return keyTypes;
   }
 
   /**
