@@ -57,6 +57,9 @@ public class SQLScriptLargeBatchTest extends TestHelper {
     runner.join();
 
     assertThat(failure.get()).isNull();
-    assertThat(database.countType("ImportRow", false)).isEqualTo(STATEMENTS);
+    // count(@rid) scans: countType() would read the cached bucket counter instead of ground truth
+    try (final ResultSet counted = database.query("sql", "SELECT count(@rid) AS total FROM ImportRow")) {
+      assertThat(counted.next().<Long>getProperty("total")).isEqualTo(STATEMENTS);
+    }
   }
 }
