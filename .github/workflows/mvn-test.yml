@@ -72,17 +72,33 @@ jobs:
       - name: Save docker image
         run: docker save arcadedata/arcadedb:latest > /tmp/arcadedb-image.tar
 
-      - name: Cache Docker image
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Artifacts, not the cache. Both of these move data from this job to the jobs that need it within
+      # THIS run - they are not reusable by any other run, because a later run rebuilds them. Keying them
+      # on github.run_id made that explicit and put them in the wrong store: the Actions cache is a fixed
+      # 10 GB per repository with LRU eviction, so a few concurrent runs evicted an entry minutes after it
+      # was written and every e2e job then died on `docker load` with "No such file or directory" (#5672).
+      # Artifacts are scoped to the run and are not evicted, which is the property this needs.
+      - name: Upload docker image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: arcadedb-docker-image
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 1
+          # Docker layers are already compressed; a second pass costs minutes and saves almost nothing.
+          compression-level: 0
 
-      - name: Cache Maven artifacts
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Only what this build produced, not the whole repository. Third-party dependencies come from the
+      # Maven cache that setup-java restores in each downstream job, so shipping all of ~/.m2 duplicated
+      # ~1.9 GB per run to say nothing the receiving job did not already have.
+      - name: Package ArcadeDB Maven artifacts
+        run: tar -czf /tmp/arcadedb-m2.tgz -C ~/.m2/repository com/arcadedb
+
+      - name: Upload ArcadeDB Maven artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-maven-artifacts
+          path: /tmp/arcadedb-m2.tgz
+          retention-days: 1
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -103,11 +119,16 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Restore Maven artifacts
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download ArcadeDB Maven artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-maven-artifacts
+          path: /tmp
+
+      - name: Install ArcadeDB Maven artifacts
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Run Unit Tests with Coverage
         # package phase runs surefire (test) and JaCoCo report (prepare-package) without reaching integration-test phase
@@ -177,11 +198,16 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Restore Maven artifacts
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download ArcadeDB Maven artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-maven-artifacts
+          path: /tmp
+
+      - name: Install ArcadeDB Maven artifacts
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Run Slow Unit Tests with Coverage
         run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine  -Dgroups=slow
@@ -226,11 +252,16 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Restore Maven artifacts
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download ArcadeDB Maven artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-maven-artifacts
+          path: /tmp
+
+      - name: Install ArcadeDB Maven artifacts
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Run Integration Tests with Coverage
         run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e,!load-tests,!e2e-ha,!ha-raft
@@ -277,11 +308,16 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Restore Maven artifacts
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download ArcadeDB Maven artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-maven-artifacts
+          path: /tmp
+
+      - name: Install ArcadeDB Maven artifacts
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Run HA Integration Tests with Coverage
         run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl ha-raft
@@ -323,11 +359,16 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Restore Maven artifacts
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download ArcadeDB Maven artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-maven-artifacts
+          path: /tmp
+
+      - name: Install ArcadeDB Maven artifacts
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Build packages for Builder Tests
         run: ./mvnw clean package -DskipTests --batch-mode --errors  --show-version
@@ -354,17 +395,22 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Restore Maven artifacts
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download ArcadeDB Maven artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-maven-artifacts
+          path: /tmp
 
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Install ArcadeDB Maven artifacts
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
+
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-docker-image
+          path: /tmp
 
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
@@ -403,11 +449,11 @@ jobs:
           cache: "npm"
           cache-dependency-path: "e2e-js/package-lock.json"
 
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-docker-image
+          path: /tmp
 
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
@@ -455,11 +501,11 @@ jobs:
           cache: "npm"
           cache-dependency-path: "e2e-studio/package-lock.json"
 
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-docker-image
+          path: /tmp
 
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
@@ -519,11 +565,11 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           uv --version
 
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-docker-image
+          path: /tmp
 
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
@@ -573,11 +619,11 @@ jobs:
           cache: true
           cache-dependency-path: "e2e-csharp/ArcadeDB.E2ETests/ArcadeDB.E2ETests.csproj"
 
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-docker-image
+          path: /tmp
 
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
@@ -630,11 +676,11 @@ jobs:
           go-version-file: "e2e-go/go.mod"
           cache-dependency-path: "e2e-go/go.sum"
 
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arcadedb-docker-image
+          path: /tmp
 
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar

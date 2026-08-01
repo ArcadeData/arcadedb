@@ -49,17 +49,29 @@ jobs:
       - name: Save docker image
         run: docker save arcadedata/arcadedb:latest > /tmp/arcadedb-image.tar
 
-      - name: Cache Docker image
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # An artifact, not the cache: this moves the image to the jobs of THIS run and is never reusable by
+      # another one. The Actions cache is a fixed 10 GB per repository with LRU eviction, so a run-scoped
+      # entry could be evicted before the consuming job restored it (#5672).
+      - name: Upload docker image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: arcadedb-docker-image
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}
+          retention-days: 1
+          # Docker layers are already compressed; a second pass costs minutes and saves almost nothing.
+          compression-level: 0
 
-      - name: Cache Maven artifacts
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Only what this build produced: third-party dependencies come from the Maven cache the consuming
+      # job restores for itself, so shipping all of ~/.m2 duplicated ~1.9 GB to say nothing new.
+      - name: Package ArcadeDB Maven artifacts
+        run: tar -czf /tmp/arcadedb-m2.tgz -C ~/.m2/repository com/arcadedb
+
+      - name: Upload ArcadeDB Maven artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}
+          name: arcadedb-maven-artifacts
+          path: /tmp/arcadedb-m2.tgz
+          retention-days: 1
 
   bolt-nightly-java:
     needs: build-image
@@ -87,16 +99,20 @@ jobs:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
-      - name: Restore Maven artifacts
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download ArcadeDB Maven artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          name: arcadedb-maven-artifacts
+          path: /tmp
+      - name: Install ArcadeDB Maven artifacts
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}
+          name: arcadedb-docker-image
+          path: /tmp
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python
@@ -141,11 +157,11 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}
+          name: arcadedb-docker-image
+          path: /tmp
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python
@@ -198,11 +214,11 @@ jobs:
           python-version: "3.13.0"
       - name: Setup UV package manager
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}
+          name: arcadedb-docker-image
+          path: /tmp
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Run Bolt suite against pinned driver
@@ -244,11 +260,11 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: "10.0"
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}
+          name: arcadedb-docker-image
+          path: /tmp
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python
@@ -297,11 +313,11 @@ jobs:
         with:
           go-version-file: "e2e-go/go.mod"
           cache-dependency-path: "e2e-go/go.sum"
-      - name: Restore Docker image
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download docker image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}
+          name: arcadedb-docker-image
+          path: /tmp
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python
