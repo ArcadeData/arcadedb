@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -45,6 +46,7 @@ import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
+import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import de.bwaldvogel.mongo.exception.MongoServerException;
 import de.bwaldvogel.mongo.oplog.Oplog;
@@ -131,7 +133,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           "Received unsupported command from MongoDB client '%s', (document=%s)".formatted(command, document));
       }
     } catch (final Exception e) {
-      throw new MongoServerException("Error on executing MongoDB '" + command + "' command", e);
+      throw wireException("Error on executing MongoDB '" + command + "' command", e);
     } finally {
       ProtocolContext.clear();
     }
@@ -203,8 +205,41 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         return collection.handleQuery(query.getQuery(), numSkip, numReturn);
       }
     } catch (final Exception e) {
-      throw new MongoServerException("Error on executing MongoDB query", e);
+      throw wireException("Error on executing MongoDB query", e);
     }
+  }
+
+  /**
+   * Wraps a failure so the client is told whose fault it was (issue #5628). Every failure used to become a bare
+   * {@link MongoServerException}, and {@link #putLastError} can only emit {@code code}/{@code codeName} for a
+   * {@link MongoServerError} - so a caller who divided by zero or hit a unique index got an uncoded error
+   * indistinguishable from the server having broken.
+   * <p>
+   * The classification itself lives in {@link ErrorCategory} so every wire protocol answers it the same way; only
+   * the translation into MongoDB's error codes is here. The categories MongoDB has no code for keep the uncoded
+   * exception they already had.
+   * <p>
+   * WriteConflict, NamespaceNotFound, Unauthorized and MaxTimeMSExpired are given as literals because the bundled
+   * {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
+   */
+  static MongoServerException wireException(final String message, final Exception e) {
+    // The bundled backend assigns its own codes - an aggregation stage rejecting a pipeline, for instance. Those
+    // are already more precise than anything classification could infer, and re-wrapping them dropped the code
+    // entirely, so the client saw an uncoded error. Keep what the backend decided.
+    if (e instanceof MongoServerError alreadyCoded)
+      return alreadyCoded;
+
+    return switch (ErrorCategory.of(e)) {
+      case RETRY -> new MongoServerError(112, "WriteConflict", message, e);
+      case ARITHMETIC, VALIDATION -> new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(), message, e);
+      case DUPLICATED_KEY ->
+          new MongoServerError(ErrorCode.DuplicateKey.getValue(), ErrorCode.DuplicateKey.getName(), message, e);
+      case SCHEMA -> new MongoServerError(26, "NamespaceNotFound", message, e);
+      case SECURITY -> new MongoServerError(13, "Unauthorized", message, e);
+      case PARSING -> new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(), message, e);
+      case TIMEOUT -> new MongoServerError(50, "MaxTimeMSExpired", message, e);
+      case NOT_FOUND, SERVER -> new MongoServerException(message, e);
+    };
   }
 
   private Document aggregateCollection(final String command, final Document document, final Oplog oplog)
