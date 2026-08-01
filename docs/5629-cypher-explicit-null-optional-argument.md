@@ -187,3 +187,12 @@ whoever cuts the release should carry it into the release notes.
 5. **`com.arcadedb.function.text.SubstringFunction` is registered by no factory**, so Cypher's `substring()` and
    this class are two implementations of one function with only one of them reachable. Either wire it up or
    delete it; keeping both invites the divergence this change just repaired.
+6. **The `*.truncate` family silently ignores a present, non-null, non-map third argument.**
+   `date.truncate('year', d, 42)` answers the truncated date and drops the `42`, because the `args[2] instanceof
+   Map` guard is the only thing looking at it. That is the same shape of defect this change repaired for `null`,
+   one step further out: a wrong query looks like a successful one. It should be a type error.
+
+   Deliberately **not** covered by a characterization test here. Asserting that `date.truncate('year', d, 42)`
+   returns the truncated value would encode the defect as the expected behaviour and make fixing it look like a
+   regression - the same trap avoided with the unknown-unit exception class above. It belongs with follow-up 1,
+   as one pass over the family's argument handling.

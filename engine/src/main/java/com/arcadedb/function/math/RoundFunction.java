@@ -63,16 +63,14 @@ public class RoundFunction implements StatelessFunction {
     // parse-time check applies, which examines each argument independently (issue #5484).
     final Number number = CypherFunctionHelper.requireNumberArgument(args[0], "round");
     final Number precisionArg = args.length > 1 ? CypherFunctionHelper.requireNumberArgument(args[1], "round") : null;
-    // An explicitly written null mode is not parsed: it propagates below, so parsing it only to discard the HALF_UP it
-    // would yield would also make parseRoundingMode's contract untrue. A mode that is present and not null is still
-    // parsed here, before propagation, so round(null, 2, 'SIDEWAYS') reports the unusable mode.
-    final RoundingMode mode =
-        args.length == 3 && !CypherFunctionHelper.isExplicitNull(args, 2) ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
-
     // An explicitly written null mode propagates, as every argument before it already does; only an omitted mode selects
-    // HALF_UP (issue #5629). This sits after the checks above so that round(null, 2, 'SIDEWAYS') still reports the
-    // unusable mode rather than answering null.
-    if (number == null || CypherFunctionHelper.isExplicitNull(args, 2))
+    // HALF_UP (issue #5629). It is not parsed on the way: parsing it only to discard the HALF_UP it would yield would
+    // also make parseRoundingMode's contract untrue. A mode that is present and not null is still parsed before
+    // propagation decides the answer, so round(null, 2, 'SIDEWAYS') reports the unusable mode rather than answering null.
+    final boolean nullMode = CypherFunctionHelper.isExplicitNull(args, 2);
+    final RoundingMode mode = args.length == 3 && !nullMode ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
+
+    if (number == null || nullMode)
       return null;
 
     final double value = number.doubleValue();
