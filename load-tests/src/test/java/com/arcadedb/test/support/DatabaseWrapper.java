@@ -153,6 +153,19 @@ public class DatabaseWrapper {
    * It also creates properties for User and Photo vertex types.
    */
   public void createSchema() {
+    createSchema(false);
+  }
+
+  /**
+   * Creates the schema, optionally adding the {@code UserStats} materialized view over {@code User}.
+   * <p>
+   * The view is the only difference between the two arms of the #5492 A/B: the same load against the same cluster is
+   * reported to lose committed writes when it is present and to run clean when it is not. Keep every other aspect of
+   * the two arms identical, or the comparison proves nothing.
+   *
+   * @param withMaterializedView whether to create the {@code REFRESH INCREMENTAL} view
+   */
+  public void createSchema(final boolean withMaterializedView) {
     // Retry to handle the case where the database is still being replicated/opened after Raft creation.
     // In a Raft cluster, the leader commits database creation to the log, but the local state machine
     // may not have opened the database yet when the next command arrives.
@@ -160,6 +173,8 @@ public class DatabaseWrapper {
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         createSchemaInternal();
+        if (withMaterializedView)
+          createMaterializedView();
         return;
       } catch (final Exception e) {
         if (attempt == maxAttempts)
@@ -207,16 +222,24 @@ public class DatabaseWrapper {
 
 
             """);
+  }
 
-/**
- *             CREATE MATERIALIZED VIEW UserStats AS
- *               SELECT id AS userId,
- *                 out('HasUploaded').in('Likes').size() AS totalLikes,
- *                 out('FriendOf').size() AS totalFriendships
- *               FROM User
- *               REFRESH INCREMENTAL;
- */
-
+  /**
+   * Creates the {@code UserStats} materialized view that #5492 reports as the trigger for the replication gap.
+   * Issued as its own command rather than inside the schema script so that a failure here is not mistaken for a
+   * failure to create the base types.
+   */
+  private void createMaterializedView() {
+    logger.info("Creating materialized view UserStats (REFRESH INCREMENTAL)");
+    db.command("sql",
+        """
+            CREATE MATERIALIZED VIEW UserStats AS
+              SELECT id AS userId,
+                out('HasUploaded').in('Likes').size() AS totalLikes,
+                out('FriendOf').size() AS totalFriendships
+              FROM User
+              REFRESH INCREMENTAL\
+            """);
   }
 
   /**
@@ -230,6 +253,76 @@ public class DatabaseWrapper {
     assertThat(schema.existsType("HasUploaded")).isTrue();
     assertThat(schema.existsType("FriendOf")).isTrue();
     assertThat(schema.existsType("Likes")).isTrue();
+  }
+
+  /**
+   * Checks that the materialized view replicated to this node, by querying it: a view this node never received fails
+   * the query outright, which is the assertion. The row count itself carries no information here, since the check runs
+   * before the load starts.
+   * <p>
+   * Queried rather than looked up through {@link RemoteSchema}, which reports types and does not list views.
+   */
+  public void checkMaterializedView() {
+    countUserStats();
+  }
+
+  /**
+   * Waits until this node answers {@link #checkSchema()}, and reports how long that took.
+   * <p>
+   * A follower applying a schema entry reopens the database, during which it answers
+   * {@code Database '...' is not available}. How long that window lasts is exactly what the two arms of the #5492 A/B
+   * should be compared on, so it is measured rather than slept through: a fixed sleep either hides a real regression
+   * or fails the run before it reaches the load phase where the reported symptom lives.
+   *
+   * @param timeoutSeconds how long to keep retrying before failing
+   *
+   * @return milliseconds waited before the schema was readable
+   */
+  public long awaitSchema(final int timeoutSeconds) {
+    return await(timeoutSeconds, this::checkSchema, "schema");
+  }
+
+  /**
+   * Waits until the materialized view is queryable on this node. See {@link #awaitSchema(int)}.
+   *
+   * @param timeoutSeconds how long to keep retrying before failing
+   *
+   * @return milliseconds waited before the view was readable
+   */
+  public long awaitMaterializedView(final int timeoutSeconds) {
+    return await(timeoutSeconds, this::checkMaterializedView, "materialized view");
+  }
+
+  private long await(final int timeoutSeconds, final Runnable check, final String what) {
+    final long start = System.currentTimeMillis();
+    final long deadline = start + timeoutSeconds * 1000L;
+    Throwable last = null;
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        check.run();
+        return System.currentTimeMillis() - start;
+      } catch (final RuntimeException | AssertionError e) {
+        last = e;
+        try {
+          Thread.sleep(500);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    }
+    throw new AssertionError(
+        "Node " + server.host() + ":" + server.httpPort() + " did not expose the " + what + " within " + timeoutSeconds
+            + "s: " + (last != null ? last.getMessage() : "unknown"), last);
+  }
+
+  /**
+   * @return number of rows currently held by the {@code UserStats} materialized view on this node
+   */
+  public long countUserStats() {
+    try (final ResultSet resultSet = db.query("sql", "SELECT count(*) AS total FROM UserStats")) {
+      return resultSet.hasNext() ? resultSet.next().<Number>getProperty("total").longValue() : 0;
+    }
   }
 
   /**
@@ -446,6 +539,45 @@ public class DatabaseWrapper {
     assertThat(actual).isEqualTo(expectedCount);
   }
 
+  /**
+   * Asserts a per-node record count by full scan rather than through the cached bucket counter.
+   * <p>
+   * This is the assertion that has to decide the run. {@link #assertThatUserCountIs(int)} and its siblings read
+   * {@code countType()}, whose counter drifts independently of replication (#5152/#5154) - so a run that really did
+   * lose committed writes can pass it whenever the drift happens to cancel the loss out, which is precisely the
+   * failure #5492 produced. Retries on the same 30 s budget, since Raft replication is asynchronous.
+   *
+   * @param typeName      type to scan
+   * @param expectedCount records this node must hold
+   */
+  public void assertThatScannedCountIs(final String typeName, final int expectedCount) {
+    final long deadline = System.currentTimeMillis() + 30_000;
+    long actual = -1;
+    Exception lastException = null;
+    do {
+      try {
+        actual = scanCount(typeName);
+        if (actual == expectedCount)
+          return;
+        lastException = null;
+      } catch (final Exception e) {
+        lastException = e;
+      }
+      if (System.currentTimeMillis() < deadline) {
+        try {
+          Thread.sleep(2_000);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    } while (System.currentTimeMillis() < deadline);
+    if (lastException != null)
+      throw new AssertionError("Expected " + expectedCount + " scanned " + typeName
+          + " but the database was not available after 30s: " + lastException.getMessage(), lastException);
+    assertThat(actual).as("scanned %s count on this node", typeName).isEqualTo(expectedCount);
+  }
+
   public List<Integer> getUserIds(int numOfUsers, int skip) {
     ResultSet resultSet = db.query("sql", "SELECT id  FROM User ORDER BY id SKIP ? LIMIT ?", skip, numOfUsers);
     return resultSet.stream()
@@ -480,6 +612,24 @@ public class DatabaseWrapper {
 
   public long countUsers() {
     return db.countType("User", false);
+  }
+
+  /**
+   * Counts records of a type by full scan, bypassing the cached bucket counter that {@link #countUsers()} and
+   * {@link #countPhotos()} read through {@code countType()}.
+   * <p>
+   * The cached counter is known to drift from the stored records (#5152/#5154), so a per-node difference in
+   * {@code countType()} is not by itself evidence of a replication defect. {@code count(@rid)} scans and is
+   * authoritative, which is what separates "this node is missing records" from "this node's counter is wrong".
+   *
+   * @param typeName type to scan
+   *
+   * @return number of records actually stored on this node
+   */
+  public long scanCount(final String typeName) {
+    try (final ResultSet resultSet = db.query("sql", "SELECT count(@rid) AS total FROM " + typeName)) {
+      return resultSet.hasNext() ? resultSet.next().<Number>getProperty("total").longValue() : 0;
+    }
   }
 
   public long countPhotos() {
