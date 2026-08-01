@@ -158,7 +158,7 @@ class CypherBoundTargetExpansionTest {
    * The row count is deliberately not asserted. A cycle whose first hop has two parallel edges reports one row
    * per closing edge rather than one per (first, closing) pair, which is a pre-existing planner discrepancy
    * unrelated to this narrowing - it reproduces with the narrowing reverted. Asserting the count here would
-   * pin a bug rather than this behaviour; it is tracked separately.
+   * pin a bug rather than this behaviour; it is tracked by issue #5663.
    */
   @Test
   void narrowingHandlesACyclePatternWhereTheLastHopReturnsToABoundVariable() {
