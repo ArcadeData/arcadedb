@@ -70,7 +70,11 @@ right authority.
 Not changed, and why:
 
 - `executeDDL()` goes through `database.getSchema()`; `LocalSchema` is constructed with
-  `wrappedDatabaseInstance`, so schema DDL already replicates.
+  `wrappedDatabaseInstance` (`LocalDatabase.java:2433`), so schema DDL already replicates regardless of which
+  instance the engine holds - which is also why SQL DDL replicated before #5492 was found. Since the whole
+  class of bug is "committed on the wrong instance", this one is pinned by a test
+  (`cypherDDLReachesFollowers`) rather than left as an argument from the constructor. That test is a guard,
+  not a reproducer: it passes with or without the fix, by design.
 - `executeAdmin()` operates on the server security manager, not on database pages.
 - `executeSession()` only evaluates an expression to store a session parameter; it never commits.
 
@@ -104,8 +108,8 @@ Proven to fail before the fix:
 
 | Suite | Result |
 |---|---|
-| `Issue5655CypherCommitsOnInnerDatabaseIT` | 2/2 pass (both failed before the fix) |
-| `engine` module, full | 7826 pass, 0 failures, 98 skipped |
+| `Issue5655CypherCommitsOnInnerDatabaseIT` | 4/4 pass; the 3 reproducers each proven to fail without the fix |
+| `engine` module, full | 10684 pass, 0 failures, 23 skipped |
 | `Issue5492*IT` (SQL half, cross-regression) | 3/3 pass |
 
 Server-module Cypher ITs (`Issue4141SessionManagementIT` and siblings, the transaction control over HTTP
@@ -147,5 +151,17 @@ Both of the bot's claims were checked against the code before acting rather than
 The new test was proven to fail before trusting it: with `executionDatabase()` temporarily stubbed to
 `return database`, `profiledCypherWriteThroughQueryReachesFollowers` fails at line 199 with
 `expected: 1L but was: 0L`. The stub was then reverted and the full set re-run green.
+
+**Cycle 2 - `ee366ae`.** `claude[bot]`: approve, no blocking items.
+
+| Finding | Verified | Action |
+|---|---|---|
+| `executeDDL()` still holds the inner instance - "very likely fine", but worth closing the loop | Confirmed structurally: `LocalSchema` is built with `wrappedDatabaseInstance` at `LocalDatabase.java:2433` | Applied: added `cypherDDLReachesFollowers`. Reading a constructor is weaker than watching an index land on a follower, and the test costs one cluster start |
+| Local `executionDatabase` shadows the method name | Style only | Applied: renamed to `execDb` |
+| The "Review cycles" section will age oddly under `docs/` as a permanent file | Fair | **Not applied** - the orchestrating skill mandates this section. Kept, and raised at handoff so the developer can trim it at merge, which is the right place for that call |
+
+Note on the DDL test: it is a **guard, not a reproducer**. It passes with or without the fix, because the DDL
+path was never broken. It is here so that a future change moving DDL off the schema layer cannot do so
+silently.
 
 No items were deferred.

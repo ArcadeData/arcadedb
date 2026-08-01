@@ -323,7 +323,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final Map<String, Object> parameters, final boolean explain, final boolean profile) {
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
     final CypherExecutionPlan plan;
-    final DatabaseInternal executionDatabase = executionDatabase(statement);
+    final DatabaseInternal execDb = executionDatabase(statement);
 
     if (!explain && !profile) {
       // Only use plan cache for normal execution (not explain/profile)
@@ -331,10 +331,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (physicalPlan != null) {
         // Reuse cached physical plan (avoids expensive statistics collection and optimization)
         plan = new CypherExecutionPlan(
-            executionDatabase, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
+            execDb, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
       } else {
         // Create new plan from scratch and cache it
-        final CypherExecutionPlanner planner = new CypherExecutionPlanner(executionDatabase, statement, parameters,
+        final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
             EXPRESSION_EVALUATOR);
         plan = planner.createExecutionPlan(configuration);
 
@@ -344,7 +344,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
     } else {
       // explain/profile mode: always create new plan without caching
-      final CypherExecutionPlanner planner = new CypherExecutionPlanner(executionDatabase, statement, parameters,
+      final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
           EXPRESSION_EVALUATOR);
       plan = planner.createExecutionPlan(configuration);
     }

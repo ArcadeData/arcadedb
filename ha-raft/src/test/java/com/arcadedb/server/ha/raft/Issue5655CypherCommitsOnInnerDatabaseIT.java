@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,7 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
   private static final String TYPE_EXPLICIT_TX = "CypherExplicitTxNode";
   private static final String TYPE_AUTOCOMMIT  = "CypherAutocommitNode";
   private static final String TYPE_PROFILE     = "CypherProfileNode";
+  private static final String TYPE_DDL         = "CypherDDLNode";
 
   @Override
   protected int getServerCount() {
@@ -200,6 +202,41 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
   }
 
   /**
+   * Cypher DDL is the one write-shaped path this fix deliberately leaves on the raw instance, so it gets a test
+   * rather than an argument.
+   * <p>
+   * {@code executeDDL()} runs against {@code database.getSchema()}, and {@code LocalSchema} is constructed with
+   * {@code wrappedDatabaseInstance} (`LocalDatabase.java:2433`), so the schema layer replicates regardless of which
+   * instance the engine holds - which is also why SQL DDL replicated before #5492 was found. Given that the whole
+   * class of bug is "committed on the wrong instance", reading the constructor is weaker evidence than watching an
+   * index appear on a follower.
+   */
+  @Test
+  void cypherDDLReachesFollowers() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
+
+    leaderDb.command("cypher", "CREATE INDEX FOR (n:" + TYPE_DDL + ") ON (n.code)").close();
+
+    assertThat(indexedPropertyExistsOn(leaderIndex)).as("leader created the index").isTrue();
+
+    waitForAllServers();
+
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
+        .as("no WAL version gap from Cypher DDL")
+        .isZero();
+
+    assertThat(awaitIndexOn(followerIndex))
+        .as("a Cypher CREATE INDEX must reach the follower: the schema layer holds the wrapped instance already")
+        .isTrue();
+  }
+
+  /**
    * Counts through a freshly resolved database handle. A snapshot resync reinstalls the follower's database, so a
    * handle cached before it throws {@code DatabaseIsClosed} - which reads like an infrastructure failure rather than
    * the divergence that caused it.
@@ -216,6 +253,32 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
     return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName + " WHERE marked = 1")
         .next().getProperty("cnt")).longValue();
+  }
+
+  /**
+   * True when the follower has both the type and an index covering {@code code}. Resolved through a fresh handle for
+   * the same reason as {@link #countOn}.
+   */
+  private boolean indexedPropertyExistsOn(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    final Schema schema = db.getSchema();
+    if (!schema.existsType(TYPE_DDL))
+      return false;
+    return schema.getType(TYPE_DDL).getIndexByProperties("code") != null;
+  }
+
+  private boolean awaitIndexOn(final int serverIndex) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 30_000;
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        if (indexedPropertyExistsOn(serverIndex))
+          return true;
+      } catch (final RuntimeException e) {
+        // Mid-resync the database is closed and being reinstalled; keep polling until the deadline.
+      }
+      Thread.sleep(250);
+    }
+    return false;
   }
 
   private long awaitCountOn(final int serverIndex, final String typeName, final long expected)
