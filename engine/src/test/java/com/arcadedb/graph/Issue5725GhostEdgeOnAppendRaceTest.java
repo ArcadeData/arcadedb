@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
@@ -194,6 +195,72 @@ class Issue5725GhostEdgeOnAppendRaceTest extends TestHelper {
         () -> assertThat(database.existsRecord(hubRID)).as("the hub survives the failed delete").isTrue());
 
     // Re-reading the vertex is what the conflict asks for, and then the delete goes through taking every edge.
+    database.transaction(() -> hubRID.asVertex().delete());
+    database.transaction(() -> assertThat(database.countType("LINK", false)).isEqualTo(0L));
+
+    assertIntegrityClean();
+  }
+
+  /**
+   * {@code checkEdgeListHeadsUnchanged} re-reads the vertex with a plain {@code lookupByRID} and trusts that answer
+   * to be the committed one. That trust rests on a fact several classes away: a READ never populates the
+   * transaction's record cache - only {@code createRecord}/{@code updateRecord} do - so the re-read is served by the
+   * page just anchored rather than by a copy this transaction took earlier. If that ever changes, the check
+   * silently degrades into comparing a value with itself, and every OTHER test in this class still passes, because
+   * none of them reads the vertex inside the delete transaction before deleting it.
+   * <p>
+   * So pin the fact itself, where a change to the read path fails loudly and locally instead of quietly widening
+   * the window this issue is about.
+   */
+  @Test
+  void aPlainReadDoesNotPopulateTheTransactionRecordCache() {
+    createSchema();
+    final RID hubRID = createHub();
+    createEdges(hubRID, 5);
+
+    database.transaction(() -> {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+      assertThat(tx.getRecordFromCache(hubRID)).as("nothing is cached before the read").isNull();
+
+      assertThat(database.lookupByRID(hubRID, true)).isNotNull();
+
+      assertThat(tx.getRecordFromCache(hubRID))
+          .as("a read must not cache the record: checkEdgeListHeadsUnchanged re-reads through the anchored page "
+              + "and a cached copy taken before a concurrent head flip would hide it")
+          .isNull();
+    });
+  }
+
+  /**
+   * The same head check as above, with the one ingredient that turns the cached-read hazard from theory into a lost
+   * edge: the delete transaction reads the vertex FRESH before deleting it.
+   * <p>
+   * That read is what a cache would answer the end-of-delete re-read from. Both halves of the check would then come
+   * from the same post-flip copy, agree, and let the delete commit over the edges in the newer chunk. Because a read
+   * does not cache, the collection still runs off the stale handle while the re-read sees the committed head, and
+   * the two disagree - which is the whole point of the comparison.
+   */
+  @Test
+  void aFreshReadInsideTheDeleteTransactionDoesNotBlindTheHeadCheck() {
+    createSchema();
+    final RID hubRID = createHub();
+    final VertexInternal staleHandle = handleWithStaleHead(hubRID);
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final Vertex fresh = (Vertex) database.lookupByRID(hubRID, true);
+      assertThat(((VertexInternal) fresh).getInEdgesHeadChunk())
+          .as("the fresh read really does see a head the stale handle does not")
+          .isNotEqualTo(staleHandle.getInEdgesHeadChunk());
+
+      graphEngine().deleteVertex(staleHandle, false);
+    }, false, 1))
+        .isInstanceOf(ConcurrentModificationException.class)
+        .isInstanceOf(NeedRetryException.class)
+        .hasMessageContaining("changed while it was being deleted");
+
+    database.transaction(
+        () -> assertThat(database.existsRecord(hubRID)).as("the hub survives the failed delete").isTrue());
+
     database.transaction(() -> hubRID.asVertex().delete());
     database.transaction(() -> assertThat(database.countType("LINK", false)).isEqualTo(0L));
 
@@ -378,12 +445,23 @@ class Issue5725GhostEdgeOnAppendRaceTest extends TestHelper {
    * nested one, and waits for it: the caller needs the append committed before it returns.
    */
   private RID appendFromAnotherThread(final RID hubRID) {
+    return appendFromAnotherThread(hubRID, 1);
+  }
+
+  /**
+   * As above but committing {@code count} edges, one transaction each, and answering the last one. Enough of them
+   * fills the head chunk and moves the head to a new one, which is how a test targets the head check specifically.
+   */
+  private RID appendFromAnotherThread(final RID hubRID, final int count) {
     final RID[] holder = new RID[1];
-    final Thread appender = new Thread(() -> database.transaction(() -> {
-      final MutableVertex src = database.newVertex("Src");
-      src.save();
-      holder[0] = src.newEdge("LINK", hubRID).getIdentity();
-    }));
+    final Thread appender = new Thread(() -> {
+      for (int i = 0; i < count; i++)
+        database.transaction(() -> {
+          final MutableVertex src = database.newVertex("Src");
+          src.save();
+          holder[0] = src.newEdge("LINK", hubRID).getIdentity();
+        });
+    });
     appender.start();
     try {
       appender.join();
