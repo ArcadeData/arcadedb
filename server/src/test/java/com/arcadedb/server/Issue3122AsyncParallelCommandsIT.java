@@ -54,8 +54,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       sequentially the second cannot even start until the first is done, so its completion is at least
  *       {@code SLEEP_DURATION} later no matter how loaded the machine is;</li>
  *   <li>without one (the HTTP route), a single-command baseline is measured back to back with the
- *       concurrent pair, and the pair must cost well under twice the baseline. Load inflates both
- *       measurements together, so the ratio survives what an absolute budget cannot.</li>
+ *       concurrent pair, and the pair must cost well under twice the baseline. What makes the ratio hold
+ *       where an absolute budget does not is that the dominant term in both measurements is the same
+ *       server-side SLEEP - a wall-clock wait, so largely load-independent - leaving the parallel ratio
+ *       near 1.0 and the sequential one near 2.0 whatever the runner is doing.</li>
  * </ul>
  * <p>
  * Every method here waits out at least one real 2 s SLEEP, and the HTTP one waits out two (baseline then

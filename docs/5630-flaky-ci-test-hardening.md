@@ -56,7 +56,9 @@ machine, so the budget was already tighter than an unloaded local run.
 - `httpAsyncCommandsRunInParallel` has no completion callback, so it measures a **single-command
   baseline back to back with the concurrent pair** on the same server, and asserts the pair costs less
   than 1.5x the baseline. Sequential execution costs ~2x the baseline, parallel ~1x; the threshold sits
-  midway and load inflates both measurements together.
+  midway. What makes the ratio hold where an absolute budget does not is that the dominant term in both
+  measurements is the same server-side SLEEP, a wall-clock wait rather than CPU work and so largely
+  load-independent - not that load inflates the two measurements proportionally.
 - The `latch.await` / `future.get` / `waitCompletion` timeouts were raised to liveness-guard values
   (120 s / 60 s) and are documented as such. They exist so a wedged executor fails rather than hangs;
   they are not performance assertions.
@@ -203,3 +205,20 @@ No blocking points. Outcomes:
    over `**/failsafe-reports/TEST*.xml`). All four classes land in that job - it excludes only
    `e2e,load-tests,e2e-ha,ha-raft`, and `Bolt5002RoutingTableIT` runs in the `bolt` module despite extending
    `BaseRaftHATest`. Do not read this PR as verified until that reporter is green.
+
+## Review cycle 3 (`615206dd7`)
+
+1. **Declined - "trim or drop this doc; I don't see an existing `docs/NNNN-*.md` per-issue convention".**
+   The premise is factually wrong, and cycle 2's review asserted the opposite about the same file, so it
+   was checked against the repository rather than split the difference: `git ls-files docs` matches **68**
+   files of the form `docs/NNNN-*.md`, and **31** of those carry review-cycle sections of exactly the kind
+   this one has. Both the file and its cycle notes are house style. Keeping them.
+2. **Accepted - the stated reason the HTTP ratio is robust was imprecise.** The doc and the class javadoc
+   said the ratio survives because "load inflates both measurements together". That is not the mechanism:
+   the dominant term in both is the server-side `SLEEP`, a wall-clock wait rather than CPU work, so it is
+   largely load-*independent*, and it is that shared constant dominating both measurements that pins the
+   parallel ratio near 1.0. Corrected in both places. The 1.5 threshold is unaffected - and note this
+   sharpens rather than contradicts the cycle-1 argument for not raising it, which turned on the *overhead*
+   term growing.
+3. Points 2, 3 and 5 (runtime cost, residual differential-starvation flake, the Bolt helper) were
+   confirmations of decisions already recorded above; no change.
