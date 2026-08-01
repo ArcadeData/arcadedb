@@ -1827,8 +1827,11 @@ class CypherExpressionBuilder {
     else
       subquery = originalText.substring(7, originalText.length() - 1).trim(); // fallback
 
+    final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(),
+        ctx.whereClause());
+
     // Check for update clauses inside EXISTS (not allowed)
-    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
+    if (containsUpdateClause(parsedBody, subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: Existential subquery cannot contain update clauses");
 
@@ -1840,8 +1843,23 @@ class CypherExpressionBuilder {
       subquery = subquery + " RETURN true";
     }
 
-    return new ExistsExpression(subquery, text,
-        parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(), ctx.whereClause()));
+    return new ExistsExpression(subquery, text, parsedBody);
+  }
+
+  /**
+   * Tells whether a subquery body writes, which the three read-only subquery expressions must reject.
+   * <p>
+   * Answered from the parse tree when there is one: a clause is a clause because of where it sits, which is what the
+   * statement already recorded in {@link CypherStatement#isReadOnly()}. The text scan it replaces had to guess from
+   * spelling alone and got two cases wrong by construction - an update keyword inside a comment was read as a clause,
+   * and {@code WITH 1 AS set RETURN set} is lexically indistinguishable from {@code SET n.x = 1} (issue #5541 fixed
+   * the third, {@code WHERE n.name = 'SET x'}, by teaching the scan about string literals). It stays as the fallback
+   * for a body the statement builder declined, where there is nothing else to answer from.
+   */
+  private static boolean containsUpdateClause(final CypherStatement parsedBody, final String bodyText) {
+    if (parsedBody != null)
+      return !parsedBody.isReadOnly();
+    return CorrelatedSubqueryRewriter.containsUpdateClause(bodyText);
   }
 
   /**
@@ -1891,7 +1909,7 @@ class CypherExpressionBuilder {
         return astBuilder.visitQueryWithLocalDefinitions(queryCtx);
 
       final StatementBuilder builder = new StatementBuilder();
-      builder.addMatch(new MatchClause(astBuilder.visitPatternList(patternCtx), false,
+      builder.addMatch(CypherASTBuilder.newMatchClause(astBuilder.visitPatternList(patternCtx), false,
           whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
       return builder.build();
     } catch (final CommandParsingException e) {
@@ -1927,8 +1945,10 @@ class CypherExpressionBuilder {
     else
       subquery = originalText.substring(8, originalText.length() - 1).trim(); // fallback "COLLECT{" prefix
 
+    final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), null, null);
+
     // Update clauses are not allowed inside a COLLECT subquery
-    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
+    if (containsUpdateClause(parsedBody, subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
 
@@ -1937,7 +1957,7 @@ class CypherExpressionBuilder {
     // "... (queryWithLocalDefinitions | matchMode? patternList whereClause?) ..." - because a COLLECT body has to
     // RETURN the value being collected. So queryWithLocalDefinitions() is never null here, and a COLLECT body can
     // never end up without an AST and quietly skip the checks this issue exists to reach it with.
-    return new CollectExpression(subquery, text, parseSubqueryBody(ctx.queryWithLocalDefinitions(), null, null));
+    return new CollectExpression(subquery, text, parsedBody);
   }
 
   /**
@@ -1958,7 +1978,10 @@ class CypherExpressionBuilder {
     else
       subquery = originalText.substring(6, originalText.length() - 1).trim(); // fallback "COUNT{" prefix
 
-    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
+    final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(),
+        ctx.whereClause());
+
+    if (containsUpdateClause(parsedBody, subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: COUNT subquery cannot contain update clauses");
 
@@ -1969,8 +1992,7 @@ class CypherExpressionBuilder {
       subquery = subquery + " RETURN 1";
     }
 
-    return new CountExpression(subquery, text,
-        parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(), ctx.whereClause()));
+    return new CountExpression(subquery, text, parsedBody);
   }
 
   /**

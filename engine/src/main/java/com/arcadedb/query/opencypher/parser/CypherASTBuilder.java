@@ -552,6 +552,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       whereClause = visitWhereClause(ctx.whereClause());
     }
 
+    return newMatchClause(pathPatterns, optional, whereClause);
+  }
+
+  /**
+   * Builds a {@code MATCH} clause with the normalizations every one of them gets. Assembling a
+   * {@link MatchClause} straight from its constructor instead skips them, which is only invisible while nothing
+   * executes the result: the bare-pattern body of an {@code EXISTS { }} / {@code COUNT { }} did exactly that and, once
+   * issue #5656 made that AST the thing that runs, a node inline {@code WHERE} inside it stopped being applied. One
+   * factory, so a new normalization cannot reach one caller and miss the other.
+   */
+  static MatchClause newMatchClause(final List<PathPattern> pathPatterns, final boolean optional,
+      final WhereClause whereClause) {
     // Normalize a node inline "(n WHERE ...)" predicate into the clause WHERE so that every planner
     // path enforces it, exactly like the equivalent "MATCH (n) WHERE ..." spelling (issue #5464)
     final MatchClause normalized = InlineNodeWhereHoister.hoist(new MatchClause(pathPatterns, optional, whereClause));

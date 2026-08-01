@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -34,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for named paths with variable-length relationships.
@@ -1124,38 +1126,50 @@ class OpenCypherVariableLengthPathTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Issue #4109: a relationship variable repeated within a WHERE pattern is unsatisfiable.
+  // Issue #4109: a relationship variable repeated within one pattern is a contradiction, and the three ways of
+  // writing that pattern must agree on it.
+  //
+  // They agree by being rejected. A pattern asking for a relationship that is simultaneously two different ones is
+  // rejected by Neo4j wherever it is written, and this engine already rejected the plain MATCH spelling; the WHERE
+  // predicate and the EXISTS body reached a path that could not correlate a relationship variable either, and
+  // answered "no match" instead of reporting the contradiction. Issue #5656 made the check reach all three, so what
+  // agreed on 0 now agrees on the error.
   // ---------------------------------------------------------------------------
 
-  // Issue #4109: repeated rel var (p)-[r]->()<-[r]- is unsatisfiable, count is 0
   @Test
-  void repeatedRelVarInWhereIsUnsatisfiable() {
+  void repeatedRelVarIsRejectedHoweverItIsWritten() {
     final Database db = new DatabaseFactory("./target/databases/issue-4109-repeated-rel-var").create();
     try {
       db.transaction(() -> db.command("opencypher",
           "CREATE (:Person {name:'Alice'})-[:KNOWS]->(:Person {name:'Bob'})-[:KNOWS]->(:Person {name:'Charlie'})"));
 
-      final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person)-[r:KNOWS]-() WHERE (p)-[r:KNOWS]->()<-[r:KNOWS]-() RETURN count(*) AS cnt");
-      assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(0L);
-    } finally {
-      db.drop();
-    }
-  }
+      // As the query's own pattern - rejected before and after.
+      assertThatThrownBy(() -> db.query("opencypher",
+          "MATCH (p:Person)-[r:KNOWS]->()<-[r:KNOWS]-() RETURN count(*) AS cnt"))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("RelationshipUniquenessViolation")
+          .hasMessageContaining("'r'");
 
-  // Issue #4109: repeated rel var under EXISTS { ... } agrees and returns 0
-  @Test
-  void repeatedRelVarUnderExistsAgrees() {
-    final Database db = new DatabaseFactory("./target/databases/issue-4109-repeated-rel-var").create();
-    try {
-      db.transaction(() -> db.command("opencypher",
-          "CREATE (:Person {name:'Alice'})-[:KNOWS]->(:Person {name:'Bob'})-[:KNOWS]->(:Person {name:'Charlie'})"));
+      // As a WHERE pattern predicate.
+      assertThatThrownBy(() -> db.query("opencypher",
+          "MATCH (p:Person)-[r:KNOWS]-() WHERE (p)-[r:KNOWS]->()<-[r:KNOWS]-() RETURN count(*) AS cnt"))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("RelationshipUniquenessViolation")
+          .hasMessageContaining("'r'");
 
-      final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person)-[r:KNOWS]-() WHERE EXISTS { MATCH (p)-[r:KNOWS]->()<-[r:KNOWS]-() } RETURN count(*) AS cnt");
-      assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(0L);
+      // As the body of an EXISTS subquery.
+      assertThatThrownBy(() -> db.query("opencypher",
+          "MATCH (p:Person)-[r:KNOWS]-() WHERE EXISTS { MATCH (p)-[r:KNOWS]->()<-[r:KNOWS]-() } RETURN count(*) AS cnt"))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("RelationshipUniquenessViolation")
+          .hasMessageContaining("'r'");
+
+      // Two relationships with distinct variables are the ordinary case and stay accepted.
+      try (final ResultSet rs = db.query("opencypher",
+          "MATCH (p:Person)-[r1:KNOWS]->()<-[r2:KNOWS]-() RETURN count(*) AS cnt")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(0L);
+      }
     } finally {
       db.drop();
     }

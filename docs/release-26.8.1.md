@@ -1313,6 +1313,61 @@ other cursor, and `IndexCursorCollection` does the same. And `MultiIndexCursor.g
 `getBinaryKeyTypes()` answered by probing the children for one that still had something left, which since #5635 means
 running page reads and tombstone skips inside two plain accessors; both now answer from state sampled at construction,
 and the key types no longer come back null once the cursor is exhausted.
+## Cypher: a subquery body is now part of the query rather than a string it carries
+
+> **Upgrade note - behaviour change.** A query whose `EXISTS { }`, `COUNT { }` or `COLLECT { }` body **fails on real
+> data** now returns that error instead of a wrong answer. Until now any exception raised while the body ran was
+> swallowed and answered with the expression's neutral value - `false`, `0`, `[]` - so a body that failed on some rows
+> and not others produced results that looked complete. If a body of yours errors on a subset of rows (an `abs()` over
+> a property that is occasionally a string or null is the usual shape), the query that used to return rows will now
+> raise. That is the point: the old answer was wrong, not merely quiet. Neo4j raises here too. The failures worth
+> knowing about are below.
+
+`EXISTS { }`, `COUNT { }` and `COLLECT { }` did not hold their body as part of the query. They held it as **text**,
+edited that text once per outer row to correlate it, ran it through `database.query("opencypher", ...)` as a
+standalone statement, and absorbed any failure into the expression's neutral value. Three things follow from that,
+and all three are fixed.
+
+**A failing body is reported instead of being answered.** A body that could not run was answered exactly like a body
+that did not match: `false` for `EXISTS`, `0` for `COUNT`, `[]` for `COLLECT`, with nothing above `FINE` to say so.
+The two are not the same thing, and the difference is load-bearing:
+
+```cypher
+MATCH (a), (b) WHERE NOT EXISTS { MATCH (a)-[:E {id: $id}]->(b) } CREATE (a)-[:E {id: $id}]->(b)
+```
+
+If that body threw for any reason, `EXISTS` answered `false`, `NOT EXISTS` answered `true`, and a de-duplicating
+guard degraded into an unconditional `CREATE`. It also meant a retryable `ConcurrentModificationException` raised
+inside a body could never reach the server's automatic retry, since it had already been swallowed. Failures now
+propagate, as they do in Neo4j. **This is a behaviour change:** a query whose subquery body fails on real data - a
+type error on a property, a lock timeout, a security violation - now returns that error instead of a wrong answer.
+
+**The body is run, not rewritten.** What executes is the parsed body, with the outer row handed to it as a seed row -
+the same mechanism a `CALL { }` clause already used. The text rewriting is gone from that path, and with it the class
+of bugs it produced: an injected `AND` binding tighter than an inner `OR` (#4995/#5165), an inline pattern predicate
+mistaken for the clause-level `WHERE` (#5464), a clause keyword missing from a keyword table (#5461), a `SET` inside
+user data read as a clause (#5541). Two blind spots that a text scan could not fix are fixed as a consequence: an
+update keyword inside a comment, and `COLLECT { WITH 1 AS set RETURN set }`, are no longer rejected as writes.
+
+**Every validation phase reaches inside a body.** Twelve run on a statement and ten of them used to stop at the
+subquery boundary, so a mistake rejected when written one way was accepted written one level in:
+
+```cypher
+-- rejected
+MATCH (n:P) RETURN count(count(n)) AS r
+-- accepted, until now
+MATCH (n:P) RETURN COUNT { MATCH (m:P) RETURN count(count(m)) } AS r
+```
+
+The same held for a negative `SKIP`/`LIMIT`, a duplicated column name, `RETURN *` with nothing in scope, and the
+column-name and `UNION`/`UNION ALL` checks of a `UNION` written as a body. The boundary is now a property of the
+validator itself rather than something each phase has to know about, so a phase added later is inside a body from
+the day it is written.
+
+One check widened beyond subqueries as part of this. A repeated relationship variable - `(a)-[r]->()<-[r]-()`, a
+pattern asking for a relationship that is two different ones at once - was rejected only when written as the query's
+own `MATCH`. It is now rejected wherever the pattern appears, including a `WHERE` pattern predicate and a subquery
+body, matching Neo4j. Those two spellings used to answer "no match" instead.
 ## Deleting an edge no longer leaves its back-reference behind under concurrency
 
 Removing an edge disconnects it from both endpoints and then deletes the edge record. The disconnection walked the

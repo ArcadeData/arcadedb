@@ -404,7 +404,8 @@ public class CypherExecutionPlan {
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     final AbstractExecutionStep rootStep;
     if (clausesInOrder != null && !clausesInOrder.isEmpty())
-      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep);
+      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep,
+          !seedRow.getPropertyNames().isEmpty());
     else
       rootStep = seedStep; // Fallback: just return the seed
 
@@ -884,17 +885,21 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder) {
-    return buildExecutionStepsWithOrder(context, clausesInOrder, null);
+    return buildExecutionStepsWithOrder(context, clausesInOrder, null, false);
   }
 
   /**
    * Builds execution steps respecting clause order, optionally seeded with an initial step.
    * When initialStep is provided (e.g., for CALL subqueries), it serves as the starting point
    * of the step chain, providing input rows to the first clause.
+   *
+   * @param seedBoundVariables whether the seed row binds any variable, i.e. whether this body is correlated to the
+   *                           enclosing query at all. A seed row that binds nothing cannot be referenced by the body,
+   *                           which is what lets the count push-downs below still apply.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder,
-      final AbstractExecutionStep initialStep) {
+      final AbstractExecutionStep initialStep, final boolean seedBoundVariables) {
     AbstractExecutionStep currentStep = initialStep;
 
     // Get function factory from evaluator for steps that need it
@@ -905,18 +910,29 @@ public class CypherExecutionPlan {
     // can detect already-bound variables and avoid Cartesian products
     final Set<String> boundVariables = new HashSet<>();
 
-    // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
-    // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
-    final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
-    if (typeCountStep != null)
-      return typeCountStep;
+    // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
+    // never look at the incoming rows. That makes them wrong the moment the seed row binds one of those pattern
+    // variables - a seeded body counting `MATCH (n)-[:KNOWS]->(m)` with `n` already bound to one vertex would be
+    // answered with the count over every `n` in the graph. So neither is attempted then; the ordinary pipeline, which
+    // consumes the seed, is used instead.
+    //
+    // A seed row that binds NOTHING is a different case and keeps the push-downs: an uncorrelated body -
+    // `RETURN COUNT { MATCH (n:Person) }`, or a `CALL { }` that imports nothing - has no name it could have taken
+    // from the enclosing query, so ignoring the seed cannot change the answer, and a large type keeps its O(1) count.
+    if (initialStep == null || !seedBoundVariables) {
+      // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
+      // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
+      final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
+      if (typeCountStep != null)
+        return typeCountStep;
 
-    // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
-    // Instead of materializing all paths (O(paths) memory), propagates counts through
-    // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
-    final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
-    if (countStep != null)
-      return countStep;
+      // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
+      // Instead of materializing all paths (O(paths) memory), propagates counts through
+      // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
+      final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+      if (countStep != null)
+        return countStep;
+    }
 
     // Special case: no MATCH as first clause (standalone expressions, WITH before MATCH, etc.)
     // E.g., RETURN abs(-42), WITH collect([0, 0.0]) AS numbers UNWIND ...
