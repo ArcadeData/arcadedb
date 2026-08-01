@@ -267,6 +267,42 @@ class Issue5680VertexDeleteEdgeCollectionTest extends TestHelper {
   }
 
   /**
+   * A self-loop is the one shape the two collection walks BOTH yield: {@code A --> A} is reachable from A's OUT list
+   * and from its IN list, so it lands in the delete list twice and the second removal runs against a chain the first
+   * already cleaned. Harmless today - and unchanged by this fix - but the removal walk is stricter now, so this pins
+   * that the duplicate resolves quietly instead of surfacing as a conflict and failing an ordinary delete.
+   */
+  @Test
+  void deletingAVertexWithASelfLoopRemovesItCleanly() {
+    createSchema();
+
+    final RID[] holder = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("Src");
+      v.save();
+      holder[0] = v.getIdentity();
+      holder[1] = v.newEdge("LINK", v).getIdentity();
+    });
+    final RID vertexRID = holder[0];
+    final RID selfLoop = holder[1];
+
+    // The self-loop really is reachable from both directions, otherwise the duplicate never arises.
+    database.transaction(() -> {
+      assertThat(vertexRID.asVertex().countEdges(Vertex.DIRECTION.OUT, "LINK")).isEqualTo(1);
+      assertThat(vertexRID.asVertex().countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(1);
+    });
+
+    database.transaction(() -> vertexRID.asVertex().delete());
+
+    database.transaction(() -> {
+      assertThat(database.existsRecord(vertexRID)).isFalse();
+      assertThat(database.existsRecord(selfLoop)).as("the self-loop must not outlive its only endpoint").isFalse();
+    });
+
+    assertIntegrityClean();
+  }
+
+  /**
    * The shape the strict read has to survive in production: vertices being deleted while other transactions append
    * edges to them, so the deleter reads an edge list a concurrent commit is publishing right now. Every edge in the
    * fixture points at a hub, so once every hub is gone NO edge record may survive - a single ghost edge is exactly

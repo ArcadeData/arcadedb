@@ -735,6 +735,13 @@ public class GraphEngine {
    * A single edge whose RECORD cannot be resolved is a different matter and stays tolerated in both modes: the walk
    * keeps every other entry, so the cost is that one already-dangling pointer rather than the whole remaining list,
    * and {@code EdgeIteratorFilter} and {@code CHECK DATABASE} treat such an entry the same way.
+   * <p>
+   * The split between the two catch arms below is NOT "transient versus permanent", and reading it that way is the
+   * one mistake to avoid here. It is "what does a miss cost". A chunk that cannot be FOUND is treated as retryable
+   * because that is the only answer that is safe when the alternative - deleting the vertex on a short list - loses
+   * references; it is deliberately applied to a chunk that is genuinely LOST as well, which no retry can bring back,
+   * so that case now fails the delete once the retries are spent instead of quietly completing it. A chunk that
+   * cannot be DECODED takes the other arm for the reason spelled out there, not because it is less permanent.
    *
    * @return whether the vertex has an edge list in this direction at all, i.e. whether there are chunk records left
    * to drain afterwards.
