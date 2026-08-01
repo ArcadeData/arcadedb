@@ -133,7 +133,20 @@ review-cycle-1 `Integer` overload fix: **10557 tests, 0 failures, 0 errors**.
 The cycle-1 test was proven to fail first the same way, by stashing only the main-source change and re-running
 it: `expected: 4294967295L but was: -1`.
 
-The server IT was **not** verified locally and is left to CI. Port 2480 on the development machine is held
+The server IT is **green in CI**, confirmed by class name in the `integration-tests` job log rather than by the
+check's colour:
+
+```
+[INFO] Running com.arcadedb.server.Issue5647SqlArithmeticHttpStatusIT
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 -- in com.arcadedb.server.Issue5647SqlArithmeticHttpStatusIT
+```
+
+That distinction matters here: `.github/workflows/mvn-test.yml` runs both `unit-tests` and `integration-tests`
+with `--fail-never`, so those checks go green even when tests fail - the failures surface only through the
+Tests Reporter step. `build-and-package` runs no ITs at all. The wider IT run reported zero failures and zero
+errors across every module, so this change introduces no IT regressions either.
+
+It was **not** verified locally. Port 2480 on the development machine is held
 permanently by a Homebrew-installed ArcadeDB service, so a `BaseGraphServerTest` server cannot bind it and the
 hardcoded `127.0.0.1:248X` assertions reach that other server instead of the test's own. This is a property of
 the local environment, not of the test: the IT follows the same hardcoded-port pattern as the merged
@@ -151,6 +164,8 @@ the local environment, not of the test: the IT follows the same hardcoded-port p
   convention, 8+ prior examples including the merged #5545).
 - **Cycle 2** (`252bd7709`) - approved, no blocking items. Raised the `Type.increment` parallel path, recorded
   as a follow-up below rather than fixed here.
+
+Final state: **clean approval**, 2 of 4 cycles used.
 
 ## Follow-ups worth filing separately
 
