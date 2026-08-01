@@ -211,16 +211,6 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
   }
 
   /**
-   * The floor score the fix hands an unreadable node is {@code 0}, and the claim that {@code 0} is the floor of
-   * <i>every</i> JVector similarity is what lets one constant serve all three. `Infinity` only ever showed up under
-   * COSINE, so these two pin the claim where it was never exercised: EUCLIDEAN's {@code 1 / (1 + d^2)} is strictly
-   * above 0, and DOT_PRODUCT's {@code (1 + dot) / 2} bottoms out at 0 for the unit-length vectors JVector documents
-   * as the precondition for using it - which is why this one normalises the fixture.
-   * <p>
-   * The arc embedding has the same magnitude at every vertex, so both metrics order the clusters exactly as cosine
-   * does and the expected answer is unchanged.
-   */
-  /**
    * The score a tombstone gets, asserted directly. It cannot be asserted through search results - the
    * {@link LiveVectorBitsFilter} keeps a tombstone out of the answer whatever it scored, which is exactly why the two
    * halves of the fix need separate tests: set {@code UNREADABLE_NODE_SCORE} to {@code 1.0f} and every end-to-end test
@@ -269,6 +259,16 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
     }
   }
 
+  /**
+   * The same deleted region under the two metrics the {@code Infinity} defect never reached - it came out of cosine
+   * cancelling the magnitude, so these two pass on {@code main} as well. They are here to hold the end-to-end
+   * behaviour of a non-cosine index, not to reproduce the bug; what pins the floor score itself is
+   * {@link #anUnreadableNodeScoresTheFloorOfItsMetric}.
+   * <p>
+   * The arc embedding has the same magnitude at every vertex, so both metrics order the clusters exactly as cosine
+   * does and the expected answer is unchanged. The DOT_PRODUCT fixture is scaled onto the unit sphere, which is
+   * JVector's documented precondition for that metric and the condition under which its floor really is 0.
+   */
   @Test
   void aDeletedRegionQueryUnderEuclidean() {
     createSchema(VectorQuantizationType.INT8, "EUCLIDEAN");

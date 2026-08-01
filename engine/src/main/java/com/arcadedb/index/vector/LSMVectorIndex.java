@@ -3336,6 +3336,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The vector values a search scores against: the live builder's in-memory set when the graph in use is the one that
    * builder produced (there the ordinals <i>are</i> vector ids), and the page-backed reader otherwise. The reader is
    * handed the index-scoped cache so a working set survives across queries (issue #5412).
+   * <p>
+   * The first branch is currently unreachable and kept as a guard: {@code graphIndex} is only ever assigned a graph
+   * loaded from disk or one built by the local builder in {@code buildGraphFromScratch}, never
+   * {@code liveBuilder.getGraph()}, so the identity check cannot hold. That matters to the callers because it means
+   * the {@code ordinalMap} they pass is always the one published alongside the graph by the same rebuild - the
+   * pairing issue #4581 exists to keep intact - and never a map whose ordinals mean something else.
    */
   private RandomAccessVectorValues searchVectorValues(final int[] ordinalMap) {
     if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph())
