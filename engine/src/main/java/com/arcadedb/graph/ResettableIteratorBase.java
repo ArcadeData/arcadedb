@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.utility.ResettableIterator;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -29,6 +30,9 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   protected       EdgeSegment      currentContainer;
   protected final AtomicInteger    currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
   protected       int              browsed         = 0;
+  private         int              neighborBucketId = -1;
+  private         long             neighborPosition = -1;
+  private         boolean          neighborFiltered = false;
 
   protected ResettableIteratorBase(final DatabaseInternal database, final EdgeSegment current) {
     if (current == null)
@@ -36,6 +40,30 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     this.database = database;
     this.initialContainer = current;
     this.currentContainer = current;
+  }
+
+  /**
+   * Restricts the iteration to the entries whose neighbour vertex is the given one.
+   * <p>
+   * Both the edge pointer and the neighbour pointer are stored inline in the segment, so the
+   * neighbour is already in hand when an entry is examined. Rejecting on it costs two primitive
+   * comparisons and, crucially, happens <b>before</b> the edge record is materialised. That is what
+   * makes an "is A connected to B" probe over a super-node cost a scan of the edge list rather than
+   * one record load - plus one property deserialization - per edge in it. The scan itself is
+   * unchanged: the segment still yields an RID per entry whether or not the filter is set.
+   *
+   * @param neighbor the only neighbour vertex to accept, or {@code null} to iterate everything
+   */
+  public void setNeighborVertexFilter(final RID neighbor) {
+    this.neighborFiltered = neighbor != null;
+    this.neighborBucketId = neighbor != null ? neighbor.getBucketId() : -1;
+    this.neighborPosition = neighbor != null ? neighbor.getPosition() : -1;
+  }
+
+  /** Tells whether the entry just read out of the segment survives the neighbour filter. */
+  protected final boolean matchesNeighborFilter(final RID neighbor) {
+    return !neighborFiltered
+        || (neighbor != null && neighbor.getBucketId() == neighborBucketId && neighbor.getPosition() == neighborPosition);
   }
 
   @Override
