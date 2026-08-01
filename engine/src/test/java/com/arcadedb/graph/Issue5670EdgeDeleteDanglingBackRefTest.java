@@ -149,6 +149,41 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
   }
 
   /**
+   * The second-order effect of the strict removal, locked in deliberately: deleting a vertex disconnects its edges
+   * from the vertices on the OTHER end too, so a healthy vertex whose NEIGHBOUR's edge list cannot be read now
+   * reports a retryable conflict instead of succeeding.
+   * <p>
+   * That is the intended answer, not an oversight. Succeeding here means deleting the edge record while the
+   * neighbour keeps pointing at it - creating exactly the dangling back-reference this issue is about, on a vertex
+   * nobody asked to touch. Under the concurrency this fix targets the retry resolves it; on a genuinely broken
+   * neighbour list the delete fails and {@code CHECK DATABASE} is the repair path. See issue #5680, which tracks
+   * whether vertex deletion should keep a tolerant escape hatch for that case.
+   */
+  @Test
+  void deletingAVertexWhoseNeighbourListIsUnreadableReportsAConflictRatherThanDanglingTheReference() {
+    createSchema();
+    final RID hubRID = createHub();
+    final List<RID> edges = createEdges(hubRID, 20);
+
+    // The SOURCE of the last edge: a perfectly healthy vertex, whose only edge points at the hub.
+    final RID[] srcHolder = new RID[1];
+    database.transaction(() -> srcHolder[0] = edges.get(edges.size() - 1).asEdge().getOut());
+
+    // Break the HUB's IN list - the neighbour of the vertex we are about to delete - leaving the hub record intact.
+    final RID[] headHolder = new RID[1];
+    database.transaction(() -> headHolder[0] = ((VertexInternal) hubRID.asVertex()).getInEdgesHeadChunk());
+    assertPrecondition(hubRID, edges.get(0), edges.size());
+    deleteRecord(headHolder[0]);
+
+    assertThatThrownBy(() -> database.transaction(() -> srcHolder[0].asVertex().delete(), false, 1))
+        .isInstanceOf(ConcurrentModificationException.class)
+        .isInstanceOf(NeedRetryException.class);
+
+    // Rolled back whole: the source vertex is still there, so a retry can complete it properly.
+    database.transaction(() -> assertThat(database.existsRecord(srcHolder[0])).isTrue());
+  }
+
+  /**
    * The reported shape (#5670): concurrent transactions that each delete one pre-existing edge of a hub and append
    * one new edge. Net degree is invariant, so the hub's IN-degree must stay at the pool size and the integrity
    * check must be clean. Before the fix this reported one edge too many - the surplus being an edge whose record

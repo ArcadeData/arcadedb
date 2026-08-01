@@ -1103,6 +1103,12 @@ public class GraphEngine {
    * from one here, so it now fails the removal on every attempt instead of completing it best-effort and leaving the
    * back-reference. Repair belongs to {@code CHECK DATABASE}, which rebuilds an unloadable chain and drops the
    * references into it; see issue #5680 for how this couples to the tolerance {@link #deleteVertex} keeps.
+   * <p>
+   * That price reaches {@link #deleteVertex} too, since disconnecting an edge touches the vertex at the OTHER end:
+   * deleting a healthy vertex whose NEIGHBOUR's list cannot be read now reports a conflict. Also deliberate -
+   * succeeding there would delete the edge record while the neighbour keeps pointing at it, dangling a reference on
+   * a vertex nobody asked to touch. Pinned by
+   * {@code Issue5670EdgeDeleteDanglingBackRefTest.deletingAVertexWhoseNeighbourListIsUnreadableReportsAConflictRatherThanDanglingTheReference}.
    */
   public EdgeLinkedList getEdgeHeadChunkForWrite(final VertexInternal vertex, final Vertex.DIRECTION direction) {
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)

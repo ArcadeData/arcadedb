@@ -1245,6 +1245,9 @@ reference during a read still skip a momentarily unreadable chunk rather than fa
 The other side of that trade, taken deliberately: an endpoint edge list that is not transiently invisible but
 genuinely broken is indistinguishable from one at that moment, so deleting an edge attached to it now fails instead
 of completing and leaving the back-reference behind. `CHECK DATABASE` remains the repair path - it rebuilds a chain
-that cannot be loaded and drops the references into it.
+that cannot be loaded and drops the references into it. This reaches vertex deletion as well, because disconnecting
+an edge touches the vertex at the other end: deleting a healthy vertex whose *neighbour's* edge list cannot be read
+now reports a conflict rather than succeeding, since succeeding would delete the edge record while the neighbour
+keeps pointing at it - dangling a reference on a vertex nobody asked to touch.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
