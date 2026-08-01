@@ -1,5 +1,7 @@
 # #5627 - `Procedure.validateArgs()` reports a wrong argument count differently from functions
 
+PR: https://github.com/ArcadeData/arcadedb/pull/5698
+
 Follow-up from #5602 (PR #5612), which unified the function side and deliberately left the procedure side alone.
 
 ## Root cause
@@ -160,3 +162,30 @@ checked with a repo-wide scan for `Error executing procedure`, `requires exactly
   anywhere. A client parsing either breaks; a client keying off the HTTP status gets a more accurate one.
 - `OPTIONAL CALL` no longer swallows a wrong argument count, matching what #5602 already did for functions.
 - No change to any procedure implementation, to `CallStep`, or to the function side.
+
+## Review cycles
+
+Four cycles against the `claude` bot on PR #5698. Every cycle was an approval; the changes below came from
+non-blocking observations, each verified against the code before being acted on.
+
+| # | Head | Change | Review outcome |
+| --- | --- | --- | --- |
+| 1 | `92a29ec9` | The fix itself: `Procedure.checkArity`, kind-aware `FunctionArity`, tests | Approved. 3 non-blocking notes. |
+| 2 | `acc02542` | Scoped the doc's claim to argument *count*, recorded the message-contract change | Approved. 3 non-blocking notes. |
+| 3 | `d5517a13` | Collapsed both `checkArity` bodies onto `FunctionArity.check`; dropped a misattributed `@author` | Approved. 3 non-blocking notes. |
+| 4 | `89ab2c9b` | Recorded the seven function-side hand-written arity checks as a follow-up | Approved, no actionable items. |
+
+Observations raised and deliberately not acted on:
+
+- **`validateArgs` is now a pure passthrough on both interfaces** (cycles 3 and 4). Kept: `validateArgs` is the
+  name `CallStep` and all ~80 `execute()` bodies call, and the split mirrors `Function`. Both reviews concluded
+  the symmetry is worth the hop.
+- **`docs/<issue>-<slug>.md` as a home for tracking docs** (cycle 2). Existing convention - 73 such files.
+- **The registry sweep assumes `validateArgs` is arity-only** (cycle 4). True today: no procedure overrides it.
+  A future override adding type checks could trip a different error on the sweep's array of nulls.
+- **`aCorrectArgumentCountIsStillAccepted` runs `algo.degree()` on an empty database** (cycle 3), so it leans on
+  that procedure tolerating an empty graph. Kept as a smoke check that the guard rejects counts, not calls.
+
+No deferred items - every actionable observation was resolved within its cycle.
+
+**Final state:** clean-approval.
