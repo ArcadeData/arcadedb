@@ -103,7 +103,7 @@ public final class CorrelatedSubqueryRunner {
     // input the physical operators do not model. The step chain is built per row, as it is for a CALL { } body.
     final CypherExecutionPlan plan = new CypherExecutionPlan(database, body,
         parameters != null ? parameters : Map.of(), database.getConfiguration(), null,
-        OpenCypherQueryEngine.sharedExpressionEvaluator());
+        OpenCypherQueryEngine.getExpressionEvaluator());
 
     return plan.executeWithSeedRow(seedRow(outerRow), context);
   }

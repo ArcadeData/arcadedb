@@ -243,6 +243,24 @@ class CypherSubqueryBodyIssue5656Test extends TestHelper {
         + "RETURN n.name AS name ORDER BY name")).containsExactly("b");
   }
 
+  /**
+   * The count push-downs answer a {@code RETURN count(*)} from the schema and the CSR arrays, reading the statement's
+   * patterns and never the incoming rows. Running a body from a seed row puts an incoming row in front of them for
+   * the first time, so a correlated body has to be kept off that path - otherwise a count over one bound vertex is
+   * answered with the count over every vertex in the graph. A body that binds nothing from outside keeps it, since
+   * there is no name it could have taken from the enclosing query.
+   */
+  @Test
+  void aCorrelatedCountIsNotAnsweredByTheGlobalCountPushDown() {
+    database.command("opencypher", "CREATE (q1:Q {k:1})-[:LINKS]->(q2:Q {k:2})-[:LINKS]->(q3:Q {k:3})");
+
+    // Correlated: q1 has one outgoing LINKS, the graph has two.
+    assertThat(collect("MATCH (q:Q {k:1}) RETURN COLLECT { MATCH (q)-[:LINKS]->(x:Q) RETURN count(*) } AS r"))
+        .containsExactly(1L);
+    // Uncorrelated, and written with no outer row at all, so the seed binds nothing: the whole graph is the answer.
+    assertThat(collect("RETURN COLLECT { MATCH (a:Q)-[:LINKS]->(b:Q) RETURN count(*) } AS r")).containsExactly(2L);
+  }
+
   @Test
   void countAndCollectStillProduceTheSameValues() {
     try (final ResultSet rs = database.query("opencypher",
