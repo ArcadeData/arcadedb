@@ -44,7 +44,9 @@ public interface Cursor extends Iterable<Identifiable>, Iterator<Identifiable>, 
 
   /**
    * Releases whatever the cursor holds. The default is a no-op for the implementations backed by an in-memory
-   * collection, which hold nothing.
+   * collection, which hold nothing - so an implementation that DOES hold something must remember to override it. The
+   * weak-reference net in {@code LSMTreeIndexCompacted} covers only the compacted-series cursors; nothing catches a
+   * new cursor type that acquires a resource and inherits this default.
    */
   @Override
   default void close() {

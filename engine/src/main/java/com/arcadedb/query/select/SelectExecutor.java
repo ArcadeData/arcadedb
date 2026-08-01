@@ -103,6 +103,8 @@ public class SelectExecutor {
       }
       return count;
     } finally {
+      // only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
+      // MultiIterator over several buckets) hold no per-series file registration and are not closeable at all
       if (iteratorFromIndexes != null)
         iteratorFromIndexes.close();
     }
