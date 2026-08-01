@@ -1,0 +1,276 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.graph;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * #5670: deleting an edge must never leave its back-reference behind.
+ * <p>
+ * The removal walk over an endpoint's edge list used to treat an unreadable chunk as "nothing to remove": the head
+ * chunk was read through the best-effort {@code getEdgeHeadChunk} (null on a miss) and the chain hops through a
+ * plain lookup, while {@code deleteEdge} wrapped both in a {@code catch (RecordNotFoundException)}. Under
+ * concurrency a chunk is regularly unreadable for reasons that have nothing to do with the graph: a commit
+ * publishes its pages one at a time and the reader takes no commit lock, so a vertex page can expose a head RID
+ * before that head's own page is visible, and an emptied chunk is relinked out of the chain under a walker's feet.
+ * The removal was then skipped while the edge record was deleted anyway - one edge too many in the endpoint's
+ * degree, plus one integrity error. The append path already answered the same window with a retryable conflict;
+ * these tests pin that the removal path now does too.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
+
+  /** These tests deliberately corrupt an edge-list chain, so the blanket end-of-test check would always fire. */
+  @Override
+  protected boolean isCheckingDatabaseIntegrity() {
+    return false;
+  }
+
+  /**
+   * The transient window as observed in the field: the hub's IN head chunk RID is readable on the vertex but the
+   * chunk itself is not. Simulated by removing the head chunk record. The edge delete must raise a retryable
+   * conflict, leaving the edge (and its back-reference) intact for the retry - not commit a delete that strips the
+   * record while the back-reference survives.
+   */
+  @Test
+  void edgeDeleteRaisesRetryableConflictWhenTheEndpointHeadChunkIsUnreadable() {
+    createSchema();
+    final RID hubRID = createHub();
+    final List<RID> edges = createEdges(hubRID, 200);
+
+    final List<RID> chain = inChunkChain(hubRID);
+    assertThat(chain).as("the hub's IN list must span several chunks").hasSizeGreaterThan(3);
+
+    final RID victim = edges.get(0);
+    assertPrecondition(hubRID, victim, edges.size());
+
+    final RID headChunk = chain.get(0);
+    deleteRecord(headChunk);
+
+    assertThatThrownBy(() -> database.transaction(() -> victim.asEdge().delete(), false, 1))
+        .isInstanceOf(ConcurrentModificationException.class)
+        .hasMessageContaining(headChunk.toString());
+
+    // The whole delete was rolled back: the edge record is still there, so a retry can complete it properly.
+    database.transaction(() -> assertThat(database.existsRecord(victim)).isTrue());
+  }
+
+  /**
+   * Same contract one hop further in: a chunk in the MIDDLE of the chain is gone (what a concurrent commit does
+   * when it empties a chunk and relinks the chain past it), and the edge to remove lives behind it. Abandoning the
+   * walk there is what left the back-reference dangling.
+   */
+  @Test
+  void edgeDeleteRaisesRetryableConflictWhenAMidChainChunkIsUnreadable() {
+    createSchema();
+    final RID hubRID = createHub();
+    final List<RID> edges = createEdges(hubRID, 200);
+
+    final List<RID> chain = inChunkChain(hubRID);
+    assertThat(chain).as("the hub's IN list must span several chunks").hasSizeGreaterThan(3);
+
+    // The oldest chunk is the chain's tail, so the first edge created is the one furthest from the head.
+    final RID victim = edges.get(0);
+    final RID midChunk = chain.get(1);
+    assertThat(chunkHolding(victim, chain)).as("the victim must sit BEHIND the chunk about to vanish")
+        .isGreaterThan(chain.indexOf(midChunk));
+    assertPrecondition(hubRID, victim, edges.size());
+
+    deleteRecord(midChunk);
+
+    assertThatThrownBy(() -> database.transaction(() -> victim.asEdge().delete(), false, 1))
+        .isInstanceOf(ConcurrentModificationException.class)
+        .hasMessageContaining(midChunk.toString());
+
+    database.transaction(() -> assertThat(database.existsRecord(victim)).isTrue());
+  }
+
+  /**
+   * The reported shape (#5670): concurrent transactions that each delete one pre-existing edge of a hub and append
+   * one new edge. Net degree is invariant, so the hub's IN-degree must stay at the pool size and the integrity
+   * check must be clean. Before the fix this reported one edge too many - the surplus being an edge whose record
+   * was deleted while its back-reference stayed in the hub's list.
+   */
+  @Test
+  @Tag("slow")
+  void concurrentDeleteAndAppendNeverLeaveADanglingBackReference() throws InterruptedException {
+    final int rounds = 40;
+    final int threads = 8;
+    final int perThread = 60;
+    final int pool = threads * perThread; // exactly one removal per iteration drains the pool
+
+    final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+    GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
+    try {
+      createSchema();
+
+      for (int round = 0; round < rounds; round++) {
+        final RID hubRID = createHub();
+        final ConcurrentLinkedQueue<RID> removable = new ConcurrentLinkedQueue<>(createEdges(hubRID, pool));
+
+        final AtomicLong failures = new AtomicLong();
+        final CountDownLatch start = new CountDownLatch(1);
+        final CountDownLatch done = new CountDownLatch(threads);
+        for (int t = 0; t < threads; t++) {
+          new Thread(() -> {
+            try {
+              start.await();
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+              done.countDown();
+              return;
+            }
+            for (int i = 0; i < perThread; i++) {
+              final RID toRemove = removable.poll();
+              try {
+                database.transaction(() -> {
+                  if (toRemove != null)
+                    toRemove.asEdge().delete();
+                  final MutableVertex src = database.newVertex("Src");
+                  src.save();
+                  src.newEdge("LINK", hubRID);
+                }, false, 10_000);
+              } catch (final Exception e) {
+                failures.incrementAndGet();
+              }
+            }
+            done.countDown();
+          }).start();
+        }
+        start.countDown();
+        done.await();
+
+        assertThat(failures.get()).as("round " + round).isEqualTo(0);
+
+        final long[] inDegree = new long[1];
+        database.transaction(() -> inDegree[0] = hubRID.asVertex().countEdges(Vertex.DIRECTION.IN, "LINK"));
+        assertThat(inDegree[0]).as("round " + round + ": hub IN-degree").isEqualTo(pool);
+      }
+
+      assertIntegrityClean();
+    } finally {
+      GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
+    }
+  }
+
+  private void createSchema() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Hub", 1);
+      database.getSchema().createVertexType("Src", 16);
+      database.getSchema().createEdgeType("LINK", 16);
+    });
+  }
+
+  private RID createHub() {
+    final MutableVertex[] holder = new MutableVertex[1];
+    database.transaction(() -> {
+      holder[0] = database.newVertex("Hub");
+      holder[0].save();
+    });
+    return holder[0].getIdentity();
+  }
+
+  /** One edge per transaction, so the hub's IN chain grows chunk by chunk exactly as it does in production. */
+  private List<RID> createEdges(final RID hubRID, final int count) {
+    final List<RID> edges = new ArrayList<>(count);
+    for (int i = 0; i < count; i++) {
+      final RID[] holder = new RID[1];
+      database.transaction(() -> {
+        final MutableVertex src = database.newVertex("Src");
+        src.save();
+        holder[0] = src.newEdge("LINK", hubRID).getIdentity();
+      });
+      edges.add(holder[0]);
+    }
+    return edges;
+  }
+
+  /** The hub's IN chunk chain, head first (newest chunk) to tail (the chunk created with the first edge). */
+  private List<RID> inChunkChain(final RID hubRID) {
+    final List<RID> chain = new ArrayList<>();
+    database.transaction(() -> {
+      RID rid = ((VertexInternal) hubRID.asVertex()).getInEdgesHeadChunk();
+      while (rid != null) {
+        chain.add(rid);
+        rid = ((EdgeSegment) database.lookupByRID(rid, true)).getPreviousRID();
+      }
+    });
+    return chain;
+  }
+
+  /** Index in {@code chain} of the chunk holding {@code edgeRID}, or -1. */
+  private int chunkHolding(final RID edgeRID, final List<RID> chain) {
+    final int[] found = new int[] { -1 };
+    database.transaction(() -> {
+      for (int i = 0; i < chain.size(); i++)
+        if (((EdgeSegment) database.lookupByRID(chain.get(i), true)).containsEdge(edgeRID)) {
+          found[0] = i;
+          break;
+        }
+    });
+    return found[0];
+  }
+
+  /** The graph is intact and the edge under test is really reachable from the hub before the chain is broken. */
+  private void assertPrecondition(final RID hubRID, final RID edgeRID, final int expectedDegree) {
+    database.transaction(() -> {
+      assertThat(hubRID.asVertex().countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(expectedDegree);
+      assertThat(database.existsRecord(edgeRID)).isTrue();
+    });
+  }
+
+  private void deleteRecord(final RID rid) {
+    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
+  }
+
+  private void assertIntegrityClean() {
+    try (final ResultSet rs = database.command("sql", "check database")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(longProperty(row, "autoFix")).as("check database autoFix: " + row.toJSON()).isEqualTo(0L);
+        assertThat(longProperty(row, "totalErrors")).as("check database totalErrors: " + row.toJSON()).isEqualTo(0L);
+      }
+    }
+  }
+
+  /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */
+  private static long longProperty(final Result row, final String name) {
+    final Object value = row.getProperty(name);
+    return value == null ? 0L : ((Number) value).longValue();
+  }
+}

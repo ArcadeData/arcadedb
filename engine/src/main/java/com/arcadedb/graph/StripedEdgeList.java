@@ -71,8 +71,8 @@ public class StripedEdgeList extends EdgeLinkedList {
   /** Millis of the last skipped-chain WARNING (see addChain): a hot super-node under the transient cross-file
    * publication window could otherwise flood the log with one line per read. Reads are deliberately
    * BEST-EFFORT - unlike the write path (which surfaces the same condition as a retryable conflict, see
-   * loadStripeHead), a read skips the momentarily unresolvable chain, so counts/iterations during a concurrent
-   * commit can transiently under-report instead of failing. */
+   * EdgeLinkedList.loadChunkForWrite), a read skips the momentarily unresolvable chain, so counts/iterations
+   * during a concurrent commit can transiently under-report instead of failing. */
   private static final AtomicLong                      LAST_SKIPPED_CHAIN_WARN = new AtomicLong();
 
   private final DatabaseInternal database;
@@ -238,7 +238,9 @@ public class StripedEdgeList extends EdgeLinkedList {
     EdgeSegment head = null;
     final RID headRID = directory.getHead(generation, slot);
     if (headRID != null) {
-      head = loadStripeHead(headRID);
+      // loadChunkForWrite maps a head that is not visible yet - the directory and chunk pages of a concurrent
+      // commit are published one at a time - to a retryable conflict rather than a spurious "record not found".
+      head = loadChunkForWrite(headRID);
       if (append(head, edgeRID, vertexRID))
         return;
     }
@@ -261,7 +263,7 @@ public class StripedEdgeList extends EdgeLinkedList {
 
     if (!freshHeadRID.equals(headRID)) {
       // A CONCURRENT TRANSACTION ALREADY REPLACED THE HEAD: APPEND INTO THE CURRENT ONE
-      head = loadStripeHead(freshHeadRID);
+      head = loadChunkForWrite(freshHeadRID);
       if (append(head, edgeRID, vertexRID))
         return;
     }
@@ -274,22 +276,6 @@ public class StripedEdgeList extends EdgeLinkedList {
     newChunk.setPrevious(head);
     database.createRecord(newChunk, database.getSchema().getBucketById(head.getIdentity().getBucketId()).getName());
     updateSlot(fresh, generation, slot, newChunk.getIdentity());
-  }
-
-  /**
-   * Loads a stripe head chunk for write, mapping a transient miss to a retryable conflict: the directory page
-   * and the stripe chunk page of a concurrent commit are published one page at a time (readers take no commit
-   * lock), so a freshly-read head RID can momentarily point to a record whose page is not visible yet. That is
-   * transient by construction - surfacing it as {@link ConcurrentModificationException} lets the transaction
-   * retry loop re-read a consistent view instead of failing with a spurious "record not found".
-   */
-  private EdgeSegment loadStripeHead(final RID headRID) {
-    try {
-      return loadChunkForWrite(headRID);
-    } catch (final RecordNotFoundException e) {
-      throw new ConcurrentModificationException(
-          "Stripe head chunk " + headRID + " not visible yet (concurrent commit in flight on vertex " + vertex.getIdentity() + ")");
-    }
   }
 
   /** In-place append + merge tracking; false if the chunk is full. */
@@ -460,7 +446,7 @@ public class StripedEdgeList extends EdgeLinkedList {
       if (strict)
         // MUTATING (or dedup-feeding) caller: skipping the chain would silently commit an incomplete operation
         // (e.g. a removal leaving a stale back-reference). The miss is transient by construction (cross-file
-        // commit publication) - surface it as a retryable conflict, symmetric with loadStripeHead.
+        // commit publication) - surface it as a retryable conflict, symmetric with loadChunkForWrite.
         throw new ConcurrentModificationException(
             "Stripe chain " + headRID + " of vertex " + vertex.getIdentity() + " not visible yet (concurrent commit in flight)");
       final long now = System.currentTimeMillis();

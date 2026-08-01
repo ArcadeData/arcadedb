@@ -1210,4 +1210,36 @@ and expressing that would have been faithful to its intent, but it would have ti
 of repairing a config that enforced nothing - a decision worth taking on its own merits. Development dependencies are
 still covered by the `npm audit --audit-level=moderate` step of the same workflow.
 
+## Deleting an edge no longer leaves its back-reference behind under concurrency
+
+Removing an edge disconnects it from both endpoints and then deletes the edge record. The disconnection walked the
+endpoint's edge-list chain with best-effort reads: the head chunk came from a helper that answers `null` when it
+cannot be loaded, the chain hops used a plain lookup, and `deleteEdge` wrapped the lot in a
+`catch (RecordNotFoundException)`. All three read "chunk unreadable" as "nothing to remove here" - and then the edge
+record was deleted anyway.
+
+Under concurrency a chunk is regularly unreadable for reasons that say nothing about the graph. A commit publishes
+its pages one at a time and a reader takes no commit lock, so a vertex page can expose a new edge-list head RID a
+moment before that head's own page becomes visible; and a chunk emptied by another transaction is relinked out of
+the chain while a walker is still following a pointer to it. Hitting either window ended the removal without having
+removed anything, so the back-reference outlived its edge: the endpoint reported one edge too many
+(`countEdges`, `both()`, `in()`/`out()`) and `check database` reported one broken link. On a hot vertex - the
+super-node shape this happens on - the window is narrow, which is why it surfaced as a rare, unexplained off-by-one
+rather than as a reproducible failure.
+
+The append path already answered exactly this window with a retryable `ConcurrentModificationException`. The removal
+path now does the same: a head chunk that is present but unreadable, and a chain hop that cannot be read, are
+retryable conflicts, so the transaction re-reads a consistent view and completes the removal instead of committing a
+half-done one. `null` from the write-side head lookup now means one thing only - the vertex has no edge list in that
+direction, so there is genuinely nothing to remove. Tolerance for an endpoint **vertex** that no longer exists is
+unchanged: there is nothing to disconnect from a vertex that is gone.
+
+Visible effect: an `edge.delete()` racing a concurrent write on the same endpoint can now raise a
+`ConcurrentModificationException` where it previously "succeeded". That is a `NeedRetryException`, so the standard
+retry loop (`database.transaction(...)`, and the server's auto-retry for single-request commands) absorbs it. A
+client-managed explicit transaction spanning several requests sees it and should retry the transaction, which is the
+same contract concurrent updates have always had. Best-effort callers are unaffected: iteration, counting and the
+opportunistic pruning of an already-dangling reference during a read still skip a momentarily unreadable chunk
+rather than failing.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

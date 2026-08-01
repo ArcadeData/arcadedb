@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -100,12 +101,22 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
         LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it. Error: %s", edge,
             vertex != null ? "vertex " + vertex : "", e.getMessage());
 
-      database.transaction(() -> {
-        final EdgeLinkedList outEdges = database.getGraphEngine().getEdgeHeadChunk((VertexInternal) this.vertex, direction);
-        if (outEdges != null)
-          outEdges.removeEdgeRID(edge);
+      try {
+        database.transaction(() -> {
+          final EdgeLinkedList outEdges = database.getGraphEngine().getEdgeHeadChunk((VertexInternal) this.vertex, direction);
+          if (outEdges != null)
+            outEdges.removeEdgeRID(edge);
 
-      }, true);
+        }, true);
+      } catch (final NeedRetryException retryLater) {
+        // #5670: the removal walk now reports an unreadable chunk as a retryable conflict, because a caller that
+        // is DELETING an edge must not conclude there was nothing to remove. This caller is not deleting anything:
+        // it is opportunistically pruning a reference whose edge is already gone, from inside a READ. A concurrent
+        // commit reshaping the chain therefore costs the ghost one more pass, not the iteration.
+        LogManager.instance()
+            .log(this, Level.FINE, "Cannot prune dangling edge %s from vertex %s now (concurrent change): %s", edge,
+                vertex, retryLater.getMessage());
+      }
 
     } else {
       if (fullStackTracePrinted < 10) {

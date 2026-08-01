@@ -493,37 +493,34 @@ public class GraphEngine {
     return total;
   }
 
+  /**
+   * Disconnects an edge from both its endpoints and deletes the edge record.
+   * <p>
+   * #5670: the two endpoint blocks tolerate a VANISHED ENDPOINT VERTEX (nothing left to disconnect) but NOT a
+   * vanished piece of a still-existing vertex's edge list. Resolving the vertex and walking its chain used to sit
+   * inside one {@code catch (SchemaException | RecordNotFoundException)}, so a chunk that was merely not visible
+   * YET - a concurrent commit publishes the vertex page carrying the new head RID before the head chunk's own page,
+   * the exact transient {@link #getOrCreateEdgeList} already turns into a retryable conflict on the append path -
+   * silently skipped the removal while the edge record below was deleted anyway. The back-reference survived its
+   * edge: one edge too many in the endpoint's degree and one integrity error, under concurrency only. Splitting the
+   * resolution from the mutation, and reading the head through the strict {@link #getEdgeHeadChunkForWrite}, makes
+   * that window a retry instead.
+   */
   public void deleteEdge(final Edge edge) {
     final Database database = edge.getDatabase();
 
-    try {
-      if (database.existsRecord(edge.getOut())) {
-        final VertexInternal vOut = (VertexInternal) edge.getOutVertex();
-        if (vOut != null) {
-          final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
-          if (outEdges != null)
-            outEdges.removeEdge(edge);
-        }
-      }
-    } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(),
-              edge.getIdentity());
+    final VertexInternal vOut = resolveEndpointToDisconnect(edge, Vertex.DIRECTION.OUT);
+    if (vOut != null) {
+      final EdgeLinkedList outEdges = getEdgeHeadChunkForWrite(vOut, Vertex.DIRECTION.OUT);
+      if (outEdges != null)
+        outEdges.removeEdge(edge);
     }
 
-    try {
-      if (database.existsRecord(edge.getIn())) {
-        final VertexInternal vIn = (VertexInternal) edge.getInVertex();
-        if (vIn != null) {
-          final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
-          if (inEdges != null)
-            inEdges.removeEdge(edge);
-        }
-      }
-    } catch (final SchemaException | RecordNotFoundException e) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(),
-              edge.getIdentity());
+    final VertexInternal vIn = resolveEndpointToDisconnect(edge, Vertex.DIRECTION.IN);
+    if (vIn != null) {
+      final EdgeLinkedList inEdges = getEdgeHeadChunkForWrite(vIn, Vertex.DIRECTION.IN);
+      if (inEdges != null)
+        inEdges.removeEdge(edge);
     }
 
     final RID edgeRID = edge.getIdentity();
@@ -537,6 +534,29 @@ public class GraphEngine {
       } catch (final RecordNotFoundException e) {
         // ALREADY DELETED: IGNORE IT
       }
+  }
+
+  /**
+   * The endpoint vertex of {@code edge} in {@code direction} whose edge list still has to be disconnected, or null
+   * when there is nothing to disconnect because the vertex itself is gone (deleted concurrently, or never existed -
+   * a dangling endpoint reference). ONLY the vertex resolution is tolerated here: every failure further in, on the
+   * edge list of a vertex that does exist, must reach the caller (see {@link #deleteEdge}).
+   */
+  private VertexInternal resolveEndpointToDisconnect(final Edge edge, final Vertex.DIRECTION direction) {
+    final RID endpointRID = direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn();
+    try {
+      if (!edge.getDatabase().existsRecord(endpointRID))
+        return null;
+      final Vertex endpoint = direction == Vertex.DIRECTION.OUT ? edge.getOutVertex() : edge.getInVertex();
+      // asVertexInternal, not a direct cast: a cached vertex arrives wrapped in a SynchronizedVertex, which is a
+      // Vertex but not a VertexInternal.
+      return endpoint == null ? null : asVertexInternal(endpoint);
+    } catch (final SchemaException | RecordNotFoundException e) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Error on loading %s vertex %s from edge %s", e, direction, endpointRID,
+              edge.getIdentity());
+      return null;
+    }
   }
 
   public void moveEdge(final MutableEdge edge, final Vertex.DIRECTION direction, final RID newVertexRID) {
@@ -1040,6 +1060,11 @@ public class GraphEngine {
       }
   }
 
+  /**
+   * READ-side edge list of a vertex: best-effort, so a head chunk that cannot be loaded costs the caller the list
+   * (null) rather than an exception. Callers that are about to MUTATE the list must use
+   * {@link #getEdgeHeadChunkForWrite} instead - see the contract stated there.
+   */
   public EdgeLinkedList getEdgeHeadChunk(final VertexInternal vertex, final Vertex.DIRECTION direction) {
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
       return null;
@@ -1047,13 +1072,8 @@ public class GraphEngine {
     RID rid = null;
     try {
       rid = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
-      if (rid != null) {
-        final Record head = vertex.getDatabase().lookupByRID(rid, true);
-        if (head instanceof StripeDirectory directory)
-          // SUPER-NODE PROMOTED VERTEX (#5156): THE EDGE LIST IS STRIPED OVER MULTIPLE CHAINS
-          return new StripedEdgeList(vertex, direction, directory);
-        return new EdgeLinkedList(vertex, direction, (EdgeSegment) head);
-      }
+      if (rid != null)
+        return buildEdgeList(vertex, direction, rid);
     } catch (final RecordNotFoundException e) {
       // rid == null: the vertex itself was deleted concurrently (stale reference from a
       //   prior traversal step). Expected under concurrent writes — log at FINE.
@@ -1065,6 +1085,44 @@ public class GraphEngine {
     }
 
     return null;
+  }
+
+  /**
+   * WRITE-side edge list of a vertex, for a caller about to remove entries from it (#5670). Identical to
+   * {@link #getEdgeHeadChunk} except that a head RID which is present but cannot be READ raises a retryable
+   * {@link ConcurrentModificationException} instead of answering null.
+   * <p>
+   * Null means one thing only here: the vertex has NO edge list in this direction, so there is genuinely nothing
+   * to remove. Anything else is not a fact about the graph, it is a fact about timing - a concurrent commit
+   * publishes its pages one at a time and this reader holds no commit lock, so the vertex page can expose a head
+   * RID a moment before that head's own page becomes visible. Answering null there let the caller "successfully"
+   * skip a removal it had to perform. {@link #getOrCreateEdgeList} draws the same line on the append path, and
+   * {@link StripedEdgeList#addChain} on the per-stripe chains.
+   */
+  public EdgeLinkedList getEdgeHeadChunkForWrite(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
+      return null;
+
+    final RID rid = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    if (rid == null)
+      return null;
+
+    try {
+      return buildEdgeList(vertex, direction, rid);
+    } catch (final RecordNotFoundException e) {
+      throw new ConcurrentModificationException(
+          "Edge list " + direction + " head chunk " + rid + " of vertex " + vertex.getIdentity()
+              + " not visible yet (concurrent commit in flight)");
+    }
+  }
+
+  /** Wraps the head record of an edge list in the view matching its layout: striped (#5156) or classic. */
+  private EdgeLinkedList buildEdgeList(final VertexInternal vertex, final Vertex.DIRECTION direction, final RID headRID) {
+    final Record head = vertex.getDatabase().lookupByRID(headRID, true);
+    if (head instanceof StripeDirectory directory)
+      // SUPER-NODE PROMOTED VERTEX (#5156): THE EDGE LIST IS STRIPED OVER MULTIPLE CHAINS
+      return new StripedEdgeList(vertex, direction, directory);
+    return new EdgeLinkedList(vertex, direction, (EdgeSegment) head);
   }
 
   // -------------------------------------------------------------------------

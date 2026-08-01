@@ -28,6 +28,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
@@ -373,6 +374,13 @@ public class EdgeLinkedList {
    * updateRecord captures the page only later, at the newer version if a concurrent transaction modified the
    * same chunk in between. The commit-time MVCC check would then compare matching versions, miss the conflict,
    * and let the stale chunk buffer silently overwrite the concurrent change (a lost update / dropped edge).
+   * <p>
+   * A chunk that is not readable at all maps to a retryable {@link ConcurrentModificationException}: the directory
+   * page and the chunk page of a concurrent commit are published one page at a time (readers take no commit lock),
+   * so a freshly-read head RID can momentarily point to a record whose page is not visible yet. That is transient
+   * by construction - surfacing it as a conflict lets the transaction retry loop re-read a consistent view instead
+   * of raising a "record not found" that reads like a fact about the graph, and that a caller further up was
+   * entitled to take for "there was nothing here to remove" (#5670).
    */
   protected EdgeSegment loadChunkForWrite(final RID chunkRID) {
     final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
@@ -384,13 +392,17 @@ public class EdgeLinkedList {
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(chunkRID.getBucketId());
     try {
       bucket.fetchPageInTransaction(chunkRID);
+      // Read THROUGH the anchored page, bypassing the record cache: a cached copy read before the anchor can be
+      // one version older than the page just anchored - writing that stale buffer back at commit would pass the
+      // MVCC check (the version matches) and silently erase a concurrent append.
+      return new MutableEdgeSegment(database, chunkRID, bucket.getRecord(chunkRID).copyOfContent());
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on loading edge chunk page " + chunkRID, e);
+    } catch (final RecordNotFoundException e) {
+      throw new ConcurrentModificationException(
+          "Edge list " + direction + " chunk " + chunkRID + " of vertex " + vertex.getIdentity()
+              + " not visible yet (concurrent commit in flight)");
     }
-    // Read THROUGH the anchored page, bypassing the record cache: a cached copy read before the anchor can be
-    // one version older than the page just anchored - writing that stale buffer back at commit would pass the
-    // MVCC check (the version matches) and silently erase a concurrent append.
-    return new MutableEdgeSegment(database, chunkRID, bucket.getRecord(chunkRID).copyOfContent());
   }
 
   /**
@@ -486,9 +498,22 @@ public class EdgeLinkedList {
    * #5155: reads an edge-list chunk for a read-only walk hop, WITHOUT anchoring its page in the transaction.
    * Used while scanning the chain for the chunk to modify; the modified chunk (and, on an empty-chunk relink,
    * the previous-browsed chunk) is re-loaded through {@link #loadChunkForWrite} before being mutated.
+   * <p>
+   * #5670: called ONLY from the three removal walks, so a chunk that cannot be read is a retryable conflict, never
+   * a reason to stop walking. The hop pointer this transaction is following was read before the walk reached it,
+   * and a concurrent commit can have relinked that chunk out of the chain (an emptied chunk is deleted, see
+   * {@link #updateSegment}) or not published its page yet. Abandoning the walk there would end the removal without
+   * having removed anything, while the caller goes on to delete the edge record - leaving a back-reference to a
+   * record that no longer exists. Retrying re-reads the chain from the vertex's current head instead.
    */
   private EdgeSegment readChunk(final RID chunkRID) {
-    return (EdgeSegment) ((DatabaseInternal) vertex.getDatabase()).lookupByRID(chunkRID, true);
+    try {
+      return (EdgeSegment) ((DatabaseInternal) vertex.getDatabase()).lookupByRID(chunkRID, true);
+    } catch (final RecordNotFoundException e) {
+      throw new ConcurrentModificationException(
+          "Edge list " + direction + " chunk " + chunkRID + " of vertex " + vertex.getIdentity()
+              + " is no longer readable (concurrent commit in flight)");
+    }
   }
 
   private int computeBestSize() {
