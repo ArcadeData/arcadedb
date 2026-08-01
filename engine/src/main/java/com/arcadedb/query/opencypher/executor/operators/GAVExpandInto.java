@@ -113,12 +113,12 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           final int srcId = provider.getNodeId(sourceVertex.getIdentity());
           final int tgtId = provider.getNodeId(targetVertex.getIdentity());
 
-          final long connectingEdges;
-          if (srcId < 0 || tgtId < 0)
-            // One or both vertices not in GAV mapping — fall back to the OLTP edge list
+          // One or both vertices not in the GAV mapping, or a provider that cannot state the
+          // multiplicity exactly (a negative answer) — fall back to the OLTP edge list
+          long connectingEdges = srcId < 0 || tgtId < 0 ?
+              -1 : provider.countEdgesBetween(srcId, tgtId, direction.toArcadeDirection(), edgeTypes);
+          if (connectingEdges < 0)
             connectingEdges = countConnectingOLTP(sourceVertex, targetVertex);
-          else
-            connectingEdges = provider.countEdgesBetween(srcId, tgtId, direction.toArcadeDirection(), edgeTypes);
 
           // One row per relationship joining the pair: a pattern hop is an expansion, not a
           // connectivity test, so parallel edges each contribute a walk

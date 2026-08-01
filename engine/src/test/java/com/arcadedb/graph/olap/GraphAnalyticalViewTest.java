@@ -4159,6 +4159,60 @@ class GraphAnalyticalViewTest extends TestHelper {
     gav.drop();
   }
 
+  /**
+   * The overlay keys a pending deletion on the (source, target) pair, so deleting one of several parallel
+   * edges masks all of them: {@code isConnectedTo} and {@code getNeighborIds} then report the pair as gone
+   * while the others remain. A count cannot absorb that the way a boolean can, because the caller turns it
+   * into rows, so the count says "unknown" and leaves the caller to walk the edge list (issue #5663).
+   */
+  @Test
+  void countEdgesBetweenAnswersUnknownWhenTheOverlayMasksAPair() {
+    database.getSchema().createVertexType("Party");
+    database.getSchema().createEdgeType("PAID");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Party").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Party").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Party").set("name", "C").save();
+    a.newEdge("PAID", b, "seq", 1);
+    a.newEdge("PAID", b, "seq", 2);
+    a.newEdge("PAID", b, "seq", 3);
+    a.newEdge("PAID", c, "seq", 4);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("maskedPairView")
+        .withVertexTypes("Party")
+        .withEdgeTypes("PAID")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(3);
+
+    // Delete one of the three A->B edges
+    database.begin();
+    for (final var edge : a.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "PAID"))
+      if (Integer.valueOf(1).equals(edge.get("seq"))) {
+        edge.delete();
+        break;
+      }
+    database.commit();
+
+    // The pair is masked, so the view cannot say how many survive and says so...
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isNegative();
+    // ...which is the honest form of what the boolean and the neighbour list already report
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isFalse();
+    assertThat(gav.getNeighborIds(idA, Vertex.DIRECTION.OUT, "PAID")).doesNotContain(idB);
+
+    // a pair the deletion did not touch still answers exactly
+    assertThat(gav.countEdgesBetween(idA, idC, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(1);
+
+    gav.drop();
+  }
+
   // ── ASYNCHRONOUS update mode tests ──────────────────────────────────────
 
   @Test

@@ -868,7 +868,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Counts the edges joining nodeA to nodeB, optionally filtered by edge type.
+   * Counts the edges joining nodeA to nodeB, optionally filtered by edge type, or a negative value
+   * when the delta overlay makes the count unknowable (see {@link #countBetweenForType}).
    * <p>
    * This is the multiplicity {@link #isConnectedTo} collapses to a boolean, and a pattern
    * relationship matches once per edge, so a Cypher hop between two pinned vertices needs it rather
@@ -880,12 +881,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final String... edgeTypes) {
     final Snapshot snap = checkBuilt();
     long total = 0;
-    if (edgeTypes != null && edgeTypes.length > 0) {
-      for (final String edgeType : edgeTypes)
-        total += countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
-    } else {
-      for (final String edgeType : snap.csrPerType.keySet())
-        total += countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
+    final Iterable<String> types = edgeTypes != null && edgeTypes.length > 0 ?
+        Arrays.asList(edgeTypes) : snap.csrPerType.keySet();
+    for (final String edgeType : types) {
+      final long forType = countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
+      if (forType < 0)
+        return MULTIPLICITY_UNKNOWN; // one unknown type makes the whole count unknown
+      total += forType;
     }
     return total;
   }
@@ -1565,12 +1567,23 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Counts the edges of one type joining nodeA to nodeB, mirroring {@link #isConnectedForType} entry
-   * by entry so the two never disagree on whether an edge is there.
+   * Counts the edges of one type joining nodeA to nodeB, or {@link #MULTIPLICITY_UNKNOWN} when the
+   * overlay cannot say how many of them survive.
    * <p>
    * A self-loop is held by both adjacency lists of its vertex, so a BOTH walk would see it twice; the
    * backward side is skipped when the two nodes are the same, which is what the OLTP expansion
    * achieves by de-duplicating on edge identity.
+   * <p>
+   * <b>Why a deleted pair is answered "unknown" rather than zero.</b> {@link DeltaOverlay} keys its
+   * pending deletions on the {@code (source, target)} pair, not on the edge, because the CSR holds
+   * adjacency ids and has no edge identity to key on. Deleting one of three parallel edges therefore
+   * marks the whole pair, and every read that consults the mask drops all three - which is what
+   * {@link #isConnectedTo} and {@link #getNeighborIds} do, and it is why they report a pair as gone
+   * while two of its edges remain. A boolean can absorb that; a count cannot, because the caller
+   * turns it directly into rows. So a masked pair is reported unknown and the caller walks the edge
+   * list, which is exact. Resolving it here instead would take per-edge identity in the CSR, and a
+   * per-pair counter cannot substitute: the overlay absorbs a deletion replayed across merges by
+   * set semantics (issue #4587), which a counter would double-count.
    */
   private long countBetweenForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {
@@ -1582,13 +1595,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final boolean walkBackward = (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
         && !(direction == Vertex.DIRECTION.BOTH && selfLoop);
 
+    if (ov != null
+        && ((walkForward && ov.isEdgeDeleted(edgeType, nodeA, nodeB))
+        || (walkBackward && ov.isEdgeDeleted(edgeType, nodeB, nodeA))))
+      return MULTIPLICITY_UNKNOWN;
+
     long count = 0;
 
     if (csr != null && nodeAInBase) {
-      if (walkForward && (ov == null || !ov.isEdgeDeleted(edgeType, nodeA, nodeB)))
+      if (walkForward)
         count += equalRangeCount(csr.getForwardNeighbors(), csr.getForwardOffsets()[nodeA],
             csr.getForwardOffsets()[nodeA + 1], nodeB);
-      if (walkBackward && (ov == null || !ov.isEdgeDeleted(edgeType, nodeB, nodeA)))
+      if (walkBackward)
         count += equalRangeCount(csr.getBackwardNeighbors(), csr.getBackwardOffsets()[nodeA],
             csr.getBackwardOffsets()[nodeA + 1], nodeB);
     }
@@ -1796,6 +1814,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private static final int[] EMPTY_INT = new int[0];
+
+  /**
+   * Returned by {@link #countEdgesBetween} when the overlay makes the multiplicity unknowable, which
+   * the {@link com.arcadedb.graph.GraphTraversalProvider} contract spells as any negative value.
+   */
+  private static final long MULTIPLICITY_UNKNOWN = -1L;
 
   /**
    * Checks the view is built and returns a consistent snapshot for the caller to use.

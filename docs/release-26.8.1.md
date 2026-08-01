@@ -1226,6 +1226,13 @@ and still reports it once. The CSR-backed variant reads the multiplicity off the
 stopping at the first hit, and now steps aside for the edge-list walk when the hop has to tell one relationship
 from another - which adjacency ids cannot do.
 
+A graph analytical view keeps its pending deletions per `(source, target)` pair, because the CSR holds adjacency
+ids and has no edge identity to key on, so deleting one of several parallel edges masks all of them. That is why
+`isConnectedTo` can report a pair as gone while two of its edges remain. A boolean can absorb that; a row count
+cannot. A masked pair is therefore reported as "cannot say", and the hop falls back to the edge list, which is
+exact - so a `SYNCHRONOUS` view that has seen such a delete answers the pattern with the right number of rows
+rather than none.
+
 One related source of confusion is gone with it: two equally cheap hops were tie-broken by a `HashSet` iteration
 order over identity hash codes, so the same query could be planned differently from run to run. Ties now fall to
 the order the hops are written in.

@@ -133,7 +133,8 @@ class CypherCycleCardinalityTest {
   @Test
   void anUndirectedClosingHopCountsEveryRelationshipJoiningThePair() {
     // HUB->PEER twice and PEER->HUB once: three relationships join the pair, so the undirected hop that
-    // closes onto the bound PEER yields three rows for each of the two directed first hops.
+    // closes onto the bound PEER sees all three and keeps the two that are not the edge the first hop
+    // bound - twice over, once per directed first hop.
     assertThat(countOf("MATCH (a:Account {code: 'HUB'})-[r1:SETTLED]->(p:Account {code: 'PEER'}) "
         + "RETURN count(*) AS c")).isEqualTo(2);
     assertThat(valuesOf("MATCH (a:Account {code: 'HUB'})-[r1:SETTLED]->(p:Account {code: 'PEER'})-[r2:SETTLED]-(a) "

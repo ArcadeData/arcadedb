@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -104,6 +105,38 @@ class CypherGAVBoundTargetCardinalityTest {
         .build();
     try {
       assertThat(countOf(unclosable)).isZero();
+    } finally {
+      view.drop();
+    }
+  }
+
+  /**
+   * The view's overlay masks a pending deletion per (source, target) pair, so deleting one of the two
+   * SETTLED edges hides both from the CSR. The count it can no longer state exactly must not become the
+   * number of rows: the operator falls back to the edge list, which still holds the surviving edge.
+   */
+  @Test
+  void theViewFallsBackToTheEdgeListWhenADeletionMasksThePair() {
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("cycle-view-sync")
+        .withVertexTypes("Account", "Txn")
+        .withEdgeTypes("INITIATED", "SETTLED")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+    try {
+      assertThat(planOf(CYCLE)).contains("GAVExpandInto");
+      assertThat(countOf(CYCLE)).isEqualTo(4);
+
+      // Drop one of the two SETTLED edges closing the cycle: 2 first hops x 1 remaining closing edge
+      database.transaction(() -> {
+        for (final Edge edge : database.query("opencypher", "MATCH (t:Txn {ref: 'SHARED'})-[r:SETTLED]->(:Account) RETURN r")
+            .stream().map(r -> (Edge) r.getProperty("r")).toList()) {
+          edge.delete();
+          break;
+        }
+      });
+
+      assertThat(countOf(CYCLE)).isEqualTo(2);
     } finally {
       view.drop();
     }

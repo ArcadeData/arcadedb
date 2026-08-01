@@ -103,8 +103,15 @@ public interface GraphTraversalProvider {
    * {@link Vertex.DIRECTION#BOTH} a self-loop counts once, matching how the OLTP expansion
    * de-duplicates the relationship it reaches from both adjacency lists.
    * <p>
-   * The default implementation counts occurrences in {@link #getNeighborIds}; a CSR-backed provider
-   * overrides it with an equal-range scan on the sorted adjacency array.
+   * <b>A negative result means the provider cannot answer exactly</b> and the caller must fall back
+   * to the edge list. A count is a stronger claim than a boolean, and a provider that tracks its
+   * pending changes at a coarser granularity than the individual edge can hold the boolean while
+   * losing the count - saying "unknown" is then the only honest answer. The caller has the two
+   * vertices in hand and can always walk the edges itself.
+   * <p>
+   * The default implementation counts occurrences in {@link #getNeighborIds} and never answers
+   * unknown; a CSR-backed provider overrides it with an equal-range scan on the sorted adjacency
+   * array.
    */
   default long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
