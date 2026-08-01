@@ -63,7 +63,7 @@ public class McpApiSpec implements OpenApiContributor {
             such as an unknown method or a malformed request body, is reported inside a 200 response: \
             JSON-RPC layers its own error reporting over the HTTP transport, so a non-200 status is \
             reserved for transport-level failures such as missing credentials, a disallowed browser \
-            Origin, an unauthorized user, an unsupported HTTP method, or the server being disabled. """
+            Origin, an unauthorized user, an unsupported HTTP method, or the server being disabled.\s"""
             + MCP_PLUGIN_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody(
         "JSON-RPC 2.0 request, notification, or response, or a batch of them as a top-level array",
@@ -116,7 +116,7 @@ public class McpApiSpec implements OpenApiContributor {
             payload rejected on any field leaves the configuration exactly as it was. Restricted to \
             the root user.
 
-            Answers with the full configuration as it stands after the update. """
+            Answers with the full configuration as it stands after the update.\s"""
             + MCP_PLUGIN_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody(
         "Partial configuration. Omitted fields keep their current value.", "McpConfig", true));
