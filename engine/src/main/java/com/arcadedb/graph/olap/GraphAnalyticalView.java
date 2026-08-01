@@ -85,6 +85,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Maximum number of concurrent CSR builds/compactions across all databases. */
   private static final int MAX_CONCURRENT_BUILDS = Math.max(2, Runtime.getRuntime().availableProcessors());
 
+  /**
+   * Returned by {@link #countEdgesBetween} when the overlay makes the multiplicity unknowable, which
+   * the {@link com.arcadedb.graph.GraphTraversalProvider} contract spells as any negative value.
+   */
+  private static final long MULTIPLICITY_UNKNOWN = -1L;
+
   /** Semaphore bounding concurrent CPU-intensive build operations. */
   private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
 
@@ -200,11 +206,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private DeltaCollector         deltaCollector;
   public static final int        DEFAULT_COMPACTION_THRESHOLD = 10_000;
   private static final int       MAX_PENDING_DELTAS           = 100_000;
-  /**
-   * Returned by {@link #countEdgesBetween} when the overlay makes the multiplicity unknowable, which
-   * the {@link com.arcadedb.graph.GraphTraversalProvider} contract spells as any negative value.
-   */
-  private static final long      MULTIPLICITY_UNKNOWN         = -1L;
   private volatile int           compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
