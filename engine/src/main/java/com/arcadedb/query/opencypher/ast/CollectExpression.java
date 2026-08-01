@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -27,17 +26,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
 
 /**
  * Expression representing COLLECT { ... } subquery.
  * Example:
  * - COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name }
  * <p>
- * Runs the inner query once per outer row, with correlated variables bound via
- * parameters, and returns the values produced by the inner RETURN as a list.
+ * Runs the inner query once per outer row, with the outer row handed to the body
+ * as a seed row, and returns the values produced by the inner RETURN as a list.
  * The list contains a single scalar per row when the RETURN projects one item,
  * otherwise a list per row.
+ * <p>
+ * <b>A body that fails is not a body that matches nothing.</b> Both were once answered with an empty list, because
+ * the Cypher contract here is a list; the failure now propagates (issue #5656).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -54,36 +55,50 @@ public class CollectExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    if (CorrelatedSubqueryRunner.canRun(parsedSubquery)) {
+      try (final ResultSet resultSet = CorrelatedSubqueryRunner.run(parsedSubquery, result, context)) {
+        return collectRows(resultSet);
+      }
+    }
+
     final Map<String, Object> params = CorrelatedSubqueryRewriter.newParams(context);
     final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__collect_", params,
         (patterns, body) -> "MATCH " + patterns + " WITH * " + body);
-
-    final List<Object> collected = new ArrayList<>();
     try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
-      while (resultSet.hasNext()) {
-        final Result row = resultSet.next();
-        final Set<String> propertyNames = row.getPropertyNames();
-        // Filter out internal (space-prefixed) names
-        final List<String> visibleNames = new ArrayList<>(propertyNames.size());
-        for (final String n : propertyNames) {
-          if (!n.startsWith(" "))
-            visibleNames.add(n);
-        }
-        if (visibleNames.size() == 1) {
-          collected.add(row.getProperty(visibleNames.get(0)));
-        } else {
-          final List<Object> rowValues = new ArrayList<>(visibleNames.size());
-          for (final String n : visibleNames)
-            rowValues.add(row.getProperty(n));
-          collected.add(rowValues);
-        }
+      return collectRows(resultSet);
+    }
+  }
+
+  /**
+   * One entry per row: the projected value when the body returns a single item, the list of them otherwise.
+   * <p>
+   * A row with <i>no</i> visible column contributes {@code null} - the value of a projection that projected nothing -
+   * rather than an empty list, which would read as "collected a row holding no values" and is not the same statement.
+   * The grammar gives {@code COLLECT} one alternative, {@code COLLECT LCURLY queryWithLocalDefinitions RCURLY}, so the
+   * body always carries a RETURN and the case is not reachable from a parsed query; it is written out because the
+   * alternative was to leave the {@code else} branch quietly answering it.
+   */
+  private static List<Object> collectRows(final ResultSet resultSet) {
+    final List<Object> collected = new ArrayList<>();
+    while (resultSet.hasNext()) {
+      final Result row = resultSet.next();
+      final Set<String> propertyNames = row.getPropertyNames();
+      // Filter out internal (space-prefixed) names
+      final List<String> visibleNames = new ArrayList<>(propertyNames.size());
+      for (final String n : propertyNames) {
+        if (!n.startsWith(" "))
+          visibleNames.add(n);
       }
-    } catch (final Exception e) {
-      // The Cypher contract here is a list, so a subquery that cannot run is absorbed as empty.
-      // Trace it: a silent empty list is how the corrupted-subquery bug of issue #5464 stayed invisible.
-      LogManager.instance().log(CollectExpression.class, Level.FINE, "Error on evaluating COLLECT subquery '%s'", e,
-          modifiedSubquery);
-      return new ArrayList<>();
+      if (visibleNames.isEmpty()) {
+        collected.add(null);
+      } else if (visibleNames.size() == 1) {
+        collected.add(row.getProperty(visibleNames.get(0)));
+      } else {
+        final List<Object> rowValues = new ArrayList<>(visibleNames.size());
+        for (final String n : visibleNames)
+          rowValues.add(row.getProperty(n));
+        collected.add(rowValues);
+      }
     }
     return collected;
   }
@@ -103,9 +118,11 @@ public class CollectExpression implements Expression {
   }
 
   /**
-   * The body as an AST. The body still executes from {@link #getSubquery()}, because what runs is the text after
-   * {@link CorrelatedSubqueryRewriter} has correlated it to the outer row, which differs row by row. This AST is the
-   * body as written, and exists so that the parse-time checks reach inside it (issue #5626).
+   * The body as an AST, or {@code null} when the statement builder declined it (the best-effort build of issue #5626).
+   * <p>
+   * This is what the parse-time checks walk (#5626) and, since #5656, what actually executes: the outer row is handed
+   * to it as a seed row rather than spliced into its text. {@link #getSubquery()} is the text that body was written
+   * as, and is used only on the fallback path, when there is no AST to run.
    */
   public CypherStatement getParsedSubquery() {
     return parsedSubquery;

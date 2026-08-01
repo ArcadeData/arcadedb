@@ -18,13 +18,11 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Map;
-import java.util.logging.Level;
 
 /**
  * Expression representing a {@code COUNT { ... }} pattern / subquery expression.
@@ -34,8 +32,11 @@ import java.util.logging.Level;
  *   <li>{@code COUNT { (p)-[:OWNS]->(:Dog) }}</li>
  *   <li>{@code COUNT { MATCH (n)-[:KNOWS]->(f) WHERE f.age > 18 }}</li>
  * </ul>
- * Runs the inner pattern or subquery once per outer row, with correlated outer
- * variables bound via parameters, and returns the number of matches as a long.
+ * Runs the inner pattern or subquery once per outer row, with the outer row handed to the body as a seed row, and
+ * returns the number of matches as a long.
+ * <p>
+ * <b>A body that fails is not a body that matches nothing.</b> Both were once answered with {@code 0}, because the
+ * Cypher contract here is a number; the failure now propagates (issue #5656).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -52,21 +53,25 @@ public class CountExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    if (CorrelatedSubqueryRunner.canRun(parsedSubquery)) {
+      try (final ResultSet resultSet = CorrelatedSubqueryRunner.run(parsedSubquery, result, context)) {
+        return countRows(resultSet);
+      }
+    }
+
     final Map<String, Object> params = CorrelatedSubqueryRewriter.newParams(context);
     final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__count_", params,
         CountExpression::wrapNonMatchBody);
-    long count = 0L;
     try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
-      while (resultSet.hasNext()) {
-        resultSet.next();
-        count++;
-      }
-    } catch (final Exception e) {
-      // The Cypher contract here is a number, so a subquery that cannot run is absorbed as zero.
-      // Trace it: a silent zero is how the corrupted-subquery bug of issue #5464 stayed invisible.
-      LogManager.instance().log(CountExpression.class, Level.FINE, "Error on evaluating COUNT subquery '%s'", e,
-          modifiedSubquery);
-      return 0L;
+      return countRows(resultSet);
+    }
+  }
+
+  private static long countRows(final ResultSet resultSet) {
+    long count = 0L;
+    while (resultSet.hasNext()) {
+      resultSet.next();
+      count++;
     }
     return count;
   }
@@ -103,9 +108,11 @@ public class CountExpression implements Expression {
   }
 
   /**
-   * The body as an AST. The body still executes from {@link #getSubquery()}, because what runs is the text after
-   * {@link CorrelatedSubqueryRewriter} has correlated it to the outer row, which differs row by row. This AST is the
-   * body as written, and exists so that the parse-time checks reach inside it (issue #5626).
+   * The body as an AST, or {@code null} when the statement builder declined it (the best-effort build of issue #5626).
+   * <p>
+   * This is what the parse-time checks walk (#5626) and, since #5656, what actually executes: the outer row is handed
+   * to it as a seed row rather than spliced into its text. {@link #getSubquery()} is the text that body was written
+   * as, and is used only on the fallback path, when there is no AST to run.
    */
   public CypherStatement getParsedSubquery() {
     return parsedSubquery;
