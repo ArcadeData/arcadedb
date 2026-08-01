@@ -33,8 +33,10 @@ jobs:
           python-version: "3.13.0"
           cache: "pip"
       - name: Check workflow artifact dependencies
+        # Pinned for the same reason the actions above are pinned to a SHA: this step gates every
+        # other job, so what it installs should not change under it between runs.
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -m pip install --quiet pyyaml==6.0.3
           ./.github/scripts/check-workflow-artifact-deps.py
       - name: Check CI scripts
         run: ./.github/scripts/tests/test-ci-scripts.sh
@@ -742,10 +744,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ unit-tests, integration-tests, slow-unit-tests, ha-integration-tests ]
     # Coverage is still worth publishing when a suite reported failing tests: the suites run with
-    # --fail-never, so JaCoCo writes its report and the job records the failure afterwards. Only a
-    # cancelled run has nothing to say - and it is also the one case where the artifacts a
-    # cancelled job would have uploaded are genuinely absent rather than late.
-    if: ${{ !cancelled() }}
+    # --fail-never, so JaCoCo writes its report and the job records the failure afterwards.
+    #
+    # A suite that was *skipped* is different. It produced no report because it never ran - build
+    # and-package failed, most likely - so there is nothing to merge, and reporting that as a
+    # missing artifact would only add a second red check to an already-red build. Skipping keeps
+    # the collector's failure meaning what it says: a suite that should have uploaded, and did not.
+    if: >-
+      ${{ !cancelled()
+      && needs.unit-tests.result != 'skipped'
+      && needs.slow-unit-tests.result != 'skipped'
+      && needs.integration-tests.result != 'skipped'
+      && needs.ha-integration-tests.result != 'skipped' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

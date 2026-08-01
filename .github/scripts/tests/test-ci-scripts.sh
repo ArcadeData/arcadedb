@@ -190,6 +190,131 @@ YAML
 expect "rejects a matrix-named download that does not wait for the matrix" 1 "cell" \
     "$DEPS" "$work/matrix-name"
 
+# A literal artifact that falls under a matrix family's glob is not produced by that family:
+# `build-*` covers `build-logs`, but `matrix.os` only ever yields `build-ubuntu` / `build-macos`.
+# Reporting the matrix job here would be a false violation in a check that gates the whole build.
+mkdir -p "$work/prefix-collision"
+cat >"$work/prefix-collision/ci.yml" <<'YAML'
+name: prefix-collision
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ ubuntu, macos ]
+    steps:
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.os }}
+  logs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-logs
+  consume:
+    runs-on: ubuntu-latest
+    needs: logs
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-logs
+YAML
+expect "does not demand a matrix job whose glob merely covers another artifact" 0 "" \
+    "$DEPS" "$work/prefix-collision"
+
+# The same shape, with the download actually naming one of the matrix's values.
+mkdir -p "$work/matrix-value"
+sed 's/name: build-logs$/name: build-macos/' "$work/prefix-collision/ci.yml" \
+    >"$work/matrix-value/ci.yml"
+expect "still demands the matrix job when the name is one it produces" 1 "build" \
+    "$DEPS" "$work/matrix-value"
+
+# An `include`-only matrix is the shape most of this repository's matrices use.
+mkdir -p "$work/matrix-include"
+cat >"$work/matrix-include/ci.yml" <<'YAML'
+name: matrix-include
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: linux
+            runs-on: ubuntu-latest
+          - platform: darwin
+            runs-on: macos-15
+    steps:
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.platform }}
+  consume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheel-darwin
+YAML
+expect "resolves a value contributed only by a matrix include" 1 "build" \
+    "$DEPS" "$work/matrix-include"
+
+# A matrix built at run time cannot be resolved, so the glob fallback applies rather than a crash.
+mkdir -p "$work/matrix-dynamic"
+cat >"$work/matrix-dynamic/ci.yml" <<'YAML'
+name: matrix-dynamic
+on: [ push ]
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        run: echo matrix=[] >> "$GITHUB_OUTPUT"
+  build:
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ matrix.arch }}
+  consume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: image-amd64
+YAML
+expect "falls back to the glob when the matrix is built at run time" 1 "build" \
+    "$DEPS" "$work/matrix-dynamic"
+
+# `run-id` pointing at the current run is an ordinary consumer, not a cross-run read.
+mkdir -p "$work/same-run-id"
+cat >"$work/same-run-id/ci.yml" <<'YAML'
+name: same-run-id
+on: [ push ]
+jobs:
+  producer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@v7
+        with:
+          name: report
+  consume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: report
+          run-id: ${{ github.run_id }}
+YAML
+expect "still checks a download pinned to the current run-id" 1 "producer" \
+    "$DEPS" "$work/same-run-id"
+
 # A selector that collapses to a bare "*" names nothing in particular: no finding can be drawn.
 mkdir -p "$work/opaque"
 cat >"$work/opaque/ci.yml" <<'YAML'

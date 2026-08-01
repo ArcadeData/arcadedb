@@ -47,15 +47,61 @@ DOWNLOAD_ACTION = "actions/download-artifact"
 DEFAULT_ARTIFACT_NAME = "artifact"
 
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+MATRIX_REFERENCE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_.-]+)\s*\}\}")
 
 
 # A matrix upload names its artifact `bolt-matrix-java-${{ matrix.version }}`; statically that is
 # `bolt-matrix-java-*`. Keeping it as a glob is what lets the check still resolve the consumer that
 # picks the whole family up with `pattern: bolt-matrix-*`, instead of reporting a family of
-# artifacts nobody uploads.
+# artifacts nobody uploads. It is only the fallback: a glob denotes more names than the step can
+# actually produce, so `names_of` below resolves the matrix outright wherever it can.
 def as_glob(value):
     """Collapse a run-time expression into the glob of names it can produce."""
     return EXPRESSION.sub("*", value)
+
+
+def matrix_values(job, key):
+    """The literal values `matrix.<key>` can take in this job, or None if they are not literal."""
+    matrix = (job.get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict):
+        return None
+
+    values = set()
+    candidates = matrix.get(key)
+    candidates = list(candidates) if isinstance(candidates, list) else []
+    # `include` entries contribute values of their own, and are the only source for a key that the
+    # base matrix does not declare at all - which is how most of this repository's matrices read.
+    include = matrix.get("include")
+    if isinstance(include, list):
+        candidates += [entry[key] for entry in include if isinstance(entry, dict) and key in entry]
+
+    for value in candidates:
+        if not isinstance(value, (str, int, float, bool)):
+            return None
+        values.add(str(value))
+    return values or None
+
+
+# Resolving the matrix matters because a glob denotes names the step cannot produce. `build-*`
+# covers `build-logs`, so an unrelated job uploading that literal would be reported as something
+# every consumer of it has to wait for - a false violation, in a check that gates the whole build.
+# Expanding `${{ matrix.os }}` to exactly {ubuntu, macos} removes the guesswork.
+#
+# Independent keys are expanded as a cartesian product, which over-approximates an `include`-only
+# matrix whose keys are correlated. That errs the safe way: it can only ask for an ordering that is
+# already implied, never drop one that is missing.
+def names_of(job, value):
+    """The exact artifact names `value` can take, or None when it cannot be resolved."""
+    names = {value}
+    for token, key in {m.group(0): m.group(1) for m in MATRIX_REFERENCE.finditer(value)}.items():
+        values = matrix_values(job, key)
+        if values is None:
+            return None
+        names = {name.replace(token, resolved) for name in names for resolved in values}
+
+    # Anything left is an expression over something no static read can resolve: an input, a
+    # `fromJSON` matrix, a step output.
+    return None if any("${{" in name for name in names) else names
 
 
 def action_of(step):
@@ -86,33 +132,50 @@ def needs_closure(jobs, name, seen=None):
 
 
 def producers_of(jobs):
-    """Artifact glob -> the jobs that upload a name matching it."""
-    produced = {}
+    """The (names, glob, job) an upload step can produce, one entry per step."""
+    produced = []
     for job_name, job in jobs.items():
         for step in steps_of(job):
             if action_of(step) != UPLOAD_ACTION:
                 continue
             with_ = step.get("with") or {}
             name = str(with_.get("name", DEFAULT_ARTIFACT_NAME))
-            produced.setdefault(as_glob(name), set()).add(job_name)
+            produced.append((names_of(job, name), as_glob(name), job_name))
     return produced
 
 
-# `name` selects one artifact, `pattern` selects every artifact matching a glob, and neither means
-# "download everything in the run" - which depends on every producing job. Both sides can be globs
-# (a matrix uploader against a family-wide consumer), so they are matched in either direction:
-# overlap in the names they can denote is enough to create the ordering requirement.
-def matching_producers(produced, name, pattern):
-    """Resolve a download step's selector to the set of jobs it reads from."""
-    if name is None and pattern is None:
-        return {job for jobs in produced.values() for job in jobs}
+# Two selectors require an ordering when they can denote the same artifact. Whenever a side is
+# resolved to exact names, that side is compared by name and the answer is exact. Only when both
+# are globs does this fall back to matching them against each other in either direction, which
+# over-matches - the conservative end, since a spurious `needs` entry costs a wait and a missing
+# one costs a silently incomplete download.
+def overlaps(selector_names, selector_glob, is_pattern, producer_names, producer_glob):
+    """True when a download selector and an upload can name the same artifact."""
+    if producer_names is not None:
+        if selector_names is not None and not is_pattern:
+            return bool(selector_names & producer_names)
+        return any(fnmatch.fnmatch(name, selector_glob) for name in producer_names)
 
-    selector = name if name is not None else pattern
-    matched = set()
-    for artifact, jobs in produced.items():
-        if fnmatch.fnmatch(artifact, selector) or fnmatch.fnmatch(selector, artifact):
-            matched |= jobs
-    return matched
+    if selector_names is not None and not is_pattern:
+        return any(fnmatch.fnmatch(name, producer_glob) for name in selector_names)
+
+    return fnmatch.fnmatch(producer_glob, selector_glob) or fnmatch.fnmatch(
+        selector_glob, producer_glob
+    )
+
+
+# `name` selects one artifact, `pattern` selects every artifact matching a glob, and neither means
+# "download everything in the run" - which depends on every producing job.
+def matching_producers(produced, selector_names, selector_glob, is_pattern):
+    """Resolve a download step's selector to the set of jobs it reads from."""
+    if selector_glob is None:
+        return {job for _, _, job in produced}
+
+    return {
+        job
+        for producer_names, producer_glob, job in produced
+        if overlaps(selector_names, selector_glob, is_pattern, producer_names, producer_glob)
+    }
 
 
 def check_workflow(path):
@@ -139,26 +202,34 @@ def check_workflow(path):
                 continue
             with_ = step.get("with") or {}
 
-            # A cross-run download reads another run's store, so this run's ordering says nothing.
-            if with_.get("run-id") is not None:
+            # A cross-run download reads another run's store, so this run's ordering says nothing
+            # about it. `run-id: ${{ github.run_id }}` is the exception: it names this run, so the
+            # step is an ordinary consumer and skipping it would quietly disable the check.
+            run_id = with_.get("run-id")
+            if run_id is not None and "github.run_id" not in str(run_id):
                 continue
 
-            # A selector is matched as the glob of names it can denote, so a matrix-interpolated
-            # one still resolves. One that collapses to a bare "*" denotes nothing in particular,
-            # and demanding every producer on the strength of it would be a guess, not a finding.
-            name = as_glob(str(with_["name"])) if with_.get("name") is not None else None
-            pattern = as_glob(str(with_["pattern"])) if with_.get("pattern") is not None else None
-            if name == "*" or pattern == "*":
-                continue
+            # A selector resolves to the exact names it can denote where the matrix allows, and to
+            # the glob of them otherwise. One that collapses to a bare "*" denotes nothing in
+            # particular, and demanding every producer on the strength of it would be a guess.
+            raw = with_.get("name") if with_.get("name") is not None else with_.get("pattern")
+            is_pattern = with_.get("name") is None and with_.get("pattern") is not None
+
+            selector_names = selector_glob = None
+            if raw is not None:
+                selector_glob = as_glob(str(raw))
+                if selector_glob == "*":
+                    continue
+                selector_names = names_of(job, str(raw))
 
             selector = (
-                "name: %s" % name
-                if name is not None
-                else "pattern: %s" % pattern if pattern is not None else "every artifact in the run"
+                "%s: %s" % ("pattern" if is_pattern else "name", selector_glob)
+                if selector_glob is not None
+                else "every artifact in the run"
             )
             step_name = step.get("name") or selector
 
-            uploaders = matching_producers(produced, name, pattern)
+            uploaders = matching_producers(produced, selector_names, selector_glob, is_pattern)
             if not uploaders:
                 violations.append(
                     "%s: job '%s', step '%s' downloads '%s', which no job in this workflow uploads"
