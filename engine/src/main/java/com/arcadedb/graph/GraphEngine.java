@@ -527,8 +527,11 @@ public class GraphEngine {
     if (edgeRID != null && !(edge instanceof LightEdge))
       // DELETE EDGE RECORD TOO
       try {
-        // Use the database's delete method to ensure proper index cleanup
-        // instead of directly calling bucket.deleteRecord()
+        // The physical removal only: index cleanup has already happened. This method is reached through
+        // LocalDatabase.deleteRecordNoLock, which cleans the record's index entries and fires the delete events
+        // BEFORE dispatching an Edge here - so going back through the database would repeat that work, not add it.
+        // (The comment previously here said the opposite of what the line below does; verified by deleting an edge
+        // carrying an indexed property and watching the index drop from 1 entry to 0.)
         final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edge.getIdentity().getBucketId());
         bucket.deleteRecord(edge.getIdentity());
       } catch (final RecordNotFoundException e) {

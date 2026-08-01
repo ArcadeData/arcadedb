@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -228,10 +229,11 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
                   src.save();
                   src.newEdge("LINK", hubRID);
                 }, false, 10_000);
-              } catch (final Exception e) {
+              } catch (final Throwable unexpected) {
                 // Nothing here is expected to surface: the retry budget above is far beyond what this contention
-                // needs, so ANY exception reaching this point is the bug, not a tolerated retry. Counted rather
-                // than rethrown only so the assertions below run on a fully drained pool.
+                // needs, so ANY throwable reaching this point is the bug, not a tolerated retry. Counted rather
+                // than rethrown only so the assertions below run on a fully drained pool - and Throwable, not
+                // Exception, so an Error cannot skip the countDown below and hang the run instead of failing it.
                 failures.incrementAndGet();
               }
             }
@@ -239,7 +241,9 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
           }).start();
         }
         start.countDown();
-        done.await();
+        // Bounded: a future regression that wedges a worker should fail this test, not hang CI until the job times
+        // out. The whole round is seconds of work, so minutes of headroom cannot fire on a merely slow machine.
+        assertThat(done.await(5, TimeUnit.MINUTES)).as("round " + round + ": all workers finished").isTrue();
 
         assertThat(failures.get()).as("round " + round).isEqualTo(0);
 
