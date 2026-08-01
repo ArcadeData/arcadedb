@@ -782,7 +782,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       this.lock = new ReentrantReadWriteLock();
       warnIfLocationCacheSizeConfigured(database);
-    this.vectorIndex = new VectorLocationIndex();
+      this.vectorIndex = new VectorLocationIndex();
       this.ordinalToVectorId = new int[0];
       this.nextId = new AtomicInteger(0);
       this.status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);

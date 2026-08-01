@@ -141,6 +141,8 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Refuses a limit on the vector-location index, which cannot be capped.
+   *
    * @param locationCacheSize the requested limit; anything positive raises
    *
    * @throws com.arcadedb.index.IndexException on any positive value
