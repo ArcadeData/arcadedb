@@ -29,6 +29,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
@@ -192,6 +193,39 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
   }
 
   /**
+   * The unset marker is a property of {@link IndexBuilder} itself, and it applies to every index type - not just HASH -
+   * so it is asserted directly rather than only through what some index implementation makes of it. A non-positive
+   * page size resolves to "unset"; before, it was passed straight through to the component, where the page arithmetic
+   * divides by it.
+   */
+  @Test
+  void aNonPositivePageSizeResolvesToUnset() {
+    database.transaction(() -> {
+      createType();
+      final IndexBuilder<?> builder = database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "k" });
+
+      // never asked: each implementation gets to choose
+      assertThat(builder.getPageSize()).isEqualTo(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
+      assertThat(builder.getPageSize(HashIndexBucket.DEF_PAGE_SIZE)).isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+
+      for (final int nonPositive : new int[] { 0, -1, IndexBuilder.PAGE_SIZE_UNSET }) {
+        builder.withPageSize(nonPositive);
+        assertThat(builder.getPageSize()).as("withPageSize(%d)", nonPositive)
+            .isEqualTo(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
+        assertThat(builder.getPageSize(HashIndexBucket.DEF_PAGE_SIZE)).as("withPageSize(%d)", nonPositive)
+            .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+      }
+
+      // an explicit positive value is answered verbatim by both getters, including the LSM default itself
+      for (final int explicit : new int[] { 4_096, HashIndexBucket.DEF_PAGE_SIZE, LSMTreeIndexAbstract.DEF_PAGE_SIZE }) {
+        builder.withPageSize(explicit);
+        assertThat(builder.getPageSize()).as("withPageSize(%d)", explicit).isEqualTo(explicit);
+        assertThat(builder.getPageSize(HashIndexBucket.DEF_PAGE_SIZE)).as("withPageSize(%d)", explicit).isEqualTo(explicit);
+      }
+    });
+  }
+
+  /**
    * The largest legal page size must still work end to end, and it is the value that used to be indistinguishable
    * from "unset" only because it happened to equal the default.
    */
@@ -280,6 +314,10 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
 
     final File mangled = new File(indexFiles[0].getPath()
         .replace("." + HashIndexBucket.MAX_PAGE_SIZE + ".", "." + illegalPageSize + "."));
+    // fail here, not on an inscrutable assertion below, if the component-file naming scheme ever stops carrying the
+    // page size as a dot-delimited segment
+    assertThat(mangled).as("page size not found in the component file name '%s'", indexFiles[0].getName())
+        .isNotEqualTo(indexFiles[0]);
     assertThat(indexFiles[0].renameTo(mangled)).isTrue();
     try (final RandomAccessFile raf = new RandomAccessFile(mangled, "rw")) {
       // round the file up to a whole number of the (now larger) pages, so the page manager can read page 0

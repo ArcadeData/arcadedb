@@ -99,11 +99,13 @@ public abstract class IndexBuilder<T extends Index> {
   }
 
   /**
-   * Requests an explicit page size for the index file. Any value below 1 is treated as {@link #PAGE_SIZE_UNSET},
-   * leaving the choice to the index implementation.
+   * Requests an explicit page size for the index file. Any value below 1 means "unset", leaving the choice to the
+   * index implementation - see {@link #getPageSize(int)}, which is the single place that resolves it. Normalising
+   * here as well would be redundant, and the builder subclasses that copy the field verbatim
+   * ({@code TypeLSMVectorIndexBuilder}, {@code TypeLSMSparseVectorIndexBuilder}) would bypass it anyway.
    */
   public IndexBuilder<T> withPageSize(final int pageSize) {
-    this.pageSize = pageSize > 0 ? pageSize : PAGE_SIZE_UNSET;
+    this.pageSize = pageSize;
     return this;
   }
 
