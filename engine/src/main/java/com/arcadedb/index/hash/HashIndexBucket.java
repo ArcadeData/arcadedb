@@ -82,10 +82,15 @@ public class HashIndexBucket extends PaginatedComponent {
   /**
    * Smallest page size a hash index can be created with.
    * <p>
-   * The binding constraint is the metadata page, which needs {@code PAGE_HEADER_SIZE + META_KEY_TYPES_START +
-   * numberOfKeys + 2 + 3 * INT_SERIALIZED_SIZE} bytes - 95 at the {@link #MAX_SANE_KEY_COUNT} ceiling. This floor
-   * clears that with room left for a bucket page to host entries, so a page size that cannot describe the index at
-   * all is refused up front instead of writing metadata past the end of page 0.
+   * What this floor guarantees is that the index is DESCRIBABLE: the metadata page needs {@code PAGE_HEADER_SIZE +
+   * META_KEY_TYPES_START + numberOfKeys + 2 + 3 * INT_SERIALIZED_SIZE} bytes - 95 at the {@link #MAX_SANE_KEY_COUNT}
+   * ceiling - so a page size that cannot even hold page 0 is refused up front instead of writing metadata past the end
+   * of it.
+   * <p>
+   * It does NOT guarantee that any given key fits a bucket page. Key width is not known at creation for
+   * {@code STRING}/{@code BINARY}/{@code DECIMAL} columns, so no static floor could promise that; an entry too large
+   * for an empty page is reported at insert by {@link #entryTooLarge}, which names the usable space per page. That is
+   * a property of small pages with wide keys generally, not of this bound.
    */
   public static final int MIN_PAGE_SIZE = 256;
 
