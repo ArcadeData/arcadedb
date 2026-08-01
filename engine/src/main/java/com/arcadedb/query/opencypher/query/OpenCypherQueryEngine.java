@@ -86,6 +86,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
     this.database = database;
   }
 
+  /**
+   * The evaluator every plan this engine builds is given. It holds no per-query state - the field is static and shared
+   * across databases for that reason - so anything that has to build a plan outside this engine can use the same one
+   * rather than allocating a second function factory. That is what the body of an {@code EXISTS}/{@code COUNT}/
+   * {@code COLLECT} subquery does when it runs from its AST ({@link com.arcadedb.query.opencypher.ast.CorrelatedSubqueryRunner}).
+   */
+  public static ExpressionEvaluator sharedExpressionEvaluator() {
+    return EXPRESSION_EVALUATOR;
+  }
+
   @Override
   public String getLanguage() {
     return ENGINE_NAME;

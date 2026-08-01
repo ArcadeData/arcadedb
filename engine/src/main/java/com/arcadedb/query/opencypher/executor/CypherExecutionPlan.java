@@ -905,18 +905,25 @@ public class CypherExecutionPlan {
     // can detect already-bound variables and avoid Cartesian products
     final Set<String> boundVariables = new HashSet<>();
 
-    // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
-    // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
-    final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
-    if (typeCountStep != null)
-      return typeCountStep;
+    // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
+    // never look at the incoming rows. That makes them wrong the moment there IS an incoming row that binds one of
+    // those pattern variables - a seeded body counting `MATCH (n)-[:KNOWS]->(m)` with `n` already bound to one vertex
+    // would be answered with the count over every `n` in the graph. So neither is attempted when the chain starts
+    // from a seed row; the ordinary pipeline, which consumes the seed, is used instead.
+    if (initialStep == null) {
+      // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
+      // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
+      final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
+      if (typeCountStep != null)
+        return typeCountStep;
 
-    // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
-    // Instead of materializing all paths (O(paths) memory), propagates counts through
-    // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
-    final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
-    if (countStep != null)
-      return countStep;
+      // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
+      // Instead of materializing all paths (O(paths) memory), propagates counts through
+      // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
+      final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+      if (countStep != null)
+        return countStep;
+    }
 
     // Special case: no MATCH as first clause (standalone expressions, WITH before MATCH, etc.)
     // E.g., RETURN abs(-42), WITH collect([0, 0.0]) AS numbers UNWIND ...

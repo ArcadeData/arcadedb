@@ -38,6 +38,11 @@ import java.util.*;
  * - Nested aggregations and aggregation in WHERE
  * - CREATE/MERGE/DELETE structural constraints
  * <p>
+ * <b>A subquery body is validated exactly as the query around it.</b> The body of a {@code CALL { }} clause and of an
+ * {@code EXISTS { }} / {@code COUNT { }} / {@code COLLECT { }} expression is a statement, and every phase below runs
+ * against it - see {@link #validateNestedStatements}. Ten of them used to stop at the boundary (issue #5656), which
+ * is how the same mistake came to be rejected written one way and accepted written one level in.
+ * <p>
  * <b>Semantic vs syntax boundary:</b> only an undefined-variable violation throws
  * {@link CommandSemanticException}, which Bolt surfaces as {@code Neo.ClientError.Statement.SemanticError}
  * (certified by conformance scenario ERR-002). Every other validation failure in this class throws
@@ -54,6 +59,17 @@ public class CypherSemanticValidator {
   }
 
   private final Map<String, VarType> varTypes = new HashMap<>();
+
+  private CypherSemanticValidator() {
+  }
+
+  /**
+   * A validator bound to the variable kinds a subquery body sees - what its own clauses declare over what it inherits
+   * from the enclosing scope. Used by {@link NestedStatementChecks} to run the phase list against a body.
+   */
+  private CypherSemanticValidator(final Map<String, VarType> scope) {
+    varTypes.putAll(scope);
+  }
 
   public static void validate(final CypherStatement statement) {
     // For UNION statements, validate union-specific constraints then each subquery
@@ -75,6 +91,7 @@ public class CypherSemanticValidator {
     v.validateExpressionAliases(statement);
     v.validateReturnStar(statement);
     v.validateFunctionArgumentTypes(statement);
+    v.validateNestedStatements(statement);
   }
 
   // ========================
@@ -82,7 +99,23 @@ public class CypherSemanticValidator {
   // ========================
 
   private static void validateUnion(final UnionStatement unionStmt) {
-    final List<CypherStatement> queries = unionStmt.getQueries();
+    validateUnionShape(unionStmt);
+
+    for (final CypherStatement query : unionStmt.getQueries())
+      // A branch with no RETURN carries no columns to compare and is not a query this validates on its own.
+      if (query.getReturnClause() != null)
+        validate(query);
+  }
+
+  /**
+   * The two checks that are about the {@code UNION} itself rather than about any one branch.
+   * <p>
+   * Separate from {@link #validateUnion} because a {@code UNION} can also appear as the body of a subquery, where the
+   * branches are validated by the walk that descends into them ({@link NestedStatementChecks}) and only these two are
+   * still owed. Before issue #5656 nothing ran them there: {@code CALL { RETURN 1 AS a UNION RETURN 2 AS b }} was
+   * accepted, while the same mismatch written as the whole query was rejected.
+   */
+  private static void validateUnionShape(final UnionStatement unionStmt) {
     final List<Boolean> flags = unionStmt.getUnionAllFlags();
 
     // Check that mixing UNION and UNION ALL is not allowed
@@ -96,18 +129,16 @@ public class CypherSemanticValidator {
 
     // Check that all queries have the same return columns
     List<String> firstColumns = null;
-    for (final CypherStatement query : queries) {
+    for (final CypherStatement query : unionStmt.getQueries()) {
       final ReturnClause returnClause = query.getReturnClause();
       if (returnClause == null)
         continue;
       final List<String> columns = returnClause.getItems();
-      if (firstColumns == null) {
+      if (firstColumns == null)
         firstColumns = columns;
-      } else if (!firstColumns.equals(columns)) {
-        throw new CommandParsingException("DifferentColumnsInUnion: All sub queries in a UNION must have the same return column names");
-      }
-      // Validate each subquery
-      validate(query);
+      else if (!firstColumns.equals(columns))
+        throw new CommandParsingException(
+            "DifferentColumnsInUnion: All sub queries in a UNION must have the same return column names");
     }
   }
 
@@ -1656,17 +1687,39 @@ public class CypherSemanticValidator {
   // Phase 5b: Relationship Uniqueness Validation
   // ============================================
 
+  /**
+   * A relationship variable may name one relationship of a pattern, not two: {@code (a)-[r]->()<-[r]-()} asks for a
+   * relationship that is simultaneously two different ones, which no graph can answer.
+   * <p>
+   * Run against every pattern the statement contains, wherever it was written. It used to iterate the path patterns of
+   * the {@code MATCH} clauses only, so the same pattern written as a {@code WHERE} predicate or inside an
+   * {@code EXISTS { }} was accepted - and then answered by a path that could not correlate a relationship variable
+   * either, which is how it came to be reported as "no match" rather than as the contradiction it is (issue #5656).
+   * Neo4j rejects all three spellings.
+   */
   private void validateRelationshipUniqueness(final CypherStatement statement) {
-    for (final MatchClause matchClause : statement.getMatchClauses()) {
-      if (!matchClause.hasPathPatterns())
-        continue;
-      for (final PathPattern path : matchClause.getPathPatterns()) {
-        final Set<String> relVars = new HashSet<>();
-        for (final RelationshipPattern rel : path.getRelationships()) {
-          final String var = rel.getVariable();
-          if (var != null && !var.isEmpty() && !relVars.add(var))
-            throw new CommandParsingException("RelationshipUniquenessViolation: Relationship variable '" + var + "' is used more than once in the same pattern");
-        }
+    CypherExpressionWalker.walk(statement, new RelationshipUniquenessChecks());
+  }
+
+  private static final class RelationshipUniquenessChecks implements CypherExpressionWalker.Visitor {
+    @Override
+    public void visit(final Expression expression) {
+      // Patterns only.
+    }
+
+    @Override
+    public void visitPattern(final PathPattern path) {
+      final List<RelationshipPattern> relationships = path.getRelationships();
+      if (relationships == null || relationships.size() < 2)
+        return;
+
+      final Set<String> relVars = new HashSet<>();
+      for (final RelationshipPattern rel : relationships) {
+        final String var = rel.getVariable();
+        if (var != null && !var.isEmpty() && !relVars.add(var))
+          throw new CommandParsingException(
+              "RelationshipUniquenessViolation: Relationship variable '" + var + "' is used more than once in the "
+                  + "same pattern");
       }
     }
   }
@@ -1880,6 +1933,84 @@ public class CypherSemanticValidator {
     public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement nested) {
       return new FunctionArgumentChecks(nestedVarTypes(scope, nested));
     }
+  }
+
+  // ==================================================
+  // Phase 11: Every phase above, applied to each body
+  // ==================================================
+
+  /**
+   * Runs the phase list against the body of every subquery the statement contains, at any depth.
+   * <p>
+   * Twelve phases ran above and only two of them reached inside a body: {@link #validateVariableScope}, which models
+   * the import rules of a {@code CALL { }} (since #5213), and {@link #validateFunctionArgumentTypes}, whose traversal
+   * descends (since #5626). The other ten stopped at the boundary, so a mistake this class rejects when written one
+   * way was accepted written one level in - {@code COUNT { MATCH (m) RETURN count(count(m)) }} passed while
+   * {@code RETURN count(count(n))} did not, and so did a negative {@code SKIP}, a repeated relationship variable, a
+   * duplicated column name (issue #5656).
+   * <p>
+   * The boundary is closed here rather than by teaching each of the ten to recurse, which would be ten new partial
+   * recursions - the shape #5602 removed. Being a property of {@code validate()} also means a phase added later is
+   * inside a body from the day it is written, without knowing subqueries exist.
+   * <p>
+   * The two that already descend are deliberately <b>not</b> in the body list. {@link #validateVariableScope} needs
+   * the scope <i>at the point the expression was written</i>, which this traversal does not carry - it would have to
+   * seed a body with an empty scope and would then report every correlated reference as undefined. Re-running
+   * {@link #validateFunctionArgumentTypes} would only repeat a walk that already covers every depth.
+   */
+  private void validateNestedStatements(final CypherStatement statement) {
+    CypherExpressionWalker.walk(statement, new NestedStatementChecks(varTypes));
+  }
+
+  /**
+   * Applies the body phase list at each nesting boundary the walk crosses. It visits no expression of its own: what it
+   * is watching for is the boundary, and the walk reports one through
+   * {@link CypherExpressionWalker.Visitor#forNestedStatement}.
+   */
+  private static final class NestedStatementChecks implements CypherExpressionWalker.Visitor {
+    private final Map<String, VarType> scope;
+
+    private NestedStatementChecks(final Map<String, VarType> scope) {
+      this.scope = scope;
+    }
+
+    @Override
+    public void visit(final Expression expression) {
+      // Boundaries only: an expression is the business of the phases that ran on the statement holding it.
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement nested) {
+      // Building the body's kinds over the inherited ones IS the variable-type phase for that body: a name the body
+      // declares twice as two different kinds raises here, from the same construction validateVariableTypes runs on
+      // the statement.
+      final Map<String, VarType> nestedScope = nestedVarTypes(scope, nested);
+
+      if (nested instanceof UnionStatement union)
+        // A UNION declares nothing of its own; each branch arrives as a nested statement in its own right and gets
+        // the body phases then. What is owed here is only what is about the UNION rather than about a branch.
+        validateUnionShape(union);
+      else
+        new CypherSemanticValidator(nestedScope).validateBodyPhases(nested);
+
+      return new NestedStatementChecks(nestedScope);
+    }
+  }
+
+  /**
+   * The phases of {@link #validate} that a body still owed. Same methods, same order, run against the body instead of
+   * against the statement.
+   */
+  private void validateBodyPhases(final CypherStatement body) {
+    validateVariableBinding(body);
+    validateCreateConstraints(body);
+    // validateRelationshipUniqueness is not here: it runs through the same walk, which already covers every body.
+    validateAggregations(body);
+    validateBooleanOperandTypes(body);
+    validateSkipLimit(body);
+    validateColumnNames(body);
+    validateExpressionAliases(body);
+    validateReturnStar(body);
   }
 
   /**
