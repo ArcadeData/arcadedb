@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
@@ -41,13 +42,48 @@ public interface Schema {
 
   boolean existsBucket(String bucketName);
 
+  /**
+   * Returns the bucket with the given name.
+   * <p>
+   * This is <b>not</b> a null-returning accessor: an unknown name raises instead of returning {@code null}, so an
+   * {@code if (bucket == null)} written after this call is unreachable. Use {@link #getBucketByNameIfExists(String)}
+   * when the caller wants to handle the missing case itself.
+   *
+   * @throws SchemaException if no bucket is registered under that name
+   */
   Bucket getBucketByName(String name);
+
+  /**
+   * Returns the bucket with the given name, or {@code null} if no bucket is registered under that name. The
+   * null-tolerant counterpart of {@link #getBucketByName(String)}.
+   */
+  Bucket getBucketByNameIfExists(String name);
 
   Component getFileByIdIfExists(int id);
 
   Collection<? extends Bucket> getBuckets();
 
+  /**
+   * Returns the bucket with the given id.
+   * <p>
+   * This is <b>not</b> a null-returning accessor: both an out-of-range id and an id that maps to a component which is
+   * not a bucket raise instead of returning {@code null}, so an {@code if (bucket == null)} written after this call is
+   * unreachable. Use {@link #getBucketByIdIfExists(int)} when the caller wants to handle the missing case itself - for
+   * example a bucket file that exists in the schema but was not loaded (an EXTERNAL property bucket tiered to a
+   * secondary path via {@code arcadedb.externalPropertyBucketPath}).
+   *
+   * @throws SchemaException if the id is out of range or does not identify a bucket
+   */
   Bucket getBucketById(int id);
+
+  /**
+   * Returns the bucket with the given id, or {@code null} if the id is out of range or does not identify a bucket. The
+   * null-tolerant counterpart of {@link #getBucketById(int)}.
+   * <p>
+   * An implementation that cannot resolve buckets by id at all may throw {@link UnsupportedOperationException}
+   * instead - as the remote schema does, where {@code null} would claim "no such bucket" rather than "I cannot tell".
+   */
+  Bucket getBucketByIdIfExists(int id);
 
   Bucket createBucket(String bucketName);
 

@@ -106,6 +106,19 @@ dependency requires. Where we knowingly carry one, the reason is recorded in the
 relevant `pom.xml` or in `.github/dependabot.yml` rather than being silently
 dismissed.
 
+**The Meterian scan reports, it does not gate.** `.github/workflows/meterian.yml`
+runs `continue-on-error` on purpose. Meterian fails a build on a composite
+security *score* computed over the whole transitive graph of every language in
+the repository, which no individual pull request can move - so gating on it
+produced a check that was red on every commit and taught reviewers to ignore red,
+which is worse than not gating at all. Nothing is hidden: the scan still runs on
+pull requests, on `main` and nightly, and still uploads its SARIF, so every
+finding lands as a GitHub code-scanning alert. **Those alerts are the source of
+truth for Meterian findings and they do need triaging** - a green Meterian check
+means the scan completed, not that it found nothing. The gates that do block are
+Dependabot, `dependency-review`, and `.github/workflows/e2e-dependency-audit.yml`
+described above.
+
 None of this changes what you should report: if you can show that a
 development-scope dependency is reachable from a shipped artifact, or exploitable
 in a way we have not considered, please tell us through the private channels

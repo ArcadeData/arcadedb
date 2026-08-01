@@ -52,9 +52,11 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
 
       final Database db = context.getDatabase();
 
+      // #5636: the else arm makes this guard reachable only when no bucket was named at all. An unknown name raised
+      // out of the throwing lookup before it could run - dead for exactly the input the message describes.
       final Bucket bucketObj;
       if (bucketName != null)
-        bucketObj = db.getSchema().getBucketByName(bucketName);
+        bucketObj = db.getSchema().getBucketByNameIfExists(bucketName);
       else
         bucketObj = null;
 

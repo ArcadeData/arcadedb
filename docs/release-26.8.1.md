@@ -878,6 +878,96 @@ The underlying contract was loose in three places, and all three are tightened:
   `NumberFormatException`), an unknown `similarity` or `quantization` name, or an out-of-range `pqClusters` is a
   client mistake. They are reported as parsing errors now, the same treatment the `GEOSPATIAL` metadata gets.
 
+## BREAKING: the monotonic engine metrics are Prometheus counters now, and no longer rewind on a database close
+
+Every never-decreasing engine total - page-cache hits and misses, pages read and written, WAL bytes, MVCC
+conflicts, the three page-merge counters, transactions, queries, commands - was registered with Micrometer as a
+**gauge** ([#5636](https://github.com/ArcadeData/arcadedb/issues/5636)). In Prometheus that means no `_total`
+suffix and no type hint that `rate()` and `increase()` are the correct functions over the series, so a dashboard
+built on `arcadedb_engine_mvcc_conflicts` showed a line that only goes up and said nothing about whether contention
+was rising *now*. They are `FunctionCounter`s from this release, which renames the exported series:
+
+| before | after |
+| --- | --- |
+| `arcadedb_engine_page_cache_hits` | `arcadedb_engine_page_cache_hits_total` |
+| `arcadedb_engine_page_cache_misses` | `arcadedb_engine_page_cache_misses_total` |
+| `arcadedb_engine_pages_read` | `arcadedb_engine_pages_read_total` |
+| `arcadedb_engine_pages_written` | `arcadedb_engine_pages_written_total` |
+| `arcadedb_engine_wal_bytes_written` | `arcadedb_engine_wal_bytes_written_total` |
+| `arcadedb_engine_mvcc_conflicts` | `arcadedb_engine_mvcc_conflicts_total` |
+| `arcadedb_engine_page_merges_edge_append` | `arcadedb_engine_page_merges_edge_append_total` |
+| `arcadedb_engine_page_merges_slot` | `arcadedb_engine_page_merges_slot_total` |
+| `arcadedb_engine_page_merges_declined` | `arcadedb_engine_page_merges_declined_total` |
+| `arcadedb_engine_tx_write` | `arcadedb_engine_tx_write_total` |
+| `arcadedb_engine_tx_read` | `arcadedb_engine_tx_read_total` |
+| `arcadedb_engine_tx_rollbacks` | `arcadedb_engine_tx_rollbacks_total` |
+| `arcadedb_engine_queries` | `arcadedb_engine_queries_total` |
+| `arcadedb_engine_commands` | `arcadedb_engine_commands_total` |
+
+**Existing dashboards and alerts on those names need updating.** The three genuinely instantaneous readings -
+`arcadedb_engine_wal_files`, `arcadedb_engine_files_open` and `arcadedb_engine_databases` - go up and down, so they
+stay gauges and keep their names.
+
+The rename would have made things worse on its own, because six of those totals were not actually monotonic. The
+per-database counters (`tx.write`, `tx.read`, `tx.rollbacks`, `queries`, `commands`, `wal.bytes.written`) were
+summed over the **currently open** databases only, so closing or dropping one made the JVM-wide total go
+*backwards* - which Prometheus reads as a counter reset, fabricating a rate spike on the next scrape. `Profiler`
+now folds a departing database's counters into a retained baseline, so the totals only ever grow for the lifetime
+of the JVM.
+
+This changes `Profiler.toJSON()` for every consumer, not just Prometheus, and each of them was quietly wrong
+before: the counters it reports are now all-time JVM totals rather than a sum over the databases that happen to be
+open. `GET /api/v1/server` (and so Studio's Database Operations table) no longer shows its query and transaction
+counts drop when a database is dropped, and its per-minute rates no longer skip a window to avoid publishing a
+negative delta. The **query profiler** benefits most: it records a snapshot at start and another at stop and hands
+both to Studio to subtract, so a database closing inside the recording window used to make that subtraction come
+out short, or negative. The AI chat handler embeds the same JSON descriptively and is unaffected either way.
+`Profiler.unregisterDatabase()` is also synchronized now, having been mutating
+a plain `LinkedHashSet` that the synchronized `toJSON()` iterates.
+
+## Studio shows a profiler counter sitting at zero instead of hiding it
+
+The profiler-details table skipped any stat whose `count` or `space` was `0`, so an operator could not tell "this
+is zero" from "this is not reported" ([#5636](https://github.com/ArcadeData/arcadedb/issues/5636)). For a health
+signal whose good state *is* zero - page merges declined, transaction rollbacks - that is backwards. Zero renders
+as zero now; only a stat that reports no numeric member at all is still omitted.
+
+## The "not found" message for a missing bucket reaches the user again
+
+`Schema.getBucketById(int)` and `getBucketByName(String)` raise a `SchemaException` in exactly the cases a caller
+would test for `null`, so every `if (bucket == null)` written after one of them was dead code
+([#5636](https://github.com/ArcadeData/arcadedb/issues/5636)). #5608 fixed one such branch; it had siblings, and
+one of them cost a real diagnosis:
+
+- **Reading an `EXTERNAL` property whose paired bucket is not loaded.** The dead branch held guidance written for
+  exactly that situation - *"if the bucket was tiered to a secondary path, set `arcadedb.externalPropertyBucketPath`
+  to the same value used at creation time and reopen the database"*. A user who hit it got a bare `Bucket with id
+  'N' was not found` instead. The write path had no check at all and raised the same bare exception; both paths
+  now share one lookup and one message.
+- **`TRUNCATE BUCKET`** reported a missing bucket twice (`Bucket not found: Bucket with id '9999' was not found`).
+- **`SELECT FROM schema:types`** raised outright when any type mapped a primary bucket to an external bucket that
+  was not loaded, instead of skipping that one mapping as the surrounding code intended.
+- **`MATCH {bucket: unknown}`** lost its own message and paid for two schema lookups to do it.
+- **`SELECT FROM bucket:<id>`** raised a raw `SchemaException` for an unknown id while `SELECT FROM bucket:<name>`
+  reported `Bucket 'x' does not exist` - the same mistake with two error contracts.
+- **`INSERT INTO bucket:? FROM SELECT ...`** never resolved its parameter at all: it read the literal bucket name
+  where its sibling calls the parameter resolver, so the statement failed even for a bucket that exists.
+
+**Watch this if you assert on exception types.** Making those messages reachable also changes what is thrown on
+these paths. An unknown bucket in SQL now raises `CommandExecutionException` or `CommandSQLParsingException`
+carrying the specific message, where several of these paths previously let a `SchemaException` escape from the
+schema layer; an `EXTERNAL` property whose bucket is not loaded raises `SerializationException` with the recovery
+instructions on both the read and the write side. This is the intended outcome - a schema-internal exception
+reaching the SQL layer was the defect - but code catching `SchemaException` around these calls needs updating.
+
+The API shape is what kept inviting the mistake, so the pattern is closed rather than the instances: `Schema` now
+exposes null-returning `getBucketByIdIfExists(int)` and `getBucketByNameIfExists(String)` - named after the
+`getFileByIdIfExists(int)` already on the interface - and the throwing forms document that they throw.
+
+Both in-tree implementors (`LocalSchema`, `RemoteSchema`) are updated. Note the two new interface methods are
+source-incompatible for anyone implementing `com.arcadedb.schema.Schema` outside the project: such an
+implementation needs the two methods added before it compiles against this release.
+
 ## An index cursor never hands out a null entry, and a restarted index scan releases its cursors
 
 Iterating an LSM-Tree index cursor could yield a `null` element ([#5635](https://github.com/ArcadeData/arcadedb/issues/5635)).
@@ -907,6 +997,7 @@ cursors were not even dropped, so a restarted scan replayed the old, partly cons
 same release now covers the per-value cursors of a `key IN [...]` lookup, which nothing had ever closed, and the
 cursors held by `MIN`/`MAX`, by the full-text term walks, and by the Cypher `NodeIndexSeek` / `NodeIndexRangeScan`
 operators - all of which stop before exhaustion by design.
+
 ## Server and cluster status endpoints scope their per-database output to the caller
 
 The routes that enumerate the whole database registry rather than naming one database in the path now reduce

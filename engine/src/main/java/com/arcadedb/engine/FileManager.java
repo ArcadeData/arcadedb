@@ -242,6 +242,17 @@ public class FileManager {
     }
   }
 
+  /**
+   * <b>Must stay lock-free, and must stay callable after {@link #close} (#5636.)</b> {@code Profiler.toJSON()} reads
+   * this while holding its own monitor, which a closing database can be waiting on, so a lock taken here would sit on
+   * the other side of that wait. Note this is deliberately NOT {@code synchronized}, unlike {@link #getFiles()} just
+   * below.
+   * <p>
+   * The close-tolerance half is not theoretical: {@code LocalDatabase.kill()} closes this file manager well before it
+   * reaches {@code Profiler.unregisterDatabase}, so a scrape landing in that window reads a CLOSED manager on a
+   * still-registered database. Returning zeros there is fine - these feed gauges, so the reading dips for one scrape -
+   * but throwing would take the whole snapshot down, and {@code toJSON()} has no try/catch by design.
+   */
   public FileManagerStats getStats() {
     final FileManagerStats stats = new FileManagerStats();
     stats.maxOpenFiles = maxFilesOpened.get();
