@@ -146,6 +146,25 @@ public enum GlobalConfiguration {
   TEST("arcadedb.test", SCOPE.JVM,
       "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose", Boolean.class, false),
 
+  // UNUSUAL AMONG THE SETTINGS IN THAT IT INSTALLS SOMETHING. reset() RUNS NO CALLBACK, SO IT RESTORES THE VALUE BUT
+  // LEAVES THE LAST INSTALLED LOGGER IN PLACE: A CALLER THAT WANTS THE PREVIOUS ONE BACK KEEPS LogManager.getLogger()
+  LOG_IMPL("arcadedb.log.impl", SCOPE.JVM,
+      "Logger implementation: 'default' uses java.util.logging, 'slf4j' routes the logs through the SLF4J facade so an embedding application receives them in its own backend. An unrecognized value is reported and falls back to 'default'",
+      String.class, "default", value -> {
+    // STORE THE SPELLING createLogger() MATCHES ON, SO dumpConfiguration() AND toJSON() DO NOT REPORT 'SLF4J' OR
+    // ' slf4j '. AN UNRECOGNIZED VALUE IS KEPT VERBATIM: IT FALLS BACK TO 'default', BUT REWRITING IT WOULD HIDE THE TYPO
+    final String impl = value == null || value.toString().isBlank() ?
+        "default" :
+        value.toString().trim().toLowerCase(Locale.ROOT); // SAME LOCALE createLogger() NORMALIZES WITH
+
+    final LogManager logManager = LogManager.instance();
+    // NULL ONLY IF THIS RUNS RE-ENTRANTLY FROM THE LOG MANAGER'S STATIC INITIALIZER, WHICH READS THE SYSTEM PROPERTY ON ITS OWN
+    if (logManager != null)
+      logManager.setLogger(LogManager.createLogger(impl));
+
+    return impl;
+  }),
+
   MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
         @Override

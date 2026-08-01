@@ -296,9 +296,11 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private Edge getExistingEdge(final Vertex currentFrom, final Vertex currentTo) {
     final RID[] key = new RID[] { currentFrom.getIdentity(), currentTo.getIdentity() };
 
-    final IndexCursor cursor = uniqueIndex.get(key);
-    if (cursor.hasNext())
-      return cursor.next().asEdge();
+    // #5662: try-with-resources - at most one entry is read out of the cursor, which is therefore never drained
+    try (final IndexCursor cursor = uniqueIndex.get(key)) {
+      if (cursor.hasNext())
+        return cursor.next().asEdge();
+    }
 
     return null;
   }

@@ -18,28 +18,38 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * CSR-backed ExpandInto that uses binary search on sorted CSR arrays for O(log(degree))
- * connectivity checks, without loading any edge objects or traversing linked lists.
+ * lookups, without loading any edge objects or traversing linked lists.
  * <p>
- * Selected when both source and target are bound, the edge variable is not captured,
- * and a matching {@link GraphTraversalProvider} is available.
+ * A pattern relationship matches once per relationship, so the pair's row is repeated once per edge
+ * joining it - the CSR holds one adjacency entry per edge, so the equal range around the search hit
+ * gives that multiplicity without materialising anything (issue #5663).
+ * <p>
+ * Selected when both source and target are bound, no edge object is needed - neither captured by the
+ * query nor required to enforce relationship uniqueness against another hop of the same MATCH clause,
+ * which adjacency ids cannot answer - and a matching {@link GraphTraversalProvider} is available.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -100,24 +110,28 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           if (sourceVertex == null || targetVertex == null)
             continue;
 
-          // CSR connectivity check: O(log(degree)) binary search
+          // CSR multiplicity lookup: O(log(degree)) binary search plus the equal range
           final int srcId = provider.getNodeId(sourceVertex.getIdentity());
           final int tgtId = provider.getNodeId(targetVertex.getIdentity());
 
-          boolean connected;
-          if (srcId < 0 || tgtId < 0) {
-            // One or both vertices not in GAV mapping — fall back to OLTP edge check
-            connected = isConnectedOLTP(sourceVertex, targetVertex);
-          } else {
-            final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-            connected = provider.isConnectedTo(srcId, tgtId, arcadeDirection, edgeTypes);
-          }
+          // One or both vertices not in the GAV mapping, or a provider that cannot state the
+          // multiplicity exactly (a negative answer) — fall back to the OLTP edge list
+          long connectingEdges = srcId < 0 || tgtId < 0 ?
+              -1 : provider.countEdgesBetween(srcId, tgtId, direction.toArcadeDirection(), edgeTypes);
+          if (connectingEdges < 0)
+            connectingEdges = countConnectingOLTP(sourceVertex, targetVertex);
 
-          if (connected) {
-            final ResultInternal result = new ResultInternal();
-            for (final String prop : inputResult.getPropertyNames())
-              result.setProperty(prop, inputResult.getProperty(prop));
-            buffer.add(result);
+          // One row per relationship joining the pair: a pattern hop is an expansion, not a
+          // connectivity test, so parallel edges each contribute a walk. The row's property names
+          // do not change between the copies, so the set is walked once however many rows it feeds.
+          if (connectingEdges > 0) {
+            final Set<String> properties = inputResult.getPropertyNames();
+            for (long i = 0; i < connectingEdges; i++) {
+              final ResultInternal result = new ResultInternal();
+              for (final String prop : properties)
+                result.setProperty(prop, inputResult.getProperty(prop));
+              buffer.add(result);
+            }
           }
         }
 
@@ -126,27 +140,61 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       }
 
       /**
-       * OLTP fallback: checks connectivity by iterating edges when one or both vertices
-       * are not present in the GAV mapping (created after last build).
+       * OLTP fallback: counts the relationships joining the pair by iterating edges, for when one or
+       * both vertices are not present in the GAV mapping (created after the last build), or when the
+       * view cannot state the multiplicity exactly.
+       * <p>
+       * It counts every connecting edge without checking any against the relationship variables an
+       * earlier hop of the same MATCH clause bound - which is correct only because
+       * {@code CypherOptimizer.createExpandIntoOperator} selects this operator solely for a hop that
+       * has no such variable to check against and no edge to track. That gate is what makes the
+       * question moot here; widen it and this count has to start asking it, which it cannot do,
+       * because the operator never binds the edges it counts.
        */
-      private boolean isConnectedOLTP(final Vertex source, final Vertex target) {
+      private long countConnectingOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-        for (final Edge edge : source.getEdges(arcadeDirection, edgeTypes)) {
+        Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection);
+        if (arcadeDirection == Vertex.DIRECTION.BOTH)
+          // both adjacency lists are walked, and a self-loop sits in each of them
+          edges = SelfLoops.deduplicatingEdges(edges);
+
+        long count = 0;
+        while (edges.hasNext()) {
+          final Edge edge = edges.next();
           try {
             if (arcadeDirection == Vertex.DIRECTION.BOTH) {
               // source can be either endpoint, so check both sides
-              if (edge.getOutVertex().getIdentity().equals(target.getIdentity()) || edge.getInVertex().getIdentity().equals(target.getIdentity()))
-                return true;
+              if (edge.getOutVertex().getIdentity().equals(target.getIdentity())
+                  || edge.getInVertex().getIdentity().equals(target.getIdentity()))
+                ++count;
             } else {
               final Vertex other = arcadeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
               if (other.getIdentity().equals(target.getIdentity()))
-                return true;
+                ++count;
             }
           } catch (final RecordNotFoundException e) {
             GhostEdgeReporter.reportSkipped(e);
           }
         }
-        return false;
+        return count;
+      }
+
+      /**
+       * Narrows the fallback to the edges that actually reach the target, using the neighbour pointer
+       * stored in the edge segment. The endpoint check below still runs and still reports ghosts, but
+       * it now runs on the handful of candidate edges instead of on the source's whole edge list -
+       * which is what keeps this fallback usable when the source is a super-node.
+       * <p>
+       * That narrows what the probe incidentally reports: a ghost edge reaching the target is still
+       * loaded and reported, but one pointing elsewhere in the source's list is no longer visited, so
+       * it goes unnoticed here. This is a connectivity probe, not a ghost scanner - CHECK DATABASE is
+       * what sweeps a whole edge list.
+       */
+      private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection) {
+        if (source instanceof VertexInternal internalSource)
+          return ((DatabaseInternal) source.getDatabase()).getGraphEngine()
+              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
+        return source.getEdges(arcadeDirection, edgeTypes).iterator();
       }
 
       @Override

@@ -1189,6 +1189,61 @@ Finally, restoring a vector index from an exported definition (`IMPORT DATABASE`
 distinct entry point: an exported definition legitimately carries structural keys - `type`, `bucket`, `version`, ... -
 that the `METADATA`-clause reader has to reject as typos.
 
+## Cypher: a hop onto an already-bound vertex counts every relationship joining the pair
+
+> **Upgrading? Row counts can go up, and that is the fix.** A pattern with a hop onto an already-bound vertex - most
+> commonly a cycle, whose closing hop always has both endpoints bound - was returning fewer rows than it should
+> wherever parallel edges join the same pair. It returns them all now, so `count(*)`, `collect()` and `sum()` over
+> such a pattern report larger numbers than they did in 26.7.2. The old numbers were under-counts, not a different
+> convention: a saved report, a golden-file test or a threshold calibrated against them is the thing to re-check. A
+> graph with at most one edge per pair per type is unaffected in every respect - there was nothing to under-count.
+
+A pattern relationship matches once per relationship. Two parallel edges between the same two vertices are two
+matches, whether or not the pattern names them - `MATCH (a)-[:R]->(b)` over a pair joined twice returns two rows,
+the same as Neo4j. The optimizer's operator for the hop whose far end is already bound did not: built as a
+semi-join ("is this pair connected?"), it answered once per input row and threw the rest of the pair away
+([#5663](https://github.com/ArcadeData/arcadedb/issues/5663)).
+
+The shape where it shows is a cycle, because the hop that closes one always has both endpoints bound:
+
+```cypher
+CREATE (a:Account {code: 'HUB'})
+CREATE (t:Txn {ref: 'SHARED'})
+CREATE (a)-[:INITIATED {kind: 'payment'}]->(t)
+CREATE (a)-[:INITIATED {kind: 'refund'}]->(t)
+CREATE (t)-[:INITIATED {ref: 'REVERSED'}]->(a)
+
+MATCH (a:Account {code: 'HUB'})-[r1:INITIATED]->(t:Txn {ref: 'SHARED'})-[r2:INITIATED]->(a)
+RETURN r1.kind
+```
+
+The cycle can be walked two ways, one per first-hop edge, each closing through the single returning edge -
+relationship uniqueness is satisfied because `r1` and `r2` bind different edges in both walks. The answer was one
+row. Anything aggregating over such a pattern (`count(*)`, `collect(r1)`, `sum`) silently under-reported wherever
+parallel edges exist between a pair, which is normal in transaction and payment graphs. The step-by-step executor
+had always got this right, so the same query could answer differently depending on which plan was chosen.
+
+The operator is an expansion now: it walks the relationships joining the pair and emits one row per relationship,
+binding the relationship variable and enforcing relationship uniqueness against the hops that precede it in the
+same `MATCH` clause - including when the hop is anonymous, whose edge a later hop in the clause must still not
+reuse. It keeps what made it fast: the source's edge list is filtered on the neighbour pointer held in the edge
+segment, so an edge that does not reach the target costs a pointer comparison rather than a record load, and only
+the edges that do reach it are ever materialised. An undirected hop reaches a self-loop from both adjacency lists
+and still reports it once. The CSR-backed variant reads the multiplicity off the sorted adjacency array instead of
+stopping at the first hit, and now steps aside for the edge-list walk when the hop has to tell one relationship
+from another - which adjacency ids cannot do.
+
+A graph analytical view keeps its pending deletions per `(source, target)` pair, because the CSR holds adjacency
+ids and has no edge identity to key on, so deleting one of several parallel edges masks all of them. That is why
+`isConnectedTo` can report a pair as gone while two of its edges remain. A boolean can absorb that; a row count
+cannot. A masked pair is therefore reported as "cannot say", and the hop falls back to the edge list, which is
+exact - so a `SYNCHRONOUS` view that has seen such a delete answers the pattern with the right number of rows
+rather than none.
+
+One related source of confusion is gone with it: two equally cheap hops were tie-broken by a `HashSet` iteration
+order over identity hash codes, so the same query could be planned differently from run to run. Ties now fall to
+the order the hops are written in.
+
 ## `.github/dependency-review-config.yml` expresses the policy the action actually reads
 
 The file was organised into `security:`, `licensing:`, `packages:`, `changes:`, `exemptions:`, `notifications:`,
@@ -1209,5 +1264,211 @@ default and therefore what this job has effectively been enforcing all along. Th
 and expressing that would have been faithful to its intent, but it would have tightened a shared gate as a side effect
 of repairing a config that enforced nothing - a decision worth taking on its own merits. Development dependencies are
 still covered by the `npm audit --audit-level=moderate` step of the same workflow.
+
+## An index cursor is `AutoCloseable`, and a leaked one no longer pins a retired index file forever
+
+Three releases in a row have fixed instances of the same defect - an `IndexCursor` obtained, driven partway and
+dropped ([#5601](https://github.com/ArcadeData/arcadedb/issues/5601),
+[#5609](https://github.com/ArcadeData/arcadedb/issues/5609),
+[#5635](https://github.com/ArcadeData/arcadedb/issues/5635)). Closing one matters: a scan over an LSM index holds one
+underlying cursor per compacted series, each registered with its file, and `dropRetiredCompactedIndexes` will not
+physically drop a file that still has one. Draining a cursor releases those registrations as each series is exhausted,
+so only a cursor abandoned **partway** leaks - which is exactly the shape a `LIMIT`, an `exists()` or an early `break`
+produces. They kept recurring because nothing fired: an abandoned cursor looks exactly like correct code, and every
+site so far was found by reading ([#5662](https://github.com/ArcadeData/arcadedb/issues/5662)).
+
+`Cursor` now extends `AutoCloseable`, so an abandoned one is a static-analysis and IDE finding rather than something
+only a careful read can catch, and a cursor can be used with try-with-resources. `close()` is declared without a
+checked exception, so a `try (final IndexCursor c = index.iterator(true))` does not force the caller into a
+`catch (Exception)`.
+
+That is a compile-time signal, and a compile-time signal proves nothing about the sites nobody has read yet. So the
+counter behind the retire guard was replaced with **weak** references to the live cursors: a cursor abandoned without
+`close()` stops pinning its file once the garbage collector reaches it, and the reclaim is logged with the index name.
+A missed `close()` used to be permanent - the retired file stayed on disk for the lifetime of the database with
+nothing left in the process that could ever release it, and nothing to say so.
+
+The call sites found in this pass and now releasing their cursor:
+
+- The native `Select` API. `exists()` returns on the first match and `count()` stops at its `LIMIT`, both abandoning
+  the scan, and `SelectIterator.close()` documented itself as having "nothing to release in the serial
+  implementation" while holding the source index cursor.
+- `SubQueryStep` never closed the plan it wraps, so closing a result set reached only the outer plan's steps. A
+  `DELETE ... WHERE` is built exactly this way - the index scan inside the sub-plan, the `LIMIT` outside it - so its
+  scan was released only when it happened to run to exhaustion.
+- `DeleteFromIndexStep` had no `close()` at all. Two smaller repairs travel with it, neither of which changes what a
+  working statement does: an `IOException` out of its initialisation printed a stack trace to stdout and carried on
+  with a null cursor, so the caller would have seen a `NullPointerException` instead of the failure that explained it;
+  and the branch for an index without ordered iterations opened a `range()` cursor and overwrote it with the
+  `iterator()` one on the next line - it could never have worked, since both of those calls raise
+  `UnsupportedOperationException` on the only index that reaches it, so it was removed in favour of the error that
+  names the condition.
+- The Gremlin index-filter step, `TypeIndex`, the unique-key check at commit time, the edge upsert lookup, and the
+  full-text scoring, explain and more-like-this walks.
+
+Two smaller corrections travel with them. The vector search cursor returned the backing list's own iterator from
+`iterator()`, so a for-each got a second, independent traversal that never moved the cursor's position - `getRecord()`
+reported nothing during the loop, and mixing it with `next()` read some RIDs twice; it now iterates itself, like every
+other cursor, and `IndexCursorCollection` does the same. And `MultiIndexCursor.getComparator()` /
+`getBinaryKeyTypes()` answered by probing the children for one that still had something left, which since #5635 means
+running page reads and tombstone skips inside two plain accessors; both now answer from state sampled at construction,
+and the key types no longer come back null once the cursor is exhausted.
+## Cypher: a subquery body is now part of the query rather than a string it carries
+
+> **Upgrade note - behaviour change.** A query whose `EXISTS { }`, `COUNT { }` or `COLLECT { }` body **fails on real
+> data** now returns that error instead of a wrong answer. Until now any exception raised while the body ran was
+> swallowed and answered with the expression's neutral value - `false`, `0`, `[]` - so a body that failed on some rows
+> and not others produced results that looked complete. If a body of yours errors on a subset of rows (an `abs()` over
+> a property that is occasionally a string or null is the usual shape), the query that used to return rows will now
+> raise. That is the point: the old answer was wrong, not merely quiet. Neo4j raises here too. The failures worth
+> knowing about are below.
+
+`EXISTS { }`, `COUNT { }` and `COLLECT { }` did not hold their body as part of the query. They held it as **text**,
+edited that text once per outer row to correlate it, ran it through `database.query("opencypher", ...)` as a
+standalone statement, and absorbed any failure into the expression's neutral value. Three things follow from that,
+and all three are fixed.
+
+**A failing body is reported instead of being answered.** A body that could not run was answered exactly like a body
+that did not match: `false` for `EXISTS`, `0` for `COUNT`, `[]` for `COLLECT`, with nothing above `FINE` to say so.
+The two are not the same thing, and the difference is load-bearing:
+
+```cypher
+MATCH (a), (b) WHERE NOT EXISTS { MATCH (a)-[:E {id: $id}]->(b) } CREATE (a)-[:E {id: $id}]->(b)
+```
+
+If that body threw for any reason, `EXISTS` answered `false`, `NOT EXISTS` answered `true`, and a de-duplicating
+guard degraded into an unconditional `CREATE`. It also meant a retryable `ConcurrentModificationException` raised
+inside a body could never reach the server's automatic retry, since it had already been swallowed. Failures now
+propagate, as they do in Neo4j. **This is a behaviour change:** a query whose subquery body fails on real data - a
+type error on a property, a lock timeout, a security violation - now returns that error instead of a wrong answer.
+
+**The body is run, not rewritten.** What executes is the parsed body, with the outer row handed to it as a seed row -
+the same mechanism a `CALL { }` clause already used. The text rewriting is gone from that path, and with it the class
+of bugs it produced: an injected `AND` binding tighter than an inner `OR` (#4995/#5165), an inline pattern predicate
+mistaken for the clause-level `WHERE` (#5464), a clause keyword missing from a keyword table (#5461), a `SET` inside
+user data read as a clause (#5541). Two blind spots that a text scan could not fix are fixed as a consequence: an
+update keyword inside a comment, and `COLLECT { WITH 1 AS set RETURN set }`, are no longer rejected as writes.
+
+**Every validation phase reaches inside a body.** Twelve run on a statement and ten of them used to stop at the
+subquery boundary, so a mistake rejected when written one way was accepted written one level in:
+
+```cypher
+-- rejected
+MATCH (n:P) RETURN count(count(n)) AS r
+-- accepted, until now
+MATCH (n:P) RETURN COUNT { MATCH (m:P) RETURN count(count(m)) } AS r
+```
+
+The same held for a negative `SKIP`/`LIMIT`, a duplicated column name, `RETURN *` with nothing in scope, and the
+column-name and `UNION`/`UNION ALL` checks of a `UNION` written as a body. The boundary is now a property of the
+validator itself rather than something each phase has to know about, so a phase added later is inside a body from
+the day it is written.
+
+One check widened beyond subqueries as part of this. A repeated relationship variable - `(a)-[r]->()<-[r]-()`, a
+pattern asking for a relationship that is two different ones at once - was rejected only when written as the query's
+own `MATCH`. It is now rejected wherever the pattern appears, including a `WHERE` pattern predicate and a subquery
+body, matching Neo4j. Those two spellings used to answer "no match" instead.
+## Deleting an edge no longer leaves its back-reference behind under concurrency
+
+Removing an edge disconnects it from both endpoints and then deletes the edge record. The disconnection walked the
+endpoint's edge-list chain with best-effort reads: the head chunk came from a helper that answers `null` when it
+cannot be loaded, the chain hops used a plain lookup, and `deleteEdge` wrapped the lot in a
+`catch (RecordNotFoundException)`. All three read "chunk unreadable" as "nothing to remove here" - and then the edge
+record was deleted anyway.
+
+Under concurrency a chunk is regularly unreadable for reasons that say nothing about the graph. A commit publishes
+its pages one at a time and a reader takes no commit lock, so a vertex page can expose a new edge-list head RID a
+moment before that head's own page becomes visible; and a chunk emptied by another transaction is relinked out of
+the chain while a walker is still following a pointer to it. Hitting either window ended the removal without having
+removed anything, so the back-reference outlived its edge: the endpoint reported one edge too many
+(`countEdges`, `both()`, `in()`/`out()`) and `check database` reported one broken link. On a hot vertex - the
+super-node shape this happens on - the window is narrow, which is why it surfaced as a rare, unexplained off-by-one
+rather than as a reproducible failure.
+
+The append path already answered exactly this window with a retryable `ConcurrentModificationException`. The removal
+path now does the same: a head chunk that is present but unreadable, and a chain hop that cannot be read, are
+retryable conflicts, so the transaction re-reads a consistent view and completes the removal instead of committing a
+half-done one. `null` from the write-side head lookup now means one thing only - the vertex has no edge list in that
+direction, so there is genuinely nothing to remove. Tolerance for an endpoint **vertex** that no longer exists is
+unchanged: there is nothing to disconnect from a vertex that is gone.
+
+**Visible effect, and it is not limited to deleting an edge.** Three operations disconnect an edge and therefore
+share the new contract:
+
+- `edge.delete()` / `DELETE EDGE`,
+- moving an edge, which disconnects it the same way,
+- **`vertex.delete()` / `DELETE VERTEX`** - the widest reach of the three. Deleting a vertex disconnects each of its
+  edges from the vertex at the *other* end, so the strict read lands on a **neighbour's** edge list. A vertex that is
+  itself perfectly healthy can now fail to delete because a neighbour's list could not be read at that moment.
+
+Any of them racing a concurrent write can now raise a `ConcurrentModificationException` where it previously
+"succeeded". That is a `NeedRetryException`, so the standard retry loop (`database.transaction(...)`, and the
+server's auto-retry for single-request commands) absorbs it. A client-managed explicit transaction spanning several
+requests sees it and should retry the transaction, which is the same contract concurrent updates have always had.
+Best-effort callers are unaffected: iteration, counting and the opportunistic pruning of an already-dangling
+reference during a read still skip a momentarily unreadable chunk rather than failing.
+
+The other side of that trade, taken deliberately: an edge list that is not transiently invisible but genuinely
+broken is indistinguishable from one at that moment, so the operations above now fail instead of completing and
+leaving the back-reference behind. For `DELETE VERTEX` that means a healthy vertex next to a corrupted one is not
+deletable by the normal path until the corruption is repaired - succeeding would delete the edge record while the
+neighbour keeps pointing at it, dangling a reference on a vertex nobody asked to touch. `CHECK DATABASE` remains the
+repair path: it rebuilds a chain that cannot be loaded and drops the references into it.
+
+**If you hit that, the recovery is `CHECK DATABASE ... FIX` and then retry the delete.** The symptom is a delete that
+keeps failing with `ConcurrentModificationException` on the same vertex however often it is retried, which is what
+tells a broken list apart from ordinary contention (that one succeeds on a retry). The repair is never blocked by the
+delete being blocked: `CHECK DATABASE` reads edge lists through the best-effort reader, so it can still walk, rebuild
+and re-link a chain that the delete path now refuses.
+
+Note also that on a hot super-node under heavy concurrent delete-and-append the transient window is now answered with
+a retry rather than passing silently, so those transactions retry slightly more often than before. That is the
+intended shift - from "quietly wrong" to "occasionally repeated" - and it lands on exactly the super-node shape the
+bug affected. `arcadedb.txRetryDelay` and `arcadedb.txRetries` are the tuning levers if a workload needs them.
+
+## A `HASH` index can key on a `LINK`, and an unsupported key type is refused at creation
+
+`CREATE INDEX ON INITIATED (`@out`, `@in`) UNIQUE_HASH` - the structural way to enforce edge de-duplication - was
+accepted, and then every insert failed:
+
+```
+com.arcadedb.index.IndexException: Unsupported key type for hash index 'INITIATED_0_...' (fileId=5): 14 (0x0E) while
+parsing entry at content offset 11. Loaded key types=[14(0x0E)=INVALID, 14(0x0E)=INVALID]. This means the index
+metadata or a bucket page is corrupted; rebuild the index (DROP and recreate it).
+```
+
+A `LINK` (and therefore an edge type's `@out`/`@in`) encodes as `TYPE_RID`, which the hash bucket's key-size, compare
+and validation paths did not recognise: only `TYPE_COMPRESSED_RID` was handled, so every key-length computation over
+such an entry fell through to the "corrupted" branch. Endpoint-keyed de-duplication was therefore `LSM_TREE`-only, and
+the failure said nothing about it.
+
+`LINK` keys are now stored the same way the bucket already stores its entry values - as varint-compressed RIDs. That
+was the cheaper of the two fixes to make correct: the fixed 4+8 byte `TYPE_RID` form costs 12 bytes per key column,
+against 2-7 for the varint form, so on the composite `(@out, @in)` key that motivates such an index it is roughly half
+the key bytes, and half the pages. Both encodings are deterministic and injective, so hashing and key comparison are
+unaffected. The metadata page keeps recording the schema type, so the on-disk format is unchanged and
+`getKeyTypes()`/`getBinaryKeyTypes()` still report `LINK`/`TYPE_RID` - the compression is internal to the bucket.
+
+The second half of the report was the message itself. Nothing was corrupt: the index had never been able to hold that
+key type, so "rebuild the index (DROP and recreate it)" pointed at a remedy that could not work and implied data loss
+that had not happened. A key type a hash index cannot encode is now refused when the index is created, before any file
+exists, naming the type and the supported ones:
+
+```
+Cannot create index 'Doc_0_...' of type HASH because the key type LIST cannot be used as a HASH index key.
+Supported key types are: BOOLEAN, INTEGER, SHORT, LONG, FLOAT, DOUBLE, DATETIME, STRING, BINARY, LINK, BYTE, DATE,
+DECIMAL, DATETIME_MICROS, DATETIME_NANOS, DATETIME_SECOND. Create the index as LSM_TREE instead
+```
+
+The runtime error that remains - reachable only from a damaged metadata page, or an index created before that check -
+now names the key column, states that no record data is lost, and distinguishes the two causes instead of asserting
+corruption.
+
+**Downgrade note.** Nothing needs migrating on upgrade: the metadata page records the same byte it always did, and a
+`LINK` HASH index created before this release cannot hold data anyway - it failed on the first insert - so an existing
+one simply starts working. The compatibility runs one way only, though. A `LINK` HASH index created *with* this
+release is not readable by an earlier build: the old loader does not recognise `TYPE_RID` as a key type and flags the
+metadata page as corrupt. The database still opens and every other index is unaffected, but that one index has to be
+dropped before going back. `LSM_TREE` indexes on the same properties are unaffected in both directions.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

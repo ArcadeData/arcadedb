@@ -56,6 +56,13 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         nextEdgeRID = currentContainer.getRID(currentPosition);
         nextVertexRID = currentContainer.getRID(currentPosition);
 
+        if (!matchesNeighborFilter(nextVertexRID)) {
+          // FILTER IT OUT ON THE POINTER READ FROM THE SEGMENT, BEFORE ANY RECORD IS TOUCHED
+          nextEdgeRID = null;
+          nextVertexRID = null;
+          continue;
+        }
+
         // VALIDATE A NON-LIGHTWEIGHT EDGE HERE SO A DANGLING POINTER (edge record removed but the link still in
         // the segment) IS SKIPPED WHILE PEEKING, KEEPING hasNext()/next() CONSISTENT WITH THE Iterator CONTRACT.
         // OTHERWISE next() WOULD SKIP THE RECORD AND THROW NoSuchElementException WHEN THE SEGMENT ENDS - WHICH

@@ -45,6 +45,16 @@ import java.util.stream.Stream;
  * and all three mistook an inline pattern predicate - {@code -[r:E WHERE r.tag = 'ok']->} or
  * {@code (b:A WHERE b.v = 2)} - for the clause-level WHERE, injecting the correlation inside the
  * pattern and corrupting the subquery (issue #5464). Keeping one implementation keeps them honest.
+ * <p>
+ * <b>This is now the fallback, not the path.</b> A body that has an AST is run from it, with the outer row handed in
+ * as a seed row and nothing rewritten - see {@link CorrelatedSubqueryRunner}, which is where the list above stops
+ * growing. What still arrives here is a body the statement builder declined (the best-effort build of issue #5626)
+ * and the existential subquery {@link PatternPredicateExpression} synthesizes at runtime from a pattern it holds.
+ * Fixing a correlation bug means asking first whether the shape can reach this class at all.
+ * <p>
+ * One thing it cannot do, and could not be taught to: correlate a <b>relationship</b> variable. An outer binding is
+ * pinned by an injected {@code MATCH (v)}, which is node syntax, so a relationship-valued outer variable produced a
+ * body that did not parse. That never surfaced while a failed body was absorbed into the expression's neutral value.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

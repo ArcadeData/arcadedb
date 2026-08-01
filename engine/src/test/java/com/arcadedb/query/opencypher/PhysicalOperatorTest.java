@@ -357,7 +357,7 @@ class PhysicalOperatorTest {
       );
       final String expandIntoExplain = expandInto.explain(0);
       assertThat(expandIntoExplain.contains("ExpandInto")).as("Explain should contain operator type").isTrue();
-      assertThat(expandIntoExplain.contains("SEMI-JOIN")).as("Explain should indicate semi-join").isTrue();
+      assertThat(expandIntoExplain.contains("BOUND-TARGET")).as("Explain should indicate the target is pinned").isTrue();
       assertThat(expandIntoExplain.contains("a")).as("Explain should contain source variable").isTrue();
       assertThat(expandIntoExplain.contains("b")).as("Explain should contain target variable").isTrue();
     });

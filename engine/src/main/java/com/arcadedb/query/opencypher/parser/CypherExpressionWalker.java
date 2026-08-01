@@ -122,6 +122,17 @@ public final class CypherExpressionWalker {
     void visit(Expression expression);
 
     /**
+     * Called once per graph pattern the walk reaches, wherever it was written: a {@code MATCH}, a {@code CREATE} or
+     * {@code MERGE}, a pattern predicate in a {@code WHERE}, a pattern comprehension, a {@code shortestPath}. For a
+     * check about the shape of a pattern rather than about an expression inside it - two relationships sharing a
+     * variable, say - this is the hook, and using it is what keeps the check from applying only to the one clause
+     * whose patterns someone remembered to iterate.
+     */
+    default void visitPattern(final PathPattern pattern) {
+      // Most visitors are about expressions.
+    }
+
+    /**
      * Called when the walk is about to descend into a statement that binds its own variables - the body of a
      * {@code CALL { ... }} clause or of an {@code EXISTS}/{@code COUNT}/{@code COLLECT} subquery expression, and each
      * branch of a {@code UNION}. Returning {@code this} keeps the same check running inside it; returning a different
@@ -406,12 +417,15 @@ public final class CypherExpressionWalker {
   }
 
   /**
-   * Visits every expression nested inside a graph pattern: the inline property values of each node and relationship,
-   * their dynamic labels, and any inline {@code WHERE}. This is how {@code CREATE (n:P {age: abs('x')})} is reached.
+   * Hands the pattern itself to {@link Visitor#visitPattern}, then visits every expression nested inside it: the
+   * inline property values of each node and relationship, their dynamic labels, and any inline {@code WHERE}. This is
+   * how {@code CREATE (n:P {age: abs('x')})} is reached.
    */
   public static void walk(final PathPattern pattern, final Visitor visitor) {
     if (pattern == null)
       return;
+
+    visitor.visitPattern(pattern);
 
     if (pattern.getNodes() != null)
       for (final NodePattern node : pattern.getNodes()) {

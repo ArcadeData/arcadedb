@@ -112,7 +112,7 @@ public class SQLQueryEngine implements QueryEngine {
     context.setInputParameters(parameters);
     context.setConfiguration(configuration);
 
-    return statement.execute(database, parameters, context);
+    return statement.execute(executionDatabase(), parameters, context);
   }
 
   @Override
@@ -121,7 +121,37 @@ public class SQLQueryEngine implements QueryEngine {
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
-    return statement.execute(database, parameters, context);
+    return statement.execute(executionDatabase(), parameters, context);
+  }
+
+  /**
+   * The database a statement executes against, and therefore the one {@code CommandContext.getDatabase()} returns.
+   * <p>
+   * Statements that commit mid-execution - {@code TRUNCATE TYPE}/{@code BUCKET} batching every
+   * {@link com.arcadedb.GlobalConfiguration#TRUNCATE_BATCH_SIZE} records, {@code REBUILD INDEX}, {@code BatchStep} -
+   * call {@code commit()} on whatever this returns. Handing them the raw instance means those commits go straight to
+   * {@code LocalDatabase.commit()}, which on an HA leader applies the pages locally and never proposes them to Raft:
+   * followers then trail by exactly those page versions and the next replicated entry touching one of them fails the
+   * version check (#5492).
+   * <p>
+   * {@code SQLScriptQueryEngine} has always resolved the wrapper for the same reason, which is why the identical
+   * statements replicate correctly under {@code sqlscript} and not under {@code sql}. Off HA the wrapper is the
+   * instance itself, so this is a no-op there.
+   * <p>
+   * <b>Which paths must use this:</b> every one that can carry a statement that commits - both {@code command()}
+   * overloads and {@code analyze()}'s {@code AnalyzedQuery.execute()}. {@code analyze()} is included because it is
+   * not gated on idempotency: the MCP command tool executes writes through it, so it can carry a {@code TRUNCATE}.
+   * <p>
+   * The two {@code query()} overloads deliberately keep the field. They throw
+   * {@link com.arcadedb.exception.QueryNotIdempotentException} before execution for anything non-idempotent, so no
+   * statement reaching them can commit, and leaving them alone keeps read traffic - including follower-local reads -
+   * resolving exactly as it did before. Add a new entry point that can execute a write, and it belongs on this
+   * method; the engine itself is bound to the inner instance
+   * ({@code RaftReplicatedDatabase.getQueryEngine} delegates to {@code proxied}), so the field is never the right
+   * answer for anything that might commit.
+   */
+  private DatabaseInternal executionDatabase() {
+    return database.getWrappedDatabaseInstance();
   }
 
   @Override
@@ -148,7 +178,11 @@ public class SQLQueryEngine implements QueryEngine {
         final long resultSetLimit = database.getResultSetLimit();
         if (resultSetLimit > 0)
           statement.setLimit(new Limit(JJTLIMIT).setValue((int) resultSetLimit));
-        return statement.execute(database, parameters);
+        // Same resolution as command(): this is a third execution entry point, not an analysis-only one.
+        // The MCP command tool runs SQL exclusively through here (analyze() once, then execute(); the
+        // database.command() fallback is only reached by engines whose execute() returns null), so leaving
+        // the raw instance here would keep #5492 open for that caller alone.
+        return statement.execute(executionDatabase(), parameters);
       }
     };
   }

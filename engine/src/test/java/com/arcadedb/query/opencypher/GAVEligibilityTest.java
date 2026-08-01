@@ -131,7 +131,7 @@ class GAVEligibilityTest {
       result.next();
 
     final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
-    // The optimizer now handles overlapping edge types correctly via ExpandInto/SEMI-JOIN
+    // The optimizer now handles overlapping edge types correctly via the bound-target ExpandInto
     assertThat(planString).contains("Cost-Based");
     result.close();
   }
@@ -179,7 +179,7 @@ class GAVEligibilityTest {
       result.next();
 
     final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
-    // Optimizer handles overlapping edge types via ExpandInto/SEMI-JOIN
+    // Optimizer handles overlapping edge types via the bound-target ExpandInto
     assertThat(planString).contains("Cost-Based");
     result.close();
   }
@@ -387,7 +387,7 @@ class GAVEligibilityTest {
 
   @Test
   void triangleCountUsesOptimizer() {
-    // Q3-like: triangle in country — optimizer handles via ExpandInto/SEMI-JOIN
+    // Q3-like: triangle in country - optimizer handles via the bound-target ExpandInto
     final ResultSet result = database.query("opencypher",
         "PROFILE MATCH (co:Country) MATCH (p1:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p2:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p3:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:KNOWS]-(p1) RETURN count(*) AS count");
 
@@ -478,7 +478,7 @@ class GAVEligibilityTest {
 
   @Test
   void starJoinQ4PatternUsesOptimizer() {
-    // Q4-like: star join with central node m:Message — optimizer handles via SEMI-JOIN
+    // Q4-like: star join with central node m:Message - optimizer handles via the bound-target ExpandInto
     final ResultSet result = database.query("opencypher",
         "PROFILE MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person), (m)<-[:LIKES]-(:Person), (m)<-[:REPLY_OF]-(:Comment) RETURN count(*) AS count");
 

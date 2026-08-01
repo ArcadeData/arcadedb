@@ -490,8 +490,11 @@ public class TransactionIndexContext {
     // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS
     final TypeIndex idx = type.getPolymorphicIndexByProperties(index.getPropertyNames());
     if (idx != null) {
-      final IndexCursor found = idx.get(key.keyValues, 2);
-      if (found.hasNext()) {
+      // #5662: try-with-resources - the cursor stops after at most two entries, so it is never drained
+      try (final IndexCursor found = idx.get(key.keyValues, 2)) {
+        if (!found.hasNext())
+          return;
+
         final Identifiable firstEntry = found.next();
         int totalEntries = 1;
         if (found.hasNext())
@@ -530,7 +533,6 @@ public class TransactionIndexContext {
         }
       }
     }
-
   }
 
   /**
