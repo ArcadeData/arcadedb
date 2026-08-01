@@ -226,7 +226,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // The cap used to push a LIMIT down into a command that states none: the caller's own 'limit' when
     // present, the configured default otherwise. A command that already carries a LIMIT is left untouched and
     // its own value decides the response size, resolved from the execution plan after execution.
-    final int autoLimit = requestLimit != null ? requestLimit : getDefaultLimit();
+    final int autoLimit = requestLimit != null ? requestLimit : getDefaultRowLimit();
     final boolean autoLimited = requiresAutomaticLimit(command, language, autoLimit);
     // Kept for the log: a warning must show the operator the query the caller sent, not the rewritten one.
     final String originalCommand = command;

@@ -43,8 +43,6 @@ import java.util.List;
  */
 public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
 
-  private static final int DEFAULT_LIMIT = 20_000;
-
   public PostTimeSeriesQueryHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -99,7 +97,8 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    final int limit = payload.getInt("limit", DEFAULT_LIMIT);
+    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited.
+    final int limit = payload.getInt("limit", getDefaultRowLimit());
 
     // Resolve field projection
     final int[] columnIndices = resolveColumnIndices(payload, columns);
@@ -118,7 +117,7 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
 
     // Build rows array, applying limit
     final JSONArray rowsArray = new JSONArray();
-    final int count = Math.min(rows.size(), limit);
+    final int count = limit > 0 ? Math.min(rows.size(), limit) : rows.size();
     for (int i = 0; i < count; i++) {
       final Object[] row = rows.get(i);
       final JSONArray rowArray = new JSONArray();

@@ -49,7 +49,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   /**
    * Default value of {@link GlobalConfiguration#SERVER_HTTP_QUERY_DEFAULT_LIMIT}, kept as a constant for the
    * tests and the clients that referenced it before the cap became configurable. Handlers must read the
-   * effective value from the server configuration via {@link #getDefaultLimit()}, never from this constant.
+   * effective value from the server configuration via {@link #getDefaultRowLimit()}, never from this constant.
    */
   public static final int DEFAULT_LIMIT = (Integer) GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getDefValue();
 
@@ -93,13 +93,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * Effective default row cap for this server, applied only when the caller expressed no limit of its own.
-   */
-  protected int getDefaultLimit() {
-    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT);
-  }
-
-  /**
    * Resolves the row cap to apply while serializing, in decreasing order of explicitness:
    * <ol>
    * <li>the {@code limit} field of the request, when present: the caller stated the size of the page it
@@ -120,7 +113,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   protected int resolveLimit(final Integer requestLimit, final int planLimit) {
     if (requestLimit != null)
       return requestLimit;
-    final int defaultLimit = getDefaultLimit();
+    final int defaultLimit = getDefaultRowLimit();
     // A non-positive default means the operator removed the cap: nothing to raise.
     return defaultLimit > 0 ? Math.max(planLimit, defaultLimit) : defaultLimit;
   }

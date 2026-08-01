@@ -121,6 +121,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
           throws Exception;
 
+  /**
+   * Maximum number of rows an endpoint serializes into a single response when the caller states no limit of its
+   * own. A non-positive value means unlimited. Shared by every row-returning endpoint so one setting governs
+   * them all (issue #5711).
+   */
+  protected int getDefaultRowLimit() {
+    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT);
+  }
+
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
       e.startBlocking();

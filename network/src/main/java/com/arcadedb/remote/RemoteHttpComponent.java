@@ -85,7 +85,9 @@ public class RemoteHttpComponent extends RWLockContext {
   protected        String                      currentServer;
   protected        int                         currentPort;
   private         Pair<String, Integer>       stickyTransactionServer;
-  private         Integer                     maxResultRows;
+  // Volatile so a setMaxResultRows() from another thread is seen by the command-build path: this class is
+  // documented as not thread safe, but the cap is a connection-wide knob an application may flip at any time.
+  private volatile Integer                    maxResultRows;
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN, FIXED
