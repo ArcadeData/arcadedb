@@ -326,10 +326,85 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
    */
   @Test
   void rebuildRepairsAnIndexWithAnIllegalPageSizeInsteadOfDroppingIt() throws Exception {
-    final String dbName = "Issue5713RebuildDB";
+    withLegacyIllegalPageSizeDatabase("Issue5713RebuildDB", 200, (db, entries) -> {
+      db.command("sql", "REBUILD INDEX `" + hashIndexOf(db).getName() + "`");
+
+      final IndexInternal rebuilt = hashIndexOf(db);
+      assertThat(rebuilt.getPageSize()).as("the rebuild must pick a legal page size")
+          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+      assertThat(rebuilt.checkIntegrity()).isEmpty();
+      assertThat(rebuilt.countEntries()).isEqualTo(entries);
+
+      db.transaction(() -> {
+        for (int i = 0; i < entries; i++)
+          assertThat(rebuilt.get(new Object[] { "key-" + i }).hasNext()).as("key-%d lost by the rebuild", i).isTrue();
+      });
+    });
+  }
+
+  /**
+   * {@code TRUNCATE TYPE} drops every index of the type and recreates it from a captured definition, so it has the same
+   * drop-then-recreate shape as a rebuild: an unaddressable page size carried into the definition would leave the type
+   * without the index it had.
+   */
+  @Test
+  void truncateTypeRecreatesAnIndexWithAnIllegalPageSize() throws Exception {
+    withLegacyIllegalPageSizeDatabase("Issue5713TruncateDB", 50, (db, entries) -> {
+      // TRUNCATE TYPE scans the type, so it needs an active transaction
+      db.transaction(() -> db.command("sql", "TRUNCATE TYPE " + TYPE_NAME));
+
+      final IndexInternal recreated = hashIndexOf(db);
+      assertThat(recreated.getPageSize()).as("TRUNCATE TYPE must recreate the index with a legal page size")
+          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+      assertThat(recreated.checkIntegrity()).isEmpty();
+      assertThat(recreated.countEntries()).isZero();
+
+      // and the index is functional afterwards
+      db.transaction(() -> {
+        final MutableDocument doc = db.newDocument(TYPE_NAME);
+        doc.set("k", "after-truncate");
+        doc.save();
+      });
+      assertThat(recreated.get(new Object[] { "after-truncate" }).hasNext()).isTrue();
+    });
+  }
+
+  /**
+   * The worst of the drop-then-recreate sites: {@code CHECK DATABASE ... FIX} rebuilds every index it flagged, and an
+   * unaddressable page size is now one of the things {@code checkIntegrity()} flags. Carrying that page size into the
+   * rebuild would make the automated repair destroy precisely the index it had just diagnosed.
+   */
+  @Test
+  void checkDatabaseFixRepairsAnIndexWithAnIllegalPageSize() throws Exception {
+    withLegacyIllegalPageSizeDatabase("Issue5713CheckFixDB", 100, (db, entries) -> {
+      db.command("sql", "CHECK DATABASE FIX");
+
+      final IndexInternal repaired = hashIndexOf(db);
+      assertThat(repaired.getPageSize()).as("CHECK DATABASE FIX must not leave the index it flagged behind")
+          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+      assertThat(repaired.checkIntegrity()).isEmpty();
+
+      db.transaction(() -> {
+        for (int i = 0; i < entries; i++)
+          assertThat(repaired.get(new Object[] { "key-" + i }).hasNext()).as("key-%d lost by CHECK DATABASE FIX", i)
+              .isTrue();
+      });
+    });
+  }
+
+  @FunctionalInterface
+  private interface LegacyDatabaseTest {
+    void accept(Database database, int entries) throws Exception;
+  }
+
+  /**
+   * Builds a database whose HASH index declares, on disk, a page size the bucket cannot address - the shape of an index
+   * created before the creation-time guard - reopens it and hands it to the test.
+   */
+  private void withLegacyIllegalPageSizeDatabase(final String dbName, final int entries, final LegacyDatabaseTest test)
+      throws Exception {
     TestHelper.dropDatabase(dbName);
 
-    final int entries = 200;
     final String databasePath;
     try (final Database db = TestHelper.createDatabase(dbName)) {
       databasePath = db.getDatabasePath();
@@ -354,19 +429,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
 
     try (final Database reopened = new DatabaseFactory(databasePath).open()) {
       assertThat(hashIndexOf(reopened).getPageSize()).isEqualTo(HashIndexBucket.MAX_PAGE_SIZE * 2);
-
-      reopened.command("sql", "REBUILD INDEX `" + hashIndexOf(reopened).getName() + "`");
-
-      final IndexInternal rebuilt = hashIndexOf(reopened);
-      assertThat(rebuilt.getPageSize()).as("the rebuild must pick a legal page size")
-          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
-      assertThat(rebuilt.checkIntegrity()).isEmpty();
-      assertThat(rebuilt.countEntries()).isEqualTo(entries);
-
-      reopened.transaction(() -> {
-        for (int i = 0; i < entries; i++)
-          assertThat(rebuilt.get(new Object[] { "key-" + i }).hasNext()).as("key-%d lost by the rebuild", i).isTrue();
-      });
+      test.accept(reopened, entries);
     } finally {
       TestHelper.dropDatabase(dbName);
     }
