@@ -187,21 +187,22 @@ def matching_producers(produced, selector_names, selector_glob, is_pattern):
 
 
 def check_workflow(path):
-    """Return the list of violation strings found in one workflow file."""
+    """Return the (violations, notes) found in one workflow file."""
     try:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as error:
-        return ["%s: cannot parse: %s" % (path, error)]
+        return ["%s: cannot parse: %s" % (path, error)], []
 
     if not isinstance(document, dict):
-        return []
+        return [], []
     jobs = document.get("jobs")
     if not isinstance(jobs, dict):
-        return []
+        return [], []
     jobs = {name: job for name, job in jobs.items() if isinstance(job, dict)}
 
     produced = producers_of(jobs)
     violations = []
+    suppressed = []
 
     # A job that delegates to a reusable workflow has no steps to read, so an artifact this file
     # never mentions may still be uploaded inside it. See the boundary note in the header.
@@ -243,11 +244,15 @@ def check_workflow(path):
 
             uploaders = matching_producers(produced, selector_names, selector_glob, is_pattern)
             if not uploaders:
-                if not opaque:
-                    violations.append(
-                        "%s: job '%s', step '%s' downloads '%s', which no job in this workflow "
-                        "uploads" % (path, job_name, step_name, selector)
-                    )
+                message = (
+                    "%s: job '%s', step '%s' downloads '%s', which no job in this workflow uploads"
+                    % (path, job_name, step_name, selector)
+                )
+                # Suppressed, not dropped. A typo in an artifact name looks exactly like an
+                # artifact a reusable workflow uploads, and this check gates every other job, so
+                # the benefit of the doubt goes to the workflow - but silently discarding the
+                # finding is how #5701 stayed invisible in the first place.
+                (suppressed if opaque else violations).append(message)
                 continue
 
             if closure is None:
@@ -273,7 +278,16 @@ def check_workflow(path):
                     )
                 )
 
-    return violations
+    notes = (
+        [
+            "%s: %d missing-producer finding(s) not reported, because a job in this workflow "
+            "delegates to a reusable workflow whose steps cannot be read:\n%s"
+            % (path, len(suppressed), "\n".join("      %s" % s for s in suppressed))
+        ]
+        if suppressed
+        else []
+    )
+    return violations, notes
 
 
 def workflow_files(arguments):
@@ -292,7 +306,12 @@ def workflow_files(arguments):
 
 def main(arguments):
     files = workflow_files(arguments)
-    violations = [v for path in files for v in check_workflow(path)]
+    results = [check_workflow(path) for path in files]
+    violations = [v for found, _ in results for v in found]
+    notes = [n for _, found in results for n in found]
+
+    for note in notes:
+        print("check-workflow-artifact-deps: %s" % note)
 
     if violations:
         print("Artifact downloads that are not ordered after their upload:\n", file=sys.stderr)

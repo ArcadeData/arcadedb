@@ -37,6 +37,12 @@ files=()
 missing=()
 summary=()
 
+# `find` runs into a file rather than straight into the read loop: a process substitution is not
+# part of the pipeline, so `pipefail` never sees its exit status and an unreadable directory would
+# look exactly like an empty one. Given this script exists to tell those two apart, it checks.
+scratch="$(mktemp)"
+trap 'rm -f "$scratch"' EXIT
+
 for argument in "$@"; do
     if [[ $argument != *=* ]]; then
         echo "$(basename "$0"): expected <suite>=<dir>, got '$argument'" >&2
@@ -49,9 +55,13 @@ for argument in "$@"; do
     # leaves an empty one. Both are the same failure - the merge would silently drop that suite.
     found=()
     if [[ -d $directory ]]; then
+        if ! find "$directory" -type f -name 'jacoco*.xml' >"$scratch"; then
+            echo "$(basename "$0"): cannot read '$directory' for suite '$suite'" >&2
+            exit 1
+        fi
         while IFS= read -r report; do
             found+=("$report")
-        done < <(find "$directory" -type f -name 'jacoco*.xml' | sort)
+        done < <(sort "$scratch")
     fi
 
     if [[ ${#found[@]} -eq 0 ]]; then

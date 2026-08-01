@@ -406,6 +406,11 @@ YAML
 expect "does not report an artifact a reusable workflow may upload" 0 "" \
     "$DEPS" "$work/reusable"
 
+# Suppressed is not the same as discarded: a typo in an artifact name looks identical to one the
+# called workflow uploads, so the finding still has to be visible somewhere.
+expect "says which findings it suppressed and why" 0 "not reported" \
+    "$DEPS" "$work/reusable"
+
 # The blind spot must not suppress a violation that is still visible in this file.
 mkdir -p "$work/reusable-unordered"
 cat >"$work/reusable-unordered/ci.yml" <<'YAML'
@@ -475,6 +480,16 @@ fi
 
 expect "rejects an argument that is not <suite>=<dir>" 2 "expected <suite>=<dir>" \
     "$COLLECT" "not-a-pair"
+
+# An unreadable directory is not an empty one, and telling those apart is the whole job. Skipped
+# for root, which can read it regardless.
+if [[ $(id -u) -ne 0 ]]; then
+    mkdir -p "$work/coverage/unreadable"
+    chmod 000 "$work/coverage/unreadable"
+    expect "fails when a suite's directory cannot be read" 1 "cannot read" \
+        "$COLLECT" "ha-integration-tests=$work/coverage/unreadable"
+    chmod 755 "$work/coverage/unreadable"
+fi
 
 echo
 if [[ $failures -gt 0 ]]; then
