@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.graph.IdFunction;
@@ -77,6 +78,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
+import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
@@ -118,6 +120,9 @@ import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -149,6 +154,13 @@ import java.util.function.Function;
  * Phase 4: Enhanced with Cost-Based Query Optimizer support.
  */
 public class CypherExecutionPlan {
+  /**
+   * The column a count push-down publishes under when it is answering "how many rows does this statement produce"
+   * rather than a {@code count()} the statement projects. Space-prefixed the way every internal name on a row is,
+   * so no Cypher identifier can collide with it.
+   */
+  private static final String ROW_COUNT_ALIAS = " rowCount";
+
   private final DatabaseInternal     database;
   private final CypherStatement      statement;
   private final Map<String, Object>  parameters;
@@ -251,7 +263,7 @@ public class CypherExecutionPlan {
     // FAST PATH: Specialized count-push-down optimizations.
     // Must be checked BEFORE the optimizer dispatch, because the optimizer produces
     // GAVExpandAll operators that still materialize individual rows (O(paths) memory).
-    rootStep = tryOptimizeCountStar(context);
+    rootStep = tryCountPushDown(context, false);
 
     if (rootStep == null) {
       // Phase 4: Use optimized physical plan if available
@@ -416,6 +428,70 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * How many rows this statement produces when seeded with {@code seedRow} - what {@code COUNT { }} asks for.
+   * <p>
+   * A {@code COUNT { }} body with no {@code RETURN} of its own is normalised to one row per match, and the
+   * expression counted those rows: {@code COUNT { MATCH (m:Big) }} materialised a full scan for a number the type
+   * counter already holds, while the same question written as {@code COLLECT { MATCH (m:Big) RETURN count(m) }} was
+   * answered in O(1) (issue #5715). When the body's row count <b>is</b> its match count, the same two push-downs
+   * answer it; otherwise the rows are produced and counted exactly as before.
+   *
+   * @param seedRow      the outer row the body is correlated to, empty when there is none
+   * @param outerContext the enclosing command context, may be null
+   */
+  public long countRows(final Result seedRow, final CommandContext outerContext) {
+    final Long pushedDown = tryCountRowsPushDown(seedRow);
+    if (pushedDown != null)
+      return pushedDown;
+
+    long count = 0L;
+    try (final ResultSet resultSet = executeWithSeedRow(seedRow, outerContext)) {
+      while (resultSet.hasNext()) {
+        resultSet.next();
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * The row count read straight off a count push-down, or null when no push-down applies and the rows have to be
+   * produced.
+   * <p>
+   * {@code SKIP} and {@code LIMIT} disqualify the body here rather than being applied: they cut the rows the body
+   * produces, and a push-down never produces them, so the arithmetic that would relate the two is not the one
+   * {@link #applySkipAndLimit} does to the single row a count comes back as.
+   */
+  private Long tryCountRowsPushDown(final Result seedRow) {
+    if (statement instanceof UnionStatement)
+      return null;
+
+    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    if (clausesInOrder == null || clausesInOrder.isEmpty())
+      return null;
+    if (statement.getSkip() != null || statement.getLimit() != null)
+      return null;
+    if (seedIsRead(seedRow))
+      return null;
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    setupFunctionResolver(context);
+
+    final AbstractExecutionStep countStep = tryCountPushDown(context, true);
+    if (countStep == null)
+      return null;
+
+    try (final ResultSet resultSet = countStep.syncPull(context, 1)) {
+      if (!resultSet.hasNext())
+        return null;
+      final Object value = resultSet.next().getProperty(ROW_COUNT_ALIAS);
+      return value instanceof Number number ? number.longValue() : null;
+    }
+  }
+
+  /**
    * Whether this statement could read anything the seed row carries, i.e. whether it is correlated to the enclosing
    * query at all.
    * <p>
@@ -571,7 +647,7 @@ public class CypherExecutionPlan {
           results.add(resultSet.next());
       } else {
         // FAST PATH: Count-push-down (same logic as execute())
-        rootStep = tryOptimizeCountStar(context);
+        rootStep = tryCountPushDown(context, false);
 
         if (rootStep == null) {
           if (canUseOptimizedPhysicalPlan()) {
@@ -951,16 +1027,10 @@ public class CypherExecutionPlan {
     // its O(1) count. What is read is decided by CypherReferencedVariables, which answers "read" for every shape it
     // does not model, so being unsure costs the optimization rather than the correctness (issue #5686).
     if (initialStep == null || !seedIsRead) {
-      // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
-      // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
-      final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
-      if (typeCountStep != null)
-        return typeCountStep;
-
-      // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
-      // Instead of materializing all paths (O(paths) memory), propagates counts through
-      // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
-      final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+      // OPTIMIZATION: the O(1) Type.count() push-down and the CSR one for chain/star/triangle/pair-join patterns.
+      // Instead of materializing all paths (O(paths) memory), counts are propagated through the CSR arrays
+      // level-by-level (O(nodes) memory). Critical for large-fanout chains.
+      final AbstractExecutionStep countStep = tryCountPushDown(context, false);
       if (countStep != null)
         return countStep;
     }
@@ -2079,14 +2149,8 @@ public class CypherExecutionPlan {
     final CypherFunctionFactory functionFactory = expressionEvaluator != null ?
         expressionEvaluator.getFunctionFactory() : null;
 
-    // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
-    // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
-    final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
-    if (typeCountStep != null)
-      return typeCountStep;
-
-    // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
-    final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+    // OPTIMIZATION: the O(1) Type.count() push-down and the CSR one for chain/star/triangle/pair-join patterns.
+    final AbstractExecutionStep countStep = tryCountPushDown(context, false);
     if (countStep != null)
       return countStep;
 
@@ -3540,16 +3604,18 @@ public class CypherExecutionPlan {
    * Requirements:
    * - Exactly one MATCH clause with one node pattern that has a label
    * - No WHERE clause
-   * - RETURN clause with exactly one item: COUNT(variable)
-   * - No other clauses (WITH, ORDER BY, SKIP, LIMIT, etc.)
+   * - RETURN clause with exactly one item: COUNT(variable) or COUNT(*)
+   * - No other clauses (WITH, ORDER BY, etc.); SKIP and LIMIT are applied to the row it produces
    * <p>
    * Uses O(1) database.countType() instead of O(n) iteration.
    *
-   * @param context command context
+   * @param context       command context
+   * @param countRowsMode see {@link #countPushDownAlias}
    *
    * @return optimized TypeCountStep if pattern matches, null otherwise
    */
-  private AbstractExecutionStep tryCreateTypeCountOptimization(final CommandContext context) {
+  private AbstractExecutionStep tryCreateTypeCountOptimization(final CommandContext context,
+      final boolean countRowsMode) {
     // Must have exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
@@ -3594,9 +3660,6 @@ public class CypherExecutionPlan {
       return null;
 
     final String variable = nodePattern.getVariable();
-    if (variable == null)
-      return null;
-
     final String typeName = nodePattern.getLabels().get(0);
 
     // MATCH (n:Label) matches only vertices. If the label collides with an existing edge or
@@ -3608,43 +3671,8 @@ public class CypherExecutionPlan {
         && !(context.getDatabase().getSchema().getType(typeName) instanceof VertexType))
       return null;
 
-    // Must have RETURN clause
-    if (statement.getReturnClause() == null)
-      return null;
-
-    // RETURN must have exactly one item
-    if (statement.getReturnClause().getReturnItems().size() != 1)
-      return null;
-
-    final ReturnClause.ReturnItem returnItem = statement.getReturnClause().getReturnItems().get(0);
-    final Expression returnExpr = returnItem.getExpression();
-
-    // Must be a function call
-    if (!(returnExpr instanceof FunctionCallExpression))
-      return null;
-
-    final FunctionCallExpression funcExpr =
-        (FunctionCallExpression) returnExpr;
-
-    // Function must be COUNT
-    if (!"count".equalsIgnoreCase(funcExpr.getFunctionName()))
-      return null;
-
-    // COUNT must have exactly one argument
-    if (funcExpr.getArguments().size() != 1)
-      return null;
-
-    final Expression countArg = funcExpr.getArguments().get(0);
-
-    // Argument must be a variable reference
-    if (!(countArg instanceof VariableExpression))
-      return null;
-
-    final VariableExpression varExpr =
-        (VariableExpression) countArg;
-
-    // Variable in COUNT must match the MATCH variable
-    if (!variable.equals(varExpr.getVariableName()))
+    final String outputAlias = typeCountOutputAlias(countRowsMode, variable);
+    if (outputAlias == null)
       return null;
 
     // Must not have any other clauses that would invalidate the optimization
@@ -3655,12 +3683,6 @@ public class CypherExecutionPlan {
       return null;
 
     if (statement.getOrderByClause() != null)
-      return null;
-
-    if (statement.getSkip() != null)
-      return null;
-
-    if (statement.getLimit() != null)
       return null;
 
     if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty())
@@ -3691,8 +3713,42 @@ public class CypherExecutionPlan {
       }
 
     // All conditions met - create optimized TypeCountStep
-    final String outputAlias = returnItem.getOutputName();
     return new TypeCountStep(typeName, outputAlias, context);
+  }
+
+  /**
+   * The name a {@link TypeCountStep} over a single-node pattern publishes its count under, or null when the RETURN
+   * is not asking for that count.
+   * <p>
+   * {@code count(*)} is accepted alongside {@code count(<the MATCH variable>)}: a single-node pattern produces
+   * exactly one row per node, so the two are the same number. Before issue #5715 this detector required the
+   * argument to name the variable while every {@code count(*)} detector required at least one relationship, so
+   * {@code MATCH (m:Big) RETURN count(*)} - the spelling Neo4j documents - fell between the two and scanned. With
+   * the star accepted the pattern does not even need to bind a variable, so {@code MATCH (:Big) RETURN count(*)} is
+   * answered too.
+   */
+  private String typeCountOutputAlias(final boolean countRowsMode, final String matchVariable) {
+    if (countRowsMode)
+      return returnPreservesRowCount() ? ROW_COUNT_ALIAS : null;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct() || returnClause.getReturnItems().size() != 1)
+      return null;
+
+    final ReturnClause.ReturnItem returnItem = returnClause.getReturnItems().get(0);
+    if (!(returnItem.getExpression() instanceof FunctionCallExpression funcExpr))
+      return null;
+    if (!"count".equalsIgnoreCase(funcExpr.getFunctionName()) || funcExpr.getArguments().size() != 1)
+      return null;
+
+    final Expression countArg = funcExpr.getArguments().get(0);
+    if (countArg instanceof VariableExpression varExpr) {
+      if (matchVariable == null || !matchVariable.equals(varExpr.getVariableName()))
+        return null;
+    } else if (!(countArg instanceof StarExpression))
+      return null;
+
+    return returnItem.getOutputName();
   }
 
   /**
@@ -4052,9 +4108,18 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Checks that there are no clause types other than MATCH and RETURN.
+   * Whether this statement is made of nothing but MATCH and RETURN.
+   * <p>
+   * {@code ORDER BY} is asked about here even though it is not a {@link ClauseEntry.ClauseType}: it is a field of the
+   * statement, so a walk of the clause list alone cannot see it, which is how {@code ORDER BY} - and, until issue
+   * #5715, {@code SKIP} and {@code LIMIT} - reached a push-down that replaces the whole step chain and drops
+   * whatever it did not build. {@code SKIP} and {@code LIMIT} are now applied to the single row a push-down
+   * produces, by {@link #applySkipAndLimit}, so they do not disqualify a statement; {@code ORDER BY} still does,
+   * because sorting by an aggregate alias is the ordinary pipeline's business.
    */
-  private boolean hasOnlyMatchAndReturnClauses() {
+  private boolean isMatchReturnOnlyStatement() {
+    if (statement.getOrderByClause() != null)
+      return false;
     if (statement.getClausesInOrder() == null)
       return true;
     for (final ClauseEntry entry : statement.getClausesInOrder()) {
@@ -4066,9 +4131,104 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * The single entry point of both count push-downs, and the only place either is reached from.
+   * <p>
+   * They used to be two independent detectors reached from different places: {@code tryOptimizeCountStar} from
+   * {@link #execute()}, before the optimizer dispatch, and {@code tryCreateTypeCountOptimization} only from
+   * {@link #buildExecutionStepsWithOrder}, which a top-level query reaches only when the optimizer declines it. A
+   * single-label {@code MATCH (m:Big) RETURN count(m)} satisfies the optimizer, so the O(1) counter was available to
+   * a subquery body and not to the plainest counting query there is (issue #5715).
+   * <p>
+   * Sharing the entry point is also what keeps their preconditions from drifting apart again: whatever holds for one
+   * is asked once, here or in {@link #isMatchReturnOnlyStatement()}.
+   *
+   * @param countRowsMode when true the caller wants the number of <b>rows</b> the statement produces rather than the
+   *                      value of a {@code count()} it projects - what {@code COUNT { }} asks for. See
+   *                      {@link #countPushDownAlias}.
+   */
+  private AbstractExecutionStep tryCountPushDown(final CommandContext context, final boolean countRowsMode) {
+    AbstractExecutionStep step = tryCreateTypeCountOptimization(context, countRowsMode);
+    if (step == null)
+      step = tryOptimizeCountStar(context, countRowsMode);
+    if (step == null)
+      return null;
+    return applySkipAndLimit(step, context);
+  }
+
+  /**
+   * Applies the statement's SKIP and LIMIT to the single row a count push-down produces.
+   * <p>
+   * A push-down returns a step that replaces the whole chain, so the {@code SkipStep} and {@code LimitStep} the
+   * ordinary pipeline would have built are never reached: {@code RETURN count(*) LIMIT 0} answered with a row, and
+   * {@code SKIP 1} with the count instead of nothing (issue #5715). Applying them here rather than refusing the
+   * statement that carries them keeps a count written with a harmless {@code LIMIT 1} on the fast path.
+   */
+  private AbstractExecutionStep applySkipAndLimit(final AbstractExecutionStep countStep, final CommandContext context) {
+    if (statement.getSkip() == null && statement.getLimit() == null)
+      return countStep;
+
+    final CypherFunctionFactory functionFactory = expressionEvaluator != null ?
+        expressionEvaluator.getFunctionFactory() : null;
+    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+
+    AbstractExecutionStep currentStep = countStep;
+    if (statement.getSkip() != null) {
+      final SkipStep skipStep =
+          new SkipStep(evaluator.evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context), context);
+      skipStep.setPrevious(currentStep);
+      currentStep = skipStep;
+    }
+    if (statement.getLimit() != null) {
+      final LimitStep limitStep =
+          new LimitStep(evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
+      limitStep.setPrevious(currentStep);
+      currentStep = limitStep;
+    }
+    return currentStep;
+  }
+
+  /**
+   * The name the pushed-down count is published under, or null when this statement is not asking for one.
+   * <p>
+   * In the ordinary mode that is the alias of the {@code count()} the RETURN projects. In {@code countRowsMode} the
+   * caller wants the number of rows and the RETURN only has to <b>preserve</b> that number, which is what
+   * {@link #returnPreservesRowCount()} decides: a {@code COUNT { MATCH (m:Big) }} body is normalised to one row per
+   * match, so its row count <i>is</i> the match count and the same push-downs answer it (issue #5715).
+   */
+  private String countPushDownAlias(final boolean countRowsMode) {
+    if (countRowsMode)
+      return returnPreservesRowCount() ? ROW_COUNT_ALIAS : null;
+    return isCountStarReturn();
+  }
+
+  /**
+   * Whether the RETURN clause emits exactly one row per matched row.
+   * <p>
+   * An absent RETURN does (the row reaches the caller as it is), and so does any projection that neither aggregates -
+   * which collapses the rows into one per group - nor is {@code DISTINCT}, which drops duplicates.
+   */
+  private boolean returnPreservesRowCount() {
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null)
+      return true;
+    if (returnClause.isDistinct())
+      return false;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      final Expression expression = item.getExpression();
+      if (expression == null || expression.containsAggregation())
+        return false;
+    }
+    return true;
+  }
+
+  /**
    * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
    */
-  private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context) {
+  private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context, final boolean countRowsMode) {
+    final String alias = countPushDownAlias(countRowsMode);
+    if (alias == null || !isMatchReturnOnlyStatement())
+      return null;
+
     // Count-push-down operators reason only about node labels and edge types; they cannot honor
     // inline property filters (e.g. (a:Node {id: 1})) or dynamic labels on the pattern's nodes.
     // If any node carries such a filter, skip all push-down detectors so the query falls back to
@@ -4087,8 +4247,101 @@ public class CypherExecutionPlan {
       op = tryDetectPairJoinCountStar();
     if (op == null)
       return null;
-    final String alias = isCountStarReturn();
+
+    // An operator with no set of anchors to walk from answers 0 for a pattern that does match (issue #5715).
+    if (!op.canEnumerateAnchors())
+      return null;
+
+    // Only asked once a detector has claimed the statement, so this replaces a push-down that would have run
+    // anyway rather than changing the plan of an unrelated query.
+    if (mandatoryPatternElementIsEmpty(context.getDatabase()))
+      return new ConstantCountStep(0L, alias, context);
+
     return new CSRCountStep(op, alias, context);
+  }
+
+  /**
+   * Whether some element the matched pattern <b>requires</b> is empty or undeclared, which makes the count 0 whatever
+   * the graph holds.
+   * <p>
+   * The push-down is applied with no cost check at all: 100 vertices with no edge cost 200 record reads to answer 0,
+   * and an edge type absent from the schema cost the same (issue #5715). Every node label and relationship type of a
+   * non-optional path pattern has to be matched for any row to exist, so one of them holding nothing settles the
+   * count without reading anything.
+   * <p>
+   * Only <b>non-optional</b> MATCH clauses are read: an OPTIONAL arm that matches nothing still contributes its row.
+   * A relationship's types are alternatives, so all of them have to be empty; a node's labels are a conjunction
+   * unless the pattern is a disjunction, where again all of them have to be. A variable-length relationship is
+   * skipped altogether, since one with a zero-length minimum matches without traversing an edge.
+   */
+  private boolean mandatoryPatternElementIsEmpty(final Database db) {
+    if (statement.getMatchClauses() == null)
+      return false;
+
+    for (final MatchClause matchClause : statement.getMatchClauses()) {
+      if (matchClause.isOptional() || !matchClause.hasPathPatterns())
+        continue;
+
+      for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+        final int hopCount = pathPattern.getRelationshipCount();
+        for (int i = 0; i <= hopCount; i++) {
+          final NodePattern node = pathPattern.getNode(i);
+          if (node.hasLabels() && allTypesAreEmpty(db, node.getLabels(), node.isLabelDisjunction()))
+            return true;
+        }
+        for (int i = 0; i < hopCount; i++) {
+          final RelationshipPattern rel = pathPattern.getRelationship(i);
+          if (!rel.isVariableLength() && rel.hasTypes() && allTypesAreEmpty(db, rel.getTypes(), true))
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether the named types settle the element as unmatchable: all of them when they are alternatives, any one of
+   * them when they are a conjunction the matched record has to satisfy at once.
+   */
+  private static boolean allTypesAreEmpty(final Database db, final List<String> names, final boolean alternatives) {
+    for (final String name : names) {
+      final boolean empty = typeIsProvablyEmpty(db, name);
+      if (alternatives) {
+        if (!empty)
+          return false;
+      } else if (empty)
+        return true;
+    }
+    return alternatives;
+  }
+
+  /**
+   * Whether a type holds no record at all: either it is not declared, or its counter is 0.
+   * <p>
+   * {@code countType} sums the buckets' cached counters plus the transaction delta, so this reads nothing. It is
+   * only meaningful for a type whose instances <b>are</b> records: a LIGHTWEIGHT edge type keeps no edge record, so
+   * its counter is 0 while its edges exist in the vertices' edge lists, and it answers "not empty" here.
+   */
+  private static boolean typeIsProvablyEmpty(final Database db, final String name) {
+    final Schema schema = db.getSchema();
+    if (!schema.existsType(name))
+      return true;
+
+    final DocumentType type = schema.getType(name);
+    if (type instanceof EdgeType && holdsALightweightEdgeType(type))
+      return false;
+
+    return db.countType(name, true) == 0;
+  }
+
+  /** Whether the edge type, or any type inheriting from it, stores its edges without a record of their own. */
+  private static boolean holdsALightweightEdgeType(final DocumentType type) {
+    if (type instanceof EdgeType edgeType && edgeType.isLightweight())
+      return true;
+    for (final DocumentType subType : type.getSubTypes())
+      if (holdsALightweightEdgeType(subType))
+        return true;
+    return false;
   }
 
   /**
@@ -4113,9 +4366,6 @@ public class CypherExecutionPlan {
   }
 
   private CountOp tryDetectChainCountStar() {
-    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
-      return null;
-
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
@@ -4222,9 +4472,6 @@ public class CypherExecutionPlan {
    * @return optimized CountStarJoinStep if pattern matches, null otherwise
    */
   private CountOp tryDetectStarCountStar() {
-    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
-      return null;
-
     // Must have at least one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty())
       return null;
@@ -4348,8 +4595,6 @@ public class CypherExecutionPlan {
    * Requires: 5+ MATCH clauses, no WHERE, RETURN count(*), one cycle MATCH, three partition MATCHes.
    */
   private CountOp tryDetectTriangleCountStar() {
-    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
-      return null;
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() < 4)
       return null;
     if (statement.getWhereClause() != null)
@@ -4495,9 +4740,6 @@ public class CypherExecutionPlan {
    * </pre>
    */
   private CountOp tryDetectPairJoinCountStar() {
-    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
-      return null;
-
     // Exactly one non-optional MATCH with exactly 2 path patterns
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
@@ -4685,9 +4927,6 @@ public class CypherExecutionPlan {
    * optionally combined with a simple inequality via AND.
    */
   private CountOp tryDetectAntiJoinChainCountStar() {
-    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
-      return null;
-
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;

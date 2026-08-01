@@ -1599,4 +1599,69 @@ build indexes through the embedded API with a computed page size, check that the
 An index that already exists on disk is unaffected either way - the page size is read from the component file, not from
 a builder.
 
+## Cypher: the two count push-downs now agree, and neither drops a `SKIP` or scans to answer 0
+
+Counting in Cypher was served by two independent push-downs - the O(1) `Type.count()` one and the CSR one that
+propagates path counts through the adjacency arrays - reached from different places and agreeing on neither their
+preconditions nor their entry points. Issue #5715 collected five consequences of that; fixing them uncovered two more.
+
+### `RETURN count(*) LIMIT 0` returns no rows
+
+`SKIP`, `LIMIT` and `ORDER BY` are fields of the statement rather than clauses in its clause list, so the check that
+was supposed to see them - a walk of the clause list - could not. The CSR push-down returns a step that replaces the
+whole chain, so the `SKIP` and `LIMIT` steps were never built and
+
+```cypher
+MATCH (a:Q)-[:LINKS]->(b:Q) RETURN count(*) AS c LIMIT 0
+```
+
+came back with a row holding the count. So did `SKIP 1`. Neo4j applies both to the one-row aggregate result and
+returns nothing for either, and so does the other push-down, so the engine disagreed with itself.
+
+Both are now applied to the row a push-down produces rather than used to refuse the statement that carries them, so a
+count written with a harmless `LIMIT 1` keeps the fast path instead of falling back to a scan. `ORDER BY` still sends
+the statement to the ordinary pipeline, which is the only thing here that knows what an aggregate alias sorts by.
+
+### `MATCH (m:Label) RETURN count(*)` no longer scans
+
+Three shapes were answered by a full scan for a number the type counter already held:
+
+- `MATCH (m:Big) RETURN count(m)` written on its own. The type-count push-down was only reachable from the planner
+  path a top-level query takes when the cost-based optimizer *declines* it - and a single-label `MATCH ... RETURN
+  count(v)` is exactly what the optimizer accepts. The same body inside `COLLECT { }` was answered in O(1); the plain
+  query was not.
+- `MATCH (m:Big) RETURN count(*)`, and `MATCH (:Big) RETURN count(*)`. The type-count detector required the argument
+  to name the MATCH variable, and every `count(*)` detector required at least one relationship, so a single-node
+  pattern with `count(*)` - the spelling Neo4j documents - was claimed by neither.
+- `COUNT { MATCH (m:Big) }` and `COUNT { (m:Big) }`. A body with no `RETURN` of its own is normalised to one row per
+  match and the expression counted those rows. `COUNT { }` now asks for the number rather than for the rows, so a body
+  whose `RETURN` preserves the row count - absent, or neither aggregating nor `DISTINCT` - is answered by the same
+  push-downs.
+
+Both push-downs are now reached through one entry point, from every planner path, which is also what keeps their
+preconditions from drifting apart again.
+
+### A pattern that cannot match is answered without reading anything
+
+The CSR push-down was applied with no cost check at all. 100 vertices with no edge between them cost 200 record reads
+to answer 0, and an edge type absent from the schema cost the same. A count over a pattern whose non-optional part
+names a node label or relationship type that is undeclared, or that holds no record, is now answered with 0 directly.
+
+A `LIGHTWEIGHT` edge type is excluded from that test: it stores its edges in the vertices' edge lists and writes no
+edge record, so its counter is 0 while its edges are there to be counted.
+
+### Two wrong answers, found while doing the above
+
+Both come from the same place - the helper that builds a node label's bucket set returned `null` both for "no label
+was given, so do not filter" and for "the label is declared but does not exist, so nothing matches", and its callers
+did not agree on which one they had been handed.
+
+- `MATCH (a)-[:LINKS]->(b) RETURN count(*)` answered **0**. Every CSR operator walks out from one labelled position of
+  the pattern and enumerates that label's buckets; an unlabelled anchor left it with no set to enumerate, which each
+  operator read as an empty one. A pattern with no label on its first node is no longer given to these operators.
+- `MATCH (a:Q)-[:LINKS]->(b:NoSuchLabel) RETURN count(*)` answered the count **without the filter** - 2, for a pattern
+  that produces no row at all. The undeclared hop label is now recognised as unmatchable.
+
+Neither shape had a test. Both are counted correctly now, and a count over a pattern that does match is unchanged.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
