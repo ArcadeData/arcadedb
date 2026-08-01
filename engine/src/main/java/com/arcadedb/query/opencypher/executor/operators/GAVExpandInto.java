@@ -141,7 +141,15 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
 
       /**
        * OLTP fallback: counts the relationships joining the pair by iterating edges, for when one or
-       * both vertices are not present in the GAV mapping (created after the last build).
+       * both vertices are not present in the GAV mapping (created after the last build), or when the
+       * view cannot state the multiplicity exactly.
+       * <p>
+       * It counts every connecting edge without checking any against the relationship variables an
+       * earlier hop of the same MATCH clause bound - which is correct only because
+       * {@code CypherOptimizer.createExpandIntoOperator} selects this operator solely for a hop that
+       * has no such variable to check against and no edge to track. That gate is what makes the
+       * question moot here; widen it and this count has to start asking it, which it cannot do,
+       * because the operator never binds the edges it counts.
        */
       private long countConnectingOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();

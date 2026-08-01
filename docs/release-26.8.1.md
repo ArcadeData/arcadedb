@@ -1191,6 +1191,13 @@ that the `METADATA`-clause reader has to reject as typos.
 
 ## Cypher: a hop onto an already-bound vertex counts every relationship joining the pair
 
+> **Upgrading? Row counts can go up, and that is the fix.** A pattern with a hop onto an already-bound vertex - most
+> commonly a cycle, whose closing hop always has both endpoints bound - was returning fewer rows than it should
+> wherever parallel edges join the same pair. It returns them all now, so `count(*)`, `collect()` and `sum()` over
+> such a pattern report larger numbers than they did in 26.7.2. The old numbers were under-counts, not a different
+> convention: a saved report, a golden-file test or a threshold calibrated against them is the thing to re-check. A
+> graph with at most one edge per pair per type is unaffected in every respect - there was nothing to under-count.
+
 A pattern relationship matches once per relationship. Two parallel edges between the same two vertices are two
 matches, whether or not the pattern names them - `MATCH (a)-[:R]->(b)` over a pair joined twice returns two rows,
 the same as Neo4j. The optimizer's operator for the hop whose far end is already bound did not: built as a

@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -193,9 +192,15 @@ public class ExpandInto extends AbstractPhysicalOperator {
    * pattern's types, each one exactly once.
    * <p>
    * The engine walks the source's edge segments rejecting on the neighbour pointer, so only the edges
-   * that actually reach the target are materialised. The generic {@link Vertex#getEdges} fallback is
-   * for a source handle that is not a {@link VertexInternal}; it loads every edge and compares the far
-   * endpoint, which is what this operator exists to avoid.
+   * that actually reach the target are materialised.
+   * <p>
+   * The {@link Vertex#getEdges} branch is for a source handle that is not a {@link VertexInternal},
+   * which the plan does not produce today - every vertex an operator binds comes from a scan, a seek
+   * or an expansion, and all three yield engine vertices - so it exists to keep the operator total
+   * against a handle arriving from elsewhere rather than to serve a known caller. It has to compare
+   * the far endpoint of each edge, which is the work the neighbour-pointer filter avoids, so it
+   * filters lazily: the operator's batching is what bounds how much of a super-node's edge list is
+   * ever walked, and collecting into a list first would take that bound away.
    * <p>
    * An undirected hop walks both adjacency lists of the source, which reaches a self-loop twice - the
    * same relationship, not two of them - so the result is de-duplicated by edge identity.
@@ -207,18 +212,47 @@ public class ExpandInto extends AbstractPhysicalOperator {
     if (source instanceof VertexInternal internalSource)
       connecting = ((DatabaseInternal) source.getDatabase()).getGraphEngine()
           .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
-    else {
-      final RID targetRid = target.getIdentity();
-      final List<Edge> reaching = new ArrayList<>();
-      for (final Edge edge : source.getEdges(arcadeDirection, edgeTypes))
-        if (arcadeDirection == Vertex.DIRECTION.BOTH ?
-            edge.getOut().equals(targetRid) || edge.getIn().equals(targetRid) :
-            (arcadeDirection == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut()).equals(targetRid))
-          reaching.add(edge);
-      connecting = reaching.isEmpty() ? Collections.emptyIterator() : reaching.iterator();
-    }
+    else
+      connecting = reachingTarget(source.getEdges(arcadeDirection, edgeTypes).iterator(),
+          target.getIdentity(), arcadeDirection);
 
     return arcadeDirection == Vertex.DIRECTION.BOTH ? SelfLoops.deduplicatingEdges(connecting) : connecting;
+  }
+
+  /**
+   * Lazily keeps the edges whose far endpoint is {@code target}, one at a time.
+   */
+  private static Iterator<Edge> reachingTarget(final Iterator<Edge> edges, final RID target,
+      final Vertex.DIRECTION direction) {
+    return new Iterator<>() {
+      private Edge nextEdge = null;
+
+      @Override
+      public boolean hasNext() {
+        if (nextEdge != null)
+          return true;
+        while (edges.hasNext()) {
+          final Edge candidate = edges.next();
+          final boolean reaches = direction == Vertex.DIRECTION.BOTH ?
+              candidate.getOut().equals(target) || candidate.getIn().equals(target) :
+              (direction == Vertex.DIRECTION.OUT ? candidate.getIn() : candidate.getOut()).equals(target);
+          if (reaches) {
+            nextEdge = candidate;
+            return true;
+          }
+        }
+        return false;
+      }
+
+      @Override
+      public Edge next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Edge result = nextEdge;
+        nextEdge = null;
+        return result;
+      }
+    };
   }
 
   /**
