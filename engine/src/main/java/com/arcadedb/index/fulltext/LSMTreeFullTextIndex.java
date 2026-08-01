@@ -350,16 +350,17 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         // type-wide query, FullTextSearch already counted df across every bucket and supplied it in the scoring context.
         long df = scoringContext != null ? scoringContext.documentFrequency(e.getKey()) : 0L;
         hits.clear();
-        final IndexCursor cursor = underlyingIndex.get(storedKey);
-        while (cursor.hasNext()) {
-          final Identifiable id = cursor.next();
-          // Skip deletion markers (negative bucket id): they are not live documents and must not inflate the document frequency.
-          if (id.getIdentity().getBucketId() < 0)
-            continue;
-          if (scoringContext == null)
-            ++df;
-          if (id instanceof FullTextPostingRID s && scoreMap.containsKey(s.getIdentity()))
-            hits.add(s);
+        try (final IndexCursor cursor = underlyingIndex.get(storedKey)) {
+          while (cursor.hasNext()) {
+            final Identifiable id = cursor.next();
+            // Skip deletion markers (negative bucket id): they are not live documents and must not inflate the document frequency.
+            if (id.getIdentity().getBucketId() < 0)
+              continue;
+            if (scoringContext == null)
+              ++df;
+            if (id instanceof FullTextPostingRID s && scoreMap.containsKey(s.getIdentity()))
+              hits.add(s);
+          }
         }
         if (df == 0L)
           continue;
@@ -371,21 +372,23 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         // already counted global df, so it goes straight to the scoring pass over this bucket.
         long df = scoringContext != null ? scoringContext.documentFrequency(e.getKey()) : 0L;
         if (scoringContext == null) {
-          final IndexCursor dfCursor = underlyingIndex.get(storedKey);
-          while (dfCursor.hasNext()) {
-            if (dfCursor.next().getIdentity().getBucketId() >= 0) // skip deletion markers
-              ++df;
+          try (final IndexCursor dfCursor = underlyingIndex.get(storedKey)) {
+            while (dfCursor.hasNext()) {
+              if (dfCursor.next().getIdentity().getBucketId() >= 0) // skip deletion markers
+                ++df;
+            }
           }
         }
         if (df == 0L)
           continue;
         final double idf = BM25Scorer.idf(totalDocs, df);
-        final IndexCursor scoreCursor = underlyingIndex.get(storedKey);
-        while (scoreCursor.hasNext()) {
-          final Identifiable id = scoreCursor.next();
-          if (id instanceof FullTextPostingRID s)
-            scoreMap.computeIfAbsent(s.getIdentity(), k -> new double[1])[0] +=
-                BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
+        try (final IndexCursor scoreCursor = underlyingIndex.get(storedKey)) {
+          while (scoreCursor.hasNext()) {
+            final Identifiable id = scoreCursor.next();
+            if (id instanceof FullTextPostingRID s)
+              scoreMap.computeIfAbsent(s.getIdentity(), k -> new double[1])[0] +=
+                  BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
+          }
         }
       }
     }
@@ -607,12 +610,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         break;
       }
       explained++;
-      final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
       long df = 0;
-      while (postings.hasNext()) {
-        // Skip deletion markers (negative bucket id) so the explained df/idf matches what computeBM25Scores actually uses.
-        if (postings.next().getIdentity().getBucketId() >= 0)
-          ++df;
+      try (final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() })) {
+        while (postings.hasNext()) {
+          // Skip deletion markers (negative bucket id) so the explained df/idf matches what computeBM25Scores actually uses.
+          if (postings.next().getIdentity().getBucketId() >= 0)
+            ++df;
+        }
       }
       terms.put(new JSONObject().put("term", e.getKey()).put("df", df).put("idf", BM25Scorer.idf(totalDocs, df))
           .put("boost", e.getValue()));
@@ -1478,11 +1482,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // Step 3: Get document frequencies for each term
     final Map<String, Integer> docFreqs = new HashMap<>();
     for (final String term : termFreqs.keySet()) {
-      final IndexCursor termCursor = underlyingIndex.get(new String[] { term });
       int docCount = 0;
-      while (termCursor.hasNext()) {
-        termCursor.next();
-        docCount++;
+      try (final IndexCursor termCursor = underlyingIndex.get(new String[] { term })) {
+        while (termCursor.hasNext()) {
+          termCursor.next();
+          docCount++;
+        }
       }
       docFreqs.put(term, docCount);
     }
@@ -1502,10 +1507,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // Step 5: Execute OR query and accumulate scores
     final Map<RID, Integer> scoreMap = new HashMap<>();
     for (final String term : topTerms) {
-      final IndexCursor termCursor = underlyingIndex.get(new String[] { term });
-      while (termCursor.hasNext()) {
-        final RID rid = termCursor.next().getIdentity();
-        scoreMap.merge(rid, 1, Integer::sum);
+      try (final IndexCursor termCursor = underlyingIndex.get(new String[] { term })) {
+        while (termCursor.hasNext()) {
+          final RID rid = termCursor.next().getIdentity();
+          scoreMap.merge(rid, 1, Integer::sum);
+        }
       }
     }
 

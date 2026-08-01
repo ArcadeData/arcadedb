@@ -65,19 +65,23 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     final Set<Identifiable> resultSet = new HashSet<>();
 
     for (int i = 0; i < indexCursors.size(); i++) {
-      final IndexCursor cursor = indexCursors.get(i);
+      // #5662: the cursors are materialized here and never touched again, so each is released as soon as it has been
+      // read. Draining one already releases its per-series file registrations, but an exception partway through the
+      // intersection would otherwise abandon it - and a compacted-series cursor left registered keeps a retired index
+      // file undroppable until the next restart
+      try (final IndexCursor cursor = indexCursors.get(i)) {
+        if (i == 0) {
+          // FIRST CURSOR: ADD ALL THE RESULTS
+          while (cursor.hasNext())
+            resultSet.add(cursor.next());
+        } else {
+          // INTERSECT WITH THE PREVIOUS RESULTS
+          final Set<Identifiable> currentResultSet = new HashSet<>();
+          while (cursor.hasNext())
+            currentResultSet.add(cursor.next());
 
-      if (i == 0) {
-        // FIRST CURSOR: ADD ALL THE RESULTS
-        while (cursor.hasNext())
-          resultSet.add(cursor.next());
-      } else {
-        // INTERSECT WITH THE PREVIOUS RESULTS
-        final Set<Identifiable> currentResultSet = new HashSet<>();
-        while (cursor.hasNext())
-          currentResultSet.add(cursor.next());
-
-        resultSet.retainAll(currentResultSet);
+          resultSet.retainAll(currentResultSet);
+        }
       }
     }
 

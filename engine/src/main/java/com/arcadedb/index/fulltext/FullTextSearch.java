@@ -116,8 +116,9 @@ public class FullTextSearch {
     final Map<RID, Float> allResults = new HashMap<>();
 
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
-      final IndexCursor cursor = new FullTextQueryExecutor(ftIndex).search(queryText, effectiveLimit);
-      mergeCursor(allResults, cursor);
+      try (final IndexCursor cursor = new FullTextQueryExecutor(ftIndex).search(queryText, effectiveLimit)) {
+        mergeCursor(allResults, cursor);
+      }
     }
 
     return allResults;
@@ -302,11 +303,12 @@ public class FullTextSearch {
     for (final String token : scoringTokens.keySet()) {
       long df = 0L;
       for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
-        final IndexCursor postings = ftIndex.getPostings(token);
-        while (postings.hasNext()) {
-          // a deletion marker carries a negative bucket id: it is not a live document
-          if (postings.next().getIdentity().getBucketId() >= 0)
-            ++df;
+        try (final IndexCursor postings = ftIndex.getPostings(token)) {
+          while (postings.hasNext()) {
+            // a deletion marker carries a negative bucket id: it is not a live document
+            if (postings.next().getIdentity().getBucketId() >= 0)
+              ++df;
+          }
         }
       }
       documentFrequencies.put(token, df);

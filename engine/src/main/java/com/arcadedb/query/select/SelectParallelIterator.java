@@ -218,10 +218,15 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
   /**
    * Stops the background producers. Each producer ends its async task through the regular completion path, releasing
    * the worker within one park cycle. Idempotent and safe to call from any thread.
+   * <p>
+   * The super call releases the source index cursor (#5662). No producer can be reading it: they are scheduled only
+   * when the source is a {@link MultiIterator}, and an index-answered plan hands this class a {@code MultiIndexCursor}
+   * instead, which leaves {@code queue} null and falls back to the serial consumption path.
    */
   @Override
   public void close() {
     closed = true;
+    super.close();
   }
 
   private T onProducerStalled() {

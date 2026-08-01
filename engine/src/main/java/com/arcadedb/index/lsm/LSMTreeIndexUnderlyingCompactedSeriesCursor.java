@@ -25,11 +25,20 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexException;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 
 public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnderlyingAbstractCursor {
   private final int                              lastPageNumber;
   private       LSMTreeIndexUnderlyingPageCursor pageCursor;
   private       boolean                          closed = false;
+
+  /**
+   * The liveness token handed to the file's cursor registry (#5662), and the weak registration to hand back on
+   * {@link #close()}. The token is a plain object rather than {@code this} so the registry never gets a reference to a
+   * half-constructed cursor; it dies with this cursor, which is what lets an abandoned scan stop pinning the file.
+   */
+  private final Object                           liveToken = new Object();
+  private final WeakReference<Object>            registration;
 
   public LSMTreeIndexUnderlyingCompactedSeriesCursor(final LSMTreeIndexCompacted index, final int firstPageNumber,
       final int lastPageNumber,
@@ -39,7 +48,7 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
 
     // Series pages are loaded LAZILY as the scan advances: register with the file so a full
     // compaction cannot physically drop it while this cursor may still need to read from it.
-    index.onCursorOpened();
+    this.registration = index.onCursorOpened(liveToken);
 
     loadNextNonEmptyPage(firstPageNumber, posInPage);
   }
@@ -115,7 +124,7 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
     // idempotent: exhaustion paths and explicit close() may both fire
     if (!closed) {
       closed = true;
-      ((LSMTreeIndexCompacted) index).onCursorClosed();
+      ((LSMTreeIndexCompacted) index).onCursorClosed(registration);
     }
   }
 }

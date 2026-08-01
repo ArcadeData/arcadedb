@@ -59,9 +59,13 @@ public class IndexCursorCollection implements IndexCursor {
     return collection.size();
   }
 
+  /**
+   * #5662: a cursor iterates ITSELF, like every other {@link IndexCursor}. Handing back the backing iterator shared
+   * the position with {@link #next()} but bypassed it, so {@link #getRecord()} stayed stale for the whole for-each.
+   */
   @Override
   public Iterator<Identifiable> iterator() {
-    return iterator;
+    return this;
   }
 
   @Override
