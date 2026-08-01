@@ -59,9 +59,13 @@ returns the instance itself, so it is a no-op there.
   straddles both instances.
 
 **The switch is on `statement.isReadOnly()`, not on the entry point.** A read-only statement cannot commit,
-so resolving the wrapper would change nothing about durability, while it *would* route the reads the steps
-issue (`query`, `lookupByRID`, `iterateType`) through `RaftReplicatedDatabase` and subject follower-local
-reads to the wrapper's read-consistency barriers. #5652 achieved the same separation by leaving `query()`
+so resolving the wrapper would change nothing about durability, while it *would* put the nested reads the
+steps issue on a different footing. Precisely which ones matters:
+`RaftReplicatedDatabase.lookupByRID`/`iterateType`/`lookupByKey` delegate straight to the inner instance and
+are indifferent, but its `query(language, ...)` overloads open with `waitForReadConsistency()`, and
+`ExistsExpression`, `CountExpression` and `CollectExpression` each evaluate their subquery through that call.
+Routing read-only statements through the wrapper would add a read barrier to every
+`EXISTS`/`COUNT`/`COLLECT` subquery, follower-local ones included. #5652 achieved the same separation by leaving `query()`
 alone, but that shortcut does not hold for Cypher: `PROFILE` bypasses the idempotency gate and executes, so
 `PROFILE MATCH ... SET ...` arrives through `query()` and does write. `isReadOnly()` is computed at parse
 time and already accounts for writes nested in a `CALL` subquery (`SimpleCypherStatement:152`), so it is the
@@ -163,5 +167,16 @@ The new test was proven to fail before trusting it: with `executionDatabase()` t
 Note on the DDL test: it is a **guard, not a reproducer**. It passes with or without the fix, because the DDL
 path was never broken. It is here so that a future change moving DDL off the schema layer cannot do so
 silently.
+
+**Cycle 3 - `3d4e151`.** `claude[bot]`: approve, two non-blocking observations.
+
+| Finding | Verified | Action |
+|---|---|---|
+| The read-only rationale is overstated: the read-consistency barrier sits at the wrapper's top-level entry, not on the low-level reads the steps make | **Half right.** `lookupByRID`/`iterateType`/`lookupByKey` (`RaftReplicatedDatabase.java:1133-1155`) do delegate with no barrier - so naming them was wrong. But `query(language, ...)` (`:1274`, `:1281`, `:1287`) *does* open with `waitForReadConsistency()`, and `ExistsExpression`/`CountExpression`/`CollectExpression` evaluate their subqueries through exactly that call | Applied, but not as suggested. The bot proposed trimming the claim; the accurate repair was to narrow it to `query()` and say explicitly that the other three are indifferent. The conclusion stands on firmer ground than before |
+| `ROLLBACK` on the wrapper is only indirectly exercised | Correct, and self-limiting: `rollback()` commits nothing, so a replication test over it could only assert an absence | Skipped, rationale recorded. The bot rates it low risk for the same reason |
+| A tracking issue for the gremlin/graphql/mongodbw audit | Agreed | Still unfiled - the developer's call, surfaced at handoff |
+
+This is the one cycle where a bot claim did not survive checking as stated. Taking the suggested trim at face
+value would have removed a true statement about `query()` along with the false one about `lookupByRID`.
 
 No items were deferred.

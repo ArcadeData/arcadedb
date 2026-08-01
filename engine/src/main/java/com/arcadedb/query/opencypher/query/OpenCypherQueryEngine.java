@@ -372,9 +372,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * the kind of asymmetry that makes a smoke test look green.
    * <p>
    * A read-only statement keeps the raw instance. It cannot commit, so resolving the wrapper would change nothing
-   * about durability, while it would route the reads the steps issue ({@code query}, {@code lookupByRID},
-   * {@code iterateType}) through {@code RaftReplicatedDatabase} and subject follower-local reads to the wrapper's
-   * read-consistency barriers. The switch is on {@code isReadOnly()} rather than on the entry point because
+   * about durability, while it would put the nested reads the steps issue on a different footing. Being precise
+   * about which ones: {@code RaftReplicatedDatabase.lookupByRID}/{@code iterateType}/{@code lookupByKey} delegate
+   * straight to the inner instance, so those are indifferent - but its {@code query(language, ...)} overloads open
+   * with {@code waitForReadConsistency()}, and {@code ExistsExpression}, {@code CountExpression} and
+   * {@code CollectExpression} all evaluate their subquery through exactly that call. Routing a read-only statement
+   * through the wrapper would therefore add a read barrier to every {@code EXISTS}/{@code COUNT}/{@code COLLECT}
+   * subquery, follower-local ones included. The switch is on {@code isReadOnly()} rather than on the entry point because
    * {@link #query} does not imply read-only here: {@code PROFILE} bypasses the idempotency gate and executes, so a
    * {@code PROFILE MATCH ... SET ...} reaches this method through {@code query()} and does write.
    *
