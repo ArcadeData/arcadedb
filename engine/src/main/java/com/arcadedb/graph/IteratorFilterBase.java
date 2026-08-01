@@ -66,8 +66,11 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
         nextEdge = currentContainer.getRID(currentPosition);
         nextVertex = currentContainer.getRID(currentPosition);
 
-        if (!validBuckets.contains(nextEdge.getBucketId())) {
-          // FILTER IT OUT
+        // THE NEIGHBOUR CHECK IS SHARED WITH THE VERTEX ITERATOR BELOW (edge == false). NO CALLER ARMS THE FILTER
+        // ON A VERTEX ITERATOR TODAY, SO IT IS INERT THERE; IT IS LEFT SHARED BECAUSE THE ENTRY IT FILTERS ON IS
+        // THE SAME PAIR EITHER WAY, SO A FUTURE "VERTICES CONNECTED TO X" WOULD BEHAVE IDENTICALLY
+        if (!validBuckets.contains(nextEdge.getBucketId()) || !matchesNeighborFilter(nextVertex)) {
+          // FILTER IT OUT. BOTH CHECKS RUN ON THE POINTERS READ FROM THE SEGMENT, BEFORE ANY RECORD IS TOUCHED
           nextEdge = null;
           nextVertex = null;
           next = null;
