@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -239,6 +240,70 @@ public class Issue5675IndexIfNotExistsConflictTest extends TestHelper {
     assertThat(database.getSchema().existsIndex("T[Scalar]")).isTrue();
     assertThat(database.getSchema().getIndexByName("T[Scalar]").isUnique()).isFalse();
     assertThat(database.query("sql", "SELECT FROM T WHERE Scalar = 'x'").stream().count()).isEqualTo(2L);
+  }
+
+  /**
+   * The restore puts back the whole definition, page size included: it is the one attribute that is not derivable from
+   * the properties, so losing it would silently re-file the index at the implementation default.
+   */
+  @Test
+  void aFailedUpgradeRestoresThePageSizeToo() {
+    database.getSchema().buildTypeIndex("T", new String[] { "Scalar" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false).withPageSize(16_384).create();
+
+    final int pageSizeBefore = ((IndexInternal) database.getSchema().getIndexByName("T[Scalar]")).getPageSize();
+    assertThat(pageSizeBefore).isEqualTo(16_384);
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET Scalar = 'x'");
+      database.command("sql", "INSERT INTO T SET Scalar = 'x'");
+    });
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("T", new String[] { "Scalar" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withReplaceIfIncompatible(true).create())
+        .isNotNull();
+
+    assertThat(database.getSchema().existsIndex("T[Scalar]")).isTrue();
+    assertThat(((IndexInternal) database.getSchema().getIndexByName("T[Scalar]")).getPageSize()).isEqualTo(pageSizeBefore);
+    assertThat(database.getSchema().getIndexByName("T[Scalar]").isUnique()).isFalse();
+  }
+
+  /**
+   * A manual index name is global, so it can already name an index on ANOTHER type. That is a different index, and the
+   * guard must say so rather than answer "already exists" and leave the requested one uncreated.
+   */
+  @Test
+  void guardedCreateWithANameTakenByAnotherTypeIsReported() {
+    database.command("sql", "CREATE INDEX SharedName ON T (Scalar) NOTUNIQUE");
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE U");
+      database.command("sql", "CREATE PROPERTY U.Scalar STRING");
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX SharedName IF NOT EXISTS ON U (Scalar) NOTUNIQUE"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("SharedName");
+
+    assertThat(database.getSchema().getIndexByName("SharedName").getTypeName()).isEqualTo("T");
+    assertThat(database.getSchema().getType("U").getAllIndexes(false)).isEmpty();
+  }
+
+  /**
+   * The requested index kind is read before the existing-index lookup, because deciding whether what is already there
+   * covers the request needs to know what the request is. A builder with no kind is therefore refused even when an
+   * index on those properties exists - where it used to hand that index back.
+   */
+  @Test
+  void aBuilderWithoutAnIndexTypeIsRefused() {
+    database.command("sql", "CREATE INDEX ON T (Scalar) NOTUNIQUE");
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("T", new String[] { "Scalar" })
+        .withIgnoreIfExists(true).create())
+        .isInstanceOf(DatabaseMetadataException.class)
+        .hasMessageContaining("indexType");
+
+    assertThat(database.getSchema().existsIndex("T[Scalar]")).isTrue();
   }
 
   /**

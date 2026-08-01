@@ -87,8 +87,10 @@ public abstract class IndexBuilder<T extends Index> {
    * is about - and reporting success there is what let a schema migration proceed believing a uniqueness constraint
    * protected its data (issue #5675).
    * <p>
-   * The null strategy is deliberately not part of this: unlike the kind and the uniqueness it can be changed on the
-   * index in place, so a mismatch is not a reason to refuse the statement.
+   * The null strategy is deliberately not part of this: unlike the kind and the uniqueness it is not structural - it
+   * is settable on an existing index through {@code ALTER} - so a mismatch is not a reason to refuse the statement.
+   * Note that a satisfied request stays a plain no-op: the requested strategy is NOT applied to the existing index,
+   * which is what {@code IF NOT EXISTS} asks for.
    */
   public static boolean satisfiesRequest(final Index existing, final Schema.INDEX_TYPE requestedType,
       final boolean requestedUnique) {

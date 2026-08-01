@@ -173,9 +173,12 @@ public class CreateIndexStatement extends DDLStatement {
         final Index existing = database.getSchema().getIndexByName(name.getValue());
         final List<String> requestedProperties = List.of(fields);
 
-        // Reachable only through a manual index name: the auto-derived form above is built from the property list, so
-        // a name match implies a property match. Two different property sets under one name are two different indexes.
-        if (!existing.getPropertyNames().equals(requestedProperties))
+        // Reachable only through a manual index name: the auto-derived form above is built from the type name and the
+        // property list, so a name match implies both already match. Index names are global, so a manual one can name
+        // an index on ANOTHER type, or on other properties of this one - either way it is a different index, and
+        // answering "already exists" would leave the requested one uncreated with nothing said about why.
+        if (!existing.getTypeName().equals(typeName.getStringValue())
+            || !existing.getPropertyNames().equals(requestedProperties))
           throw new IllegalArgumentException(
               "Cannot create the index '" + name.getValue() + "' on type '" + typeName.getStringValue() + "' properties "
                   + requestedProperties + " because an index with that name already exists on type '" + existing.getTypeName()

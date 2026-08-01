@@ -1723,3 +1723,15 @@ leaves it alone rather than replacing it with a plain one.
 Reachable only through `CREATE INDEX <name> IF NOT EXISTS ...`, since the auto-derived name is built from the property
 list. A name that already belongs to an index on other properties used to satisfy the guard; it is now reported, since
 two different property sets under one name are two different indexes.
+
+### The index kind is now read before the existing-index lookup
+
+`TypeIndexBuilder.create()` validates `indexType` at the top, because deciding whether the index already on those
+properties covers the request needs to know what the request is. One embedded-API shape changes as a result: a builder
+with **no** `withType(...)` and `withIgnoreIfExists(true)` used to hand back the existing index on those properties,
+and now raises `DatabaseMetadataException` the way it always did when no index was there. Every in-tree caller sets the
+type; a get-or-create helper that relied on omitting it has to pass the type it expects.
+
+A failed replacement restores the page size along with the rest of the definition, via `getPageSizeForNewFile()` - the
+same accessor a rebuild uses, so a page size the current file carries but creation would refuse cannot turn the restore
+into a second failure (#5713).

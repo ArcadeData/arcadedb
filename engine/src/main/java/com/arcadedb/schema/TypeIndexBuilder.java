@@ -447,18 +447,30 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   /**
    * The definition of an index dropped to make room for a replacement, kept so it can be rebuilt if the replacement
-   * fails. Enough to reproduce it: the kind, the uniqueness, the null strategy, the properties, and the metadata that
-   * carries the collations plus whatever settings the index type keeps of its own (analyzers, geospatial precision,
-   * vector dimensions, ...).
+   * fails. Enough to reproduce it: the kind, the uniqueness, the null strategy, the page size, the properties, and the
+   * metadata that carries the collations plus whatever settings the index type keeps of its own (analyzers,
+   * geospatial precision, vector dimensions, ...).
    */
   private record ReplacedIndexDefinition(Schema.INDEX_TYPE indexType, boolean unique,
-                                         LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, String typeName,
+                                         LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, int pageSize, String typeName,
                                          String[] propertyNames, IndexMetadata metadata) {
 
     static ReplacedIndexDefinition of(final TypeIndex index) {
       final IndexInternal[] onBuckets = index.getIndexesOnBuckets();
-      return new ReplacedIndexDefinition(index.getType(), index.isUnique(), index.getNullStrategy(), index.getTypeName(),
-          index.getPropertyNames().toArray(new String[0]), onBuckets.length > 0 ? onBuckets[0].getMetadata() : null);
+
+      // Templated off a BUCKET-level metadata rather than built fresh, deliberately: only its concrete subclass knows
+      // the settings of that index type (analyzers, geospatial precision, vector dimensions), and there is no generic
+      // way to copy them onto a new instance. It is read as a TEMPLATE, exactly like the one the normal path builds:
+      // LocalSchema.createBucketIndex takes the collations and the TypeIndex name off it and leaves the rest to the
+      // per-bucket index it creates, so the bucket id it happens to carry never reaches the restored index. Nothing
+      // else reads it either - the index it belongs to is dropped before the restore can run.
+      final IndexMetadata metadata = onBuckets.length > 0 ? onBuckets[0].getMetadata() : null;
+
+      // getPageSizeForNewFile(), not getPageSize(): the value goes back through the creation path, which validates it,
+      // and an index whose current page size is not one creation would accept answers with a legal one instead. Asking
+      // for the raw current size could make the restore fail on exactly the index the restore exists to save (#5713).
+      return new ReplacedIndexDefinition(index.getType(), index.isUnique(), index.getNullStrategy(),
+          index.getPageSizeForNewFile(), index.getTypeName(), index.getPropertyNames().toArray(new String[0]), metadata);
     }
   }
 
@@ -479,6 +491,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           .buildTypeIndex(replaced.typeName(), replaced.propertyNames()).withType(replaced.indexType());
       restore.withUnique(replaced.unique());
       restore.withNullStrategy(replaced.nullStrategy());
+      restore.withPageSize(replaced.pageSize());
       if (replaced.metadata() != null)
         restore.withMetadata(replaced.metadata());
       restore.create();
