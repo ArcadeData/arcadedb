@@ -360,6 +360,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // Last thing before the build: everything above can still refuse the request (an undeclared property, a BY ITEM on
     // a non-LIST, a sorted build on a replicated database), and none of those refusals may cost the caller the index it
     // already had.
+    //
+    // NOT ATOMIC, and deliberately so. The drop is its own committed schema change - LocalSchema.dropIndex wraps itself
+    // in recordFileChanges, and so does the build below - so the two cannot be rolled back as one. The window is
+    // covered for a FAILING build (restoreReplacedIndex in the catch arms below) but not for a process that dies inside
+    // it: the type then reopens with no index on those properties and has to be given one again. Making it atomic means
+    // holding a schema transaction across a full index build, which is the wrong trade for a DDL statement that already
+    // rebuilds every entry. Narrowing it further would mean building the new index alongside the old one, which
+    // LocalDocumentType.indexesByProperties cannot represent - one index per property set is the invariant.
+    //
+    // Only an explicit withReplaceIfIncompatible reaches here, so nothing is exposed to this window without asking.
     if (replaced != null)
       existingTypeIndex.drop();
 

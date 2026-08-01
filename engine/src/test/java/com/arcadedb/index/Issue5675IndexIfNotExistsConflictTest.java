@@ -269,6 +269,59 @@ public class Issue5675IndexIfNotExistsConflictTest extends TestHelper {
   }
 
   /**
+   * The restore is faithful to the whole definition, and a manual index name is part of it: an index the caller named
+   * itself must come back under that name rather than the auto-derived one. It travels on the captured
+   * {@link com.arcadedb.schema.IndexMetadata#typeIndexName}, which {@code LocalSchema.createBucketIndex} copies onto
+   * each bucket index and {@code LocalDocumentType.addIndexInternal} then honours when minting the TypeIndex (#4139) -
+   * the same route a manual name takes on the normal creation path.
+   */
+  @Test
+  void aFailedUpgradeRestoresAManualIndexNameAndItsPageSize() {
+    database.getSchema().buildTypeIndex("T", new String[] { "Scalar" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false).withPageSize(16_384).withIndexName("HandPicked").create();
+
+    assertThat(database.getSchema().existsIndex("HandPicked")).isTrue();
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET Scalar = 'x'");
+      database.command("sql", "INSERT INTO T SET Scalar = 'x'");
+    });
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("T", new String[] { "Scalar" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withReplaceIfIncompatible(true).create())
+        .isNotNull();
+
+    assertThat(database.getSchema().existsIndex("HandPicked"))
+        .as("the restored index keeps the name its owner gave it, not the auto-derived one")
+        .isTrue();
+    assertThat(database.getSchema().getIndexByName("HandPicked").isUnique()).isFalse();
+    assertThat(((IndexInternal) database.getSchema().getIndexByName("HandPicked")).getPageSize()).isEqualTo(16_384);
+    assertThat(database.getSchema().existsIndex("T[Scalar]")).isFalse();
+  }
+
+  /**
+   * Replacement is for the type's OWN index. An index it merely inherits belongs to the parent, and taking it away
+   * there is the silent parent-index loss of issue #4083, so the explicit opt-in does not reach it.
+   */
+  @Test
+  void replaceIfIncompatibleStillRefusesAnInheritedIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Parent");
+      database.command("sql", "CREATE PROPERTY Parent.Code STRING");
+      database.command("sql", "CREATE INDEX ON Parent (Code) NOTUNIQUE");
+      database.command("sql", "CREATE VERTEX TYPE Child EXTENDS Parent");
+    });
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("Child", new String[] { "Code" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withReplaceIfIncompatible(true).create())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Parent");
+
+    assertThat(database.getSchema().existsIndex("Parent[Code]")).isTrue();
+    assertThat(database.getSchema().getIndexByName("Parent[Code]").isUnique()).isFalse();
+  }
+
+  /**
    * A manual index name is global, so it can already name an index on ANOTHER type. That is a different index, and the
    * guard must say so rather than answer "already exists" and leave the requested one uncreated.
    */

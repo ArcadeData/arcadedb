@@ -1735,3 +1735,17 @@ type; a get-or-create helper that relied on omitting it has to pass the type it 
 A failed replacement restores the page size along with the rest of the definition, via `getPageSizeForNewFile()` - the
 same accessor a rebuild uses, so a page size the current file carries but creation would refuse cannot turn the restore
 into a second failure (#5713).
+
+### Embedded API: `getOrCreateTypeIndex` no longer upgrades an incompatible index
+
+`LocalSchema.getOrCreateTypeIndex(...)` sets `withIgnoreIfExists(true)`, so it inherits the change above: asked for a
+`UNIQUE` index where a `NOTUNIQUE` one already covers those properties, it used to drop and rebuild, and now raises
+`IllegalArgumentException` naming both definitions. That is the point of the fix - the rebuild is what could leave the
+type with no index - but embedded callers using it as an "ensure this index" helper across a schema change are the ones
+who will meet the new exception. Either drop the old index explicitly, or build through
+`buildTypeIndex(...).withReplaceIfIncompatible(true)` if replacing it really is what you mean.
+
+The replacement restores the previous definition on failure, including a manual index name (carried on the index
+metadata, the same route `CREATE INDEX <name>` uses) and the page size. It is not atomic, though: the drop and the
+build are separate schema changes, so a process that dies between them leaves the type without an index on those
+properties until one is created again. Only an explicit `withReplaceIfIncompatible` is exposed to that window.
