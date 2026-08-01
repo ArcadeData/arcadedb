@@ -168,13 +168,32 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     LogManager.instance().log(this, Level.WARNING,
         "Query on database '%s' returned more rows than the default HTTP limit of %d: the response has been truncated to %d rows. "
             + "Set 'limit' in the request, add an explicit LIMIT to the query, or raise '%s'. Query: %s", databaseName, limit,
-        outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(), abbreviate(command));
+        outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(), abbreviateForLog(command));
   }
 
-  private static String abbreviate(final String command) {
+  /**
+   * Prepares a client-supplied command to be echoed in a log line: caps the length so a large payload cannot
+   * flood the log, and replaces control characters with a space so an embedded line break cannot forge log
+   * lines of its own. Same concern - and same shape - as
+   * {@link AbstractServerHttpHandler#sanitizeRequestId(String)} for the {@code X-Request-Id} header; allocates
+   * only when the command actually needs cleaning. Package-private for direct unit testing.
+   */
+  static String abbreviateForLog(final String command) {
     if (command == null)
       return null;
-    return command.length() <= MAX_LOGGED_COMMAND_CHARS ? command : command.substring(0, MAX_LOGGED_COMMAND_CHARS) + "...";
+    final int len = Math.min(command.length(), MAX_LOGGED_COMMAND_CHARS);
+    StringBuilder cleaned = null;
+    for (int i = 0; i < len; i++) {
+      final char c = command.charAt(i);
+      if (c < 0x20 || c == 0x7F) {
+        if (cleaned == null)
+          cleaned = new StringBuilder(len).append(command, 0, i);
+        cleaned.append(' ');
+      } else if (cleaned != null)
+        cleaned.append(c);
+    }
+    final String result = cleaned != null ? cleaned.toString() : command.substring(0, len);
+    return command.length() > MAX_LOGGED_COMMAND_CHARS ? result + "..." : result;
   }
 
   protected SerializationOutcome serializeResultSet(final Database database, final String serializer, final int limit,
@@ -347,6 +366,12 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   /**
    * True when the cap stopped the serialization with at least one row still pending in the result set.
+   * <p>
+   * That pending row comes from a different place on the two surfaces, and both are exact. The GET endpoint runs
+   * the query as written, so a lazy result set still has rows of its own when the cap bites. The POST endpoints
+   * rewrite the command to push a LIMIT down, which would otherwise make the engine stop at exactly the cap and
+   * leave the truncation undetectable, so what they push down is one row above it (see
+   * {@link PostCommandHandler#truncationProbeLimit(int)}).
    */
   private static boolean isTruncated(final ResultSet qResult, final int limit, final int serialized) {
     return limit > 0 && serialized >= limit && qResult.hasNext();
