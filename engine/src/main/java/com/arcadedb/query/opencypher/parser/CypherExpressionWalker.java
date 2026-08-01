@@ -133,6 +133,20 @@ public final class CypherExpressionWalker {
     }
 
     /**
+     * Called once per predicate node the walk reaches - the condition of a {@code WHERE}, an inline pattern
+     * predicate, and every predicate nested inside one. {@link #visit} does not see these: a
+     * {@link BooleanExpression} is not an {@link Expression}, and the walk descends through a predicate into the
+     * expressions it holds without ever handing the predicate itself to a visitor.
+     * <p>
+     * A check about expressions does not need this. One that has to account for <b>every</b> node it crosses - a
+     * collector that must know when it met a shape it does not model - does, because the {@code default} arm of the
+     * predicate walk treats an unrecognised type as a leaf and would otherwise hide it.
+     */
+    default void visitPredicate(final BooleanExpression predicate) {
+      // Most visitors are about expressions.
+    }
+
+    /**
      * Called when the walk is about to descend into a statement that binds its own variables - the body of a
      * {@code CALL { ... }} clause or of an {@code EXISTS}/{@code COUNT}/{@code COLLECT} subquery expression, and each
      * branch of a {@code UNION}. Returning {@code this} keeps the same check running inside it; returning a different
@@ -376,6 +390,8 @@ public final class CypherExpressionWalker {
   public static void walk(final BooleanExpression expr, final Visitor visitor) {
     if (expr == null)
       return;
+
+    visitor.visitPredicate(expr);
 
     if (expr instanceof ComparisonExpression comparison) {
       walk(comparison.getLeft(), visitor);

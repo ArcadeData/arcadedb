@@ -55,6 +55,8 @@ public class SimpleCypherStatement implements CypherStatement {
   private final boolean            hasWriteBeforeMatch;
   private final boolean            hasFinishClause;
 
+  private volatile CypherReferencedVariables referencedVariables;
+
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
                                final boolean hasCreate, final boolean hasMerge,
@@ -372,6 +374,20 @@ public class SimpleCypherStatement implements CypherStatement {
   @Override
   public boolean hasFinishClause() {
     return hasFinishClause;
+  }
+
+  /**
+   * Computed on first use and kept, because the statement is immutable and shared while the caller - the plan built
+   * for a subquery body - is rebuilt for every outer row. Two threads arriving together collect the same answer from
+   * the same tree and one overwrites the other with an equal value, so the field is written once as far as any
+   * reader is concerned; {@code volatile} is what publishes the collected set safely.
+   */
+  @Override
+  public CypherReferencedVariables getReferencedVariables() {
+    CypherReferencedVariables result = referencedVariables;
+    if (result == null)
+      referencedVariables = result = CypherReferencedVariables.of(this);
+    return result;
   }
 
   public String getOriginalQuery() {
