@@ -85,11 +85,13 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
       // A non-positive limit means unlimited here too, as it does on the query/command endpoints: it used to
       // reach Math.min(rows, -1) and return no row at all while reporting the result as truncated.
-      request.put("limit", -1);
-      final JSONObject unlimited = postTsQuery(serverIndex, request);
-      assertThat(unlimited.getInt("count")).isEqualTo(3);
-      assertThat(unlimited.getInt("limit")).isEqualTo(-1);
-      assertThat(unlimited.getBoolean("truncated")).isFalse();
+      for (final int unlimitedLimit : new int[] { -1, 0 }) {
+        request.put("limit", unlimitedLimit);
+        final JSONObject unlimited = postTsQuery(serverIndex, request);
+        assertThat(unlimited.getInt("count")).isEqualTo(3);
+        assertThat(unlimited.getInt("limit")).isEqualTo(-1);
+        assertThat(unlimited.getBoolean("truncated")).isFalse();
+      }
     });
   }
 

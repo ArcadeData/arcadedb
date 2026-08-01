@@ -36,6 +36,12 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -278,39 +284,50 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   @Test
   void theRemoteDriverHonorsTheQueryLimit() {
     try (final RemoteDatabase remote = newRemoteDatabase()) {
-      int rows = 0;
-      try (final ResultSet resultSet = remote.query("sql", "SELECT i FROM " + TYPE_NAME + " LIMIT " + TOTAL_ROWS)) {
-        while (resultSet.hasNext()) {
-          resultSet.next();
-          rows++;
-        }
-      }
-      assertThat(rows).isEqualTo(TOTAL_ROWS);
+      assertThat(countRows(remote, "SELECT i FROM " + TYPE_NAME + " LIMIT " + TOTAL_ROWS)).isEqualTo(TOTAL_ROWS);
     }
   }
 
   @Test
   void theRemoteDriverCanRemoveTheCap() {
     try (final RemoteDatabase remote = newRemoteDatabase()) {
-      int rows = 0;
-      try (final ResultSet resultSet = remote.query("sql", "SELECT i FROM " + TYPE_NAME)) {
-        while (resultSet.hasNext()) {
-          resultSet.next();
-          rows++;
-        }
-      }
-      assertThat(rows).isEqualTo(CAP);
+      assertThat(countRows(remote, "SELECT i FROM " + TYPE_NAME)).isEqualTo(CAP);
 
       remote.setMaxResultRows(-1);
-      rows = 0;
-      try (final ResultSet resultSet = remote.query("sql", "SELECT i FROM " + TYPE_NAME)) {
-        while (resultSet.hasNext()) {
-          resultSet.next();
-          rows++;
-        }
-      }
-      assertThat(rows).isEqualTo(TOTAL_ROWS);
+      assertThat(countRows(remote, "SELECT i FROM " + TYPE_NAME)).isEqualTo(TOTAL_ROWS);
     }
+  }
+
+  @Test
+  void theRemoteDriverWarnsOnlyWhenItDidNotAskForTheCap() {
+    final CapturingHandler captured = new CapturingHandler();
+    final Logger logger = Logger.getLogger(RemoteDatabase.class.getName());
+    logger.addHandler(captured);
+    try (final RemoteDatabase remote = newRemoteDatabase()) {
+      // Nobody asked for a cap, so the truncation is a partial answer the application must hear about.
+      assertThat(countRows(remote, "SELECT i FROM " + TYPE_NAME)).isEqualTo(CAP);
+      assertThat(captured.messages()).anyMatch(m -> m.contains("truncated the result set"));
+
+      // The application set its own page size: the truncation is what it asked for, so warning on every page
+      // would only flood its log - the same rule the server applies to a request carrying its own 'limit'.
+      captured.clear();
+      remote.setMaxResultRows(10);
+      assertThat(countRows(remote, "SELECT i FROM " + TYPE_NAME)).isEqualTo(10);
+      assertThat(captured.messages()).noneMatch(m -> m.contains("truncated the result set"));
+    } finally {
+      logger.removeHandler(captured);
+    }
+  }
+
+  private static int countRows(final RemoteDatabase remote, final String query) {
+    int rows = 0;
+    try (final ResultSet resultSet = remote.query("sql", query)) {
+      while (resultSet.hasNext()) {
+        resultSet.next();
+        rows++;
+      }
+    }
+    return rows;
   }
 
   private RemoteDatabase newRemoteDatabase() {
@@ -356,5 +373,44 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
     final HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
     assertThat(response.statusCode()).isEqualTo(200);
     return new JSONObject(response.body());
+  }
+
+  /**
+   * Collects the formatted WARNING (and above) messages published to a logger.
+   */
+  private static final class CapturingHandler extends Handler {
+    private final List<String> records = new CopyOnWriteArrayList<>();
+
+    @Override
+    public void publish(final LogRecord record) {
+      if (record == null || record.getLevel().intValue() < Level.WARNING.intValue())
+        return;
+      String message = record.getMessage();
+      if (message != null && record.getParameters() != null && record.getParameters().length > 0) {
+        try {
+          message = message.formatted(record.getParameters());
+        } catch (final Exception ignored) {
+          // keep the raw message: the assertions only look for a substring of the template
+        }
+      }
+      if (message != null)
+        records.add(message);
+    }
+
+    List<String> messages() {
+      return List.copyOf(records);
+    }
+
+    void clear() {
+      records.clear();
+    }
+
+    @Override
+    public void flush() {
+    }
+
+    @Override
+    public void close() {
+    }
   }
 }

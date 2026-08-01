@@ -527,10 +527,13 @@ public class CoreApiSpec implements OpenApiContributor {
   private Schema<?> createQueryResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Query response object");
     schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.object(null), "Query results"));
-    schema.addProperty("executionTime", SpecBuilders.integer("Execution time in milliseconds"));
-    schema.addProperty("recordCount", SpecBuilders.integer("Number of records returned"));
     schema.addProperty("limit", SpecBuilders.integer("Effective row cap applied while serializing, -1 when uncapped"));
-    schema.addProperty("returned", SpecBuilders.integer("Number of rows carried by this response"));
+    // 'executionTime' and 'recordCount' used to be documented here but no handler has ever emitted them:
+    // 'returned' is the real row count, and timings are reported under 'profile' when profileExecution is set.
+    schema.addProperty("returned", SpecBuilders.integer(
+        """
+        Number of rows carried by this response. With the 'graph' serializer, whose cap counts graph elements \
+        rather than rows, it is the number of serialized vertices plus edges."""));
     schema.addProperty("truncated", SpecBuilders.bool(
         "True when the cap stopped the serialization with rows still pending, so the response is incomplete"));
     return schema;
