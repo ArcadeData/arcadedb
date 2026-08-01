@@ -345,17 +345,10 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    */
   @Override
   public IndexMetadata getMetadataForNewFile() {
-    final IndexMetadata base = underlyingIndex.getMetadata();
-    final GeoIndexMetadata geoMetadata = new GeoIndexMetadata(base != null ? base.typeName : null,
-        base != null ? base.propertyNames.toArray(new String[0]) : new String[0],
-        base != null ? base.associatedBucketId : -1);
-    if (base != null) {
-      geoMetadata.collations = base.collations;
-      geoMetadata.typeIndexName = base.typeIndexName;
-    }
-    geoMetadata.setPrecision(precision);
-    geoMetadata.setTokenization(tokenization);
-    return geoMetadata;
+    // Unlike the full-text and sparse-vector wrappers, there is no stored GeoIndexMetadata to hand back: this class
+    // holds the two settings as plain fields. GeoIndexMetadata.from() reassembles the definition, keeping the
+    // base-field copy inside the metadata hierarchy where copyCommonTo() lives.
+    return GeoIndexMetadata.from(underlyingIndex.getMetadata(), precision, tokenization);
   }
 
   @Override

@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordReadListener;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -281,6 +282,32 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
     database.transaction(() -> {
       final ImmutableDocument scanned = (ImmutableDocument) database.iterateType("SecurityTest", false).next();
       assertThat(scanned.propertiesAsMap("publicProperty")).containsExactly(entry("publicProperty", "public_value"));
+    });
+  }
+
+  /**
+   * The other half of the #5723 change, stated deliberately: a record whose RID no longer resolves now REPORTS that,
+   * where before the missing lazy load was indistinguishable from a record with no properties. This is the same
+   * contract {@link #consistentExceptionTypesInLazyLoading()} pins down for the other accessors - an accessor of this
+   * class does not answer for a record it could not read.
+   */
+  @Test
+  void propertiesAsMapReportsARecordThatNoLongerResolves() {
+    final RID[] documentRid = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("SecurityTest");
+      doc.set("publicProperty", "public_value");
+      doc.save();
+      documentRid[0] = doc.getIdentity();
+    });
+
+    database.transaction(() -> {
+      // Not loaded yet: the buffer is only materialised on the first access, which is the whole point here.
+      final ImmutableDocument stale = (ImmutableDocument) database.lookupByRID(documentRid[0], false);
+      database.deleteRecord(database.lookupByRID(documentRid[0], true));
+
+      assertThatThrownBy(stale::propertiesAsMap).isInstanceOf(RecordNotFoundException.class);
+      assertThatThrownBy(() -> stale.propertiesAsMap("publicProperty")).isInstanceOf(RecordNotFoundException.class);
     });
   }
 }

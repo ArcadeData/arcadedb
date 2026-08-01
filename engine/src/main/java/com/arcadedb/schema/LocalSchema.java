@@ -557,6 +557,26 @@ public class LocalSchema implements Schema {
     this.encoding = encoding;
   }
 
+  /**
+   * Creates {@code newTypeName} as a copy of {@code typeName}: its properties, its records, and the definitions of the
+   * indexes it declares itself.
+   * <p>
+   * <b>Not atomic, by construction.</b> The records commit first - in batches of {@code transactionBatchSize}, so a
+   * large type does not hold one transaction open - and only then are the indexes built, each in its own transaction.
+   * The index build has to run outside the record-copy transaction to see the records at all (see the comment at that
+   * call site), which is what puts a commit boundary in the middle of the operation. The safety net for a failure on
+   * either side of it is the {@code catch} below: it drops {@code newTypeName}, and with it the buckets and records
+   * already committed, so a failed copy leaves the schema as it found it rather than a half-built type. The SOURCE type
+   * is only ever read, so it is unaffected either way.
+   *
+   * @param typeName             type to copy from, left untouched
+   * @param newTypeName          type to create, which must not exist yet
+   * @param newTypeClass         {@link LocalDocumentType} or {@link LocalVertexType}; edge types are not supported
+   * @param buckets              number of buckets of the new type
+   * @param pageSize             page size of the new type's buckets, not of its indexes - those keep the page size of
+   *                             the index they are copied from
+   * @param transactionBatchSize records to copy per transaction, or 0 to copy them all in one
+   */
   @Override
   public DocumentType copyType(final String typeName, final String newTypeName, final Class<? extends DocumentType> newTypeClass,
       final int buckets, final int pageSize, final int transactionBatchSize) {

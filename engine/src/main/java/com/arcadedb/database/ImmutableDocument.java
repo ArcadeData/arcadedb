@@ -132,6 +132,8 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     if (buffer == null)
       return Collections.emptyMap();
+    // NOT redundant with the positioning checkForLazyLoading() does: when an after-read event returns a DIFFERENT
+    // record (the encryption path), that method replaces the buffer with a freshly serialised one and leaves it at 0.
     buffer.position(propertiesStartingPosition);
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
   }
