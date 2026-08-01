@@ -113,6 +113,12 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
         // is DELETING an edge must not conclude there was nothing to remove. This caller is not deleting anything:
         // it is opportunistically pruning a reference whose edge is already gone, from inside a READ. A concurrent
         // commit reshaping the chain therefore costs the ghost one more pass, not the iteration.
+        //
+        // NeedRetryException, deliberately wider than the ConcurrentModificationException this change introduces:
+        // the condition being absorbed is "retry later", not one specific cause. Its sibling LockTimeoutException
+        // says the same thing about this prune - come back for it - and letting THAT escape would fail a read
+        // because an optional repair could not get a lock, which is precisely the outcome this catch exists to
+        // prevent. Narrowing it to the CME would re-open that door for the sake of matching a comment.
         LogManager.instance()
             .log(this, Level.FINE, "Cannot prune dangling edge %s from vertex %s now (concurrent change): %s", edge,
                 vertex, retryLater.getMessage());
