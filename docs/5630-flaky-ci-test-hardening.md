@@ -173,3 +173,33 @@ Bot review raised five points. Outcomes:
 3. **Point 5 (treat the negative check as blocking, not a follow-up)** - agreed and discharged; see the
    proof table above.
 4. Points 3 and 4 were confirmations of existing reasoning; no change needed.
+
+## Review cycle 2 (`3ff6ba5f5`)
+
+No blocking points. Outcomes:
+
+1. **No change - residual flakiness in `assertCommandsOverlapped`.** Correctly observed: if a runner starves
+   the second worker for a whole SLEEP, two genuinely parallel commands can still complete `>= SLEEP` apart.
+   The reviewer recommends keeping it anyway and that is right - the old assertion failed under *any* uniform
+   slowdown, this one fails only under differential starvation of one worker. Strict improvement, residual
+   risk accepted knowingly.
+2. **Confirmed and documented - the baseline guard's dependency on enqueue-before-202.** The review flagged
+   that `singleMs >= SLEEP_DURATION` is only sound if the command is enqueued before the 202 the client
+   observes, otherwise the guard added in cycle 1 would produce *false failures*. Verified in the source
+   rather than assumed: `PostCommandHandler` line 214-217 calls `executeCommandAsync(...)` - which enqueues
+   synchronously via `database.async().command(...)` - and only then constructs the 202. The ordering holds;
+   a comment now records it at the assertion.
+3. **Accepted for `Issue3122` only - `@Tag("slow")`.** This class now waits out two SLEEPs in the HTTP test
+   where it previously waited one, so the change itself made it slower and the tag is earned under the
+   CLAUDE.md convention for multi-second regression tests. Declined for `HttpRedMetricsIT`, which issues 50
+   local HTTP requests and is sub-second unless it fails.
+   Worth recording: `excludedGroups` is **commented out** in the root POM (line 216), so no tag filtering is
+   currently active. Tagging changes nothing about what CI runs today - it is classification, which is also
+   why it carries no risk of silencing the very test being de-flaked. If tag filtering is ever re-enabled,
+   `slow` must stay inside the IT job or this and the two already-tagged classes would stop running.
+4. **Answered - which CI signal is authoritative.** Verified against `.github/workflows/mvn-test.yml`: the
+   integration job runs `./mvnw verify ... --fail-never`, so `Run Integration Tests with Coverage: success`
+   is unconditional and carries no information. The gate is the `IT Tests Reporter` step (dorny/test-reporter
+   over `**/failsafe-reports/TEST*.xml`). All four classes land in that job - it excludes only
+   `e2e,load-tests,e2e-ha,ha-raft`, and `Bolt5002RoutingTableIT` runs in the `bolt` module despite extending
+   `BaseRaftHATest`. Do not read this PR as verified until that reporter is green.

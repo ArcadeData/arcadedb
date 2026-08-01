@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -56,7 +57,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       concurrent pair, and the pair must cost well under twice the baseline. Load inflates both
  *       measurements together, so the ratio survives what an absolute budget cannot.</li>
  * </ul>
+ * <p>
+ * Every method here waits out at least one real 2 s SLEEP, and the HTTP one waits out two (baseline then
+ * pair), so the class is tagged slow per the repository convention for multi-second regression tests.
  */
+@Tag("slow")
 class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
 
   private static final String DATABASE_NAME  = "Issue3122AsyncParallelCommands";
@@ -111,6 +116,10 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
       // The threshold below is only meaningful if the baseline actually waited out its SLEEP. Were
       // waitCompletion to return before the command was picked up, singleMs would collapse to the HTTP
       // round trip and the comparison would silently stop testing anything.
+      // This is safe to assert rather than merely hope for: on the awaitResponse=false path
+      // PostCommandHandler calls executeCommandAsync - which enqueues via database.async().command() -
+      // before it builds the 202, so by the time the future below has observed the response the command
+      // is already on the queue that waitCompletion drains.
       assertThat(singleMs)
           .as("The single-command baseline must have waited out its SLEEP, otherwise the ratio below is "
               + "measured against nothing (baseline: %d ms, SLEEP: %d ms)", singleMs, SLEEP_DURATION)
