@@ -530,14 +530,15 @@ public class FullTextQueryExecutor {
 
     // Raw postings lookup: we only need the matching RIDs here. The BM25 score is computed once, later, by scoreCandidatesBM25;
     // going through index.get() would run (and then discard) the full scoring pipeline for every term.
-    final IndexCursor cursor = index.getPostings(searchKey);
     long df = 0L;
-    while (cursor.hasNext()) {
-      final RID rid = cursor.next().getIdentity();
-      // Deletion markers carry a negative bucket id: they are not live documents and must not inflate the document frequency.
-      if (rid.getBucketId() >= 0)
-        ++df;
-      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+    try (final IndexCursor cursor = index.getPostings(searchKey)) {
+      while (cursor.hasNext()) {
+        final RID rid = cursor.next().getIdentity();
+        // Deletion markers carry a negative bucket id: they are not live documents and must not inflate the document frequency.
+        if (rid.getBucketId() >= 0)
+          ++df;
+        scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+      }
     }
     recordDocumentFrequency(searchKey, df);
   }
@@ -562,14 +563,15 @@ public class FullTextQueryExecutor {
     for (final Term term : terms) {
       recordScoringToken(term.text(), 1.0f);
       final Map<RID, AtomicInteger> termMatches = new HashMap<>();
-      final IndexCursor cursor = index.getPostings(term.text());
       long df = 0L;
-      while (cursor.hasNext()) {
-        final RID rid = cursor.next().getIdentity();
-        // Deletion markers carry a negative bucket id and must not inflate the document frequency.
-        if (rid.getBucketId() >= 0)
-          ++df;
-        termMatches.put(rid, new AtomicInteger(1));
+      try (final IndexCursor cursor = index.getPostings(term.text())) {
+        while (cursor.hasNext()) {
+          final RID rid = cursor.next().getIdentity();
+          // Deletion markers carry a negative bucket id and must not inflate the document frequency.
+          if (rid.getBucketId() >= 0)
+            ++df;
+          termMatches.put(rid, new AtomicInteger(1));
+        }
       }
       recordDocumentFrequency(term.text(), df);
 

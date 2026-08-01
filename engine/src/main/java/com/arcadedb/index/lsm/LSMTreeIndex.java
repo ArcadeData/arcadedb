@@ -180,7 +180,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    */
   synchronized void dropRetiredCompactedIndexes() {
     for (final LSMTreeIndexCompacted retired : retiredCompactedIndexes) {
-      if (retired.getActiveCursors() != 0)
+      if (retired.countActiveCursors() != 0)
         continue;
 
       final int fileId = retired.getFileId();

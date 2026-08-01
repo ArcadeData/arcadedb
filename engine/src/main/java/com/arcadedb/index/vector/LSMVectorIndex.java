@@ -4073,9 +4073,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return resultRIDs.size();
         }
 
+        /**
+         * #5662: a cursor iterates ITSELF, like every other {@link IndexCursor}. Handing back the backing list's own
+         * iterator gave a for-each a second, independent traversal that left {@code position} untouched, so
+         * {@link #getRecord()} reported nothing during the loop and mixing {@code next()} with a for-each read some
+         * RIDs twice.
+         */
         @Override
         public Iterator<Identifiable> iterator() {
-          return (Iterator<Identifiable>) (Iterator<?>) resultRIDs.iterator();
+          return this;
         }
       };
     } catch (final Exception e) {

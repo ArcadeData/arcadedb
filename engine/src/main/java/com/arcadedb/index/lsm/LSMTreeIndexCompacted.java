@@ -37,7 +37,9 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.RidHashSet;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.logging.Level;
@@ -59,13 +61,19 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   private volatile boolean keyOrderCheckedOnLoad = false;
 
   /**
-   * Number of live {@link LSMTreeIndexUnderlyingCompactedSeriesCursor}s over this file. Series cursors load
-   * their pages LAZILY (page by page as the scan advances), so unlike the mutable-page cursors - which grab
-   * every page buffer eagerly at construction - they cannot survive their file being dropped. A full
-   * compaction that replaces this file must therefore defer the physical drop until this count drains to
-   * zero (see LSMTreeIndex's retired-file handling).
+   * The live {@link LSMTreeIndexUnderlyingCompactedSeriesCursor}s over this file, one entry per open cursor. Series
+   * cursors load their pages LAZILY (page by page as the scan advances), so unlike the mutable-page cursors - which
+   * grab every page buffer eagerly at construction - they cannot survive their file being dropped. A full compaction
+   * that replaces this file must therefore defer the physical drop until this set drains (see LSMTreeIndex's
+   * retired-file handling).
+   * <p>
+   * <b>#5662.</b> The entries are WEAK references to a token the cursor owns, not a plain counter, so that a cursor
+   * abandoned without {@code close()} stops pinning the file once the GC collects it. It used to be a counter, which
+   * made every missed {@code close()} permanent: the retired file stayed undroppable for the lifetime of the database
+   * with nothing left that could ever release it, and nothing to say so. {@link #purgeCollectedCursors()} now reports
+   * each one, because a leak that repairs itself is still a leak worth a line in the log.
    */
-  private final AtomicInteger activeCursors = new AtomicInteger();
+  private final Set<WeakReference<Object>> activeCursors = ConcurrentHashMap.newKeySet();
 
   /**
    * Per-series bloom filters over this file (#5517), or null when the file has none - because the feature is off, the
@@ -899,17 +907,58 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     super.drop();
   }
 
-  void onCursorOpened() {
-    activeCursors.incrementAndGet();
+  /**
+   * Registers a series cursor over this file. The caller passes a token it keeps strongly referenced for as long as it
+   * may still read a page, and hands the returned registration back to {@link #onCursorClosed(WeakReference)}.
+   */
+  WeakReference<Object> onCursorOpened(final Object liveToken) {
+    final WeakReference<Object> registration = new WeakReference<>(liveToken);
+    activeCursors.add(registration);
+    return registration;
   }
 
-  void onCursorClosed() {
-    activeCursors.decrementAndGet();
+  void onCursorClosed(final WeakReference<Object> registration) {
+    activeCursors.remove(registration);
   }
 
-  /** Live series cursors over this file; the file cannot be physically dropped while > 0. */
-  public int getActiveCursors() {
-    return activeCursors.get();
+  /**
+   * Live series cursors over this file; the file cannot be physically dropped while this is > 0.
+   * <p>
+   * Named {@code count...} rather than {@code get...} because it is NOT a plain accessor (#5662): it walks the
+   * registrations and drops the ones whose cursor has been collected, the same purge-on-read a {@code WeakHashMap}
+   * does. That makes it O(live cursors) and gives it a side effect - it can emit a warning. Both are irrelevant on the
+   * one path that calls it, the retired-file drop, and neither is what a caller would expect from a getter.
+   */
+  public int countActiveCursors() {
+    purgeCollectedCursors();
+    return activeCursors.size();
+  }
+
+  /**
+   * Drops the registrations whose cursor has been collected without being closed, and says so: they are the only way
+   * an entry can be left behind, since {@link #onCursorClosed(WeakReference)} removes its own. Called from
+   * {@link #countActiveCursors()}, which the retired-file drop consults, so an abandoned cursor delays the drop until
+   * the next GC instead of forever.
+   * <p>
+   * Nothing else purges, so on a file that is never retired the cleared references sit here unreclaimed. They are
+   * empty {@link WeakReference} shells bounded by the number of cursors actually leaked over the file's lifetime -
+   * a few dozen bytes each in a case that is already a bug - and they are gone the moment a drop is attempted. Purging
+   * from {@link #onCursorOpened(Object)} instead would put that walk on the scan-open path to reclaim nothing that
+   * matters.
+   */
+  private void purgeCollectedCursors() {
+    int leaked = 0;
+    for (final Iterator<WeakReference<Object>> it = activeCursors.iterator(); it.hasNext(); ) {
+      if (it.next().get() == null) {
+        it.remove();
+        ++leaked;
+      }
+    }
+
+    if (leaked > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Reclaimed %d cursor(s) on compacted index '%s' that were garbage collected without being closed: the file "
+              + "could not be dropped until now. Please report this, the scan that opened them is leaking.", leaked, getName());
   }
 
   /**

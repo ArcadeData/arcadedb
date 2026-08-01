@@ -31,6 +31,10 @@ public class MultiIndexCursor implements IndexCursor {
   private final List<IndexCursor>  cursors;
   private final int                limit;
   private final byte[]             keyTypes;
+  // #5662: sampled once at construction, like keyTypes. A child's comparator does not depend on how much of it is
+  // left, and since #5635 hasNext() prefetches - so probing the children to answer an accessor would run page reads
+  // and tombstone skips on a cursor that may only ever be asked for its key types.
+  private final BinaryComparator   comparator;
   private final boolean            ascendingOrder;
   private       int                browsed         = 0;
   private       Object[]           nextKeys;
@@ -42,37 +46,57 @@ public class MultiIndexCursor implements IndexCursor {
     this.cursors = cursors;
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
-    this.keyTypes = cursors.getFirst().getBinaryKeyTypes();
-    initCursors();
+    try {
+      this.keyTypes = cursors.getFirst().getBinaryKeyTypes();
+      this.comparator = firstComparator(cursors);
+      initCursors();
+    } catch (final RuntimeException e) {
+      // #5662: the caller handed the children over, so a constructor that does not complete must not leave them open -
+      // no one else holds a reference to them
+      closeQuietly();
+      throw e;
+    }
   }
 
   public MultiIndexCursor(final List<IndexInternal> indexes, final boolean ascendingOrder, final int limit) {
     this.cursors = new ArrayList<>(indexes.size());
     this.limit = limit;
-    for (final Index i : indexes) {
-      if (!(i instanceof RangeIndex))
-        throw new IllegalArgumentException("Cannot iterate an index that does not support ordered iteration");
-
-      this.cursors.add(((RangeIndex) i).iterator(ascendingOrder));
-    }
     this.ascendingOrder = ascendingOrder;
-    this.keyTypes = indexes.getFirst().getBinaryKeyTypes();
-    initCursors();
+    try {
+      for (final Index i : indexes) {
+        if (!(i instanceof RangeIndex))
+          throw new IllegalArgumentException("Cannot iterate an index that does not support ordered iteration");
+
+        this.cursors.add(((RangeIndex) i).iterator(ascendingOrder));
+      }
+      this.keyTypes = indexes.getFirst().getBinaryKeyTypes();
+      this.comparator = firstComparator(this.cursors);
+      initCursors();
+    } catch (final RuntimeException e) {
+      closeQuietly();
+      throw e;
+    }
   }
 
   public MultiIndexCursor(final List<IndexInternal> indexes, final Object[] fromKeys, final boolean ascendingOrder,
       final boolean includeFrom, final int limit) {
     this.cursors = new ArrayList<>(indexes.size());
     this.limit = limit;
-    for (final Index i : indexes) {
-      if (!(i instanceof RangeIndex))
-        throw new IllegalArgumentException("Cannot iterate an index that does not support ordered iteration");
-
-      this.cursors.add(((RangeIndex) i).iterator(ascendingOrder, fromKeys, includeFrom));
-    }
     this.ascendingOrder = ascendingOrder;
-    this.keyTypes = indexes.getFirst().getBinaryKeyTypes();
-    initCursors();
+    try {
+      for (final Index i : indexes) {
+        if (!(i instanceof RangeIndex))
+          throw new IllegalArgumentException("Cannot iterate an index that does not support ordered iteration");
+
+        this.cursors.add(((RangeIndex) i).iterator(ascendingOrder, fromKeys, includeFrom));
+      }
+      this.keyTypes = indexes.getFirst().getBinaryKeyTypes();
+      this.comparator = firstComparator(this.cursors);
+      initCursors();
+    } catch (final RuntimeException e) {
+      closeQuietly();
+      throw e;
+    }
   }
 
   @Override
@@ -172,6 +196,24 @@ public class MultiIndexCursor implements IndexCursor {
     }
   }
 
+  /**
+   * {@link #close()} for the failed-construction path: it must not mask the exception that is being propagated, and it
+   * cannot assume the fields it reads were assigned.
+   */
+  private void closeQuietly() {
+    for (int i = 0; i < cursors.size(); ++i) {
+      final IndexCursor cursor = cursors.get(i);
+      if (cursor != null) {
+        try {
+          cursor.close();
+        } catch (final RuntimeException ignore) {
+          // KEEP CLOSING THE OTHERS
+        }
+        cursors.set(i, null);
+      }
+    }
+  }
+
   @Override
   public long estimateSize() {
     long tot = 0L;
@@ -194,21 +236,29 @@ public class MultiIndexCursor implements IndexCursor {
     return this;
   }
 
+  /**
+   * The comparator sampled at construction. Reading it does not touch the children: since #5635
+   * {@code LSMTreeIndexCursor.hasNext()} prefetches, so the previous "first child that still has something"
+   * formulation turned a plain accessor into page reads and tombstone-skip work (#5662).
+   */
   @Override
   public BinaryComparator getComparator() {
-    for (final IndexCursor cursor : cursors) {
-      if (cursor != null && cursor.hasNext())
-        return cursor.getComparator();
-    }
-    return null;
+    return comparator;
   }
 
+  /**
+   * The key types sampled at construction, for the same reason as {@link #getComparator()}. Every child scans the
+   * same logical index over a different bucket, so they all agree on the key types, exhausted or not.
+   */
   @Override
   public byte[] getBinaryKeyTypes() {
-    for (final IndexCursor cursor : cursors) {
-      if (cursor != null && cursor.hasNext())
-        return cursor.getBinaryKeyTypes();
-    }
+    return keyTypes;
+  }
+
+  private static BinaryComparator firstComparator(final List<IndexCursor> cursors) {
+    for (final IndexCursor cursor : cursors)
+      if (cursor != null)
+        return cursor.getComparator();
     return null;
   }
 

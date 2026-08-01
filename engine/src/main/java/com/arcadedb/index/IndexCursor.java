@@ -32,6 +32,9 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
  * the result, not answer optimistically and hand out a null element. Consumers must therefore not guard against a null
  * from {@code next()}; several used to, each with its own comment, because {@code LSMTreeIndexCursor} did answer
  * optimistically.
+ * <p>
+ * An index cursor is also {@link AutoCloseable} through {@link Cursor} - see {@link Cursor#close()} for why an
+ * abandoned one is not free.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -66,10 +69,6 @@ public interface IndexCursor extends Cursor {
    */
   default float getFloatScore() {
     return getScore();
-  }
-
-  default void close() {
-    // NO ACTIONS
   }
 
   default String dumpStats() {

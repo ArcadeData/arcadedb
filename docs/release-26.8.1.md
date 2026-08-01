@@ -1210,4 +1210,53 @@ and expressing that would have been faithful to its intent, but it would have ti
 of repairing a config that enforced nothing - a decision worth taking on its own merits. Development dependencies are
 still covered by the `npm audit --audit-level=moderate` step of the same workflow.
 
+## An index cursor is `AutoCloseable`, and a leaked one no longer pins a retired index file forever
+
+Three releases in a row have fixed instances of the same defect - an `IndexCursor` obtained, driven partway and
+dropped ([#5601](https://github.com/ArcadeData/arcadedb/issues/5601),
+[#5609](https://github.com/ArcadeData/arcadedb/issues/5609),
+[#5635](https://github.com/ArcadeData/arcadedb/issues/5635)). Closing one matters: a scan over an LSM index holds one
+underlying cursor per compacted series, each registered with its file, and `dropRetiredCompactedIndexes` will not
+physically drop a file that still has one. Draining a cursor releases those registrations as each series is exhausted,
+so only a cursor abandoned **partway** leaks - which is exactly the shape a `LIMIT`, an `exists()` or an early `break`
+produces. They kept recurring because nothing fired: an abandoned cursor looks exactly like correct code, and every
+site so far was found by reading ([#5662](https://github.com/ArcadeData/arcadedb/issues/5662)).
+
+`Cursor` now extends `AutoCloseable`, so an abandoned one is a static-analysis and IDE finding rather than something
+only a careful read can catch, and a cursor can be used with try-with-resources. `close()` is declared without a
+checked exception, so a `try (final IndexCursor c = index.iterator(true))` does not force the caller into a
+`catch (Exception)`.
+
+That is a compile-time signal, and a compile-time signal proves nothing about the sites nobody has read yet. So the
+counter behind the retire guard was replaced with **weak** references to the live cursors: a cursor abandoned without
+`close()` stops pinning its file once the garbage collector reaches it, and the reclaim is logged with the index name.
+A missed `close()` used to be permanent - the retired file stayed on disk for the lifetime of the database with
+nothing left in the process that could ever release it, and nothing to say so.
+
+The call sites found in this pass and now releasing their cursor:
+
+- The native `Select` API. `exists()` returns on the first match and `count()` stops at its `LIMIT`, both abandoning
+  the scan, and `SelectIterator.close()` documented itself as having "nothing to release in the serial
+  implementation" while holding the source index cursor.
+- `SubQueryStep` never closed the plan it wraps, so closing a result set reached only the outer plan's steps. A
+  `DELETE ... WHERE` is built exactly this way - the index scan inside the sub-plan, the `LIMIT` outside it - so its
+  scan was released only when it happened to run to exhaustion.
+- `DeleteFromIndexStep` had no `close()` at all. Two smaller repairs travel with it, neither of which changes what a
+  working statement does: an `IOException` out of its initialisation printed a stack trace to stdout and carried on
+  with a null cursor, so the caller would have seen a `NullPointerException` instead of the failure that explained it;
+  and the branch for an index without ordered iterations opened a `range()` cursor and overwrote it with the
+  `iterator()` one on the next line - it could never have worked, since both of those calls raise
+  `UnsupportedOperationException` on the only index that reaches it, so it was removed in favour of the error that
+  names the condition.
+- The Gremlin index-filter step, `TypeIndex`, the unique-key check at commit time, the edge upsert lookup, and the
+  full-text scoring, explain and more-like-this walks.
+
+Two smaller corrections travel with them. The vector search cursor returned the backing list's own iterator from
+`iterator()`, so a for-each got a second, independent traversal that never moved the cursor's position - `getRecord()`
+reported nothing during the loop, and mixing it with `next()` read some RIDs twice; it now iterates itself, like every
+other cursor, and `IndexCursorCollection` does the same. And `MultiIndexCursor.getComparator()` /
+`getBinaryKeyTypes()` answered by probing the children for one that still had something left, which since #5635 means
+running page reads and tombstone skips inside two plain accessors; both now answer from state sampled at construction,
+and the key types no longer come back null once the cursor is exhausted.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
