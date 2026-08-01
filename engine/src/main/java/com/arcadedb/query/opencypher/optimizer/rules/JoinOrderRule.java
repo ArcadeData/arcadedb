@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -114,7 +115,10 @@ public class JoinOrderRule implements OptimizationRule {
 
     final List<LogicalRelationship> ordered = new ArrayList<>();
     final Set<String> bound = new HashSet<>(boundVariables);
-    final Set<LogicalRelationship> remaining = new HashSet<>(relationships);
+    // Insertion-ordered: LogicalRelationship inherits identity hashing, so a plain HashSet made the
+    // tie-break between two equally cheap hops depend on the addresses the JVM happened to hand out,
+    // and the same query planned differently from run to run. Ties now fall to pattern order.
+    final Set<LogicalRelationship> remaining = new LinkedHashSet<>(relationships);
 
     // Build expansion plan greedily
     while (!remaining.isEmpty()) {

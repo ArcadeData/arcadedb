@@ -85,6 +85,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Maximum number of concurrent CSR builds/compactions across all databases. */
   private static final int MAX_CONCURRENT_BUILDS = Math.max(2, Runtime.getRuntime().availableProcessors());
 
+  /**
+   * Returned by {@link #countEdgesBetween} when the overlay makes the multiplicity unknowable, which
+   * the {@link com.arcadedb.graph.GraphTraversalProvider} contract spells as any negative value.
+   */
+  private static final long MULTIPLICITY_UNKNOWN = -1L;
+
   /** Semaphore bounding concurrent CPU-intensive build operations. */
   private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
 
@@ -868,6 +874,31 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
+   * Counts the edges joining nodeA to nodeB, optionally filtered by edge type, or a negative value
+   * when the delta overlay makes the count unknowable (see {@link #countBetweenForType}).
+   * <p>
+   * This is the multiplicity {@link #isConnectedTo} collapses to a boolean, and a pattern
+   * relationship matches once per edge, so a Cypher hop between two pinned vertices needs it rather
+   * than the boolean. Parallel edges sit next to each other in the sorted adjacency array, so the
+   * equal range around the binary search hit gives the count in O(log(degree) + multiplicity).
+   */
+  @Override
+  public long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final Snapshot snap = checkBuilt();
+    long total = 0;
+    final Iterable<String> types = edgeTypes != null && edgeTypes.length > 0 ?
+        Arrays.asList(edgeTypes) : snap.csrPerType.keySet();
+    for (final String edgeType : types) {
+      final long forType = countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
+      if (forType < 0)
+        return MULTIPLICITY_UNKNOWN; // one unknown type makes the whole count unknown
+      total += forType;
+    }
+    return total;
+  }
+
+  /**
    * Counts common neighbors between two nodes, optionally filtered by edge types.
    */
   public int countCommonNeighbors(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
@@ -1539,6 +1570,81 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
     return false;
+  }
+
+  /**
+   * Counts the edges of one type joining nodeA to nodeB, or {@link #MULTIPLICITY_UNKNOWN} when the
+   * overlay cannot say how many of them survive.
+   * <p>
+   * A self-loop is held by both adjacency lists of its vertex, so a BOTH walk would see it twice; the
+   * backward side is skipped when the two nodes are the same, which is what the OLTP expansion
+   * achieves by de-duplicating on edge identity.
+   * <p>
+   * <b>Why a deleted pair is answered "unknown" rather than zero.</b> {@link DeltaOverlay} keys its
+   * pending deletions on the {@code (source, target)} pair, not on the edge, because the CSR holds
+   * adjacency ids and has no edge identity to key on. Deleting one of three parallel edges therefore
+   * marks the whole pair, and every read that consults the mask drops all three - which is what
+   * {@link #isConnectedTo} and {@link #getNeighborIds} do, and it is why they report a pair as gone
+   * while two of its edges remain. A boolean can absorb that; a count cannot, because the caller
+   * turns it directly into rows. So a masked pair is reported unknown and the caller walks the edge
+   * list, which is exact. Resolving it here instead would take per-edge identity in the CSR, and a
+   * per-pair counter cannot substitute: the overlay absorbs a deletion replayed across merges by
+   * set semantics (issue #4587), which a counter would double-count.
+   */
+  private long countBetweenForType(final Snapshot snap, final int nodeA, final int nodeB,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    final DeltaOverlay ov = snap.overlay;
+    final boolean nodeAInBase = nodeA < snap.nodeMapping.size();
+    final boolean selfLoop = nodeA == nodeB;
+    final boolean walkForward = direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH;
+    final boolean walkBackward = (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        && !(direction == Vertex.DIRECTION.BOTH && selfLoop);
+
+    if (ov != null
+        && ((walkForward && ov.isEdgeDeleted(edgeType, nodeA, nodeB))
+        || (walkBackward && ov.isEdgeDeleted(edgeType, nodeB, nodeA))))
+      return MULTIPLICITY_UNKNOWN;
+
+    long count = 0;
+
+    if (csr != null && nodeAInBase) {
+      if (walkForward)
+        count += equalRangeCount(csr.getForwardNeighbors(), csr.getForwardOffsets()[nodeA],
+            csr.getForwardOffsets()[nodeA + 1], nodeB);
+      if (walkBackward)
+        count += equalRangeCount(csr.getBackwardNeighbors(), csr.getBackwardOffsets()[nodeA],
+            csr.getBackwardOffsets()[nodeA + 1], nodeB);
+    }
+
+    if (ov != null) {
+      if (walkForward)
+        for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
+          if (neighbor == nodeB)
+            ++count;
+      if (walkBackward)
+        for (final int neighbor : ov.getAddedInNeighbors(nodeA, edgeType))
+          if (neighbor == nodeB)
+            ++count;
+    }
+
+    return count;
+  }
+
+  /**
+   * Returns how many times {@code value} occurs in the sorted range {@code [from, to)}.
+   */
+  private static int equalRangeCount(final int[] sorted, final int from, final int to, final int value) {
+    final int hit = Arrays.binarySearch(sorted, from, to, value);
+    if (hit < 0)
+      return 0;
+    int start = hit;
+    while (start > from && sorted[start - 1] == value)
+      --start;
+    int end = hit + 1;
+    while (end < to && sorted[end] == value)
+      ++end;
+    return end - start;
   }
 
   private int countCommonForType(final Snapshot snap, final int nodeA, final int nodeB,
