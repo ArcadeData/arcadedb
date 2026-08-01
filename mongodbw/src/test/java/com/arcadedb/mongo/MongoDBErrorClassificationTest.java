@@ -87,6 +87,19 @@ class MongoDBErrorClassificationTest {
   }
 
   @Test
+  void aCodeTheBackendAlreadyAssignedIsNotThrownAway() {
+    // A MongoServerError from the bundled backend carries a code more precise than classification could infer,
+    // and it is not an ArcadeDBException - so it would classify as SERVER and be re-wrapped uncoded, losing the
+    // very thing the client needs.
+    final MongoServerError fromBackend = new MongoServerError(16459, "attempt to insert in system namespace");
+
+    final MongoServerException wrapped = MongoDBDatabaseWrapper.wireException("failed", fromBackend);
+
+    assertThat(wrapped).isSameAs(fromBackend);
+    assertThat(((MongoServerError) wrapped).getCode()).isEqualTo(16459);
+  }
+
+  @Test
   void aServerFaultStaysUncoded() {
     // MongoDB has no code that means "the server broke", so these keep the uncoded exception they already had
     // rather than being given a client-error code that would misdirect the caller.

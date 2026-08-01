@@ -223,6 +223,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
    */
   static MongoServerException wireException(final String message, final Exception e) {
+    // The bundled backend assigns its own codes - an aggregation stage rejecting a pipeline, for instance. Those
+    // are already more precise than anything classification could infer, and re-wrapping them dropped the code
+    // entirely, so the client saw an uncoded error. Keep what the backend decided.
+    if (e instanceof MongoServerError alreadyCoded)
+      return alreadyCoded;
+
     return switch (ErrorCategory.of(e)) {
       case RETRY -> new MongoServerError(112, "WriteConflict", message, e);
       case ARITHMETIC, VALIDATION -> new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(), message, e);

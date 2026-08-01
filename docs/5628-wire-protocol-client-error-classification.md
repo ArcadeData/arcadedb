@@ -160,6 +160,26 @@ equivalent: classification is by category priority, not by which type the walk m
 `NeedRetryException` sits below an `ArithmeticErrorException` must still answer `RETRY`. Now pinned by
 `categoryPriorityBeatsPositionInTheChain` so the claim in the javadoc has a test behind it.
 
+### Cycle 4 - 9efdea5e6
+
+No blocking items. One change taken:
+
+- **A code the MongoDB backend already assigned was being thrown away.** A `de.bwaldvogel` `MongoServerError` is
+  not an `ArcadeDBException`, so it classified as `SERVER` and got re-wrapped uncoded - losing the very code the
+  client needs. `wireException` now returns it untouched. The specific `16459` insert case is caught locally and
+  never reaches here, but the bundled aggregation code raises coded errors that do. Pre-existing behaviour, not a
+  regression from this PR; fixed because it is one line. Pinned by `aCodeTheBackendAlreadyAssignedIsNotThrownAway`,
+  fail-first verified.
+
+The remaining points were already answered in earlier cycles: the Postgres message/SQLSTATE divergence is
+documented and cosmetic (drivers branch on the code), `IllegalArgumentException`'s widened surface is a recorded
+trade, and the end-to-end wire ITs stay deferred below. The review independently re-verified the parts of the
+ordering that matter - `DuplicatedKeyException` not extending `NeedRetryException`, `ArithmeticErrorException`
+being tested before its supertype, and `SecurityException` resolving to the `java.lang` one.
+
+**Watch on merge:** the Redis reply format changed from `-<message>` to `-ERR <message>`. `RedisWTest` (which
+exercises the RESP wire) is green locally, but `RedisQueryLanguageTest` and the server ITs are CI-gated here.
+
 ## Deferred
 
 - **`SchemaException` has no HTTP arm**, so `SELECT FROM NonExistentType` over `/query` or `/command` reports 500
