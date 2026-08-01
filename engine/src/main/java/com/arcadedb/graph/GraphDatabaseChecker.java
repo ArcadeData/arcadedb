@@ -1230,7 +1230,6 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
             checkEndpoints.accept(database.lookupByRID(rid, true));
           } catch (final Exception e) {
             // See the vertex arm: an Error must not be recorded as record corruption.
-            
             progressTick();
             addWarning(warnings, totalWarnings, maxWarnings,
                 "edge " + rid + " cannot be loaded (error: " + describe(e) + ")");
