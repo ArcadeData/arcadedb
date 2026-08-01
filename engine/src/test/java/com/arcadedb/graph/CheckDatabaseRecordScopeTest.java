@@ -19,8 +19,17 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponentFile;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -323,6 +332,78 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
 
     assertThat((Collection<String>) result.get("warnings")).as("retained warnings are capped").hasSize(10);
     assertThat((Long) result.get("totalWarnings")).as("but every occurrence is counted").isEqualTo(40L);
+  }
+
+  /**
+   * The other half of the cost story, made executable: a listed record that is GENUINELY corrupted (not merely
+   * missing, and not merely chain-broken) is flagged, and under {@code FIX} every index on its bucket is dropped
+   * and rebuilt. That is the documented limit of the scope - `RECORD` bounds the CHECK, not necessarily the FIX -
+   * and pinning it means a future change cannot quietly make a scoped repair either cheaper or more destructive
+   * than stated.
+   */
+  @Test
+  void checkDatabaseRecordFixRebuildsTheBucketIndexesOfAGenuinelyCorruptedRecord() {
+    createSchema();
+    database.transaction(() -> {
+      database.getSchema().getType("Src").createProperty("name", Type.STRING);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Src", "name");
+    });
+
+    final RID[] victim = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("Src").set("name", "corrupt-me");
+      v.save();
+      victim[0] = v.getIdentity();
+    });
+
+    shrinkRecordBuffer(victim[0]);
+
+    // Precondition: the record still occupies its slot (so this is NOT the missing-RID case) but no longer reads
+    // back as a vertex.
+    database.transaction(() -> {
+      assertThat(database.existsRecord(victim[0])).as("the record must still be there").isTrue();
+      assertThatThrownBy(() -> database.lookupByRID(victim[0], true).asVertex(true))
+          .isNotInstanceOf(RecordNotFoundException.class);
+    });
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + victim[0] + " FIX")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(longProperty(row, "totalCorruptedRecords")).as("genuine corruption IS flagged: %s", row.toJSON())
+          .isGreaterThan(0L);
+      // The documented cost: the record's bucket had its indexes dropped and rebuilt.
+      assertThat((Collection<String>) row.getProperty("rebuiltIndexes")).as("%s", row.toJSON()).isNotEmpty();
+    }
+  }
+
+  /**
+   * Replaces the record-size varint of {@code rid} with a single-byte varint encoding a size far below the fixed
+   * 25-byte vertex prefix, so the record still occupies its slot but can no longer be read back as a vertex - the
+   * on-disk shape of a corrupted (as opposed to a missing) record. zigzag(8) == 16.
+   */
+  private void shrinkRecordBuffer(final RID rid) {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final int fileId = rid.getBucketId();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(fileId);
+    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
+    final int maxRecordsInPage = bucket.getMaxRecordsInPage();
+
+    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
+    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+
+    db.transaction(() -> {
+      try {
+        final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, fileId, pageId), pageSize, false);
+        // PAGE_RECORD_TABLE_OFFSET == PAGE_RECORD_COUNT_IN_PAGE_OFFSET(0) + SHORT_SERIALIZED_SIZE; each slot holds
+        // the content-relative offset of its record, whose first byte starts the record-size varint.
+        final int slotOffset = Binary.SHORT_SERIALIZED_SIZE + (positionInPage * Binary.INT_SERIALIZED_SIZE);
+        final int recordOffset = (int) page.readUnsignedInt(slotOffset);
+        assertThat(recordOffset).as("the record must still occupy its slot").isGreaterThan(0);
+        page.writeByte(recordOffset, (byte) 16);
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
   }
 
   private void createSchema() {

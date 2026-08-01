@@ -1617,8 +1617,11 @@ the surviving edge records. It combines with `FIX` and `COMPRESS`, and is reject
 letting one win would run a check nobody asked for. The database-wide passes (buckets, external properties,
 indexes) and the orphaned-segment reclaim are skipped, since none can be narrowed to a record.
 
-Two costs a record scope does **not** bound, worth knowing before reaching for it:
+Three costs a record scope does **not** bound, worth knowing before reaching for it:
 
+- `COMPRESS` is unaffected by the scope and still compresses the **whole database**. It is opt-in, but it is the
+  one clause that breaks the "naming a record bounds the cost" promise, so do not pair `RECORD ... COMPRESS`
+  expecting a cheap run;
 - rebuilding an adjacency means finding every surviving edge that points at the vertex, and no index maps
   endpoints back to edges, so the scoped run saves the vertex passes but still scans the edge types;
 - if a listed record turns out to be *corrupted*, every index on its bucket is dropped and rebuilt, which is a
