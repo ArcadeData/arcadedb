@@ -1282,21 +1282,28 @@ half-done one. `null` from the write-side head lookup now means one thing only -
 direction, so there is genuinely nothing to remove. Tolerance for an endpoint **vertex** that no longer exists is
 unchanged: there is nothing to disconnect from a vertex that is gone.
 
-Visible effect: an `edge.delete()` racing a concurrent write on the same endpoint can now raise a
-`ConcurrentModificationException` where it previously "succeeded" - and so can moving an edge, which disconnects it
-the same way. That is a `NeedRetryException`, so the standard retry loop (`database.transaction(...)`, and the
+**Visible effect, and it is not limited to deleting an edge.** Three operations disconnect an edge and therefore
+share the new contract:
+
+- `edge.delete()` / `DELETE EDGE`,
+- moving an edge, which disconnects it the same way,
+- **`vertex.delete()` / `DELETE VERTEX`** - the widest reach of the three. Deleting a vertex disconnects each of its
+  edges from the vertex at the *other* end, so the strict read lands on a **neighbour's** edge list. A vertex that is
+  itself perfectly healthy can now fail to delete because a neighbour's list could not be read at that moment.
+
+Any of them racing a concurrent write can now raise a `ConcurrentModificationException` where it previously
+"succeeded". That is a `NeedRetryException`, so the standard retry loop (`database.transaction(...)`, and the
 server's auto-retry for single-request commands) absorbs it. A client-managed explicit transaction spanning several
 requests sees it and should retry the transaction, which is the same contract concurrent updates have always had.
 Best-effort callers are unaffected: iteration, counting and the opportunistic pruning of an already-dangling
 reference during a read still skip a momentarily unreadable chunk rather than failing.
 
-The other side of that trade, taken deliberately: an endpoint edge list that is not transiently invisible but
-genuinely broken is indistinguishable from one at that moment, so deleting an edge attached to it now fails instead
-of completing and leaving the back-reference behind. `CHECK DATABASE` remains the repair path - it rebuilds a chain
-that cannot be loaded and drops the references into it. This reaches vertex deletion as well, because disconnecting
-an edge touches the vertex at the other end: deleting a healthy vertex whose *neighbour's* edge list cannot be read
-now reports a conflict rather than succeeding, since succeeding would delete the edge record while the neighbour
-keeps pointing at it - dangling a reference on a vertex nobody asked to touch.
+The other side of that trade, taken deliberately: an edge list that is not transiently invisible but genuinely
+broken is indistinguishable from one at that moment, so the operations above now fail instead of completing and
+leaving the back-reference behind. For `DELETE VERTEX` that means a healthy vertex next to a corrupted one is not
+deletable by the normal path until the corruption is repaired - succeeding would delete the edge record while the
+neighbour keeps pointing at it, dangling a reference on a vertex nobody asked to touch. `CHECK DATABASE` remains the
+repair path: it rebuilds a chain that cannot be loaded and drops the references into it.
 
 **If you hit that, the recovery is `CHECK DATABASE ... FIX` and then retry the delete.** The symptom is a delete that
 keeps failing with `ConcurrentModificationException` on the same vertex however often it is retried, which is what

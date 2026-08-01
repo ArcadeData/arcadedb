@@ -547,6 +547,12 @@ public class GraphEngine {
    */
   private VertexInternal resolveEndpointToDisconnect(final Edge edge, final Vertex.DIRECTION direction) {
     final RID endpointRID = direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn();
+    if (endpointRID == null)
+      // No endpoint recorded on this side: nothing to disconnect, same answer as a vertex that is gone. An edge
+      // always carries both, so this is a guard rather than a case - but existsRecord raises IllegalArgumentException
+      // on a null RID, which the catch below does not cover and which is not retryable, so it would escape as a hard
+      // failure from the one method whose job is to decide what is tolerable.
+      return null;
     try {
       // NOT redundant with the resolution below, however much it looks it: Edge.getOutVertex/getInVertex load with
       // loadContent=false, which hands back a LAZY handle without touching the bucket. A deleted endpoint therefore
