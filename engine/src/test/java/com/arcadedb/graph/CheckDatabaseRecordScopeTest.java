@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -27,9 +28,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -286,6 +292,37 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "CHECK DATABASE RECORD {\"@rid\": null}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("none of them resolves to a RID");
+
+    // And the same guard protects the public API, not just the SQL layer: setRecords is the last place that can
+    // still tell "named records, none usable" from "named no records".
+    assertThatThrownBy(() -> new DatabaseChecker(database).setRecords(new LinkedHashSet<>(Collections.singletonList(null))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("none of them resolves to a RID");
+
+    // A genuinely empty scope still means "no scope", and must NOT be refused.
+    assertThatCode(() -> new DatabaseChecker(database).setRecords(Collections.emptySet()))
+        .doesNotThrowAnyException();
+    assertThatCode(() -> new DatabaseChecker(database).setRecords(null)).doesNotThrowAnyException();
+  }
+
+  /**
+   * The retained warnings are capped, while the totals keep counting - so a scope naming a flood of bogus RIDs
+   * reports how many problems there were without holding a message for each.
+   */
+  @Test
+  void checkDatabaseRecordCapsTheWarningsItRetains() {
+    createSchema();
+    createHub();
+
+    final DatabaseChecker checker = new DatabaseChecker(database).setVerboseLevel(0).setMaxWarnings(10);
+    final Set<RID> scoped = new LinkedHashSet<>();
+    for (int i = 0; i < 40; i++)
+      scoped.add(database.newRID(9999, i));
+
+    final Map<String, Object> result = checker.setRecords(scoped).check();
+
+    assertThat((Collection<String>) result.get("warnings")).as("retained warnings are capped").hasSize(10);
+    assertThat((Long) result.get("totalWarnings")).as("but every occurrence is counted").isEqualTo(40L);
   }
 
   private void createSchema() {

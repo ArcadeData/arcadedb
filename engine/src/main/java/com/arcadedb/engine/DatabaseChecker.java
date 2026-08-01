@@ -449,7 +449,9 @@ public class DatabaseChecker {
           // every index on it - see the same guard in GraphDatabaseChecker's scoped arms.
           addScopedWarning("document " + rid + " does not exist");
         } catch (final Exception e) {
-          addScopedWarning("document " + rid + " cannot be loaded, removing it");
+          // NOT "removing it": corruptedRecords only drives the index rebuild, nothing deletes the record here.
+          // The type-wide checkDocuments says otherwise, and says "vertex" for a document while it is at it.
+          addScopedWarning("document " + rid + " cannot be loaded");
           ((LinkedHashSet<RID>) result.get("corruptedRecords")).add(rid);
           result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
         }
@@ -513,18 +515,34 @@ public class DatabaseChecker {
     return this;
   }
 
+  /**
+   * Restricts the check to these records (#5680). A null or empty set means "no record scope" - the check runs
+   * over the whole database, or over whatever {@link #setTypes}/{@link #setBuckets} narrowed it to.
+   * <p>
+   * A set that is NOT empty but contains only nulls is REFUSED rather than treated as "no scope". Silently
+   * dropping them would widen a call that explicitly named records into a full-database scan, which on a large
+   * database is enormously more expensive than what was asked for and is the one outcome such a caller cannot
+   * have wanted. The guard lives here rather than only in the SQL layer because this is the public entry point,
+   * and it is the last place that can still tell "named records, none usable" from "named no records" - once the
+   * nulls are dropped the two are indistinguishable.
+   */
   public DatabaseChecker setRecords(final Set<RID> records) {
     if (records == null || records.isEmpty()) {
       this.records = Collections.emptySet();
       return this;
     }
     // LinkedHashSet: the grouping below (and so the reported step order) follows the order the RIDs were given.
-    // Nulls are dropped rather than trusted away: this is a public API, and Rid.toRecordId() can answer null for
-    // a non-literal RID form, which groupRecordsByType would meet as an NPE on getBucketId().
+    // Nulls are dropped rather than trusted away: Rid.toRecordId() answers null for a non-literal RID form, which
+    // groupRecordsByType would meet as an NPE on getBucketId().
     final LinkedHashSet<RID> copy = new LinkedHashSet<>(records.size());
     for (final RID rid : records)
       if (rid != null)
         copy.add(rid);
+
+    if (copy.isEmpty())
+      throw new IllegalArgumentException(
+          "CHECK DATABASE RECORD was given " + records.size() + " record(s) but none of them resolves to a RID");
+
     this.records = copy;
     return this;
   }
