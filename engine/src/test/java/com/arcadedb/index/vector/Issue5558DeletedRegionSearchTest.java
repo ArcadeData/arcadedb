@@ -70,6 +70,9 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
   private static final double CLUSTER_GAP     = 0.12;
   private static final double JITTER          = 0.0001;
 
+  /** DOT_PRODUCT is only defined on unit-length vectors, so that test scales the fixture down to the unit sphere. */
+  private boolean normalizeEmbeddings = false;
+
   @BeforeEach
   void freezeTheGraph() {
     // Keep the deleted vectors in the graph for the duration of the test: a rebuild would drop them and there would
@@ -207,6 +210,35 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
           .isGreaterThanOrEqualTo(DELETED_CLUSTERS);
   }
 
+  /**
+   * The floor score the fix hands an unreadable node is {@code 0}, and the claim that {@code 0} is the floor of
+   * <i>every</i> JVector similarity is what lets one constant serve all three. `Infinity` only ever showed up under
+   * COSINE, so these two pin the claim where it was never exercised: EUCLIDEAN's {@code 1 / (1 + d^2)} is strictly
+   * above 0, and DOT_PRODUCT's {@code (1 + dot) / 2} bottoms out at 0 for the unit-length vectors JVector documents
+   * as the precondition for using it - which is why this one normalises the fixture.
+   * <p>
+   * The arc embedding has the same magnitude at every vertex, so both metrics order the clusters exactly as cosine
+   * does and the expected answer is unchanged.
+   */
+  @Test
+  void aDeletedRegionQueryUnderEuclidean() {
+    createSchema(VectorQuantizationType.INT8, "EUCLIDEAN");
+    insertVertices();
+    deleteFirstClusters();
+
+    assertNeighborClusterIs(1, DELETED_CLUSTERS);
+  }
+
+  @Test
+  void aDeletedRegionQueryUnderDotProduct() {
+    normalizeEmbeddings = true;
+    createSchema(VectorQuantizationType.INT8, "DOT_PRODUCT");
+    insertVertices();
+    deleteFirstClusters();
+
+    assertNeighborClusterIs(1, DELETED_CLUSTERS);
+  }
+
   /** A reopen reloads the graph from disk, so the hole has to stay searchable across it. */
   @Test
   void theDeletedRegionStaysSearchableAfterAReopen() {
@@ -235,10 +267,14 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
   }
 
   private void createSchema() {
-    createSchema(VectorQuantizationType.INT8);
+    createSchema(VectorQuantizationType.INT8, "COSINE");
   }
 
   private void createSchema(final VectorQuantizationType quantization) {
+    createSchema(quantization, "COSINE");
+  }
+
+  private void createSchema(final VectorQuantizationType quantization, final String similarity) {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE Doc");
       database.command("sql", "CREATE PROPERTY Doc.id STRING");
@@ -247,7 +283,7 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
 
       final TypeLSMVectorIndexBuilder builder = (TypeLSMVectorIndexBuilder) database.getSchema()
           .buildTypeIndex("Doc", new String[] { "embedding" }).withLSMVectorType();
-      builder.withDimensions(DIMENSIONS).withQuantization(quantization).create();
+      builder.withDimensions(DIMENSIONS).withQuantization(quantization).withSimilarity(similarity).create();
     });
   }
 
@@ -286,12 +322,16 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
    * nearest surviving vector to a query is therefore decidable on paper, and with the clusters an order of magnitude
    * further apart than they are wide, INT8 quantization noise cannot move the answer to another cluster.
    */
-  private static float[] embedding(final int vertex) {
+  private float[] embedding(final int vertex) {
     final float[] v = new float[DIMENSIONS];
     final double theta = (vertex / PER_CLUSTER) * CLUSTER_GAP + (vertex % PER_CLUSTER - PER_CLUSTER / 2.0) * JITTER;
+    double magnitude = 0;
+    for (int m = 1; m <= DIMENSIONS / 2; m++)
+      magnitude += 2.0 / (m * (double) m);
+    final double scale = normalizeEmbeddings ? 1 / Math.sqrt(magnitude) : 1;
     for (int m = 1; m <= DIMENSIONS / 2; m++) {
-      v[(m - 1) * 2] = (float) (Math.cos(m * theta) / m);
-      v[(m - 1) * 2 + 1] = (float) (Math.sin(m * theta) / m);
+      v[(m - 1) * 2] = (float) (scale * Math.cos(m * theta) / m);
+      v[(m - 1) * 2 + 1] = (float) (scale * Math.sin(m * theta) / m);
     }
     return v;
   }

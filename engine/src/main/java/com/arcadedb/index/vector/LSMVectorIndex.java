@@ -3301,9 +3301,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * The similarity handed to a graph node whose vector can no longer be read. Every JVector similarity function is
-   * normalised so that {@code 0} is the floor - {@code (1 + cosine) / 2} and {@code (1 + dot) / 2} bottom out there,
-   * {@code 1 / (1 + d^2)} approaches it - so a node scored this way sorts behind every real candidate.
+   * The similarity handed to a graph node whose vector can no longer be read. Every JVector similarity function has
+   * {@code 0} as its floor: {@code (1 + cosine) / 2} bottoms out there at {@code cosine = -1}, {@code 1 / (1 + d^2)}
+   * approaches it from above, and {@code (1 + dot) / 2} bottoms out there for the unit-length vectors JVector
+   * documents as the precondition for using {@code DOT_PRODUCT} at all. A node scored this way therefore sorts at or
+   * behind every real candidate.
    */
   private static final float UNREADABLE_NODE_SCORE = 0.0f;
 
@@ -3641,6 +3643,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // no query can ever return, and sizing the expectation on them asked for results that do not exist. It also
         // closes the case of a single surviving vector, where the old "less than 80% of what is available" guard
         // evaluated to `0 < 0` and suppressed the fallback that was the only thing left to answer the query.
+        // VectorLocationIndex.size() is the live count only while the map does not evict, which since #5568 it never
+        // does. On a bounded backend it is a lower bound, so this would under-estimate the budget and could leave the
+        // fallback unfired when it should run - acceptable, since an evicting location map already makes the whole
+        // index approximate, and the same assumption is what the auto-compaction ratio rests on.
         final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
         final int expectedResults = Math.min(k, availableVectors);
         if (results.size() < expectedResults) {

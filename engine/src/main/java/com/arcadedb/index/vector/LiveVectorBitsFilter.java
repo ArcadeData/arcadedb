@@ -38,6 +38,13 @@ import java.util.Set;
  * The predicate is deliberately identical to the post-filter applied to the search output, so nothing that would have
  * survived it is dropped here.
  * <p>
+ * <b>This rests on one JVector behaviour.</b> "The tombstones are still traversed" is true because
+ * {@code GraphSearcher.searchOneLayer} consults {@code acceptOrds} only to decide whether a popped node joins the
+ * result heap, and expands its neighbours either way. A JVector upgrade that started pruning the neighbours of a
+ * rejected node would silently make the vectors behind a deleted region unreachable again - the same bug this class
+ * exists to fix, with the filter now causing it. If you are upgrading JVector, check that first;
+ * {@code Issue5558DeletedRegionSearchTest} is what will tell you.
+ * <p>
  * <b>Cost.</b> This runs on every search, not only on the RID-restricted ones that used to need a filter, so it is
  * worth knowing what it costs an index with no deletions at all. JVector calls {@code acceptOrds.get()} once per
  * <i>popped</i> candidate, not once per scored neighbour, so it does not scale with beam width times graph fan-out:
