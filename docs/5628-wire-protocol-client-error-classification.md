@@ -33,7 +33,7 @@ wire module then owns only the table that translates a category into its own voc
 | `RETRY` | `40001` serialization_failure | `TRYAGAIN` | 112 `WriteConflict` |
 | `ARITHMETIC` | `22012` division_by_zero / `22003` numeric_value_out_of_range | `ERR` | 2 `BadValue` |
 | `DUPLICATED_KEY` | `23505` unique_violation | `ERR` | 11000 `DuplicateKey` |
-| `NOT_FOUND` | `02000` no_data | `ERR` | (uncoded) |
+| `NOT_FOUND` | `P0002` no_data_found | `ERR` | (uncoded) |
 | `SCHEMA` | `42P01` undefined_table | `ERR` | 26 `NamespaceNotFound` |
 | `SECURITY` | `42501` insufficient_privilege | `NOPERM` | 13 `Unauthorized` |
 | `VALIDATION` | `22023` invalid_parameter_value | `ERR` | 2 `BadValue` |
@@ -53,7 +53,8 @@ regression suites of several shipped issues; rewriting them buys nothing this is
 - `postgresw` - `PostgresNetworkExecutor.sqlStateFor(...)`, used by every query/parse/bind error arm
 - `redisw` - `RedisNetworkExecutor.respErrorPrefix(...)`, plus a RESP-safe single-line error reply
 - `mongodbw` - `MongoDBDatabaseWrapper.wireException(...)`, so `putLastError` can emit `code`/`codeName`
-- `graphql` - `ArcadeDBException` passthrough in `GraphQLQueryEngine` and `GraphQLSchema`
+- `graphql` - `CommandParsingException | CommandExecutionException` passthrough in `GraphQLQueryEngine` and
+  `GraphQLSchema` (deliberately not `ArcadeDBException` - see the cycle-2 note)
 
 ## Tests
 
@@ -102,7 +103,51 @@ Points assessed and answered rather than changed:
   server-backed ITs cannot run on this machine (ports 2480-2482 are held locally), so writing one I cannot
   execute would be worse than not writing it. Deferred; noted below.
 
+### Cycle 2 - 12e9b668c
+
+- **Postgres bypassed the `ARITHMETIC`-before-`PARSING` precedence it documents.** Both execution arms caught
+  `CommandParsingException` first and hardcoded `42601`, so on that path the ordering in `ErrorCategory.of` was
+  dead: any failure arriving wrapped in a parsing exception reported as a syntax error. Latent today (the
+  Postgres path executes an already-parsed statement) but exactly the shape that made GraphQL need fixing in
+  this same PR. All four arms now route through `sqlStateFor`, which keeps genuine parse errors at `42601` via
+  the `PARSING` arm while letting a wrapped arithmetic, conflict or schema error win. Pinned by
+  `aParsingWrapperDoesNotHideTheRealFailure`.
+- **`isClientError()` had no production caller.** Dropped, along with its test, rather than left as an API that
+  reads as if it were in use.
+- **`NOT_FOUND` used `02000`.** SQLSTATE class 02 is a completion condition, not an error class. Changed to
+  `P0002` no_data_found, which carries the client-error verdict honestly.
+- **The GraphQL passthrough was narrowed, because the broad version regressed an HTTP status.** Review cycle 2
+  flagged that propagating the underlying exception changes what the HTTP handler sees. Checking rather than
+  acknowledging: `SchemaException` is *not* in that handler's ladder, so it falls to `catch (Throwable)` and
+  reports 500. The broad `ArcadeDBException` passthrough therefore took GraphQL's unknown-type case from 400 to
+  500 - a regression I introduced.
+
+  The obvious repair, an HTTP arm mapping `SchemaException` to 400, is **not** taken. The class is not purely a
+  caller error: `Dictionary`, `TransactionManager` and `TransactionContext` raise it for genuine server faults,
+  and issue #4122 is specifically an HTTP 500 `Error on updating dictionary for key '...'` on a follower.
+  Mapping the class to 400 would relabel a known server bug as the caller's fault, which is the mirror image of
+  the defect this PR fixes. It also needs two coordinated sites (the top-level arm and the auto-commit
+  `TransactionException` arm, since `POST /command` and `POST /query` wrap), in a handler whose behaviour is
+  pinned by several shipped issues - and the server ITs that would validate it cannot run on this machine.
+
+  So the passthrough covers only `CommandParsingException` and `CommandExecutionException`, both of which the
+  HTTP ladder already models. `SchemaException` keeps the status it always had, pinned by
+  `anUnknownTypeKeepsTheStatusItAlwaysHad` so the deliberate narrowness is not "tidied up" into a regression.
+  The HTTP gap is recorded under Deferred.
+
+  Consequence worth stating: a `CommandExecutionException` from a delegated statement now answers the same as
+  the identical statement issued directly (500), instead of being relabelled a 400 parse error. That is a status
+  change, and it is the consistent one.
+- **`SECURITY` javadoc** now names which `SecurityException` it targets (`java.lang`, raised by
+  `LocalDatabase.checkPermissionsOn*`) rather than the server's `ServerSecurityException`.
+
 ## Deferred
 
+- **`SchemaException` has no HTTP arm**, so `SELECT FROM NonExistentType` over `/query` or `/command` reports 500
+  today - for plain SQL as well, independently of this PR. Fixing it needs a decision this change should not make
+  unilaterally: the class mixes caller errors (~75% of throw sites: unknown type, bucket, property, index) with
+  genuine server faults (dictionary update failures, schema IO, issue #4122), and no discriminator exists short
+  of matching messages. Verified that nothing currently depends on the 500, and that no HTTP test covers
+  `SELECT FROM <nonexistent>` at all.
 - One IT per protocol asserting the SQLSTATE / MongoDB code actually reaches a driver over the wire. Redis
   already has this coverage via `RedisWTest`; Postgres and MongoDB are unit-tested at the helper level only.

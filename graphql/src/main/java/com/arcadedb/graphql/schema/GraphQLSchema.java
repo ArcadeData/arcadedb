@@ -19,7 +19,7 @@
 package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
@@ -184,11 +184,15 @@ public class GraphQLSchema {
 
       return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
 
-    } catch (final ArcadeDBException e) {
-      // A failure the engine already classified keeps that classification. Rewrapping every one of them as a
-      // parsing exception told the caller their GraphQL was malformed when the real cause was an arithmetic error,
-      // an unknown type or a constraint violation raised by the statement this query delegates to, and left the
-      // wire layers nothing to report a client-vs-server verdict from. See issue #5628.
+    } catch (final CommandParsingException | CommandExecutionException e) {
+      // An execution failure raised by the statement this query delegates to keeps the classification the engine
+      // gave it. Rewrapping it as a parsing exception reported a runtime error - an arithmetic error, or the
+      // NoSuchElementException #5219 covers - as a malformed document. See issue #5628.
+      //
+      // Deliberately narrower than ArcadeDBException: SchemaException is NOT passed through. It would reach the
+      // HTTP handler, which has no arm for it, as a 500 - and the class is not purely a caller error (Dictionary
+      // and TransactionManager raise it for genuine server faults, e.g. issue #4122), so it cannot simply be
+      // mapped to 400 either. Tracked as a follow-up rather than decided here.
       throw e;
     } catch (final Exception e) {
       if (queryName != null)

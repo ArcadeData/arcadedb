@@ -461,7 +461,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
@@ -560,7 +560,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
@@ -1577,7 +1577,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), sqlStateFor(e));
@@ -1770,7 +1770,7 @@ public class PostgresNetworkExecutor extends Thread {
       case RETRY -> "40001";          // serialization_failure - the code drivers auto-retry on
       case ARITHMETIC -> arithmeticSqlState(error);
       case DUPLICATED_KEY -> "23505"; // unique_violation
-      case NOT_FOUND -> "02000";      // no_data
+      case NOT_FOUND -> "P0002";      // no_data_found - class 02 is a completion condition, not an error
       case SCHEMA -> "42P01";         // undefined_table - a type is this database's table
       case SECURITY -> "42501";       // insufficient_privilege
       case VALIDATION -> "22023";     // invalid_parameter_value

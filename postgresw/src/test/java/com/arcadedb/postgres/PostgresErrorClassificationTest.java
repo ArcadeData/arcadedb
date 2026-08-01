@@ -95,13 +95,34 @@ class PostgresErrorClassificationTest {
   void theRemainingCategoriesGetTheirPostgresCodes() {
     assertThat(PostgresNetworkExecutor.sqlStateFor(new DuplicatedKeyException("idx", "k", new RID(1, 1))))
         .isEqualTo("23505");
-    assertThat(PostgresNetworkExecutor.sqlStateFor(new RecordNotFoundException("gone", new RID(1, 1)))).isEqualTo("02000");
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new RecordNotFoundException("gone", new RID(1, 1)))).isEqualTo("P0002");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new SchemaException("Type with name 'Nope' was not found"))).isEqualTo("42P01");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new SecurityException("denied"))).isEqualTo("42501");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new ValidationException("mandatory property"))).isEqualTo("22023");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new QueryNotIdempotentException("writes on a query"))).isEqualTo("22023");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new CommandParsingException("bad syntax"))).isEqualTo("42601");
     assertThat(PostgresNetworkExecutor.sqlStateFor(new TimeoutException("too slow"))).isEqualTo("57014");
+  }
+
+  @Test
+  void aParsingWrapperDoesNotHideTheRealFailure() {
+    // Both execution arms used to hardcode 42601 for CommandParsingException, which made the
+    // ARITHMETIC-before-PARSING ordering in ErrorCategory dead on this path: a query engine that wraps an
+    // execution failure as a parsing exception - as GraphQL did until this change - would have reported a
+    // division by zero as a syntax error. Routing the arm through sqlStateFor keeps genuine parse errors at
+    // 42601 while letting the real cause win.
+    assertThat(PostgresNetworkExecutor.sqlStateFor(
+        new CommandParsingException("Error on executing query", new ArithmeticErrorException("/ by zero"))))
+        .isEqualTo("22012");
+    assertThat(PostgresNetworkExecutor.sqlStateFor(
+        new CommandParsingException("Error on executing query", new ConcurrentModificationException("conflict"))))
+        .isEqualTo("40001");
+    assertThat(PostgresNetworkExecutor.sqlStateFor(
+        new CommandParsingException("Error on executing query", new SchemaException("Type 'Nope' was not found"))))
+        .isEqualTo("42P01");
+
+    // A parse error that is genuinely just a parse error keeps the code it always had.
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new CommandParsingException("unexpected token"))).isEqualTo("42601");
   }
 
   @Test

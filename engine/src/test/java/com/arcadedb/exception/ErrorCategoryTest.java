@@ -125,19 +125,4 @@ class ErrorCategoryTest {
 
     assertThat(ErrorCategory.of(a)).isEqualTo(ErrorCategory.SERVER);
   }
-
-  @Test
-  void onlyServerAndRetryAndTimeoutAreNotClientErrors() {
-    assertThat(ErrorCategory.SERVER.isClientError()).isFalse();
-    assertThat(ErrorCategory.RETRY.isClientError()).isFalse();
-    assertThat(ErrorCategory.TIMEOUT.isClientError()).isFalse();
-
-    assertThat(ErrorCategory.ARITHMETIC.isClientError()).isTrue();
-    assertThat(ErrorCategory.DUPLICATED_KEY.isClientError()).isTrue();
-    assertThat(ErrorCategory.NOT_FOUND.isClientError()).isTrue();
-    assertThat(ErrorCategory.SCHEMA.isClientError()).isTrue();
-    assertThat(ErrorCategory.SECURITY.isClientError()).isTrue();
-    assertThat(ErrorCategory.VALIDATION.isClientError()).isTrue();
-    assertThat(ErrorCategory.PARSING.isClientError()).isTrue();
-  }
 }

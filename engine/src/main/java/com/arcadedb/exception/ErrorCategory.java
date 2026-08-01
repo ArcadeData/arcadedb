@@ -61,7 +61,9 @@ public enum ErrorCategory {
   SCHEMA,
 
   /**
-   * The caller is not allowed to do this.
+   * The caller is not allowed to do this. Targets {@link java.lang.SecurityException}, which is what
+   * {@code LocalDatabase.checkPermissionsOn*} raises on a query-time permission denial - not the server's
+   * {@code ServerSecurityException}, which extends {@code ServerException} and never reaches these paths.
    */
   SECURITY,
 
@@ -123,14 +125,5 @@ public enum ErrorCategory {
     if (CauseChain.contains(error, TimeoutException.class))
       return TIMEOUT;
     return SERVER;
-  }
-
-  /**
-   * Whether the caller, rather than the server, has to change something for the request to succeed. {@link #RETRY}
-   * and {@link #TIMEOUT} are excluded: the same request repeated can succeed, so they are neither the caller's
-   * fault nor a permanent server fault.
-   */
-  public boolean isClientError() {
-    return this != SERVER && this != RETRY && this != TIMEOUT;
   }
 }
