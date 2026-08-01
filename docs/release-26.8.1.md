@@ -1599,4 +1599,52 @@ build indexes through the embedded API with a computed page size, check that the
 An index that already exists on disk is unaffected either way - the page size is read from the component file, not from
 a builder.
 
+## Deleting a vertex no longer loses an edge appended while the delete was running
+
+The two changes above closed this window from the removal side: a piece of an edge list that cannot be read is now a
+retryable conflict rather than "nothing to remove here". They could not close it from the *append* side, and the same
+corruption arrived from there.
+
+`DELETE VERTEX` is a read-modify-write over the whole edge list: collect every edge, disconnect each one from the
+vertex at its other end, drop the chunk records, delete the vertex record. Only the *write* half left an MVCC
+footprint. The collection walked the chain through a plain record lookup, which under `READ_COMMITTED` does not retain
+the pages it reads, while the removals and the chunk drain captured each page only later - at whatever version it had
+by then. An edge appended in between was therefore already part of the page the delete rewrote and then deleted: the
+commit-time version check compared the newer version against itself, found no conflict, and committed. The vertex was
+gone, the chunk holding the new edge was gone with it, and the edge record survived with a live `out` and an `in`
+naming a record that no longer exists. `check database` reports it as an invalid link.
+
+Nothing in the collection could have caught it: the edge did not exist when the walk ran. Measured on four hubs of a
+hundred edges each with six appender threads racing four deleter threads, a surviving edge appeared in roughly one
+round in three, and reproduced identically on the commit before #5680 - it is a pre-existing defect, not a regression
+from that fix.
+
+A vertex delete now pins, in its own transaction, everything its edge list can grow through, at the version it reads
+the list at:
+
+- **Every chunk page of the list**, not just the head. An appender resolves the head from its own handle of the
+  vertex, so a handle taken before a head flip appends into a chunk that is no longer the head but is still in the
+  chain. This costs nothing at the peak - the drain deletes every one of those chunks anyway, so their pages end up in
+  the transaction regardless; the pin only brings them in early enough to be worth something. On a promoted super-node
+  (#5156) the same applies to the stripe directory and to every chain of every generation.
+- **The vertex's own head pointers**, re-read through their page just before the record is deleted. An append that
+  finds the head chunk full writes no chunk at all: it creates a new one and records it in the vertex record, so the
+  chunk pins see nothing. If either head moved since the collection, the delete is refused.
+
+**Visible effect.** As with the two changes above, `vertex.delete()` / `DELETE VERTEX` can now raise a retryable
+`ConcurrentModificationException` where it previously "succeeded" while losing an edge, and the standard retry loops
+absorb it - the retry re-reads the list, finds the appended edge, and deletes it with the rest. Both checks are
+skipped under the internal `force` delete, which is unchanged: `force` means "this record is known broken, get it
+out", and the surviving references are the price its caller accepts.
+
+Two tolerances are deliberately preserved. A vertex whose own record buffer cannot be decoded has no head to compare,
+so the head check does not apply to it - failing there would make it undeletable again, which is what #4420 and #4432
+fixed. And under `force`, a pin that cannot complete still leaves a usable list behind, so the tolerant walk collects
+what it can and the chunk drain still runs.
+
+**Not addressed here.** `deleteVertex` still materialises every edge into a list before deleting any of them. That is
+unchanged behaviour and predates all of this; the two-phase shape exists precisely *because* the removals relink and
+delete chunks underneath the walk, so streaming it means walking a list while it is being restructured - the class of
+problem this whole series is about. It is tracked separately.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

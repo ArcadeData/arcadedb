@@ -86,6 +86,52 @@ public class EdgeLinkedList {
   }
 
   /**
+   * #5725: brings EVERY page of this list into the transaction, at the version the caller is about to read the
+   * list at, for a caller that is going to remove the whole list and then delete the vertex that owns it (today,
+   * {@code GraphEngine.deleteVertex}).
+   * <p>
+   * Without this the collection walk leaves no MVCC footprint at all - it reads the chunks through plain
+   * {@code lookupByRID}, which under READ_COMMITTED does not retain their pages - while the writes that follow
+   * capture each page only LATER, at whatever version it has by then. An edge appended between the walk and those
+   * writes is therefore already IN the page the removal rebuilds and the drain deletes: the commit-time check
+   * compares the newer version against itself, finds no conflict, and the vertex goes away with an edge it never
+   * collected. The edge record survives naming a vertex that no longer exists - the same silent graph corruption
+   * #5670/#5680 fixed from the removal side, arriving from the append side. This is the read-modify-write gap
+   * #5147 closed on the append path ({@code GraphEngine.anchorHeadChunkPage}), on the walk that removes.
+   * <p>
+   * Every chunk, not just the head: an appender resolves the head from its own handle of the vertex, so a handle
+   * that predates a head flip appends into a chunk that is no longer the head but is still in the chain. Anchoring
+   * the whole chain costs nothing at the peak either - {@link #deleteAll} deletes every one of these chunks, so
+   * their pages end up in the transaction regardless; this only brings them in EARLY ENOUGH to be worth something.
+   * <p>
+   * Reading through {@link #loadChunkForWrite} is what makes the anchor mean something: it anchors the page and
+   * then re-reads the chunk THROUGH it, so the {@code previous} pointer this walk follows comes from the version
+   * it just pinned rather than from one a concurrent commit may have replaced in between.
+   */
+  public void anchorForFullRemoval() {
+    lastSegment = anchorChain(lastSegment.getIdentity());
+  }
+
+  /**
+   * Anchors every page of the chunk chain starting at {@code headRID}, returning the head re-read through its
+   * anchored page. Shared with {@link StripedEdgeList}, which applies it to one stripe chain at a time.
+   * <p>
+   * The self-reference guard matches every other walk in this class: a chunk pointing at itself ends the chain
+   * instead of looping forever. A longer cycle would hang here exactly as it already hangs {@link #deleteAll},
+   * which walks the same chain immediately afterwards, so this adds no exposure that was not there.
+   */
+  protected final EdgeSegment anchorChain(final RID headRID) {
+    final EdgeSegment head = loadChunkForWrite(headRID);
+    EdgeSegment current = head;
+    while (true) {
+      final RID previousRID = current.getPreviousRID();
+      if (previousRID == null || previousRID.equals(current.getIdentity()))
+        return head;
+      current = loadChunkForWrite(previousRID);
+    }
+  }
+
+  /**
    * Same as {@link #edgeIterator(String...)} but yielding only the edges that reach the given
    * neighbour vertex.
    * <p>

@@ -308,6 +308,13 @@ class Issue5680VertexDeleteEdgeCollectionTest extends TestHelper {
    * fixture points at a hub, so once every hub is gone NO edge record may survive - a single ghost edge is exactly
    * the defect this issue is about. The retries must also be enough to absorb the contention: a delete that gives
    * up here would mean the strict read traded a silent loss for a workload that cannot make progress.
+   * <p>
+   * This test was originally scoped to the FIXTURE edges only - the ones already in the hub's list when the deleter
+   * started - because an edge an APPENDER committed into a hub being deleted could still outlive it through a
+   * separate window on the append path, reported as #5725. That window is closed (the delete now pins every page
+   * its list can grow through and re-reads the vertex's head pointers, so an append behind the collection is a
+   * retryable conflict), so the assertion below is the whole invariant again. The full append-side fixture, and the
+   * deterministic tests that pin the mechanism, live in {@code Issue5725GhostEdgeOnAppendRaceTest}.
    */
   @Test
   @Tag("slow")
@@ -403,32 +410,28 @@ class Issue5680VertexDeleteEdgeCollectionTest extends TestHelper {
           // The invariant this test owns: every edge that was IN the hub's list when the deleter started must be
           // gone with it. Those are exactly the fixture edges - the deleter's collection walk saw all of them, so a
           // survivor here is the collection having lost one, which is the defect this issue is about.
-          //
-          // Deliberately NOT "no LINK edge survives at all". An edge an APPENDER commits while its hub is being
-          // deleted can outlive that hub, and that is a separate pre-existing defect on the APPEND path (measured
-          // on this fixture: a surviving edge whose out vertex exists and whose in names the deleted hub). It
-          // reproduces identically with this fix reverted, it is nothing deleteVertex can prevent - the edge did
-          // not exist when the collection ran - and folding it in here would make this test fail for a reason it
-          // is not testing. Reported separately.
           for (final RID edge : fixtureEdges)
             assertThat(database.existsRecord(edge))
                 .as("round " + currentRound + ": edge " + edge + " must not outlive the hub that was deleting it")
                 .isFalse();
+          // And, since #5725, the same for an edge an APPENDER committed into a hub being deleted: it did not
+          // exist when the collection ran, so nothing in the collection could have caught it, but the delete now
+          // conflicts on the pages that append landed on and retries instead of committing over it.
+          assertThat(database.countType("LINK", false))
+              .as("round " + currentRound + ": edges outliving the hub they pointed at").isEqualTo(0L);
         });
       }
 
       // Appends really did race the deletes rather than all losing to a hub that was already gone: if none of them
       // ever landed, the rounds above only measured a plain sequential delete.
       assertThat(appendsLanded.get()).as("appends committed against a hub still being deleted").isGreaterThan(0L);
-
-      // No assertIntegrityClean() here, for the same reason as above: an edge an appender commits while its hub is
-      // being deleted survives it and CHECK DATABASE reports that (correctly) as a broken link, so this fixture
-      // cannot be expected to end clean until the append-side defect is fixed. The integrity of what THIS fix
-      // governs is asserted on the non-racing fixtures, by anOrdinaryDeleteOfAHealthyVertexRemovesEveryEdgeOnBothSides
-      // and aForcedDeleteOfAHealthyVertexStillDisconnectsItsNeighbours.
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
     }
+
+    // Since #5725 this fixture ends clean: no edge survives its hub from either side of the race, so there is no
+    // broken link left for CHECK DATABASE to report.
+    assertIntegrityClean();
   }
 
   /** Blocks until the round starts; false means the wait was interrupted and the worker must give up. */

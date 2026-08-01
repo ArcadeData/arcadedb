@@ -53,6 +53,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.logging.Level;
 
 /**
@@ -499,10 +500,20 @@ public class GraphEngine {
    * Anchoring here makes the conflict visible so the transaction retries and re-reads the current chunk.
    */
   private void anchorHeadChunkPage(final RID headChunkRID) {
+    anchorRecordPage(headChunkRID);
+  }
+
+  /**
+   * Brings a record's page into the transaction at its current version, so a write this transaction makes to that
+   * page later is version-checked against the state it decided on rather than against whatever a concurrent commit
+   * left there in the meantime. {@link #anchorHeadChunkPage} is the edge-list case (#5147);
+   * {@link #checkEdgeListHeadsUnchanged} uses it on the vertex record itself (#5725).
+   */
+  private void anchorRecordPage(final RID rid) {
     try {
-      ((LocalBucket) database.getSchema().getBucketById(headChunkRID.getBucketId())).fetchPageInTransaction(headChunkRID);
+      ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Error on loading edge chunk page " + headChunkRID, e);
+      throw new DatabaseOperationException("Error on loading page of record " + rid, e);
     }
   }
 
@@ -688,12 +699,24 @@ public class GraphEngine {
    * Draining the chunk records at the end stays best-effort in BOTH modes on purpose: by then every collected edge
    * has been disconnected from both endpoints and the vertex record is about to go, so a chunk that cannot be read
    * there costs orphaned chunk records - garbage {@code CHECK DATABASE} reclaims - never a surviving reference.
+   * <p>
+   * #5725 closes the other half of the same defect, the one #5680 could not reach: an edge that did not EXIST when
+   * the collection walk ran, because a concurrent transaction appended it a moment later. Strictness in the read
+   * cannot collect what is not there; what makes it safe is that the delete now leaves an MVCC footprint on
+   * everything the list could grow through, so an append that raced it turns the delete into a retry rather than
+   * into a vertex deleted with an uncollected edge still pointing at it. That is two checks, both skipped under
+   * {@code force}: {@link EdgeLinkedList#anchorForFullRemoval()} pins every page of the list at the version the
+   * walk reads it at, and {@link #checkEdgeListHeadsUnchanged} re-reads the vertex's head pointers, for the append
+   * that lands in a BRAND NEW chunk and so touches none of those pages.
    */
   public void deleteVertex(final VertexInternal vertex, final boolean force) {
     // #5660: the edge-list heads are pointers INSIDE the vertex record, so they must be read from the instance this
     // transaction holds - a handle obtained before an append in the same transaction still names the previous head
     // and would hide the newest edges, which is the same "collect nothing, delete anyway" defect by another route.
     final VertexInternal mostUpdatedVertex = getMostUpdatedVertex(vertex);
+
+    // The heads this delete is about to collect from, kept for checkEdgeListHeadsUnchanged below.
+    final RID[] collectedHeads = readEdgeListHeads(mostUpdatedVertex);
 
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
     final List<Identifiable> edgesToDelete = new ArrayList<>();
@@ -722,14 +745,109 @@ public class GraphEngine {
     if (hadInList)
       deleteRemainingChunks(mostUpdatedVertex, Vertex.DIRECTION.IN);
 
+    if (!force && collectedHeads != null)
+      checkEdgeListHeadsUnchanged(mostUpdatedVertex, collectedHeads[0], collectedHeads[1]);
+
     // DELETE VERTEX RECORD
     mostUpdatedVertex.getDatabase().getSchema().getBucketById(mostUpdatedVertex.getIdentity().getBucketId())
         .deleteRecord(mostUpdatedVertex.getIdentity(), force);
   }
 
   /**
+   * The {OUT, IN} edge-list head pointers of a vertex about to be deleted, or {@code null} if they cannot be read.
+   * <p>
+   * Purely ADVISORY, and the blanket catch is the point rather than an oversight. This runs FIRST, before
+   * {@link #collectEdgesToDelete}, only to capture a value for the optional {@link #checkEdgeListHeadsUnchanged}
+   * at the end - so it must not be what decides whether the delete proceeds. On a not-yet-materialised
+   * {@code ImmutableVertex} the head read lazy-loads the record, which puts every way that load can fail in front
+   * of a delete that used to meet them further in, where they are each already owned and answered:
+   * <ul>
+   *   <li>a corrupt or truncated buffer ({@link SerializationException} and the rest of the decode family) is
+   *   tolerated by {@code collectEdgesToDelete}, because such a vertex reaches here with {@code force == false} and
+   *   failing would make it undeletable - the complaint #4420 and #4432 fixed;</li>
+   *   <li>a vanished record, or a multi-page body a concurrent commit is rewriting, is a retryable conflict
+   *   {@link #getEdgeHeadChunkForWrite} raises as a {@link ConcurrentModificationException} - and one that
+   *   {@code force} then absorbs, which is how {@code LocalDatabase.deleteRecordNoLock} deletes a record whose own
+   *   chunk chain is broken.</li>
+   * </ul>
+   * Re-raising any of them from here would replace a handled outcome with a raw failure the force policy never
+   * gets to see. Nothing is hidden by swallowing them either: the very next thing the delete does is read the same
+   * heads again through the method that owns the answer.
+   */
+  private static RID[] readEdgeListHeads(final VertexInternal vertex) {
+    try {
+      return new RID[] { vertex.getOutEdgesHeadChunk(), vertex.getInEdgesHeadChunk() };
+    } catch (final RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
+   * #5725: the second half of "the list must not grow behind this delete", covering the growth that does NOT touch
+   * any page {@link EdgeLinkedList#anchorForFullRemoval()} pinned.
+   * <p>
+   * An append that finds the head chunk FULL does not write that chunk at all: it creates a new one and records it
+   * as the new head IN THE VERTEX RECORD (or, on a super-node promotion, replaces the head with a stripe
+   * directory). The pinned chunk pages see nothing, this delete walks the chain hanging off the head it read at
+   * the start, misses the whole new chunk, and then deletes the vertex - leaving the appended edge naming a record
+   * that is gone. So the vertex record itself is re-read here, THROUGH its anchored page, and the delete is
+   * refused as a retryable conflict if either head moved since the collection.
+   * <p>
+   * The anchor is what makes the check binding rather than advisory: the page it pins is the page the record
+   * delete right after this writes, so a flip that commits between the two fails the commit-time version check
+   * instead of slipping in behind the comparison. Doing it HERE, at the end, rather than up front keeps that
+   * window to a few instructions - pinning the vertex page for the whole collection would put every unrelated
+   * record sharing that bucket page in conflict with the delete for its entire duration.
+   * <p>
+   * A vertex this transaction has WRITTEN itself needs no check: its own copy is authoritative, and a concurrent
+   * commit over it cannot pass the version check on that write.
+   */
+  private void checkEdgeListHeadsUnchanged(final VertexInternal vertex, final RID collectedOutHead,
+      final RID collectedInHead) {
+    final RID vertexRID = vertex.getIdentity();
+
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || tx.getWrittenRecord(vertexRID) != null)
+      return;
+
+    anchorRecordPage(vertexRID);
+
+    final VertexInternal committed;
+    try {
+      // Read AFTER the anchor, so the heads compared here are the ones on the pinned page: a read-only lookup is
+      // never tx-cached, so this goes through that page rather than through a copy taken before it.
+      committed = (VertexInternal) database.lookupByRID(vertexRID, true);
+    } catch (final RecordNotFoundException e) {
+      // The vertex is already gone: a concurrent transaction deleted it while this one was disconnecting its
+      // edges. Retry, and let the re-read decide there is nothing left to delete.
+      throw new ConcurrentModificationException(
+          "Vertex " + vertexRID + " was deleted by a concurrent transaction while its edges were being removed");
+    } catch (final ClassCastException e) {
+      // The RID no longer names a vertex: the slot was reused after a concurrent delete. Same answer as above.
+      throw new ConcurrentModificationException(
+          "Vertex " + vertexRID + " no longer names a vertex record (concurrent commit in flight)");
+    }
+
+    final RID[] committedHeads = readEdgeListHeads(committed);
+    if (committedHeads == null)
+      // The committed buffer cannot be decoded: there is nothing to compare against, and refusing here would make
+      // a corrupt vertex undeletable for the reason spelled out on readEdgeListHeads.
+      return;
+
+    final RID committedOutHead = committedHeads[0];
+    final RID committedInHead = committedHeads[1];
+
+    if (!Objects.equals(collectedOutHead, committedOutHead) || !Objects.equals(collectedInHead, committedInHead))
+      throw new ConcurrentModificationException(
+          "Edge list head of vertex " + vertexRID + " changed while it was being deleted (OUT " + collectedOutHead
+              + " -> " + committedOutHead + ", IN " + collectedInHead + " -> " + committedInHead
+              + "): a concurrent transaction appended an edge this delete did not collect");
+  }
+
+  /**
    * Collects into {@code edgesToDelete} every edge reachable from {@code vertex} in {@code direction}, reading the
-   * list the way a removal must: the head through {@link #getEdgeHeadChunkForWrite}, the walk through
+   * list the way a removal must: the head through {@link #getEdgeHeadChunkForWrite}, every page of it pinned by
+   * {@link EdgeLinkedList#anchorForFullRemoval()} (#5725), the walk through
    * {@link EdgeLinkedList#edgeIteratorForRemoval} (which, on a promoted super-node, refuses to skip a stripe chain
    * it cannot load), and the chain hops through {@link #hasNextEdgeToDelete}. See {@link #deleteVertex} for why.
    * Only {@code force} turns a conflict into a logged warning.
@@ -754,6 +872,16 @@ public class GraphEngine {
     try {
       edges = getEdgeHeadChunkForWrite(vertex, direction);
       if (edges != null) {
+        // #5725: pin every page this list can grow through BEFORE walking it, so an edge appended behind the walk
+        // fails this transaction's commit-time version check instead of being deleted along with the chunk that
+        // holds it. Deliberately not folded into getEdgeHeadChunkForWrite: deleteEdge calls that once per endpoint
+        // per edge, and pinning a whole neighbour list there would retain a page copy per visited chunk for every
+        // edge removed. Pinning earns its cost exactly where the transaction writes those pages anyway - here.
+        //
+        // AFTER the assignment above, not before it: a pin that fails under force must still leave a usable list
+        // behind, so the tolerant walk collects what it can and the chunk drain still runs.
+        edges.anchorForFullRemoval();
+
         final Iterator<Edge> iterator = edges.edgeIteratorForRemoval();
 
         while (hasNextEdgeToDelete(iterator, vertex, direction)) {
