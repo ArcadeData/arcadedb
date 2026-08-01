@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.exception.TimeoutException;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #5728: a schema change executed while ANOTHER thread holds the
@@ -122,6 +124,40 @@ class Issue5728SchemaChangeDuringRecordingSessionIT extends BaseRaftHATest {
               session and was applied on the leader only, replicating nothing (#5728)""", serverIndex, VERTEX_TYPE)
           .isTrue();
     });
+  }
+
+  /**
+   * The other half of the contract: when the contending session outlives the wait, the schema change must
+   * fail loudly rather than fall back to the local-only path that diverged the cluster. Without this the
+   * timeout branch is never executed, so a fix that silently swallowed the expiry would still look green.
+   */
+  @Test
+  void schemaChangeFailsRatherThanDivergingWhenTheSessionIsNeverReleased() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final DatabaseInternal leaderDb = (DatabaseInternal) getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.async().waitCompletion();
+
+    final FileManager fileManager = leaderDb.getEmbedded().getFileManager();
+    assertThat(acquireRecordingSession(fileManager))
+        .as("the test must own the recording session, otherwise it is not reproducing the contended case")
+        .isTrue();
+
+    // Held for the whole attempt: the wait is bounded by HA_QUORUM_TIMEOUT, so the DDL gives up on its own.
+    try {
+      assertThatThrownBy(() ->
+          leaderDb.getSchema().buildVertexType().withName(VERTEX_TYPE + "Timeout").withTotalBuckets(1).create())
+          .as("a schema change that cannot claim the recording session must throw, never apply leader-locally")
+          .isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("waiting for the file recording session");
+    } finally {
+      fileManager.stopRecordingChanges();
+    }
+
+    assertThat(leaderDb.getSchema().existsType(VERTEX_TYPE + "Timeout"))
+        .as("the refused schema change must not have been applied on the leader either")
+        .isFalse();
   }
 
   /**

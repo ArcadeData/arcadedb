@@ -1441,12 +1441,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // On the leader, record file changes and send them via Raft immediately
     // (like the legacy HA system) so replicas have the files before WAL pages arrive
-    if (!acquireRecordingSession()) {
-      final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
-      throw new TimeoutException(
-          "Timeout of " + timeout + "ms waiting for the file recording session to replicate a schema change on database '"
-              + getName() + "'");
-    }
+    acquireRecordingSession();
 
     final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
 
@@ -1457,6 +1452,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // Clear thread-local WAL buffers so any commits inside the callback are captured fresh,
     // and mark THIS thread as the schema-commit thread so commit() buffers rather than replicates.
+    // The flag is saved and restored rather than removed on the way out: it is static, so a session on
+    // another database opened from inside an outer callback would otherwise clear the outer frame's mark
+    // and leave the rest of that callback unable to recognize its own nesting.
+    final Boolean outerSchemaCommitThread = isSchemaCommitThread.get();
     schemaWalBuffer.get().clear();
     schemaBucketDeltaBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
@@ -1510,7 +1509,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
-      isSchemaCommitThread.remove();
+      if (outerSchemaCommitThread == null)
+        isSchemaCommitThread.remove();
+      else
+        isSchemaCommitThread.set(outerSchemaCommitThread);
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
@@ -1667,11 +1669,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Raft round trip completes, which is why the divergence only appeared under load. Waiting is the only
    * correct answer here: unlike a compaction, a schema change cannot be deferred and rescheduled.
    *
-   * @return true when this thread owns the session, false if it gave up waiting
+   * @throws TimeoutException if the session could not be claimed, so the caller fails loudly instead of
+   *                          diverging. The interrupted case reports itself as such rather than claiming
+   *                          an elapsed timeout that never elapsed.
    */
-  private boolean acquireRecordingSession() {
+  private void acquireRecordingSession() {
     if (proxied.getFileManager().startRecordingChanges())
-      return true;
+      return;
 
     final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     final long deadline = System.currentTimeMillis() + timeout;
@@ -1680,12 +1684,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         Thread.sleep(2);
       } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
-        return false;
+        throw new TimeoutException("Interrupted while waiting for the file recording session to replicate a schema change on database '"
+            + getName() + "'");
       }
       if (proxied.getFileManager().startRecordingChanges())
-        return true;
+        return;
     }
-    return false;
+    throw new TimeoutException("Timeout of " + timeout
+        + "ms waiting for the file recording session to replicate a schema change on database '" + getName() + "'");
   }
 
   private void waitForActiveRecordingSession() {
