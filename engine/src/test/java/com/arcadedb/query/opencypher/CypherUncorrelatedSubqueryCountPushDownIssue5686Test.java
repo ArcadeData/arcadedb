@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CollectExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
+import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
@@ -58,7 +59,6 @@ import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
-import com.arcadedb.query.opencypher.parser.CypherReferencedVariables;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -445,6 +445,12 @@ class CypherUncorrelatedSubqueryCountPushDownIssue5686Test extends TestHelper {
    * Whether {@code type} holds an expression, a predicate or a pattern anywhere in its fields - directly, inside a
    * collection, or through a helper of the AST such as {@code CaseAlternative}. A type that holds none is a leaf and
    * needs no arm on the walker.
+   * <p>
+   * It reads declared types, so an expression stashed in a raw {@code Object} field is invisible to it and the type
+   * would be taken for a leaf. That is the one blind spot in this guard. The single place the AST does that today -
+   * inline pattern properties, held as {@code Map<String, Object>} - the collector refuses to reason about at all
+   * ({@code getPropertiesParameterName} and the explicit incompleteness in {@code visitPattern}), so nothing
+   * currently relies on the gap being closed.
    */
   private static boolean nestsAnExpression(final Class<?> type, final Set<Class<?>> visited) {
     if (!visited.add(type))

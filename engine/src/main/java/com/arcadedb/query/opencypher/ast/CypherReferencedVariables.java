@@ -16,56 +16,9 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.opencypher.parser;
+package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.query.opencypher.ast.AllReduceExpression;
-import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
-import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
-import com.arcadedb.query.opencypher.ast.BooleanExpression;
-import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
-import com.arcadedb.query.opencypher.ast.CaseExpression;
-import com.arcadedb.query.opencypher.ast.ClauseEntry;
-import com.arcadedb.query.opencypher.ast.CollectExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
-import com.arcadedb.query.opencypher.ast.CountExpression;
-import com.arcadedb.query.opencypher.ast.CypherStatement;
-import com.arcadedb.query.opencypher.ast.ExistsExpression;
-import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
-import com.arcadedb.query.opencypher.ast.InExpression;
-import com.arcadedb.query.opencypher.ast.IsNullExpression;
-import com.arcadedb.query.opencypher.ast.IsTypedExpression;
-import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
-import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
-import com.arcadedb.query.opencypher.ast.ListExpression;
-import com.arcadedb.query.opencypher.ast.ListIndexExpression;
-import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
-import com.arcadedb.query.opencypher.ast.ListSliceExpression;
-import com.arcadedb.query.opencypher.ast.LiteralExpression;
-import com.arcadedb.query.opencypher.ast.LogicalExpression;
-import com.arcadedb.query.opencypher.ast.MapExpression;
-import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
-import com.arcadedb.query.opencypher.ast.MatchClause;
-import com.arcadedb.query.opencypher.ast.NodePattern;
-import com.arcadedb.query.opencypher.ast.OrderByClause;
-import com.arcadedb.query.opencypher.ast.ParameterExpression;
-import com.arcadedb.query.opencypher.ast.PathPattern;
-import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
-import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
-import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
-import com.arcadedb.query.opencypher.ast.ReduceExpression;
-import com.arcadedb.query.opencypher.ast.RegexExpression;
-import com.arcadedb.query.opencypher.ast.RelationshipPattern;
-import com.arcadedb.query.opencypher.ast.ReturnClause;
-import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
-import com.arcadedb.query.opencypher.ast.StarExpression;
-import com.arcadedb.query.opencypher.ast.StringMatchExpression;
-import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
-import com.arcadedb.query.opencypher.ast.UnionStatement;
-import com.arcadedb.query.opencypher.ast.UnwindClause;
-import com.arcadedb.query.opencypher.ast.VariableExpression;
-import com.arcadedb.query.opencypher.ast.WithClause;
+import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -99,6 +52,11 @@ import java.util.Set;
  * declines - {@code RETURN *}. So a statement they would accept is always one this collector models. Nothing in the
  * code ties the two together, so {@code CypherUncorrelatedSubqueryCountPushDownIssue5686Test} asserts it rather than
  * assuming it.
+ * <p>
+ * It lives beside the AST it analyses, and beside {@link CypherStatement#getReferencedVariables()}, which returns it
+ * and memoizes it - so no statement type has to name something outside this package to state its own contract. The
+ * one thing it reaches for is {@link CypherExpressionWalker}, a traversal over these same nodes that happens to be
+ * filed under the parser that first needed it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

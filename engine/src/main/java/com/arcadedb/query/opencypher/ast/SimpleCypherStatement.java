@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.query.opencypher.parser.CypherReferencedVariables;
-
 import java.util.ArrayList;
 import java.util.List;
 
