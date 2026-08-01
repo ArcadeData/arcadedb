@@ -72,6 +72,24 @@ Worth a follow-up in its own right - it is the same 500-for-a-client-mistake sha
 removed one case of - but it is a sweep over ~80 implementations' argument extraction rather than a change to
 the `Procedure` abstraction, so it is deliberately not bundled here.
 
+A second gap sits on the **function** side, which #5602 was meant to have closed: seven functions still hand-write
+their own count check and raise `CommandExecutionException` (a 500) with the pre-#5602 wording, bypassing
+`Function.checkArity` entirely.
+
+| File | Message |
+| --- | --- |
+| `function/coll/CollSort.java:57` | `coll.sort() requires exactly 1 argument` |
+| `function/coll/CollMin.java:56` | `coll.min() requires exactly 1 argument` |
+| `function/coll/CollMax.java:56` | `coll.max() requires exactly 1 argument` |
+| `function/coll/CollDistinct.java:58` | `coll.distinct() requires exactly 1 argument` |
+| `function/coll/CollIndexOf.java:55` | `coll.indexOf() requires exactly 2 arguments` |
+| `function/coll/CollInsert.java:56` | `coll.insert() requires exactly 3 arguments (list, index, value)` |
+| `function/sql/graph/SQLFunctionCypherRID.java:47` | `cypherRID() requires exactly one argument: the numeric Cypher id` |
+
+Each is a one-line replacement with `checkArity(args)` reading the bounds the function already declares, so it is
+a small and self-contained follow-up - but it is function-side work, and folding it in here would make this PR
+about something other than what #5627 asks.
+
 ### Why "Procedure", not "Function"
 
 `FunctionArity.message` hard-codes the word `Function`. Reusing it verbatim would tell a caller that
