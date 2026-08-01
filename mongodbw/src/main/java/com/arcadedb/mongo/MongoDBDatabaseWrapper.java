@@ -218,6 +218,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * The classification itself lives in {@link ErrorCategory} so every wire protocol answers it the same way; only
    * the translation into MongoDB's error codes is here. The categories MongoDB has no code for keep the uncoded
    * exception they already had.
+   * <p>
+   * WriteConflict, NamespaceNotFound, Unauthorized and MaxTimeMSExpired are given as literals because the bundled
+   * {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
    */
   static MongoServerException wireException(final String message, final Exception e) {
     return switch (ErrorCategory.of(e)) {

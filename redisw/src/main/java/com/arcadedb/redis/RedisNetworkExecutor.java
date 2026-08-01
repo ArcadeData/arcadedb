@@ -239,6 +239,10 @@ public class RedisNetworkExecutor extends Thread {
    * The classification itself lives in {@link ErrorCategory} so every wire protocol answers it the same way. RESP
    * has no vocabulary for the client-error categories Postgres and Bolt distinguish, so they all keep Redis'
    * generic {@code ERR}.
+   * <p>
+   * {@code TRYAGAIN} is the closest RESP2 offers, but in real Redis it is a cluster-mode error, so several client
+   * libraries will not auto-retry on it. The retry hint is therefore weaker here than Postgres' {@code 40001} or
+   * Bolt's transient status - it is the best signal the protocol has, not an equivalent one.
    */
   static String respErrorPrefix(final Throwable error) {
     return switch (ErrorCategory.of(error)) {

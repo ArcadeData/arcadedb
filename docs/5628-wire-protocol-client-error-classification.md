@@ -141,6 +141,25 @@ Points assessed and answered rather than changed:
 - **`SECURITY` javadoc** now names which `SecurityException` it targets (`java.lang`, raised by
   `LocalDatabase.checkPermissionsOn*`) rather than the server's `ServerSecurityException`.
 
+### Cycle 3 - b5385847c
+
+Nothing blocking; four points, all answered in comments rather than behaviour:
+
+- **Postgres message/SQLSTATE can diverge.** The `CommandParsingException` arm still says "Syntax error" while the
+  code now comes from `sqlStateFor`. Today only genuine parse failures reach it, so they agree; the assumption is
+  now pinned in a comment rather than left implicit.
+- **`IllegalArgumentException -> VALIDATION` now applies to every protocol, not just HTTP.** Recorded in the
+  javadoc as the conscious trade it is: an internal invariant violation can reach a MongoDB client as `BadValue`.
+- **Redis `TRYAGAIN` is a weaker retry hint** than Postgres `40001` or Bolt's transient status - it is a
+  cluster-mode error in real Redis and not every client auto-retries on it. Noted; RESP2 offers nothing better.
+- **MongoDB's four literal codes** are literals because the bundled `de.bwaldvogel` `ErrorCode` enum does not
+  define them. Verified against the bundled sources and noted.
+
+The suggestion to collapse `ErrorCategory.of` into a single cause-chain walk was **not** taken, because it is not
+equivalent: classification is by category priority, not by which type the walk meets first. A chain whose
+`NeedRetryException` sits below an `ArithmeticErrorException` must still answer `RETRY`. Now pinned by
+`categoryPriorityBeatsPositionInTheChain` so the claim in the javadoc has a test behind it.
+
 ## Deferred
 
 - **`SchemaException` has no HTTP arm**, so `SELECT FROM NonExistentType` over `/query` or `/command` reports 500

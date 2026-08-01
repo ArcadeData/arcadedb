@@ -101,7 +101,15 @@ public enum ErrorCategory {
    * {@link IllegalArgumentException} is the one entry that is not self-evidently the caller's fault: the engine
    * raises it both for bad input and for internal invariant violations, so classifying it as {@link #VALIDATION}
    * can label a server bug a client error. It is mapped anyway because the HTTP handler has answered it with 400
-   * since long before this enum, and having the two disagree would be worse than either verdict.
+   * since long before this enum, and having the two disagree would be worse than either verdict. Note that this
+   * now decides the answer on every wire protocol, not just HTTP: an internal invariant violation reaches a
+   * MongoDB client as {@code BadValue} and a Postgres one as {@code 22023}. A conscious trade, not a free one.
+   * <p>
+   * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
+   * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
+   * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
+   * to act on. A single walk would return whichever type happened to appear first. The repeated walks cost
+   * nothing worth reclaiming - they run only on a failure path, and each is capped by {@link CauseChain}.
    */
   public static ErrorCategory of(final Throwable error) {
     if (CauseChain.contains(error, NeedRetryException.class))

@@ -66,6 +66,18 @@ class ErrorCategoryTest {
   }
 
   @Test
+  void categoryPriorityBeatsPositionInTheChain() {
+    // The conflict sits BELOW the arithmetic error here, the reverse of the case above. Classification is by
+    // category priority, not by which type the walk reaches first, so the answer must not change - which is also
+    // why ErrorCategory.of walks the chain once per category rather than testing every type per frame.
+    final Throwable retryDeeper = new ArithmeticErrorException("long overflow", new LockTimeoutException("lock timeout"));
+    final Throwable retryOuter = new LockTimeoutException("lock timeout", new ArithmeticErrorException("long overflow"));
+
+    assertThat(ErrorCategory.of(retryDeeper)).isEqualTo(ErrorCategory.RETRY);
+    assertThat(ErrorCategory.of(retryOuter)).isEqualTo(ErrorCategory.RETRY);
+  }
+
+  @Test
   void retryableConflictsAreTheirOwnCategory() {
     assertThat(ErrorCategory.of(new ConcurrentModificationException("conflict"))).isEqualTo(ErrorCategory.RETRY);
     assertThat(ErrorCategory.of(new LockTimeoutException("lock"))).isEqualTo(ErrorCategory.RETRY);

@@ -460,6 +460,10 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
     } catch (final CommandParsingException e) {
+      // The "Syntax error" wording assumes only genuine parse failures reach this arm, which holds because this
+      // path runs an already-parsed statement and execution failures are CommandExecutionException. If a
+      // CommandParsingException ever wraps a non-parse cause here, sqlStateFor reports that cause - correctly, and
+      // clients branch on the SQLSTATE - while this text would still read "Syntax error".
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
@@ -559,6 +563,7 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final CommandParsingException e) {
+      // See the note on the same arm in executeCommand about the "Syntax error" wording.
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
