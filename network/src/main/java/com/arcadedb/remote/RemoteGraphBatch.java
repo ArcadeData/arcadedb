@@ -369,7 +369,12 @@ public class RemoteGraphBatch implements AutoCloseable {
       return this;
     }
 
-    /** If true, property-less edges are stored as light edges. Default: false. */
+    /**
+     * If true, property-less edges are stored as light edges. Default: false.
+     *
+     * @deprecated Declare {@code LIGHTWEIGHT} on the edge type instead.
+     */
+    @Deprecated
     public Builder withLightEdges(final boolean lightEdges) {
       queryParams.put("lightEdges", String.valueOf(lightEdges));
       return this;

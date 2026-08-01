@@ -1474,4 +1474,49 @@ One more silent-loss route closed with it: the collection now reads the edge-lis
 running transaction holds. A handle obtained before an edge was appended in the same transaction still named the
 previous head, so the newest edges were invisible to the walk - and, once again, the vertex was deleted anyway.
 
+## A `HASH` index can key on a `LINK`, and an unsupported key type is refused at creation
+
+`CREATE INDEX ON INITIATED (`@out`, `@in`) UNIQUE_HASH` - the structural way to enforce edge de-duplication - was
+accepted, and then every insert failed:
+
+```
+com.arcadedb.index.IndexException: Unsupported key type for hash index 'INITIATED_0_...' (fileId=5): 14 (0x0E) while
+parsing entry at content offset 11. Loaded key types=[14(0x0E)=INVALID, 14(0x0E)=INVALID]. This means the index
+metadata or a bucket page is corrupted; rebuild the index (DROP and recreate it).
+```
+
+A `LINK` (and therefore an edge type's `@out`/`@in`) encodes as `TYPE_RID`, which the hash bucket's key-size, compare
+and validation paths did not recognise: only `TYPE_COMPRESSED_RID` was handled, so every key-length computation over
+such an entry fell through to the "corrupted" branch. Endpoint-keyed de-duplication was therefore `LSM_TREE`-only, and
+the failure said nothing about it.
+
+`LINK` keys are now stored the same way the bucket already stores its entry values - as varint-compressed RIDs. That
+was the cheaper of the two fixes to make correct: the fixed 4+8 byte `TYPE_RID` form costs 12 bytes per key column,
+against 2-7 for the varint form, so on the composite `(@out, @in)` key that motivates such an index it is roughly half
+the key bytes, and half the pages. Both encodings are deterministic and injective, so hashing and key comparison are
+unaffected. The metadata page keeps recording the schema type, so the on-disk format is unchanged and
+`getKeyTypes()`/`getBinaryKeyTypes()` still report `LINK`/`TYPE_RID` - the compression is internal to the bucket.
+
+The second half of the report was the message itself. Nothing was corrupt: the index had never been able to hold that
+key type, so "rebuild the index (DROP and recreate it)" pointed at a remedy that could not work and implied data loss
+that had not happened. A key type a hash index cannot encode is now refused when the index is created, before any file
+exists, naming the type and the supported ones:
+
+```
+Cannot create index 'Doc_0_...' of type HASH because the key type LIST cannot be used as a HASH index key.
+Supported key types are: BOOLEAN, INTEGER, SHORT, LONG, FLOAT, DOUBLE, DATETIME, STRING, BINARY, LINK, BYTE, DATE,
+DECIMAL, DATETIME_MICROS, DATETIME_NANOS, DATETIME_SECOND. Create the index as LSM_TREE instead
+```
+
+The runtime error that remains - reachable only from a damaged metadata page, or an index created before that check -
+now names the key column, states that no record data is lost, and distinguishes the two causes instead of asserting
+corruption.
+
+**Downgrade note.** Nothing needs migrating on upgrade: the metadata page records the same byte it always did, and a
+`LINK` HASH index created before this release cannot hold data anyway - it failed on the first insert - so an existing
+one simply starts working. The compatibility runs one way only, though. A `LINK` HASH index created *with* this
+release is not readable by an earlier build: the old loader does not recognise `TYPE_RID` as a key type and flags the
+metadata page as corrupt. The database still opens and every other index is unaffected, but that one index has to be
+dropped before going back. `LSM_TREE` indexes on the same properties are unaffected in both directions.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

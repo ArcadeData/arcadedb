@@ -81,6 +81,7 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
+  @Deprecated
   public synchronized ImmutableLightEdge newLightEdge(String edgeType, Identifiable toVertex) {
     return delegate.newLightEdge(edgeType, toVertex);
   }

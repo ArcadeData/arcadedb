@@ -33,8 +33,16 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   private final RID out;
   private final RID in;
 
-  public ImmutableLightEdge(final Database graph, final DocumentType type, final RID edgeRID, final RID out, final RID in) {
-    super(graph, type, edgeRID, null);
+  /**
+   * Builds a lightweight edge over the endpoints it connects. The identity is derived here rather than supplied by the
+   * caller so that every construction site gets a {@link LightEdgeRID} - a caller-supplied {@code #bucket:-1} marker
+   * would be shared by every lightweight edge of the type and would collapse them all into one in any dedup set.
+   *
+   * @param edgeTypeBucketId first bucket of the edge type, the tag the edge-list chunk stores to name the type
+   */
+  public ImmutableLightEdge(final Database graph, final DocumentType type, final int edgeTypeBucketId, final RID out,
+                            final RID in) {
+    super(graph, type, new LightEdgeRID(graph, edgeTypeBucketId, out, in), null);
     this.out = out;
     this.in = in;
   }

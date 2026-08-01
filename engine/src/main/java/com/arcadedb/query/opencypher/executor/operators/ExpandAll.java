@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.RidHashSet;
+import com.arcadedb.graph.EdgeIdentitySet;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -112,7 +112,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
       private Iterator<Vertex> vertexIterator = null;
       // Cached set of edge RIDs already bound by same-clause preceding rel vars in
       // the current input row. Computed once per input row, queried per edge.
-      private RidHashSet currentInputUsedEdgeRids = null;
+      private EdgeIdentitySet currentInputUsedEdgeRids = null;
       private Set<RID> emittedSelfLoops = null; // lazily created for a source vertex that has self-loops
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
@@ -292,15 +292,15 @@ public class ExpandAll extends AbstractPhysicalOperator {
    * in the input row. Returns null when no relevant binding is present, so the per-edge
    * check stays free in the common single-hop case.
    */
-  private RidHashSet collectUsedEdgeRids(final Result row) {
+  private EdgeIdentitySet collectUsedEdgeRids(final Result row) {
     if (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())
       return null;
-    RidHashSet used = null;
+    EdgeIdentitySet used = null;
     for (final String relVar : sameClausePrecedingRelVars) {
       final Object val = row.getProperty(relVar);
       if (val instanceof Edge) {
         if (used == null)
-          used = new RidHashSet();
+          used = new EdgeIdentitySet();
         used.add(((Edge) val).getIdentity());
       }
     }

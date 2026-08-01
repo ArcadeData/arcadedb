@@ -785,7 +785,9 @@ public class RemoteSchema implements Schema {
           break;
         case "edge":
           type = new RemoteEdgeType(remoteDatabase, record,
-              record.hasProperty("bidirectional") ? (Boolean) record.getProperty("bidirectional") : true);
+              record.hasProperty("bidirectional") ? (Boolean) record.getProperty("bidirectional") : true,
+              record.hasProperty("lightweight") && (Boolean) record.getProperty("lightweight"),
+              record.hasProperty("unique") && (Boolean) record.getProperty("unique"));
           break;
         case LocalTimeSeriesType.KIND_CODE: // timeseries: represented as document type for remote schema navigation
           type = new RemoteDocumentType(remoteDatabase, record);

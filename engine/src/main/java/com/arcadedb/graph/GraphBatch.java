@@ -31,6 +31,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -131,6 +132,8 @@ public class GraphBatch implements AutoCloseable {
   private long[]     edgeDstPositions;
   private int[]      edgeTypeBucketIds;   // first bucket id of the edge type (for light edge RID)
   private boolean[]  edgeHasProperties;
+  private boolean[]  edgeIsLightweight;
+  private long       duplicateLightEdges;
   private Object[][] edgeProperties;      // null for light edges
   private int        edgeCount;
 
@@ -163,6 +166,7 @@ public class GraphBatch implements AutoCloseable {
 
   // --- Edge type cache: avoids repeated schema lookups ---
   private final Map<String, Integer> edgeTypeFirstBucketCache = new ConcurrentHashMap<>();
+  private final Map<String, Boolean> lightweightTypeCache     = new ConcurrentHashMap<>();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
   // Must be ConcurrentHashMap because getOrCreate*EdgeChunk() is called from parallel async slots
@@ -236,6 +240,7 @@ public class GraphBatch implements AutoCloseable {
     edgeDstPositions = new long[batchSize];
     edgeTypeBucketIds = new int[batchSize];
     edgeHasProperties = new boolean[batchSize];
+    edgeIsLightweight = new boolean[batchSize];
     edgeProperties = new Object[batchSize][];
     sortIndex = new int[batchSize];
     mergeTmp = new int[batchSize / 2 + 1];
@@ -480,6 +485,9 @@ public class GraphBatch implements AutoCloseable {
     final int typeBucketId = edgeTypeFirstBucketCache.computeIfAbsent(edgeTypeName,
         name -> ((EdgeType) database.getSchema().getType(name)).getFirstBucketId());
 
+    final boolean typeIsLightweight = lightweightTypeCache.computeIfAbsent(edgeTypeName,
+        name -> ((EdgeType) database.getSchema().getType(name)).isLightweight());
+
     final int idx = edgeCount;
     edgeSrcBucketIds[idx] = sourceVertexRID.getBucketId();
     edgeSrcPositions[idx] = sourceVertexRID.getPosition();
@@ -488,8 +496,16 @@ public class GraphBatch implements AutoCloseable {
     edgeTypeBucketIds[idx] = typeBucketId;
 
     final boolean hasProps = edgeProperties != null && edgeProperties.length > 0;
+    if (typeIsLightweight && hasProps)
+      throw new IllegalArgumentException("Edge type '" + edgeTypeName
+          + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
+          + "needs to carry data");
+
     edgeHasProperties[idx] = hasProps;
     this.edgeProperties[idx] = hasProps ? edgeProperties : null;
+    // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
+    // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
+    edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps);
 
     edgeCount++;
 
@@ -521,7 +537,7 @@ public class GraphBatch implements AutoCloseable {
       // Count non-light edges and group by bucket for bulk creation
       int nonLightCount = 0;
       for (int i = 0; i < edgeCount; i++) {
-        if (lightEdges && !edgeHasProperties[i])
+        if (edgeIsLightweight[i])
           edgeRIDs[i] = new RID(edgeTypeBucketIds[i], -1L);
         else
           nonLightCount++;
@@ -1921,7 +1937,56 @@ public class GraphBatch implements AutoCloseable {
       if (bucketCounts[b] > 1)
         mergeSort(sortIndex, bucketOffsets[b], bucketOffsets[b + 1], true);
 
+    findDuplicateLightEdges(maxBucket);
+
     return maxBucket;
+  }
+
+  /**
+   * Reports lightweight edges buffered twice in this flush.
+   * <p>
+   * A lightweight edge is the triple (type, out, in), so two entries carrying the same three values are one edge
+   * stored twice. The sort above already places them adjacently, so finding them is one comparison per edge in a
+   * pass that has to happen anyway - which is why this is on by default rather than opt-in.
+   * <p>
+   * <b>Scope: this flush only.</b> It cannot see a duplicate against an edge already in the database, nor one split
+   * across two flushes; catching those needs the O(degree) edge-list scan that
+   * {@link com.arcadedb.schema.EdgeType#isUnique()} performs on the single-edge path. What it does catch is the
+   * common case of a re-run import. On a type that declares UNIQUE the duplicate is an error; otherwise it is
+   * counted and reported through {@link #getDuplicateLightEdges()}.
+   */
+  private void findDuplicateLightEdges(final int maxBucket) {
+    for (int b = 0; b <= maxBucket; b++) {
+      for (int i = bucketOffsets[b] + 1; i < bucketOffsets[b + 1]; i++) {
+        final int prev = sortIndex[i - 1];
+        final int curr = sortIndex[i];
+
+        if (!edgeIsLightweight[prev] || !edgeIsLightweight[curr])
+          continue;
+        if (edgeTypeBucketIds[prev] != edgeTypeBucketIds[curr]
+            || edgeDstBucketIds[prev] != edgeDstBucketIds[curr]
+            || edgeDstPositions[prev] != edgeDstPositions[curr]
+            || edgeSrcBucketIds[prev] != edgeSrcBucketIds[curr]
+            || edgeSrcPositions[prev] != edgeSrcPositions[curr])
+          continue;
+
+        ++duplicateLightEdges;
+
+        final EdgeType edgeType = (EdgeType) database.getSchema().getTypeByBucketId(edgeTypeBucketIds[curr]);
+        if (edgeType.isUnique())
+          throw new DuplicatedKeyException(edgeType.getName() + "[@out,@in]",
+              "[#" + edgeSrcBucketIds[curr] + ":" + edgeSrcPositions[curr] + ", #" + edgeDstBucketIds[curr] + ":"
+                  + edgeDstPositions[curr] + "]", null);
+      }
+    }
+  }
+
+  /**
+   * Number of lightweight edges this batch found buffered twice within a single flush. See
+   * {@code findDuplicateLightEdges} for what this does and does not cover.
+   */
+  public long getDuplicateLightEdges() {
+    return duplicateLightEdges;
   }
 
   /**
@@ -2155,8 +2220,20 @@ public class GraphBatch implements AutoCloseable {
 
   private int compare(final int a, final int b, final boolean bySource) {
     if (bySource) {
-      final int cmp = Integer.compare(edgeSrcBucketIds[a], edgeSrcBucketIds[b]);
-      return cmp != 0 ? cmp : Long.compare(edgeSrcPositions[a], edgeSrcPositions[b]);
+      int cmp = Integer.compare(edgeSrcBucketIds[a], edgeSrcBucketIds[b]);
+      if (cmp != 0)
+        return cmp;
+      cmp = Long.compare(edgeSrcPositions[a], edgeSrcPositions[b]);
+      if (cmp != 0)
+        return cmp;
+      // Secondary keys: grouping by source is all the write pass needs, but ordering within a source group by
+      // (edge type, destination) makes two identical lightweight edges land next to each other, which turns
+      // duplicate detection into one comparison inside a pass that already exists. See findDuplicateLightEdges.
+      cmp = Integer.compare(edgeTypeBucketIds[a], edgeTypeBucketIds[b]);
+      if (cmp != 0)
+        return cmp;
+      cmp = Integer.compare(edgeDstBucketIds[a], edgeDstBucketIds[b]);
+      return cmp != 0 ? cmp : Long.compare(edgeDstPositions[a], edgeDstPositions[b]);
     }
     final int cmp = Integer.compare(edgeDstBucketIds[a], edgeDstBucketIds[b]);
     return cmp != 0 ? cmp : Long.compare(edgeDstPositions[a], edgeDstPositions[b]);
@@ -2274,7 +2351,11 @@ public class GraphBatch implements AutoCloseable {
     /**
      * If true (default), edges without properties are created as light edges
      * (no record stored, only connectivity pointers). Saves ~33% I/O for property-less edges.
+     *
+     * @deprecated Declare {@code LIGHTWEIGHT} on the edge type instead. An edge type that declares it is stored
+     * lightweight whatever this flag says; this flag remains only for types that declare nothing.
      */
+    @Deprecated
     public Builder withLightEdges(final boolean lightEdges) {
       this.lightEdges = lightEdges;
       return this;

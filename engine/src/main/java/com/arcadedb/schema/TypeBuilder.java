@@ -46,6 +46,8 @@ public class TypeBuilder<T> {
   int                     buckets;
   int                     pageSize;
   boolean                 edgeBidirectional = true;
+  boolean                 edgeLightweight   = false;
+  boolean                 edgeUnique        = false;
 
   protected TypeBuilder(final DatabaseInternal database, final Class<T> type) {
     this.database = database;
@@ -76,7 +78,14 @@ public class TypeBuilder<T> {
     if (alreadyComplete != null)
       return alreadyComplete;
 
-    return database.executeInWriteLock(() -> createInternal(schema));
+    final T created = database.executeInWriteLock(() -> createInternal(schema));
+
+    // Built outside the schema write lock: creating the backing index takes its own locks, and the type has to be
+    // fully published before an index can be attached to it.
+    if (created instanceof LocalEdgeType edgeType)
+      LocalEdgeType.applyUniqueConstraint(schema, edgeType);
+
+    return created;
   }
 
   /**
@@ -153,7 +162,7 @@ public class TypeBuilder<T> {
       if (type.equals(VertexType.class))
         c = new LocalVertexType(schema, typeName);
       else if (type.equals(EdgeType.class))
-        c = new LocalEdgeType(schema, typeName, edgeBidirectional);
+        c = new LocalEdgeType(schema, typeName, edgeBidirectional, edgeLightweight, edgeUnique);
       else {
         c = new LocalDocumentType(schema, typeName);
 
@@ -226,6 +235,28 @@ public class TypeBuilder<T> {
     if (!type.isAssignableFrom(EdgeType.class))
       throw new UnsupportedOperationException("withBidirectional() on non edge type");
     this.edgeBidirectional = edgeBidirectional;
+    return this;
+  }
+
+  /**
+   * Declares every edge of this type lightweight: no edge record, therefore no properties. See
+   * {@link EdgeType#isLightweight()}.
+   */
+  public TypeBuilder<T> withLightweight(final boolean edgeLightweight) {
+    if (!type.isAssignableFrom(EdgeType.class))
+      throw new UnsupportedOperationException("withLightweight() on non edge type");
+    this.edgeLightweight = edgeLightweight;
+    return this;
+  }
+
+  /**
+   * Declares that at most one edge of this type may connect a given ordered pair of vertices. See
+   * {@link EdgeType#isUnique()} for the cost, which differs between lightweight and regular types.
+   */
+  public TypeBuilder<T> withUnique(final boolean edgeUnique) {
+    if (!type.isAssignableFrom(EdgeType.class))
+      throw new UnsupportedOperationException("withUnique() on non edge type");
+    this.edgeUnique = edgeUnique;
     return this;
   }
 

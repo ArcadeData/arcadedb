@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.path;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -99,7 +100,7 @@ public class PathSubgraphAll extends AbstractPathProcedure {
     final Set<Vertex> reachableNodes = new HashSet<>();
     final Set<Edge> reachableEdges = new HashSet<>();
     final RidHashSet visitedNodes = new RidHashSet();
-    final RidHashSet visitedEdges = new RidHashSet();
+    final EdgeIdentitySet visitedEdges = new EdgeIdentitySet();
     final Queue<VertexLevel> queue = new ArrayDeque<>();
 
     queue.add(new VertexLevel(startNode, 0));

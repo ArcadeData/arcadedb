@@ -523,13 +523,14 @@ tsTimeUnit
     ;
 
 /**
- * CREATE EDGE TYPE body (supports UNIDIRECTIONAL)
+ * CREATE EDGE TYPE body (supports UNIDIRECTIONAL, LIGHTWEIGHT, UNIQUE)
  */
 createEdgeTypeBody
     : identifier
       (IF NOT EXISTS)?
       (EXTENDS identifier (COMMA identifier)*)?
       UNIDIRECTIONAL?
+      (LIGHTWEIGHT | UNIQUE)*
       (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
       (PAGESIZE INTEGER_LITERAL)?
@@ -636,7 +637,7 @@ createEdgeBody
 // ============================================================================
 
 alterTypeBody
-    : identifier alterTypeItem (COMMA alterTypeItem)* (WITH alterTypeSetting (COMMA alterTypeSetting)*)?
+    : identifier (alterTypeItem (COMMA alterTypeItem)*)? (WITH alterTypeSetting (COMMA alterTypeSetting)*)?
     ;
 
 alterTypeItem
@@ -652,7 +653,10 @@ alterTypeItem
 // invalidates the partition mapping can chain a rebuild atomically. Generic so future settings
 // (e.g., a quiet-mode flag) drop in without re-touching the grammar.
 alterTypeSetting
-    : identifier EQ expression
+    // UNIQUE is spelled out because it is its own lexer token (CREATE INDEX ... UNIQUE) and would not
+    // otherwise reduce to `identifier`. Listing it here rather than adding it to the identifier keyword
+    // set keeps CREATE INDEX unambiguous.
+    : (identifier | UNIQUE) EQ expression
     ;
 
 alterPropertyBody
@@ -1667,6 +1671,7 @@ identifier
     | IDENTIFIED
     | SYSTEM
     | UNIDIRECTIONAL
+    | LIGHTWEIGHT
     // CONTAINS is allowed as an identifier so that dot-path function calls like geo.contains(...)
     // parse correctly (the parser sees "contains" as the second segment of the identifier chain).
     // Note: this means CONTAINS cannot be used as a reserved infix operator in future SQL extensions

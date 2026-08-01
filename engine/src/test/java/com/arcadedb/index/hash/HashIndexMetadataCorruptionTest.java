@@ -108,7 +108,7 @@ class HashIndexMetadataCorruptionTest extends TestHelper {
         .hasMessageContaining(TYPE_NAME)        // names the affected index (the underlying hash bucket of the Account type)
         .hasMessageContaining("-108")           // still reports the offending byte
         .hasMessageContaining("0x94")           // and its hex form
-        .hasMessageContaining("rebuild"));      // tells the operator how to recover
+        .hasMessageContaining("recreate"));     // tells the operator how to recover
   }
 
   @Test

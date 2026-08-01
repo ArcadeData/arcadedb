@@ -143,6 +143,8 @@ import java.util.stream.Stream;
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
+  /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
+  public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
 
   private static final Set<String> SUPPORTED_FILE_EXT = Set.of(
       Dictionary.DICT_EXT,
@@ -246,7 +248,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   public static int getNewEdgeListSize(final int previousSize) {
     if (previousSize == 0)
-      return EDGE_LIST_INITIAL_CHUNK_SIZE;
+      // Floored: the chunk buffer is not auto-resizable, so a configured value that cannot hold the header plus one
+      // entry fails at the first append with "Cannot resize the buffer" rather than at configuration time.
+      return Math.max(MIN_EDGE_LIST_CHUNK_SIZE,
+          GlobalConfiguration.GRAPH_EDGE_LIST_INITIAL_CHUNK_SIZE.getValueAsInteger());
 
     int newSize = previousSize * 2;
     if (newSize > MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE)
@@ -1305,7 +1310,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         ((RecordEventsRegistry) document.getType().getEvents()).onAfterDelete(record);
 
       final TransactionContext transaction = getTransaction();
-      transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
+      if (record.getIdentity().getPosition() >= 0)
+        // A record-less RID (a lightweight edge) never allocated a record in the bucket, so there is nothing to
+        // subtract. Folding a -1 anyway drifts the cached counter behind count(*), and the drift is persisted in
+        // statistics.json, so it survives a reopen.
+        transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
 
     } finally {
       if (implicitTransaction) {

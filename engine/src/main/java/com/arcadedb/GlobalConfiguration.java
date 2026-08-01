@@ -477,6 +477,10 @@ public enum GlobalConfiguration {
       "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. FORWARD-INCOMPATIBLE ON FIRST USE: promotion writes a new record type (the stripe directory), so once any vertex promotes, the database can no longer be opened by releases older than 26.8.1; promotion is one-way. Iteration order on promoted vertices is approximate (newest-generation-first) instead of strict reverse-insertion. 0 disables promotion entirely (databases stay fully readable by older versions)",
       Integer.class, 4096),
 
+  GRAPH_EDGE_LIST_INITIAL_CHUNK_SIZE("arcadedb.graph.edgeListInitialChunkSize", SCOPE.DATABASE,
+      "Size in bytes of the FIRST chunk of a vertex's edge list. Each further chunk doubles the previous one up to 8192 bytes, so the total a vertex allocates is the sum of the series - which means a SMALLER first chunk does not necessarily use less space, it just takes more chunks to reach the same capacity and adds a record header per chunk. Tune with a measured degree distribution: a value close to the bytes a typical vertex's edges occupy avoids both the slack of an oversized first chunk and the extra chunks of an undersized one",
+      Integer.class, 64),
+
   GRAPH_SUPERNODE_STRIPES("arcadedb.graph.supernodeStripes", SCOPE.DATABASE,
       "Number of stripes (separate edge-list files) a super-node's edge list is spread over at promotion. The stripes are hosted in a per-type bucket pool of this many files, created once per type at its first promotion (types without super-nodes cost no files). Write parallelism saturates at the number of concurrent writers, so values beyond the CPU cores rarely help. Values below 2 disable promotion entirely. Recorded per vertex at promotion time",
       Integer.class, 16),
