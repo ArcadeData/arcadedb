@@ -775,6 +775,10 @@ public class GraphEngine {
    * itself is not free - the segment still yields an RID per entry, as it always did - but on a super-node dropping
    * the per-edge record load is the difference between the probe being unusable and being cheap.
    *
+   * Under {@link Vertex.DIRECTION#BOTH} a self-loop is returned twice, once from each list, exactly as
+   * {@link #getEdges(VertexInternal, Vertex.DIRECTION, String...)} does. A caller that cares must de-duplicate by
+   * edge identity, as the Cypher expansion does.
+   *
    * @param target the vertex the returned edges must reach; must not be null
    */
   public Iterator<Edge> getEdgesConnectedTo(final VertexInternal vertex, final Vertex.DIRECTION direction,
@@ -985,29 +989,29 @@ public class GraphEngine {
     return Collections.emptyList();
   }
 
-  public RID getFirstEdgeConnectedToVertex(VertexInternal vertex, final Identifiable toVertex,
+  public RID getFirstEdgeConnectedToVertex(final VertexInternal vertex, final Identifiable toVertex,
                                            final int[] edgeBucketFilter) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
     // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
-    vertex = getMostUpdatedVertex(vertex);
+    final VertexInternal source = getMostUpdatedVertex(vertex);
 
-    final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
     if (outEdges != null) {
       final RID edgeRID = outEdges.getFirstEdgeConnectedToVertex(toVertex.getIdentity(), edgeBucketFilter);
       if (edgeRID != null)
         return edgeRID;
     }
 
-    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
     if (inEdges != null)
       return inEdges.getFirstEdgeConnectedToVertex(toVertex.getIdentity(), edgeBucketFilter);
 
     return null;
   }
 
-  public RID getFirstEdgeConnectedToVertex(VertexInternal vertex, final Identifiable toVertex,
+  public RID getFirstEdgeConnectedToVertex(final VertexInternal vertex, final Identifiable toVertex,
                                            final Vertex.DIRECTION direction, final int[] edgeBucketFilter) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
@@ -1016,10 +1020,10 @@ public class GraphEngine {
       throw new IllegalArgumentException("Direction is null");
 
     // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
-    vertex = getMostUpdatedVertex(vertex);
+    final VertexInternal source = getMostUpdatedVertex(vertex);
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-      final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+      final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
       if (outEdges != null) {
         final RID edgeRID = outEdges.getFirstEdgeConnectedToVertex(toVertex.getIdentity(), edgeBucketFilter);
         if (edgeRID != null)
@@ -1028,7 +1032,7 @@ public class GraphEngine {
     }
 
     if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-      final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+      final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
       if (inEdges != null)
         return inEdges.getFirstEdgeConnectedToVertex(toVertex.getIdentity(), edgeBucketFilter);
     }
@@ -1044,22 +1048,22 @@ public class GraphEngine {
    * Like that method, and like every other probe here that walks an edge list, it resolves the vertex to the instance
    * the running transaction holds before reading the head pointer - see {@link #getMostUpdatedVertex}.
    */
-  public boolean isVertexConnectedTo(VertexInternal vertex, final Identifiable toVertex) {
+  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
     // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
-    vertex = getMostUpdatedVertex(vertex);
+    final VertexInternal source = getMostUpdatedVertex(vertex);
 
-    final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
     if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), null))
       return true;
 
-    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
     return inEdges != null && inEdges.containsVertex(toVertex.getIdentity(), null);
   }
 
-  public boolean isVertexConnectedTo(VertexInternal vertex, final Identifiable toVertex,
+  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex,
                                      final Vertex.DIRECTION direction) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
@@ -1068,23 +1072,23 @@ public class GraphEngine {
       throw new IllegalArgumentException("Direction is null");
 
     // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
-    vertex = getMostUpdatedVertex(vertex);
+    final VertexInternal source = getMostUpdatedVertex(vertex);
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-      final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+      final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
       if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), null))
         return true;
     }
 
     if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-      final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+      final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
       return inEdges != null && inEdges.containsVertex(toVertex.getIdentity(), null);
     }
 
     return false;
   }
 
-  public boolean isVertexConnectedTo(VertexInternal vertex, final Identifiable toVertex,
+  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex,
                                      final Vertex.DIRECTION direction,
                                      final String edgeType) {
     if (toVertex == null)
@@ -1097,19 +1101,19 @@ public class GraphEngine {
       throw new IllegalArgumentException("Edge type is null");
 
     // Read the edge-list head from the instance this transaction holds; see getMostUpdatedVertex.
-    vertex = getMostUpdatedVertex(vertex);
+    final VertexInternal source = getMostUpdatedVertex(vertex);
 
-    final int[] bucketFilter = vertex.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream()
+    final int[] bucketFilter = source.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream()
         .mapToInt(x -> x.getFileId()).toArray();
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-      final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+      final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
       if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), bucketFilter))
         return true;
     }
 
     if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-      final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+      final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
       return inEdges != null && inEdges.containsVertex(toVertex.getIdentity(), bucketFilter);
     }
 
