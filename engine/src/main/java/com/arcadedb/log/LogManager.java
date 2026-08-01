@@ -31,8 +31,12 @@ public class LogManager {
    * System property selecting the {@link Logger} implementation, applied at startup without any code
    * change. Unset (or any value other than {@code slf4j}) keeps the default {@link DefaultLogger}
    * (java.util.logging); {@code slf4j} installs {@link Slf4jLogger}, routing the engine's logs
-   * through the SLF4J facade so an embedding application receives them in its own backend. The logger
-   * can also be swapped programmatically via {@link #setLogger(Logger)}.
+   * through the SLF4J facade so an embedding application receives them in its own backend.
+   * <p>
+   * It is also the key of {@code GlobalConfiguration.LOG_IMPL}, which applies the same choice at any
+   * time - including after this class has been loaded, which the system property cannot do because it
+   * is read from the static initialiser below. The logger can additionally be swapped programmatically
+   * via {@link #setLogger(Logger)}.
    */
   public  static final String                        LOG_IMPL_PROPERTY    = "arcadedb.log.impl";
   private static final LogContext                    CONTEXT_INSTANCE     = new LogContext();
@@ -40,7 +44,9 @@ public class LogManager {
   private static final LogManager                    instance             = new LogManager();
   private static volatile TraceContextSupplier       traceContextSupplier = null;
   private              boolean                        debug                = false;
-  private              Logger                         logger;
+  // VOLATILE BECAUSE setLogger() IS A RUNTIME PATH - GlobalConfiguration.LOG_IMPL SWAPS THE LOGGER FROM AN
+  // ARBITRARY THREAD WHILE OTHERS ARE LOGGING - AND EVERY log() OVERLOAD READS IT
+  private volatile     Logger                         logger;
 
   static class LogContext extends ThreadLocal<String> {
   }
@@ -126,17 +132,34 @@ public class LogManager {
   }
 
   /**
-   * Builds the {@link Logger} chosen by {@link #LOG_IMPL_PROPERTY}: {@link Slf4jLogger} for
-   * {@code slf4j}, {@link DefaultLogger} when unset or {@code default}. Any other value is reported
-   * on {@code System.err} and treated as {@code default}, so a typo does not silently look like a
-   * working configuration. Any failure constructing the chosen implementation (e.g. {@code slf4j-api}
-   * missing at runtime) is caught and falls back to {@link DefaultLogger}, so a logging
-   * misconfiguration can never prevent startup.
+   * Builds the {@link Logger} chosen by the {@link #LOG_IMPL_PROPERTY} system property.
+   * <p>
+   * This class reads the raw system property rather than {@code GlobalConfiguration} on purpose: it runs
+   * from the static initialiser, and querying the configuration there would run the whole of
+   * {@code GlobalConfiguration}'s own initialisation - callbacks included - while {@link #instance()} is
+   * still {@code null}. {@code GlobalConfiguration.LOG_IMPL} drives the logger the other way round, by
+   * calling {@link #setLogger(Logger)} with {@link #createLogger(String)} whenever it is set.
    *
    * @return the logger instance to install; never {@code null}
    */
   static Logger createLogger() {
-    final String impl = System.getProperty(LOG_IMPL_PROPERTY, "").trim().toLowerCase(Locale.ROOT);
+    return createLogger(System.getProperty(LOG_IMPL_PROPERTY, ""));
+  }
+
+  /**
+   * Builds the {@link Logger} named by {@code implementation}: {@link Slf4jLogger} for {@code slf4j},
+   * {@link DefaultLogger} when null, empty or {@code default}. Matching is case-insensitive. Any other
+   * value is reported on {@code System.err} and treated as {@code default}, so a typo does not silently
+   * look like a working configuration. Any failure constructing the chosen implementation (e.g.
+   * {@code slf4j-api} missing at runtime) is caught and falls back to {@link DefaultLogger}, so a logging
+   * misconfiguration can never prevent startup.
+   *
+   * @param implementation the requested implementation name; may be {@code null}
+   *
+   * @return the logger instance to install; never {@code null}
+   */
+  public static Logger createLogger(final String implementation) {
+    final String impl = implementation == null ? "" : implementation.trim().toLowerCase(Locale.ROOT);
     try {
       if ("slf4j".equals(impl))
         return new Slf4jLogger();
@@ -167,6 +190,14 @@ public class LogManager {
     CONTEXT_INSTANCE.set(context);
   }
 
+  /**
+   * Installs {@code logger} as the destination of every subsequent {@code log()} call, replacing whatever
+   * {@link #createLogger()} or {@code GlobalConfiguration.LOG_IMPL} had selected. This is the escape hatch
+   * for an embedder that needs an implementation the configuration cannot name, and for a test swapping in
+   * a capturing logger - such a caller should keep the {@link #getLogger()} it replaces and put it back.
+   *
+   * @param logger the logger to install; must not be {@code null}
+   */
   public void setLogger(final Logger logger) {
     this.logger = logger;
   }
