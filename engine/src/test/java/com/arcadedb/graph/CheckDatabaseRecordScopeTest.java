@@ -42,6 +42,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -432,11 +433,107 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
   }
 
   /**
+   * #5764, item 4: the scoped arm materialises the record through {@code lookupByRID} and the type-wide arm through
+   * a raw bucket scan, so a corruption shape that surfaced only through the raw view would be caught by one and
+   * missed by the other. It cannot: {@code lookupByRID} IS that materialisation
+   * ({@code newImmutableRecord(type, rid, bucket.getRecord(rid).copyOfContent())}), and both then decode through the
+   * same {@code asVertex(true)}. Pinned rather than argued, so a future change to either enumeration that breaks the
+   * equivalence fails here.
+   */
+  @Test
+  void theScopedAndTypeWideRunsAgreeOnAGenuinelyCorruptedRecord() {
+    createSchema();
+
+    final RID[] victim = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("Src").set("name", "corrupt-me");
+      v.save();
+      victim[0] = v.getIdentity();
+    });
+
+    shrinkRecordBuffer(victim[0]);
+
+    // Neither run is allowed to FIX: the point is that the two CHECKS see the same thing, and a fix would delete
+    // the record out from under the second one.
+    final long scopedCorrupted = corruptedReportedBy("CHECK DATABASE RECORD " + victim[0], victim[0]);
+    final long typeWideCorrupted = corruptedReportedBy("CHECK DATABASE TYPE Src", victim[0]);
+
+    assertThat(scopedCorrupted).as("the scoped run must flag the corrupted record").isEqualTo(1L);
+    assertThat(typeWideCorrupted).as("and the type-wide run must agree, not merely also complain")
+        .isEqualTo(scopedCorrupted);
+  }
+
+  /**
+   * #5764, item 3: the same corrupt DOCUMENT must read the same whichever path found it. The type-wide arm used to
+   * add to the warning and corrupted-record sets without touching {@code totalWarnings}/{@code totalCorruptedRecords}
+   * - so a run reported zero of both while listing the finding - and called the document a "vertex" it was
+   * "removing", when nothing on that path removes anything.
+   */
+  @Test
+  void aCorruptDocumentIsReportedIdenticallyByTheScopedAndTypeWideRuns() {
+    createSchema();
+    database.transaction(() -> database.getSchema().createDocumentType("Doc"));
+
+    final RID[] victim = new RID[1];
+    database.transaction(() -> victim[0] = database.newDocument("Doc").set("k", 1).save().getIdentity());
+
+    corruptRecordTypeByte(victim[0]);
+
+    final String expected = "document " + victim[0] + " cannot be loaded";
+
+    for (final String command : List.of("CHECK DATABASE RECORD " + victim[0], "CHECK DATABASE TYPE Doc")) {
+      try (final ResultSet rs = database.command("sql", command)) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((Collection<String>) row.getProperty("warnings")).as("%s: %s", command, row.toJSON())
+            .contains(expected);
+        assertThat(longProperty(row, "totalWarnings")).as("%s must COUNT what it reports: %s", command, row.toJSON())
+            .isGreaterThan(0L);
+        assertThat(longProperty(row, "totalCorruptedRecords")).as("%s: %s", command, row.toJSON()).isEqualTo(1L);
+      }
+    }
+  }
+
+  /** Runs a non-fixing check and returns its corrupted-record total, asserting the record was named in a warning. */
+  private long corruptedReportedBy(final String command, final RID rid) {
+    try (final ResultSet rs = database.command("sql", command)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("%s: %s", command, row.toJSON())
+          .anyMatch(w -> w.contains(rid.toString()));
+      assertThat((Collection<?>) row.getProperty("rebuiltIndexes")).as("no FIX, so nothing may be rebuilt: %s",
+          row.toJSON()).isEmpty();
+      return longProperty(row, "totalCorruptedRecords");
+    }
+  }
+
+  /**
+   * Overwrites the record-type byte of {@code rid} with a value no {@code RecordFactory} branch knows, so the record
+   * still occupies its slot and still has a valid size, but cannot be materialised at all - the one corruption shape
+   * that reaches BOTH the raw-view construction of the type-wide scan and the {@code lookupByRID} of the scoped arm
+   * at the same point, which is what makes the two paths comparable.
+   */
+  private void corruptRecordTypeByte(final RID rid) {
+    onRecordPage(rid, (page, recordOffset) -> {
+      final long[] recordSize = page.readNumberAndSize(recordOffset);
+      page.writeByte((int) (recordOffset + recordSize[1]), (byte) 99);
+    });
+  }
+
+  /**
    * Replaces the record-size varint of {@code rid} with a single-byte varint encoding a size far below the fixed
    * 25-byte vertex prefix, so the record still occupies its slot but can no longer be read back as a vertex - the
    * on-disk shape of a corrupted (as opposed to a missing) record. zigzag(8) == 16.
    */
   private void shrinkRecordBuffer(final RID rid) {
+    onRecordPage(rid, (page, recordOffset) -> page.writeByte(recordOffset, (byte) 16));
+  }
+
+  /**
+   * Runs {@code mutation} against the page holding {@code rid}, handing it the content-relative offset where the
+   * record's size varint starts. Shared by the corruption helpers so they agree on the page layout.
+   */
+  private void onRecordPage(final RID rid, final BiConsumer<MutablePage, Integer> mutation) {
     final DatabaseInternal db = (DatabaseInternal) database;
     final int fileId = rid.getBucketId();
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(fileId);
@@ -454,7 +551,7 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
         final int slotOffset = Binary.SHORT_SERIALIZED_SIZE + (positionInPage * Binary.INT_SERIALIZED_SIZE);
         final int recordOffset = (int) page.readUnsignedInt(slotOffset);
         assertThat(recordOffset).as("the record must still occupy its slot").isGreaterThan(0);
-        page.writeByte(recordOffset, (byte) 16);
+        mutation.accept(page, recordOffset);
       } catch (final Exception e) {
         throw new RuntimeException(e);
       }
