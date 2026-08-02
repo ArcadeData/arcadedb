@@ -606,11 +606,22 @@ public class GraphEngine {
     if (edgeRID != null && !(edge instanceof LightEdge))
       // DELETE EDGE RECORD TOO
       try {
-        // The physical removal only: index cleanup has already happened. This method is reached through
-        // LocalDatabase.deleteRecordNoLock, which cleans the record's index entries and fires the delete events
-        // BEFORE dispatching an Edge here - so going back through the database would repeat that work, not add it.
-        // (The comment previously here said the opposite of what the line below does; verified by deleting an edge
-        // carrying an indexed property and watching the index drop from 1 entry to 0.)
+        // The physical removal only: on the DELETE PATH the index cleanup has already happened. This method is
+        // normally reached through LocalDatabase.deleteRecordNoLock, which cleans the record's index entries and
+        // fires the delete events BEFORE dispatching an Edge here - so going back through the database would
+        // repeat that work, not add it. (The comment previously here said the opposite of what the line below
+        // does; verified by deleting an edge carrying an indexed property and watching the index drop from 1
+        // entry to 0.)
+        //
+        // "Normally" is load-bearing: moveEdge calls the public deleteEdge(Edge) DIRECTLY, and there the
+        // precondition does NOT hold - the old edge record's index entries are never cleaned. Measured rather
+        // than assumed before writing this down, and it is benign TODAY for a reason that is an allocation
+        // coincidence rather than a guarantee: moveEdge re-creates the edge with the same properties, and the
+        // bucket hands the just-freed slot straight back, so the stale entry ends up on the new record with the
+        // same key (checked on a multi-bucket edge type - 41 records, 41 index entries, identical RID). Anything
+        // that breaks that coincidence - a different bucket, a concurrent allocation taking the slot - leaves an
+        // index entry naming a record that is gone. A new caller of the public deleteEdge(Edge) must therefore
+        // either arrive through deleteRecordNoLock or clean up after itself.
         final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edge.getIdentity().getBucketId());
         bucket.deleteRecord(edge.getIdentity());
       } catch (final RecordNotFoundException e) {
