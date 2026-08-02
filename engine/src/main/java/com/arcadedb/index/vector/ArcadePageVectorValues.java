@@ -331,6 +331,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * {@code Float.MIN_NORMAL} on the theory that it would score very low, which it does not - cosine cancels the
    * magnitude out, and the squared magnitude {@code dimensions * MIN_NORMAL^2} underflows to zero in float, so the
    * similarity came back {@code Infinity} and made every tombstone the best candidate in the beam (issue #5558).
+   * <p>
+   * <b>There is no safer value to pick.</b> The two differ only in magnitude, so under cosine they point the same way
+   * and would score identically if the old one had not underflowed - swapping them changed a broken number into a
+   * defined one, not a high rank into a low one. And no constant can do better: for any fixed vector {@code s} there
+   * are queries scoring it anywhere in range, so "a placeholder that scores toward the floor" does not exist. That is
+   * why the floor is applied by the score function that recognises the placeholder, and why it matters that an
+   * unguarded scoring path now fails quietly - it gets a plausible number rather than the {@code Infinity} that used
+   * to trip an assertion. {@link #isDeletedSentinel} lists the callers that must ask.
    */
   private static VectorFloat<?> createDeletedSentinelVector(final int dimensions) {
     final float[] sentinel = new float[dimensions];

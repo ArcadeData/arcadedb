@@ -83,15 +83,28 @@ public class LiveVectorBitsFilter implements Bits {
 
   @Override
   public boolean get(final int ordinal) {
+    return admissibleLocation(ordinal, ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs) != null;
+  }
+
+  /**
+   * The location a graph ordinal may be answered with, or {@code null} if it may not: out of the ordinal map, no
+   * longer live, or outside the allow-list. Shared with {@link GroupedRIDBitsFilter}, which needs the location itself
+   * to resolve a group key and would otherwise carry a second copy of this predicate for the two to drift apart on.
+   *
+   * @param allowedRIDs optional RID allow-list; {@code null} or empty means "every live vector"
+   */
+  static VectorLocationIndex.VectorLocation admissibleLocation(final int ordinal, final int[] ordinalToVectorIdSnapshot,
+      final VectorLocationIndex vectorIndex, final Set<RID> allowedRIDs) {
     if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
-      return false;
+      return null;
 
-    final int vectorId = ordinalToVectorIdSnapshot[ordinal];
-
-    final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+    final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(ordinalToVectorIdSnapshot[ordinal]);
     if (loc == null || loc.deleted)
-      return false;
+      return null;
 
-    return allowedRIDs == null || allowedRIDs.contains(loc.rid);
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
+      return null;
+
+    return loc;
   }
 }

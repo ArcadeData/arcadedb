@@ -90,19 +90,11 @@ public class GroupedRIDBitsFilter implements Bits {
     if (rejected.contains(ordinal))
       return false;
 
-    if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length) {
-      rejected.add(ordinal);
-      return false;
-    }
-
-    final int vectorId = ordinalToVectorIdSnapshot[ordinal];
-    final VectorLocationIndex.VectorLocation loc = vectorIndexSnapshot.getLocation(vectorId);
-    if (loc == null || loc.deleted) {
-      rejected.add(ordinal);
-      return false;
-    }
-
-    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid)) {
+    // Same liveness and allow-list predicate the ungrouped search applies, borrowed from LiveVectorBitsFilter so the
+    // two cannot drift; it hands back the location because the group key below needs the RID anyway.
+    final VectorLocationIndex.VectorLocation loc = LiveVectorBitsFilter.admissibleLocation(ordinal,
+        ordinalToVectorIdSnapshot, vectorIndexSnapshot, allowedRIDs);
+    if (loc == null) {
       rejected.add(ordinal);
       return false;
     }
