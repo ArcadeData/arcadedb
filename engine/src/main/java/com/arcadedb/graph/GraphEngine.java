@@ -837,8 +837,12 @@ public class GraphEngine {
   private static NeedRetryException withRepairAdvice(final NeedRetryException e, final RID vertexRID) {
     if (!(e instanceof ConcurrentModificationException))
       return e;
+    // toString() rather than getMessage(): every conflict raised on this path carries a message today, but a
+    // message-less one would render the advice as "null. If it persists...", which reads as a bug in the advice
+    // rather than as a missing diagnosis. toString() degrades to the class name instead.
+    final String diagnosis = e.getMessage() != null ? e.getMessage() : e.toString();
     return new ConcurrentModificationException(
-        e.getMessage() + ". If it persists once the retries are spent the list is genuinely broken: "
+        diagnosis + ". If it persists once the retries are spent the list is genuinely broken: "
             + scopedRepairAdvice(vertexRID), e);
   }
 
@@ -848,6 +852,13 @@ public class GraphEngine {
    * Best-effort on purpose, and only ever used to enrich a message: this is called from the handler for an edge
    * whose disconnection just failed, so the edge record itself may well be unreadable. A failure to name the
    * neighbour must degrade the advice, never replace the original failure.
+   * <p>
+   * ONE case would answer {@code vertexRID} itself despite the name, and it is the right answer rather than a leak
+   * to be closed: a self-loop ({@code out == in == vertexRID}) has no other end, and the list that failed to
+   * disconnect it IS the vertex's own - so that is the RID whose repair the caller must name. Not reachable today,
+   * which is why there is no test for it: the only caller runs after BOTH of the vertex's lists have been collected
+   * successfully, and a self-loop is read out of those same two lists, so a list broken enough to fail the
+   * disconnection fails the collection first and never gets here. Stated so the equality is not "simplified" away.
    */
   private static RID otherEndOf(final Identifiable edge, final RID vertexRID) {
     try {
