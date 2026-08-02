@@ -1659,6 +1659,36 @@ build indexes through the embedded API with a computed page size, check that the
 An index that already exists on disk is unaffected either way - the page size is read from the component file, not from
 a builder.
 
+### `CHECK DATABASE RECORD <rid>`: check and repair named records only (#5680)
+
+`CHECK DATABASE` could be narrowed to a `TYPE` or a `BUCKET`, but not to a record. That became the sharp edge of
+the strict vertex delete above: a genuinely broken edge chain makes its vertex undeletable until
+`CHECK DATABASE ... FIX` rebuilds the adjacency from the surviving edge records, and the smallest way to ask for
+that repair was two full passes over the whole vertex type. The new `RECORD` scope visits only the records listed:
+
+```sql
+CHECK DATABASE RECORD #12:3 FIX
+CHECK DATABASE RECORD #12:3, #12:9 FIX
+```
+
+The per-record work and the fix are identical to the type-wide run, including rebuilding a vertex's edge list from
+the surviving edge records. It combines with `FIX` and `COMPRESS`, and is rejected when combined with `TYPE` or
+`BUCKET` - `RECORD` is already the narrowest scope, so the combination has no sensible meaning and silently
+letting one win would run a check nobody asked for. The database-wide passes (buckets, external properties,
+indexes) and the orphaned-segment reclaim are skipped, since none can be narrowed to a record.
+
+Three costs a record scope does **not** bound, worth knowing before reaching for it:
+
+- `COMPRESS` is unaffected by the scope and still compresses the **whole database**. It is opt-in, but it is the
+  one clause that breaks the "naming a record bounds the cost" promise, so do not pair `RECORD ... COMPRESS`
+  expecting a cheap run;
+- rebuilding an adjacency means finding every surviving edge that points at the vertex, and no index maps
+  endpoints back to edges, so the scoped run saves the vertex passes but still scans the edge types - once per
+  distinct vertex **type** named, so naming ten vertices of one type costs one sweep while naming one vertex of
+  each of three types costs three;
+- if a listed record turns out to be *corrupted*, every index on its bucket is dropped and rebuilt, which is a
+  full bucket scan. That matches the type-wide semantics and only fires on genuine corruption - an edge-list
+  rebuild alone deletes no record and triggers none of it - but `RECORD` bounds the check, not necessarily the fix.
 ## Copying a type copies its records and its index definitions, not just their names
 
 `Schema.copyType()` - what `DocumentType` → `VertexType` conversion goes through - was reported as losing the page

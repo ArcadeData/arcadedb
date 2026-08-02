@@ -329,19 +329,24 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
     database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
   }
 
+  /** Asserts on the fields {@code check database} actually reports, so a typo cannot make this vacuously pass. */
   private void assertIntegrityClean() {
     try (final ResultSet rs = database.command("sql", "check database")) {
+      assertThat(rs.hasNext()).isTrue();
       while (rs.hasNext()) {
         final Result row = rs.next();
-        assertThat(longProperty(row, "autoFix")).as("check database autoFix: " + row.toJSON()).isEqualTo(0L);
-        assertThat(longProperty(row, "totalErrors")).as("check database totalErrors: " + row.toJSON()).isEqualTo(0L);
+        assertThat(longProperty(row, "autoFix")).as("autoFix: %s", row.toJSON()).isEqualTo(0L);
+        assertThat(longProperty(row, "invalidLinks")).as("invalidLinks: %s", row.toJSON()).isEqualTo(0L);
+        assertThat(longProperty(row, "totalWarnings")).as("totalWarnings: %s", row.toJSON()).isEqualTo(0L);
+        assertThat(longProperty(row, "totalCorruptedRecords")).as("totalCorruptedRecords: %s", row.toJSON()).isEqualTo(0L);
       }
     }
   }
 
-  /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */
+  /** Reads a numeric check-database property, failing loudly when the field does not exist (a vacuous assertion). */
   private static long longProperty(final Result row, final String name) {
     final Object value = row.getProperty(name);
-    return value == null ? 0L : ((Number) value).longValue();
+    assertThat(value).as("check database must report '%s': %s", name, row.toJSON()).isNotNull();
+    return ((Number) value).longValue();
   }
 }

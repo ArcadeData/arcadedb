@@ -36,6 +36,7 @@ import com.arcadedb.utility.ProgressCallback;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -375,6 +376,23 @@ public class GraphDatabaseChecker {
 
   public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel,
       final int maxWarnings, final int maxCorrupted) {
+    return checkVertices(typeName, null, fix, verboseLevel, maxWarnings, maxCorrupted);
+  }
+
+  /**
+   * #5680: same check restricted to {@code scopedRecords} when it is non-null - the {@code CHECK DATABASE RECORD}
+   * scope. The per-vertex work and the fix (rebuilding the adjacency from the surviving edge records) are
+   * identical; only the enumeration changes, from two passes over every bucket of the type to a lookup per listed
+   * RID. That is what makes "one vertex's edge chain is broken, so the vertex cannot be deleted" repairable
+   * without paying a full type scan - the strict delete path in {@code GraphEngine.deleteVertex} names this
+   * command in its error message.
+   * <p>
+   * The edge-record scan inside {@link #reconnectEdges} is NOT scoped: rebuilding an adjacency means finding
+   * every surviving edge that points at the vertex, and no index maps endpoints back to edges. So the scoped run
+   * saves the vertex passes, not the edge pass.
+   */
+  public Map<String, Object> checkVertices(final String typeName, final Collection<RID> scopedRecords,
+      final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
     final AtomicLong invalidLinks = new AtomicLong();
     final AtomicLong duplicateLightEdges = new AtomicLong();
@@ -391,27 +409,8 @@ public class GraphDatabaseChecker {
 
     database.begin();
     try {
-      // TWO FULL PASSES OVER THE TYPE (record-type scan + connectivity walk): progress total is 2x the count.
-      // countType reads the maintained bucket counters (no scan), so sizing the total is negligible.
-      progressBegin(progressStepName, 2 * database.countType(typeName, false));
-
-      // CHECK RECORD IS OF THE RIGHT TYPE
-      final DocumentType type = database.getSchema().getType(typeName);
-      for (final Bucket b : type.getBuckets(false)) {
-        b.scan((rid, view) -> {
-          try {
-            final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
-            record.asVertex(true);
-          } catch (Exception e) {
-            addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " cannot be loaded, removing it");
-            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-          }
-          progressTick();
-          return true;
-        }, null);
-      }
-
-      database.scanType(typeName, false, record -> {
+      // The connectivity check of ONE vertex: shared by the type-wide scan and the RECORD-scoped enumeration.
+      final Consumer<Record> checkConnectivity = record -> {
         progressTick();
         try {
           Vertex vertex = record.asVertex(true);
@@ -431,15 +430,66 @@ public class GraphDatabaseChecker {
               "vertex " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
           addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, record.getIdentity());
         }
+      };
 
-        return true;
-      }, (rid, exception) -> {
-        progressTick();
-        addWarning(warnings, totalWarnings, maxWarnings,
-            "vertex " + rid + " cannot be loaded (error: " + describe(exception) + ")");
-        addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-        return true;
-      });
+      if (scopedRecords != null) {
+        progressBegin(progressStepName, scopedRecords.size());
+
+        for (final RID rid : scopedRecords) {
+          try {
+            checkConnectivity.accept(database.lookupByRID(rid, true));
+          } catch (final RecordNotFoundException e) {
+            // A RID that simply is not there is NOT corruption, and the difference is expensive: a record flagged
+            // corrupted puts its BUCKET into affectedBuckets, and CHECK DATABASE ... FIX then drops and rebuilds
+            // every index on that bucket - a full bucket scan. Since the RECORD scope exists to be hand-typed
+            // after a failed delete, a typo'd or already-deleted RID would otherwise buy exactly the cost the
+            // scope was reached for. Reported, not repaired.
+            progressTick();
+            addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " does not exist");
+          } catch (final Exception e) {
+            // Exception, not Throwable, so an Error raised by the LOOKUP (OOM, StackOverflow) is not recorded as
+            // "this record is corrupt" and does not have fix mode delete a healthy record. Scope of that, stated
+            // honestly: the shared consumer below still catches Throwable around the connectivity check itself,
+            // matching the type-wide path, so an Error raised in THERE is still flagged. Narrowing that one would
+            // change the type-wide behaviour too, which is not this change's business.
+            progressTick();
+            addWarning(warnings, totalWarnings, maxWarnings,
+                "vertex " + rid + " cannot be loaded (error: " + describe(e) + ")");
+            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
+          }
+        }
+      } else {
+        // TWO FULL PASSES OVER THE TYPE (record-type scan + connectivity walk): progress total is 2x the count.
+        // countType reads the maintained bucket counters (no scan), so sizing the total is negligible.
+        progressBegin(progressStepName, 2 * database.countType(typeName, false));
+
+        // CHECK RECORD IS OF THE RIGHT TYPE
+        final DocumentType type = database.getSchema().getType(typeName);
+        for (final Bucket b : type.getBuckets(false)) {
+          b.scan((rid, view) -> {
+            try {
+              final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
+              record.asVertex(true);
+            } catch (Exception e) {
+              addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " cannot be loaded, removing it");
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
+            }
+            progressTick();
+            return true;
+          }, null);
+        }
+
+        database.scanType(typeName, false, record -> {
+          checkConnectivity.accept(record);
+          return true;
+        }, (rid, exception) -> {
+          progressTick();
+          addWarning(warnings, totalWarnings, maxWarnings,
+              "vertex " + rid + " cannot be loaded (error: " + describe(exception) + ")");
+          addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
+          return true;
+        });
+      }
 
       progressComplete();
 
@@ -1052,6 +1102,16 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
 
   public Map<String, Object> checkEdges(final String typeName, final boolean fix, final int verboseLevel,
       final int maxWarnings, final int maxCorrupted) {
+    return checkEdges(typeName, null, fix, verboseLevel, maxWarnings, maxCorrupted);
+  }
+
+  /**
+   * #5680: same check restricted to {@code scopedRecords} when it is non-null - the {@code CHECK DATABASE RECORD}
+   * scope. Per-edge work is identical; only the enumeration changes, from two passes over every bucket of the
+   * type to a lookup per listed RID.
+   */
+  public Map<String, Object> checkEdges(final String typeName, final Collection<RID> scopedRecords,
+      final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
     final AtomicLong invalidLinks = new AtomicLong();
     final AtomicLong missingReferenceBack = new AtomicLong();
@@ -1072,26 +1132,8 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     database.begin();
 
     try {
-      // TWO FULL PASSES OVER THE TYPE (record-type scan + endpoint checks): progress total is 2x the count.
-      progressBegin(progressStepName, 2 * database.countType(typeName, false));
-
-      // CHECK RECORD IS OF THE RIGHT TYPE
-      final DocumentType type = database.getSchema().getType(typeName);
-      for (final Bucket b : type.getBuckets(false)) {
-        b.scan((rid, view) -> {
-          try {
-            final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
-            record.asEdge(true);
-          } catch (Exception e) {
-            addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " cannot be loaded, removing it");
-            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-          }
-          progressTick();
-          return true;
-        }, null);
-      }
-
-      database.scanType(typeName, false, record -> {
+      // The endpoint check of ONE edge: shared by the type-wide scan and the RECORD-scoped enumeration.
+      final Consumer<Record> checkEndpoints = record -> {
         progressTick();
         final RID edgeRID = record.getIdentity();
 
@@ -1189,15 +1231,58 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
               "edge " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
           addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
         }
+      };
 
-        return true;
-      }, (rid, exception) -> {
-        progressTick();
-        addWarning(warnings, totalWarnings, maxWarnings,
-            "edge " + rid + " cannot be loaded (error: " + describe(exception) + ")");
-        addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-        return true;
-      });
+      if (scopedRecords != null) {
+        progressBegin(progressStepName, scopedRecords.size());
+
+        for (final RID rid : scopedRecords) {
+          try {
+            checkEndpoints.accept(database.lookupByRID(rid, true));
+          } catch (final RecordNotFoundException e) {
+            // See the vertex arm: a missing RID is reported, never flagged corrupted, so FIX does not rebuild
+            // this bucket's indexes over what is usually just a stale or mistyped RID.
+            progressTick();
+            addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " does not exist");
+          } catch (final Exception e) {
+            // See the vertex arm, including what that guard does and does not cover.
+            progressTick();
+            addWarning(warnings, totalWarnings, maxWarnings,
+                "edge " + rid + " cannot be loaded (error: " + describe(e) + ")");
+            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
+          }
+        }
+      } else {
+        // TWO FULL PASSES OVER THE TYPE (record-type scan + endpoint checks): progress total is 2x the count.
+        progressBegin(progressStepName, 2 * database.countType(typeName, false));
+
+        // CHECK RECORD IS OF THE RIGHT TYPE
+        final DocumentType type = database.getSchema().getType(typeName);
+        for (final Bucket b : type.getBuckets(false)) {
+          b.scan((rid, view) -> {
+            try {
+              final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
+              record.asEdge(true);
+            } catch (Exception e) {
+              addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " cannot be loaded, removing it");
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
+            }
+            progressTick();
+            return true;
+          }, null);
+        }
+
+        database.scanType(typeName, false, record -> {
+          checkEndpoints.accept(record);
+          return true;
+        }, (rid, exception) -> {
+          progressTick();
+          addWarning(warnings, totalWarnings, maxWarnings,
+              "edge " + rid + " cannot be loaded (error: " + describe(exception) + ")");
+          addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
+          return true;
+        });
+      }
 
       progressComplete();
 
