@@ -38,6 +38,10 @@ class LSMVectorIndexMetrics {
   private final AtomicLong insertOperations = new AtomicLong(0);
   private final AtomicLong graphRebuildCount = new AtomicLong(0);
   private final AtomicLong compactionCount = new AtomicLong(0);
+  // Queries the graph search could not fill, which then walked every ordinal. A full scan per query is the most
+  // expensive thing this index does, and until now it was only a log line (issue #5558). Counts the plain k-NN path
+  // only, which is the only one with a fallback to count: the grouped and PQ paths deliberately have none.
+  private final AtomicLong bruteForceScans = new AtomicLong(0);
 
   // Cache statistics
   private final AtomicLong vectorCacheHits = new AtomicLong(0);
@@ -72,6 +76,10 @@ class LSMVectorIndexMetrics {
 
   void incrementCompactionCount() {
     compactionCount.incrementAndGet();
+  }
+
+  void incrementBruteForceScans() {
+    bruteForceScans.incrementAndGet();
   }
 
   // Cache tracking methods
@@ -126,6 +134,10 @@ class LSMVectorIndexMetrics {
     return compactionCount.get();
   }
 
+  long getBruteForceScans() {
+    return bruteForceScans.get();
+  }
+
   long getVectorCacheHits() {
     return vectorCacheHits.get();
   }
@@ -177,6 +189,7 @@ class LSMVectorIndexMetrics {
     stats.put("searchOperations", searchOperations.get());
     stats.put("insertOperations", insertOperations.get());
     stats.put("graphRebuildCount", graphRebuildCount.get());
+    stats.put("bruteForceScans", bruteForceScans.get());
     stats.put("compactionCount", compactionCount.get());
 
     stats.put("vectorCacheHits", vectorCacheHits.get());
@@ -197,6 +210,7 @@ class LSMVectorIndexMetrics {
     searchOperations.set(0);
     insertOperations.set(0);
     graphRebuildCount.set(0);
+    bruteForceScans.set(0);
     compactionCount.set(0);
     vectorCacheHits.set(0);
     vectorCacheMisses.set(0);

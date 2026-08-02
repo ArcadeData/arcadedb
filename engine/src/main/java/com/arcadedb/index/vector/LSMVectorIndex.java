@@ -1961,11 +1961,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Train PQ codebooks from pre-loaded vectors (all in cache, no disk I/O)
         earlyPq = ProductQuantization.compute(vectors, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
 
-        // Encode all vectors
+        // Encode all vectors. An ordinal whose vector cannot be read yields the placeholder, not null, and encoding
+        // that would put a PQ code carrying the placeholder's own direction into the table - a code the approximate
+        // search then scores as if it meant something. setZero records "no information here" instead, and unlike
+        // skipping the ordinal it keeps the code array dense (issue #5558).
         final MutablePQVectors mutablePqVectors = new MutablePQVectors(earlyPq);
+        final ArcadePageVectorValues earlyPageValues =
+            vectors instanceof final ArcadePageVectorValues p ? p : null;
         for (int i = 0; i < vectors.size(); i++) {
           final VectorFloat<?> vector = vectors.getVector(i);
-          if (vector != null)
+          if (vector == null || (earlyPageValues != null && earlyPageValues.isDeletedSentinel(vector)))
+            mutablePqVectors.setZero(i);
+          else
             mutablePqVectors.encodeAndSet(i, vector);
         }
         earlyPqVectors = mutablePqVectors;
@@ -2399,11 +2406,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Encode all vectors with PQ
       final long encodeStart = System.currentTimeMillis();
       final MutablePQVectors encodedVectors = new MutablePQVectors(pq);
+      // Same as the early-PQ loop above: the placeholder is not null, and a PQ code built from it would carry its
+      // direction into approximate scoring. Record "no information here" instead (issue #5558).
+      final ArcadePageVectorValues encodePageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
       for (int i = 0; i < vectorCount; i++) {
         final VectorFloat<?> vector = vectors.getVector(i);
-        if (vector != null) {
+        if (vector == null || (encodePageValues != null && encodePageValues.isDeletedSentinel(vector)))
+          encodedVectors.setZero(i);
+        else
           encodedVectors.encodeAndSet(i, vector);
-        }
       }
 
       LogManager.instance().log(this, Level.INFO,
@@ -3301,6 +3312,75 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The similarity handed to a graph node whose vector can no longer be read. Every JVector similarity function has
+   * {@code 0} as its floor: {@code (1 + cosine) / 2} bottoms out there at {@code cosine = -1}, {@code 1 / (1 + d^2)}
+   * approaches it from above, and {@code (1 + dot) / 2} bottoms out there for the unit-length vectors JVector
+   * documents as the precondition for using {@code DOT_PRODUCT} at all. A node scored this way therefore sorts at or
+   * behind every real candidate.
+   */
+  private static final float UNREADABLE_NODE_SCORE = 0.0f;
+
+  /**
+   * The scoring function used to walk the graph: the configured similarity for a vector that can be read, and
+   * {@link #UNREADABLE_NODE_SCORE} for one that cannot.
+   * <p>
+   * A deleted vector stays in the graph until the next rebuild and its pages are released as soon as it is
+   * tombstoned, so {@link ArcadePageVectorValues} hands back a placeholder rather than null (issue #3715) and
+   * {@link GrowableVectorValues} hands back null. Scoring either of those is meaningless, and for
+   * {@code COSINE} it is worse than meaningless: the placeholder's squared magnitude underflows to zero in float,
+   * so the similarity comes back {@code Infinity}. That made every tombstone the <i>best</i> candidate in the beam -
+   * it displaced the real neighbours a query near deleted data was looking for, and tripped JVector's own
+   * {@code 0 <= score <= 1} assertion when they were enabled (issue #5558).
+   */
+  ScoreFunction.ExactScoreFunction liveOnlyScoreFunction(final VectorFloat<?> queryVector,
+      final RandomAccessVectorValues vectors) {
+    final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
+    return node -> {
+      final VectorFloat<?> vector = vectors.getVector(node);
+      if (vector == null || (pageValues != null && pageValues.isDeletedSentinel(vector)))
+        return UNREADABLE_NODE_SCORE;
+      return metadata.similarityFunction.compare(queryVector, vector);
+    };
+  }
+
+  /**
+   * The vector values a search scores against: the live builder's in-memory set when the graph in use is the one that
+   * builder produced (there the ordinals <i>are</i> vector ids), and the page-backed reader otherwise. The reader is
+   * handed the index-scoped cache so a working set survives across queries (issue #5412).
+   * <p>
+   * The first branch is currently unreachable and kept as a guard: {@code graphIndex} is only ever assigned a graph
+   * loaded from disk or one built by the local builder in {@code buildGraphFromScratch}, never
+   * {@code liveBuilder.getGraph()}, so the identity check cannot hold. That matters to the callers because it means
+   * the {@code ordinalMap} they pass is always the one published alongside the graph by the same rebuild - the
+   * pairing issue #4581 exists to keep intact - and never a map whose ordinals mean something else.
+   */
+  private RandomAccessVectorValues searchVectorValues(final int[] ordinalMap) {
+    if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph())
+      return liveVectorValues;
+
+    final String vectorProp =
+        metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) : "vector";
+    return new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp, vectorIndex, ordinalMap, this,
+        getSearchVectorCache());
+  }
+
+  /** Visible for tests: the ordinal-to-vector-id map the next search would capture. */
+  int[] getOrdinalToVectorIdForTest() {
+    return ordinalToVectorId;
+  }
+
+  /**
+   * Visible for tests: the similarity a search would compute for one graph ordinal, through the same vector values and
+   * the same score function the query path builds. Lets a test assert what a node whose vector cannot be read scores,
+   * which end-to-end search results cannot show - the {@link LiveVectorBitsFilter} keeps such a node out of the answer
+   * whatever it scored.
+   */
+  float scoreOrdinalForTest(final float[] queryVector, final int ordinal) {
+    return liveOnlyScoreFunction(vts.createFloatVector(queryVector), searchVectorValues(ordinalToVectorId))
+        .similarityTo(ordinal);
+  }
+
+  /**
    * Brute-force scan of delta vectors (inserted since last graph rebuild) and merge with graph search results.
    * <p>
    * The delta buffer holds every vector ingested since the last graph rebuild, so under sustained ingestion it
@@ -3376,6 +3456,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Re-reading the volatile this.ordinalToVectorId here would risk indexing into an array that was
     // reassigned by a concurrent rebuild, pairing each ordinal's RID with a vector from a different
     // mapping (issue #4581).
+    final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
     boolean added = false;
     for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++) {
       final int vectorId = ordinalMap[ordinal];
@@ -3387,8 +3468,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
         continue;
 
+      // The location says the vector is live, but the read can still fail - a document whose vector property was
+      // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
+      // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
       final VectorFloat<?> vec = vectors.getVector(ordinal);
-      if (vec == null)
+      if (vec == null || (pageValues != null && pageValues.isDeletedSentinel(vec)))
         continue;
 
       final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
@@ -3497,27 +3581,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // against the wrong vector (issue #4581).
         final int[] ordinalMap = this.ordinalToVectorId;
 
-        // Use liveVectorValues for scoring when available — it has ingested vectors cached
-        // in memory, avoiding disk I/O. Falls back to ArcadePageVectorValues (disk-based).
-        // Note: liveVectorValues is keyed by vectorId (same as graph ordinal when using
-        // the live builder), so it works directly as RandomAccessVectorValues for scoring.
-        final String vectorProp =
-            metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
-                "vector";
-        final RandomAccessVectorValues vectors;
-        if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph()) {
-          // Live builder mode: graph was built by this builder, ordinals ARE vectorIds
-          vectors = liveVectorValues;
-        } else {
-          vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-              vectorProp,
-              vectorIndex, ordinalMap, this, getSearchVectorCache());
-        }
+        final RandomAccessVectorValues vectors = searchVectorValues(ordinalMap);
 
-        // Perform search with optional RID filtering
-        final Bits bitsFilter = allowedRIDs != null && !allowedRIDs.isEmpty() ?
-            new RIDBitsFilter(allowedRIDs, ordinalMap, vectorIndex) :
-            Bits.ALL;
+        // Only live vectors may enter the result heap. Accepting tombstones lets a query aimed at a deleted
+        // neighbourhood fill its beam with them and stop, which is what returned an empty list (issue #5558).
+        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex);
 
         // Use instance GraphSearcher with SearchScoreProvider for efSearch control. The searcher is borrowed from
         // the index-scoped pool so its scratch state survives across queries (issue #5413).
@@ -3529,8 +3597,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final ImmutableGraphIndex pooledGraph = graphIndex;
         final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
         try {
-          final ScoreFunction.ExactScoreFunction exactScoreFunction = node ->
-              metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
+          final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
 
           // Use exact scoring for graph traversal.
           // FusedPQ approximate scoring is currently disabled due to a bug where PQ codes
@@ -3603,18 +3670,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Merge with delta vectors inserted since last graph rebuild
         mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
 
-        // Issue #3722: If graph search + delta merge returned significantly fewer results than
-        // expected AND there are enough vectors available, fall back to brute-force scan of all
-        // vectors. This handles degraded graph quality after rebuilds with corrupted pages.
-        final int availableVectors = ordinalMap.length;
+        // Issue #3722: if graph search + delta merge could not fill the request, fall back to a brute-force scan.
+        // This handles degraded graph quality after rebuilds with corrupted pages.
+        // The budget is the LIVE vector count, not the ordinal map length: a tombstone-heavy graph carries ordinals
+        // no query can ever return, and sizing the expectation on them asked for results that do not exist. It also
+        // closes the case of a single surviving vector, where the old "less than 80% of what is available" guard
+        // evaluated to `0 < 0` and suppressed the fallback that was the only thing left to answer the query.
+        // VectorLocationIndex.size() is the live count only while the map does not evict, which since #5568 it never
+        // does. On a bounded backend it is a lower bound, so this would under-estimate the budget and could leave the
+        // fallback unfired when it should run - acceptable, since an evicting location map already makes the whole
+        // index approximate, and the same assumption is what the auto-compaction ratio rests on.
+        // It also counts vectors still in the delta buffer, which the scan below cannot reach because it walks graph
+        // ordinals - mergeWithDeltaScan has already covered those. So a search left short only by delta vectors can
+        // still pay for a scan that finds nothing new. Bounded, rare, and now visible through bruteForceScans.
+        final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
         final int expectedResults = Math.min(k, availableVectors);
-        if (results.size() < expectedResults && results.size() < availableVectors * 8 / 10) {
+        if (results.size() < expectedResults) {
           LogManager.instance()
               .log(this, Level.WARNING,
                   """
                   Graph search returned only %d results (expected %d, available %d) for index %s - \
                   falling back to brute-force scan (graph may need rebuilding)""",
                   results.size(), expectedResults, availableVectors, indexName);
+          metrics.incrementBruteForceScans();
           bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap);
         }
 
@@ -3707,18 +3785,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-        final String vectorProp =
-            metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) : "vector";
-        final RandomAccessVectorValues vectors;
-        if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph()) {
-          vectors = liveVectorValues;
-        } else {
-          vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
-              vectorIndex, ordinalToVectorId, this, getSearchVectorCache());
-        }
+        final RandomAccessVectorValues vectors = searchVectorValues(ordinalToVectorId);
 
         // Group-aware Bits filter. Wraps the same RID validity + allowedRIDs gating that
-        // RIDBitsFilter applies, plus per-group counters that reject candidates whose group has
+        // LiveVectorBitsFilter applies, plus per-group counters that reject candidates whose group has
         // reached capacity. Per-search state lives on the filter instance; do not reuse the
         // instance across calls.
         final Bits bitsFilter = new GroupedRIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex,
@@ -3732,8 +3802,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final ImmutableGraphIndex pooledGraph = graphIndex;
         final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
         try {
-          final ScoreFunction.ExactScoreFunction exactScoreFunction = node ->
-              metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
+          final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
           // Choose efSearch the same way the non-grouped path does, but skip the
@@ -3899,10 +3968,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Wrap in a DefaultSearchScoreProvider (concrete implementation)
         final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
 
-        // Create RID filter if needed
-        final Bits bitsFilter = allowedRIDs != null && !allowedRIDs.isEmpty() ?
-            new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
-            Bits.ALL;
+        // Snapshot the volatile ordinal map once, the way the exact path does: the filter and the result loop below
+        // must resolve an ordinal through the same array, or a concurrent rebuild between the two reads would pair
+        // an ordinal's RID with a vector from a different mapping (issue #4581).
+        final int[] ordinalMap = this.ordinalToVectorId;
+
+        // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
+        // without this the beam fills with nodes the post-filter below then drops (issue #5558).
+        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex);
 
         // Execute search using the PQ-based score provider
         // The graph structure is typically small enough to stay in OS page cache
@@ -3926,8 +3999,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int skippedDeletedOrNull = 0;
         for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
           final int ordinal = nodeScore.node;
-          if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
-            final int vectorId = ordinalToVectorId[ordinal];
+          if (ordinal >= 0 && ordinal < ordinalMap.length) {
+            final int vectorId = ordinalMap[ordinal];
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
             if (loc != null && !loc.deleted) {
               final float distance = scoreToDistance(metadata.similarityFunction, nodeScore.score);

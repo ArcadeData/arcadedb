@@ -1659,6 +1659,46 @@ build indexes through the embedded API with a computed page size, check that the
 An index that already exists on disk is unaffected either way - the page size is read from the component file, not from
 a builder.
 
+## `LSM_VECTOR`: a search aimed at deleted vectors now finds the survivors instead of nothing
+
+Deleting a vector does not take it out of the HNSW graph. It tombstones the location and leaves the node in place until
+the next graph rebuild, which for any index above a thousand vectors is thousands of mutations away. A query whose
+vector landed in a neighbourhood that had been deleted therefore walked into a region where nothing was left to return,
+and answered accordingly - `[]`, while the rest of the index was still there and still searchable with any other query.
+An application that deletes a topical cluster (a tenant, a document set, a time range) leaves exactly that hole, in
+exactly the place queries about that topic land.
+
+Two independent causes, both fixed:
+
+- **The traversal was told every node was an acceptable answer.** JVector's beam stops as soon as it holds enough
+  *acceptable* candidates, so a beam that filled with tombstones declared itself finished; the post-filter then removed
+  them one by one and the caller got a short list, or an empty one. Search now passes a filter that accepts only
+  ordinals still mapping to a live vector - the same predicate the post-filter applies, so nothing that would have
+  survived is lost. Tombstones are still *traversed* (JVector expands a rejected node, it just does not collect it), so
+  the vectors behind the hole stay reachable and the beam keeps walking until it has found them.
+- **A tombstone was scored through a placeholder vector.** The placeholder was a vector of `Float.MIN_NORMAL`s, chosen
+  on the theory that it would score very low. It does not: cosine cancels the magnitude out, and the squared magnitude
+  underflows to zero in float, so the similarity came back `Infinity`. Every tombstone was therefore the *best*
+  candidate in the beam, displacing the real neighbours, and on a JVM with assertions enabled the search failed
+  outright on JVector's own `0 <= score <= 1` check. A node whose vector cannot be read is now scored at the floor of
+  the metric instead, so it sorts behind every real candidate rather than ahead of them.
+
+The brute-force fallback that backs up a degraded graph search now sizes its expectation on the live vector count
+rather than on the graph's ordinal count, and no longer requires the result to be under 80% of what is available - a
+guard that evaluated to `0 < 0` when a single vector survived, and suppressed the only thing left that could answer the
+query.
+
+`select().vectorNeighbors()` on a `PRODUCT`-quantized index is where this was most visible, because that path has
+neither a delta scan nor a brute-force fallback behind it: it returned the empty list directly.
+
+`getStats()` gains a `bruteForceScans` counter. The brute-force scan is the fallback a k-NN query takes when the graph
+walk could not fill it, and it reads every vector in the index - by far the most expensive thing this index does, and
+until now visible only as a `WARNING` in the log. If filtered vector queries are slow, look there first.
+
+One part of this is rebuild-gated. An unreadable vector is no longer encoded into the PQ code table under its
+placeholder, but an index built before this release keeps the codes it already has, so PQ navigation past such a
+vector stays slightly degraded until the next graph rebuild. Results are correct either way - what a query may return
+is decided by the live-vector filter, not by the codes.
 ## Deleting a vertex no longer loses an edge appended while the delete was running
 
 The two changes above closed this window from the removal side: a piece of an edge list that cannot be read is now a
