@@ -35,6 +35,9 @@ import io.swagger.v3.oas.models.responses.ApiResponses;
  */
 public class McpApiSpec implements OpenApiContributor {
 
+  private static final String MCP_PLUGIN_REQUIRED =
+      "Requires MCPPlugin: present in every standard distribution, absent from a custom build that excludes the MCP module.";
+
   @Override
   public void contribute(final OpenAPI openAPI) {
     openAPI.getPaths().addPathItem("/api/v1/mcp", createMcpPath());
@@ -60,7 +63,8 @@ public class McpApiSpec implements OpenApiContributor {
             such as an unknown method or a malformed request body, is reported inside a 200 response: \
             JSON-RPC layers its own error reporting over the HTTP transport, so a non-200 status is \
             reserved for transport-level failures such as missing credentials, a disallowed browser \
-            Origin, an unauthorized user, an unsupported HTTP method, or the server being disabled.""");
+            Origin, an unauthorized user, an unsupported HTTP method, or the server being disabled.\s"""
+            + MCP_PLUGIN_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody(
         "JSON-RPC 2.0 request, notification, or response, or a batch of them as a top-level array",
         null, true));
@@ -98,7 +102,7 @@ public class McpApiSpec implements OpenApiContributor {
     final Operation get = SpecBuilders.operation("getMcpConfig", "MCP",
         "Read the MCP server configuration",
         "Returns the MCP server's enablement, permission flags, tool profile, and access lists. "
-            + "Restricted to the root user.");
+            + "Restricted to the root user. " + MCP_PLUGIN_REQUIRED);
     get.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Current configuration", "McpConfig"),
         "401", "403", "405", "500"));
@@ -112,7 +116,8 @@ public class McpApiSpec implements OpenApiContributor {
             payload rejected on any field leaves the configuration exactly as it was. Restricted to \
             the root user.
 
-            Answers with the full configuration as it stands after the update.""");
+            Answers with the full configuration as it stands after the update.\s"""
+            + MCP_PLUGIN_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody(
         "Partial configuration. Omitted fields keep their current value.", "McpConfig", true));
     post.setResponses(SpecBuilders.standardResponses("200",

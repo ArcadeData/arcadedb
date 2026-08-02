@@ -27,7 +27,7 @@ GITHUB_RELEASES_BASE="https://github.com/arcadedata/arcadedb/releases/download"
 
 # Module metadata
 SHADED_MODULES="gremlin redisw mongodbw postgresw grpcw metrics tracing"
-REGULAR_MODULES="console studio graphql"
+REGULAR_MODULES="console studio graphql mcp"
 
 # Module descriptions for interactive menu
 # Note: Associative arrays require bash 4.0+
@@ -44,6 +44,7 @@ get_module_description() {
   graphql) echo "GraphQL API support" ;;
   metrics) echo "Prometheus metrics integration" ;;
   tracing) echo "OpenTelemetry distributed tracing (OTLP export) - optional plugin" ;;
+  mcp) echo "Model Context Protocol server for LLM clients" ;;
   *) echo "Unknown module" ;;
   esac
 }
@@ -81,7 +82,7 @@ Build custom ArcadeDB distributions with only the modules you need.
 OPTIONS:
     --version=VERSION       ArcadeDB version to build (required for non-interactive mode)
     --modules=MODULES       Comma-separated list of modules. If not provided, will be asked interactively.
-                           Options: console,gremlin,studio,redisw,mongodbw,postgresw,grpcw,graphql,metrics
+                           Options: console,gremlin,studio,redisw,mongodbw,postgresw,grpcw,graphql,metrics,mcp
     --local-repo[=PATH]    Use local Maven repository or directory instead of downloading from Maven Central.
                            If PATH is not provided, defaults to ~/.m2/repository
     --local-base=FILE      Use local base distribution file instead of downloading from GitHub.
@@ -107,6 +108,7 @@ OPTIONAL MODULES:
     grpcw        gRPC wire protocol support
     graphql      GraphQL API support
     metrics      Prometheus metrics integration
+    mcp          Model Context Protocol server for LLM clients
 
 EXAMPLES:
     # Build with Gremlin and Studio
