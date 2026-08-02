@@ -47,8 +47,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The database therefore grants a single batch slot at a time. What is pinned here is not only the
  * rejection but every way the slot has to come back, because a slot left behind stops the database from
  * batching until the process restarts.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue5666ConcurrentGraphBatchTest extends TestHelper {
 

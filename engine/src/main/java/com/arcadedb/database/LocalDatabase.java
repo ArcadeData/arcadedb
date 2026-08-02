@@ -202,7 +202,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private            long                                      lastUpdatedOn;
   private            long                                      lastUsedOn;
   private            int                                       cachedHashCode            = 0;
-  /** #5666: guards against concurrent GraphBatch instances on this database. Never routed through a wrapper. */
+  /** Guards against concurrent GraphBatch instances on this database. Never routed through a wrapper. */
   private final      AtomicBoolean                             batchInProgress           = new AtomicBoolean(false);
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
