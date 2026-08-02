@@ -128,6 +128,12 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * Whether this is the placeholder handed back for a vector that could not be read. {@link #getVector} never
    * returns null - a deleted, missing or unreadable ordinal yields the sentinel so JVector's traversal does not
    * NPE (issue #3715) - so a caller that needs a genuine vector has to ask.
+   * <p>
+   * The check is by reference, so it only recognises a placeholder that never left this instance. One written to disk
+   * and read back - {@code LSMVectorIndexGraphFile} persists {@code getVector(ordinal)} inline when
+   * {@code storeVectorsInGraph} is on - comes back as a different object and would be scored as an ordinary vector.
+   * A rebuild excludes deleted ordinals from the graph it persists, so there is nothing to write today; what keeps
+   * that case right regardless is {@link LiveVectorBitsFilter} and the location map, not this guard.
    */
   boolean isDeletedSentinel(final VectorFloat<?> vector) {
     return vector == deletedSentinelVector;
