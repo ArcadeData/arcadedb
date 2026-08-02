@@ -20,7 +20,9 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
@@ -82,6 +84,11 @@ class Issue5559LocationCacheSizeTest extends TestHelper {
         CREATE INDEX ON Doc (embedding) LSM_VECTOR \
         METADATA {"dimensions": %d, "similarity": "COSINE", "quantization": "INT8", "locationCacheSize": %d}\
         """.formatted(DIMENSIONS, LOCATION_CACHE_CAP)))
+        // A parsing exception, not an execution one: it is what AbstractServerHttpHandler's 400 arm keys on, so
+        // this type is what keeps the refusal a client error over HTTP rather than a 500 carrying a helpful
+        // message nobody displays. Pinned end to end by Issue5559LocationCacheSizeHttpIT in the server module.
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasRootCauseInstanceOf(IndexException.class)
         .hasMessageContaining("locationCacheSize")
         .hasMessageContaining("no longer supported")
         .hasMessageContaining("90 bytes per live vector");
