@@ -3968,9 +3968,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Wrap in a DefaultSearchScoreProvider (concrete implementation)
         final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
 
+        // Snapshot the volatile ordinal map once, the way the exact path does: the filter and the result loop below
+        // must resolve an ordinal through the same array, or a concurrent rebuild between the two reads would pair
+        // an ordinal's RID with a vector from a different mapping (issue #4581).
+        final int[] ordinalMap = this.ordinalToVectorId;
+
         // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
         // without this the beam fills with nodes the post-filter below then drops (issue #5558).
-        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex);
+        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex);
 
         // Execute search using the PQ-based score provider
         // The graph structure is typically small enough to stay in OS page cache
@@ -3994,8 +3999,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int skippedDeletedOrNull = 0;
         for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
           final int ordinal = nodeScore.node;
-          if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
-            final int vectorId = ordinalToVectorId[ordinal];
+          if (ordinal >= 0 && ordinal < ordinalMap.length) {
+            final int vectorId = ordinalMap[ordinal];
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
             if (loc != null && !loc.deleted) {
               final float distance = scoreToDistance(metadata.similarityFunction, nodeScore.score);

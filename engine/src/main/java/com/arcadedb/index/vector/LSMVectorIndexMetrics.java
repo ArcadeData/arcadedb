@@ -39,7 +39,8 @@ class LSMVectorIndexMetrics {
   private final AtomicLong graphRebuildCount = new AtomicLong(0);
   private final AtomicLong compactionCount = new AtomicLong(0);
   // Queries the graph search could not fill, which then walked every ordinal. A full scan per query is the most
-  // expensive thing this index does, and until now it was only a log line (issue #5558).
+  // expensive thing this index does, and until now it was only a log line (issue #5558). Counts the plain k-NN path
+  // only, which is the only one with a fallback to count: the grouped and PQ paths deliberately have none.
   private final AtomicLong bruteForceScans = new AtomicLong(0);
 
   // Cache statistics
