@@ -153,9 +153,11 @@ public class FileManager {
    */
   public synchronized boolean startRecordingChanges() {
     if (recordedChanges != null) {
-      LogManager.instance().log(this, Level.FINE,
-          "startRecordingChanges denied: a session is already active with %d entries",
-          null, recordedChanges.size());
+      // Level-guarded because a contended HA caller polls this method until the session frees up.
+      if (Logger.getLogger(getClass().getName()).isLoggable(Level.FINE))
+        LogManager.instance().log(this, Level.FINE,
+            "startRecordingChanges denied: a session is already active with %d entries",
+            null, recordedChanges.size());
       return false;
     }
 

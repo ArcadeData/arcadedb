@@ -1423,11 +1423,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    if (!isLeader()) {
-      final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
-      throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-          leaderAddr != null ? leaderAddr : "");
-    }
+    if (!isLeader())
+      throw schemaChangesNeedTheLeader();
 
     // A recording session already open ON THIS THREAD means we are nested inside our own DDL or
     // compaction session (schema DDL nests routinely: the outer callback creates the type, an inner one
@@ -1442,6 +1439,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // On the leader, record file changes and send them via Raft immediately
     // (like the legacy HA system) so replicas have the files before WAL pages arrive
     acquireRecordingSession();
+
+    // Claiming the session can take seconds under contention, so leadership is re-checked afterwards:
+    // running the callback on a node that became a follower in the meantime would apply the schema change
+    // there and propose nothing, the same divergence this fix exists to prevent, just from the other end.
+    if (!isLeader()) {
+      proxied.getFileManager().stopRecordingChanges();
+      throw schemaChangesNeedTheLeader();
+    }
 
     final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
 
@@ -1702,6 +1707,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *                          as the non-retryable give-up signal - but says so in its message rather than
    *                          reporting an elapsed timeout that never elapsed.
    */
+  private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
+    final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+    return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
+        leaderAddr != null ? leaderAddr : "");
+  }
+
   private void acquireRecordingSession() {
     if (proxied.getFileManager().startRecordingChanges())
       return;
