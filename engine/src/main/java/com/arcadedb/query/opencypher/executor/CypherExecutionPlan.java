@@ -635,8 +635,9 @@ public class CypherExecutionPlan {
   /**
    * The count push-down this query would run, built only to be described, or null when it would not take one.
    * <p>
-   * It builds the same steps {@link #execute()} would and pulls none of them, so nothing is counted; the one thing
-   * it does read is the schema, through the emptiness check that decides between a real push-down and a constant.
+   * It builds the same steps {@link #execute()} would and pulls none of them, so no count is computed. What it does
+   * read is the schema, through the emptiness check that decides between a real push-down and a constant - and, on a
+   * counter that has never been computed, the one bucket scan {@link #typeIsProvablyEmpty} describes.
    */
   private AbstractExecutionStep countPushDownForDescription() {
     if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty())
@@ -3774,7 +3775,7 @@ public class CypherExecutionPlan {
    */
   private String typeCountOutputAlias(final boolean countRowsMode, final String matchVariable) {
     if (countRowsMode)
-      return returnPreservesRowCount() ? ROW_COUNT_ALIAS : null;
+      return rowCountAlias();
 
     final ReturnClause returnClause = statement.getReturnClause();
     if (returnClause == null || returnClause.isDistinct() || returnClause.getReturnItems().size() != 1)
@@ -4212,6 +4213,9 @@ public class CypherExecutionPlan {
     if (statement.getSkip() == null && statement.getLimit() == null)
       return countStep;
 
+    // Built the way the ordinary pipeline builds it at every other SKIP/LIMIT site, rather than reusing the field:
+    // the field is null for a plan constructed without one, and what the evaluation needs is the function factory it
+    // carries, not the instance.
     final CypherFunctionFactory functionFactory = expressionEvaluator != null ?
         expressionEvaluator.getFunctionFactory() : null;
     final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
@@ -4241,9 +4245,18 @@ public class CypherExecutionPlan {
    * match, so its row count <i>is</i> the match count and the same push-downs answer it (issue #5715).
    */
   private String countPushDownAlias(final boolean countRowsMode) {
-    if (countRowsMode)
-      return returnPreservesRowCount() ? ROW_COUNT_ALIAS : null;
-    return isCountStarReturn();
+    return countRowsMode ? rowCountAlias() : isCountStarReturn();
+  }
+
+  /**
+   * The alias a row-count push-down publishes under, or null when this statement's RETURN would not leave the row
+   * count alone.
+   * <p>
+   * Both detectors ask it, and it is one method rather than a branch in each of them for the reason this whole issue
+   * exists: a precondition written down twice is a precondition that drifts.
+   */
+  private String rowCountAlias() {
+    return returnPreservesRowCount() ? ROW_COUNT_ALIAS : null;
   }
 
   /**
