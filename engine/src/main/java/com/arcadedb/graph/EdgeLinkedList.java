@@ -536,7 +536,7 @@ public class EdgeLinkedList {
     } catch (final RecordNotFoundException e) {
       throw new ConcurrentModificationException(
           "Edge list " + direction + " chunk " + chunkRID + " of vertex " + vertex.getIdentity()
-              + " not visible yet (concurrent commit in flight)");
+              + " not visible yet (concurrent commit in flight)", e);
     }
   }
 
@@ -647,7 +647,7 @@ public class EdgeLinkedList {
     } catch (final RecordNotFoundException e) {
       throw new ConcurrentModificationException(
           "Edge list " + direction + " chunk " + chunkRID + " of vertex " + vertex.getIdentity()
-              + " is no longer readable (concurrent commit in flight)");
+              + " is no longer readable (concurrent commit in flight)", e);
     }
   }
 
