@@ -39,7 +39,6 @@ import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -1653,7 +1652,12 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     // 5) Capture warnings/severe logs during the reopen.
     final List<String> captured = new CopyOnWriteArrayList<>();
-    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    // #5773: getLogger(), not reflection on the private field - the accessor exists for exactly this
+    // save-and-restore, and a field rename would break the reflective form with no compile error. NOTE that
+    // LogManager is a SINGLETON, so this swap is PROCESS-WIDE until the finally below restores it: safe only
+    // because surefire runs test classes sequentially within a fork. Under class-level parallelism a concurrent
+    // test's WARNING output would land in the list below. There is no per-invocation seam to capture through.
+    final Logger originalLogger = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new CapturingLogger(captured, originalLogger));
 
     try {
@@ -1877,13 +1881,6 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
         return true;
     }
     return false;
-  }
-
-  @SuppressWarnings("unchecked")
-  private static <T> T readField(final Object target, final String name) throws Exception {
-    final Field f = target.getClass().getDeclaredField(name);
-    f.setAccessible(true);
-    return (T) f.get(target);
   }
 
   /**

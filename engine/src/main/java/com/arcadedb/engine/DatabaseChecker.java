@@ -466,19 +466,33 @@ public class DatabaseChecker {
   }
 
   /**
-   * Records a warning raised by this class itself (as opposed to one merged in from a nested checker): always
-   * counted, retained only while under {@code maxWarnings}, and - like {@code GraphDatabaseChecker.addWarning} -
-   * LOGGED when it has to be dropped, so a capped run does not lose the message silently.
+   * Records a warning raised by this class itself (as opposed to one merged in from a nested checker): counted,
+   * retained only while under {@code maxWarnings}, and - like {@code GraphDatabaseChecker.addWarning} - LOGGED when
+   * it has to be dropped, so a capped run does not lose the message silently.
    * <p>
    * #5764: shared with the type-wide {@link #checkDocuments}, which used to bypass the totals and the cap.
+   * <p>
+   * #5773: de-duplicated on the same terms as {@link #addCorrupted}, and for the same reason. The retained
+   * {@code warnings} is a {@code Set}, so two findings that render to the same message have always collapsed to one
+   * line; the total used to count both, which made it exceed the retained size on a run nowhere near its cap. Both
+   * sides now answer "distinct messages".
+   * <p>
+   * The one residual: a message produced identically by two DIFFERENT sub-checks (each {@code GraphDatabaseChecker}
+   * keeps its own set, and {@link #updateStats} sums their totals while the sets are union-ed here) is still
+   * retained once and counted twice. Reachable only for the few messages that carry no RID - "reconnected N
+   * outgoing edges" for two types that reconnected the same N - and closing it would mean threading a dropped-count
+   * out of every sub-check instead of a total, which buys nothing an operator reads.
    */
   private void addWarning(final String warning) {
-    result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
     final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
-    if (warnings.size() < maxWarnings)
-      warnings.add(warning);
+    if (warnings.size() < maxWarnings) {
+      if (!warnings.add(warning))
+        return;
+    } else if (warnings.contains(warning))
+      return;
     else if (verboseLevel > 0)
       LogManager.instance().log(this, Level.WARNING, "- " + warning);
+    result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
   }
 
   /**
@@ -493,6 +507,10 @@ public class DatabaseChecker {
    * every RID ever counted, which is precisely the memory the cap exists to refuse. Neither caller reaches it today
    * - the type-wide bucket scan visits each RID once, and the RECORD scope is a {@link Set}, so a duplicate cannot
    * survive as far as {@link #groupRecordsByType()}.
+   * <p>
+   * #5773: {@code GraphDatabaseChecker.addCorrupted} used to increment unconditionally past the cap, so the two
+   * near-identical helpers disagreed on the same input (its {@code checkEdges} DOES flag one RID twice, for an edge
+   * whose endpoints are both gone). They now share this behaviour; keep them aligned rather than "fixing" one back.
    * <p>
    * The cap is {@code maxWarnings} because that is the only bound this class has; the {@code maxCorrupted} the
    * graph arms take is a separate knob {@link GraphDatabaseChecker} owns, and it is passed the remaining budget

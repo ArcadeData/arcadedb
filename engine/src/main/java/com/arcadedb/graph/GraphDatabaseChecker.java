@@ -150,7 +150,7 @@ public class GraphDatabaseChecker {
    * the alternative if the always-on cost proves unwelcome; left always-on for now.
    */
   public Map<String, Object> reclaimOrphanedEdgeSegments(final int verboseLevel, final int maxWarnings) {
-    final List<String> warnings = new ArrayList<>();
+    final LinkedHashSet<String> warnings = new LinkedHashSet<>();
     final AtomicLong totalWarnings = new AtomicLong();
     final Map<String, Object> stats = new HashMap<>();
 
@@ -391,18 +391,32 @@ public class GraphDatabaseChecker {
    * every surviving edge that points at the vertex, and no index maps endpoints back to edges. So the scoped run
    * saves the vertex passes, not the edge pass.
    * <p>
-   * #5764 - why ONE pass here answers what TWO answer below, which is not obvious from the shapes. The type-wide
-   * arm materialises each record twice: once from the raw page view in the bucket scan
-   * ({@code newImmutableRecord(type, rid, view)} then {@code asVertex(true)}), and once again through the
-   * connectivity walk. The scoped arm looks like it runs only the second - but {@code LocalDatabase.lookupByRID}
-   * IS the first: it calls the same {@code newImmutableRecord(type, rid, bucket.getRecord(rid).copyOfContent())},
-   * and {@link #checkVertices}' shared {@code checkConnectivity} opens with the same {@code asVertex(true)}, whose
-   * {@code loadContent} flag is what forces the buffer decode. Both halves of the type-wide first pass therefore
-   * run per listed RID, and no corruption shape reaches one enumeration but not the other:
-   * {@code LocalBucket.getRecord} and {@code LocalBucket.scan} resolve placeholders and multi-page chains
-   * identically and skip the same slot markers. The type-wide pass is a second look at the same bytes, kept there
-   * because a scan is how a whole type is enumerated at all - not a check the scoped run is missing. Pinned by
-   * {@code CheckDatabaseRecordScopeTest.theScopedAndTypeWideRunsAgreeOnAGenuinelyCorruptedRecord}.
+   * #5764/#5773 - both arms materialise each record EXACTLY ONCE, which is not obvious from the shapes and is the
+   * reason the type-wide arm no longer opens with a raw bucket scan of its own. The scoped arm materialises through
+   * {@code LocalDatabase.lookupByRID}; the type-wide arm through {@code LocalDatabase.scanType}, whose callback does
+   * the same {@code newImmutableRecord(type, rid, view)} from the same raw page view that {@code lookupByRID} builds
+   * from {@code bucket.getRecord(rid).copyOfContent()}. Both then hand the record to the shared
+   * {@code checkConnectivity}, which opens with the same {@code asVertex(true)} whose {@code loadContent} flag forces
+   * the buffer decode. No corruption shape reaches one enumeration but not the other: {@code LocalBucket.getRecord}
+   * and {@code LocalBucket.scan} resolve placeholders and multi-page chains identically and skip the same slot
+   * markers. Pinned by {@code CheckDatabaseRecordScopeTest.theScopedAndTypeWideRunsAgreeOnAGenuinelyCorruptedRecord}.
+   * <p>
+   * #5773 - what the dropped type-wide first pass did, and why removing it detects strictly no less. It scanned the
+   * buckets, built each record with {@code newImmutableRecord} and called {@code asVertex(true)}, flagging a failure
+   * of either. The surviving {@code scanType} pass does the FIRST of those inside {@code LocalBucket.scan}'s per-slot
+   * {@code try}, so a construction failure is routed to the {@code errorRecordCallback} below (which warns and flags
+   * the record), and the SECOND inside {@code checkConnectivity}'s {@code catch (Throwable)}, which warns and flags
+   * it likewise. The dropped pass in fact saw LESS: it passed a {@code null} error callback, so a failure inside the
+   * bucket machinery itself (placeholder resolution, a multi-page chain read) was only logged, never reported.
+   * <p>
+   * What removing it is and is not worth, MEASURED rather than assumed - the record-materialisation count halves,
+   * but materialisation is not what the step spends its time on. On a warm 200k-vertex / 200k-edge graph with no
+   * super-node, the per-type steps went 173 ms -> 162 ms (vertices) and 155 ms -> 142 ms (edges), about 7% each; a
+   * full {@code CHECK DATABASE} went 509 ms -> 472 ms. The pass is cheap because {@code asVertex(true)} only parses
+   * the edge pointers, not the properties. The real reasons to drop it are that it was provably redundant and that
+   * it emitted a "vertex/edge <rid> cannot be loaded, REMOVING IT" warning on runs without {@code FIX}, which
+   * remove nothing - and a duplicate warning per corrupt record besides. Pinned by
+   * {@code CheckDatabaseSinglePassTest}.
    */
   public Map<String, Object> checkVertices(final String typeName, final Collection<RID> scopedRecords,
       final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {
@@ -412,7 +426,7 @@ public class GraphDatabaseChecker {
     final AtomicLong totalWarnings = new AtomicLong();
     final AtomicLong totalCorrupted = new AtomicLong();
     final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
-    final List<String> warnings = new ArrayList<>();
+    final LinkedHashSet<String> warnings = new LinkedHashSet<>();
     final Set<RID> reconnectOutEdges = new HashSet<>();
     final Set<RID> reconnectInEdges = new HashSet<>();
     final Map<RID, Long> missingReferences = new HashMap<>();
@@ -472,25 +486,9 @@ public class GraphDatabaseChecker {
           }
         }
       } else {
-        // TWO FULL PASSES OVER THE TYPE (record-type scan + connectivity walk): progress total is 2x the count.
-        // countType reads the maintained bucket counters (no scan), so sizing the total is negligible.
-        progressBegin(progressStepName, 2 * database.countType(typeName, false));
-
-        // CHECK RECORD IS OF THE RIGHT TYPE
-        final DocumentType type = database.getSchema().getType(typeName);
-        for (final Bucket b : type.getBuckets(false)) {
-          b.scan((rid, view) -> {
-            try {
-              final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
-              record.asVertex(true);
-            } catch (Exception e) {
-              addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " cannot be loaded, removing it");
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-            }
-            progressTick();
-            return true;
-          }, null);
-        }
+        // ONE FULL PASS OVER THE TYPE (#5773): progress total is the record count. countType reads the maintained
+        // bucket counters (no scan), so sizing the total is negligible.
+        progressBegin(progressStepName, database.countType(typeName, false));
 
         database.scanType(typeName, false, record -> {
           checkConnectivity.accept(record);
@@ -535,8 +533,8 @@ public class GraphDatabaseChecker {
     } finally {
       stats.put("autoFix", autoFix.get());
       stats.put("corruptedRecords", corruptedRecords);
-stats.put("duplicateLightEdges", duplicateLightEdges.get());
-            stats.put("invalidLinks", invalidLinks.get());
+      stats.put("duplicateLightEdges", duplicateLightEdges.get());
+      stats.put("invalidLinks", invalidLinks.get());
       stats.put("warnings", warnings);
       stats.put("totalWarnings", totalWarnings.get());
       stats.put("totalCorruptedRecords", totalCorrupted.get());
@@ -555,7 +553,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
    * does not): that is the same behaviour as before and the {@code checkEdges} pass reports it.
    */
   private void reconnectEdges(Set<RID> reconnectOutEdges, Set<RID> reconnectInEdges, Set<RID> corruptedRecords,
-      List<String> warnings, AtomicLong totalWarnings, int maxWarnings, Map<String, Object> stats) {
+      Collection<String> warnings, AtomicLong totalWarnings, int maxWarnings, Map<String, Object> stats) {
     // BROWSE ALL THE EDGES AND COLLECT THE ONES PART OF THE RECONNECTION
     final List<EdgeType> edgeTypes = new ArrayList<>();
     for (DocumentType schemaType : database.getSchema().getTypes()) {
@@ -615,13 +613,13 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     }
   }
 
-  private static void warnUnreadableEdgeDuringRebuild(final List<String> warnings, final AtomicLong totalWarnings,
+  private static void warnUnreadableEdgeDuringRebuild(final Collection<String> warnings, final AtomicLong totalWarnings,
       final int maxWarnings, final Object rid, final Throwable error) {
     addWarning(warnings, totalWarnings, maxWarnings,
         "edge " + rid + " could not be read during the edge-list rebuild, skipping it (error: " + describe(error) + ")");
   }
 
-  private void checkIncomingEdges(boolean fix, Vertex vertex, List<String> warnings, AtomicLong totalWarnings, int maxWarnings,
+  private void checkIncomingEdges(boolean fix, Vertex vertex, Collection<String> warnings, AtomicLong totalWarnings, int maxWarnings,
       RID vertexIdentity, AtomicLong invalidLinks, LinkedHashSet<RID> corruptedRecords, AtomicLong totalCorrupted,
       int maxCorrupted, Set<RID> reconnectInEdges, Set<RID> reconnectOutEdges, Map<RID, Long> missingReferences,
       Map<RID, String> missingReferenceErrors) {
@@ -844,7 +842,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     }
   }
 
-  private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final List<String> warnings,
+  private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final Collection<String> warnings,
       final AtomicLong totalWarnings, final int maxWarnings, final RID vertexIdentity, final AtomicLong invalidLinks,
       final LinkedHashSet<RID> corruptedRecords, final AtomicLong totalCorrupted, final int maxCorrupted,
       final Set<RID> reconnectOutEdges, final Set<RID> reconnectInEdges, final Map<RID, Long> missingReferences,
@@ -1133,7 +1131,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     // Use a Set (matching checkVertices) so the same RID flagged on both sides of an edge is recorded once and
     // totalCorrupted (which counts only genuinely new entries, see addCorrupted) stays aligned with its size.
     final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
-    final List<String> warnings = new ArrayList<>();
+    final LinkedHashSet<String> warnings = new LinkedHashSet<>();
     final Map<RID, Long> missingReferences = new HashMap<>();
     final Map<RID, String> missingReferenceErrors = new HashMap<>();
     // Vertices whose edge LIST failed to walk during the back-reference probe: warned once each (a broken
@@ -1266,24 +1264,9 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
           }
         }
       } else {
-        // TWO FULL PASSES OVER THE TYPE (record-type scan + endpoint checks): progress total is 2x the count.
-        progressBegin(progressStepName, 2 * database.countType(typeName, false));
-
-        // CHECK RECORD IS OF THE RIGHT TYPE
-        final DocumentType type = database.getSchema().getType(typeName);
-        for (final Bucket b : type.getBuckets(false)) {
-          b.scan((rid, view) -> {
-            try {
-              final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
-              record.asEdge(true);
-            } catch (Exception e) {
-              addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " cannot be loaded, removing it");
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-            }
-            progressTick();
-            return true;
-          }, null);
-        }
+        // ONE FULL PASS OVER THE TYPE (#5773): progress total is the record count. See checkVertices for why the
+        // record-type scan that used to precede this detected nothing the endpoint pass misses.
+        progressBegin(progressStepName, database.countType(typeName, false));
 
         database.scanType(typeName, false, record -> {
           checkEndpoints.accept(record);
@@ -1365,24 +1348,50 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     }
   }
 
-  private static void addWarning(final List<String> warnings, final AtomicLong totalWarnings, final int maxWarnings,
+  /**
+   * Records a warning, bounded by {@code maxWarnings} and de-duplicated exactly the way {@link #addCorrupted} bounds
+   * and de-duplicates the corrupted-record set - the two are one policy, stated once here and once there.
+   * <p>
+   * #5773: {@code totalWarnings} used to count OCCURRENCES while {@code DatabaseChecker} publishes the retained
+   * warnings as a {@code Set}, so two findings rendering to the same message (a vertex with two null entries in its
+   * edge list, say) collapsed to one line and counted two - the total exceeded the retained size on a run nowhere
+   * near its cap, which is exactly what makes a total useless. Both sides now answer "distinct messages", so an
+   * uncapped run has {@code totalWarnings == warnings.size()} and a capped one reports how many it could not keep.
+   */
+  private static void addWarning(final Collection<String> warnings, final AtomicLong totalWarnings, final int maxWarnings,
       final String message) {
-    totalWarnings.incrementAndGet();
-    if (warnings.size() < maxWarnings)
-      warnings.add(message);
+    if (warnings.size() < maxWarnings) {
+      // Under the cap the retained set itself answers "have I already said this". Collection.add() returns false
+      // for an item already present in a Set.
+      if (!warnings.add(message))
+        return;
+    } else if (warnings.contains(message))
+      // Past the cap: still recognised while it is retained (see addCorrupted for the limit of that).
+      return;
     else
+      // Dropped rather than retained, so it is not lost silently.
       LogManager.instance().log(GraphDatabaseChecker.class, Level.WARNING, message);
+    totalWarnings.incrementAndGet();
   }
 
+  /**
+   * Flags an item as corrupted, bounded by {@code maxCorrupted}: the total keeps counting, the retained collection
+   * does not grow without limit.
+   * <p>
+   * De-duplication is EXACT while the collection is under the cap - the collection itself answers "have I seen
+   * this". Past the cap it degrades to what the retained collection can still answer: an item already in it is
+   * recognised (hence the {@code contains} check rather than an unconditional increment, aligned with
+   * {@code DatabaseChecker.addCorrupted} by #5773), but one that was never retained cannot be, so a second flag on
+   * it counts twice. Deliberate: the only way to keep it exact past the cap is a second unbounded collection of
+   * every item ever counted, which is precisely the memory the cap exists to refuse.
+   */
   private static <T> void addCorrupted(final Collection<T> corrupted, final AtomicLong totalCorrupted, final int maxCorrupted,
       final T item) {
     if (corrupted.size() < maxCorrupted) {
-      // Under the cap: count the record only the first time it is recorded so totalCorrupted stays aligned with the
-      // de-duplicated collection size. Collection.add() returns false for an item already present in a Set.
-      if (corrupted.add(item))
-        totalCorrupted.incrementAndGet();
-    } else
-      // At/over the cap the item is not stored, so de-duplication is no longer possible: count the occurrence.
-      totalCorrupted.incrementAndGet();
+      if (!corrupted.add(item))
+        return;
+    } else if (corrupted.contains(item))
+      return;
+    totalCorrupted.incrementAndGet();
   }
 }
