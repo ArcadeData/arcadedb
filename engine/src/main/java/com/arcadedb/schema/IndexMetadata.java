@@ -22,7 +22,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -157,6 +160,62 @@ public class IndexMetadata {
    */
   protected void applyUserMetadata(final JSONObject json) {
     // no user-facing setting on a plain index
+  }
+
+  /**
+   * Reads back the current value of one {@code METADATA} key, the inverse of the corresponding branch of
+   * {@link #applyUserMetadata}. Answers {@code null} for a key this index type does not have.
+   * <p>
+   * Every key {@link #getUserMetadataKeys()} declares must be readable here. {@code IndexMetadataUserSettingComparisonTest}
+   * enforces it, so a setting added to one of the two lists and not the other fails a test instead of silently
+   * becoming invisible to {@link #findUserSettingMismatches}.
+   */
+  protected Object getUserMetadataValue(final String key) {
+    return null;
+  }
+
+  /**
+   * Answers which of the settings {@code requested} NAMES this definition does not already carry, so an
+   * {@code IF NOT EXISTS} request can tell "the index that is there is the one I asked for" from "the index that is
+   * there happens to sit on the same properties".
+   * <p>
+   * Only the keys the clause actually wrote are compared. A setting the caller did not name is one they expressed no
+   * opinion about, so the existing index satisfies it by definition - which is what keeps a guarded statement with no
+   * {@code METADATA} the plain no-op it has always been. Everything named IS compared, including the tuning knobs a
+   * rebuild would not be needed to change ({@code efSearch}, {@code inactivityRebuildTimeoutMs}): writing a value into
+   * a statement and having it silently discarded is the surprise this exists to remove, and the caller who meant the
+   * no-op simply leaves the key out.
+   * <p>
+   * The comparison runs on the INTERNAL representation, not on the JSON: the request is first read through this index
+   * type's own {@link #applyUserMetadata} onto a copy, so {@code "384"} and {@code 384}, {@code "cosine"} and
+   * {@code COSINE} compare as the one value each denotes rather than as the two spellings they are. It also means an
+   * unreadable value is reported by the reader that owns it, with its own message, instead of surfacing here as a
+   * spurious mismatch.
+   *
+   * @param requested the {@code METADATA} clause of the request, or {@code null} when it carried none
+   * @param indexType the requested index type, named in the reader's error messages
+   *
+   * @return one human-readable line per differing setting, empty when the request is already satisfied
+   */
+  public final List<String> findUserSettingMismatches(final JSONObject requested, final Schema.INDEX_TYPE indexType) {
+    if (requested == null || requested.isEmpty())
+      return List.of();
+
+    final IndexMetadata asRequested = copy(typeName,
+        propertyNames == null ? null : propertyNames.toArray(new String[0]), associatedBucketId);
+    asRequested.fromUserMetadata(requested, indexType);
+
+    final List<String> mismatches = new ArrayList<>();
+    for (final String key : requested.keySet()) {
+      final Object current = getUserMetadataValue(key);
+      final Object wanted = asRequested.getUserMetadataValue(key);
+      if (!Objects.equals(current, wanted))
+        mismatches.add(key + "=" + current + " (requested " + wanted + ")");
+    }
+    // Stable order: a JSONObject key set is unordered, and an error message that reshuffles between two identical
+    // statements is one nobody can match on.
+    Collections.sort(mismatches);
+    return mismatches;
   }
 
   /**

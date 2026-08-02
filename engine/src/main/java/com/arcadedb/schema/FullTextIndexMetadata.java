@@ -283,6 +283,32 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * The per-field entries answer from the map rather than from {@code getAnalyzerClass(field)} / the boost getter, which
+   * fall back to the index-wide default: a request naming {@code title_analyzer} asks for an analyzer configured FOR
+   * that field, and an index that merely inherits the default one does not provide it.
+   */
+  @Override
+  protected Object getUserMetadataValue(final String key) {
+    return switch (key) {
+      case "analyzer" -> analyzerClass;
+      case "index_analyzer" -> indexAnalyzerClass;
+      case "query_analyzer" -> queryAnalyzerClass;
+      case "allowLeadingWildcard" -> allowLeadingWildcard;
+      case "defaultOperator" -> defaultOperator;
+      case "similarity" -> similarity;
+      case "bm25_k1" -> bm25K1;
+      case "bm25_b" -> bm25B;
+      default -> {
+        if (key.endsWith(ANALYZER_SUFFIX))
+          yield fieldAnalyzers.get(key.substring(0, key.length() - ANALYZER_SUFFIX.length()));
+        if (key.endsWith(BOOST_SUFFIX))
+          yield fieldBoosts.get(key.substring(0, key.length() - BOOST_SUFFIX.length()));
+        yield null;
+      }
+    };
+  }
+
+  /**
    * Returns the field name a per-field {@code METADATA} key configures, having checked that this index covers it.
    * <p>
    * An analyzer or a boost for a property the index does not cover is dead configuration: only an indexed field is

@@ -50,6 +50,17 @@ class LSMVectorIndexRebuildTest extends TestHelper {
   // Must be >= ASYNC_REBUILD_MIN_GRAPH_SIZE (1000) so the async path is used
   private static final int LARGE_INDEX_VECTORS = 1100;
 
+  /**
+   * Ceiling for every "the background rebuild has settled" wait in this class (issue #5765).
+   * <p>
+   * Deliberately an absolute duration rather than a multiple of the inactivity timeout: what varies between a fast
+   * laptop and a loaded CI runner with several engine suites in flight is how long the REBUILD itself takes, and that
+   * has nothing to do with how long the timer waits before starting it. Scaling the bound off {@code timeoutMs} made
+   * the wait shortest exactly where the work is slowest. Generous on purpose - it costs nothing when the rebuild
+   * lands on time, and these are liveness assertions: a rebuild that never happens still fails, just later.
+   */
+  private static final Duration REBUILD_SETTLE_TIMEOUT = Duration.ofSeconds(120);
+
   // Issue #3147: REBUILD INDEX preserves vector metadata (dimensions, similarity, maxConnections, beamWidth, idPropertyName) instead of recreating with dimensions=0.
   @Test
   void rebuildIndexPreservesVectorMetadata() {
@@ -381,16 +392,17 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     // Search should have returned very fast (not blocked by rebuild)
     assertThat(elapsedMs).as("Search should not block on async rebuild").isLessThan(5000);
 
-    // Wait for the async rebuild to complete
-    Thread.sleep(5000);
-
+    // Wait for the async rebuild to complete. Polled rather than slept: the rebuild runs on a background thread, so
+    // any fixed wait is a bet on how loaded the machine is (issue #5765).
     // After async rebuild, mutation counter should be reset or low.
     // With incremental inserts via live builder, counter may reflect inserts that
     // went directly to graph (not via delta/rebuild path).
-    stats = lsmIndex.getStats();
-    assertThat(stats.get("mutationsSinceRebuild"))
-        .as("Mutation counter should be reset or low after async rebuild completes")
-        .isLessThanOrEqualTo((long) lowThreshold);
+    Awaitility.await("the async rebuild drains the mutation counter")
+        .atMost(REBUILD_SETTLE_TIMEOUT)
+        .pollInterval(Duration.ofMillis(100))
+        .untilAsserted(() -> assertThat(lsmIndex.getStats().get("mutationsSinceRebuild"))
+            .as("Mutation counter should be reset or low after async rebuild completes")
+            .isLessThanOrEqualTo((long) lowThreshold));
   }
 
   // Issue #3679: the IndexCursor get() path also honours the rebuild threshold (no rebuild while below threshold).
@@ -510,7 +522,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     // (issue #3683). This replaces a fixed 200ms "let it start" sleep whose injection window was missed under
     // CI load; the bound keeps a rebuild delayed behind the single-permit REBUILD_SEMAPHORE from hanging the test.
     Awaitility.await("async rebuild snapshotted its start counter")
-        .atMost(Duration.ofSeconds(30))
+        .atMost(REBUILD_SETTLE_TIMEOUT)
         .pollInterval(Duration.ofMillis(20))
         .until(() -> lsmIndex.getStats().get("rebuildSnapshotGeneration") > snapshotGenBefore);
 
@@ -529,7 +541,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     // LSMVectorIndexIncrementalIngestScalingTest.graphShouldKeepAbsorbingPendingVectorsWithoutFurtherSearches.
     final long totalInserted = LARGE_INDEX_VECTORS + threshold + vectorsDuringBuild;
     Awaitility.await("every vector inserted during the previous rebuild reaches the graph")
-        .atMost(Duration.ofSeconds(60))
+        .atMost(REBUILD_SETTLE_TIMEOUT)
         .pollInterval(Duration.ofMillis(200))
         .untilAsserted(() -> {
           if (lsmIndex.getStats().get("mutationsSinceRebuild") > 0)
@@ -595,17 +607,20 @@ class LSMVectorIndexRebuildTest extends TestHelper {
         .as("Delta buffer should have entries before timeout fires")
         .isGreaterThan(0L);
 
-    // Wait for the inactivity timeout to fire plus some margin
-    Thread.sleep(timeoutMs + 3_000);
-
-    // After the timeout, the graph should have been rebuilt and delta buffer flushed
-    stats = lsmIndex.getStats();
-    assertThat(stats.get("mutationsSinceRebuild"))
-        .as("Mutation counter should be reset after inactivity rebuild")
-        .isEqualTo(0L);
-    assertThat(stats.get("deltaVectorsCount"))
-        .as("Delta buffer should be empty after inactivity rebuild")
-        .isEqualTo(0L);
+    // Wait for the inactivity timeout to fire AND for the rebuild it starts to finish. The fixed
+    // `timeoutMs + 3s` sleep this replaces bounded only the first of the two (issue #5765).
+    Awaitility.await("the inactivity rebuild flushes both counters")
+        .atMost(REBUILD_SETTLE_TIMEOUT)
+        .pollInterval(Duration.ofMillis(100))
+        .untilAsserted(() -> {
+          final Map<String, Long> settled = lsmIndex.getStats();
+          assertThat(settled.get("mutationsSinceRebuild"))
+              .as("Mutation counter should be reset after inactivity rebuild")
+              .isEqualTo(0L);
+          assertThat(settled.get("deltaVectorsCount"))
+              .as("Delta buffer should be empty after inactivity rebuild")
+              .isEqualTo(0L);
+        });
   }
 
   // Issue #3737: each new mutation resets the inactivity timer so the rebuild only fires after a sustained quiet period.
@@ -660,7 +675,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     // and resets the counter to 0. Poll instead of sleeping a fixed interval: the timer fire plus the rebuild
     // can take noticeably longer than the raw timeout on a loaded CI runner.
     Awaitility.await("inactivity rebuild flushes the mutation counter after the quiet period")
-        .atMost(Duration.ofMillis(timeoutMs * 20L))
+        .atMost(REBUILD_SETTLE_TIMEOUT)
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> assertThat(lsmIndex.getStats().get("mutationsSinceRebuild"))
             .as("Mutation counter should be reset after inactivity rebuild")
@@ -837,10 +852,9 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(indexA.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
     assertThat(indexB.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
 
-    // 25x = first timer cycle + retry cycle for the skipped index + two synchronous rebuilds
-    // (well under 1s each at 50 vectors) + slack for GC pauses on loaded CI runners.
+    // The wait covers the first timer cycle, the retry cycle for the skipped index and two synchronous rebuilds.
     Awaitility.await("both small-graph indexes drain pending mutations after at least one skip cycle")
-        .atMost(Duration.ofMillis(timeoutMs * 25L))
+        .atMost(REBUILD_SETTLE_TIMEOUT)
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> {
           assertThat(indexA.getStats().get("mutationsSinceRebuild")).isEqualTo(0L);
