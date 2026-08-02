@@ -47,6 +47,7 @@ public class FileManager {
   // Volatile because startRecordingChanges()/stopRecordingChanges() are the handshake HA uses to decide
   // whether a schema change still needs replicating; a stale read there loses the change silently (#5728).
   private volatile     List<FileChange>                          recordedChanges   = null;
+  private volatile     Thread                                    recordingThread   = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
 
   public static class FileChange {
@@ -159,9 +160,23 @@ public class FileManager {
     }
 
     recordedChanges = new ArrayList<>();
+    recordingThread = Thread.currentThread();
     LogManager.instance().log(this, Level.FINE,
         "startRecordingChanges: new session begun on thread '%s'", null, Thread.currentThread().getName());
     return true;
+  }
+
+  /**
+   * Tells apart the two reasons {@link #startRecordingChanges()} can refuse. A caller nested inside its own
+   * session may proceed, because the frame that opened the session still owns the recorded changes and will
+   * act on them; a caller facing a session opened by a different thread has no such guarantee and must wait
+   * for its own. Conflating the two let an HA leader apply a schema change locally and replicate nothing
+   * (#5728).
+   *
+   * @return true when the active session was opened by the calling thread
+   */
+  public synchronized boolean isRecordingChangesOnCurrentThread() {
+    return recordedChanges != null && recordingThread == Thread.currentThread();
   }
 
   public List<FileChange> getRecordedChanges() {
@@ -181,6 +196,7 @@ public class FileManager {
           null, Thread.currentThread().getName(), recordedChanges.size(), dump.toString());
     }
     recordedChanges = null;
+    recordingThread = null;
   }
 
   /**

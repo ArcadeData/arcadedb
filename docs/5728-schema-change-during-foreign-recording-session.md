@@ -68,11 +68,15 @@ with a fresh list and the first would lose its recorded file creations.
 
 `ha-raft/src/main/java/com/arcadedb/server/ha/raft/RaftReplicatedDatabase.java`
 
-- Distinguish the two cases with two signals: `isSchemaCommitThread`, the thread-local already set by both
-  session owners (`recordFileChanges` line 1449, `runWithCompactionReplication` line 1550), **and** this
-  database's own recording session being open. Both are required because the thread-local is static, so on
-  its own it would also match a thread nested in a *different* database's session, for which this database
-  has replicated nothing. When both hold, nesting is safe - delegate to `proxied` as before.
+- Distinguish the two cases by asking this database's own `FileManager` whether the active session belongs
+  to the calling thread (`isRecordingChangesOnCurrentThread()`). When it does, nesting is safe - delegate
+  to `proxied` as before. The static `isSchemaCommitThread` thread-local is deliberately *not* the signal:
+  it is shared across every `RaftReplicatedDatabase`, so it would also answer yes for a thread nested in a
+  *different* database's session, for which this database has replicated nothing.
+- `recordFileChanges` now saves and restores that thread-local instead of removing it, so a session opened
+  on another database from inside an outer callback cannot clear the outer frame's mark and send its
+  remaining commits as separate `TX_ENTRY`s (the #4083 ordering hazard). `runWithCompactionReplication`
+  keeps the bare `remove()` - it defers rather than nesting, so it can never be the inner frame.
 - When it is not set, the session belongs to another thread. `acquireRecordingSession()` waits for it to
   be released instead of silently skipping replication, then opens our own session and replicates
   normally. On expiry throw `TimeoutException` rather than diverge - unlike a compaction, a schema change
@@ -86,6 +90,8 @@ with a fresh list and the first would lose its recorded file creations.
   previously unsynchronized on a non-volatile field, so two arriving threads could both be told they had
   started; the second would replace `recordedChanges` and the first would lose its recorded file
   creations.
+- Record the session's owning thread and expose `isRecordingChangesOnCurrentThread()`, so "a session is
+  open" and "*my* session is open" stop being the same question.
 
 ## Verification
 
@@ -96,3 +102,8 @@ the #4063 contract - creates a vertex type from a second thread, and releases th
 
 - Before the fix: the DDL returns immediately down the local-only path, the followers never see the type.
 - After the fix: the DDL blocks until the session is released, then replicates.
+
+A second test pins the other half of the contract: a session that is never released must make the schema
+change throw `TimeoutException`, and leave the type absent on the leader too. Both tests hold the session
+on a thread *other* than the one running the DDL - a same-thread holder is the legitimate re-entrant
+nesting the fix still allows through, so the wait, and therefore the timeout, would never be reached.

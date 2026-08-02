@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -130,6 +131,10 @@ class Issue5728SchemaChangeDuringRecordingSessionIT extends BaseRaftHATest {
    * The other half of the contract: when the contending session outlives the wait, the schema change must
    * fail loudly rather than fall back to the local-only path that diverged the cluster. Without this the
    * timeout branch is never executed, so a fix that silently swallowed the expiry would still look green.
+   * <p>
+   * The session must be held by a thread OTHER than the one running the DDL. A holder on the DDL's own
+   * thread is the legitimate re-entrant nesting the fix deliberately still allows through, so the wait -
+   * and therefore the timeout - would never be reached.
    */
   @Test
   void schemaChangeFailsRatherThanDivergingWhenTheSessionIsNeverReleased() throws Exception {
@@ -140,22 +145,43 @@ class Issue5728SchemaChangeDuringRecordingSessionIT extends BaseRaftHATest {
     leaderDb.async().waitCompletion();
 
     final FileManager fileManager = leaderDb.getEmbedded().getFileManager();
-    assertThat(acquireRecordingSession(fileManager))
-        .as("the test must own the recording session, otherwise it is not reproducing the contended case")
-        .isTrue();
+    final String timeoutType = VERTEX_TYPE + "Timeout";
+    final CountDownLatch sessionTaken = new CountDownLatch(1);
+    final CountDownLatch releaseSession = new CountDownLatch(1);
+    final AtomicBoolean sessionOwned = new AtomicBoolean();
 
-    // Held for the whole attempt: the wait is bounded by HA_QUORUM_TIMEOUT, so the DDL gives up on its own.
+    // Holds the session for the whole attempt, so the DDL exhausts HA_QUORUM_TIMEOUT and gives up.
+    final Thread holder = new Thread(() -> {
+      try {
+        sessionOwned.set(acquireRecordingSession(fileManager));
+        sessionTaken.countDown();
+        releaseSession.await(DDL_TIMEOUT_SECS, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } finally {
+        if (sessionOwned.get())
+          fileManager.stopRecordingChanges();
+      }
+    }, "issue5728-session-holder");
+    holder.start();
+
     try {
+      assertThat(sessionTaken.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(sessionOwned.get())
+          .as("the holder thread must own the recording session, otherwise this is not the contended case")
+          .isTrue();
+
       assertThatThrownBy(() ->
-          leaderDb.getSchema().buildVertexType().withName(VERTEX_TYPE + "Timeout").withTotalBuckets(1).create())
+          leaderDb.getSchema().buildVertexType().withName(timeoutType).withTotalBuckets(1).create())
           .as("a schema change that cannot claim the recording session must throw, never apply leader-locally")
           .isInstanceOf(TimeoutException.class)
           .hasMessageContaining("waiting for the file recording session");
     } finally {
-      fileManager.stopRecordingChanges();
+      releaseSession.countDown();
+      holder.join(TimeUnit.SECONDS.toMillis(DDL_TIMEOUT_SECS));
     }
 
-    assertThat(leaderDb.getSchema().existsType(VERTEX_TYPE + "Timeout"))
+    assertThat(leaderDb.getSchema().existsType(timeoutType))
         .as("the refused schema change must not have been applied on the leader either")
         .isFalse();
   }

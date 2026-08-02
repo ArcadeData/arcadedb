@@ -1432,11 +1432,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // A recording session already open ON THIS THREAD means we are nested inside our own DDL or
     // compaction session (schema DDL nests routinely: the outer callback creates the type, an inner one
     // creates its buckets). The outer frame captures these file changes and ships them, so delegating is
-    // correct. A session owned by ANOTHER thread carries no such promise, which is why the shared
-    // getRecordedChanges() alone cannot decide this - see acquireRecordingSession (#5728). Both signals
-    // are required: isSchemaCommitThread is static, so on its own it would also match a thread nested in
-    // a DIFFERENT database's session, for which this database has replicated nothing.
-    if (Boolean.TRUE.equals(isSchemaCommitThread.get()) && proxied.getFileManager().getRecordedChanges() != null)
+    // correct. A session owned by ANOTHER thread carries no such promise, which is why the bare
+    // "is a session open?" test cannot decide this - see acquireRecordingSession (#5728). The ownership
+    // question is asked of this database's own FileManager rather than of isSchemaCommitThread, which is
+    // static and would also answer yes for a thread nested in a DIFFERENT database's session.
+    if (proxied.getFileManager().isRecordingChangesOnCurrentThread())
       return proxied.recordFileChanges(callback);
 
     // On the leader, record file changes and send them via Raft immediately
@@ -1453,8 +1453,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // Clear thread-local WAL buffers so any commits inside the callback are captured fresh,
     // and mark THIS thread as the schema-commit thread so commit() buffers rather than replicates.
     // The flag is saved and restored rather than removed on the way out: it is static, so a session on
-    // another database opened from inside an outer callback would otherwise clear the outer frame's mark
-    // and leave the rest of that callback unable to recognize its own nesting.
+    // another database opened from inside an outer callback would otherwise clear the outer frame's mark,
+    // and the outer callback's remaining commits would ship separate TX_ENTRYs instead of riding its
+    // SCHEMA_ENTRY - the ordering hazard of issue #4083.
     final Boolean outerSchemaCommitThread = isSchemaCommitThread.get();
     schemaWalBuffer.get().clear();
     schemaBucketDeltaBuffer.get().clear();
@@ -1625,6 +1626,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
+      // A bare remove() is enough here, unlike recordFileChanges: a compaction runs on its own scheduler
+      // thread and defers (returns false above) whenever a session is already open, so it never nests
+      // inside another session whose mark it could clear.
       isSchemaCommitThread.remove();
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
@@ -1657,21 +1661,46 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * remains as a defensive safety net for any other recorder thread that crashes mid-session; it
    * is intentionally retained, not dead code.
    */
+  private void waitForActiveRecordingSession() {
+    if (proxied.getFileManager().getRecordedChanges() == null)
+      return;
+    final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    final long deadline = System.currentTimeMillis() + timeout;
+    while (proxied.getFileManager().getRecordedChanges() != null) {
+      if (System.currentTimeMillis() >= deadline) {
+        HALog.log(this, HALog.BASIC,
+            "commit waited %dms for FileManager recording session and gave up; proceeding with TX_ENTRY",
+            timeout);
+        return;
+      }
+      try {
+        Thread.sleep(2);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+  }
+
   /**
    * Claims the file-manager recording session so this thread's schema change can be captured and shipped
    * as a {@code SCHEMA_ENTRY}, waiting for a session owned by another thread (a concurrent DDL, or an LSM
    * compaction inside {@link #runWithCompactionReplication}) to be released first.
    * <p>
-   * The session is a single per-database slot with no owner, so a contended caller used to fall back to
+   * The session used to be a single per-database slot with no owner, so a contended caller fell back to
    * running the DDL straight on the inner database: applied on the leader, proposed to nobody, nothing
    * thrown (#5728). The window it lost to is real work, not an instant - the owning session releases the
    * database write lock when its callback returns but keeps the session until its {@code replicateSchema()}
    * Raft round trip completes, which is why the divergence only appeared under load. Waiting is the only
-   * correct answer here: unlike a compaction, a schema change cannot be deferred and rescheduled.
+   * correct answer here: unlike a compaction, a schema change cannot be deferred and rescheduled. Nothing
+   * is locked while polling - the caller takes the database write lock only afterwards, inside
+   * {@code proxied.recordFileChanges} - so the wait cannot deadlock against the session's owner.
    *
    * @throws TimeoutException if the session could not be claimed, so the caller fails loudly instead of
-   *                          diverging. The interrupted case reports itself as such rather than claiming
-   *                          an elapsed timeout that never elapsed.
+   *                          diverging. Interruption raises the same type - both mean "this schema change
+   *                          never claimed the session", and callers already treat {@code TimeoutException}
+   *                          as the non-retryable give-up signal - but says so in its message rather than
+   *                          reporting an elapsed timeout that never elapsed.
    */
   private void acquireRecordingSession() {
     if (proxied.getFileManager().startRecordingChanges())
@@ -1692,27 +1721,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     throw new TimeoutException("Timeout of " + timeout
         + "ms waiting for the file recording session to replicate a schema change on database '" + getName() + "'");
-  }
-
-  private void waitForActiveRecordingSession() {
-    if (proxied.getFileManager().getRecordedChanges() == null)
-      return;
-    final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
-    final long deadline = System.currentTimeMillis() + timeout;
-    while (proxied.getFileManager().getRecordedChanges() != null) {
-      if (System.currentTimeMillis() >= deadline) {
-        HALog.log(this, HALog.BASIC,
-            "commit waited %dms for FileManager recording session and gave up; proceeding with TX_ENTRY",
-            timeout);
-        return;
-      }
-      try {
-        Thread.sleep(2);
-      } catch (final InterruptedException ie) {
-        Thread.currentThread().interrupt();
-        return;
-      }
-    }
   }
 
   /**
