@@ -190,6 +190,12 @@ public class VectorLocationIndex {
    * The single-int constructor used to mean {@code maxSize} (issue #5559 removed bounding). A caller that still
    * passes an eviction limit here would now silently get a capacity hint instead, which is why the old
    * {@code -1 = unlimited} sentinel is rejected rather than quietly treated as a size.
+   * <p>
+   * That rejection is an {@link IllegalArgumentException}, deliberately NOT the {@code IndexException} that
+   * {@code LSMVectorIndexMetadata.setLocationCacheSize} raises for the same setting. The two guard different
+   * things: that one answers a user who wrote {@code locationCacheSize} in DDL and belongs in the error the
+   * statement reports, while this one can only fire on a caller inside the engine that was not updated for the
+   * changed parameter meaning - programming error, not user input.
    *
    * @param initialCapacity Initial capacity hint for the underlying maps, at least 0
    */
