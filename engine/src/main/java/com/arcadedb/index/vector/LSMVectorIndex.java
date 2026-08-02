@@ -149,6 +149,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // enough to never matter and large enough that a small index is fully resident from the first query.
   private static final int MIN_SEARCH_CACHE_SIZE = 8_192;
 
+  // DOT_PRODUCT is the fast path for cosine on already-normalized data, and JVector documents unit length as its
+  // precondition. How many ordinals a rebuild samples to notice that the precondition is not met, and how far a
+  // magnitude may drift from 1 before it counts as violated (float accumulation over a few thousand dimensions
+  // moves the last digits, so an exact comparison would flag correctly normalized data).
+  private static final int    UNIT_VECTOR_SAMPLE_SIZE  = 1_000;
+  private static final double UNIT_MAGNITUDE_TOLERANCE = 0.01;
+  // Squared bounds, so the sample costs one multiply-add per component and no square root at all.
+  private static final double MIN_UNIT_MAGNITUDE_SQUARED = (1.0 - UNIT_MAGNITUDE_TOLERANCE) * (1.0 - UNIT_MAGNITUDE_TOLERANCE);
+  private static final double MAX_UNIT_MAGNITUDE_SQUARED = (1.0 + UNIT_MAGNITUDE_TOLERANCE) * (1.0 + UNIT_MAGNITUDE_TOLERANCE);
+
   // Not final: a compaction swaps in a new data file, and this index is named after its component - see
   // getMostRecentFileName(). Every node names the index after the file it holds, so the leader has to
   // follow its own rename or its schema stops matching the followers that rebuilt it from that file.
@@ -184,6 +194,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
   // compareAndSet, not a plain flag: two threads racing the first call would otherwise both log it.
   private final    AtomicBoolean                 locationCacheCapReported = new AtomicBoolean();
+  // Same idea for the DOT_PRODUCT unit-length warning: an ingest crosses the rebuild threshold every time the
+  // pending set grows by a fraction of the graph, so a million-row load rebuilds a hundred-odd times and would
+  // otherwise repeat the same warning on each of them. Set only when the warning is actually emitted, so an index
+  // that starts out normalized and later is not still gets told once.
+  private final    AtomicBoolean                 nonUnitVectorsReported   = new AtomicBoolean();
 
   // Graph file for persistent storage of graph topology
   // Allows lazy-loading graph from disk and avoiding expensive rebuilds
@@ -1929,6 +1944,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       vectors = pageVectors;
 
+      reportNonUnitVectorsOnDotProduct(pageVectors, finalActiveVectorIds.length);
+
       // Publish the ordinal mapping and the build state under the write lock so searches never observe an
       // ordinal map that disagrees with the vectors snapshot they captured (issue #4581).
       lock.writeLock().lock();
@@ -2269,6 +2286,60 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
       throw new IndexException("Error building graph from scratch", e);
     }
+  }
+
+  /**
+   * Warns once when a {@code DOT_PRODUCT} index is being built over vectors that are not unit length.
+   * <p>
+   * {@code VectorSimilarityFunction.DOT_PRODUCT} scores {@code (1 + dot(a, b)) / 2} and documents unit length as its
+   * precondition: it exists as the cheap path for cosine on data that is already normalized. Honour it and the raw dot
+   * product stays in {@code [-1, 1]}, so the score stays in {@code [0, 1]} and zero is a genuine floor, which is what
+   * {@link #UNREADABLE_NODE_SCORE} relies on to keep an unreadable node from outranking a real one. Break it and the
+   * dot product is unbounded below, real vectors can score under zero, and a tombstone at exactly zero wastes beam
+   * budget. It cannot enter a result - {@code LiveVectorBitsFilter} decides membership, not the score - so the cost is
+   * recall and work, not a wrong answer. Silently worse rankings than COSINE would have given is the opposite of the
+   * reason to pick this metric, hence the warning.
+   * <p>
+   * The rebuild has already read and validated every vector, so sampling costs no I/O beyond what the cache already
+   * holds, and it is bounded at {@link #UNIT_VECTOR_SAMPLE_SIZE} ordinals regardless of index size. Unreadable
+   * ordinals are skipped: the placeholder {@code ArcadePageVectorValues} hands back is all ones, whose magnitude is
+   * {@code sqrt(dimensions)}, and counting it would report a normalization problem the data does not have.
+   *
+   * @param vectors     the vector view the graph is about to be built on
+   * @param totalActive number of active ordinals in that view
+   */
+  private void reportNonUnitVectorsOnDotProduct(final ArcadePageVectorValues vectors, final int totalActive) {
+    if (metadata.similarityFunction != VectorSimilarityFunction.DOT_PRODUCT || nonUnitVectorsReported.get())
+      return;
+
+    final int sampleSize = Math.min(totalActive, UNIT_VECTOR_SAMPLE_SIZE);
+    int sampled = 0;
+    int nonUnit = 0;
+
+    for (int ordinal = 0; ordinal < sampleSize; ordinal++) {
+      final VectorFloat<?> vector = vectors.getVector(ordinal);
+      if (vector == null || vectors.isDeletedSentinel(vector))
+        continue;
+
+      double magnitudeSquared = 0.0;
+      for (int i = 0; i < vector.length(); i++) {
+        final float component = vector.get(i);
+        magnitudeSquared += (double) component * component;
+      }
+
+      ++sampled;
+      if (magnitudeSquared < MIN_UNIT_MAGNITUDE_SQUARED || magnitudeSquared > MAX_UNIT_MAGNITUDE_SQUARED)
+        ++nonUnit;
+    }
+
+    if (nonUnit == 0 || !nonUnitVectorsReported.compareAndSet(false, true))
+      return;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Vector index '%s' uses DOT_PRODUCT but %d of the %d sampled vectors (%d%%) are not unit length. DOT_PRODUCT is "
+            + "defined only for normalized vectors, so search quality is degraded: normalize the vectors on ingest or "
+            + "recreate the index with COSINE. This is reported once per index",
+        indexName, nonUnit, sampled, nonUnit * 100 / sampled);
   }
 
   private long getTxChunkSize() {
