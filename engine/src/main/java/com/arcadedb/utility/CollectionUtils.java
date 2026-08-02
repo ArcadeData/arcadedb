@@ -285,9 +285,23 @@ public class CollectionUtils {
     return Arrays.asList((Object[]) array);
   }
 
+  /** What {@link #addBounded} did with the item - the whole answer, so no caller has to re-derive part of it. */
+  public enum BoundedAdd {
+    /** First sighting, and the set had room: it is now in {@code retained}. */
+    RETAINED,
+    /** First sighting, but the cap refused it: counted, never retained. The case a caller may want to log. */
+    DROPPED,
+    /** Already recorded. Nothing to count. */
+    DUPLICATE;
+
+    /** True when this sighting was the first, i.e. when a counter kept alongside the set should tick. */
+    public boolean isFirstSighting() {
+      return this != DUPLICATE;
+    }
+  }
+
   /**
-   * Records {@code item} in a de-duplicating set that must not grow past {@code max}, and answers whether this is the
-   * FIRST time it has been recorded - i.e. whether a counter kept alongside {@code retained} should tick.
+   * Records {@code item} in a de-duplicating set that must not grow past {@code max}, and answers what became of it.
    * <p>
    * Extracted by #5773 so the two {@code CHECK DATABASE} counters (warnings and corrupted records, in
    * {@code DatabaseChecker} and {@code GraphDatabaseChecker}) cannot drift apart again: they had four near-identical
@@ -306,14 +320,21 @@ public class CollectionUtils {
    * NOT thread-safe, and neither is the read-then-add it performs: {@code size()} is read before {@code add()}, so
    * concurrent callers can both see room under the cap. Every caller today drives it from a single-threaded scan.
    * Anything that parallelises such a scan has to supply its own synchronisation or a concurrent set.
+   * <p>
+   * The three-valued return is what keeps the cap rule in this method ALONE. A plain boolean answers "count it?" but
+   * not "was it kept?", so a caller needing the second - to log what the cap forced it to drop - would have to either
+   * mirror the {@code size() < max} test before the call or re-interrogate the set after it. Both are the rule
+   * written down twice, which is the drift this method was extracted to end.
    *
    * @param retained the bounded, de-duplicating set; not added to once it holds {@code max} items
    * @param max      the retention cap
    * @param item     the item to record
    *
-   * @return true when {@code item} had not been recorded before
+   * @return whether {@code item} was retained, dropped by the cap, or already known
    */
-  public static <T> boolean addBounded(final Set<T> retained, final int max, final T item) {
-    return retained.size() < max ? retained.add(item) : !retained.contains(item);
+  public static <T> BoundedAdd addBounded(final Set<T> retained, final int max, final T item) {
+    if (retained.size() < max)
+      return retained.add(item) ? BoundedAdd.RETAINED : BoundedAdd.DUPLICATE;
+    return retained.contains(item) ? BoundedAdd.DUPLICATE : BoundedAdd.DROPPED;
   }
 }

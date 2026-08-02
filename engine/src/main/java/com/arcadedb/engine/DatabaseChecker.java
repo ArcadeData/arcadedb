@@ -488,11 +488,10 @@ public class DatabaseChecker {
    */
   private void addWarning(final String warning) {
     final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
-    if (!CollectionUtils.addBounded(warnings, maxWarnings, warning))
+    final CollectionUtils.BoundedAdd outcome = CollectionUtils.addBounded(warnings, maxWarnings, warning);
+    if (!outcome.isFirstSighting())
       return;
-    // The set answers whether it was retained - see the twin in GraphDatabaseChecker.CheckReport.warn() for why
-    // that is asked of the set rather than by re-deriving addBounded's cap rule here.
-    if (verboseLevel > 0 && !warnings.contains(warning))
+    if (outcome == CollectionUtils.BoundedAdd.DROPPED && verboseLevel > 0)
       LogManager.instance().log(this, Level.WARNING, "- " + warning);
     result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
   }
@@ -514,7 +513,8 @@ public class DatabaseChecker {
    * from this same field by {@link #checkScopedRecords}. Two names, one setting.
    */
   private void addCorrupted(final RID rid) {
-    if (CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("corruptedRecords"), maxWarnings, rid))
+    if (CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("corruptedRecords"), maxWarnings, rid)
+        .isFirstSighting())
       result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
   }
 
