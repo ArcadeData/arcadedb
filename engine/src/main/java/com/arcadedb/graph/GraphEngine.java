@@ -410,7 +410,7 @@ public class GraphEngine {
         // existing list here (silent edge loss) whenever this window was hit.
         throw new ConcurrentModificationException(
             "Edge list " + direction + " head chunk " + headRID + " of vertex " + vertex.getIdentity()
-                + " not visible yet (concurrent commit in flight)");
+                + " not visible yet (concurrent commit in flight)", e);
       }
 
     // FIRST EDGE IN THIS DIRECTION: the vertex record itself is rewritten (head pointer), so materialise the
@@ -741,6 +741,10 @@ public class GraphEngine {
    * walk reads it at, and {@link #checkEdgeListHeadsUnchanged} re-reads the vertex's head pointers, for the append
    * that lands in a BRAND NEW chunk and so touches none of those pages.
    * <p>
+   * #5764: every recovery hint this method emits names {@code CHECK DATABASE RECORD}, the scope #5710 added for
+   * exactly this case - see {@link #scopedRepairAdvice} and {@link #danglingRepairAdvice} for which of the two
+   * each outcome deserves.
+   * <p>
    * #5760 removes the two costs this method used to pay for the walk, both of which fall out of ONE observation:
    * the vertex's own lists are dropped wholesale at the end, so nothing this method does to them is worth doing.
    * <ul>
@@ -811,6 +815,90 @@ public class GraphEngine {
   }
 
   /**
+   * #5764: the repair for a vertex whose edge list cannot be walked, named as a command that can be pasted into a
+   * console rather than as a category of command.
+   * <p>
+   * This is the outcome {@code CHECK DATABASE RECORD} (#5710) was added for: the delete was REFUSED, so the vertex
+   * is still there, and the operator holds the one piece of information that makes the repair cheap - the RID -
+   * while every message here used to point at a whole-database or whole-type run costing two full passes over the
+   * vertex type. Stated in the same breath because the scope does not bound everything: rebuilding an adjacency
+   * means finding every surviving edge that points at the vertex, and no index maps an endpoint back to its edges,
+   * so the edge sweep still runs once per distinct vertex type named.
+   *
+   * @see #danglingRepairAdvice() for the other outcome - the delete went THROUGH and left references behind.
+   */
+  private static String scopedRepairAdvice(final RID vertexRID) {
+    return "run `CHECK DATABASE RECORD " + vertexRID + " FIX` to rebuild its edge list from the surviving edge "
+        + "records, then retry the delete (the scope saves the vertex passes, not the edge sweep the rebuild needs)";
+  }
+
+  /**
+   * #5764: the repair for the OTHER outcome - the vertex record is gone and the references the delete could not
+   * remove now dangle. {@code CHECK DATABASE RECORD} cannot help there: the record it would be aimed at no longer
+   * exists, and the survivors are edges nobody can enumerate without a scan. So this one stays whole-database, and
+   * says what the scoped form would have bought had it been run BEFORE the delete.
+   */
+  private static String danglingRepairAdvice() {
+    return "run `CHECK DATABASE FIX` to drop the references that now dangle - rebuilding the list first with "
+        + "`CHECK DATABASE RECORD <vertex> FIX` and deleting without force is what keeps the edges";
+  }
+
+  /**
+   * #5764: the same retryable conflict, carrying the repair command for the vertex whose list could not be read.
+   * <p>
+   * A conflict is normally absorbed by the transaction retry and never seen, so the one run that DOES surface this
+   * message is the retry-exhausted one - which, by the design spelled out on {@link #collectEdgesToDelete}, is the
+   * run where the list is genuinely broken rather than transiently invisible. That is precisely the run whose
+   * message has to say how to recover, and it used to arrive carrying only {@code getEdgeHeadChunkForWrite}'s
+   * "concurrent commit in flight".
+   * <p>
+   * The class is preserved rather than re-typed: a retryable that is NOT a conflict (a lock timeout, replication
+   * back-pressure) means something else entirely, and rewriting it into a {@link ConcurrentModificationException}
+   * to improve a message would throw that distinction away.
+   */
+  private static NeedRetryException withRepairAdvice(final NeedRetryException e, final RID vertexRID) {
+    if (!(e instanceof ConcurrentModificationException))
+      return e;
+    // toString() rather than getMessage(): every conflict raised on this path carries a message today, but a
+    // message-less one would render the advice as "null. If it persists...", which reads as a bug in the advice
+    // rather than as a missing diagnosis. toString() degrades to the class name instead.
+    final String diagnosis = e.getMessage() != null ? e.getMessage() : e.toString();
+    return new ConcurrentModificationException(
+        diagnosis + ". If it persists once the retries are spent the list is genuinely broken: "
+            + scopedRepairAdvice(vertexRID), e);
+  }
+
+  /**
+   * The endpoint of {@code edge} that is not {@code vertexRID}, or {@code null} when it cannot be resolved.
+   * <p>
+   * Best-effort on purpose, and only ever used to enrich a message: this is called from the handler for an edge
+   * whose disconnection just failed, so the edge record itself may well be unreadable. A failure to name the
+   * neighbour must degrade the advice, never replace the original failure.
+   * <p>
+   * ONE case would answer {@code vertexRID} itself despite the name, and it is the right answer rather than a leak
+   * to be closed: a self-loop ({@code out == in == vertexRID}) has no other end, and the list that failed to
+   * disconnect it IS the vertex's own - so that is the RID whose repair the caller must name. Stated so the
+   * equality is not "simplified" away, not because it can happen.
+   * <p>
+   * It cannot. The reason CHANGED with #5760 and the old one no longer holds, so it is worth being exact: this
+   * used to be unreachable because the only caller ran after BOTH of the vertex's lists had been collected, and a
+   * self-loop is read out of those same two lists - a list broken enough to fail the disconnection failed the
+   * collection first. That argument died with the two-phase walk, which now streams, so an OUT edge is deleted
+   * before the IN list has been read at all. What replaces it is stronger: #5760 skips the disconnection at BOTH
+   * endpoints of a self-loop, since both are the vertex being deleted, so a self-loop never reads an edge list
+   * here and therefore never raises the conflict that reaches this method.
+   */
+  private static RID otherEndOf(final Identifiable edge, final RID vertexRID) {
+    try {
+      final Edge resolved = edge.asEdge();
+      final RID out = resolved.getOut();
+      return vertexRID.equals(out) ? resolved.getIn() : out;
+    } catch (final RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
    * #5725: the second half of "the list must not grow behind this delete", covering the growth that does NOT touch
    * any page {@link EdgeLinkedList#anchorForFullRemoval()} pinned.
    * <p>
@@ -851,11 +939,11 @@ public class GraphEngine {
       // The vertex is already gone: a concurrent transaction deleted it while this one was disconnecting its
       // edges. Retry, and let the re-read decide there is nothing left to delete.
       throw new ConcurrentModificationException(
-          "Vertex " + vertexRID + " was deleted by a concurrent transaction while its edges were being removed");
+          "Vertex " + vertexRID + " was deleted by a concurrent transaction while its edges were being removed", e);
     } catch (final ClassCastException e) {
       // The RID no longer names a vertex: the slot was reused after a concurrent delete. Same answer as above.
       throw new ConcurrentModificationException(
-          "Vertex " + vertexRID + " no longer names a vertex record (concurrent commit in flight)");
+          "Vertex " + vertexRID + " no longer names a vertex record (concurrent commit in flight)", e);
     }
 
     final RID[] committedHeads = readEdgeListHeads(committed);
@@ -973,11 +1061,14 @@ public class GraphEngine {
   private void tolerateUnreadableEdgeList(final NeedRetryException e, final VertexInternal vertex,
       final Vertex.DIRECTION direction, final boolean force) {
     if (!force)
-      throw e;
+      // #5764: NOT a bare rethrow. What the operator saw was getEdgeHeadChunkForWrite's "concurrent commit in
+      // flight", which is the right diagnosis for the transient case that never reaches a human and says nothing
+      // about the permanent one that does. See withRepairAdvice.
+      throw withRepairAdvice(e, vertex.getIdentity());
     LogManager.instance()
         .log(this, Level.WARNING, """
-                Cannot read the %s edge list of vertex %s while force-deleting it: its edges survive, run a \
-                database check to repair them""", e, direction, vertex.getIdentity());
+                Cannot read the %s edge list of vertex %s while force-deleting it: its edges survive, %s""", e,
+            direction, vertex.getIdentity(), danglingRepairAdvice());
   }
 
   /**
@@ -992,8 +1083,9 @@ public class GraphEngine {
    * {@code force == false}. Failing here would therefore make it undeletable - precisely the "records that can't
    * be deleted" complaint issues #4420 and #4432 fixed. The cost is real and larger than the tolerated single
    * dangling entry (everything behind the corrupt chunk is dropped, and the vertex is still deleted), which is why
-   * it is logged at WARNING: {@code CHECK DATABASE ... FIX} rebuilds the chain from the surviving edge records and
-   * is the way to delete such a vertex without losing its edges.
+   * it is logged at WARNING: {@code CHECK DATABASE RECORD <rid> FIX} rebuilds the chain from the surviving edge
+   * records and is the way to delete such a vertex without losing its edges - run BEFORE the delete, since by the
+   * time this fires the vertex is on its way out (#5764).
    * <p>
    * The caught list is CLOSED, and deliberately not a blanket {@code catch (Exception)}: "tolerate and delete
    * anyway" is the behaviour the surrounding strictness exists to take away from conditions that do not deserve
@@ -1013,7 +1105,7 @@ public class GraphEngine {
     LogManager.instance()
         .log(this, Level.WARNING, """
                 Cannot decode the %s edge list of vertex %s (corrupted chunk): deleting it anyway, edges behind the \
-                damage survive - run a database check to repair them""", e, direction, vertex.getIdentity());
+                damage survive - %s""", e, direction, vertex.getIdentity(), danglingRepairAdvice());
   }
 
   /**
@@ -1032,14 +1124,20 @@ public class GraphEngine {
     } catch (final RecordNotFoundException e) {
       // ALREADY DELETED, IGNORE IT
     } catch (final NeedRetryException e) {
-      // THE EDGE LIST OF THE VERTEX AT THE OTHER END IS NOT READABLE (SEE getEdgeHeadChunkForWrite)
+      // THE EDGE LIST OF THE VERTEX AT THE OTHER END IS NOT READABLE (SEE getEdgeHeadChunkForWrite). #5764: the
+      // list that needs rebuilding belongs to the NEIGHBOUR, not to the vertex being deleted, so that is the RID
+      // the advice names - resolved best-effort, since reading the edge is what just failed.
+      final RID otherEnd = otherEndOf(edge, vertex.getIdentity());
       if (!force)
-        throw e;
+        throw otherEnd != null ? withRepairAdvice(e, otherEnd) : e;
       LogManager.instance()
           .log(this, Level.WARNING, """
                   Cannot disconnect edge %s from the vertex at its other end while force-deleting vertex %s: \
-                  the reference survives, run a database check to repair it""", e, edge.getIdentity(),
-              vertex.getIdentity());
+                  the reference survives, %s""", e, edge.getIdentity(), vertex.getIdentity(),
+              otherEnd != null ?
+                  "rebuild that vertex's list with `CHECK DATABASE RECORD " + otherEnd + " FIX`, then "
+                      + danglingRepairAdvice() :
+                  danglingRepairAdvice());
     }
   }
 
@@ -1064,9 +1162,12 @@ public class GraphEngine {
     try {
       return iterator.hasNext();
     } catch (final RecordNotFoundException e) {
+      // Interpolated AND kept as the cause, for the reason spelled out on getEdgeHeadChunkForWrite: the chunk that
+      // could not be loaded is named only inside the record-not-found message, and the top-level message is what
+      // reaches a log line (#5764).
       throw new ConcurrentModificationException(
           "Edge list " + direction + " of vertex " + vertex.getIdentity()
-              + " is not fully readable (concurrent commit in flight): " + e.getMessage());
+              + " is not fully readable (concurrent commit in flight): " + e.getMessage(), e);
     }
   }
 
@@ -1633,9 +1734,14 @@ public class GraphEngine {
         return null;
       return buildEdgeList(vertex, direction, rid);
     } catch (final RecordNotFoundException e) {
+      // The cause and the interpolated e.getMessage() are NOT redundant, though they read that way (#5764). This
+      // message is the only place the missing CHUNK's RID appears - the text above names the vertex, not the chunk,
+      // which is inside the record-not-found message - and the top-level message is what a log line and an HTTP
+      // error body carry, while the cause chain surfaces only in a full trace or a development-mode detail field.
+      // Pinned by Issue5670EdgeDeleteDanglingBackRefTest, which asserts the head chunk's RID is in this message.
       throw new ConcurrentModificationException(
           "Edge list " + direction + " of vertex " + vertex.getIdentity()
-              + " is not fully visible yet (concurrent commit in flight): " + e.getMessage());
+              + " is not fully visible yet (concurrent commit in flight): " + e.getMessage(), e);
     }
   }
 

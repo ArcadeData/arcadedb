@@ -499,7 +499,8 @@ public class StripedEdgeList extends EdgeLinkedList {
         // (e.g. a removal leaving a stale back-reference). The miss is transient by construction (cross-file
         // commit publication) - surface it as a retryable conflict, symmetric with loadChunkForWrite.
         throw new ConcurrentModificationException(
-            "Stripe chain " + headRID + " of vertex " + vertex.getIdentity() + " not visible yet (concurrent commit in flight)");
+            "Stripe chain " + headRID + " of vertex " + vertex.getIdentity() + " not visible yet (concurrent commit in flight)",
+            e);
       final long now = System.currentTimeMillis();
       final long last = LAST_SKIPPED_CHAIN_WARN.get();
       if (now - last > 60_000 && LAST_SKIPPED_CHAIN_WARN.compareAndSet(last, now))

@@ -54,9 +54,9 @@ public class BuildKnowledgeGraphPrompt {
       Extract a knowledge graph from the source text and write it into the ArcadeDB database
       '{database}'.
 
-      <source_text>
+      <source_text{fence}>
       {sourceText}
-      </source_text>
+      </source_text{fence}>
 
       Procedure:
       1. Read the MCP resource arcadedb://{database}/schema, or call get_schema, before writing
@@ -79,10 +79,12 @@ public class BuildKnowledgeGraphPrompt {
          contain. Close by reporting the entities and relationships you wrote, and anything you
          deliberately skipped.""";
 
+  private static final String FENCE_TAG = "source_text";
+
   // Matches a placeholder token verbatim, never a token that substitution may have introduced: the render below
   // walks TEMPLATE once with Matcher.appendReplacement/appendTail, so a database name such as 'x{sourceText}y'
   // cannot be reinterpreted as the source-text placeholder the way a second .replace() pass would reinterpret it.
-  private static final Pattern PLACEHOLDER = Pattern.compile("\\{(database|sourceText)\\}");
+  private static final Pattern PLACEHOLDER = Pattern.compile("\\{(database|sourceText|fence)\\}");
 
   private BuildKnowledgeGraphPrompt() {
   }
@@ -128,22 +130,25 @@ public class BuildKnowledgeGraphPrompt {
   }
 
   /**
-   * KNOWN LIMITATION: sourceText is substituted verbatim, so a document containing a literal closing
-   * source-text tag ends the fence the template opens around it, and whatever follows reads as procedure rather
-   * than as data. This is accepted rather than escaped. The rendered prompt is returned to the caller that
-   * supplied the document, never executed here, and every tool the text names enforces its own permission and
-   * per-database checks when it is actually called, so nothing is reachable that the caller could not already
-   * reach. Neutralizing the tag would silently alter the caller's document, which the verbatim-substitution rule
-   * this prompt is built on rules out. Revisit only together with that rule.
+   * sourceText is substituted verbatim, so the fence the template opens around it cannot be enforced by escaping
+   * the document: the delimiters move instead. {@link PromptFence} suffixes both of them with an unpredictable
+   * token whenever the document carries a closing source-text tag, so the document reaches the model byte for byte
+   * and still cannot end the block early. A document that carries no such tag renders against the constant
+   * delimiters, which is every ordinary call.
    */
   public static JSONArray getMessages(final JSONObject args) {
     final String database = MCPToolUtils.requireString(args, "database");
     final String sourceText = MCPToolUtils.requireString(args, "sourceText");
+    final String fence = PromptFence.suffixFor(FENCE_TAG, sourceText);
 
     final Matcher matcher = PLACEHOLDER.matcher(TEMPLATE);
     final StringBuilder rendered = new StringBuilder();
     while (matcher.find()) {
-      final String value = "database".equals(matcher.group(1)) ? database : sourceText;
+      final String value = switch (matcher.group(1)) {
+        case "database" -> database;
+        case "sourceText" -> sourceText;
+        default -> fence;
+      };
       matcher.appendReplacement(rendered, Matcher.quoteReplacement(value));
     }
     matcher.appendTail(rendered);

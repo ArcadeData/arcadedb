@@ -2013,6 +2013,65 @@ metadata, the same route `CREATE INDEX <name>` uses) and the page size. It is no
 build are separate schema changes, so a process that dies between them leaves the type without an index on those
 properties until one is created again. Only an explicit `withReplaceIfIncompatible` is exposed to that window.
 
+## A refused vertex delete names the command that repairs it, and the conflict keeps its cause
+
+Follow-ups from #5680, whose two halves landed separately (#5707 made `deleteVertex` strict, #5710 added the
+`CHECK DATABASE RECORD` scope), so the seams between them were never closed (#5764).
+
+### The repair advice names the scoped command, with the RID substituted
+
+Every recovery hint `GraphEngine.deleteVertex` emitted predated the scope it was written for, so they all pointed at
+a whole-database or whole-type run - two full passes over the vertex type plus an edge sweep - while the operator was
+holding the one piece of information that makes the repair cheap. And the retryable arm rethrew the conflict bare, so
+what actually reached a human was `getEdgeHeadChunkForWrite`'s "concurrent commit in flight", which says nothing about
+recovery at all.
+
+A delete refused because the vertex's own list cannot be walked now answers with the command to run:
+
+```
+Edge list IN of vertex #12:3 is not fully visible yet (concurrent commit in flight): ...
+  If it persists once the retries are spent the list is genuinely broken: run `CHECK DATABASE RECORD #12:3 FIX` to
+  rebuild its edge list from the surviving edge records, then retry the delete (the scope saves the vertex passes,
+  not the edge sweep the rebuild needs)
+```
+
+When the conflict comes from disconnecting a collected edge at its **other** end, the list that needs rebuilding
+belongs to the neighbour, so that is the RID named - repairing the healthy vertex under delete would do nothing.
+
+The `force` arms keep the whole-database form, deliberately: by the time they log, the delete has gone through, so
+the record a scoped check would be aimed at no longer exists. They say what the scoped form would have bought had it
+been run first.
+
+### `ConcurrentModificationException` carries the failure that produced it
+
+`NeedRetryException` already declared a `(message, cause)` constructor; `ConcurrentModificationException` exposed only
+`(String)`, so every site that raised one from a caught exception - eight across `GraphEngine`, `EdgeLinkedList` and
+`StripedEdgeList` - discarded the original stack. A conflict is normally absorbed by the retry and never seen, so the
+single run that does surface one is the retry-exhausted run: exactly the run whose stack trace has to be diagnosable.
+The cause is now kept. The exception class on the wire is unchanged, so nothing about HTTP status mapping or the
+remote driver's typed reconstruction moves; only the `detail` chain in a development-mode error body gets longer.
+
+### `CHECK DATABASE` reports a corrupt document the same way whichever scope found it
+
+The type-wide document check added to the `warnings` and `corruptedRecords` sets without touching `totalWarnings` and
+`totalCorruptedRecords`, so a run listed the finding while reporting zero of both - and, since the retained sets are
+capped and the totals are not, that divergence grew with the number of findings. It also called a document a
+"vertex", and said it was "removing it" when nothing on that path removes anything (`corruptedRecords` only drives the
+end-of-run index rebuild). Both paths now emit `document <rid> cannot be loaded`, count it, and honour `maxWarnings`.
+
+If you parse `CHECK DATABASE` output, note the two changes: the message text for an unloadable document, and
+`totalWarnings`/`totalCorruptedRecords` now being non-zero on a type-wide run that finds one.
+
+### The scoped vertex check runs one pass where the type-wide runs two - and that is correct
+
+Recorded rather than changed, since the asymmetry looks like a gap. The type-wide arm materialises each record from
+the raw page view in a bucket scan and then again through the connectivity walk; the scoped arm appears to run only
+the second. But `lookupByRID` *is* the first - it performs the same
+`newImmutableRecord(type, rid, bucket.getRecord(rid).copyOfContent())` - and the connectivity walk opens with the same
+`asVertex(true)`, whose `loadContent` flag is what forces the decode. `LocalBucket.getRecord` and `LocalBucket.scan`
+resolve placeholders and multi-page chains identically and skip the same slot markers, so no corruption shape reaches
+one enumeration and not the other. Pinned by a test that corrupts a record and asserts both scopes report it.
+
 ## Deleting a vertex no longer disconnects its edges from itself
 
 `GraphEngine.deleteVertex` walked the vertex's edge lists, then handed every edge to `deleteEdge`, which disconnects
