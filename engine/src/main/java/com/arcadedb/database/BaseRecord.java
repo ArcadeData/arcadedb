@@ -78,8 +78,11 @@ public abstract class BaseRecord implements Record {
         if (loaded == null) {
           buffer = null;
         } else if (loaded != this) {
-          // CREATE A BUFFER FROM THE MODIFIED RECORD
-          buffer = ((RecordInternal) loaded).getBuffer().copy();
+          // CREATE A BUFFER FROM THE MODIFIED RECORD, THE SAME WAY ImmutableDocument.checkForLazyLoading() DOES.
+          // TAKING getBuffer() INSTEAD WOULD DISCARD WHAT THE LISTENER DID: ON A DIRTY MutableDocument THAT BUFFER
+          // STILL HOLDS THE PRE-MODIFICATION CONTENT, AND IT IS null OUTRIGHT FOR A RECORD BUILT FROM SCRATCH.
+          // copyOfContent() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER
+          buffer = database.getSerializer().serialize(database, loaded).copyOfContent();
         }
 
       } catch (final RecordNotFoundException e) {

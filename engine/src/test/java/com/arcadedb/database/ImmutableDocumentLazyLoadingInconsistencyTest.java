@@ -21,6 +21,8 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -283,6 +285,196 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
       final ImmutableDocument scanned = (ImmutableDocument) database.iterateType("SecurityTest", false).next();
       assertThat(scanned.propertiesAsMap("publicProperty")).containsExactly(entry("publicProperty", "public_value"));
     });
+  }
+
+  /**
+   * Regression for issue #5755: when an after-read listener returns a DIFFERENT record,
+   * {@code checkForLazyLoading()} replaces the buffer with a freshly serialised one. If that replacement is not
+   * positioned at the properties, every accessor that reads straight after the lazy load - {@code toJSON()},
+   * {@code getPropertyNames()}, {@code toMap()}, {@code has()}, {@code get()} - consumes the record-type byte as the
+   * first byte of the header size and answers nonsense.
+   * <p>
+   * The listener here returns a DIRTY {@link MutableDocument}, which is what sends
+   * {@code BinarySerializer.serializeDocument()} through {@code serializeProperties()} and its closing
+   * {@code header.flip()} - the buffer comes back at 0. The in-tree encryption listener
+   * ({@link com.arcadedb.event.RecordEncryptionTest}) takes exactly that branch too, but on a VERTEX, where
+   * {@code ImmutableVertex.checkForLazyLoading()} re-parses the edge pointers from position 1 and repositions as a
+   * side effect. Plain documents have no such second pass, which is why the gap survived unnoticed.
+   */
+  @Test
+  void afterReadListenerReturningADifferentRecordLeavesTheBufferAtTheProperties() {
+    final RID[] documentRid = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("SecurityTest");
+      doc.set("publicProperty", "public_value");
+      doc.set("secretProperty", "encrypted_value");
+      doc.save();
+      documentRid[0] = doc.getIdentity();
+    });
+
+    // MIMICS THE ENCRYPTION HOOK: HAND BACK A DIFFERENT, DIRTY RECORD
+    final AfterRecordReadListener rewriter = record -> ((Document) record).modify().set("secretProperty", "decrypted_value");
+
+    database.getSchema().getType("SecurityTest").getEvents().registerListener(rewriter);
+    try {
+      database.transaction(() -> {
+        final Document scanned = (Document) database.iterateType("SecurityTest", false).next();
+        assertThat(scanned.toJSON().getString("secretProperty")).isEqualTo("decrypted_value");
+      });
+
+      database.transaction(() -> {
+        final Document scanned = (Document) database.iterateType("SecurityTest", false).next();
+        assertThat(scanned.getPropertyNames()).containsExactlyInAnyOrder("publicProperty", "secretProperty");
+      });
+
+      database.transaction(() -> {
+        final Document scanned = (Document) database.iterateType("SecurityTest", false).next();
+        assertThat(scanned.toMap(false)).containsEntry("publicProperty", "public_value")
+            .containsEntry("secretProperty", "decrypted_value");
+      });
+
+      database.transaction(() -> {
+        final Document scanned = (Document) database.iterateType("SecurityTest", false).next();
+        assertThat(scanned.has("secretProperty")).isTrue();
+      });
+
+      database.transaction(() -> {
+        final Document scanned = (Document) database.iterateType("SecurityTest", false).next();
+        assertThat(scanned.get("secretProperty")).isEqualTo("decrypted_value");
+      });
+
+      database.transaction(() -> {
+        final Document scanned = (Document) database.iterateType("SecurityTest", false).next();
+        assertThat(scanned.propertiesAsMap()).containsEntry("secretProperty", "decrypted_value");
+      });
+
+      // AND THE SAME RECORD REACHED BY RID, NOT BY SCAN
+      database.transaction(() -> {
+        final Document loaded = (Document) database.lookupByRID(documentRid[0], false);
+        assertThat(loaded.toJSON().getString("secretProperty")).isEqualTo("decrypted_value");
+      });
+    } finally {
+      database.getSchema().getType("SecurityTest").getEvents().unregisterListener(rewriter);
+    }
+  }
+
+  /**
+   * Second half of issue #5755, on the same line: the buffer handed back by {@code BinarySerializer.serialize()} for a
+   * DIRTY record is {@code DatabaseContext.getTemporaryBuffer1()} - a per-thread scratch buffer that every subsequent
+   * serialization {@code clear()}s and overwrites. Keeping it as the record's own buffer means the record's content is
+   * silently rewritten by the next unrelated save on the same thread. The record must own a private copy.
+   */
+  @Test
+  void afterReadListenerReturningADifferentRecordDoesNotShareTheSerializerScratchBuffer() {
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("SecurityTest");
+      doc.set("publicProperty", "public_value");
+      doc.set("secretProperty", "encrypted_value");
+      doc.save();
+    });
+
+    final AfterRecordReadListener rewriter = record -> ((Document) record).modify().set("secretProperty", "decrypted_value");
+
+    database.getSchema().getType("SecurityTest").getEvents().registerListener(rewriter);
+    try {
+      database.transaction(() -> {
+        final Document scanned = (Document) database.iterateType("SecurityTest", false).next();
+        // MATERIALISE IT: FROM HERE ON THE RECORD READS FROM ITS OWN BUFFER
+        assertThat(scanned.get("secretProperty")).isEqualTo("decrypted_value");
+
+        // ANY OTHER SERIALIZATION ON THIS THREAD REUSES THE SAME SCRATCH BUFFER
+        final MutableDocument other = database.newDocument("SecurityTest");
+        other.set("publicProperty", "0123456789012345678901234567890123456789");
+        other.set("secretProperty", "9876543210987654321098765432109876543210");
+        other.save();
+
+        assertThat(scanned.get("secretProperty")).isEqualTo("decrypted_value");
+        assertThat(scanned.get("publicProperty")).isEqualTo("public_value");
+        assertThat(scanned.propertiesAsMap()).containsEntry("secretProperty", "decrypted_value");
+      });
+    } finally {
+      database.getSchema().getType("SecurityTest").getEvents().unregisterListener(rewriter);
+    }
+  }
+
+  /**
+   * The vertex shape of the same two defects. {@code ImmutableVertex} inherits
+   * {@code ImmutableDocument.checkForLazyLoading()} and only re-reads its fixed edge-pointer prefix afterwards, so it
+   * was shielded from the wrong buffer POSITION but not from aliasing the serializer's scratch buffer - and the
+   * encryption recipe this hook exists for ({@link com.arcadedb.event.RecordEncryptionTest}) is written on vertices.
+   */
+  @Test
+  void afterReadListenerRewritingAVertexIsAlsoIsolatedFromTheScratchBuffer() {
+    database.transaction(() -> database.getSchema().createVertexType("SecurityVertex"));
+
+    final RID[] vertexRid = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("SecurityVertex");
+      v.set("publicProperty", "public_value");
+      v.set("secretProperty", "encrypted_value");
+      v.save();
+      vertexRid[0] = v.getIdentity();
+    });
+
+    final AfterRecordReadListener rewriter = record -> record.asVertex().modify().set("secretProperty", "decrypted_value");
+
+    database.getSchema().getType("SecurityVertex").getEvents().registerListener(rewriter);
+    try {
+      database.transaction(() -> {
+        final Vertex v = (Vertex) database.lookupByRID(vertexRid[0], false);
+        assertThat(v.getString("secretProperty")).isEqualTo("decrypted_value");
+        assertThat(v.toJSON().getString("secretProperty")).isEqualTo("decrypted_value");
+
+        // ANY OTHER SERIALIZATION ON THIS THREAD REUSES THE SAME SCRATCH BUFFER
+        final MutableVertex other = database.newVertex("SecurityVertex");
+        other.set("publicProperty", "0123456789012345678901234567890123456789");
+        other.set("secretProperty", "9876543210987654321098765432109876543210");
+        other.save();
+
+        assertThat(v.getString("secretProperty")).isEqualTo("decrypted_value");
+        assertThat(v.getString("publicProperty")).isEqualTo("public_value");
+      });
+    } finally {
+      database.getSchema().getType("SecurityVertex").getEvents().unregisterListener(rewriter);
+    }
+  }
+
+  /**
+   * Third defect on the same contract, found while fixing #5755: {@link BaseRecord#reload()} handles the very same "the after-read listener returned a
+   * different record" case as {@code checkForLazyLoading()}, but took the record's own {@code getBuffer()} instead of
+   * serialising it. On a dirty {@link MutableDocument} that buffer still holds the PRE-modification content, so a
+   * reload silently threw the listener's work away and handed back the raw stored value - ciphertext, for the
+   * encryption recipe this hook exists for. It is also plainly {@code null} for a record the listener built from
+   * scratch rather than by {@code modify()}, which was an NPE.
+   */
+  @Test
+  void reloadKeepsWhatTheAfterReadListenerReturned() {
+    final RID[] documentRid = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("SecurityTest");
+      doc.set("publicProperty", "public_value");
+      doc.set("secretProperty", "encrypted_value");
+      doc.save();
+      documentRid[0] = doc.getIdentity();
+    });
+
+    final AfterRecordReadListener rewriter = record -> ((Document) record).modify().set("secretProperty", "decrypted_value");
+
+    database.getSchema().getType("SecurityTest").getEvents().registerListener(rewriter);
+    try {
+      database.transaction(() -> {
+        final ImmutableDocument doc = (ImmutableDocument) database.lookupByRID(documentRid[0], false);
+        assertThat(doc.get("secretProperty")).isEqualTo("decrypted_value");
+
+        doc.reload();
+
+        assertThat(doc.get("secretProperty")).isEqualTo("decrypted_value");
+        assertThat(doc.get("publicProperty")).isEqualTo("public_value");
+        assertThat(doc.toJSON().getString("secretProperty")).isEqualTo("decrypted_value");
+      });
+    } finally {
+      database.getSchema().getType("SecurityTest").getEvents().unregisterListener(rewriter);
+    }
   }
 
   /**
