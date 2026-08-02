@@ -2013,6 +2013,40 @@ metadata, the same route `CREATE INDEX <name>` uses) and the page size. It is no
 build are separate schema changes, so a process that dies between them leaves the type without an index on those
 properties until one is created again. Only an explicit `withReplaceIfIncompatible` is exposed to that window.
 
+## An after-read listener that rewrites a record no longer corrupts it
+
+An `AfterRecordReadListener` may return a *different* record than the one it was handed - that is how the documented
+record-encryption recipe decrypts on the way out. The buffer built from that replacement was wrong in three ways
+(#5755), and the worst of them was live rather than latent.
+
+The buffer was not positioned at the properties. `BinarySerializer.serializeDocument()` hands it back at position 1
+when it can copy the record's own buffer, but at 0 when it had to re-serialise the properties of a dirty record - the
+closing `header.flip()`. In the second case the record-type byte was still ahead of the read cursor, so `toJSON()`,
+`getPropertyNames()`, `toMap()`, `has()` and `get()` consumed it as the first byte of the header size and answered
+nonsense. It stayed hidden because the only in-tree listener of that shape decrypts *vertices*, where
+`ImmutableVertex` re-parses its edge-pointer prefix from position 1 afterwards and repositions as a side effect.
+
+The record also aliased `DatabaseContext.getTemporaryBuffer1()`, the per-thread scratch buffer the serializer clears
+and hands out again on every call. A decrypted record held across an unrelated `save()` on the same thread had its
+content rewritten underneath it and started answering with **the other record's values**. That one reached the
+encryption recipe as written, vertices included.
+
+Finally, `BaseRecord.reload()` handled the identical case by taking the returned record's own `getBuffer()`, which on
+a dirty record still holds the *pre*-modification content: a reload silently discarded what the listener did and
+handed back the raw stored value - ciphertext, for the encryption recipe - and threw `NullPointerException` outright
+for a replacement the listener had built from scratch rather than by `modify()`.
+
+The postcondition of `ImmutableDocument.checkForLazyLoading()` is now uniform and documented - *on return with a
+non-null buffer, the buffer is positioned at the start of the properties* - and `reload()` obeys the same contract.
+
+### The record a listener returns must be mutable
+
+`reload()` now renders the replacement through the serializer, the way `checkForLazyLoading()` always did, rather than
+taking its buffer. That is a real narrowing: a listener returning a different **immutable** record with a valid buffer
+used to be accepted on the `reload()` path and now raises `ClassCastException`, matching what the lazy-load path has
+always required. `AfterRecordReadListener.onAfterRead()` documents it: a returned record that is not the one received
+must be mutable - typically `record.modify()`, or built from scratch, which is equally supported - and returning
+`null` filters the record away.
 ## A refused vertex delete names the command that repairs it, and the conflict keeps its cause
 
 Follow-ups from #5680, whose two halves landed separately (#5707 made `deleteVertex` strict, #5710 added the
