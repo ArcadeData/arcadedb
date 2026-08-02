@@ -28,6 +28,8 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -37,7 +39,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BiConsumer;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -268,6 +272,51 @@ class CheckDatabaseSinglePassTest extends TestHelper {
     assertThat((Long) stats.get("totalCorruptedRecords")).as("%s", stats).isEqualTo(1L);
   }
 
+  /**
+   * #5773: a warning the cap forced the checker to DROP is logged rather than lost - and both {@code addWarning}
+   * arms honour {@code verboseLevel == 0} as "the caller asked for no logging", where the graph one used to log
+   * regardless. The retained set and {@code totalWarnings} still report the drop either way, which is what makes
+   * honouring the flag safe.
+   */
+  @Test
+  void aDroppedWarningIsLoggedUnlessTheCallerAskedForSilence() {
+    createGraph(3);
+
+    final RID victim = firstOf("Person");
+    corruptRecordTypeByte(victim);
+
+    // maxWarnings 0: the finding is counted but never retained, which is the only path that reaches the log.
+    assertThat(capturedWhileChecking(0)).as("verboseLevel 0 asked for no logging").isEmpty();
+    assertThat(capturedWhileChecking(1)).as("otherwise the dropped message must still be audible")
+        .anyMatch(m -> m.contains(victim.toString()));
+
+    // Either way the caller can still see that something was dropped.
+    final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database)
+        .checkVertices("Person", null, false, 0, 0, 0);
+    assertThat((Collection<String>) stats.get("warnings")).as("nothing retained at cap 0: %s", stats).isEmpty();
+    assertThat((Long) stats.get("totalWarnings")).as("but counted: %s", stats).isEqualTo(1L);
+  }
+
+  /**
+   * Runs a capped type-wide vertex check at {@code verboseLevel} and returns the WARNING messages it logged.
+   * <p>
+   * NOTE: {@code LogManager} is a SINGLETON, so this swap is process-wide for its duration. It is restored in the
+   * finally and is safe only because surefire runs test classes sequentially within a fork - the same constraint
+   * the four capture sites this PR touched carry.
+   */
+  private List<String> capturedWhileChecking(final int verboseLevel) {
+    final List<String> captured = new CopyOnWriteArrayList<>();
+    final Logger original = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(new CapturingLogger(captured, original));
+    try {
+      new GraphDatabaseChecker((DatabaseInternal) database)
+          .checkVertices("Person", null, false, verboseLevel, 0, 0);
+    } finally {
+      LogManager.instance().setLogger(original);
+    }
+    return captured;
+  }
+
   private void assertBudgetIsOnePassPerRecord(final List<Emission> emissions, final String stepName,
       final long records) {
     assertThat(records).as("precondition: '%s' must have records to budget for", stepName).isGreaterThan(0L);
@@ -358,6 +407,45 @@ class CheckDatabaseSinglePassTest extends TestHelper {
         throw new RuntimeException(e);
       }
     });
+  }
+
+  /** Captures WARNING-and-above messages while forwarding every record on, so test output still shows what fired. */
+  private static final class CapturingLogger implements Logger {
+    private final List<String> captured;
+    private final Logger       delegate;
+
+    CapturingLogger(final List<String> captured, final Logger delegate) {
+      this.captured = captured;
+      this.delegate = delegate;
+    }
+
+    private void capture(final Level level, final String message) {
+      if (message != null && level.intValue() >= Level.WARNING.intValue())
+        captured.add(message);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+        final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
+        final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16,
+        final Object arg17) {
+      capture(level, message);
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      capture(level, message);
+      delegate.log(requester, level, message, exception, context, args);
+    }
+
+    @Override
+    public void flush() {
+      delegate.flush();
+    }
   }
 
   /** Reads a numeric check-database property, failing loudly when the field does not exist. */

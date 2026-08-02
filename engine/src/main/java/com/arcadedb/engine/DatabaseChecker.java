@@ -468,9 +468,11 @@ public class DatabaseChecker {
 
   /**
    * Records a warning raised by this class itself (as opposed to one merged in from a nested checker), under the same
-   * {@link CollectionUtils#addBounded} rule as {@link #addCorrupted}, and - like
-   * {@code GraphDatabaseChecker.addWarning} - LOGGED when the cap meant it could not be retained, so a capped run
-   * does not lose the message silently.
+   * {@link CollectionUtils#addBounded} rule as {@link #addCorrupted}, and - like {@code GraphDatabaseChecker}'s twin -
+   * LOGGED when the cap meant it could not be retained, so a capped run does not lose the message silently. Both
+   * honour {@code verboseLevel == 0} as "the caller asked for no logging"; before #5773 only this one did, so the
+   * same dropped message was audible from one arm and silent from the other. The retained set and
+   * {@code totalWarnings} still report how many were dropped either way.
    * <p>
    * #5764: shared with the type-wide {@link #checkDocuments}, which used to bypass the totals and the cap.
    * <p>
