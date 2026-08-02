@@ -120,6 +120,11 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
         .as("and the graph still carries the tombstones, which is the state this test is about")
         .isEqualTo(VERTICES);
 
+    // Counted across the query below rather than asserted as an absolute, so the assertion says "this query did not
+    // fall back" and not "nothing in the fixture ever did" - the graph-building warm-up in insertVertices() is a
+    // search too, and coupling to whether it fell back would make this depend on fixture ordering.
+    final long scansBefore = (Long) vectorIndex().getStats().get("bruteForceScans");
+
     assertNeighborClusterIs(1, DELETED_CLUSTERS);
 
     // Stronger than "the answer is right": the answer came from the graph walk. The brute-force fallback would have
@@ -131,7 +136,7 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
     // ever goes red on its own, check the assertion above first - while the returned cluster is still 4, this is
     // recall drift and not a regression, and the fix to make is the fixture (a wider cluster gap or a larger k), not
     // the search.
-    assertThat(vectorIndex().getStats().get("bruteForceScans"))
+    assertThat((Long) vectorIndex().getStats().get("bruteForceScans") - scansBefore)
         .as("the beam must walk out of the deleted region on its own, not be rescued by a full scan").isEqualTo(0L);
   }
 

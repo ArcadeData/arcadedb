@@ -1691,4 +1691,13 @@ query.
 `select().vectorNeighbors()` on a `PRODUCT`-quantized index is where this was most visible, because that path has
 neither a delta scan nor a brute-force fallback behind it: it returned the empty list directly.
 
+`getStats()` gains a `bruteForceScans` counter. The brute-force scan is the fallback a k-NN query takes when the graph
+walk could not fill it, and it reads every vector in the index - by far the most expensive thing this index does, and
+until now visible only as a `WARNING` in the log. If filtered vector queries are slow, look there first.
+
+One part of this is rebuild-gated. An unreadable vector is no longer encoded into the PQ code table under its
+placeholder, but an index built before this release keeps the codes it already has, so PQ navigation past such a
+vector stays slightly degraded until the next graph rebuild. Results are correct either way - what a query may return
+is decided by the live-vector filter, not by the codes.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
