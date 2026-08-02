@@ -2112,3 +2112,17 @@ megabytes of retained heap; there is no longer a per-degree allocation on the pa
 
 There is no behaviour change for callers: `deleteVertex` disconnects, deletes and tolerates exactly what it did
 before, including under `force`.
+
+### One observable worth knowing if you register delete listeners
+
+A self-loop is reachable from **both** of its vertex's edge lists, so deleting that vertex walks it twice and the
+record-delete pipeline - including `BeforeRecordDeleteListener.onBeforeDelete` and the type-level delete events -
+runs for it **twice**. The second pass disconnects nothing (both endpoints are the vertex being deleted, so both
+are skipped) and the record removal is absorbed, so the graph outcome is correct either way; a listener that is not
+idempotent is the only thing that can notice.
+
+This is **not new** in this release - the previous two-phase walk collected the self-loop from each list and called
+`delete()` on it twice as well, and `deleteRecordNoLock` fires the event before anything can short-circuit. It is
+recorded here because it was never written down, and because it holds for lightweight self-loops too, where there
+is no record to go missing on the second pass. Pinned as an exact count by
+`Issue5760VertexDeleteSelfSideSkipTest.aSelfLoopIsWalkedFromBothListsSoItsDeleteEventFiresTwice`.
