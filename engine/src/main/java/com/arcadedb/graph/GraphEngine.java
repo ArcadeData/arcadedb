@@ -854,7 +854,7 @@ public class GraphEngine {
    * #5764: the same retryable conflict, carrying the repair command for the vertex whose list could not be read.
    * <p>
    * A conflict is normally absorbed by the transaction retry and never seen, so the one run that DOES surface this
-   * message is the retry-exhausted one - which, by the design spelled out on {@link #collectEdgesToDelete}, is the
+   * message is the retry-exhausted one - which, by the design spelled out on {@link #deleteEdgesOf}, is the
    * run where the list is genuinely broken rather than transiently invisible. That is precisely the run whose
    * message has to say how to recover, and it used to arrive carrying only {@code getEdgeHeadChunkForWrite}'s
    * "concurrent commit in flight".
