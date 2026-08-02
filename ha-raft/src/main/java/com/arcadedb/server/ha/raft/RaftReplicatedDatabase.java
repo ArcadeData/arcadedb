@@ -1687,19 +1687,32 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
   }
 
+  private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
+    final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+    return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
+        leaderAddr != null ? leaderAddr : "");
+  }
+
   /**
    * Claims the file-manager recording session so this thread's schema change can be captured and shipped
-   * as a {@code SCHEMA_ENTRY}, waiting for a session owned by another thread (a concurrent DDL, or an LSM
-   * compaction inside {@link #runWithCompactionReplication}) to be released first.
+   * as a {@code SCHEMA_ENTRY}, waiting for a session owned by another thread to be released first. In
+   * practice that owner is an LSM compaction inside {@link #runWithCompactionReplication}: a second
+   * schema change normally never gets this far, because the DDL entry points that take the database write
+   * lock around the whole operation (e.g. {@code TypeBuilder.create}) serialize on it first.
    * <p>
    * The session used to be a single per-database slot with no owner, so a contended caller fell back to
    * running the DDL straight on the inner database: applied on the leader, proposed to nobody, nothing
    * thrown (#5728). The window it lost to is real work, not an instant - the owning session releases the
    * database write lock when its callback returns but keeps the session until its {@code replicateSchema()}
    * Raft round trip completes, which is why the divergence only appeared under load. Waiting is the only
-   * correct answer here: unlike a compaction, a schema change cannot be deferred and rescheduled. Nothing
-   * is locked while polling - the caller takes the database write lock only afterwards, inside
-   * {@code proxied.recordFileChanges} - so the wait cannot deadlock against the session's owner.
+   * correct answer here: unlike a compaction, a schema change cannot be deferred and rescheduled.
+   * <p>
+   * <b>The wait can run while the caller holds the database write lock</b>, since {@code TypeBuilder.create}
+   * wraps the whole operation in {@code executeInWriteLock}. A contended schema change therefore stalls
+   * writers on that database for as long as it polls. That is a deliberate trade: an availability pause
+   * bounded by {@link GlobalConfiguration#HA_QUORUM_TIMEOUT}, in place of a leader that silently stops
+   * replicating its schema. The bound is also what keeps the stall from becoming permanent if the session's
+   * owner ever needs a lock this caller is holding - it gives up and throws rather than waiting forever.
    *
    * @throws TimeoutException if the session could not be claimed, so the caller fails loudly instead of
    *                          diverging. Interruption raises the same type - both mean "this schema change
@@ -1707,18 +1720,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *                          as the non-retryable give-up signal - but says so in its message rather than
    *                          reporting an elapsed timeout that never elapsed.
    */
-  private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
-    final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
-    return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-        leaderAddr != null ? leaderAddr : "");
-  }
-
   private void acquireRecordingSession() {
     if (proxied.getFileManager().startRecordingChanges())
       return;
 
     final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
-    final long deadline = System.currentTimeMillis() + timeout;
+    final long started = System.currentTimeMillis();
+    final long deadline = started + timeout;
     while (System.currentTimeMillis() < deadline) {
       try {
         Thread.sleep(2);
@@ -1727,8 +1735,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         throw new TimeoutException("Interrupted while waiting for the file recording session to replicate a schema change on database '"
             + getName() + "'");
       }
-      if (proxied.getFileManager().startRecordingChanges())
+      if (proxied.getFileManager().startRecordingChanges()) {
+        // Logged because this wait can block writers on the database: an operator seeing writes pause
+        // should find the reason here rather than having to infer it.
+        HALog.log(this, HALog.BASIC,
+            "Schema change on database '%s' waited %dms for the file recording session held by another thread",
+            getName(), System.currentTimeMillis() - started);
         return;
+      }
     }
     throw new TimeoutException("Timeout of " + timeout
         + "ms waiting for the file recording session to replicate a schema change on database '" + getName() + "'");
