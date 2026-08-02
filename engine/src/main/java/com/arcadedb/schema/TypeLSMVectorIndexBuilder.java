@@ -141,12 +141,19 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
-   * Sets the size of the vector-location cache. {@code -1} (default) defers to the global setting.
+   * Refuses a limit on the vector-location index, which cannot be capped.
    *
-   * @param locationCacheSize the cache size in entries
+   * @param locationCacheSize the requested limit; anything positive raises
+   *
+   * @throws com.arcadedb.index.IndexException on any positive value
+   * @deprecated since 26.8.1 (issues #5559 and #5568): the location index cannot be capped, because a vector
+   * location is the only mapping from a vector id to its record and nothing on disk can rebuild an evicted one. The
+   * index costs ~90 bytes per LIVE vector; size the heap for that instead. Only {@code -1}/{@code 0} ("no limit",
+   * the default) are still accepted, so an existing call passing one of those keeps working.
    */
+  @Deprecated
   public TypeLSMVectorIndexBuilder withLocationCacheSize(final int locationCacheSize) {
-    vectorMetadata().locationCacheSize = locationCacheSize;
+    vectorMetadata().setLocationCacheSize(locationCacheSize);
     return this;
   }
 

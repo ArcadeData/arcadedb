@@ -29,111 +29,30 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression test for issue #4515.
+ * Regression test for issue #4515, and the concurrency contract of the one backend that survived it.
  * <p>
  * In bounded mode ({@code maxSize > 0}) the index was backed by a
- * {@code Collections.synchronizedMap(new LinkedHashMap<>(.., .., true))} with
- * {@code accessOrder=true}. Every {@code get()} became a structural
- * modification, and the streaming methods iterated {@code keySet()}/
- * {@code values()} without holding the wrapper monitor while calling
- * {@code get()} inside the pipeline, so concurrent read/iterate load threw
- * {@link java.util.ConcurrentModificationException} or silently corrupted the
- * underlying linked list.
+ * {@code Collections.synchronizedMap(new LinkedHashMap<>(.., .., true))} with {@code accessOrder=true}. Every
+ * {@code get()} became a structural modification, and the streaming methods iterated {@code keySet()}/
+ * {@code values()} without holding the wrapper monitor while calling {@code get()} inside the pipeline, so
+ * concurrent read/iterate load threw {@link java.util.ConcurrentModificationException} or silently corrupted the
+ * underlying linked list. #4515 fixed that by dropping access-order and snapshotting under the monitor; issue #5559
+ * then removed the bounded backend altogether - it evicted, and an evicted location cannot be recovered - so the
+ * failure mode is structurally gone rather than merely guarded, and the case that drove it has nothing left to
+ * construct. What remains is the {@link java.util.concurrent.ConcurrentHashMap} backend, exercised below.
  */
 class VectorLocationIndexConcurrencyTest {
 
   /**
-   * Drives concurrent reads, iteration and counting against a bounded index.
-   * Before the fix this reliably throws ConcurrentModificationException from
-   * the streaming methods (or corrupts the map). After the fix it must run
-   * cleanly.
+   * The surviving backend is a ConcurrentHashMap and uses the lazy, non-snapshotting stream path. Verify it stays
+   * consistent under concurrent writes/iteration without throwing.
    */
   @Test
-  void concurrentIterationAndAccessDoesNotThrow() throws Exception {
-    final int maxSize = 256;
-    final VectorLocationIndex index = new VectorLocationIndex(maxSize, maxSize);
-
-    // Pre-populate the bounded cache up to (and beyond) its capacity so that
-    // eviction is active and the linked list is fully exercised.
-    for (int i = 0; i < maxSize; i++)
-      index.addVector(false, i * 24L, new RID(1, i));
-
-    final int threads = 8;
-    final int iterationsPerThread = 5_000;
-    final ExecutorService pool = Executors.newFixedThreadPool(threads);
-    final CountDownLatch start = new CountDownLatch(1);
-    final CountDownLatch done = new CountDownLatch(threads);
-    final AtomicBoolean failed = new AtomicBoolean(false);
-    final ConcurrentLinkedQueue<Throwable> errors = new ConcurrentLinkedQueue<>();
-
-    for (int t = 0; t < threads; t++) {
-      final int threadId = t;
-      pool.submit(() -> {
-        try {
-          start.await();
-          for (int i = 0; i < iterationsPerThread; i++) {
-            final int id = (threadId * 31 + i) % maxSize;
-            switch (i % 4) {
-            case 0 -> index.getLocation(id);                       // mutating get under accessOrder
-            case 1 -> index.getActiveVectorIds().count();          // iterate keySet + get inside filter
-            case 2 -> index.getAllVectorIds().count();             // iterate keySet
-            default -> index.getActiveCount();                     // iterate values
-            }
-          }
-        } catch (final Throwable e) {
-          failed.set(true);
-          errors.add(e);
-        } finally {
-          done.countDown();
-        }
-      });
-    }
-
-    start.countDown();
-    final boolean finished = done.await(60, TimeUnit.SECONDS);
-    pool.shutdownNow();
-
-    assertThat(finished).as("all worker threads completed within timeout").isTrue();
-    assertThat(failed.get())
-        .as("no exception during concurrent access/iteration; first error: %s",
-            errors.isEmpty() ? "none" : errors.peek())
-        .isFalse();
-  }
-
-  /**
-   * Eviction must remain insertion-order (FIFO, oldest-inserted first) after
-   * dropping access-order, and the map must never exceed maxSize.
-   */
-  @Test
-  void boundedIndexRespectsMaxSizeAndEvictsOldest() {
-    final int maxSize = 4;
-    final VectorLocationIndex index = new VectorLocationIndex(maxSize, maxSize);
-
-    final int[] ids = new int[8];
-    for (int i = 0; i < ids.length; i++)
-      ids[i] = index.addVector(false, i, new RID(1, i));
-
-    assertThat(index.size()).isEqualTo(maxSize);
-
-    // The first 4 inserted entries must have been evicted.
-    for (int i = 0; i < 4; i++)
-      assertThat(index.getLocation(ids[i])).as("evicted oldest entry %d", i).isNull();
-
-    // The last 4 inserted entries must still be present.
-    for (int i = 4; i < 8; i++)
-      assertThat(index.getLocation(ids[i])).as("retained recent entry %d", i).isNotNull();
-  }
-
-  /**
-   * Unlimited mode is backed by a ConcurrentHashMap and uses the lazy,
-   * non-snapshotting stream path. Verify it stays consistent under concurrent
-   * reads/iteration without throwing.
-   */
-  @Test
-  void unlimitedModeConcurrentIterationDoesNotThrow() throws Exception {
-    final VectorLocationIndex index = new VectorLocationIndex(); // unlimited (ConcurrentHashMap)
+  void concurrentIterationDoesNotThrow() throws Exception {
+    final VectorLocationIndex index = new VectorLocationIndex();
 
     final int seed = 512;
     for (int i = 0; i < seed; i++)
@@ -175,9 +94,22 @@ class VectorLocationIndexConcurrencyTest {
 
     assertThat(finished).as("all worker threads completed within timeout").isTrue();
     assertThat(failed.get())
-        .as("no exception during unlimited-mode concurrent access; first error: %s",
-            errors.isEmpty() ? "none" : errors.peek())
+        .as("no exception during concurrent access; first error: %s", errors.isEmpty() ? "none" : errors.peek())
         .isFalse();
+  }
+
+  /**
+   * The single-int constructor used to mean {@code maxSize}, where {@code -1} was the "unlimited" sentinel; it now
+   * means an initial capacity. A caller carried over from the old signature must not silently get a map sized 0 or
+   * a negative-capacity failure deep inside the map - issue #5559.
+   */
+  @Test
+  void theOldUnlimitedSentinelIsRefusedRatherThanReadAsACapacity() {
+    assertThatThrownBy(() -> new VectorLocationIndex(-1))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("eviction limit");
+
+    assertThat(new VectorLocationIndex(1024).size()).as("a genuine capacity hint is accepted").isZero();
   }
 
   /**
@@ -186,7 +118,7 @@ class VectorLocationIndexConcurrencyTest {
    */
   @Test
   void activeVectorIdsExcludeDeleted() {
-    final VectorLocationIndex index = new VectorLocationIndex(64, 64);
+    final VectorLocationIndex index = new VectorLocationIndex(64);
 
     final int id0 = index.addVector(false, 0, new RID(1, 0));
     final int id1 = index.addVector(false, 24, new RID(1, 1));
