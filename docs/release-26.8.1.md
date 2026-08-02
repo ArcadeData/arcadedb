@@ -1865,3 +1865,95 @@ deserves its own regression test rather than riding along with this one. `REBUIL
 reconstructs the typed metadata from the persisted JSON.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
+
+## `CREATE INDEX IF NOT EXISTS` no longer reports success for an index that is not the one asked for
+
+`IF NOT EXISTS` matched a pre-existing index on the indexed property set alone. The property set is what the index
+name is derived from, and it says nothing about what the index does, so a `NOTUNIQUE` index answered "already there"
+to a request for a `UNIQUE` one:
+
+```sql
+CREATE INDEX ON T (Scalar) NOTUNIQUE;
+CREATE INDEX IF NOT EXISTS ON T (Scalar) UNIQUE;   -- reported success, created no constraint
+INSERT INTO T SET Scalar = 'x';
+INSERT INTO T SET Scalar = 'x';                    -- accepted
+```
+
+Schema-migration DDL uses `IF NOT EXISTS` precisely so it can be re-applied, so tightening an index from `NOTUNIQUE`
+to `UNIQUE` did nothing while the application carried on believing a uniqueness constraint protected its data. Issue
+#5675. The same statement without the guard reported the clash, which is what made the guard the thing suppressing an
+error the server already knew how to raise.
+
+`IF NOT EXISTS` is now satisfied only when the existing index provides what was asked for: the same index kind, and a
+uniqueness constraint at least as strong.
+
+- A `UNIQUE` index still satisfies a `NOTUNIQUE` request. It indexes exactly the same keys, so the statement stays the
+  no-op it was, and it is never weakened into a plain index.
+- A `NOTUNIQUE` index no longer satisfies a `UNIQUE` request. The statement is refused, naming both definitions.
+- An index of a different KIND on the same properties - a `FULL_TEXT` index where a range index was asked for, or the
+  reverse - is refused for the same reason. That one was silent too.
+
+### An existing index is never dropped implicitly any more
+
+The refusal is the answer even in the case the request could technically be granted by rebuilding. Underneath,
+`TypeIndexBuilder.create()` with `withIgnoreIfExists(true)` used to drop the existing index and rebuild it with the
+requested definition. That is not a recoverable operation: if the rebuild then fails on the data already stored - two
+records sharing the key the new index has to keep unique - the type is left with **no index at all** and an error. On
+an index the type only inherited it took away the parent type's index instead, which is issue #4083.
+
+So `withIgnoreIfExists` now means only what it says. Callers that genuinely mean "make this the definition" opt in
+explicitly:
+
+```java
+database.getSchema().buildTypeIndex("T", new String[] { "Scalar" })
+    .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+    .withReplaceIfIncompatible(true)     // new: may take away the plain index on those properties
+    .create();
+```
+
+and even then the replacement is undone if the new index cannot be built, so a failed upgrade costs an error rather
+than an index. An inherited index is still never replaced.
+
+### Cypher: a uniqueness constraint over a plain index still upgrades it
+
+`CREATE CONSTRAINT ... REQUIRE ... IS UNIQUE` and `... IS NODE KEY` are statements about the data rather than requests
+to create an index if one is missing, so they are the callers that opt into the replacement above. Neo4j keeps the
+range index and the constraint as two separate objects; ArcadeDB has one index per property set and a unique index
+covers both roles, so the upgrade is the equivalent end state and a Neo4j migration script that creates indexes and
+then constraints keeps working. Cypher's own `CREATE INDEX` does not opt in: it finds a unique index sufficient and
+leaves it alone rather than replacing it with a plain one.
+
+### A manual index name that already names a different index
+
+Reachable only through `CREATE INDEX <name> IF NOT EXISTS ...`, since the auto-derived name is built from the property
+list. A name that already belongs to an index on other properties used to satisfy the guard; it is now reported, since
+two different property sets under one name are two different indexes.
+
+### The index kind is now read before the existing-index lookup
+
+`TypeIndexBuilder.create()` validates `indexType` at the top, because deciding whether the index already on those
+properties covers the request needs to know what the request is. One embedded-API shape changes as a result: a builder
+with **no** `withType(...)` and `withIgnoreIfExists(true)` used to hand back the existing index on those properties,
+and now raises `DatabaseMetadataException` the way it always did when no index was there. Every in-tree caller sets the
+type; a get-or-create helper that relied on omitting it has to pass the type it expects.
+
+A failed replacement restores the page size along with the rest of the definition, via `getPageSizeForNewFile()` - the
+same accessor a rebuild uses, so a page size the current file carries but creation would refuse cannot turn the restore
+into a second failure (#5713).
+
+### BREAKING: `getOrCreateTypeIndex` no longer upgrades an incompatible index
+
+This one surfaces at runtime rather than at compile time, so it is the change embedded callers are most likely to meet
+without warning.
+
+`LocalSchema.getOrCreateTypeIndex(...)` sets `withIgnoreIfExists(true)`, so it inherits the change above: asked for a
+`UNIQUE` index where a `NOTUNIQUE` one already covers those properties, it used to drop and rebuild, and now raises
+`IllegalArgumentException` naming both definitions. That is the point of the fix - the rebuild is what could leave the
+type with no index - but embedded callers using it as an "ensure this index" helper across a schema change are the ones
+who will meet the new exception. Either drop the old index explicitly, or build through
+`buildTypeIndex(...).withReplaceIfIncompatible(true)` if replacing it really is what you mean.
+
+The replacement restores the previous definition on failure, including a manual index name (carried on the index
+metadata, the same route `CREATE INDEX <name>` uses) and the page size. It is not atomic, though: the drop and the
+build are separate schema changes, so a process that dies between them leaves the type without an index on those
+properties until one is created again. Only an explicit `withReplaceIfIncompatible` is exposed to that window.
