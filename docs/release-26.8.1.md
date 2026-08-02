@@ -1659,4 +1659,63 @@ build indexes through the embedded API with a computed page size, check that the
 An index that already exists on disk is unaffected either way - the page size is read from the component file, not from
 a builder.
 
+## Copying a type copies its records and its index definitions, not just their names
+
+`Schema.copyType()` - what `DocumentType` → `VertexType` conversion goes through - was reported as losing the page
+size of every index on the copy (#5723). It was, and that turned out to be the least of it. The same thirty lines held
+three defects, and the two that were not reported are the ones that made the copy wrong rather than differently tuned.
+
+**The copy had no data in its indexes.** The indexes were created inside the transaction that copies the records.
+`TypeIndexBuilder.create()` builds each bucket's index in its own transaction (`joinCurrent=false`), which from inside
+an enclosing transaction neither sees the records still pending in it nor commits the entries it produces. So every
+index on the copy came out empty, and any query the planner routed through one answered nothing - silently, since an
+empty index is indistinguishable from a type with no matching rows:
+
+```java
+schema.copyType("Doc", "Doc2", LocalVertexType.class, 1, 65_536, 1_000);
+database.query("sql", "SELECT FROM Doc2 WHERE k = 'v1'");   // 0 rows, and the record is right there
+```
+
+The index build now runs after the record-copy transaction has committed.
+
+**The copied records were empty.** `ImmutableDocument.propertiesAsMap()` was the one accessor of that class that did
+not lazy-load: it answered `Collections.emptyMap()` whenever the record had not been materialised yet, which is the
+state of every record handed out by `iterateType()` and `scanBucket()`. `copyType()` reads each source record that
+way, so it faithfully created the right *number* of records, each with no properties. The same silent emptiness
+affected a `DetachedDocument` built off a record straight from a scan. `propertiesAsMap()` now loads first, like
+`get()`, `has()`, `getPropertyNames()` and `toJSON()` already did; the empty map remains the answer only for a record
+that genuinely cannot be materialised.
+
+**And the index definitions were rebuilt from three attributes.** The copy went through the three-argument
+`createTypeIndex` overload, so the index type, the uniqueness flag and the property list survived and everything else
+was replaced by a default: the tuned page size from the report, the null strategy, the collations that make a lookup
+case-insensitive, and the entire type-specific configuration. That last one is not a tuning difference - a copied
+`FULL_TEXT` index tokenized and ranked with the default analyzer instead of the configured one, a copied `GEOSPATIAL`
+index dropped to the default geohash resolution, and a copied `LSM_VECTOR` index came up with `dimensions` 0.
+
+Carrying a definition into a new index file now has an accessor of its own, `IndexInternal.getMetadataForNewFile()`,
+alongside the `getPageSizeForNewFile()` that #5713 introduced for the page size. It exists because `getMetadata()`
+cannot answer this question for the wrapper index types: a full-text index keeps its analyzers and BM25 parameters in
+its own `FullTextIndexMetadata` and a geospatial one keeps its resolution and layout in plain fields, while
+`getMetadata()` delegates to the underlying LSM-Tree and hands back a definition with none of it. `IndexMetadata.copy()`
+is now polymorphic across all five metadata classes, so each carries its own settings and there is no second field list
+to forget. Per-index runtime state deliberately does not ride along: the copy starts empty, so inheriting the dense
+vector index's build state or the full-text corpus counters would describe a different set of records.
+
+A user-supplied index name is the one attribute not carried over. It is unique across the schema and still belongs to
+the source type, so the copy takes the auto-derived `NewType[properties]` form rather than colliding with it.
+
+**One behaviour change reaches outside `copyType()`.** `LSMVectorIndexMetadata.copy()` already existed and carried only
+the collations; routing it through the shared `copyCommonTo()` means it now also carries the user-supplied index name.
+Its other caller is `TRUNCATE TYPE`, which drops and recreates each index from its own definition - so a manually named
+`LSM_VECTOR` index now keeps its name across a truncate, where before it came back under the auto-derived
+`Type[properties]` form. Nothing else was affected: every other index type already kept its name there, because that
+path hands the original metadata object straight back rather than copying it.
+
+The other sites that rebuild an index from its own definition - `TRUNCATE TYPE`, `CHECK DATABASE FIX`, and the
+propagation to a freshly added bucket or sub type - still read `getMetadata()` and so still lose a full-text or
+geospatial configuration. They are unchanged here and tracked separately: each is a distinct user-visible operation and
+deserves its own regression test rather than riding along with this one. `REBUILD INDEX` is already correct; it
+reconstructs the typed metadata from the persisted JSON.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

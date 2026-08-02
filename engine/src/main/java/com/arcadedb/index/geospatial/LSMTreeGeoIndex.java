@@ -338,6 +338,19 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     return underlyingIndex.getMetadata();
   }
 
+  /**
+   * The geohash resolution and the storage layout are held here as plain fields, not on the underlying LSM-Tree, so a
+   * site carrying this definition into a new index file has to read them from this instance: through
+   * {@link #getMetadata()} a copy would silently drop to the default precision (issue #5723).
+   */
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    // Unlike the full-text and sparse-vector wrappers, there is no stored GeoIndexMetadata to hand back: this class
+    // holds the two settings as plain fields. GeoIndexMetadata.from() reassembles the definition, keeping the
+    // base-field copy inside the metadata hierarchy where copyCommonTo() lives.
+    return GeoIndexMetadata.from(underlyingIndex.getMetadata(), precision, tokenization);
+  }
+
   @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();

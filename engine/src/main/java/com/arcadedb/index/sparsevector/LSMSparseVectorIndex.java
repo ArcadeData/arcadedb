@@ -545,6 +545,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     return underlyingIndex.getMetadata();
   }
 
+  /**
+   * The dimensionality, the scoring modifier and the weight quantization live here, not on the underlying LSM-Tree, so
+   * a site carrying this definition into a new index file has to read them from this instance (issue #5723).
+   */
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    return sparseMetadata != null ? sparseMetadata : underlyingIndex.getMetadata();
+  }
+
   @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();
