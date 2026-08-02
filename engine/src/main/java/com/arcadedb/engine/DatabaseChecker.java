@@ -468,10 +468,20 @@ public class DatabaseChecker {
 
   /**
    * Flags a record as corrupted, bounded the way {@code GraphDatabaseChecker.addCorrupted} bounds the graph arms:
-   * the total keeps counting every occurrence, the retained set does not grow without limit.
+   * the total keeps counting, the retained set does not grow without limit.
    * <p>
-   * The total is incremented only for a RID the set has not already accounted for, so it stays comparable with the
-   * set's size for as long as the cap allows - a record flagged twice is one corrupted record.
+   * De-duplication is EXACT while the set is under the cap - a record flagged twice is one corrupted record, since
+   * the set itself answers "have I seen this". Past the cap it degrades to what the retained set can still answer:
+   * a RID already in the set is still recognised (which is why the {@code contains} check is there rather than an
+   * unconditional increment), but one that was never retained cannot be, so a second flag on it counts twice. That
+   * is deliberate and not worth closing: the only way to keep it exact past the cap is a second unbounded set of
+   * every RID ever counted, which is precisely the memory the cap exists to refuse. Neither caller reaches it today
+   * - the type-wide bucket scan visits each RID once, and the RECORD scope is a {@link Set}, so a duplicate cannot
+   * survive as far as {@link #groupRecordsByType()}.
+   * <p>
+   * The cap is {@code maxWarnings} because that is the only bound this class has; the {@code maxCorrupted} the
+   * graph arms take is a separate knob {@link GraphDatabaseChecker} owns, and it is passed the remaining budget
+   * from this same field by {@link #checkScopedRecords}. Two names, one setting.
    */
   private void addCorrupted(final RID rid) {
     final LinkedHashSet<RID> corrupted = (LinkedHashSet<RID>) result.get("corruptedRecords");

@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -158,7 +157,7 @@ class Issue5764DeleteVertexRepairAdviceTest extends TestHelper {
    * when run BEFORE the delete.
    */
   @Test
-  void aForcedDeleteAdvisesTheWholeDatabaseFixBecauseTheScopedFormCannotHelpAfterwards() throws Exception {
+  void aForcedDeleteAdvisesTheWholeDatabaseFixBecauseTheScopedFormCannotHelpAfterwards() {
     createSchema();
     final RID hubRID = createHub();
     final List<RID> edges = createEdges(hubRID, 1);
@@ -167,7 +166,9 @@ class Issue5764DeleteVertexRepairAdviceTest extends TestHelper {
     deleteRecord(outHeadChunk(srcRID));
 
     final List<String> warnings = new CopyOnWriteArrayList<>();
-    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    // getLogger(), not reflection on the private field: LogManager exposes the accessor for exactly this - a
+    // caller that temporarily swaps the logger and has to put the original back.
+    final Logger originalLogger = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new CapturingLogger(warnings, originalLogger));
     try {
       database.transaction(() -> graphEngine().deleteVertex((VertexInternal) srcRID.asVertex(), true));
@@ -201,13 +202,6 @@ class Issue5764DeleteVertexRepairAdviceTest extends TestHelper {
     for (Throwable current = e; current != null && !chain.contains(current); current = current.getCause())
       chain.add(current);
     return chain;
-  }
-
-  @SuppressWarnings("unchecked")
-  private static <T> T readField(final Object target, final String name) throws Exception {
-    final Field f = target.getClass().getDeclaredField(name);
-    f.setAccessible(true);
-    return (T) f.get(target);
   }
 
   private GraphEngine graphEngine() {
