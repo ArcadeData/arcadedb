@@ -56,9 +56,24 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     throw new UnsupportedOperationException();
   }
 
+  /**
+   * The script lines are chained through {@code prev} by {@link #chain}, so releasing the tail of
+   * {@link #steps} cascades over every line and the per-statement plan each one holds. {@code lastStep} is an
+   * execution cursor, not an ownership handle: {@link #executeUntilReturn()} and {@link #doExecute} swap it
+   * for a {@link ReturnStep} or a {@link BreakStep} that is not part of the chain, so closing it would
+   * release nothing.
+   * <p>
+   * Nothing is closed through {@code lastStep} on purpose. On the normal path it is already the tail of
+   * {@link #steps}; on the RETURN/BREAK paths it holds no resources of its own; and when it is the last step
+   * of a nested plan, that plan is held by one of these script lines and is released by the walk below, so
+   * closing it here would close the nested chain twice.
+   * <p>
+   * The walk in {@link ScriptLineStep#close()} is iterative, which keeps a large batch off the stack.
+   */
   @Override
   public void close() {
-    lastStep.close();
+    if (!steps.isEmpty())
+      steps.getLast().close();
   }
 
   @Override
