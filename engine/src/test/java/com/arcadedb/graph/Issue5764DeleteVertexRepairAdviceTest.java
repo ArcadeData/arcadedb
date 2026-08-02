@@ -155,6 +155,14 @@ class Issue5764DeleteVertexRepairAdviceTest extends TestHelper {
    * would be worse than the whole-database form it replaced - it names a repair that cannot run. The message must
    * therefore keep the whole-database command for the references left dangling, and say what the scoped form buys
    * when run BEFORE the delete.
+   * <p>
+   * NOTE on the capture: {@link LogManager} is a singleton, so swapping its logger is PROCESS-WIDE for the duration
+   * of the forced delete below. Restored in a {@code finally}, and safe under the suite as it runs today (surefire
+   * executes classes sequentially within a fork), but it is shared state: if class-level parallelism is ever
+   * enabled in this module, a concurrent test's WARNING output would land in {@code warnings} here and this test's
+   * delegate would be whatever that test installed. There is no per-invocation seam to capture through - the log
+   * call sites go straight to the singleton - so the alternative is asserting on nothing, which is worse than a
+   * documented window.
    */
   @Test
   void aForcedDeleteAdvisesTheWholeDatabaseFixBecauseTheScopedFormCannotHelpAfterwards() {

@@ -1043,6 +1043,9 @@ public class GraphEngine {
     try {
       return iterator.hasNext();
     } catch (final RecordNotFoundException e) {
+      // Interpolated AND kept as the cause, for the reason spelled out on getEdgeHeadChunkForWrite: the chunk that
+      // could not be loaded is named only inside the record-not-found message, and the top-level message is what
+      // reaches a log line (#5764).
       throw new ConcurrentModificationException(
           "Edge list " + direction + " of vertex " + vertex.getIdentity()
               + " is not fully readable (concurrent commit in flight): " + e.getMessage(), e);
@@ -1608,6 +1611,11 @@ public class GraphEngine {
         return null;
       return buildEdgeList(vertex, direction, rid);
     } catch (final RecordNotFoundException e) {
+      // The cause and the interpolated e.getMessage() are NOT redundant, though they read that way (#5764). This
+      // message is the only place the missing CHUNK's RID appears - the text above names the vertex, not the chunk,
+      // which is inside the record-not-found message - and the top-level message is what a log line and an HTTP
+      // error body carry, while the cause chain surfaces only in a full trace or a development-mode detail field.
+      // Pinned by Issue5670EdgeDeleteDanglingBackRefTest, which asserts the head chunk's RID is in this message.
       throw new ConcurrentModificationException(
           "Edge list " + direction + " of vertex " + vertex.getIdentity()
               + " is not fully visible yet (concurrent commit in flight): " + e.getMessage(), e);

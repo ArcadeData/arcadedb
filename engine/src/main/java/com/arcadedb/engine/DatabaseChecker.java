@@ -66,6 +66,21 @@ public class DatabaseChecker {
           + "check. Drop the TYPE/BUCKET clause, or run the two checks separately";
   /** #5680: entries {@link #setRecords} discarded because they did not resolve; reported, never silent. */
   private       int                 droppedRecords = 0;
+  /**
+   * The ONLY retention bound this class has: it caps both the {@code warnings} messages ({@link #addWarning}) and
+   * the {@code corruptedRecords} set ({@link #addCorrupted}).
+   * <p>
+   * #5764, so a future reader does not "fix" the apparent inconsistency: {@code GraphDatabaseChecker} takes a
+   * SEPARATE {@code maxCorrupted} parameter for the same set, which looks like two policies on one run. It is one -
+   * {@link #checkEdges}, {@link #checkVertices} and {@link #checkScopedRecords} all pass this field's REMAINING
+   * budget into that parameter, so both names resolve to this setting. Aligning the two would mean adding a knob,
+   * not removing a divergence.
+   * <p>
+   * The cap is not purely cosmetic, which is why it is worth stating: the RETAINED {@code corruptedRecords} are
+   * what {@link #check()} turns into {@code affectedBuckets}, so a record dropped past the cap does not get the
+   * indexes on its bucket rebuilt under {@code FIX}. Only reachable on a run finding more than 100k corrupt
+   * records, where a bounded repair is the point.
+   */
   private       int                 maxWarnings  = 100_000;
   private final Map<String, Object> result       = new HashMap<>();
 
