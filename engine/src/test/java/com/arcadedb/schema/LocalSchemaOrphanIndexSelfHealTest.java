@@ -27,7 +27,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.FileWriter;
-import java.lang.reflect.Field;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
@@ -95,8 +94,17 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
     // This bypasses JUL entirely, so the assertion does not depend on JUL configuration state
     // left over by earlier tests in the same JVM (logger levels, filters, handler chains).
     // The pattern mirrors QueryEngineManagerPoolTest.saturationLogsThrottledWarning.
+    //
+    // NOTE (#5773): LogManager is a SINGLETON, so this swap is PROCESS-WIDE for its duration. It is restored in
+    // the finally below and is safe today only because surefire runs test classes sequentially within a fork; if
+    // class-level parallelism is ever enabled in this module, a concurrent test's WARNING output would land in
+    // the list below and its own delegate would be whatever this test installed. There is no per-invocation seam
+    // to capture through - the log call sites go straight to the singleton - so this is a constraint to know,
+    // not a defect to fix here.
     final List<String> warnings = new CopyOnWriteArrayList<>();
-    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    // getLogger(), not reflection on the private field: the accessor exists for exactly this save-and-restore and
+    // a field rename would break the reflective form with no compile error.
+    final Logger originalLogger = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new CapturingLogger(warnings, originalLogger));
 
     try {
@@ -142,13 +150,6 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
   @Override
   protected String getDatabasePath() {
     return "target/databases/LocalSchemaOrphanIndexSelfHealTest";
-  }
-
-  @SuppressWarnings("unchecked")
-  private static <T> T readField(final Object target, final String name) throws Exception {
-    final Field f = target.getClass().getDeclaredField(name);
-    f.setAccessible(true);
-    return (T) f.get(target);
   }
 
   /**

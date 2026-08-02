@@ -2105,3 +2105,75 @@ the second. But `lookupByRID` *is* the first - it performs the same
 `asVertex(true)`, whose `loadContent` flag is what forces the decode. `LocalBucket.getRecord` and `LocalBucket.scan`
 resolve placeholders and multi-page chains identically and skip the same slot markers, so no corruption shape reaches
 one enumeration and not the other. Pinned by a test that corrupts a record and asserts both scopes report it.
+
+*(Superseded below: the corollary is that the type-wide arm's first pass was the redundant one, and #5773 removed
+it. Both arms now run exactly one pass.)*
+
+## `CHECK DATABASE` stops looking at every vertex and edge twice
+
+Follow-ups from #5764 (#5773). The observation above cuts the other way too: if one pass answers everything for the
+scoped arm, the type-wide arm's **first** pass is doing work its second pass already does.
+
+### The redundant pass is gone
+
+`checkVertices` and `checkEdges` opened with a raw bucket scan that built every record and decoded it, then ran the
+real connectivity/endpoint walk through `scanType` - which performs the identical `newImmutableRecord(...)` from the
+identical raw page view and opens with the identical `asVertex(true)`/`asEdge(true)`. Nothing the first pass could
+see escaped the second: a construction failure lands inside `LocalBucket.scan`'s per-slot `try` and is routed to the
+error callback that warns and flags the record, and a decode failure lands in the walk's own `catch`. The dropped
+pass in fact saw *less*, since it passed a `null` error callback and so only logged a failure inside the bucket
+machinery itself (placeholder resolution, a multi-page chain read) instead of reporting it.
+
+Measured rather than assumed, because "materialises every record twice" makes the saving sound larger than it is:
+on a warm 200k-vertex / 200k-edge graph the per-type steps went 173 ms -> 162 ms (vertices) and 155 ms -> 142 ms
+(edges), and a full `CHECK DATABASE` 509 ms -> 472 ms - about 7%. The pass is cheap because `asVertex(true)` parses
+the edge pointers, not the properties. What it mostly buys is correctness of the report, below.
+
+**Visible change:** the progress `total` for a vertex/edge step is now the record count, where it was twice the
+record count (it was written as literally `2 * countType`). A progress bar reading it will simply be accurate.
+
+### `CHECK DATABASE` no longer says it is "removing" records it does not remove
+
+The dropped pass emitted `vertex <rid> cannot be loaded, removing it` (and the edge equivalent). Removal happens only
+under `FIX`, so a plain `CHECK DATABASE` announced a removal and removed nothing. #5764 fixed exactly this wording on
+the document arm; the vertex and edge arms had the conditional version of the same defect, and both messages leave
+with the pass that emitted them. The surviving wording is `vertex <rid> cannot be loaded (error: ...)`, which names
+the failure as well.
+
+**If you parse `CHECK DATABASE` output:** a corrupt vertex or edge now produces **one** warning per record instead
+of two, and the `, removing it` message is gone. `corruptedRecords` is a set, so the corrupted total is unchanged;
+`totalWarnings` drops by one per corrupt record. `FIX` still deletes exactly what it deleted before.
+
+### The two warning/corrupted counters answer the same question
+
+Two smaller alignments in the same files:
+
+- `GraphDatabaseChecker.addCorrupted` incremented unconditionally once past its retention cap, while the
+  `DatabaseChecker` twin added by #5764 checked `contains` first - so a RID still present in the retained set was
+  counted again by one and not by the other. `checkEdges` really does flag one RID twice (an edge whose IN and OUT
+  vertices are both gone), so the two helpers disagreed on the same input. They now share the `contains`-checking
+  behaviour: exact de-duplication while under the cap, degrading past it only for RIDs the cap refused to retain.
+- `totalWarnings` counted occurrences while the retained `warnings` is a `Set`, so two findings that render to the
+  same message collapsed to one line and counted two - the total could exceed the retained size on a run nowhere
+  near its cap. Both sides now count distinct messages, in `GraphDatabaseChecker` and in `DatabaseChecker`.
+
+Both are a **reported-statistic change**, so they are worth knowing about if you consume `CHECK DATABASE` output
+programmatically rather than reading it: `totalWarnings` now answers "how many distinct messages", where it used to
+answer "how many times something was reported". On a run whose findings all render differently - the normal case -
+the number is unchanged. On one with repeats it drops, and it can no longer exceed the size of the `warnings` set
+on an uncapped run. `totalCorruptedRecords` gains the same guarantee past the cap.
+
+The four hand-written copies of that rule are gone with them, into `CollectionUtils.addBounded`, which is now the
+one place the retain-and-de-duplicate policy is written down. Two of the four had drifted apart, which is what made
+the counters disagree in the first place.
+
+### `CHECK DATABASE` at `verboseLevel 0` no longer logs the warnings it had to drop
+
+Also an alignment, and the one behaviour change here an operator could notice directly. When a run exceeds its
+warning cap, the message that cannot be retained is logged instead, so it is not lost silently. The two arms
+disagreed about whether `verboseLevel 0` switched that off: the graph arm logged regardless, the document arm
+honoured the flag. They now both honour it, on the grounds that a caller passing `0` asked for no logging - and the
+retained set plus `totalWarnings` still report that something was dropped either way.
+
+If you run a **capped** check **quietly** and relied on the dropped messages appearing in the log, pass a
+`verboseLevel` above zero. A default `CHECK DATABASE` is unaffected: it runs at verbosity 1.

@@ -37,6 +37,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.ProgressCallback;
 
@@ -466,46 +467,55 @@ public class DatabaseChecker {
   }
 
   /**
-   * Records a warning raised by this class itself (as opposed to one merged in from a nested checker): always
-   * counted, retained only while under {@code maxWarnings}, and - like {@code GraphDatabaseChecker.addWarning} -
-   * LOGGED when it has to be dropped, so a capped run does not lose the message silently.
+   * Records a warning raised by this class itself (as opposed to one merged in from a nested checker), under the same
+   * {@link CollectionUtils#addBounded} rule as {@link #addCorrupted}, and - like {@code GraphDatabaseChecker}'s twin -
+   * LOGGED when the cap meant it could not be retained, so a capped run does not lose the message silently. Both
+   * honour {@code verboseLevel == 0} as "the caller asked for no logging"; before #5773 only this one did, so the
+   * same dropped message was audible from one arm and silent from the other. The retained set and
+   * {@code totalWarnings} still report how many were dropped either way.
    * <p>
    * #5764: shared with the type-wide {@link #checkDocuments}, which used to bypass the totals and the cap.
+   * <p>
+   * #5773: de-duplicated, where it used to count occurrences. The retained {@code warnings} is a {@code Set}, so two
+   * findings that render to the same message have always collapsed to one line; the total counted both, which made it
+   * exceed the retained size on a run nowhere near its cap. Both sides now answer "distinct messages".
+   * <p>
+   * The one residual: a message produced identically by two DIFFERENT sub-checks (each {@code GraphDatabaseChecker}
+   * keeps its own set, and {@link #updateStats} sums their totals while the sets are union-ed here) is still
+   * retained once and counted twice. Reachable only for the few messages that carry no RID - "reconnected N
+   * outgoing edges" for two types that reconnected the same N - and closing it would mean threading a dropped-count
+   * out of every sub-check instead of a total, which buys nothing an operator reads.
    */
   private void addWarning(final String warning) {
-    result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
     final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
-    if (warnings.size() < maxWarnings)
-      warnings.add(warning);
-    else if (verboseLevel > 0)
+    final CollectionUtils.BoundedAdd outcome = CollectionUtils.addBounded(warnings, maxWarnings, warning);
+    if (!outcome.isFirstSighting())
+      return;
+    if (outcome == CollectionUtils.BoundedAdd.DROPPED && verboseLevel > 0)
       LogManager.instance().log(this, Level.WARNING, "- " + warning);
+    result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
   }
 
   /**
-   * Flags a record as corrupted, bounded the way {@code GraphDatabaseChecker.addCorrupted} bounds the graph arms:
-   * the total keeps counting, the retained set does not grow without limit.
+   * Flags a record as corrupted under {@link CollectionUtils#addBounded}, which documents the retain-and-de-duplicate
+   * rule itself: exact while under the cap, degrading past it only for RIDs the cap refused to retain. Neither caller
+   * of THIS one reaches the degraded case today - the type-wide bucket scan visits each RID once, and the RECORD scope
+   * is a {@link Set}, so a duplicate cannot survive as far as {@link #groupRecordsByType()}.
    * <p>
-   * De-duplication is EXACT while the set is under the cap - a record flagged twice is one corrupted record, since
-   * the set itself answers "have I seen this". Past the cap it degrades to what the retained set can still answer:
-   * a RID already in the set is still recognised (which is why the {@code contains} check is there rather than an
-   * unconditional increment), but one that was never retained cannot be, so a second flag on it counts twice. That
-   * is deliberate and not worth closing: the only way to keep it exact past the cap is a second unbounded set of
-   * every RID ever counted, which is precisely the memory the cap exists to refuse. Neither caller reaches it today
-   * - the type-wide bucket scan visits each RID once, and the RECORD scope is a {@link Set}, so a duplicate cannot
-   * survive as far as {@link #groupRecordsByType()}.
+   * #5773: there used to be four hand-written copies of that rule across this class and
+   * {@link GraphDatabaseChecker}, and two of them disagreed past the cap - the graph one incremented unconditionally
+   * there, so a RID still present in its retained set was counted again. That case IS reachable (its
+   * {@code checkEdges} flags one RID twice for an edge whose endpoints are both gone). Extracting the rule is what
+   * keeps them from drifting apart again; do not re-inline it.
    * <p>
    * The cap is {@code maxWarnings} because that is the only bound this class has; the {@code maxCorrupted} the
    * graph arms take is a separate knob {@link GraphDatabaseChecker} owns, and it is passed the remaining budget
    * from this same field by {@link #checkScopedRecords}. Two names, one setting.
    */
   private void addCorrupted(final RID rid) {
-    final LinkedHashSet<RID> corrupted = (LinkedHashSet<RID>) result.get("corruptedRecords");
-    if (corrupted.size() < maxWarnings) {
-      if (!corrupted.add(rid))
-        return;
-    } else if (corrupted.contains(rid))
-      return;
-    result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
+    if (CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("corruptedRecords"), maxWarnings, rid)
+        .isFirstSighting())
+      result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
   }
 
   /**

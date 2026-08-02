@@ -293,4 +293,68 @@ class CollectionUtilsTest {
     final List<String> result = CollectionUtils.removeFromUnmodifiableList(original, "z");
     assertThat(result).containsExactly("a", "b");
   }
+
+  /** #5773: under the cap, the retained set itself is the de-duplication - a repeat is not a first sighting. */
+  @Test
+  void addBoundedRetainsAndDeduplicatesUnderTheCap() {
+    final Set<String> retained = new LinkedHashSet<>();
+
+    assertThat(CollectionUtils.addBounded(retained, 3, "a")).isEqualTo(CollectionUtils.BoundedAdd.RETAINED);
+    assertThat(CollectionUtils.addBounded(retained, 3, "b")).isEqualTo(CollectionUtils.BoundedAdd.RETAINED);
+    assertThat(CollectionUtils.addBounded(retained, 3, "a")).as("a repeat is not a first sighting")
+        .isEqualTo(CollectionUtils.BoundedAdd.DUPLICATE);
+
+    assertThat(retained).containsExactly("a", "b");
+  }
+
+  /** Past the cap nothing more is retained, so the collection stops growing - and says so. */
+  @Test
+  void addBoundedStopsRetainingAtTheCap() {
+    final Set<String> retained = new LinkedHashSet<>();
+    CollectionUtils.addBounded(retained, 2, "a");
+    CollectionUtils.addBounded(retained, 2, "b");
+
+    final CollectionUtils.BoundedAdd outcome = CollectionUtils.addBounded(retained, 2, "c");
+    assertThat(outcome).as("unseen past the cap is a first sighting, but a dropped one")
+        .isEqualTo(CollectionUtils.BoundedAdd.DROPPED);
+    assertThat(outcome.isFirstSighting()).as("so a counter beside the set still ticks").isTrue();
+    assertThat(retained).as("but it is not retained").containsExactly("a", "b");
+  }
+
+  /**
+   * The documented degradation, pinned so it cannot silently change in either direction: past the cap an item that
+   * is STILL retained is recognised (this is the case the two CHECK DATABASE counters used to disagree on), while an
+   * item the cap refused to retain cannot be, so a second sighting of it counts again.
+   */
+  @Test
+  void addBoundedRecognisesARetainedItemPastTheCapButNotADroppedOne() {
+    final Set<String> retained = new LinkedHashSet<>();
+    CollectionUtils.addBounded(retained, 1, "kept");
+
+    assertThat(CollectionUtils.addBounded(retained, 1, "kept")).as("still in the set, so still recognised")
+        .isEqualTo(CollectionUtils.BoundedAdd.DUPLICATE);
+
+    assertThat(CollectionUtils.addBounded(retained, 1, "dropped")).isEqualTo(CollectionUtils.BoundedAdd.DROPPED);
+    assertThat(CollectionUtils.addBounded(retained, 1, "dropped"))
+        .as("never retained, so it cannot be recognised - counted again, by design")
+        .isEqualTo(CollectionUtils.BoundedAdd.DROPPED);
+  }
+
+  /** A cap of zero retains nothing and therefore recognises nothing: every call is a dropped first sighting. */
+  @Test
+  void addBoundedWithAZeroCapRetainsNothing() {
+    final Set<String> retained = new LinkedHashSet<>();
+
+    assertThat(CollectionUtils.addBounded(retained, 0, "a")).isEqualTo(CollectionUtils.BoundedAdd.DROPPED);
+    assertThat(CollectionUtils.addBounded(retained, 0, "a")).isEqualTo(CollectionUtils.BoundedAdd.DROPPED);
+    assertThat(retained).isEmpty();
+  }
+
+  /** Only a duplicate is not a first sighting - the property both CHECK DATABASE counters tick on. */
+  @Test
+  void onlyADuplicateIsNotAFirstSighting() {
+    assertThat(CollectionUtils.BoundedAdd.RETAINED.isFirstSighting()).isTrue();
+    assertThat(CollectionUtils.BoundedAdd.DROPPED.isFirstSighting()).isTrue();
+    assertThat(CollectionUtils.BoundedAdd.DUPLICATE.isFirstSighting()).isFalse();
+  }
 }
