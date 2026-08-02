@@ -2156,3 +2156,24 @@ Two smaller alignments in the same files:
 - `totalWarnings` counted occurrences while the retained `warnings` is a `Set`, so two findings that render to the
   same message collapsed to one line and counted two - the total could exceed the retained size on a run nowhere
   near its cap. Both sides now count distinct messages, in `GraphDatabaseChecker` and in `DatabaseChecker`.
+
+Both are a **reported-statistic change**, so they are worth knowing about if you consume `CHECK DATABASE` output
+programmatically rather than reading it: `totalWarnings` now answers "how many distinct messages", where it used to
+answer "how many times something was reported". On a run whose findings all render differently - the normal case -
+the number is unchanged. On one with repeats it drops, and it can no longer exceed the size of the `warnings` set
+on an uncapped run. `totalCorruptedRecords` gains the same guarantee past the cap.
+
+The four hand-written copies of that rule are gone with them, into `CollectionUtils.addBounded`, which is now the
+one place the retain-and-de-duplicate policy is written down. Two of the four had drifted apart, which is what made
+the counters disagree in the first place.
+
+### `CHECK DATABASE` at `verboseLevel 0` no longer logs the warnings it had to drop
+
+Also an alignment, and the one behaviour change here an operator could notice directly. When a run exceeds its
+warning cap, the message that cannot be retained is logged instead, so it is not lost silently. The two arms
+disagreed about whether `verboseLevel 0` switched that off: the graph arm logged regardless, the document arm
+honoured the flag. They now both honour it, on the grounds that a caller passing `0` asked for no logging - and the
+retained set plus `totalWarnings` still report that something was dropped either way.
+
+If you run a **capped** check **quietly** and relied on the dropped messages appearing in the log, pass a
+`verboseLevel` above zero. A default `CHECK DATABASE` is unaffected: it runs at verbosity 1.
