@@ -941,6 +941,16 @@ public enum GlobalConfiguration {
       "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
 
+  SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
+      """
+      Default maximum number of rows the HTTP query/command endpoints serialize into a single response when \
+      the caller states no limit of its own. A request that carries a `limit` field, and a query that carries \
+      its own LIMIT clause, are both honored as written and are never capped by this value. When this default \
+      does cut a result short the response reports `"truncated": true` next to `returned` and `limit`, and the \
+      server logs a warning: the truncation is never silent (issue #5711). Set to -1 or 0 for unlimited \
+      (WARNING: removes the protection against materializing an unbounded result set in memory). Default is 20000""",
+      Integer.class, 20_000),
+
   SERVER_HTTP_STREAMING_READ_TIMEOUT("arcadedb.server.httpStreamingReadTimeout", SCOPE.SERVER,
       """
       Budget in milliseconds granted to endpoints that consume the request body while working (today only \

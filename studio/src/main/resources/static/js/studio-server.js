@@ -867,6 +867,20 @@ function saveBackupConfig() {
 var mcpConfigData = null;
 var mcpConfigLoaded = false;
 
+// A 404 on the MCP routes means this distribution was built without the MCP module, which is a build-time
+// choice rather than a failure. Every other status is a genuine error and must still surface.
+function isMCPModuleAbsent(jqXHR) {
+  return !!jqXHR && jqXHR.status === 404;
+}
+
+function showMCPModuleAbsent() {
+  $("#mcpConfigForm").html(
+    '<div class="alert alert-secondary" style="font-size: 0.85rem;">' +
+      "The MCP module is not installed in this distribution. Rebuild with the <code>mcp</code> module to enable it." +
+      "</div>"
+  );
+}
+
 function loadMCPConfig() {
   jQuery
     .ajax({
@@ -882,8 +896,12 @@ function loadMCPConfig() {
       populateMCPConfigForm(data);
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
-      globalNotifyError(jqXHR.responseText);
       mcpConfigLoaded = false;
+      if (isMCPModuleAbsent(jqXHR)) {
+        showMCPModuleAbsent();
+        return;
+      }
+      globalNotifyError(jqXHR.responseText);
     });
 }
 
@@ -973,6 +991,10 @@ function saveMCPConfig() {
       globalNotify("MCP Configuration", "Configuration saved successfully", "success");
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
+      if (isMCPModuleAbsent(jqXHR)) {
+        showMCPModuleAbsent();
+        return;
+      }
       globalNotifyError(jqXHR.responseText);
     });
 }

@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -33,6 +34,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.function.IntFunction;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,11 +43,51 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test for GitHub Issue #3122: Async commands should run in parallel.
  * https://github.com/ArcadeData/arcadedb/issues/3122
+ * <p>
+ * None of the assertions below compares elapsed time against a fixed constant. Doing so made the class a
+ * CI flake (issue #5630): a run that takes 7 s alone on a developer machine took 26.8 s on a loaded shared
+ * runner, nine times over a 3 s budget, while running perfectly in parallel the whole time. What separates
+ * parallel from sequential execution is not how long the work took but how the two commands were spaced,
+ * so that is what is asserted:
+ * <ul>
+ *   <li>with a completion callback, the two commands must finish <em>less than one SLEEP apart</em> - run
+ *       sequentially the second cannot even start until the first is done, so its completion is at least
+ *       {@code SLEEP_DURATION} later no matter how loaded the machine is;</li>
+ *   <li>without one (the HTTP route), a single-command baseline is measured back to back with the
+ *       concurrent pair, and the pair must cost well under twice the baseline. What makes the ratio hold
+ *       where an absolute budget does not is that the dominant term in both measurements is the same
+ *       server-side SLEEP - a wall-clock wait, so largely load-independent - leaving the parallel ratio
+ *       near 1.0 and the sequential one near 2.0 whatever the runner is doing.</li>
+ * </ul>
+ * <p>
+ * Every method here waits out at least one real 2 s SLEEP, and the HTTP one waits out two (baseline then
+ * pair), so the class is tagged slow per the repository convention for multi-second regression tests.
  */
+@Tag("slow")
 class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
 
   private static final String DATABASE_NAME  = "Issue3122AsyncParallelCommands";
   private static final int    SLEEP_DURATION = 2000; // 2 seconds per sleep command
+
+  /**
+   * Liveness guards only, never performance assertions: they exist so a wedged async executor fails the
+   * test instead of hanging it. Deliberately far above any plausible loaded-CI duration.
+   */
+  private static final long COMPLETION_TIMEOUT_MS      = 120_000;
+  private static final long HTTP_RESPONSE_TIMEOUT_SECS = 60;
+
+  /**
+   * A pair of commands executed sequentially costs about twice the single-command baseline; executed in
+   * parallel it costs about the baseline. The threshold sits midway, far from both outcomes.
+   * <p>
+   * Do not raise it to buy margin against a stray pause. Writing {@code o} for the fixed per-request
+   * overhead, the sequential ratio is {@code (2*SLEEP + o) / (SLEEP + o)}, which <em>falls</em> toward 1.0
+   * as {@code o} grows: it is 2.0 only when the overhead is negligible, and already 1.5 once the overhead
+   * reaches a whole SLEEP. Every increase of this constant therefore buys false-failure margin by giving
+   * up false-pass margin, and a regression guard that silently passes is the worse of the two. The
+   * baseline-validity assertion below is the cheaper way to protect the same property.
+   */
+  private static final double SEQUENTIAL_COST_FRACTION = 1.5;
 
   @Override
   protected String getDatabaseName() {
@@ -53,8 +96,6 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
 
   /**
    * Test that two async commands sent via HTTP run in parallel, not sequentially.
-   * If they run in parallel, total time should be ~SLEEP_DURATION.
-   * If they run sequentially, total time would be ~2*SLEEP_DURATION.
    */
   @Test
   void httpAsyncCommandsRunInParallel() throws Exception {
@@ -67,13 +108,140 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
           .as("Server should have at least 2 async worker threads by default")
           .isGreaterThanOrEqualTo(2);
 
-      final long startTime = System.currentTimeMillis();
+      // Baseline first, on the same server and under the same load as the pair it is compared against.
+      final long singleMs = timeHttpAsyncSleepCommands(serverIndex, database, 1);
+      final long pairMs = timeHttpAsyncSleepCommands(serverIndex, database, 2);
 
-      // Send two async SLEEP commands concurrently
-      final ExecutorService executor = Executors.newFixedThreadPool(2);
+      LogManager.instance().log(this, Level.INFO,
+          "One async SLEEP command (%d ms each): %d ms; two concurrently: %d ms", SLEEP_DURATION, singleMs, pairMs);
+
+      // The threshold below is only meaningful if the baseline actually waited out its SLEEP. Were
+      // waitCompletion to return before the command was picked up, singleMs would collapse to the HTTP
+      // round trip and the comparison would silently stop testing anything.
+      // This is safe to assert rather than merely hope for: on the awaitResponse=false path
+      // PostCommandHandler calls executeCommandAsync - which enqueues via database.async().command() -
+      // before it builds the 202, so by the time the future below has observed the response the command
+      // is already on the queue that waitCompletion drains.
+      assertThat(singleMs)
+          .as("The single-command baseline must have waited out its SLEEP, otherwise the ratio below is "
+              + "measured against nothing (baseline: %d ms, SLEEP: %d ms)", singleMs, SLEEP_DURATION)
+          .isGreaterThanOrEqualTo(SLEEP_DURATION);
+
+      assertThat(pairMs)
+          .as("Two concurrent async commands must cost far less than two sequential ones "
+              + "(one command: %d ms, two commands: %d ms)", singleMs, pairMs)
+          .isLessThan((long) (singleMs * SEQUENTIAL_COST_FRACTION));
+    });
+  }
+
+  /**
+   * Test that two async commands via the database.async() API run in parallel.
+   */
+  @Test
+  void databaseAsyncCommandsRunInParallel() throws Exception {
+    final Database database = getServer(0).getDatabase(getDatabaseName());
+
+    // Ensure we have at least 2 async worker threads
+    final int originalParallelLevel = database.async().getParallelLevel();
+    if (originalParallelLevel < 2)
+      database.async().setParallelLevel(2);
+
+    try {
+      assertCommandsOverlapped("database.async()", awaitAsyncSleepCompletions(database, "sqlscript",
+          cmdNum -> "SLEEP " + SLEEP_DURATION + "; CONSOLE.log 'Database async command " + cmdNum + " completed'"));
+    } finally {
+      database.async().setParallelLevel(originalParallelLevel);
+    }
+  }
+
+  /**
+   * Test that simple SQL SLEEP commands (not sqlscript) also run in parallel.
+   */
+  @Test
+  void simpleSqlAsyncCommandsRunInParallel() throws Exception {
+    final Database database = getServer(0).getDatabase(getDatabaseName());
+
+    // Ensure we have at least 2 async worker threads
+    final int originalParallelLevel = database.async().getParallelLevel();
+    if (originalParallelLevel < 2)
+      database.async().setParallelLevel(2);
+
+    try {
+      assertCommandsOverlapped("SQL", awaitAsyncSleepCompletions(database, "sql",
+          cmdNum -> "SLEEP " + SLEEP_DURATION));
+    } finally {
+      database.async().setParallelLevel(originalParallelLevel);
+    }
+  }
+
+  /**
+   * Submits two async SLEEP commands and returns the instant at which each one reported completion.
+   */
+  private long[] awaitAsyncSleepCompletions(final Database database, final String language,
+      final IntFunction<String> commandForIndex) throws InterruptedException {
+    final int commands = 2;
+    final AtomicLongArray completedAt = new AtomicLongArray(commands);
+    final AtomicInteger completedCount = new AtomicInteger();
+    final CountDownLatch latch = new CountDownLatch(commands);
+
+    for (int i = 0; i < commands; i++) {
+      final int cmdNum = i + 1;
+      final int slot = i;
+      database.async().command(language, commandForIndex.apply(cmdNum), new AsyncResultsetCallback() {
+        @Override
+        public void onComplete(final ResultSet resultset) {
+          // Written before countDown() so the await() below happens-after every timestamp.
+          completedAt.set(slot, System.currentTimeMillis());
+          completedCount.incrementAndGet();
+          latch.countDown();
+          LogManager.instance().log(this, Level.INFO, "Async %s command %d completed", language, cmdNum);
+        }
+
+        @Override
+        public void onError(final Exception exception) {
+          latch.countDown();
+          LogManager.instance().log(this, Level.SEVERE, "Async %s command %d failed", exception, language, cmdNum);
+        }
+      });
+    }
+
+    assertThat(latch.await(COMPLETION_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+        .as("Both async commands should complete within %d ms", COMPLETION_TIMEOUT_MS).isTrue();
+    assertThat(completedCount.get()).isEqualTo(commands);
+
+    return new long[] { completedAt.get(0), completedAt.get(1) };
+  }
+
+  /**
+   * Asserts the two commands were in flight at the same time. Sequential execution puts at least one whole
+   * SLEEP between the two completions, because the second command cannot start before the first has
+   * finished; parallel execution puts them within scheduling noise of each other. The gap is independent
+   * of how loaded the machine is, which a total-elapsed-time budget is not.
+   */
+  private void assertCommandsOverlapped(final String label, final long[] completions) {
+    final long completionGap = Math.abs(completions[1] - completions[0]);
+
+    LogManager.instance().log(this, Level.INFO,
+        "Completion gap for 2 %s SLEEP commands (%d ms each): %d ms", label, SLEEP_DURATION, completionGap);
+
+    assertThat(completionGap)
+        .as("%s async commands must run in parallel: run sequentially their completions would be at least "
+            + "one SLEEP (%d ms) apart, they were %d ms apart", label, SLEEP_DURATION, completionGap)
+        .isLessThan((long) SLEEP_DURATION);
+  }
+
+  /**
+   * Fires {@code count} async SLEEP commands over HTTP and returns the wall-clock time until all of them
+   * have finished executing on the server.
+   */
+  private long timeHttpAsyncSleepCommands(final int serverIndex, final Database database, final int count)
+      throws Exception {
+    final ExecutorService executor = Executors.newFixedThreadPool(count);
+    try {
+      final long startTime = System.currentTimeMillis();
       final List<Future<Integer>> futures = new ArrayList<>();
 
-      for (int i = 0; i < 2; i++) {
+      for (int i = 0; i < count; i++) {
         final int cmdNum = i + 1;
         futures.add(executor.submit(() -> {
           final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -100,157 +268,16 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
         }));
       }
 
-      // Wait for both HTTP requests to return (they should return immediately with 202)
-      for (Future<Integer> future : futures) {
-        final int responseCode = future.get(5, TimeUnit.SECONDS);
-        assertThat(responseCode).isEqualTo(202);
-      }
+      // The HTTP requests themselves return immediately with 202; the work continues on the async executor.
+      for (final Future<Integer> future : futures)
+        assertThat(future.get(HTTP_RESPONSE_TIMEOUT_SECS, TimeUnit.SECONDS)).isEqualTo(202);
 
+      assertThat(database.async().waitCompletion(COMPLETION_TIMEOUT_MS))
+          .as("The %d async command(s) must finish within %d ms", count, COMPLETION_TIMEOUT_MS).isTrue();
+
+      return System.currentTimeMillis() - startTime;
+    } finally {
       executor.shutdown();
-
-      // Now wait for the async commands to actually complete
-      database.async().waitCompletion(SLEEP_DURATION * 3);
-
-      final long endTime = System.currentTimeMillis();
-      final long totalTime = endTime - startTime;
-
-      LogManager.instance().log(this, Level.INFO,
-          "Total time for 2 async SLEEP commands (%d ms each): %d ms", SLEEP_DURATION, totalTime);
-
-      // If running in parallel, total time should be close to SLEEP_DURATION
-      // If running sequentially, total time would be close to 2*SLEEP_DURATION
-      // We use 1.5x as the threshold - parallel should be well under this
-      final long maxExpectedParallelTime = (long) (SLEEP_DURATION * 1.5);
-
-      assertThat(totalTime)
-          .as("Async commands should run in parallel. Total time: %d ms, expected max: %d ms", totalTime, maxExpectedParallelTime)
-          .isLessThan(maxExpectedParallelTime);
-    });
-  }
-
-  /**
-   * Test that two async commands via the database.async() API run in parallel.
-   */
-  @Test
-  void databaseAsyncCommandsRunInParallel() throws Exception {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
-
-    // Ensure we have at least 2 async worker threads
-    final int originalParallelLevel = database.async().getParallelLevel();
-    if (originalParallelLevel < 2) {
-      database.async().setParallelLevel(2);
-    }
-
-    try {
-      final long startTime = System.currentTimeMillis();
-      final AtomicInteger completedCount = new AtomicInteger(0);
-      final CountDownLatch latch = new CountDownLatch(2);
-
-      // Send two async SLEEP commands
-      for (int i = 0; i < 2; i++) {
-        final int cmdNum = i + 1;
-        database.async().command("sqlscript",
-            "SLEEP " + SLEEP_DURATION + "; CONSOLE.log 'Database async command " + cmdNum + " completed'",
-            new AsyncResultsetCallback() {
-              @Override
-              public void onComplete(final ResultSet resultset) {
-                completedCount.incrementAndGet();
-                latch.countDown();
-                LogManager.instance().log(this, Level.INFO, "Database async command %d completed", cmdNum);
-              }
-
-              @Override
-              public void onError(final Exception exception) {
-                latch.countDown();
-                LogManager.instance().log(this, Level.SEVERE, "Database async command %d failed", exception, cmdNum);
-              }
-            });
-      }
-
-      // Wait for both commands to complete
-      final boolean completed = latch.await(SLEEP_DURATION * 3, TimeUnit.MILLISECONDS);
-      assertThat(completed).as("Both async commands should complete within timeout").isTrue();
-      assertThat(completedCount.get()).isEqualTo(2);
-
-      final long endTime = System.currentTimeMillis();
-      final long totalTime = endTime - startTime;
-
-      LogManager.instance().log(this, Level.INFO,
-          "Total time for 2 database.async() SLEEP commands (%d ms each): %d ms", SLEEP_DURATION, totalTime);
-
-      // If running in parallel, total time should be close to SLEEP_DURATION
-      final long maxExpectedParallelTime = (long) (SLEEP_DURATION * 1.5);
-
-      assertThat(totalTime)
-          .as("Database async commands should run in parallel. Total time: %d ms, expected max: %d ms", totalTime,
-              maxExpectedParallelTime)
-          .isLessThan(maxExpectedParallelTime);
-
-    } finally {
-      database.async().setParallelLevel(originalParallelLevel);
-    }
-  }
-
-  /**
-   * Test that simple SQL SLEEP commands (not sqlscript) also run in parallel.
-   */
-  @Test
-  void simpleSqlAsyncCommandsRunInParallel() throws Exception {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
-
-    // Ensure we have at least 2 async worker threads
-    final int originalParallelLevel = database.async().getParallelLevel();
-    if (originalParallelLevel < 2) {
-      database.async().setParallelLevel(2);
-    }
-
-    try {
-      final long startTime = System.currentTimeMillis();
-      final AtomicInteger completedCount = new AtomicInteger(0);
-      final CountDownLatch latch = new CountDownLatch(2);
-
-      // Send two async SLEEP commands using plain SQL
-      for (int i = 0; i < 2; i++) {
-        final int cmdNum = i + 1;
-        database.async().command("sql",
-            "SLEEP " + SLEEP_DURATION,
-            new AsyncResultsetCallback() {
-              @Override
-              public void onComplete(final ResultSet resultset) {
-                completedCount.incrementAndGet();
-                latch.countDown();
-                LogManager.instance().log(this, Level.INFO, "SQL async command %d completed", cmdNum);
-              }
-
-              @Override
-              public void onError(final Exception exception) {
-                latch.countDown();
-                LogManager.instance().log(this, Level.SEVERE, "SQL async command %d failed", exception, cmdNum);
-              }
-            });
-      }
-
-      // Wait for both commands to complete
-      final boolean completed = latch.await(SLEEP_DURATION * 3, TimeUnit.MILLISECONDS);
-      assertThat(completed).as("Both SQL async commands should complete within timeout").isTrue();
-      assertThat(completedCount.get()).isEqualTo(2);
-
-      final long endTime = System.currentTimeMillis();
-      final long totalTime = endTime - startTime;
-
-      LogManager.instance().log(this, Level.INFO,
-          "Total time for 2 SQL async SLEEP commands (%d ms each): %d ms", SLEEP_DURATION, totalTime);
-
-      // If running in parallel, total time should be close to SLEEP_DURATION
-      final long maxExpectedParallelTime = (long) (SLEEP_DURATION * 1.5);
-
-      assertThat(totalTime)
-          .as("SQL async commands should run in parallel. Total time: %d ms, expected max: %d ms", totalTime,
-              maxExpectedParallelTime)
-          .isLessThan(maxExpectedParallelTime);
-
-    } finally {
-      database.async().setParallelLevel(originalParallelLevel);
     }
   }
 
