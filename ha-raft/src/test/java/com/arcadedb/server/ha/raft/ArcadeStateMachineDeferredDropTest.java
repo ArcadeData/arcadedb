@@ -154,8 +154,10 @@ class ArcadeStateMachineDeferredDropTest {
 
     assertThat(new DatabaseFactory(databaseDirectory.toString()).exists()).isFalse();
 
+    final Path staged = findStagingDirectory();
+
     gate.countDown();
-    awaitGone(findStagingDirectory());
+    awaitGone(staged);
   }
 
   /**
