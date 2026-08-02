@@ -757,4 +757,58 @@ class BinarySerializerTest extends TestHelper {
       assertThat(result).containsEntry("c", "gamma");
     });
   }
+
+  /**
+   * Regression: deserializeProperties must reject a misaligned read that lands on the record type byte.
+   * The headerEndOffset read from position 0 is a huge number (> buffer size), which our validation
+   * catches and reports as a SerializationException instead of returning invented properties.
+   */
+  @Test
+  void deserializeRejectsMisalignedReadAtRecordType() throws Exception {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Misaligned");
+
+      final MutableDocument doc = database.newDocument("Misaligned");
+      doc.set("alpha", "one");
+      doc.set("beta", "two");
+
+      final Binary original = serializer.serialize((DatabaseInternal) database, doc);
+
+      final ByteBuffer dest = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
+      dest.put(original.toByteArray());
+      dest.flip();
+      final Binary misaligned = new Binary(dest);
+      // Do NOT skip the record type byte — start reading at position 0, which is the record type byte.
+      // The headerEndOffset read from here will be a huge number > buffer.size().
+
+      assertThatThrownBy(() -> serializer.deserializeProperties(database, misaligned, null, null))
+          .isInstanceOf(SerializationException.class)
+          .hasMessageContaining("headerEndOffset");
+    });
+  }
+
+  /**
+   * Regression: deserializeProperties must reject an inflated property count that exceeds the buffer size.
+   * A corrupted/misaligned varint can decode to a very large count, which would spin the property loop
+   * until something throws. checkDeserializedCount catches this early with a clear error.
+   */
+  @Test
+  void deserializeRejectsInflatedPropertyCount() throws Exception {
+    database.transaction(() -> {
+      // Build a minimal buffer that looks like a record header with an inflated count.
+      // The header starts with an int (headerEndOffset), then a varint (count).
+      final ByteBuffer raw = ByteBuffer.allocate(128);
+      raw.putInt(20);          // headerEndOffset = 20 (plausible, within buffer)
+      raw.putUnsignedNumber(1000); // count = 1000 (far exceeds the 128-byte buffer)
+      raw.flip();
+      final Binary buffer = new Binary(raw);
+
+      final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+
+      assertThatThrownBy(() -> serializer.deserializeProperties(database, buffer, null, null))
+          .isInstanceOf(SerializationException.class)
+          .hasMessageContaining("Invalid element count");
+    });
+  }
 }

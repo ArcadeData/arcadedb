@@ -222,7 +222,7 @@ public class BinarySerializer {
     final Set<String> result = new LinkedHashSet<>();
     try {
       buffer.getInt(); // HEADER-SIZE
-      final int properties = (int) buffer.getUnsignedNumber();
+      final int properties = checkDeserializedCount(buffer.getUnsignedNumber(), buffer);
 
       for (int i = 0; i < properties; ++i) {
         final int nameId = (int) buffer.getUnsignedNumber();
@@ -243,16 +243,14 @@ public class BinarySerializer {
     try {
       final int initialPosition = buffer.position();
       final int headerEndOffset = buffer.getInt();
-      if (headerEndOffset < 0)
+      if (headerEndOffset < 0 || headerEndOffset > buffer.size())
         throw new SerializationException(
             "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " at position "
-                + initialPosition + ")");
+                + initialPosition + ", buffer size=" + buffer.size() + ")");
 
-      final int properties = (int) buffer.getUnsignedNumber();
+      final int properties = checkDeserializedCount(buffer.getUnsignedNumber(), buffer);
 
-      if (properties < 0)
-        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-      else if (properties == 0)
+      if (properties == 0)
         // EMPTY: NOT FOUND
         return values;
 
@@ -325,10 +323,8 @@ public class BinarySerializer {
   public boolean hasProperty(final Database database, final Binary buffer, final String fieldName, final RID rid) {
     try {
       buffer.getInt(); // headerEndOffset
-      final int properties = (int) buffer.getUnsignedNumber();
-      if (properties < 0)
-        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-      else if (properties == 0)
+      final int properties = checkDeserializedCount(buffer.getUnsignedNumber(), buffer);
+      if (properties == 0)
         // EMPTY: NOT FOUND
         return false;
 
@@ -350,11 +346,9 @@ public class BinarySerializer {
       final String fieldName, final RID rid) {
     try {
       final int headerEndOffset = buffer.getInt();
-      final int properties = (int) buffer.getUnsignedNumber();
+      final int properties = checkDeserializedCount(buffer.getUnsignedNumber(), buffer);
 
-      if (properties < 0)
-        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-      else if (properties == 0)
+      if (properties == 0)
         // EMPTY: NOT FOUND
         return null;
 
