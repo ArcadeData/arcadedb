@@ -54,8 +54,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
 
-  private static final int READ_TIMEOUT_MS  = 2_000;
-  private static final int STALL_MS         = 5_000;
+  /**
+   * What the scenario needs is the ordering {@code READ_TIMEOUT_MS < STALL_MS < streaming budget}, not any
+   * particular absolute value. At 2 s the socket timeout was also shorter than the pauses a loaded CI runner
+   * puts between the client's writes of the 1.7 MB body, so the server timed the upload out mid-body and the
+   * class failed with "Read timed out after 2000 milliseconds" (issue #5630). The three values are scaled
+   * together here: the ordering under test is unchanged, the margin against runner scheduling is five times
+   * wider.
+   */
+  private static final int READ_TIMEOUT_MS      = 10_000;
+  private static final int STALL_MS             = 20_000;
+  private static final int STREAMING_BUDGET_MS  = 120_000;
+  /**
+   * Strictly greater than the streaming budget. A server that wrongly waits out the whole budget must be
+   * caught by an elapsed-time assertion, not by the client's own read timeout firing first: at equal
+   * values the two race and the failure surfaces as a SocketTimeoutException instead.
+   */
+  private static final int CLIENT_SO_TIMEOUT_MS = STREAMING_BUDGET_MS + 30_000;
   /** More than one server-side vertex batch (PostBatchHandler flushes every 10,000 vertices). */
   private static final int TOTAL_VERTICES   = 25_000;
 
@@ -65,7 +80,7 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(READ_TIMEOUT_MS);
     // Keep the streaming budget well above the stall injected below: setting it to 0 (the pre-fix behaviour)
     // makes serverSideStallDoesNotTruncateTheBatch fail with a connection reset.
-    GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT.setValue(60_000);
+    GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT.setValue(STREAMING_BUDGET_MS);
   }
 
   @AfterEach
@@ -137,7 +152,7 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
 
     try (final Socket socket = new Socket("127.0.0.1", 2480)) {
-      socket.setSoTimeout(60_000);
+      socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
 
       final OutputStream out = socket.getOutputStream();
       // Announce far more bytes than are ever sent, then go silent.
@@ -157,7 +172,7 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
 
       // Either the server answers (preferred: 408 with the counters) or it closes the connection, but it must
       // never wait for the relaxed streaming budget before reacting.
-      assertThat(elapsedMs).isLessThan(60_000L);
+      assertThat(elapsedMs).isLessThan((long) STREAMING_BUDGET_MS);
       if (statusLine != null)
         assertThat(statusLine).contains("408");
     }
@@ -185,7 +200,7 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
 
     try (final Socket socket = new Socket("127.0.0.1", 2480)) {
-      socket.setSoTimeout(60_000);
+      socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
 
       final OutputStream out = socket.getOutputStream();
       // vertexBatchSize=1 commits every record, so the reported counts are exactly what reached the database.

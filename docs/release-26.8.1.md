@@ -1519,6 +1519,66 @@ release is not readable by an earlier build: the old loader does not recognise `
 metadata page as corrupt. The database still opens and every other index is unaffected, but that one index has to be
 dropped before going back. `LSM_TREE` indexes on the same properties are unaffected in both directions.
 
+## HTTP: a truncated query response is no longer indistinguishable from a complete one
+
+The HTTP query and command endpoints serialize at most a fixed number of rows into a response, 20,000 by default.
+The cap was applied after the engine had produced the rows and was reported nowhere: same `200`, same body shape,
+no flag and no count. A caller that paged by writing `LIMIT` into its own SQL - the obvious thing to do - got
+20,000 rows for any page larger than that and nothing in the answer said so
+([#5711](https://github.com/ArcadeData/arcadedb/issues/5711)).
+
+Two things were wrong, and both are fixed.
+
+**A limit the caller stated is now honored as written.** The row cap is the `limit` field of the request when
+there is one; otherwise it is the server default, raised to the LIMIT the query itself carries. So
+`SELECT i FROM R LIMIT 30000` now returns 30,000 rows over HTTP exactly as it does embedded, while a query
+stating no limit at all is still capped. The query's LIMIT only ever raises the cap: a smaller LIMIT is already
+enforced by the engine, so the serializer has nothing to add. This also removes an asymmetry between the two
+surfaces: `GET /query` already read the LIMIT back from the execution plan, `POST /query` and `POST /command`
+did not.
+
+**When the default cap does bite, the response says so.** The query and command endpoints now always report:
+
+```json
+{ "result": [ ... ], "limit": 20000, "returned": 20000, "truncated": true }
+```
+
+`truncated` is true only when the cap stopped the serialization with at least one row still pending, so a result
+that ends exactly at the cap is not flagged. The server also logs a warning naming the database, the cap and the
+query - but only when the *default* did the cutting, since truncation against a `limit` the caller asked for is
+the expected outcome.
+
+The flag is exact for the row-oriented serializers (`record`, `studio` and the default one), where `returned` also
+never exceeds `limit`. With `serializer: "graph"` the cap counts graph *elements* instead of rows, so two things
+differ: `returned` can come back above `limit`, because the row that reaches the cap is expanded whole; and since
+the same vertex reached twice is serialized once, `truncated` is best-effort there - a result whose rows dedup
+down to fewer elements than the cap can read `false`. A paging client should use a row-oriented serializer.
+
+`POST /timeseries/{db}/query` reports `limit` and `truncated` the same way, logs the same warning when its own
+default did the cutting, reads the same setting instead of its own hardcoded 20,000, and no longer answers a
+non-positive `limit` with zero rows (it used to compute `min(rows, -1)`, so `limit: -1` returned nothing at all).
+
+The cap is now configurable with **`arcadedb.server.httpQueryDefaultLimit`** (default 20000, `-1` for unlimited);
+it applies only to callers that state no limit of their own.
+
+One gap is worth knowing about: a query's LIMIT raises the cap only for a language that exposes it on the
+execution plan. SQL does; Cypher on the non-EXPLAIN path builds no plan, so `MATCH ... RETURN n LIMIT 30000` is
+still cut at the default - now with `truncated: true` and a warning rather than silently. Send `limit` in the
+request for those languages.
+
+**Java remote driver.** `RemoteDatabase` warns when the server reports a truncated result instead of handing back
+a partial `ResultSet` that looks complete, and `setMaxResultRows(Integer)` sets the cap for that connection -
+`-1` removes it, so a query with no LIMIT of its own returns every row like the embedded API does. Beware that
+removing the cap makes the server materialize the whole result set in memory before answering.
+
+**Studio** marks the row count with `(truncated)` when the result it is showing was cut short.
+
+Three smaller behaviour changes come with this. A serializer name other than `graph`, `studio` or `record` used
+to emit one row *above* the cap; it now emits exactly the cap, like the others. On `GET /query`, an explicit
+`limit` query parameter now wins over the LIMIT in the query text (it used to be the other way round), which is
+what the POST endpoints have always done. And `"limit": 0` now means unlimited everywhere, as it already did in
+the serializer: it used to be pushed down as a literal `LIMIT 0` and return no row at all for a query that
+carried no LIMIT of its own, while returning every row for a query that did.
 ## A `HASH` index refuses a page size its bucket pages cannot address
 
 A `HASH` index accepted any page size:
@@ -1651,5 +1711,157 @@ what it can and the chunk drain still runs.
 unchanged behaviour and predates all of this; the two-phase shape exists precisely *because* the removals relink and
 delete chunks underneath the walk, so streaming it means walking a list while it is being restructured - the class of
 problem this whole series is about. It is tracked separately.
+## Cypher: the two count push-downs now agree, and neither drops a `SKIP` or scans to answer 0
+
+Counting in Cypher was served by two independent push-downs - the O(1) `Type.count()` one and the CSR one that
+propagates path counts through the adjacency arrays - reached from different places and agreeing on neither their
+preconditions nor their entry points. Issue #5715 collected five consequences of that; fixing them uncovered two more.
+
+### `RETURN count(*) LIMIT 0` returns no rows
+
+`SKIP`, `LIMIT` and `ORDER BY` are fields of the statement rather than clauses in its clause list, so the check that
+was supposed to see them - a walk of the clause list - could not. The CSR push-down returns a step that replaces the
+whole chain, so the `SKIP` and `LIMIT` steps were never built and
+
+```cypher
+MATCH (a:Q)-[:LINKS]->(b:Q) RETURN count(*) AS c LIMIT 0
+```
+
+came back with a row holding the count. So did `SKIP 1`. Neo4j applies both to the one-row aggregate result and
+returns nothing for either, and so does the other push-down, so the engine disagreed with itself.
+
+Both are now applied to the row a push-down produces rather than used to refuse the statement that carries them, so a
+count written with a harmless `LIMIT 1` keeps the fast path instead of falling back to a scan. `ORDER BY` still sends
+the statement to the ordinary pipeline, which is the only thing here that knows what an aggregate alias sorts by.
+
+### `MATCH (m:Label) RETURN count(*)` no longer scans
+
+Three shapes were answered by a full scan for a number the type counter already held:
+
+- `MATCH (m:Big) RETURN count(m)` written on its own. The type-count push-down was only reachable from the planner
+  path a top-level query takes when the cost-based optimizer *declines* it - and a single-label `MATCH ... RETURN
+  count(v)` is exactly what the optimizer accepts. The same body inside `COLLECT { }` was answered in O(1); the plain
+  query was not.
+- `MATCH (m:Big) RETURN count(*)`, and `MATCH (:Big) RETURN count(*)`. The type-count detector required the argument
+  to name the MATCH variable, and every `count(*)` detector required at least one relationship, so a single-node
+  pattern with `count(*)` - the spelling Neo4j documents - was claimed by neither.
+- `COUNT { MATCH (m:Big) }` and `COUNT { (m:Big) }`. A body with no `RETURN` of its own is normalised to one row per
+  match and the expression counted those rows. `COUNT { }` now asks for the number rather than for the rows, so a body
+  whose `RETURN` preserves the row count - absent, or neither aggregating nor `DISTINCT` - is answered by the same
+  push-downs.
+
+Both push-downs are now reached through one entry point, from every planner path, which is also what keeps their
+preconditions from drifting apart again.
+
+### A pattern that cannot match is answered without reading anything
+
+The CSR push-down was applied with no cost check at all. 100 vertices with no edge between them cost 200 record reads
+to answer 0, and an edge type absent from the schema cost the same. A count over a pattern whose non-optional part
+names a node label or relationship type that is undeclared, or that holds no record, is now answered with 0 directly.
+
+A `LIGHTWEIGHT` edge type is excluded from that test: it stores its edges in the vertices' edge lists and writes no
+edge record, so its counter is 0 while its edges are there to be counted.
+
+### Two wrong answers, found while doing the above
+
+Both come from the same place - the helper that builds a node label's bucket set returned `null` both for "no label
+was given, so do not filter" and for "the label is declared but does not exist, so nothing matches", and its callers
+did not agree on which one they had been handed.
+
+- `MATCH (a)-[:LINKS]->(b) RETURN count(*)` answered **0**. Every CSR operator walks out from one labelled position of
+  the pattern and enumerates that label's buckets; an unlabelled anchor left it with no set to enumerate, which each
+  operator read as an empty one. A pattern with no label on its first node is no longer given to these operators.
+- `MATCH (a:Q)-[:LINKS]->(b:NoSuchLabel) RETURN count(*)` answered the count **without the filter** - 2, for a pattern
+  that produces no row at all. The undeclared hop label is now recognised as unmatchable.
+
+Neither shape had a test. Both are counted correctly now, and a count over a pattern that does match is unchanged.
+### `CHECK DATABASE RECORD <rid>`: check and repair named records only (#5680)
+
+`CHECK DATABASE` could be narrowed to a `TYPE` or a `BUCKET`, but not to a record. That became the sharp edge of
+the strict vertex delete above: a genuinely broken edge chain makes its vertex undeletable until
+`CHECK DATABASE ... FIX` rebuilds the adjacency from the surviving edge records, and the smallest way to ask for
+that repair was two full passes over the whole vertex type. The new `RECORD` scope visits only the records listed:
+
+```sql
+CHECK DATABASE RECORD #12:3 FIX
+CHECK DATABASE RECORD #12:3, #12:9 FIX
+```
+
+The per-record work and the fix are identical to the type-wide run, including rebuilding a vertex's edge list from
+the surviving edge records. It combines with `FIX` and `COMPRESS`, and is rejected when combined with `TYPE` or
+`BUCKET` - `RECORD` is already the narrowest scope, so the combination has no sensible meaning and silently
+letting one win would run a check nobody asked for. The database-wide passes (buckets, external properties,
+indexes) and the orphaned-segment reclaim are skipped, since none can be narrowed to a record.
+
+Three costs a record scope does **not** bound, worth knowing before reaching for it:
+
+- `COMPRESS` is unaffected by the scope and still compresses the **whole database**. It is opt-in, but it is the
+  one clause that breaks the "naming a record bounds the cost" promise, so do not pair `RECORD ... COMPRESS`
+  expecting a cheap run;
+- rebuilding an adjacency means finding every surviving edge that points at the vertex, and no index maps
+  endpoints back to edges, so the scoped run saves the vertex passes but still scans the edge types - once per
+  distinct vertex **type** named, so naming ten vertices of one type costs one sweep while naming one vertex of
+  each of three types costs three;
+- if a listed record turns out to be *corrupted*, every index on its bucket is dropped and rebuilt, which is a
+  full bucket scan. That matches the type-wide semantics and only fires on genuine corruption - an edge-list
+  rebuild alone deletes no record and triggers none of it - but `RECORD` bounds the check, not necessarily the fix.
+## Copying a type copies its records and its index definitions, not just their names
+
+`Schema.copyType()` - what `DocumentType` → `VertexType` conversion goes through - was reported as losing the page
+size of every index on the copy (#5723). It was, and that turned out to be the least of it. The same thirty lines held
+three defects, and the two that were not reported are the ones that made the copy wrong rather than differently tuned.
+
+**The copy had no data in its indexes.** The indexes were created inside the transaction that copies the records.
+`TypeIndexBuilder.create()` builds each bucket's index in its own transaction (`joinCurrent=false`), which from inside
+an enclosing transaction neither sees the records still pending in it nor commits the entries it produces. So every
+index on the copy came out empty, and any query the planner routed through one answered nothing - silently, since an
+empty index is indistinguishable from a type with no matching rows:
+
+```java
+schema.copyType("Doc", "Doc2", LocalVertexType.class, 1, 65_536, 1_000);
+database.query("sql", "SELECT FROM Doc2 WHERE k = 'v1'");   // 0 rows, and the record is right there
+```
+
+The index build now runs after the record-copy transaction has committed.
+
+**The copied records were empty.** `ImmutableDocument.propertiesAsMap()` was the one accessor of that class that did
+not lazy-load: it answered `Collections.emptyMap()` whenever the record had not been materialised yet, which is the
+state of every record handed out by `iterateType()` and `scanBucket()`. `copyType()` reads each source record that
+way, so it faithfully created the right *number* of records, each with no properties. The same silent emptiness
+affected a `DetachedDocument` built off a record straight from a scan. `propertiesAsMap()` now loads first, like
+`get()`, `has()`, `getPropertyNames()` and `toJSON()` already did; the empty map remains the answer only for a record
+that genuinely cannot be materialised.
+
+**And the index definitions were rebuilt from three attributes.** The copy went through the three-argument
+`createTypeIndex` overload, so the index type, the uniqueness flag and the property list survived and everything else
+was replaced by a default: the tuned page size from the report, the null strategy, the collations that make a lookup
+case-insensitive, and the entire type-specific configuration. That last one is not a tuning difference - a copied
+`FULL_TEXT` index tokenized and ranked with the default analyzer instead of the configured one, a copied `GEOSPATIAL`
+index dropped to the default geohash resolution, and a copied `LSM_VECTOR` index came up with `dimensions` 0.
+
+Carrying a definition into a new index file now has an accessor of its own, `IndexInternal.getMetadataForNewFile()`,
+alongside the `getPageSizeForNewFile()` that #5713 introduced for the page size. It exists because `getMetadata()`
+cannot answer this question for the wrapper index types: a full-text index keeps its analyzers and BM25 parameters in
+its own `FullTextIndexMetadata` and a geospatial one keeps its resolution and layout in plain fields, while
+`getMetadata()` delegates to the underlying LSM-Tree and hands back a definition with none of it. `IndexMetadata.copy()`
+is now polymorphic across all five metadata classes, so each carries its own settings and there is no second field list
+to forget. Per-index runtime state deliberately does not ride along: the copy starts empty, so inheriting the dense
+vector index's build state or the full-text corpus counters would describe a different set of records.
+
+A user-supplied index name is the one attribute not carried over. It is unique across the schema and still belongs to
+the source type, so the copy takes the auto-derived `NewType[properties]` form rather than colliding with it.
+
+**One behaviour change reaches outside `copyType()`.** `LSMVectorIndexMetadata.copy()` already existed and carried only
+the collations; routing it through the shared `copyCommonTo()` means it now also carries the user-supplied index name.
+Its other caller is `TRUNCATE TYPE`, which drops and recreates each index from its own definition - so a manually named
+`LSM_VECTOR` index now keeps its name across a truncate, where before it came back under the auto-derived
+`Type[properties]` form. Nothing else was affected: every other index type already kept its name there, because that
+path hands the original metadata object straight back rather than copying it.
+
+The other sites that rebuild an index from its own definition - `TRUNCATE TYPE`, `CHECK DATABASE FIX`, and the
+propagation to a freshly added bucket or sub type - still read `getMetadata()` and so still lose a full-text or
+geospatial configuration. They are unchanged here and tracked separately: each is a distinct user-visible operation and
+deserves its own regression test rather than riding along with this one. `REBUILD INDEX` is already correct; it
+reconstructs the typed metadata from the persisted JSON.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

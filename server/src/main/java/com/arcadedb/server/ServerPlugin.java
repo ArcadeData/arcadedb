@@ -52,4 +52,16 @@ public interface ServerPlugin {
   default boolean isActive() {
     return true;
   }
+
+  /**
+   * Whether this plugin activates on classpath presence alone, without an entry in {@code SERVER_PLUGINS}.
+   * <p>
+   * The default is {@code false}: a plugin is opt-in and a deployment names it explicitly. A plugin that is
+   * part of the standard distribution and must keep answering after an upgrade returns {@code true} instead,
+   * so excluding it from a custom build is the only thing that removes it. Owning the rule here rather than
+   * in the plugin manager is what lets that manager stay ignorant of plugin identities.
+   */
+  default boolean isAutoDiscovered(final ContextConfiguration configuration) {
+    return false;
+  }
 }

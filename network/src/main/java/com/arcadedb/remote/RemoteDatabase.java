@@ -752,6 +752,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   protected ResultSet createResultSet(final JSONObject response) {
     final ResultSet resultSet = new InternalResultSet();
 
+    if (getMaxResultRows() == null && response.getBoolean("truncated", false))
+      // The server dropped rows this driver never asked to drop: without this the caller would receive a
+      // partial ResultSet indistinguishable from a complete one, and would silently disagree with the same
+      // query executed on the embedded API (issue #5711). An application that set its own cap with
+      // setMaxResultRows() asked for the truncation, so it is not warned about it - the same rule the server
+      // applies to a request carrying its own 'limit', and what keeps a paging application out of the log.
+      LogManager.instance().log(this, Level.WARNING,
+          "The server truncated the result set to %d rows (its limit is %d): the returned result is incomplete. Add an explicit "
+              + "LIMIT to the query, or raise the cap with RemoteDatabase.setMaxResultRows().",
+          response.getInt("returned", -1), response.getInt("limit", -1));
+
     final JSONArray resultArray = response.getJSONArray("result");
     for (int i = 0; i < resultArray.length(); ++i) {
       final JSONObject result = resultArray.getJSONObject(i);

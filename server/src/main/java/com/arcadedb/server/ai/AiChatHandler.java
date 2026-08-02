@@ -27,9 +27,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
-import com.arcadedb.server.mcp.MCPConfiguration;
-import com.arcadedb.server.mcp.tools.GetSchemaTool;
-import com.arcadedb.server.mcp.tools.ServerStatusTool;
+import com.arcadedb.server.info.SchemaInfo;
+import com.arcadedb.server.info.ServerInfo;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
@@ -173,10 +172,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         return handleStreamingRequest(exchange, gatewayRequest, chat, messages, username, dispatcher);
       } else {
         // Review-first path: embed schema/serverInfo in prompt
-        final MCPConfiguration mcpConfig = server.getMCPConfiguration();
-        final JSONObject schemaArgs = new JSONObject().put("database", database);
-        final JSONObject schema = GetSchemaTool.execute(server, user, schemaArgs, mcpConfig);
-        final JSONObject serverInfo = ServerStatusTool.execute(server, user, new JSONObject(), mcpConfig);
+        final JSONObject schema = SchemaInfo.forUser(server, user, database);
+        final JSONObject serverInfo = ServerInfo.toJSON(server, user::canAccessToDatabase, false);
         serverInfo.put("metrics", Profiler.INSTANCE.toJSON());
         gatewayRequest.put("schema", schema);
         gatewayRequest.put("serverInfo", serverInfo);

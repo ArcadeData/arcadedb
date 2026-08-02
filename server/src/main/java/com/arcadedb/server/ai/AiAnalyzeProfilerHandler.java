@@ -26,8 +26,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
-import com.arcadedb.server.mcp.MCPConfiguration;
-import com.arcadedb.server.mcp.tools.GetSchemaTool;
+import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -160,13 +159,11 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
     }
 
     // Fetch schema for each database the user can access
-    final MCPConfiguration mcpConfig = server.getMCPConfiguration();
     for (final String dbName : dbNames) {
       if (!user.canAccessToDatabase(dbName))
         continue;
       try {
-        final JSONObject schemaArgs = new JSONObject().put("database", dbName);
-        schemas.put(dbName, GetSchemaTool.execute(server, user, schemaArgs, mcpConfig));
+        schemas.put(dbName, SchemaInfo.forUser(server, user, dbName));
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Could not fetch schema for database '%s': %s", dbName, e.getMessage());
       }

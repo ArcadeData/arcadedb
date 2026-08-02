@@ -121,6 +121,40 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
           throws Exception;
 
+  /**
+   * Maximum number of rows an endpoint serializes into a single response when the caller states no limit of its
+   * own. A non-positive value means unlimited. Shared by every row-returning endpoint so one setting governs
+   * them all (issue #5711).
+   */
+  protected int getDefaultRowLimit() {
+    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT);
+  }
+
+  /**
+   * Validates a row limit that arrived as a JSON value and narrows it to an {@code int}. Every endpoint reading
+   * a {@code limit} shares this so the same input gets the same answer: {@link Number#intValue()} truncates the
+   * high bits, so {@code 3000000000} would arrive as a negative value and be read as "unlimited", silently
+   * turning off the very cap the field governs (issue #5711). Out of range, NaN and a non-numeric value are all
+   * client errors, mapped to HTTP 400 by the {@link IllegalArgumentException} arm below.
+   */
+  protected static int requireIntLimit(final Object value, final String field) {
+    if (!(value instanceof Number n))
+      throw new IllegalArgumentException("Field '" + field + "' must be an integer");
+    final double magnitude = n.doubleValue();
+    if (Double.isNaN(magnitude) || magnitude > Integer.MAX_VALUE || magnitude < Integer.MIN_VALUE)
+      throw unusableLimit(field, null);
+    return n.intValue();
+  }
+
+  /**
+   * Rejection of a row limit that is not an integer this server can apply, worded identically wherever the limit
+   * arrives from so the surfaces report the same thing.
+   */
+  protected static IllegalArgumentException unusableLimit(final String field, final Throwable cause) {
+    return new IllegalArgumentException(
+        "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE, cause);
+  }
+
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
       e.startBlocking();

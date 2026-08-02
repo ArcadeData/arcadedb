@@ -51,34 +51,47 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   /**
-   * Appends an automatic trailing {@code LIMIT} to SELECT/MATCH SQL commands that do not already carry one,
-   * mirroring the historical heuristic while avoiding a full-command {@code toLowerCase} copy per request.
-   * The command is expected to be already trimmed. Only case-insensitive prefix/substring probes are used,
-   * and the last line is lowercased only when an explicit LIMIT may already be present.
+   * Tells whether the given command needs an automatic trailing {@code LIMIT} pushed down, i.e. whether it is a
+   * SELECT/MATCH SQL command that states no LIMIT of its own. A command that already carries one has expressed
+   * the caller's own expectation, and that expectation - not the default cap - decides how many rows are
+   * serialized, so the text is left exactly as it arrived.
+   * <p>
+   * The historical heuristic is preserved while avoiding a full-command {@code toLowerCase} copy per request:
+   * the command is expected to be already trimmed, only case-insensitive prefix/substring probes are used, and
+   * the last line is lowercased only when an explicit LIMIT may already be present.
    */
-  static String appendAutomaticLimit(final String command, final String language, final int limit) {
-    if (limit == -1)
-      return command;
+  static boolean requiresAutomaticLimit(final String command, final String language, final int limit) {
+    // A non-positive cap means unlimited, exactly as it does in the serializer: pushing 'limit 0' down would
+    // instead return no row at all, which is what the previous asymmetry did with a request carrying limit=0.
+    if (limit <= 0)
+      return false;
     if (!"sql".equalsIgnoreCase(language) && !"sqlScript".equalsIgnoreCase(language))
-      return command;
+      return false;
 
     final boolean isSelect = command.regionMatches(true, 0, "select", 0, 6);
     final boolean isMatch = command.regionMatches(true, 0, "match", 0, 5);
     if ((!isSelect && !isMatch) || command.endsWith(";"))
-      return command;
+      return false;
 
     if (!containsIgnoreCase(command, " limit ") && !containsIgnoreCase(command, "\nlimit "))
-      return command + " limit " + limit;
+      return true;
 
     // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
     final String[] lines = LINE_BREAK.split(command);
     final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
-    if (words.length > 1 //
+    return words.length > 1 //
         && !"limit".equals(words[words.length - 2]) //
-        && (words.length < 5 || !"limit".equals(words[words.length - 4])))
-      return command + " limit " + limit;
+        && (words.length < 5 || !"limit".equals(words[words.length - 4]));
+  }
 
-    return command;
+  /**
+   * LIMIT to push down into a command that carries none, one row above the cap the response will honor: the
+   * extra row never reaches the client and is what lets the serializer tell a result that ends exactly at the
+   * cap from one that was cut short (issue #5711). A non-positive cap means unlimited and is pushed down
+   * unchanged, and a cap of {@link Integer#MAX_VALUE} saturates instead of overflowing.
+   */
+  static int truncationProbeLimit(final int limit) {
+    return limit > 0 && limit < Integer.MAX_VALUE ? limit + 1 : limit;
   }
 
   /**
@@ -115,13 +128,15 @@ public class PostCommandHandler extends AbstractQueryHandler {
     throw new IllegalArgumentException("Field '" + field + "' must be a string");
   }
 
-  private static int requireIntField(final Map<String, Object> map, final String field, final int defaultValue) {
+  /**
+   * Returns the value of an optional request field that must be a JSON integer, or {@code null} when absent.
+   * The absence must stay distinguishable from any value the caller could send: {@code limit} is the caller's
+   * explicit statement of the page size it expects, and a default substituted for a missing field would be
+   * indistinguishable from that statement.
+   */
+  private static Integer optionalIntField(final Map<String, Object> map, final String field) {
     final Object value = map.get(field);
-    if (value == null)
-      return defaultValue;
-    if (value instanceof Number n)
-      return n.intValue();
-    throw new IllegalArgumentException("Field '" + field + "' must be an integer");
+    return value == null ? null : requireIntLimit(value, field);
   }
 
   @Override
@@ -159,7 +174,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // and a command can legitimately carry HTML entities (e.g. &quot;, &amp;) inside its data. Decoding
     // them here corrupts the payload (e.g. breaks the embedded JSON of an INSERT ... CONTENT { ... }).
     String command = requireStringField(requestMap, "command");
-    final int limit = requireIntField(requestMap, "limit", DEFAULT_LIMIT);
+    final Integer requestLimit = optionalIntField(requestMap, "limit");
     final String serializer = requireStringField(requestMap, "serializer", "record");
     final String profileExecution = requireStringField(requestMap, "profileExecution", null);
 
@@ -198,7 +213,16 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // and downgraded to HTTP 500.
     paramMap = AbstractQueryHandler.decodeTypedJsonMarkers(paramMap);
 
-    command = appendAutomaticLimit(command, language, limit);
+    // The cap used to push a LIMIT down into a command that states none: the caller's own 'limit' when
+    // present, the configured default otherwise. A command that already carries a LIMIT is left untouched and
+    // its own value decides the response size, resolved from the execution plan after execution.
+    final int autoLimit = requestLimit != null ? requestLimit : getDefaultRowLimit();
+    final boolean autoLimited = requiresAutomaticLimit(command, language, autoLimit);
+    // Kept for the log: a warning must show the operator the query the caller sent, not the rewritten one.
+    final String originalCommand = command;
+    if (autoLimited)
+      // One row above the cap: the extra row is never serialized, it only makes truncation detectable.
+      command = command + " limit " + truncationProbeLimit(autoLimit);
 
     if ("sqlScript".equalsIgnoreCase(language) && !command.endsWith(";"))
       command += ";";
@@ -226,6 +250,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
         final JSONObject response = new JSONObject();
         response.put("user", user != null ? user.getName() : null);
 
+        // How many rows the response may carry, in decreasing order of explicitness: the request 'limit', the
+        // LIMIT the command carries (read back from the execution plan, and ignored when it is the one this
+        // handler pushed down itself), the configured default. Only the last one can drop rows the caller
+        // never asked to drop, and that is exactly what 'truncated' reports below (issue #5711).
+        final int planLimit = autoLimited ? 0 : getPlanLimit(qResult);
+        final int limit = resolveLimit(requestLimit, planLimit);
+        final SerializationOutcome outcome;
+
         if (qResult instanceof ExplainResultSet) {
           // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
           // so serializeResultSet produces an empty result structure
@@ -237,7 +269,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
-          serializeResultSet(database, serializer, limit, response, qResult);
+          outcome = serializeResultSet(database, serializer, limit, response, qResult);
           response.put("explain", explainText);
           response.put("explainPlan", executionPlan.toResult().toJSON());
           profile.addSerializationNanos(System.nanoTime() - serializationStart);
@@ -251,7 +283,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
-          serializeResultSet(database, serializer, limit, response, qResult);
+          outcome = serializeResultSet(database, serializer, limit, response, qResult);
 
           if (qResult != null) {
             final var qStats = qResult.getStatistics();
@@ -268,6 +300,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
           }
           profile.addSerializationNanos(System.nanoTime() - serializationStart);
         }
+
+        reportLimits(response, limit, outcome);
+        logIfTruncatedByDefault(database.getName(), originalCommand, limit, requestLimit, planLimit, outcome);
 
         if (detailedProfile)
           response.put("profile", profile.toJSON());

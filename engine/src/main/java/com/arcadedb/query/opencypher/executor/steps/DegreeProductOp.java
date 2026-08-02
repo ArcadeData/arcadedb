@@ -76,6 +76,12 @@ public final class DegreeProductOp implements CountOp {
     return allEdgeTypes;
   }
 
+  /** The degree product is computed per central node, which are the vertices carrying the central label. */
+  @Override
+  public boolean canEnumerateAnchors() {
+    return centralLabel != null;
+  }
+
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db) {
     // With no mandatory arm there is no degree filter to exclude non-central-type nodes from the

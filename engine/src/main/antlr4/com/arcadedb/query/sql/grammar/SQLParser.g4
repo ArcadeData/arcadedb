@@ -1094,6 +1094,7 @@ checkDatabaseStatement
     : CHECK DATABASE
       (TYPE identifier (COMMA identifier)*)?
       (BUCKET (identifier | INTEGER_LITERAL) (COMMA (identifier | INTEGER_LITERAL))*)?
+      (RECORD rid (COMMA rid)*)?
       (FIX)?
       (COMPRESS)?
     ;

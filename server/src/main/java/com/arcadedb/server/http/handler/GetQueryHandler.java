@@ -20,7 +20,6 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -69,18 +68,19 @@ public class GetQueryHandler extends AbstractQueryHandler {
       try {
         final long engineStart = System.nanoTime();
         qResult = database.query(language, text);
-        final ExecutionPlan plan = qResult.getExecutionPlan().orElse(null);
-        int limit = plan != null ? plan.getLimit() : 0;
-        if (limit == 0) {
-          if (limitPar == null)
-            limit = DEFAULT_LIMIT;
-          else
-            limit = Integer.parseInt(limitPar);
-        }
+
+        // Same precedence as the POST endpoint: the caller's own 'limit' parameter, then the LIMIT the query
+        // carries, then the configured default - the only case that can drop rows the caller never asked to
+        // drop, and it is reported back with 'truncated' (issue #5711).
+        final Integer requestLimit = parseLimitParameter(limitPar, "limit");
+        final int planLimit = getPlanLimit(qResult);
+        final int limit = resolveLimit(requestLimit, planLimit);
         profile.addEngineNanos(System.nanoTime() - engineStart);
 
         final long serializationStart = System.nanoTime();
-        serializeResultSet(database, serializer, limit, response, qResult);
+        final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult);
+        reportLimits(response, limit, outcome);
+        logIfTruncatedByDefault(database.getName(), text, limit, requestLimit, planLimit, outcome);
         profile.addSerializationNanos(System.nanoTime() - serializationStart);
 
       } finally {

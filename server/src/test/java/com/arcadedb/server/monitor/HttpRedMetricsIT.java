@@ -26,15 +26,26 @@ import org.junit.jupiter.api.Test;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
+import java.util.Collection;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Verifies the always-on HTTP RED timer {@code arcadedb.http.requests} records every request
  * served by the universal handler entry, with a bounded path-template tag (never the raw URI).
  */
 class HttpRedMetricsIT extends BaseGraphServerTest {
+
+  /**
+   * The RED timer is recorded in the handler's finally block, which runs after the response has been
+   * written, so every meter read here races the request that produced it. The assertions are polled for
+   * that window rather than widened, which would stop them detecting a request that is never recorded.
+   */
+  private static final Duration SETTLE_TIMEOUT = Duration.ofSeconds(30);
+  private static final Duration POLL_INTERVAL  = Duration.ofMillis(100);
 
   @Override
   protected int getServerCount() {
@@ -48,18 +59,21 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     issueReady();
     issueQuery();
 
-    final Timer anyTimer = Metrics.globalRegistry.find("arcadedb.http.requests").timer();
-    assertThat(anyTimer).isNotNull();
-
     // The query route must be tagged with the template, not the concrete database name "graph".
     // Every tag of the tuple this test drove is pinned: the ITs share one reused fork, so meters from
     // earlier test classes are still registered under this name and a path-only lookup returns an
     // arbitrary one of them. Those stale meters record nothing for this test, so asserting a count on
     // one is a false failure that depends purely on test ordering.
-    final Timer queryTimer = Metrics.globalRegistry.find("arcadedb.http.requests")
-        .tag("path", "/query/{database}").tag("db", "graph").tag("method", "POST").tag("status", "200").timer();
-    assertThat(queryTimer).isNotNull();
-    assertThat(queryTimer.count()).isGreaterThanOrEqualTo(1L);
+    // Polled: the handler records the timer in a finally block that runs after the response is sent, so
+    // a client that already read the response code can still observe the meter unregistered or short.
+    await().atMost(SETTLE_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted(() -> {
+      assertThat(Metrics.globalRegistry.find("arcadedb.http.requests").timer()).isNotNull();
+
+      final Timer queryTimer = Metrics.globalRegistry.find("arcadedb.http.requests")
+          .tag("path", "/query/{database}").tag("db", "graph").tag("method", "POST").tag("status", "200").timer();
+      assertThat(queryTimer).isNotNull();
+      assertThat(queryTimer.count()).isGreaterThanOrEqualTo(1L);
+    });
 
     // Cardinality guard: no timer should carry the raw database name in its path tag.
     final Timer rawPathTimer = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "/query/graph").timer();
@@ -78,11 +92,14 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     assertThat(c.getResponseCode()).isEqualTo(401);
     c.disconnect();
 
-    // RED metrics must record errors too, tagged with the failing status code.
-    final Timer errorTimer = Metrics.globalRegistry.find("arcadedb.http.requests")
-        .tag("path", "/command/{database}").tag("status", "401").timer();
-    assertThat(errorTimer).isNotNull();
-    assertThat(errorTimer.count()).isGreaterThanOrEqualTo(1L);
+    // RED metrics must record errors too, tagged with the failing status code. Polled for the same
+    // reason as above: the record happens after the 401 has already reached the client.
+    await().atMost(SETTLE_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted(() -> {
+      final Timer errorTimer = Metrics.globalRegistry.find("arcadedb.http.requests")
+          .tag("path", "/command/{database}").tag("status", "401").timer();
+      assertThat(errorTimer).isNotNull();
+      assertThat(errorTimer.count()).isGreaterThanOrEqualTo(1L);
+    });
   }
 
   @Test
@@ -93,21 +110,26 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     for (int i = 0; i < 50; i++)
       hitGet("/unmatched/" + i);
 
-    // No timer may carry a raw client URI in its path tag.
+    // All unmatched traffic collapses onto a single bounded path tag. The 50 requests above may split
+    // across status or method tags, and earlier test classes in the reused fork leave their own
+    // "unmatched" meters behind, so the count is summed over every meter carrying the tag rather than
+    // read off whichever single one the lookup happens to return.
+    // Polled: the last request's timer is recorded after its response was read, so an immediate sum
+    // legitimately lands one short of 50.
+    await().atMost(SETTLE_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted(() -> {
+      final Collection<Timer> collapsed = Metrics.globalRegistry.find("arcadedb.http.requests")
+          .tag("path", "unmatched").timers();
+      assertThat(collapsed).isNotEmpty();
+      assertThat(collapsed.stream().mapToLong(Timer::count).sum()).isGreaterThanOrEqualTo(50L);
+    });
+
+    // No timer may carry a raw client URI in its path tag. Checked after the poll above, so every one
+    // of the 50 requests has been recorded by the time the cardinality guard reads the registry.
     final long rawUnmatchedMeters = Metrics.globalRegistry.find("arcadedb.http.requests").timers().stream()
         .map(t -> t.getId().getTag("path"))
         .filter(p -> p != null && p.startsWith("/unmatched"))
         .count();
     assertThat(rawUnmatchedMeters).isZero();
-
-    // All unmatched traffic collapses onto a single bounded path tag. The 50 requests above may split
-    // across status or method tags, and earlier test classes in the reused fork leave their own
-    // "unmatched" meters behind, so the count is summed over every meter carrying the tag rather than
-    // read off whichever single one the lookup happens to return.
-    final java.util.Collection<Timer> collapsed = Metrics.globalRegistry.find("arcadedb.http.requests")
-        .tag("path", "unmatched").timers();
-    assertThat(collapsed).isNotEmpty();
-    assertThat(collapsed.stream().mapToLong(Timer::count).sum()).isGreaterThanOrEqualTo(50L);
   }
 
   private void hitGet(final String path) throws Exception {
