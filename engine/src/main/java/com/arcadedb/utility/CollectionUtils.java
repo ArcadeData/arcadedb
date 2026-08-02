@@ -284,4 +284,57 @@ public class CollectionUtils {
     // For object arrays, use Arrays.asList
     return Arrays.asList((Object[]) array);
   }
+
+  /** What {@link #addBounded} did with the item - the whole answer, so no caller has to re-derive part of it. */
+  public enum BoundedAdd {
+    /** First sighting, and the set had room: it is now in {@code retained}. */
+    RETAINED,
+    /** First sighting, but the cap refused it: counted, never retained. The case a caller may want to log. */
+    DROPPED,
+    /** Already recorded. Nothing to count. */
+    DUPLICATE;
+
+    /** True when this sighting was the first, i.e. when a counter kept alongside the set should tick. */
+    public boolean isFirstSighting() {
+      return this != DUPLICATE;
+    }
+  }
+
+  /**
+   * Records {@code item} in a de-duplicating set that must not grow past {@code max}, and answers what became of it.
+   * <p>
+   * Extracted by #5773 so the two {@code CHECK DATABASE} counters (warnings and corrupted records, in
+   * {@code DatabaseChecker} and {@code GraphDatabaseChecker}) cannot drift apart again: they had four near-identical
+   * copies of this rule and two of them disagreed past the cap. There is one rule now, and it is this method.
+   * <p>
+   * De-duplication is EXACT while the set is under the cap - the set itself answers "have I seen this". Past the cap
+   * it degrades to what the retained set can still answer: an item already in it is recognised, but one the cap
+   * refused to retain cannot be, so a later sighting of that item counts again. Deliberate: keeping it exact past the
+   * cap needs a second, unbounded collection of every item ever seen, which is precisely the memory the cap exists to
+   * refuse.
+   * <p>
+   * {@link Set}, not {@link Collection}, is the parameter type on purpose: the whole rule rests on {@code add()}
+   * answering "was it already there", which a {@code List} never does - it would return true every time and the
+   * counter would count occurrences instead of distinct items, which is the exact bug #5773 fixed.
+   * <p>
+   * NOT thread-safe, and neither is the read-then-add it performs: {@code size()} is read before {@code add()}, so
+   * concurrent callers can both see room under the cap. Every caller today drives it from a single-threaded scan.
+   * Anything that parallelises such a scan has to supply its own synchronisation or a concurrent set.
+   * <p>
+   * The three-valued return is what keeps the cap rule in this method ALONE. A plain boolean answers "count it?" but
+   * not "was it kept?", so a caller needing the second - to log what the cap forced it to drop - would have to either
+   * mirror the {@code size() < max} test before the call or re-interrogate the set after it. Both are the rule
+   * written down twice, which is the drift this method was extracted to end.
+   *
+   * @param retained the bounded, de-duplicating set; not added to once it holds {@code max} items
+   * @param max      the retention cap
+   * @param item     the item to record
+   *
+   * @return whether {@code item} was retained, dropped by the cap, or already known
+   */
+  public static <T> BoundedAdd addBounded(final Set<T> retained, final int max, final T item) {
+    if (retained.size() < max)
+      return retained.add(item) ? BoundedAdd.RETAINED : BoundedAdd.DUPLICATE;
+    return retained.contains(item) ? BoundedAdd.DUPLICATE : BoundedAdd.DROPPED;
+  }
 }

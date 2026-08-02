@@ -247,7 +247,12 @@ class QueryEngineManagerPoolTest {
     // server console (and routes through the slf4j chain in production); the test substitutes a
     // simple list-collector for the duration of the test, then restores.
     final List<String> warnings = Collections.synchronizedList(new ArrayList<>());
-    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    // #5773: getLogger(), not reflection on the private field - the accessor exists for exactly this
+    // save-and-restore, and a field rename would break the reflective form with no compile error. NOTE that
+    // LogManager is a SINGLETON, so this swap is PROCESS-WIDE until the finally below restores it: safe only
+    // because surefire runs test classes sequentially within a fork. Under class-level parallelism a concurrent
+    // test's WARNING output would land in the list below. There is no per-invocation seam to capture through.
+    final Logger originalLogger = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new Logger() {
       @Override public void log(final Object req, final Level level, final String msg,
           final Throwable th, final String ctx, final Object a1, final Object a2, final Object a3, final Object a4,
@@ -310,11 +315,4 @@ class QueryEngineManagerPoolTest {
     }
   }
 
-  private static <T> T readField(final Object target, final String name) throws Exception {
-    final java.lang.reflect.Field f = target.getClass().getDeclaredField(name);
-    f.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    final T v = (T) f.get(target);
-    return v;
-  }
 }

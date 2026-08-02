@@ -162,6 +162,34 @@ class GraphDatabaseCheckerReclaimFailClosedTest extends TestHelper {
     return chunks;
   }
 
+  /**
+   * #5773: the reclaim pass reports through the same bounded, de-duplicating counter as the vertex and edge arms,
+   * so its {@code totalWarnings} answers "how many distinct messages" and honours the retention cap. It used to
+   * keep an {@code ArrayList} and count occurrences; the change is quiet (its per-vertex messages carry distinct
+   * RIDs, so collisions are unlikely in practice) and this is the only test that pins it for THIS method.
+   */
+  @Test
+  void theReclaimPassCountsDistinctWarningsAndHonoursTheCap() {
+    // Same fixture as reclaimSkippedWhenAVertexCannotBeWalked: an unloadable hub makes the reclaim report.
+    final RID hub = buildHubWithMultiChunkInChain(500);
+    shrinkRecordContent(hub);
+    reopenDatabase();
+
+    final Map<String, Object> uncapped = new GraphDatabaseChecker((DatabaseInternal) database)
+        .reclaimOrphanedEdgeSegments(0, Integer.MAX_VALUE);
+    final Collection<String> warnings = (Collection<String>) uncapped.get("warnings");
+    assertThat(warnings).as("precondition: the reclaim must have reported something: %s", uncapped).isNotEmpty();
+    assertThat(((Number) uncapped.get("totalWarnings")).longValue())
+        .as("uncapped, the total is the retained count: %s", uncapped).isEqualTo(warnings.size());
+
+    // Capped at zero: nothing is retained, but the drop is still counted rather than vanishing.
+    final Map<String, Object> capped = new GraphDatabaseChecker((DatabaseInternal) database)
+        .reclaimOrphanedEdgeSegments(0, 0);
+    assertThat((Collection<String>) capped.get("warnings")).as("%s", capped).isEmpty();
+    assertThat(((Number) capped.get("totalWarnings")).longValue()).as("the drop is still counted: %s", capped)
+        .isGreaterThan(0L);
+  }
+
   private void assertReclaimSkipped(final Map<String, Object> stats) {
     // NOTHING was reclaimed: the incomplete walk disabled the deletion phase.
     assertThat(((Number) stats.get("orphanedEdgeSegmentsReclaimed")).longValue())
