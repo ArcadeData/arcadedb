@@ -33,6 +33,10 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 public interface AfterRecordReadListener {
   /**
    * Callback invoked right after a record (documents, vertices and edges) is read from the page. You can use this callback to enrich the record with additional properties.
+   * <p>
+   * A returned record that is not the one received is re-serialized by the caller to become the record's content, so it must be a MUTABLE record - typically
+   * obtained by {@code record.modify()} (or built from scratch, which is equally supported). Returning a different IMMUTABLE record is not serializable and
+   * raises a {@link ClassCastException}. Returning {@code null} filters the record away.
    *
    * @return the enhanced record if needed, otherwise the same record instance received as parameter.
    */

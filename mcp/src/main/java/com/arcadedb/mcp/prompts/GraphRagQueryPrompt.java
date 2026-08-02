@@ -55,9 +55,9 @@ public class GraphRagQueryPrompt {
       """
       Answer the following question using the ArcadeDB database '{database}'.
 
-      <question>
+      <question{fence}>
       {question}
-      </question>
+      </question{fence}>
 
       Procedure:
       1. Load the schema first: read the MCP resource arcadedb://{database}/schema, or call
@@ -81,7 +81,9 @@ public class GraphRagQueryPrompt {
   // Matches a placeholder token verbatim, never a token that substitution may have introduced: the render below
   // walks TEMPLATE once with Matcher.appendReplacement/appendTail, so a database name such as 'x{question}y' cannot
   // be reinterpreted as the question placeholder the way a second .replace() pass would reinterpret it.
-  private static final Pattern PLACEHOLDER = Pattern.compile("\\{(database|question)\\}");
+  private static final Pattern PLACEHOLDER = Pattern.compile("\\{(database|question|fence)\\}");
+
+  private static final String FENCE_TAG = "question";
 
   private GraphRagQueryPrompt() {
   }
@@ -126,14 +128,25 @@ public class GraphRagQueryPrompt {
     return true;
   }
 
+  /**
+   * The question is substituted verbatim inside a delimiter block, so the block is closed with the suffix
+   * {@link PromptFence} derives: a question carrying a closing question tag would otherwise end the block early and
+   * have what follows read as procedure. A question that carries no such tag, which is all of them in practice,
+   * renders against the constant delimiters.
+   */
   public static JSONArray getMessages(final JSONObject args) {
     final String database = MCPToolUtils.requireString(args, "database");
     final String question = MCPToolUtils.requireString(args, "question");
+    final String fence = PromptFence.suffixFor(FENCE_TAG, question);
 
     final Matcher matcher = PLACEHOLDER.matcher(TEMPLATE);
     final StringBuilder rendered = new StringBuilder();
     while (matcher.find()) {
-      final String value = "database".equals(matcher.group(1)) ? database : question;
+      final String value = switch (matcher.group(1)) {
+        case "database" -> database;
+        case "question" -> question;
+        default -> fence;
+      };
       matcher.appendReplacement(rendered, Matcher.quoteReplacement(value));
     }
     matcher.appendTail(rendered);

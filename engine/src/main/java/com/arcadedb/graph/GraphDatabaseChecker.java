@@ -390,6 +390,19 @@ public class GraphDatabaseChecker {
    * The edge-record scan inside {@link #reconnectEdges} is NOT scoped: rebuilding an adjacency means finding
    * every surviving edge that points at the vertex, and no index maps endpoints back to edges. So the scoped run
    * saves the vertex passes, not the edge pass.
+   * <p>
+   * #5764 - why ONE pass here answers what TWO answer below, which is not obvious from the shapes. The type-wide
+   * arm materialises each record twice: once from the raw page view in the bucket scan
+   * ({@code newImmutableRecord(type, rid, view)} then {@code asVertex(true)}), and once again through the
+   * connectivity walk. The scoped arm looks like it runs only the second - but {@code LocalDatabase.lookupByRID}
+   * IS the first: it calls the same {@code newImmutableRecord(type, rid, bucket.getRecord(rid).copyOfContent())},
+   * and {@link #checkVertices}' shared {@code checkConnectivity} opens with the same {@code asVertex(true)}, whose
+   * {@code loadContent} flag is what forces the buffer decode. Both halves of the type-wide first pass therefore
+   * run per listed RID, and no corruption shape reaches one enumeration but not the other:
+   * {@code LocalBucket.getRecord} and {@code LocalBucket.scan} resolve placeholders and multi-page chains
+   * identically and skip the same slot markers. The type-wide pass is a second look at the same bytes, kept there
+   * because a scan is how a whole type is enumerated at all - not a check the scoped run is missing. Pinned by
+   * {@code CheckDatabaseRecordScopeTest.theScopedAndTypeWideRunsAgreeOnAGenuinelyCorruptedRecord}.
    */
   public Map<String, Object> checkVertices(final String typeName, final Collection<RID> scopedRecords,
       final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {

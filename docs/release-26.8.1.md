@@ -2013,6 +2013,99 @@ metadata, the same route `CREATE INDEX <name>` uses) and the page size. It is no
 build are separate schema changes, so a process that dies between them leaves the type without an index on those
 properties until one is created again. Only an explicit `withReplaceIfIncompatible` is exposed to that window.
 
+## An after-read listener that rewrites a record no longer corrupts it
+
+An `AfterRecordReadListener` may return a *different* record than the one it was handed - that is how the documented
+record-encryption recipe decrypts on the way out. The buffer built from that replacement was wrong in three ways
+(#5755), and the worst of them was live rather than latent.
+
+The buffer was not positioned at the properties. `BinarySerializer.serializeDocument()` hands it back at position 1
+when it can copy the record's own buffer, but at 0 when it had to re-serialise the properties of a dirty record - the
+closing `header.flip()`. In the second case the record-type byte was still ahead of the read cursor, so `toJSON()`,
+`getPropertyNames()`, `toMap()`, `has()` and `get()` consumed it as the first byte of the header size and answered
+nonsense. It stayed hidden because the only in-tree listener of that shape decrypts *vertices*, where
+`ImmutableVertex` re-parses its edge-pointer prefix from position 1 afterwards and repositions as a side effect.
+
+The record also aliased `DatabaseContext.getTemporaryBuffer1()`, the per-thread scratch buffer the serializer clears
+and hands out again on every call. A decrypted record held across an unrelated `save()` on the same thread had its
+content rewritten underneath it and started answering with **the other record's values**. That one reached the
+encryption recipe as written, vertices included.
+
+Finally, `BaseRecord.reload()` handled the identical case by taking the returned record's own `getBuffer()`, which on
+a dirty record still holds the *pre*-modification content: a reload silently discarded what the listener did and
+handed back the raw stored value - ciphertext, for the encryption recipe - and threw `NullPointerException` outright
+for a replacement the listener had built from scratch rather than by `modify()`.
+
+The postcondition of `ImmutableDocument.checkForLazyLoading()` is now uniform and documented - *on return with a
+non-null buffer, the buffer is positioned at the start of the properties* - and `reload()` obeys the same contract.
+
+### The record a listener returns must be mutable
+
+`reload()` now renders the replacement through the serializer, the way `checkForLazyLoading()` always did, rather than
+taking its buffer. That is a real narrowing: a listener returning a different **immutable** record with a valid buffer
+used to be accepted on the `reload()` path and now raises `ClassCastException`, matching what the lazy-load path has
+always required. `AfterRecordReadListener.onAfterRead()` documents it: a returned record that is not the one received
+must be mutable - typically `record.modify()`, or built from scratch, which is equally supported - and returning
+`null` filters the record away.
+## A refused vertex delete names the command that repairs it, and the conflict keeps its cause
+
+Follow-ups from #5680, whose two halves landed separately (#5707 made `deleteVertex` strict, #5710 added the
+`CHECK DATABASE RECORD` scope), so the seams between them were never closed (#5764).
+
+### The repair advice names the scoped command, with the RID substituted
+
+Every recovery hint `GraphEngine.deleteVertex` emitted predated the scope it was written for, so they all pointed at
+a whole-database or whole-type run - two full passes over the vertex type plus an edge sweep - while the operator was
+holding the one piece of information that makes the repair cheap. And the retryable arm rethrew the conflict bare, so
+what actually reached a human was `getEdgeHeadChunkForWrite`'s "concurrent commit in flight", which says nothing about
+recovery at all.
+
+A delete refused because the vertex's own list cannot be walked now answers with the command to run:
+
+```
+Edge list IN of vertex #12:3 is not fully visible yet (concurrent commit in flight): ...
+  If it persists once the retries are spent the list is genuinely broken: run `CHECK DATABASE RECORD #12:3 FIX` to
+  rebuild its edge list from the surviving edge records, then retry the delete (the scope saves the vertex passes,
+  not the edge sweep the rebuild needs)
+```
+
+When the conflict comes from disconnecting a collected edge at its **other** end, the list that needs rebuilding
+belongs to the neighbour, so that is the RID named - repairing the healthy vertex under delete would do nothing.
+
+The `force` arms keep the whole-database form, deliberately: by the time they log, the delete has gone through, so
+the record a scoped check would be aimed at no longer exists. They say what the scoped form would have bought had it
+been run first.
+
+### `ConcurrentModificationException` carries the failure that produced it
+
+`NeedRetryException` already declared a `(message, cause)` constructor; `ConcurrentModificationException` exposed only
+`(String)`, so every site that raised one from a caught exception - eight across `GraphEngine`, `EdgeLinkedList` and
+`StripedEdgeList` - discarded the original stack. A conflict is normally absorbed by the retry and never seen, so the
+single run that does surface one is the retry-exhausted run: exactly the run whose stack trace has to be diagnosable.
+The cause is now kept. The exception class on the wire is unchanged, so nothing about HTTP status mapping or the
+remote driver's typed reconstruction moves; only the `detail` chain in a development-mode error body gets longer.
+
+### `CHECK DATABASE` reports a corrupt document the same way whichever scope found it
+
+The type-wide document check added to the `warnings` and `corruptedRecords` sets without touching `totalWarnings` and
+`totalCorruptedRecords`, so a run listed the finding while reporting zero of both - and, since the retained sets are
+capped and the totals are not, that divergence grew with the number of findings. It also called a document a
+"vertex", and said it was "removing it" when nothing on that path removes anything (`corruptedRecords` only drives the
+end-of-run index rebuild). Both paths now emit `document <rid> cannot be loaded`, count it, and honour `maxWarnings`.
+
+If you parse `CHECK DATABASE` output, note the two changes: the message text for an unloadable document, and
+`totalWarnings`/`totalCorruptedRecords` now being non-zero on a type-wide run that finds one.
+
+### The scoped vertex check runs one pass where the type-wide runs two - and that is correct
+
+Recorded rather than changed, since the asymmetry looks like a gap. The type-wide arm materialises each record from
+the raw page view in a bucket scan and then again through the connectivity walk; the scoped arm appears to run only
+the second. But `lookupByRID` *is* the first - it performs the same
+`newImmutableRecord(type, rid, bucket.getRecord(rid).copyOfContent())` - and the connectivity walk opens with the same
+`asVertex(true)`, whose `loadContent` flag is what forces the decode. `LocalBucket.getRecord` and `LocalBucket.scan`
+resolve placeholders and multi-page chains identically and skip the same slot markers, so no corruption shape reaches
+one enumeration and not the other. Pinned by a test that corrupts a record and asserts both scopes report it.
+
 ## Manual indexes: creating one no longer fences the database, and a guarded request answers for the index asked for
 
 Two defects, one on top of the other, on the `Schema.buildManualIndex(...)` path - the index kind that is not bound to a

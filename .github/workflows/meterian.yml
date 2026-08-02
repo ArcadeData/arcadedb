@@ -49,7 +49,7 @@ jobs:
         with:
           cli_args: "--report-sarif=report.sarif --exclude-folders=**/bindings/python"
           oss: true
-      - uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v3.29.5
+      - uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v3.29.5
         # continue-on-error here too, or the fix above only half works: a pull request from a FORK gets a read-only
         # token no matter what `security-events: write` says, so this upload cannot succeed there - and it, not the
         # scan, would then turn the job red on exactly the PRs external contributors and Dependabot open. Uploading

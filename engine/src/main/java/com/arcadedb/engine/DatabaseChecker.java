@@ -66,6 +66,21 @@ public class DatabaseChecker {
           + "check. Drop the TYPE/BUCKET clause, or run the two checks separately";
   /** #5680: entries {@link #setRecords} discarded because they did not resolve; reported, never silent. */
   private       int                 droppedRecords = 0;
+  /**
+   * The ONLY retention bound this class has: it caps both the {@code warnings} messages ({@link #addWarning}) and
+   * the {@code corruptedRecords} set ({@link #addCorrupted}).
+   * <p>
+   * #5764, so a future reader does not "fix" the apparent inconsistency: {@code GraphDatabaseChecker} takes a
+   * SEPARATE {@code maxCorrupted} parameter for the same set, which looks like two policies on one run. It is one -
+   * {@link #checkEdges}, {@link #checkVertices} and {@link #checkScopedRecords} all pass this field's REMAINING
+   * budget into that parameter, so both names resolve to this setting. Aligning the two would mean adding a knob,
+   * not removing a divergence.
+   * <p>
+   * The cap is not purely cosmetic, which is why it is worth stating: the RETAINED {@code corruptedRecords} are
+   * what {@link #check()} turns into {@code affectedBuckets}, so a record dropped past the cap does not get the
+   * indexes on its bucket rebuilt under {@code FIX}. Only reachable on a run finding more than 100k corrupt
+   * records, where a bounded repair is the point.
+   */
   private       int                 maxWarnings  = 100_000;
   private final Map<String, Object> result       = new HashMap<>();
 
@@ -157,13 +172,13 @@ public class DatabaseChecker {
 
       if (droppedRecords > 0)
         // No count, for the same reason the refusal above quotes none.
-        addScopedWarning("one or more of the records given did not resolve to a RID and were not checked");
+        addWarning("one or more of the records given did not resolve to a RID and were not checked");
 
       if (compress)
         // COMPRESS is not scoped and cannot be: it works on buckets, not records. Legal and meaningful ("check
         // this record, then compress the database"), so it is not refused - but naming a record sets an
         // expectation of a bounded run, and this is the one clause that breaks it. Say so rather than surprise.
-        addScopedWarning(
+        addWarning(
             "COMPRESS is not limited by the RECORD scope: the whole database will be compressed after the check");
 
       checkScopedRecords(scoped);
@@ -283,12 +298,25 @@ public class DatabaseChecker {
         .collect(Collectors.toList());
   }
 
+  /**
+   * The type-wide document check. #5764 settled the three ways it used to disagree with its RECORD-scoped twin
+   * {@link #checkScopedDocuments} over the SAME finding, all of them in the reporting rather than in the check:
+   * <ul>
+   *   <li>it added to the {@code warnings}/{@code corruptedRecords} sets without touching
+   *   {@code totalWarnings}/{@code totalCorruptedRecords}, so a corrupt document reported different numbers
+   *   depending on which path found it - and, since the totals are what a capped run reports, reported zero once
+   *   the sets filled up;</li>
+   *   <li>it called a document a "vertex", and said it was "removing it" when nothing here removes anything -
+   *   {@code corruptedRecords} only drives the index rebuild at the end of {@link #check()};</li>
+   *   <li>it kept no cap at all, so a type whose whole bucket is unreadable retained one message per record.</li>
+   * </ul>
+   * Both paths now go through {@link #addWarning}/{@link #addCorrupted}. The accumulators are also per-type now:
+   * they used to be declared outside the loop and re-added to the result after every type, which the sets absorbed
+   * but paid for in re-insertions proportional to the square of the type count.
+   */
   private void checkDocuments(final List<DocumentType> documentTypes) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking documents...");
-
-    final List<String> warnings = new ArrayList<>();
-    final Set<RID> corruptedRecords = new LinkedHashSet<>();
 
     for (final DocumentType type : documentTypes) {
       stepBegin("Checking documents '" + type.getName() + "'", database.countType(type.getName(), false));
@@ -303,8 +331,8 @@ public class DatabaseChecker {
               final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
               record.asDocument(true);
             } catch (Exception e) {
-              warnings.add("vertex " + rid + " cannot be loaded, removing it");
-              corruptedRecords.add(rid);
+              addWarning("document " + rid + " cannot be loaded");
+              addCorrupted(rid);
             }
             stepTick();
             return true;
@@ -316,9 +344,6 @@ public class DatabaseChecker {
       }
 
       stepComplete();
-
-      ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
-      ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll(corruptedRecords);
     }
   }
 
@@ -405,7 +430,7 @@ public class DatabaseChecker {
         // The bucket belongs to no type (an internal file, or a RID the caller invented). Capped like every other
         // warning source: a caller passing thousands of bogus RIDs must not blow past maxWarnings.
         for (final RID rid : rids) {
-          addScopedWarning("record " + rid + " does not belong to any type");
+          addWarning("record " + rid + " does not belong to any type");
           stepTick();
         }
         stepComplete();
@@ -441,11 +466,13 @@ public class DatabaseChecker {
   }
 
   /**
-   * Records a RECORD-scope warning: always counted, retained only while under {@code maxWarnings}, and - like
-   * {@code GraphDatabaseChecker.addWarning} - LOGGED when it has to be dropped, so a capped run does not lose the
-   * message silently.
+   * Records a warning raised by this class itself (as opposed to one merged in from a nested checker): always
+   * counted, retained only while under {@code maxWarnings}, and - like {@code GraphDatabaseChecker.addWarning} -
+   * LOGGED when it has to be dropped, so a capped run does not lose the message silently.
+   * <p>
+   * #5764: shared with the type-wide {@link #checkDocuments}, which used to bypass the totals and the cap.
    */
-  private void addScopedWarning(final String warning) {
+  private void addWarning(final String warning) {
     result.put("totalWarnings", (Long) result.get("totalWarnings") + 1);
     final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
     if (warnings.size() < maxWarnings)
@@ -455,14 +482,36 @@ public class DatabaseChecker {
   }
 
   /**
-   * The document arm of the RECORD scope: the same "does it load as a document" check {@link #checkDocuments} does,
-   * with the {@code maxWarnings} cap the record-belongs-to-no-type branch honours (the totals still count every
-   * occurrence, only the retained messages are bounded).
+   * Flags a record as corrupted, bounded the way {@code GraphDatabaseChecker.addCorrupted} bounds the graph arms:
+   * the total keeps counting, the retained set does not grow without limit.
    * <p>
-   * NOTE, deliberately not aligned here: the type-wide {@link #checkDocuments} adds to the warnings and
-   * corrupted-records SETS without incrementing {@code totalWarnings}/{@code totalCorruptedRecords}, so the two
-   * paths report those totals differently for a corrupt document. This arm is the correct one; changing the
-   * type-wide path is a behaviour change to a command this issue does not otherwise touch.
+   * De-duplication is EXACT while the set is under the cap - a record flagged twice is one corrupted record, since
+   * the set itself answers "have I seen this". Past the cap it degrades to what the retained set can still answer:
+   * a RID already in the set is still recognised (which is why the {@code contains} check is there rather than an
+   * unconditional increment), but one that was never retained cannot be, so a second flag on it counts twice. That
+   * is deliberate and not worth closing: the only way to keep it exact past the cap is a second unbounded set of
+   * every RID ever counted, which is precisely the memory the cap exists to refuse. Neither caller reaches it today
+   * - the type-wide bucket scan visits each RID once, and the RECORD scope is a {@link Set}, so a duplicate cannot
+   * survive as far as {@link #groupRecordsByType()}.
+   * <p>
+   * The cap is {@code maxWarnings} because that is the only bound this class has; the {@code maxCorrupted} the
+   * graph arms take is a separate knob {@link GraphDatabaseChecker} owns, and it is passed the remaining budget
+   * from this same field by {@link #checkScopedRecords}. Two names, one setting.
+   */
+  private void addCorrupted(final RID rid) {
+    final LinkedHashSet<RID> corrupted = (LinkedHashSet<RID>) result.get("corruptedRecords");
+    if (corrupted.size() < maxWarnings) {
+      if (!corrupted.add(rid))
+        return;
+    } else if (corrupted.contains(rid))
+      return;
+    result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
+  }
+
+  /**
+   * The document arm of the RECORD scope: the same "does it load as a document" check {@link #checkDocuments} does,
+   * over the RIDs named instead of over every bucket of the type. Since #5764 the two report a finding identically
+   * - same message, same totals, same cap - so a corrupt document reads the same whichever path found it.
    */
   private void checkScopedDocuments(final DocumentType type, final List<RID> rids) {
     stepBegin("Checking records of '" + type.getName() + "'", rids.size());
@@ -475,17 +524,11 @@ public class DatabaseChecker {
         } catch (final RecordNotFoundException e) {
           // Not corruption: flagging it would put this bucket into affectedBuckets and have FIX drop and rebuild
           // every index on it - see the same guard in GraphDatabaseChecker's scoped arms.
-          addScopedWarning("document " + rid + " does not exist");
+          addWarning("document " + rid + " does not exist");
         } catch (final Exception e) {
           // NOT "removing it": corruptedRecords only drives the index rebuild, nothing deletes the record here.
-          // The type-wide checkDocuments says otherwise, and says "vertex" for a document while it is at it.
-          addScopedWarning("document " + rid + " cannot be loaded");
-          // Bounded like addCorrupted bounds the graph arms - the total keeps counting, the retained set does
-          // not grow without limit on a scope naming a large batch of unloadable documents.
-          final LinkedHashSet<RID> corrupted = (LinkedHashSet<RID>) result.get("corruptedRecords");
-          if (corrupted.size() < maxWarnings)
-            corrupted.add(rid);
-          result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
+          addWarning("document " + rid + " cannot be loaded");
+          addCorrupted(rid);
         }
         stepTick();
       }
