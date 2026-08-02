@@ -3461,26 +3461,59 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // mapping (issue #4581).
     final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
     boolean added = false;
-    for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++) {
-      final int vectorId = ordinalMap[ordinal];
-      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-      if (loc == null || loc.deleted)
-        continue;
-      if (seenRIDs.contains(loc.rid))
-        continue;
-      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
-        continue;
 
-      // The location says the vector is live, but the read can still fail - a document whose vector property was
-      // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
-      // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
-      final VectorFloat<?> vec = vectors.getVector(ordinal);
-      if (vec == null || (pageValues != null && pageValues.isDeletedSentinel(vec)))
-        continue;
+    if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
+      // Optimized path: walk only the allowed RIDs instead of every ordinal (issue #5748).
+      // When the allow-list is narrower than k, the unmodified expected-results threshold triggers
+      // a brute-force scan on every query. Walking the full ordinal map costs O(index), while
+      // walking the allow-list costs O(allow-list). Build a reverse index (vectorId -> ordinal) so
+      // we can use vectors.getVector(ordinal) for scoring, keeping the same vector-reading path.
+      final Map<Integer, Integer> vectorIdToOrdinal = new HashMap<>(ordinalMap.length);
+      for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++)
+        vectorIdToOrdinal.put(ordinalMap[ordinal], ordinal);
 
-      final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
-      results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, score)));
-      added = true;
+      for (final RID rid : allowedRIDs) {
+        if (seenRIDs.contains(rid))
+          continue;
+        final int[] vectorIds = vectorIndex.getVectorIdsForRid(rid);
+        for (final int vectorId : vectorIds) {
+          final Integer ordinal = vectorIdToOrdinal.get(vectorId);
+          if (ordinal == null)
+            continue;
+          final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+          if (loc == null || loc.deleted)
+            continue;
+          // The location says the vector is live, but the read can still fail - a document whose vector property was
+          // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
+          // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
+          final VectorFloat<?> vec = vectors.getVector(ordinal);
+          if (vec == null || (pageValues != null && pageValues.isDeletedSentinel(vec)))
+            continue;
+          final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
+          results.add(new Pair<>(bindRid(rid), scoreToDistance(metadata.similarityFunction, score)));
+          added = true;
+        }
+      }
+    } else {
+      for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++) {
+        final int vectorId = ordinalMap[ordinal];
+        final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+        if (loc == null || loc.deleted)
+          continue;
+        if (seenRIDs.contains(loc.rid))
+          continue;
+
+        // The location says the vector is live, but the read can still fail - a document whose vector property was
+        // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
+        // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
+        final VectorFloat<?> vec = vectors.getVector(ordinal);
+        if (vec == null || (pageValues != null && pageValues.isDeletedSentinel(vec)))
+          continue;
+
+        final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
+        results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, score)));
+        added = true;
+      }
     }
 
     if (added) {
