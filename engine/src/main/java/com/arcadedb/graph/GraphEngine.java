@@ -573,10 +573,17 @@ public class GraphEngine {
    * {@link #deleteEdge(Edge)} for a caller that is about to drop one endpoint's edge list WHOLESALE, so the removal
    * of this edge from that list would be pure waste (#5760).
    * <p>
-   * {@code skipEndpoint} is the RID of a vertex whose edge list must NOT be touched - today only
-   * {@link #deleteVertex}, passing the vertex it is deleting. One of an edge's two endpoints is always that vertex,
-   * and disconnecting it means walking the chain from the head probing each chunk for the entry, anchoring the
-   * chunk that holds it, compacting it, and writing it back - per edge, over a list that
+   * NOT a general-purpose "delete an edge but keep one side attached" entry point, and it cannot become one: the
+   * only reason skipping is sound is that the caller destroys the skipped list immediately afterwards. Pass a
+   * {@code skipEndpoint} whose list SURVIVES and the result is a back-reference to a deleted edge - precisely the
+   * corruption #5670 exists to prevent. It is public only because {@code LocalDatabase} dispatches to it from
+   * another package; the sole legitimate caller is {@link #deleteVertex}, and a new one has to satisfy that same
+   * "the skipped list is about to be dropped" precondition.
+   * <p>
+   * {@code skipEndpoint} is the RID of a vertex whose edge list must NOT be touched. One of an edge's two
+   * endpoints is always the vertex being deleted, and disconnecting it means walking the chain from the head
+   * probing each chunk for the entry, anchoring the chunk that holds it, compacting it, and writing it back -
+   * per edge, over a list that
    * {@link #deleteRemainingChunks} deletes in its entirety a moment later. Skipping it removes the work rather than
    * making it cheaper.
    * <p>
@@ -1041,6 +1048,15 @@ public class GraphEngine {
         break;
       }
 
+      // A SELF-LOOP ARRIVES HERE TWICE, once from each of the vertex's two lists, and that is expected rather than
+      // guarded against: the second call runs the delete pipeline over a record the first already removed (the
+      // iterator does not filter it out - it resolves the edge with loadContent=false, and a lazy handle to a
+      // record deleted earlier in this transaction still resolves), where the disconnection is skipped on both
+      // sides and bucket.deleteRecord absorbs the RecordNotFoundException. The visible consequence is that
+      // onBeforeDelete fires TWICE for a self-loop, which is what this path did before #5760 as well - the
+      // two-phase walk collected it from each list and called delete() on it twice. Pinned as an exact count by
+      // Issue5760VertexDeleteSelfSideSkipTest.aSelfLoopIsWalkedFromBothListsSoItsDeleteEventFiresTwice, so a
+      // non-idempotent listener meets a documented number rather than a surprise.
       deleteEdgeOfDeletedVertex(edge, vertex, force);
     }
 

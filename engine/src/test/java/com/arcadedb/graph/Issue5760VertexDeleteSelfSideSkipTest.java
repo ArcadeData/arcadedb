@@ -367,6 +367,78 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
   }
 
   /**
+   * A self-loop is reachable from BOTH of the vertex's lists, so both walks yield it and the delete pipeline runs
+   * for it twice - the second time over a record the first pass already removed, which `EdgeIterator.hasNext`
+   * does not filter out because it resolves the edge with {@code loadContent=false} and a lazy handle to a record
+   * deleted earlier in the same transaction still resolves.
+   * <p>
+   * That means {@code onBeforeDelete} fires TWICE for a self-loop, and a listener that is not idempotent sees it.
+   * Pinned here as an exact count, in both the record-backed and the lightweight shape, because the number is the
+   * whole point: it is what this path did BEFORE #5760 as well (the two-phase walk collected the self-loop from
+   * each list and called {@code delete()} on it twice, the second reaching the tolerated
+   * {@code RecordNotFoundException} inside {@code deleteEdge}), so streaming changed nothing here and must keep
+   * not changing it. Verified against the parent commit: two events there, two events now. A future change that
+   * makes it one - or three - moves this assertion.
+   */
+  @Test
+  void aSelfLoopIsWalkedFromBothListsSoItsDeleteEventFiresTwice() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Loop", 1);
+      database.getSchema().createEdgeType("LINK", 4);
+      database.getSchema().buildEdgeType().withName("LIGHT").withTotalBuckets(4).withLightweight(true).create();
+    });
+
+    assertThat(countDeleteEventsDeletingASelfLoop("LINK"))
+        .as("a record-backed self-loop: yielded by the OUT walk and again by the IN walk").isEqualTo(2);
+    assertThat(countDeleteEventsDeletingASelfLoop("LIGHT"))
+        .as("a lightweight self-loop has no record to go missing, so both walks yield it just the same")
+        .isEqualTo(2);
+
+    assertIntegrityClean();
+  }
+
+  /**
+   * Creates a vertex carrying a single self-loop of the given edge type, deletes it, and returns how many delete
+   * events the edge type saw. Also asserts the delete actually happened, so a count of 0 cannot pass as a result.
+   */
+  private int countDeleteEventsDeletingASelfLoop(final String edgeTypeName) {
+    final RID[] holder = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("Loop");
+      v.save();
+      v.newEdge(edgeTypeName, v);
+      holder[0] = v.getIdentity();
+    });
+    final RID vertexRID = holder[0];
+
+    database.transaction(() -> {
+      assertThat(vertexRID.asVertex().countEdges(Vertex.DIRECTION.OUT, edgeTypeName)).isEqualTo(1);
+      assertThat(vertexRID.asVertex().countEdges(Vertex.DIRECTION.IN, edgeTypeName)).isEqualTo(1);
+    });
+
+    final AtomicLong events = new AtomicLong();
+    final BeforeRecordDeleteListener probe = record -> {
+      if (record instanceof Edge)
+        events.incrementAndGet();
+      return true;
+    };
+
+    database.getSchema().getType(edgeTypeName).getEvents().registerListener(probe);
+    try {
+      database.transaction(() -> vertexRID.asVertex().delete());
+    } finally {
+      database.getSchema().getType(edgeTypeName).getEvents().unregisterListener(probe);
+    }
+
+    database.transaction(() -> {
+      assertThat(database.existsRecord(vertexRID)).as("the vertex must be gone").isFalse();
+      assertThat(database.countType(edgeTypeName, false)).as("the self-loop must be gone with it").isEqualTo(0L);
+    });
+
+    return (int) events.get();
+  }
+
+  /**
    * A forced delete keeps every tolerance it had: the far-end disconnection still happens on a healthy neighbour
    * (that is #5680's contract, and the skip must not be mistaken for "force skips the disconnection"), and the
    * vertex still goes.
