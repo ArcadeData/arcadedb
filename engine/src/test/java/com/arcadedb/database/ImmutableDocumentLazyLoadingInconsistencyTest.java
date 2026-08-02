@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
@@ -474,6 +475,80 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
       });
     } finally {
       database.getSchema().getType("SecurityTest").getEvents().unregisterListener(rewriter);
+    }
+  }
+
+  /**
+   * The other half of defect 3: a listener that builds its replacement FROM SCRATCH rather than by {@code modify()}
+   * hands back a record whose {@code getBuffer()} is plainly {@code null}, so the old {@code getBuffer().copy()} was a
+   * straight NPE. Every other test here goes through {@code modify()} and so only pins the stale-content half.
+   */
+  @Test
+  void reloadAcceptsARecordTheAfterReadListenerBuiltFromScratch() {
+    final RID[] documentRid = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("SecurityTest");
+      doc.set("publicProperty", "public_value");
+      doc.set("secretProperty", "encrypted_value");
+      doc.save();
+      documentRid[0] = doc.getIdentity();
+    });
+
+    // NEVER PERSISTED, SO IT CARRIES NO BUFFER AT ALL
+    final AfterRecordReadListener rewriter = record -> database.newDocument("SecurityTest")
+        .set("publicProperty", "public_value")
+        .set("secretProperty", "rebuilt_value");
+
+    database.getSchema().getType("SecurityTest").getEvents().registerListener(rewriter);
+    try {
+      database.transaction(() -> {
+        final ImmutableDocument doc = (ImmutableDocument) database.lookupByRID(documentRid[0], false);
+        assertThat(doc.get("secretProperty")).isEqualTo("rebuilt_value");
+
+        doc.reload();
+
+        assertThat(doc.get("secretProperty")).isEqualTo("rebuilt_value");
+        assertThat(doc.get("publicProperty")).isEqualTo("public_value");
+      });
+    } finally {
+      database.getSchema().getType("SecurityTest").getEvents().unregisterListener(rewriter);
+    }
+  }
+
+  /**
+   * {@code reload()} on the VERTEX shape, which the encryption recipe this hook exists for is written on. It takes a
+   * different route than the document one - {@code ImmutableVertex.reload()} nulls the buffer before delegating - so
+   * it is worth its own case.
+   */
+  @Test
+  void reloadKeepsWhatTheAfterReadListenerReturnedOnAVertex() {
+    database.transaction(() -> database.getSchema().createVertexType("SecurityReloadVertex"));
+
+    final RID[] vertexRid = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("SecurityReloadVertex");
+      v.set("publicProperty", "public_value");
+      v.set("secretProperty", "encrypted_value");
+      v.save();
+      vertexRid[0] = v.getIdentity();
+    });
+
+    final AfterRecordReadListener rewriter = record -> record.asVertex().modify().set("secretProperty", "decrypted_value");
+
+    database.getSchema().getType("SecurityReloadVertex").getEvents().registerListener(rewriter);
+    try {
+      database.transaction(() -> {
+        final ImmutableVertex v = (ImmutableVertex) database.lookupByRID(vertexRid[0], false);
+        assertThat(v.getString("secretProperty")).isEqualTo("decrypted_value");
+
+        v.reload();
+
+        assertThat(v.getString("secretProperty")).isEqualTo("decrypted_value");
+        assertThat(v.getString("publicProperty")).isEqualTo("public_value");
+        assertThat(v.toJSON().getString("secretProperty")).isEqualTo("decrypted_value");
+      });
+    } finally {
+      database.getSchema().getType("SecurityReloadVertex").getEvents().unregisterListener(rewriter);
     }
   }
 
