@@ -601,6 +601,9 @@
       ]
     },
     {
+      "type": "com.arcadedb.mcp.MCPPlugin"
+    },
+    {
       "type": "com.arcadedb.metrics.otlp.OtlpMetricsPlugin"
     },
     {

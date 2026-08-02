@@ -150,6 +150,7 @@
         <module>network</module>
         <module>grpc</module>
         <module>server</module>
+        <module>mcp</module>
         <module>ha-raft</module>
         <module>metrics</module>
         <module>tracing</module>

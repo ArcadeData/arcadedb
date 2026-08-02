@@ -179,6 +179,11 @@
             <artifactId>arcadedb-grpcw</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-mcp</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
     </dependencies>
 
     <build>

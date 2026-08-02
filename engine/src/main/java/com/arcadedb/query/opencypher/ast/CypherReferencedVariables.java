@@ -197,20 +197,22 @@ public final class CypherReferencedVariables {
 
     @Override
     public void visit(final Expression expression) {
-      switch (expression) {
-      case VariableExpression variable -> add(variable.getVariableName());
-      case PropertyAccessExpression property -> add(property.getVariableName());
-      case MapProjectionExpression projection -> add(projection.getVariableName());
+      if (expression instanceof VariableExpression variable)
+        add(variable.getVariableName());
+      else if (expression instanceof PropertyAccessExpression property)
+        add(property.getVariableName());
+      else if (expression instanceof MapProjectionExpression projection)
+        add(projection.getVariableName());
       // A subquery expression with no parsed body runs from its text through CorrelatedSubqueryRewriter, which the
       // walk cannot enter and which can name anything the outer row carries.
-      case ExistsExpression exists -> requireParsedBody(exists.getParsedSubquery());
-      case CountExpression count -> requireParsedBody(count.getParsedSubquery());
-      case CollectExpression collect -> requireParsedBody(collect.getParsedSubquery());
-      default -> {
-        if (!NAMELESS_EXPRESSIONS.contains(expression.getClass()))
-          complete = false;
-      }
-      }
+      else if (expression instanceof ExistsExpression exists)
+        requireParsedBody(exists.getParsedSubquery());
+      else if (expression instanceof CountExpression count)
+        requireParsedBody(count.getParsedSubquery());
+      else if (expression instanceof CollectExpression collect)
+        requireParsedBody(collect.getParsedSubquery());
+      else if (!NAMELESS_EXPRESSIONS.contains(expression.getClass()))
+        complete = false;
     }
 
     @Override

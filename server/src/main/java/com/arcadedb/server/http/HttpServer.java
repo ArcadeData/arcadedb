@@ -78,8 +78,6 @@ import com.arcadedb.server.ai.AiChatHandler;
 import com.arcadedb.server.ai.AiChatsHandler;
 import com.arcadedb.server.ai.AiConfigHandler;
 import com.arcadedb.server.ai.ChatStorage;
-import com.arcadedb.server.mcp.MCPConfigHandler;
-import com.arcadedb.server.mcp.MCPHttpHandler;
 import com.arcadedb.server.security.ServerSecurityException;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
@@ -262,11 +260,6 @@ public class HttpServer implements ServerPlugin {
         .get("/ts/{database}/prom/api/v1/label/{name}/values", new GetPromQLLabelValuesHandler(this))
         .get("/ts/{database}/prom/api/v1/series", new GetPromQLSeriesHandler(this))
     );
-
-    // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling
-    final var mcpConfig = server.getMCPConfiguration();
-    routes.addExactPath("/api/v1/mcp", new MCPHttpHandler(this, server, mcpConfig));
-    routes.addExactPath("/api/v1/mcp/config", new MCPConfigHandler(this, mcpConfig));
 
     // AI routes are always registered; the chat handler checks isConfigured() at request time
     final var aiConfig = server.getAiConfiguration();

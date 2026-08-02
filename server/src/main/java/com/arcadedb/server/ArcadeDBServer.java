@@ -40,7 +40,6 @@ import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
-import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
 import com.arcadedb.server.monitor.EngineMetricsBinder;
@@ -131,7 +130,6 @@ public class ArcadeDBServer {
   private volatile    HAServerPlugin                        haServer;
   private volatile    ServerSecurity                        security;
   private volatile    HttpServer                            httpServer;
-  private             MCPConfiguration                      mcpConfiguration;
   private             AiConfiguration                       aiConfiguration;
   private             ServerQueryProfiler                   queryProfiler;
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
@@ -307,11 +305,6 @@ public class ArcadeDBServer {
     loadDatabases();
 
     security.loadUsers();
-
-    // INITIALIZE MCP CONFIGURATION (always available, disabled by default)
-    mcpConfiguration = new MCPConfiguration(serverRootPath);
-    mcpConfiguration.load();
-    mcpConfiguration.warnUnknownDatabaseOverrides(getDatabaseNames());
 
     // INITIALIZE AI CONFIGURATION (always available, inactive until subscription token is set)
     aiConfiguration = new AiConfiguration(serverRootPath);
@@ -941,10 +934,6 @@ public class ArcadeDBServer {
 
   public ServerSecurity getSecurity() {
     return security;
-  }
-
-  public MCPConfiguration getMCPConfiguration() {
-    return mcpConfiguration;
   }
 
   public AiConfiguration getAiConfiguration() {
