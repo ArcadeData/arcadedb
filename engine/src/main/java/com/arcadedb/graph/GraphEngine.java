@@ -566,21 +566,34 @@ public class GraphEngine {
    * that window a retry instead.
    */
   public void deleteEdge(final Edge edge) {
+    deleteEdge(edge, null);
+  }
+
+  /**
+   * {@link #deleteEdge(Edge)} for a caller that is about to drop one endpoint's edge list WHOLESALE, so the removal
+   * of this edge from that list would be pure waste (#5760).
+   * <p>
+   * {@code skipEndpoint} is the RID of a vertex whose edge list must NOT be touched - today only
+   * {@link #deleteVertex}, passing the vertex it is deleting. One of an edge's two endpoints is always that vertex,
+   * and disconnecting it means walking the chain from the head probing each chunk for the entry, anchoring the
+   * chunk that holds it, compacting it, and writing it back - per edge, over a list that
+   * {@link #deleteRemainingChunks} deletes in its entirety a moment later. Skipping it removes the work rather than
+   * making it cheaper.
+   * <p>
+   * Matched by RID against the endpoint recorded ON THE EDGE, not by which list the edge was found in: an entry
+   * whose {@code out}/{@code in} does NOT name the vertex being deleted is a reference into somebody else's list
+   * and is disconnected normally.
+   * <p>
+   * A SELF-LOOP therefore skips BOTH sides, which is correct for the same reason as one side: {@code A -> A} is
+   * reachable from both of A's lists and both are dropped. What is NOT skipped is the self-side READ - the strict
+   * collection walk in {@link #deleteEdgesOf} that refuses to delete a vertex whose own list is not fully readable
+   * (#5670/#5680) - because that walk is what decides which edges exist to disconnect at all.
+   */
+  public void deleteEdge(final Edge edge, final RID skipEndpoint) {
     final Database database = edge.getDatabase();
 
-    final VertexInternal vOut = resolveEndpointToDisconnect(edge, Vertex.DIRECTION.OUT);
-    if (vOut != null) {
-      final EdgeLinkedList outEdges = getEdgeHeadChunkForWrite(vOut, Vertex.DIRECTION.OUT);
-      if (outEdges != null)
-        outEdges.removeEdge(edge);
-    }
-
-    final VertexInternal vIn = resolveEndpointToDisconnect(edge, Vertex.DIRECTION.IN);
-    if (vIn != null) {
-      final EdgeLinkedList inEdges = getEdgeHeadChunkForWrite(vIn, Vertex.DIRECTION.IN);
-      if (inEdges != null)
-        inEdges.removeEdge(edge);
-    }
+    disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint);
+    disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint);
 
     final RID edgeRID = edge.getIdentity();
     if (edgeRID != null && !(edge instanceof LightEdge))
@@ -596,6 +609,24 @@ public class GraphEngine {
       } catch (final RecordNotFoundException e) {
         // ALREADY DELETED: IGNORE IT
       }
+  }
+
+  /**
+   * Removes {@code edge} from the edge list of its endpoint in {@code direction}, unless that endpoint is the one
+   * the caller is dropping wholesale (see {@link #deleteEdge(Edge, RID)}).
+   */
+  private void disconnectEndpoint(final Edge edge, final Vertex.DIRECTION direction, final RID skipEndpoint) {
+    if (skipEndpoint != null && skipEndpoint.equals(
+        direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn()))
+      return;
+
+    final VertexInternal endpoint = resolveEndpointToDisconnect(edge, direction);
+    if (endpoint == null)
+      return;
+
+    final EdgeLinkedList list = getEdgeHeadChunkForWrite(endpoint, direction);
+    if (list != null)
+      list.removeEdge(edge);
   }
 
   /**
@@ -685,60 +716,57 @@ public class GraphEngine {
    * <p>
    * So:
    * <ul>
-   *   <li>{@code force == false} - the collection walk is strict: an unreadable head or hop raises a retryable
+   *   <li>{@code force == false} - the removal walk is strict: an unreadable head or hop raises a retryable
    *   {@link ConcurrentModificationException}, the transaction rolls back whole and re-reads a consistent view.
    *   A GENUINELY broken chain is indistinguishable from the transient one and therefore fails the delete after
    *   the retries are spent; {@code CHECK DATABASE} is the repair path - it rebuilds an unloadable chain from the
    *   surviving edge records (see {@code GraphDatabaseCheckerChainRebuildTest}), after which the delete succeeds
    *   normally.</li>
    *   <li>{@code force == true} - every one of those conflicts is absorbed and logged, INCLUDING the one raised
-   *   while disconnecting a collected edge from the vertex at its OTHER end. Before #5680 that last one escaped:
+   *   while disconnecting an edge from the vertex at its OTHER end. Before #5680 that last one escaped:
    *   a broken NEIGHBOUR blocked a forced delete just as it blocked an ordinary one, which is precisely what
    *   {@code force} exists to override.</li>
    * </ul>
-   * Draining the chunk records at the end stays best-effort in BOTH modes on purpose: by then every collected edge
-   * has been disconnected from both endpoints and the vertex record is about to go, so a chunk that cannot be read
-   * there costs orphaned chunk records - garbage {@code CHECK DATABASE} reclaims - never a surviving reference.
+   * Draining the chunk records at the end stays best-effort in BOTH modes on purpose: by then every edge the walk
+   * saw has been disconnected from the vertex at its far end and the vertex record is about to go, so a chunk that
+   * cannot be read there costs orphaned chunk records - garbage {@code CHECK DATABASE} reclaims - never a
+   * surviving reference.
    * <p>
    * #5725 closes the other half of the same defect, the one #5680 could not reach: an edge that did not EXIST when
-   * the collection walk ran, because a concurrent transaction appended it a moment later. Strictness in the read
-   * cannot collect what is not there; what makes it safe is that the delete now leaves an MVCC footprint on
+   * the removal walk ran, because a concurrent transaction appended it a moment later. Strictness in the read
+   * cannot see what is not there; what makes it safe is that the delete now leaves an MVCC footprint on
    * everything the list could grow through, so an append that raced it turns the delete into a retry rather than
-   * into a vertex deleted with an uncollected edge still pointing at it. That is two checks, both skipped under
+   * into a vertex deleted with an edge it never saw still pointing at it. That is two checks, both skipped under
    * {@code force}: {@link EdgeLinkedList#anchorForFullRemoval()} pins every page of the list at the version the
    * walk reads it at, and {@link #checkEdgeListHeadsUnchanged} re-reads the vertex's head pointers, for the append
    * that lands in a BRAND NEW chunk and so touches none of those pages.
+   * <p>
+   * #5760 removes the two costs this method used to pay for the walk, both of which fall out of ONE observation:
+   * the vertex's own lists are dropped wholesale at the end, so nothing this method does to them is worth doing.
+   * <ul>
+   *   <li>Each edge is disconnected from its FAR endpoint only ({@link #deleteEdge(Edge, RID)}). The self side was
+   *   a chain walk, a chunk anchor, a compaction and a write-back per edge, over a list
+   *   {@link #deleteRemainingChunks} deletes entirely moments later.</li>
+   *   <li>The walk STREAMS. It used to materialise every edge into an {@code ArrayList} first, and had to: the
+   *   self-side removals relinked and deleted chunks underneath the iterator, so a single pass would have been a
+   *   walk over a list being restructured - the shape #5155, #5670 and #5680 were all about. With the self side
+   *   skipped, this method no longer writes the list it is reading AT ALL, so the iterator is stable and the list
+   *   of every edge (an object per edge, retained for the whole delete) simply disappears.</li>
+   * </ul>
+   * The self-side READ is untouched: it is what decides which edges exist, and its strictness is the whole of
+   * #5670/#5680.
    */
   public void deleteVertex(final VertexInternal vertex, final boolean force) {
     // #5660: the edge-list heads are pointers INSIDE the vertex record, so they must be read from the instance this
     // transaction holds - a handle obtained before an append in the same transaction still names the previous head
-    // and would hide the newest edges, which is the same "collect nothing, delete anyway" defect by another route.
+    // and would hide the newest edges, which is the same "see nothing, delete anyway" defect by another route.
     final VertexInternal mostUpdatedVertex = getMostUpdatedVertex(vertex);
 
-    // The heads this delete is about to collect from, kept for checkEdgeListHeadsUnchanged below.
+    // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
     final RID[] collectedHeads = readEdgeListHeads(mostUpdatedVertex);
 
-    // RETRIEVE ALL THE EDGES TO DELETE AT THE END
-    final List<Identifiable> edgesToDelete = new ArrayList<>();
-
-    final boolean hadOutList = collectEdgesToDelete(mostUpdatedVertex, Vertex.DIRECTION.OUT, force, edgesToDelete);
-    final boolean hadInList = collectEdgesToDelete(mostUpdatedVertex, Vertex.DIRECTION.IN, force, edgesToDelete);
-
-    for (final Identifiable edge : edgesToDelete)
-      try {
-        edge.asEdge().delete();
-      } catch (final RecordNotFoundException e) {
-        // ALREADY DELETED, IGNORE IT
-      } catch (final NeedRetryException e) {
-        // THE EDGE LIST OF THE VERTEX AT THE OTHER END IS NOT READABLE (SEE getEdgeHeadChunkForWrite)
-        if (!force)
-          throw e;
-        LogManager.instance()
-            .log(this, Level.WARNING, """
-                    Cannot disconnect edge %s from the vertex at its other end while force-deleting vertex %s: \
-                    the reference survives, run a database check to repair it""", e, edge.getIdentity(),
-                mostUpdatedVertex.getIdentity());
-      }
+    final boolean hadOutList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.OUT, force);
+    final boolean hadInList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.IN, force);
 
     if (hadOutList)
       deleteRemainingChunks(mostUpdatedVertex, Vertex.DIRECTION.OUT);
@@ -757,13 +785,13 @@ public class GraphEngine {
    * The {OUT, IN} edge-list head pointers of a vertex about to be deleted, or {@code null} if they cannot be read.
    * <p>
    * Purely ADVISORY, and the blanket catch is the point rather than an oversight. This runs FIRST, before
-   * {@link #collectEdgesToDelete}, only to capture a value for the optional {@link #checkEdgeListHeadsUnchanged}
+   * {@link #deleteEdgesOf}, only to capture a value for the optional {@link #checkEdgeListHeadsUnchanged}
    * at the end - so it must not be what decides whether the delete proceeds. On a not-yet-materialised
    * {@code ImmutableVertex} the head read lazy-loads the record, which puts every way that load can fail in front
    * of a delete that used to meet them further in, where they are each already owned and answered:
    * <ul>
    *   <li>a corrupt or truncated buffer ({@link SerializationException} and the rest of the decode family) is
-   *   tolerated by {@code collectEdgesToDelete}, because such a vertex reaches here with {@code force == false} and
+   *   tolerated by {@code deleteEdgesOf}, because such a vertex reaches here with {@code force == false} and
    *   failing would make it undeletable - the complaint #4420 and #4432 fixed;</li>
    *   <li>a vanished record, or a multi-page body a concurrent commit is rewriting, is a retryable conflict
    *   {@link #getEdgeHeadChunkForWrite} raises as a {@link ConcurrentModificationException} - and one that
@@ -847,30 +875,37 @@ public class GraphEngine {
   }
 
   /**
-   * Collects into {@code edgesToDelete} every edge reachable from {@code vertex} in {@code direction}, reading the
-   * list the way a removal must: the head through {@link #getEdgeHeadChunkForWrite}, every page of it pinned by
+   * Deletes every edge reachable from {@code vertex} in {@code direction}, reading the list the way a removal must:
+   * the head through {@link #getEdgeHeadChunkForWrite}, every page of it pinned by
    * {@link EdgeLinkedList#anchorForFullRemoval()} (#5725), the walk through
    * {@link EdgeLinkedList#edgeIteratorForRemoval} (which, on a promoted super-node, refuses to skip a stripe chain
    * it cannot load), and the chain hops through {@link #hasNextEdgeToDelete}. See {@link #deleteVertex} for why.
    * Only {@code force} turns a conflict into a logged warning.
    * <p>
-   * A single edge whose RECORD cannot be resolved is a different matter and stays tolerated in both modes: the walk
-   * keeps every other entry, so the cost is that one already-dangling pointer rather than the whole remaining list,
-   * and {@code EdgeIteratorFilter} and {@code CHECK DATABASE} treat such an entry the same way.
+   * #5760: the walk STREAMS - each edge is deleted as it is yielded, instead of being appended to a list of every
+   * edge the vertex has and deleted in a second pass. The second pass was not a style choice: while the removals
+   * still disconnected each edge from THIS vertex too, they relinked and deleted chunks underneath the iterator,
+   * and a single pass would have been a walk over a list being restructured. It is
+   * {@link #deleteEdge(Edge, RID)} skipping this vertex that makes one pass legal - the deletions below now write
+   * the FAR endpoints' lists and the edge records, never this list - and the accumulator, one live object per edge
+   * held for the whole delete, goes away with it.
    * <p>
-   * The split between the two catch arms below is NOT "transient versus permanent", and reading it that way is the
-   * one mistake to avoid here. It is "what does a miss cost". A chunk that cannot be FOUND is treated as retryable
-   * because that is the only answer that is safe when the alternative - deleting the vertex on a short list - loses
-   * references; it is deliberately applied to a chunk that is genuinely LOST as well, which no retry can bring back,
-   * so that case now fails the delete once the retries are spent instead of quietly completing it. A chunk that
-   * cannot be DECODED takes the other arm for the reason spelled out there, not because it is less permanent.
+   * A single edge whose RECORD cannot be resolved is a different matter from a list that cannot be read, and stays
+   * tolerated in both modes: the walk keeps every other entry, so the cost is that one already-dangling pointer
+   * rather than the whole remaining list, and {@code EdgeIteratorFilter} and {@code CHECK DATABASE} treat such an
+   * entry the same way.
+   * <p>
+   * The per-edge deletion sits OUTSIDE the try that reads the list, deliberately. The two tolerances below are
+   * about THIS vertex's list; an exception raised while disconnecting an edge from the vertex at its other end
+   * carries a different meaning entirely, has its own policy in {@link #deleteEdgeOfDeletedVertex}, and must not
+   * be mistaken for "this vertex's list is corrupt, delete it anyway".
    *
    * @return whether the vertex has an edge list in this direction at all, i.e. whether there are chunk records left
    * to drain afterwards.
    */
-  private boolean collectEdgesToDelete(final VertexInternal vertex, final Vertex.DIRECTION direction,
-      final boolean force, final List<Identifiable> edgesToDelete) {
+  private boolean deleteEdgesOf(final VertexInternal vertex, final Vertex.DIRECTION direction, final boolean force) {
     EdgeLinkedList edges = null;
+    Iterator<Edge> iterator = null;
     try {
       edges = getEdgeHeadChunkForWrite(vertex, direction);
       if (edges != null) {
@@ -881,64 +916,131 @@ public class GraphEngine {
         // edge removed. Pinning earns its cost exactly where the transaction writes those pages anyway - here.
         //
         // AFTER the assignment above, not before it. A pin that fails jumps straight to the catch below, so the
-        // walk is skipped either way and nothing is collected from this direction; what the ordering buys is that
+        // walk is skipped either way and nothing is deleted from this direction; what the ordering buys is that
         // `edges` is non-null by then, so under force this method still reports the list as present and the chunk
         // drain still runs. Pinning before the assignment would leave it null and orphan the chunks as well.
         edges.anchorForFullRemoval();
 
-        final Iterator<Edge> iterator = edges.edgeIteratorForRemoval();
-
-        while (hasNextEdgeToDelete(iterator, vertex, direction)) {
-          try {
-            edgesToDelete.add(iterator.next());
-          } catch (final RecordNotFoundException e) {
-            // ALREADY DELETED, IGNORE THIS
-            LogManager.instance()
-                .log(this, Level.FINE, "Error on deleting %s edge connected to vertex %s (record not found)", direction,
-                    vertex.getIdentity());
-          }
-        }
+        iterator = edges.edgeIteratorForRemoval();
       }
     } catch (final NeedRetryException e) {
+      tolerateUnreadableEdgeList(e, vertex, direction, force);
+    } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
+                   | IndexOutOfBoundsException | IllegalArgumentException | ClassCastException | SchemaException e) {
+      tolerateUndecodableEdgeList(e, vertex, direction);
+    }
+
+    // A null iterator means there is nothing to walk: no list in this direction, or a failure the block above
+    // tolerated. The loop leaves only through a break - the iterator reference itself never changes.
+    while (iterator != null) {
+      final Edge edge;
+      try {
+        if (!hasNextEdgeToDelete(iterator, vertex, direction))
+          break;
+        edge = iterator.next();
+      } catch (final RecordNotFoundException e) {
+        // DANGLING ENTRY: THE EDGE RECORD IS ALREADY GONE, KEEP WALKING
+        LogManager.instance()
+            .log(this, Level.FINE, "Error on deleting %s edge connected to vertex %s (record not found)", direction,
+                vertex.getIdentity());
+        continue;
+      } catch (final NeedRetryException e) {
+        tolerateUnreadableEdgeList(e, vertex, direction, force);
+        break;
+      } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
+                     | IndexOutOfBoundsException | IllegalArgumentException | ClassCastException | SchemaException e) {
+        tolerateUndecodableEdgeList(e, vertex, direction);
+        break;
+      }
+
+      deleteEdgeOfDeletedVertex(edge, vertex, force);
+    }
+
+    return edges != null;
+  }
+
+  /**
+   * The vertex's own edge list could not be READ. Retryable, and only {@code force} absorbs it.
+   * <p>
+   * The split between this and {@link #tolerateUndecodableEdgeList} is NOT "transient versus permanent", and
+   * reading it that way is the one mistake to avoid here. It is "what does a miss cost". A chunk that cannot be
+   * FOUND is treated as retryable because that is the only answer that is safe when the alternative - deleting the
+   * vertex on a short list - loses references; it is deliberately applied to a chunk that is genuinely LOST as
+   * well, which no retry can bring back, so that case now fails the delete once the retries are spent instead of
+   * quietly completing it. A chunk that cannot be DECODED takes the other path for the reason spelled out there,
+   * not because it is less permanent.
+   */
+  private void tolerateUnreadableEdgeList(final NeedRetryException e, final VertexInternal vertex,
+      final Vertex.DIRECTION direction, final boolean force) {
+    if (!force)
+      throw e;
+    LogManager.instance()
+        .log(this, Level.WARNING, """
+                Cannot read the %s edge list of vertex %s while force-deleting it: its edges survive, run a \
+                database check to repair them""", e, direction, vertex.getIdentity());
+  }
+
+  /**
+   * The vertex's own edge list could not be DECODED. Not an oversight and not the case above: this is what is left
+   * once the TRANSIENT window has been split off into the retryable branch. What reaches here is a buffer that
+   * cannot be decoded - a corrupted chunk body or vertex prefix raising {@link SerializationException},
+   * {@link BufferUnderflowException}, {@link NegativeArraySizeException} and friends - which no retry can fix, and
+   * which is tolerated on purpose EVEN when force is false. That looks inconsistent with the strictness above
+   * until you follow where such a record comes from: {@code LocalDatabase.deleteRecordNoLock} catches exactly this
+   * exception family around the index cleanup and proceeds WITHOUT setting its force flag (it raises that flag
+   * only for a confirmed broken chunk chain), so a vertex whose buffer is corrupt reaches the delete with
+   * {@code force == false}. Failing here would therefore make it undeletable - precisely the "records that can't
+   * be deleted" complaint issues #4420 and #4432 fixed. The cost is real and larger than the tolerated single
+   * dangling entry (everything behind the corrupt chunk is dropped, and the vertex is still deleted), which is why
+   * it is logged at WARNING: {@code CHECK DATABASE ... FIX} rebuilds the chain from the surviving edge records and
+   * is the way to delete such a vertex without losing its edges.
+   * <p>
+   * The caught list is CLOSED, and deliberately not a blanket {@code catch (Exception)}: "tolerate and delete
+   * anyway" is the behaviour the surrounding strictness exists to take away from conditions that do not deserve
+   * it, so it must not be handed to an exception nobody has reasoned about. The first five are the decode family
+   * {@code LocalDatabase} uses for the same purpose; {@link ClassCastException} and {@link SchemaException} are
+   * the two further shapes a CORRUPT edge list adds on top of it (a head RID naming a record that is not an edge
+   * segment, an edge bucket whose type is gone). {@link IllegalArgumentException} is the loosest member and the
+   * one to re-examine first if this ever starts firing in the field: it earns its place because {@code Binary}
+   * raises it ("Invalid position") for a content offset that decodes past the end of the buffer, which is a
+   * genuine corruption shape and not a caller error. Anything else - an NPE or an IllegalStateException from a
+   * future change, an I/O failure surfacing as {@link DatabaseOperationException} - is a bug or an environment
+   * fault, not a broken graph, and propagates so it is seen rather than silently paid for with the vertex's edges.
+   * If a genuine corruption shape ever escapes, add it to the caught list with the reason; do not widen the catch.
+   */
+  private void tolerateUndecodableEdgeList(final RuntimeException e, final VertexInternal vertex,
+      final Vertex.DIRECTION direction) {
+    LogManager.instance()
+        .log(this, Level.WARNING, """
+                Cannot decode the %s edge list of vertex %s (corrupted chunk): deleting it anyway, edges behind the \
+                damage survive - run a database check to repair them""", e, direction, vertex.getIdentity());
+  }
+
+  /**
+   * Deletes one edge of a vertex that is itself being deleted: the full record deletion (index cleanup, external
+   * values, delete events) with the disconnection from {@code vertex} skipped - see
+   * {@link #deleteEdge(Edge, RID)} for why, and {@link #deleteEdgesOf} for why this is not inside the walk's
+   * {@code try}.
+   * <p>
+   * Routed through the edge's OWN database handle rather than this engine's, so a wrapped instance
+   * (server, replicated) still sees the delete go through its own pipeline - exactly what {@code Record.delete()}
+   * did when this was a plain {@code edge.delete()}.
+   */
+  private void deleteEdgeOfDeletedVertex(final Edge edge, final VertexInternal vertex, final boolean force) {
+    try {
+      ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, vertex.getIdentity());
+    } catch (final RecordNotFoundException e) {
+      // ALREADY DELETED, IGNORE IT
+    } catch (final NeedRetryException e) {
+      // THE EDGE LIST OF THE VERTEX AT THE OTHER END IS NOT READABLE (SEE getEdgeHeadChunkForWrite)
       if (!force)
         throw e;
       LogManager.instance()
           .log(this, Level.WARNING, """
-                  Cannot read the %s edge list of vertex %s while force-deleting it: its edges survive, run a \
-                  database check to repair them""", e, direction, vertex.getIdentity());
-    } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
-                   | IndexOutOfBoundsException | IllegalArgumentException | ClassCastException | SchemaException e) {
-      // LINKED LIST COULD BE BROKEN. Not an oversight and not the case above: this arm is what is left once the
-      // TRANSIENT window has been split off into the retryable branch. What reaches here is a buffer that cannot be
-      // DECODED - a corrupted chunk body or vertex prefix raising SerializationException, BufferUnderflowException,
-      // NegativeArraySizeException and friends - which no retry can fix, and which is tolerated on purpose EVEN when
-      // force is false. That looks inconsistent with the strictness above until you follow where such a record comes
-      // from: LocalDatabase.deleteRecordNoLock catches exactly this exception family around the index cleanup and
-      // proceeds WITHOUT setting its force flag (it raises that flag only for a confirmed broken chunk chain), so a
-      // vertex whose buffer is corrupt reaches this method with force == false. Failing here would therefore make it
-      // undeletable - precisely the "records that can't be deleted" complaint issues #4420 and #4432 fixed. The cost
-      // is real and larger than the tolerated single dangling entry (everything behind the corrupt chunk is dropped,
-      // and the vertex is still deleted), which is why it is logged at WARNING: CHECK DATABASE ... FIX rebuilds the
-      // chain from the surviving edge records and is the way to delete such a vertex without losing its edges.
-      //
-      // The list is CLOSED, and deliberately not a blanket catch (Exception): "tolerate and delete anyway" is the
-      // behaviour this whole method exists to take away from conditions that do not deserve it, so it must not be
-      // handed to an exception nobody has reasoned about. The first five are the decode family LocalDatabase uses
-      // for the same purpose; ClassCastException and SchemaException are the two further shapes a CORRUPT edge list
-      // adds on top of it (a head RID naming a record that is not an edge segment, an edge bucket whose type is
-      // gone). IllegalArgumentException is the loosest member and the one to re-examine first if this arm ever
-      // starts firing in the field: it earns its place because Binary raises it ("Invalid position") for a content
-      // offset that decodes past the end of the buffer, which is a genuine corruption shape and not a caller error.
-      // Anything else - an NPE or an IllegalStateException from a future change, an I/O failure surfacing as
-      // DatabaseOperationException - is a bug or an environment fault, not a broken graph, and propagates so it is
-      // seen rather than silently paid for with the vertex's edges. If a genuine corruption shape ever escapes here,
-      // add it to this list with the reason; do not widen the catch.
-      LogManager.instance()
-          .log(this, Level.WARNING, """
-                  Cannot decode the %s edge list of vertex %s (corrupted chunk): deleting it anyway, edges behind the \
-                  damage survive - run a database check to repair them""", e, direction, vertex.getIdentity());
+                  Cannot disconnect edge %s from the vertex at its other end while force-deleting vertex %s: \
+                  the reference survives, run a database check to repair it""", e, edge.getIdentity(),
+              vertex.getIdentity());
     }
-    return edges != null;
   }
 
   /**
@@ -955,7 +1057,7 @@ public class GraphEngine {
    * conflict is raised, never in whether it is: {@link StripedEdgeList#edgeIteratorForRemoval} resolves every stripe
    * head eagerly while BUILDING the iterator, so a stripe chain that cannot be loaded raises its
    * {@link ConcurrentModificationException} there rather than on a hop through here. Both sit inside the same
-   * {@code try} in {@link #collectEdgesToDelete} and are handled identically.
+   * {@code try} in {@link #deleteEdgesOf} and are handled identically.
    */
   private boolean hasNextEdgeToDelete(final Iterator<Edge> iterator, final VertexInternal vertex,
       final Vertex.DIRECTION direction) {
@@ -969,13 +1071,17 @@ public class GraphEngine {
   }
 
   /**
-   * Drains the chunk records left behind once every edge has been disconnected. Best-effort by design, in both
-   * modes: nothing references these chunks any more and the vertex record is about to be deleted, so failing here
-   * would abort a delete that has already done everything that could dangle a reference - see {@link #deleteVertex}.
+   * Drains the chunk records of a list whose owner is being deleted. Best-effort by design, in both modes: nothing
+   * references these chunks any more and the vertex record is about to be deleted, so failing here would abort a
+   * delete that has already done everything that could dangle a reference - see {@link #deleteVertex}.
+   * <p>
+   * The chunks still hold their entries: since #5760 the walk does not remove them one at a time, precisely
+   * because this drops all of them at once. What matters is that the far-end back-references are gone and the
+   * edge records with them, which {@link #deleteEdgesOf} has already done.
    */
   private void deleteRemainingChunks(final VertexInternal vertex, final Vertex.DIRECTION direction) {
     try {
-      // RELOAD THE LINKED LIST: the removals above rewrote the chain (an emptied chunk is relinked out of it).
+      // RE-READ THE HEAD rather than reuse the walk's list: under force the walk may not have produced one at all.
       final EdgeLinkedList edges = getEdgeHeadChunk(vertex, direction);
       if (edges != null)
         edges.deleteAll();
