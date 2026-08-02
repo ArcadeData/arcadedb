@@ -267,6 +267,49 @@ class Issue5725GhostEdgeOnAppendRaceTest extends TestHelper {
     assertIntegrityClean();
   }
 
+  /**
+   * The pin runs BEFORE the collection walk, so a chain it cannot finish must not cost the delete the edges in
+   * front of the break. Those are edges the old incremental walk collected and disconnected from the vertices at
+   * their other end; a pin that failed the whole direction instead would leave every one of those far-end pointers
+   * dangling on neighbours nobody asked to touch - the same "back-reference survives its edge" defect #5670 fixed,
+   * re-introduced through the back door.
+   * <p>
+   * So the pin stops at the break and the collection walk, which follows the same pointers, is what reports it. On
+   * a forced delete that means the edges before the break are disconnected properly and only the ones behind it
+   * survive, which is the documented tolerance and no wider.
+   */
+  @Test
+  void aForcedDeleteOfAVertexWhoseChainBreaksMidWayStillDisconnectsTheEdgesInFrontOfTheBreak() {
+    createSchema();
+    final RID hubRID = createHub();
+    final List<RID> edges = createEdges(hubRID, 200);
+
+    final List<RID> chain = inChunkChain(hubRID);
+    assertThat(chain).as("the hub's IN list must span several chunks").hasSizeGreaterThan(3);
+
+    // Break the SECOND chunk from the head, so the head chunk's edges sit in front of the damage.
+    deleteRecord(chain.get(1));
+
+    database.transaction(() -> graphEngine().deleteVertex((VertexInternal) hubRID.asVertex(), true));
+
+    database.transaction(() -> {
+      assertThat(database.existsRecord(hubRID)).as("force must still get the vertex out").isFalse();
+
+      long survived = 0;
+      for (final RID edge : edges)
+        if (database.existsRecord(edge))
+          survived++;
+
+      // The point of the test: SOME edges were reached and deleted. A pin that failed the whole direction would
+      // leave every one of the 200 behind, still naming the hub.
+      assertThat(survived).as("the edges in front of the break must have been disconnected and deleted")
+          .isLessThan(edges.size());
+      // And the documented tolerance is unchanged: what is behind the damage does survive, so this is not
+      // accidentally asserting that a broken chain deletes cleanly.
+      assertThat(survived).as("the edges behind the break are the accepted cost of force").isGreaterThan(0L);
+    });
+  }
+
   /** {@code force} is the documented escape hatch and must still get a stale-headed vertex out. */
   @Test
   void aForcedDeleteIsNotBlockedByAStaleHeadPointer() {
@@ -516,6 +559,24 @@ class Issue5725GhostEdgeOnAppendRaceTest extends TestHelper {
       edges.add(holder[0]);
     }
     return edges;
+  }
+
+  /** The hub's IN chunk chain, head first (newest chunk) to tail (the chunk created with the first edge). */
+  private List<RID> inChunkChain(final RID hubRID) {
+    final List<RID> chain = new ArrayList<>();
+    database.transaction(() -> {
+      RID rid = ((VertexInternal) hubRID.asVertex()).getInEdgesHeadChunk();
+      while (rid != null) {
+        chain.add(rid);
+        rid = ((EdgeSegment) database.lookupByRID(rid, true)).getPreviousRID();
+      }
+    });
+    return chain;
+  }
+
+  private void deleteRecord(final RID rid) {
+    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
   }
 
   private RID inHeadChunk(final RID vertexRID) {

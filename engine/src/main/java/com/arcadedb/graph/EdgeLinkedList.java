@@ -29,6 +29,8 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
@@ -36,6 +38,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
+import java.nio.BufferUnderflowException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -116,6 +119,21 @@ public class EdgeLinkedList {
    * Anchors every page of the chunk chain starting at {@code headRID}, returning the head re-read through its
    * anchored page. Shared with {@link StripedEdgeList}, which applies it to one stripe chain at a time.
    * <p>
+   * A hop this walk cannot follow STOPS the pinning instead of failing it - the pages up to the break stay pinned
+   * and the caller carries on. The reason is that this pass must not become the thing that reports a broken chain:
+   * the collection walk that runs immediately after follows the same pointers in the same order, so it meets the
+   * same wall, and the policy for what to do about it already lives there and is carefully split (a chunk that
+   * cannot be FOUND is retryable and only {@code force} absorbs it; a chunk that cannot be DECODED is tolerated
+   * even without {@code force}, so a vertex whose list is corrupt stays deletable - #4420/#4432). Raising from
+   * here would pre-empt all of that with a failure BEFORE a single edge has been collected, so a delete that used
+   * to disconnect everything in front of the break from its neighbours would now disconnect nothing and leave those
+   * far-end pointers dangling. Nothing is hidden by stopping quietly: the next walk raises what this one saw.
+   * <p>
+   * The HEAD load is deliberately outside that tolerance. It is where an append lands, and unlike the hops it is
+   * not re-read by the collection walk - {@code lastSegment} is already materialised - so continuing past a head
+   * this walk could not pin would leave the collection reading a page it never pinned, which is the exact window
+   * this whole mechanism exists to close.
+   * <p>
    * The self-reference guard matches every other walk in this class: a chunk pointing at itself ends the chain
    * instead of looping forever. A longer cycle would hang here exactly as it already hangs {@link #deleteAll},
    * which walks the same chain immediately afterwards, so this adds no exposure that was not there.
@@ -124,10 +142,21 @@ public class EdgeLinkedList {
     final EdgeSegment head = loadChunkForWrite(headRID);
     EdgeSegment current = head;
     while (true) {
-      final RID previousRID = current.getPreviousRID();
-      if (previousRID == null || previousRID.equals(current.getIdentity()))
+      try {
+        final RID previousRID = current.getPreviousRID();
+        if (previousRID == null || previousRID.equals(current.getIdentity()))
+          return head;
+        current = loadChunkForWrite(previousRID);
+      } catch (final ConcurrentModificationException | SerializationException | NegativeArraySizeException
+                     | BufferUnderflowException | IndexOutOfBoundsException | IllegalArgumentException
+                     | ClassCastException | SchemaException e) {
+        // "This chunk cannot be read", in the two shapes the chain can produce it: loadChunkForWrite maps a
+        // vanished record to a retryable conflict, and a corrupted body fails to decode. Both stop the pinning
+        // here and are re-raised by the collection walk. Anything else - an I/O fault surfacing as
+        // DatabaseOperationException - is not a broken chain and must not be mistaken for one, because the
+        // collection walk might then read a chunk this pass failed to pin.
         return head;
-      current = loadChunkForWrite(previousRID);
+      }
     }
   }
 
