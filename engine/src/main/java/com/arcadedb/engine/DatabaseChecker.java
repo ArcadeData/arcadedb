@@ -488,7 +488,9 @@ public class DatabaseChecker {
    */
   private void addWarning(final String warning) {
     final LinkedHashSet<String> warnings = (LinkedHashSet<String>) result.get("warnings");
-    // Read BEFORE the record: addBounded grows the set, so "was it retained" cannot be asked afterwards.
+    // Read BEFORE the record: addBounded grows the set, so "was it retained" cannot be asked afterwards. Mirrors
+    // addBounded's own boundary test - same size(), same add(), so they cannot disagree. See the twin in
+    // GraphDatabaseChecker.CheckReport.warn().
     final boolean retaining = warnings.size() < maxWarnings;
     if (!CollectionUtils.addBounded(warnings, maxWarnings, warning))
       return;

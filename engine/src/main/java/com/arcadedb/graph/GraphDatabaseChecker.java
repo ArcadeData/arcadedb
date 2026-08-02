@@ -1351,7 +1351,10 @@ public class GraphDatabaseChecker {
      * not keep.
      */
     void warn(final String message) {
-      // Read BEFORE the record: addBounded grows the collection, so "was it retained" cannot be asked afterwards.
+      // Read BEFORE the record: addBounded grows the set, so "was it retained" cannot be asked afterwards. This
+      // deliberately mirrors addBounded's own boundary test rather than being told the answer - the two read the
+      // same size() before the same add(), so they cannot disagree. If addBounded's retention policy ever stops
+      // being "under the cap", this needs to learn the new answer rather than keep guessing it.
       final boolean retaining = warnings.size() < maxWarnings;
       if (!CollectionUtils.addBounded(warnings, maxWarnings, message))
         return;

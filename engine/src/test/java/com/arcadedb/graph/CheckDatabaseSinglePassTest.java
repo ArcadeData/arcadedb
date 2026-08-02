@@ -236,8 +236,12 @@ class CheckDatabaseSinglePassTest extends TestHelper {
     final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database)
         .checkEdges("WorksAt", false, 0, 100, 1);
 
+    // The retained slot holds the EDGE because checkEndpoints flags it before the missing endpoint it found: the
+    // IN branch calls corrupt(edgeRID) first, then corrupt(edge.getIn()). Asserted rather than assumed, so a
+    // future reorder of that branch fails here instead of quietly changing what this test is measuring.
     final Collection<RID> corrupted = (Collection<RID>) stats.get("corruptedRecords");
-    assertThat(corrupted).as("precondition: the cap must actually bite").hasSize(1).containsExactly(edge);
+    assertThat(corrupted).as("precondition: the cap must bite, and the edge must be what it retained")
+        .hasSize(1).containsExactly(edge);
     // Flagged: the edge (twice - once per missing endpoint) and the missing IN vertex. The edge's second flag is
     // the one that must not count, because the set still answers "already seen" for it.
     assertThat((Long) stats.get("totalCorruptedRecords"))
