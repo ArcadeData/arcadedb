@@ -49,6 +49,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
@@ -65,6 +66,18 @@ public class CreateIndexStatement extends DDLStatement {
       "LSM_VECTOR index requires a METADATA clause with a positive 'dimensions', e.g. METADATA {\"dimensions\": 384}. "
           + "Optional: similarity (default COSINE), maxConnections (default 32), beamWidth (default 100), "
           + "quantization (default NONE)";
+
+  /**
+   * Keys of a {@code METADATA} clause that direct THIS statement rather than configuring the index, so no index ever
+   * stores them.
+   * <p>
+   * They have to be stripped before the clause reaches anything that reads it as configuration: an index type's
+   * {@code fromUserMetadata} refuses a key it does not know, and {@code IF NOT EXISTS} would otherwise compare a
+   * directive against an existing index that cannot have one - both turning a well-formed statement into a 400. Kept
+   * as one named set so a future "do X now" key on another index type has an obvious place to be declared instead of
+   * being stripped at whichever site happens to notice (issue #5765 review).
+   */
+  private static final Set<String> DIRECTIVE_METADATA_KEYS = Set.of("buildGraphNow");
 
   public Identifier                         name;
   public Identifier                         typeName;
@@ -108,19 +121,20 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   /**
-   * Reads the {@code METADATA} clause as written, or null when the statement carried none.
-   * <p>
-   * {@code buildGraphNow} is stripped: it is a directive to THIS statement (build the vector graph before returning),
-   * not a setting the index keeps, so comparing it against an existing index would report a mismatch for something no
-   * index stores - and {@code fromUserMetadata} would refuse it as an unknown key. The creation branch below removes
-   * it for the same reason.
+   * Reads the {@code METADATA} clause as written and without the statement directives, or null when the statement
+   * carried none. See {@link #DIRECTIVE_METADATA_KEYS} for why the directives cannot travel with it.
    */
   private JSONObject readUserMetadata(final CommandContext context) {
     if (metadata == null)
       return null;
 
-    final JSONObject json = new JSONObject(metadata.toMap((Result) null, context));
-    json.remove("buildGraphNow");
+    return stripDirectives(new JSONObject(metadata.toMap((Result) null, context)));
+  }
+
+  /** Removes the statement directives from a METADATA clause in place, and hands it back for chaining. */
+  private static JSONObject stripDirectives(final JSONObject json) {
+    for (final String directive : DIRECTIVE_METADATA_KEYS)
+      json.remove(directive);
     return json;
   }
 
@@ -291,9 +305,10 @@ public class CreateIndexStatement extends DDLStatement {
         if (jsonMetadata.getInt("dimensions", 0) < 1)
           throw new CommandSQLParsingException(LSM_VECTOR_METADATA_HINT);
 
-        // Extract buildGraphNow directive (default true) before passing metadata to builder
+        // Read the buildGraphNow directive (default true), then strip every directive before the clause reaches the
+        // builder - which reads what is left as configuration and refuses anything it does not recognise.
         buildGraphNow = jsonMetadata.getBoolean("buildGraphNow", true);
-        jsonMetadata.remove("buildGraphNow");
+        stripDirectives(jsonMetadata);
 
         vectorBuilder.withMetadata(jsonMetadata);
         // The clause as written, so IF NOT EXISTS can compare an existing index on the settings this statement
