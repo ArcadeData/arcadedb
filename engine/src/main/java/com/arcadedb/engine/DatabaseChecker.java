@@ -55,9 +55,15 @@ public class DatabaseChecker {
   /**
    * #5680: {@code CHECK DATABASE RECORD} scope - visit only these records instead of scanning whole types. The
    * cheap repair for "one vertex's edge chain is broken", which the strict {@code GraphEngine.deleteVertex}
-   * points operators at: its cost is the listed records plus, in fix mode, the one edge scan a rebuild needs.
+   * points operators at: its cost is the listed records plus, in fix mode, the edge scan a rebuild needs - ONE
+   * per distinct vertex TYPE named, since {@code reconnectEdges} runs inside each per-type {@code checkVertices}
+   * call. Naming ten vertices of one type costs one sweep; naming one vertex of each of three types costs three.
    */
   private       Set<RID>            records      = Collections.emptySet();
+  /** Shared with {@code CheckDatabaseStatement}, which diagnoses the same conflict before resolving the RIDs. */
+  public static final String RECORD_SCOPE_CONFLICT_ERROR =
+      "CHECK DATABASE RECORD cannot be combined with TYPE or BUCKET: RECORD already names the exact records to "
+          + "check. Drop the TYPE/BUCKET clause, or run the two checks separately";
   /** #5680: entries {@link #setRecords} discarded because they did not resolve; reported, never silent. */
   private       int                 droppedRecords = 0;
   private       int                 maxWarnings  = 100_000;
@@ -127,9 +133,7 @@ public class DatabaseChecker {
       // #5680: RECORD is the narrowest scope there is, so combining it with TYPE/BUCKET can only mean the caller
       // expected something this does not do. Silently letting RECORD win would run a check the caller did not ask
       // for; an intersection would be a third semantics nobody asked for either. Refuse and say so.
-      throw new IllegalArgumentException(
-          "CHECK DATABASE RECORD cannot be combined with TYPE or BUCKET: RECORD already names the exact records to "
-              + "check. Drop the TYPE/BUCKET clause, or run the two checks separately");
+      throw new IllegalArgumentException(RECORD_SCOPE_CONFLICT_ERROR);
 
     final boolean reclaimOrphanedSegments = fix && !recordScope //
         && (types == null || types.isEmpty()) && (buckets == null || buckets.isEmpty());
@@ -152,7 +156,8 @@ public class DatabaseChecker {
       totalSteps = scoped.size() + (fix ? 1 : 0) + (compress ? 1 : 0);
 
       if (droppedRecords > 0)
-        addScopedWarning(droppedRecords + " of the record(s) given did not resolve to a RID and were not checked");
+        // No count, for the same reason the refusal above quotes none.
+        addScopedWarning("one or more of the records given did not resolve to a RID and were not checked");
 
       if (compress)
         // COMPRESS is not scoped and cannot be: it works on buckets, not records. Legal and meaningful ("check
@@ -475,7 +480,11 @@ public class DatabaseChecker {
           // NOT "removing it": corruptedRecords only drives the index rebuild, nothing deletes the record here.
           // The type-wide checkDocuments says otherwise, and says "vertex" for a document while it is at it.
           addScopedWarning("document " + rid + " cannot be loaded");
-          ((LinkedHashSet<RID>) result.get("corruptedRecords")).add(rid);
+          // Bounded like addCorrupted bounds the graph arms - the total keeps counting, the retained set does
+          // not grow without limit on a scope naming a large batch of unloadable documents.
+          final LinkedHashSet<RID> corrupted = (LinkedHashSet<RID>) result.get("corruptedRecords");
+          if (corrupted.size() < maxWarnings)
+            corrupted.add(rid);
           result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + 1);
         }
         stepTick();
@@ -571,8 +580,9 @@ public class DatabaseChecker {
     this.droppedRecords = records.size() - copy.size();
 
     if (copy.isEmpty())
-      throw new IllegalArgumentException(
-          "CHECK DATABASE RECORD was given " + records.size() + " record(s) but none of them resolves to a RID");
+      // Deliberately no count: a Set collapses every null-resolving RID into one element, so any number quoted
+      // here would be wrong for a multi-RID statement.
+      throw new IllegalArgumentException("CHECK DATABASE RECORD: none of the records given resolves to a RID");
 
     this.records = copy;
     return this;

@@ -306,13 +306,13 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
     // `#n:n` literal this IS reachable from SQL.
     assertThatThrownBy(() -> database.command("sql", "CHECK DATABASE RECORD {\"@rid\": null}"))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("none of them resolves to a RID");
+        .hasMessageContaining("none of the records given resolves to a RID");
 
     // And the same guard protects the public API, not just the SQL layer: setRecords is the last place that can
     // still tell "named records, none usable" from "named no records".
     assertThatThrownBy(() -> new DatabaseChecker(database).setRecords(new LinkedHashSet<>(Collections.singletonList(null))))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("none of them resolves to a RID");
+        .hasMessageContaining("none of the records given resolves to a RID");
 
     // A genuinely empty scope still means "no scope", and must NOT be refused.
     assertThatCode(() -> new DatabaseChecker(database).setRecords(Collections.emptySet()))
@@ -338,7 +338,7 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
     final Map<String, Object> result = new DatabaseChecker(database).setVerboseLevel(0).setRecords(scoped).check();
 
     assertThat((Collection<String>) result.get("warnings")).as("%s", result)
-        .anyMatch(w -> w.contains("1 of the record(s) given did not resolve"));
+        .anyMatch(w -> w.contains("one or more of the records given did not resolve"));
     // The valid RID was still checked: narrowing is the point, silence is not.
     assertThat((Long) result.get("totalWarnings")).isEqualTo(1L);
   }

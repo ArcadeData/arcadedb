@@ -68,9 +68,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       // Checked HERE, before the RIDs are resolved, even though DatabaseChecker.check() guards it too: resolving
       // first means a scope whose RIDs do not resolve reports "none of them resolves to a RID" for a statement
       // whose actual problem is the clause combination. Diagnose the outer mistake first.
-      throw new IllegalArgumentException(
-          "CHECK DATABASE RECORD cannot be combined with TYPE or BUCKET: RECORD already names the exact records to "
-              + "check. Drop the TYPE/BUCKET clause, or run the two checks separately");
+      throw new IllegalArgumentException(DatabaseChecker.RECORD_SCOPE_CONFLICT_ERROR);
 
     final DatabaseChecker checker = createChecker(context);
     checker.setVerboseLevel(0);

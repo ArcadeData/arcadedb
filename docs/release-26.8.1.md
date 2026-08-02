@@ -1623,7 +1623,9 @@ Three costs a record scope does **not** bound, worth knowing before reaching for
   one clause that breaks the "naming a record bounds the cost" promise, so do not pair `RECORD ... COMPRESS`
   expecting a cheap run;
 - rebuilding an adjacency means finding every surviving edge that points at the vertex, and no index maps
-  endpoints back to edges, so the scoped run saves the vertex passes but still scans the edge types;
+  endpoints back to edges, so the scoped run saves the vertex passes but still scans the edge types - once per
+  distinct vertex **type** named, so naming ten vertices of one type costs one sweep while naming one vertex of
+  each of three types costs three;
 - if a listed record turns out to be *corrupted*, every index on its bucket is dropped and rebuilt, which is a
   full bucket scan. That matches the type-wide semantics and only fires on genuine corruption - an edge-list
   rebuild alone deletes no record and triggers none of it - but `RECORD` bounds the check, not necessarily the fix.
