@@ -56,7 +56,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final LSMVectorIndex                                   lsmIndex;         // Used for reading quantized vectors
 
   // Sentinel vector returned for deleted/missing ordinals to prevent NPE in JVector's GraphSearcher (issue #3715).
-  // Uses Float.MIN_NORMAL to avoid division-by-zero with cosine similarity while giving very low similarity scores.
+  // It is a placeholder of the right shape, NOT a low score: no vector scores low against every query, so callers
+  // that score what getVector() returns must ask isDeletedSentinel() first and substitute their own floor.
   private final VectorFloat<?> deletedSentinelVector;
 
   // Cache for graph building and search - dramatically speeds up repeated vector access.
@@ -127,6 +128,12 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * Whether this is the placeholder handed back for a vector that could not be read. {@link #getVector} never
    * returns null - a deleted, missing or unreadable ordinal yields the sentinel so JVector's traversal does not
    * NPE (issue #3715) - so a caller that needs a genuine vector has to ask.
+   * <p>
+   * The check is by reference, so it only recognises a placeholder that never left this instance. One written to disk
+   * and read back - {@code LSMVectorIndexGraphFile} persists {@code getVector(ordinal)} inline when
+   * {@code storeVectorsInGraph} is on - comes back as a different object and would be scored as an ordinary vector.
+   * A rebuild excludes deleted ordinals from the graph it persists, so there is nothing to write today; what keeps
+   * that case right regardless is {@link LiveVectorBitsFilter} and the location map, not this guard.
    */
   boolean isDeletedSentinel(final VectorFloat<?> vector) {
     return vector == deletedSentinelVector;
@@ -307,17 +314,35 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   @Override
   public RandomAccessVectorValues copy() {
     // This implementation is thread-safe for reads (PageManager handles concurrency)
+    //
+    // DO NOT make this return a real copy. {@link #isDeletedSentinel} recognises the placeholder by reference, and
+    // the sentinel is per-instance, so a copy would carry a different one: every caller that scores through the copy
+    // would stop recognising it and would score the placeholder as if it were a vector. That is issue #5558's second
+    // cause, and it would come back silently - the placeholder is finite now, so it produces a plausible score rather
+    // than the Infinity that used to make it obvious. Sharing one instance is what keeps the guard total.
     return this;
   }
 
   /**
-   * Creates a sentinel vector for deleted/missing ordinals with small non-zero values.
-   * Uses Float.MIN_NORMAL to avoid division-by-zero in cosine similarity while producing
-   * very low similarity scores that effectively push deleted nodes to the bottom of results.
+   * Creates the placeholder handed back for a deleted or unreadable ordinal.
+   * <p>
+   * It only has to be a well-formed vector of the right dimension: {@link #isDeletedSentinel} is how a caller
+   * recognises it, and a caller that scores it anyway must at least get a finite number back. The value used to be
+   * {@code Float.MIN_NORMAL} on the theory that it would score very low, which it does not - cosine cancels the
+   * magnitude out, and the squared magnitude {@code dimensions * MIN_NORMAL^2} underflows to zero in float, so the
+   * similarity came back {@code Infinity} and made every tombstone the best candidate in the beam (issue #5558).
+   * <p>
+   * <b>There is no safer value to pick.</b> The two differ only in magnitude, so under cosine they point the same way
+   * and would score identically if the old one had not underflowed - swapping them changed a broken number into a
+   * defined one, not a high rank into a low one. And no constant can do better: for any fixed vector {@code s} there
+   * are queries scoring it anywhere in range, so "a placeholder that scores toward the floor" does not exist. That is
+   * why the floor is applied by the score function that recognises the placeholder, and why it matters that an
+   * unguarded scoring path now fails quietly - it gets a plausible number rather than the {@code Infinity} that used
+   * to trip an assertion. {@link #isDeletedSentinel} lists the callers that must ask.
    */
   private static VectorFloat<?> createDeletedSentinelVector(final int dimensions) {
     final float[] sentinel = new float[dimensions];
-    Arrays.fill(sentinel, Float.MIN_NORMAL);
+    Arrays.fill(sentinel, 1.0f);
     return vts.createFloatVector(sentinel);
   }
 }

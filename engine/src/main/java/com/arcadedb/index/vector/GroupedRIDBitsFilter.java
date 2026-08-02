@@ -54,7 +54,9 @@ import java.util.function.Function;
 public class GroupedRIDBitsFilter implements Bits {
   private final Set<RID>              allowedRIDs;
   private final int[]                 ordinalToVectorIdSnapshot;
-  private final VectorLocationIndex   vectorIndexSnapshot;
+  // The live location map, not a snapshot, matching LiveVectorBitsFilter: the shared predicate reads it at
+  // traversal time so both filters answer what the post-filter on the search output will.
+  private final VectorLocationIndex   vectorIndex;
   private final Function<RID, Object> groupKeyResolver;
   private final int                   limit;
   private final int                   groupSize;
@@ -67,7 +69,7 @@ public class GroupedRIDBitsFilter implements Bits {
   private final HashSet<Integer>         rejected   = new HashSet<>();
 
   public GroupedRIDBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
-      final VectorLocationIndex vectorIndexSnapshot, final Function<RID, Object> groupKeyResolver,
+      final VectorLocationIndex vectorIndex, final Function<RID, Object> groupKeyResolver,
       final int limit, final int groupSize) {
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
@@ -77,7 +79,7 @@ public class GroupedRIDBitsFilter implements Bits {
       throw new IllegalArgumentException("groupSize must be > 0");
     this.allowedRIDs = allowedRIDs;
     this.ordinalToVectorIdSnapshot = ordinalToVectorIdSnapshot;
-    this.vectorIndexSnapshot = vectorIndexSnapshot;
+    this.vectorIndex = vectorIndex;
     this.groupKeyResolver = groupKeyResolver;
     this.limit = limit;
     this.groupSize = groupSize;
@@ -90,19 +92,11 @@ public class GroupedRIDBitsFilter implements Bits {
     if (rejected.contains(ordinal))
       return false;
 
-    if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length) {
-      rejected.add(ordinal);
-      return false;
-    }
-
-    final int vectorId = ordinalToVectorIdSnapshot[ordinal];
-    final VectorLocationIndex.VectorLocation loc = vectorIndexSnapshot.getLocation(vectorId);
-    if (loc == null || loc.deleted) {
-      rejected.add(ordinal);
-      return false;
-    }
-
-    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid)) {
+    // Same liveness and allow-list predicate the ungrouped search applies, borrowed from LiveVectorBitsFilter so the
+    // two cannot drift; it hands back the location because the group key below needs the RID anyway.
+    final VectorLocationIndex.VectorLocation loc = LiveVectorBitsFilter.admissibleLocation(ordinal,
+        ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs);
+    if (loc == null) {
       rejected.add(ordinal);
       return false;
     }
