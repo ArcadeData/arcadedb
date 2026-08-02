@@ -202,6 +202,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private            long                                      lastUpdatedOn;
   private            long                                      lastUsedOn;
   private            int                                       cachedHashCode            = 0;
+  /** #5666: guards against concurrent GraphBatch instances on this database. Never routed through a wrapper. */
+  private final      AtomicBoolean                             batchInProgress           = new AtomicBoolean(false);
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
       final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -1819,23 +1821,35 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public GraphBatch.Builder batch() {
-    // Guard against concurrent GraphBatch instances on the same database (issue #5666).
-    // Two concurrent batches on the same database silently lose edges because the head
-    // pointer is deferred to close() — the last writer wins, and the loser's segment chain
-    // is orphaned. The fix is a simple AtomicBoolean guard: the first caller acquires it,
-    // subsequent callers are rejected with a clear message.
+    // Use the outermost wrapper so that commits flow through any HA/replication layer.
+    // Without this, GraphBatch.commit() would short-circuit the Raft replication wrapper
+    // installed by the HA plugin and writes would never reach followers (issue #4076).
+    //
+    // The guard owner is this instance and NOT the wrapper: the wrapper only delegates batch(),
+    // so a release routed through it would never reach the flag below and the first batch would
+    // lock out every later one on a replicated database (issue #5666).
+    return GraphBatch.builder(wrappedDatabaseInstance, this);
+  }
+
+  /**
+   * Reserves the single-batch slot of this database. Two concurrent {@link GraphBatch} instances on the same
+   * database silently lose edges: the head pointer is deferred to close(), so the last writer wins and the
+   * loser's segment chain is orphaned. Called by {@code GraphBatch.Builder.build()}, released by
+   * {@link #batchFinished()}.
+   *
+   * @throws DatabaseOperationException if a batch is already open on this database
+   */
+  public void batchStarted() {
     if (!batchInProgress.compareAndSet(false, true))
       throw new DatabaseOperationException(
           "A GraphBatch is already in progress on this database. Concurrent batches silently lose edges. "
               + "Use a single GraphBatch (parallelFlush for parallel fan-out).");
-
-    // Use the outermost wrapper so that commits flow through any HA/replication layer.
-    // Without this, GraphBatch.commit() would short-circuit the Raft replication wrapper
-    // installed by the HA plugin and writes would never reach followers (issue #4076).
-    return GraphBatch.builder(wrappedDatabaseInstance);
   }
 
-  @Override
+  /**
+   * Releases the single-batch slot reserved by {@link #batchStarted()}. Idempotent, and safe to call on a
+   * database that never opened a batch.
+   */
   public void batchFinished() {
     batchInProgress.set(false);
   }
@@ -2387,9 +2401,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */
   private final AtomicBoolean pageManagerReferenceReleased = new AtomicBoolean(false);
-
-  /** #5666: guards against concurrent GraphBatch instances on the same database. */
-  private final AtomicBoolean batchInProgress = new AtomicBoolean(false);
 
   boolean isPageManagerReferenceReleased() {
     return pageManagerReferenceReleased.get();
