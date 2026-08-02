@@ -24,6 +24,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONObject;
 
 import org.junit.jupiter.api.Test;
@@ -112,6 +113,18 @@ class Issue5559LocationCacheSizeTest extends TestHelper {
         .hasMessageContaining("no longer supported");
 
     assertThat(database.getSchema().existsIndex("Doc[embedding]")).isFalse();
+
+    // "no limit" keeps working on the builder too, and keeps returning the builder so an existing fluent chain
+    // carrying it still composes. Only the SQL entrance was pinned for this above.
+    final TypeLSMVectorIndexBuilder builder = database.getSchema().buildTypeIndex("Doc", new String[] { "embedding" })
+        .withLSMVectorType()
+        .withDimensions(DIMENSIONS);
+    assertThat(builder.withLocationCacheSize(-1)).as("the fluent chain continues").isSameAs(builder);
+
+    builder.create();
+    final TypeIndex created = (TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
+    assertThat(((LSMVectorIndex) created.getIndexesOnBuckets()[0]).getMetadata().locationCacheSize)
+        .as("-1 means 'no limit', which is what the index does").isEqualTo(-1);
   }
 
   /**
