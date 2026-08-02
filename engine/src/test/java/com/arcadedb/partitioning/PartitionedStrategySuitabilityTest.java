@@ -44,7 +44,7 @@ import java.time.ZonedDateTime;
 import java.util.Date;
 import java.util.List;
 
-import static com.arcadedb.partitioning.WarningCapture.captureWarnings;
+import static com.arcadedb.log.WarningCapture.captureWarnings;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
