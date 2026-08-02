@@ -1207,7 +1207,10 @@ public class LocalSchema implements Schema {
   @Deprecated
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes,
       final int pageSize, final NULL_STRATEGY nullStrategy) {
-    return buildManualIndex(indexName, keyTypes).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
+    // withType is NOT optional here: the index factory resolves the handler by index type, so dropping the argument
+    // this overload takes made every call through it fail with a NullPointerException (issue #5765).
+    return buildManualIndex(indexName, keyTypes).withType(indexType).withUnique(unique).withPageSize(pageSize)
+        .withNullStrategy(nullStrategy).create();
   }
 
   public void close() {

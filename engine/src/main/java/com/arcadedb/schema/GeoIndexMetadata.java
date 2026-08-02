@@ -162,6 +162,15 @@ public class GeoIndexMetadata extends IndexMetadata {
     }
   }
 
+  @Override
+  protected Object getUserMetadataValue(final String key) {
+    return switch (key) {
+      case "precision" -> precision;
+      case "tokenization" -> tokenization;
+      default -> null;
+    };
+  }
+
   /**
    * Reads the tokenization layout from a PERSISTED index definition, defaulting to {@link #LEGACY_TOKENIZATION} when the
    * field is absent.

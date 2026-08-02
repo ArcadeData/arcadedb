@@ -107,6 +107,16 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
       this.weightQuantization = parseWeightQuantization(json.getString("weightQuantization"));
   }
 
+  @Override
+  protected Object getUserMetadataValue(final String key) {
+    return switch (key) {
+      case "dimensions" -> dimensions;
+      case "modifier" -> modifier;
+      case "weightQuantization" -> weightQuantization;
+      default -> null;
+    };
+  }
+
   /**
    * Sets the maximum dimensionality of the sparse vectors. A value of 0 means dimensions are inferred from the data.
    */

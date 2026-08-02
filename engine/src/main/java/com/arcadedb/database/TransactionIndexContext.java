@@ -360,11 +360,18 @@ public class TransactionIndexContext {
         // set by the number of indexes on the type - 6 indexes x 32 buckets = 192 exclusive locks to insert
         // one edge in the report that surfaced this - and serialised every writer against every other one
         // regardless of which keys or buckets they touched.
-        final DocumentType type = schema.getType(index.getTypeName());
-        for (final TypeIndex typeIndex : type.getAllIndexes(true))
-          if (typeIndex.isUnique())
-            for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
-              modifiedFiles.add(idx.getFileId());
+        //
+        // A MANUAL index has no type to fan out over (#5765): it is the only index holding its keys, and its own
+        // files are already in the set above. Reading getTypeName() as a type name threw a NullPointerException
+        // here, so a unique manual index could not commit a single entry.
+        final String typeName = index.getTypeName();
+        if (typeName != null) {
+          final DocumentType type = schema.getType(typeName);
+          for (final TypeIndex typeIndex : type.getAllIndexes(true))
+            if (typeIndex.isUnique())
+              for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
+                modifiedFiles.add(idx.getFileId());
+        }
       } else if (associatedBucketId >= 0)
         modifiedFiles.add(associatedBucketId);
     }
@@ -485,10 +492,16 @@ public class TransactionIndexContext {
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
    */
   private void checkUniqueIndexKeys(final Index index, final IndexKey key, final RID deleted) {
-    final DocumentType type = database.getSchema().getType(index.getTypeName());
+    // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS.
+    // A MANUAL index has no type (#5765): nothing else indexes its keys, so it IS the whole search space and the
+    // polymorphic lookup below has nothing to widen it to. Resolving getTypeName() as a type name threw a
+    // NullPointerException here, which is where a unique manual index failed to commit its first entry.
+    final Index idx;
+    if (index.getTypeName() == null)
+      idx = index;
+    else
+      idx = database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
 
-    // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS
-    final TypeIndex idx = type.getPolymorphicIndexByProperties(index.getPropertyNames());
     if (idx != null) {
       // #5662: try-with-resources - the cursor stops after at most two entries, so it is never drained
       try (final IndexCursor found = idx.get(key.keyValues, 2)) {

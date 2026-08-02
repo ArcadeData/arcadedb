@@ -208,6 +208,33 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       setPQTrainingLimit(metadataInt(json, "pqTrainingLimit"));
   }
 
+  @Override
+  protected Object getUserMetadataValue(final String key) {
+    return switch (key) {
+      case "dimensions" -> dimensions;
+      case "similarity" -> similarityFunction;
+      case "quantization" -> quantizationType;
+      case "encoding" -> encoding;
+      case "maxConnections" -> maxConnections;
+      case "beamWidth" -> beamWidth;
+      case "efSearch" -> efSearch;
+      case "neighborOverflowFactor" -> neighborOverflowFactor;
+      case "alphaDiversityRelaxation" -> alphaDiversityRelaxation;
+      case "idPropertyName" -> idPropertyName;
+      case "locationCacheSize" -> locationCacheSize;
+      case "graphBuildCacheSize" -> graphBuildCacheSize;
+      case "mutationsBeforeRebuild" -> mutationsBeforeRebuild;
+      case "inactivityRebuildTimeoutMs" -> inactivityRebuildTimeoutMs;
+      case "storeVectorsInGraph" -> storeVectorsInGraph;
+      case "addHierarchy" -> addHierarchy;
+      case "pqSubspaces" -> pqSubspaces;
+      case "pqClusters" -> pqClusters;
+      case "pqCenterGlobally" -> pqCenterGlobally;
+      case "pqTrainingLimit" -> pqTrainingLimit;
+      default -> null;
+    };
+  }
+
   /**
    * Sets the similarity function from its name (COSINE, DOT_PRODUCT, EUCLIDEAN), case-insensitive.
    */
