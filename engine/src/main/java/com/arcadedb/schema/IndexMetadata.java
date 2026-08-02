@@ -49,6 +49,40 @@ public class IndexMetadata {
     this.associatedBucketId = bucketId;
   }
 
+  /**
+   * Returns a fresh instance carrying every SETTING of this definition, retargeted to the given type, properties and
+   * bucket. This is what "carry the index configuration over into a new index file" means: a rebuild, a truncate, the
+   * propagation to a freshly added bucket or sub type, a {@code copyType()}.
+   * <p>
+   * Two things the copy deliberately leaves behind. Anything that is per-index RUNTIME state rather than a setting -
+   * the dense vector index's {@code buildState}, the full-text corpus counters - because the new file starts empty and
+   * would otherwise inherit statistics describing a different set of records. And the association to a bucket, which
+   * the caller re-establishes by passing the target {@code bucketId} (or -1 when the per-bucket builder will bind it
+   * during {@code create()}).
+   * <p>
+   * Every subclass overrides this so its own settings ride along; there is no second field list to keep in sync, which
+   * is the point. Missing overrides are how a page size (issue #5713), a null strategy, a collation and a whole
+   * type-specific configuration all ended up being replaced by defaults on {@code copyType()} (issue #5723).
+   *
+   * @param typeName      type the copy belongs to
+   * @param propertyNames indexed properties of the copy
+   * @param bucketId      associated bucket, or -1 when not bound yet
+   */
+  public IndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    return copyCommonTo(new IndexMetadata(typeName, propertyNames, bucketId));
+  }
+
+  /**
+   * Copies the settings held by this base class onto a copy an override has just instantiated, and hands it back so the
+   * override can keep chaining. {@code collations} is shared rather than cloned: it is assigned wholesale and never
+   * mutated in place.
+   */
+  protected final <T extends IndexMetadata> T copyCommonTo(final T copy) {
+    copy.collations = collations;
+    copy.typeIndexName = typeIndexName;
+    return copy;
+  }
+
   public void fromJSON(final JSONObject metadata) {
     typeName = metadata.getString("typeName");
     propertyNames = metadata.getJSONArray("properties").toListOfStrings();

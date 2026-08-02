@@ -59,6 +59,47 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #5711: a response the row limit cut short must say so instead of looking like a complete one.
+   */
+  @Test
+  void rawQueryReportsTruncation() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONObject request = new JSONObject();
+      request.put("type", "weather");
+      request.put("from", 1000L);
+      request.put("to", 3000L);
+      request.put("limit", 2);
+
+      final JSONObject truncated = postTsQuery(serverIndex, request);
+      assertThat(truncated.getInt("count")).isEqualTo(2);
+      assertThat(truncated.getInt("limit")).isEqualTo(2);
+      assertThat(truncated.getBoolean("truncated")).isTrue();
+
+      request.put("limit", 3);
+      final JSONObject complete = postTsQuery(serverIndex, request);
+      assertThat(complete.getInt("count")).isEqualTo(3);
+      assertThat(complete.getBoolean("truncated")).isFalse();
+
+      // A non-positive limit means unlimited here too, as it does on the query/command endpoints: it used to
+      // reach Math.min(rows, -1) and return no row at all while reporting the result as truncated.
+      // A limit an int cannot hold must not wrap into a negative value and be read as unlimited: it is a client
+      // error here exactly as it is on the query and command endpoints.
+      request.put("limit", 3_000_000_000L);
+      assertThat(postTsQueryRaw(serverIndex, request)).isEqualTo(400);
+
+      for (final int unlimitedLimit : new int[] { -1, 0 }) {
+        request.put("limit", unlimitedLimit);
+        final JSONObject unlimited = postTsQuery(serverIndex, request);
+        assertThat(unlimited.getInt("count")).isEqualTo(3);
+        assertThat(unlimited.getInt("limit")).isEqualTo(-1);
+        assertThat(unlimited.getBoolean("truncated")).isFalse();
+      }
+    });
+  }
+
   @Test
   void aggregatedQuery() throws Exception {
     testEachServer(serverIndex -> {

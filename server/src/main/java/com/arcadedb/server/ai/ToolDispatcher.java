@@ -24,9 +24,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.mcp.MCPConfiguration;
-import com.arcadedb.server.mcp.tools.GetSchemaTool;
-import com.arcadedb.server.mcp.tools.ServerStatusTool;
+import com.arcadedb.server.info.SchemaInfo;
+import com.arcadedb.server.info.ServerInfo;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 /**
@@ -35,8 +34,8 @@ import com.arcadedb.server.security.ServerSecurityUser;
  * network. Each tool is a thin wrapper over an existing in-process facility:
  * <ul>
  *   <li>{@code query_database} - read-only SQL/Cypher/Gremlin via {@code database.query()}</li>
- *   <li>{@code get_schema} - delegates to {@link GetSchemaTool}</li>
- *   <li>{@code get_server_info} - delegates to {@link ServerStatusTool}</li>
+ *   <li>{@code get_schema} - delegates to {@link SchemaInfo}</li>
+ *   <li>{@code get_server_info} - delegates to {@link ServerInfo}</li>
  * </ul>
  * The returned String is the JSON the LLM sees; the wire shape mirrors what the
  * gateway used to fetch back over HTTP from {@code /api/v1/query/{db}} so we can
@@ -125,26 +124,11 @@ try (ResultSet rs = database.query(language, command)) {
     if (databaseName == null || databaseName.isEmpty())
       return errorJson("get_schema requires a 'database' argument");
 
-    final MCPConfiguration config = effectiveMcpConfig();
-    final JSONObject result = GetSchemaTool.execute(server, user, new JSONObject().put("database", databaseName), config);
-    return result.toString();
+    return SchemaInfo.forUser(server, user, databaseName).toString();
   }
 
   private String executeServerInfo() {
-    final MCPConfiguration config = effectiveMcpConfig();
-    final JSONObject result = ServerStatusTool.execute(server, user, new JSONObject(), config);
-    return result.toString();
-  }
-
-  // The AI assistant has its own enablement gate via ai.json; once enabled, all three
-  // tools above are read-only and safe regardless of whether MCP itself is configured
-  // to allow reads. We synthesize a minimal MCPConfiguration that just enables reads
-  // so we don't accidentally inherit a stricter MCP policy that was meant for the
-  // separate MCP HTTP/stdio endpoints.
-  private MCPConfiguration effectiveMcpConfig() {
-    final MCPConfiguration cfg = new MCPConfiguration(null);
-    cfg.setAllowReads(true);
-    return cfg;
+    return ServerInfo.toJSON(server, user::canAccessToDatabase, false).toString();
   }
 
   private static String errorJson(final String message) {

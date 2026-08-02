@@ -23,10 +23,11 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link PostCommandHandler#appendAutomaticLimit(String, String, int)}: the automatic
- * trailing-LIMIT heuristic must behave exactly as the previous inline implementation while avoiding a
- * full-command {@code toLowerCase} copy per request. The command passed in is already trimmed, as in the
- * handler.
+ * Unit tests for {@link PostCommandHandler#requiresAutomaticLimit(String, String, int)}, the predicate that
+ * decides whether the handler pushes a trailing {@code LIMIT} into the command: it must behave exactly as the
+ * previous inline implementation while avoiding a full-command {@code toLowerCase} copy per request, because a
+ * command that already carries a LIMIT has stated the caller's own expectation and must not be rewritten
+ * (issue #5711). The command passed in is already trimmed, as in the handler.
  */
 class PostCommandHandlerAutoLimitTest {
 
@@ -34,77 +35,79 @@ class PostCommandHandlerAutoLimitTest {
 
   @Test
   void appendsLimitToPlainSelect() {
-    assertThat(PostCommandHandler.appendAutomaticLimit("select from V", "sql", LIMIT))
-        .isEqualTo("select from V limit " + LIMIT);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from V", "sql", LIMIT)).isTrue();
   }
 
   @Test
   void appendsLimitToMatch() {
-    assertThat(PostCommandHandler.appendAutomaticLimit("match {type: V, as: v} return v", "sql", LIMIT))
-        .isEqualTo("match {type: V, as: v} return v limit " + LIMIT);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("match {type: V, as: v} return v", "sql", LIMIT)).isTrue();
   }
 
   @Test
   void prefixCheckIsCaseInsensitive() {
-    assertThat(PostCommandHandler.appendAutomaticLimit("SELECT from V", "sql", LIMIT))
-        .isEqualTo("SELECT from V limit " + LIMIT);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT from V", "sql", LIMIT)).isTrue();
   }
 
   @Test
   void doesNotAppendWhenExplicitLowercaseLimitAlreadyPresent() {
-    final String cmd = "select from V limit 5";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", LIMIT)).isEqualTo(cmd);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from V limit 5", "sql", LIMIT)).isFalse();
   }
 
   @Test
   void doesNotAppendWhenExplicitUppercaseLimitAlreadyPresent() {
-    final String cmd = "select from V LIMIT 5";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", LIMIT)).isEqualTo(cmd);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from V LIMIT 5", "sql", LIMIT)).isFalse();
   }
 
   @Test
   void doesNotAppendWhenCommandEndsWithSemicolon() {
-    final String cmd = "select from V;";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", LIMIT)).isEqualTo(cmd);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from V;", "sql", LIMIT)).isFalse();
   }
 
   @Test
   void doesNotAppendToNonSelectOrMatch() {
-    final String cmd = "insert into V set name = 'a'";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", LIMIT)).isEqualTo(cmd);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("insert into V set name = 'a'", "sql", LIMIT)).isFalse();
   }
 
   @Test
   void doesNotAppendForNonSqlLanguage() {
-    final String cmd = "MATCH (n) RETURN n";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "cypher", LIMIT)).isEqualTo(cmd);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("MATCH (n) RETURN n", "cypher", LIMIT)).isFalse();
   }
 
   @Test
   void doesNotAppendWhenLimitDisabled() {
-    final String cmd = "select from V";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", -1)).isEqualTo(cmd);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from V", "sql", -1)).isFalse();
+  }
+
+  @Test
+  void doesNotAppendWhenLimitIsZero() {
+    // A non-positive cap means unlimited, as it does in the serializer: appending 'limit 0' would return no row.
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from V", "sql", 0)).isFalse();
   }
 
   @Test
   void appendsWhenLimitSubstringIsNotAStandaloneClause() {
     // "limitless" must not be mistaken for an existing LIMIT clause.
-    final String cmd = "select limitless from V";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", LIMIT))
-        .isEqualTo("select limitless from V limit " + LIMIT);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select limitless from V", "sql", LIMIT)).isTrue();
   }
 
   @Test
   void appendsWhenLimitOnlyOnEarlierLineButNotOnLastLine() {
     // A subquery LIMIT on an earlier line must still let the outer query receive a trailing LIMIT.
-    final String cmd = "select from (select from V limit 3)\nwhere x > 1";
-    assertThat(PostCommandHandler.appendAutomaticLimit(cmd, "sql", LIMIT))
-        .isEqualTo(cmd + " limit " + LIMIT);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from (select from V limit 3)\nwhere x > 1", "sql", LIMIT)).isTrue();
   }
 
   @Test
   void handlesSqlScriptLanguage() {
-    assertThat(PostCommandHandler.appendAutomaticLimit("select from V", "sqlScript", LIMIT))
-        .isEqualTo("select from V limit " + LIMIT);
+    assertThat(PostCommandHandler.requiresAutomaticLimit("select from V", "sqlScript", LIMIT)).isTrue();
+  }
+
+  @Test
+  void probeLimitIsOneRowAboveTheCapAndSaturates() {
+    // What the handler actually pushes down: the extra row is never serialized, it only tells a result ending
+    // at the cap from a truncated one.
+    assertThat(PostCommandHandler.truncationProbeLimit(LIMIT)).isEqualTo(LIMIT + 1);
+    assertThat(PostCommandHandler.truncationProbeLimit(Integer.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(PostCommandHandler.truncationProbeLimit(0)).isEqualTo(0);
+    assertThat(PostCommandHandler.truncationProbeLimit(-1)).isEqualTo(-1);
   }
 }

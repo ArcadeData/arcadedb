@@ -3033,6 +3033,16 @@ function applyDefaultLabel(value) {
   if (globalCy != null) renderGraph();
 }
 
+/**
+ * Renders the number of returned rows, flagging a response the server cut short at its row limit so a partial
+ * result cannot be read as a complete one (issue #5711).
+ */
+function renderResultCount(data, count) {
+  if (data.truncated === true)
+    $("#result-num").html(count + ' <span class="text-warning" title="More rows matched: raise the limit to see them.">(truncated)</span>');
+  else $("#result-num").html(count);
+}
+
 function browseType(typeName) {
   let database = getCurrentDatabase();
   if (!database) return;
@@ -3071,7 +3081,7 @@ function browseType(typeName) {
     } else {
       globalResultset = data.result;
       globalCy = null;
-      $("#result-num").html(data.result.records.length);
+      renderResultCount(data, data.result.records.length);
       renderGraph();
     }
 
@@ -3232,7 +3242,7 @@ function executeCommandTable() {
       let elapsed = new Date() - beginTime;
       $("#result-elapsed").html(elapsed);
 
-      $("#result-num").html(data.result.records.length);
+      renderResultCount(data, data.result.records.length);
       $("#resultJson").val(JSON.stringify(data, null, 2));
       $("#resultExplain").val(data.explain != null ? data.explain : "No profiler data found");
 
@@ -3287,7 +3297,7 @@ function executeCommandGraph() {
       let elapsed = new Date() - beginTime;
       $("#result-elapsed").html(elapsed);
 
-      $("#result-num").html(data.result.records.length);
+      renderResultCount(data, data.result.records.length);
       $("#resultJson").val(JSON.stringify(data, null, 2));
       $("#resultExplain").val(data.explain != null ? data.explain : "No profiler data found");
 
