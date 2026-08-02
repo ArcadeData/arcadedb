@@ -1423,17 +1423,30 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    if (!isLeader()) {
-      final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
-      throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-          leaderAddr != null ? leaderAddr : "");
-    }
+    if (!isLeader())
+      throw schemaChangesNeedTheLeader();
+
+    // A recording session already open ON THIS THREAD means we are nested inside our own DDL or
+    // compaction session (schema DDL nests routinely: the outer callback creates the type, an inner one
+    // creates its buckets). The outer frame captures these file changes and ships them, so delegating is
+    // correct. A session owned by ANOTHER thread carries no such promise, which is why the bare
+    // "is a session open?" test cannot decide this - see acquireRecordingSession (#5728). The ownership
+    // question is asked of this database's own FileManager rather than of isSchemaCommitThread, which is
+    // static and would also answer yes for a thread nested in a DIFFERENT database's session.
+    if (proxied.getFileManager().isRecordingChangesOnCurrentThread())
+      return proxied.recordFileChanges(callback);
 
     // On the leader, record file changes and send them via Raft immediately
     // (like the legacy HA system) so replicas have the files before WAL pages arrive
-    final boolean alreadyRecording = !proxied.getFileManager().startRecordingChanges();
-    if (alreadyRecording)
-      return proxied.recordFileChanges(callback);
+    acquireRecordingSession();
+
+    // Claiming the session can take seconds under contention, so leadership is re-checked afterwards:
+    // running the callback on a node that became a follower in the meantime would apply the schema change
+    // there and propose nothing, the same divergence this fix exists to prevent, just from the other end.
+    if (!isLeader()) {
+      proxied.getFileManager().stopRecordingChanges();
+      throw schemaChangesNeedTheLeader();
+    }
 
     final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
 
@@ -1444,6 +1457,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // Clear thread-local WAL buffers so any commits inside the callback are captured fresh,
     // and mark THIS thread as the schema-commit thread so commit() buffers rather than replicates.
+    // The flag is saved and restored rather than removed on the way out: it is static, so a session on
+    // another database opened from inside an outer callback would otherwise clear the outer frame's mark,
+    // and the outer callback's remaining commits would ship separate TX_ENTRYs instead of riding its
+    // SCHEMA_ENTRY - the ordering hazard of issue #4083.
+    final Boolean outerSchemaCommitThread = isSchemaCommitThread.get();
     schemaWalBuffer.get().clear();
     schemaBucketDeltaBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
@@ -1497,7 +1515,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
-      isSchemaCommitThread.remove();
+      if (outerSchemaCommitThread == null)
+        isSchemaCommitThread.remove();
+      else
+        isSchemaCommitThread.set(outerSchemaCommitThread);
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
@@ -1610,6 +1631,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
+      // A bare remove() is enough here, unlike recordFileChanges: a compaction runs on its own scheduler
+      // thread and defers (returns false above) whenever a session is already open, so it never nests
+      // inside another session whose mark it could clear.
       isSchemaCommitThread.remove();
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
@@ -1661,6 +1685,67 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         return;
       }
     }
+  }
+
+  private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
+    final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+    return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
+        leaderAddr != null ? leaderAddr : "");
+  }
+
+  /**
+   * Claims the file-manager recording session so this thread's schema change can be captured and shipped
+   * as a {@code SCHEMA_ENTRY}, waiting for a session owned by another thread to be released first. In
+   * practice that owner is an LSM compaction inside {@link #runWithCompactionReplication}: a second
+   * schema change normally never gets this far, because the DDL entry points that take the database write
+   * lock around the whole operation (e.g. {@code TypeBuilder.create}) serialize on it first.
+   * <p>
+   * The session used to be a single per-database slot with no owner, so a contended caller fell back to
+   * running the DDL straight on the inner database: applied on the leader, proposed to nobody, nothing
+   * thrown (#5728). The window it lost to is real work, not an instant - the owning session releases the
+   * database write lock when its callback returns but keeps the session until its {@code replicateSchema()}
+   * Raft round trip completes, which is why the divergence only appeared under load. Waiting is the only
+   * correct answer here: unlike a compaction, a schema change cannot be deferred and rescheduled.
+   * <p>
+   * <b>The wait can run while the caller holds the database write lock</b>, since {@code TypeBuilder.create}
+   * wraps the whole operation in {@code executeInWriteLock}. A contended schema change therefore stalls
+   * writers on that database for as long as it polls. That is a deliberate trade: an availability pause
+   * bounded by {@link GlobalConfiguration#HA_QUORUM_TIMEOUT}, in place of a leader that silently stops
+   * replicating its schema. The bound is also what keeps the stall from becoming permanent if the session's
+   * owner ever needs a lock this caller is holding - it gives up and throws rather than waiting forever.
+   *
+   * @throws TimeoutException if the session could not be claimed, so the caller fails loudly instead of
+   *                          diverging. Interruption raises the same type - both mean "this schema change
+   *                          never claimed the session", and callers already treat {@code TimeoutException}
+   *                          as the non-retryable give-up signal - but says so in its message rather than
+   *                          reporting an elapsed timeout that never elapsed.
+   */
+  private void acquireRecordingSession() {
+    if (proxied.getFileManager().startRecordingChanges())
+      return;
+
+    final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    final long started = System.currentTimeMillis();
+    final long deadline = started + timeout;
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        Thread.sleep(2);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        throw new TimeoutException("Interrupted while waiting for the file recording session to replicate a schema change on database '"
+            + getName() + "'");
+      }
+      if (proxied.getFileManager().startRecordingChanges()) {
+        // Logged because this wait can block writers on the database: an operator seeing writes pause
+        // should find the reason here rather than having to infer it.
+        HALog.log(this, HALog.BASIC,
+            "Schema change on database '%s' waited %dms for the file recording session held by another thread",
+            getName(), System.currentTimeMillis() - started);
+        return;
+      }
+    }
+    throw new TimeoutException("Timeout of " + timeout
+        + "ms waiting for the file recording session to replicate a schema change on database '" + getName() + "'");
   }
 
   /**
