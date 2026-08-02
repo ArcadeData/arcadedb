@@ -167,7 +167,9 @@ class Issue5666ConcurrentGraphBatchTest extends TestHelper {
   @Test
   void abandonReleasesTheSlotAndCloseDoesNotReleaseItTwice() {
     final GraphBatch abandoned = database.batch().build();
+    assertThat(database.isReadYourWrites()).as("the batch relaxes read-your-writes for the load").isFalse();
     abandoned.abandon();
+    assertThat(database.isReadYourWrites()).as("an abandoned batch must put read-your-writes back").isTrue();
 
     final GraphBatch next = database.batch().build();
     abandoned.close();

@@ -972,8 +972,14 @@ public class GraphBatch implements AutoCloseable {
    * Gives up the single-batch slot of the database without flushing anything. For callers that abandon a
    * failed batch on a thread that cannot afford the cost of a full {@link #close()}: whatever is still
    * buffered is dropped. Calling {@link #close()} afterwards remains safe and releases nothing twice.
+   * <p>
+   * The read-your-writes policy is database wide and was relaxed for the load, so it is put back here: a
+   * batch that ends this way is never closed and would otherwise leave every later reader on that database
+   * unable to see its own writes. The WAL policy is not, because it lives on the {@code TransactionContext}
+   * of the thread that opened the batch and this method is expected to run on another one.
    */
   public void abandon() {
+    database.setReadYourWrites(savedReadYourWrites);
     releaseBatchGuard();
   }
 

@@ -139,6 +139,12 @@ public class Issue5666GrpcBatchGuardIT extends BaseGraphServerTest {
     assertThat(failure.get()).isInstanceOf(StatusRuntimeException.class);
     assertThat(failure.get().getMessage()).contains("Unknown temporary ID");
 
+    // The batch relaxed read-your-writes for the load and was dropped before close() could put it
+    // back, so the endpoint has to. Left relaxed, every later reader on this database loses it.
+    assertThat(getServerDatabase(0, getDatabaseName()).isReadYourWrites())
+        .as("a dropped batch must not leave read-your-writes off")
+        .isTrue();
+
     // Same database, right after: this is the load a leaked slot would refuse forever.
     final GraphBatchResult result = loadTwoVertices("g2", "g3");
     assertThat(result.getVerticesCreated()).isEqualTo(2);
