@@ -234,6 +234,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       // index KINDS would be comparing key spaces that have nothing to do with each other.
       boolean satisfied = satisfiesRequest(existingTypeIndex, indexType, unique);
 
+      //
+      // Not wrapped the way the SQL shortcut wraps its own call: reading the clause here CANNOT fail on any path that
+      // sets {@link #withUserMetadata} the way it is meant to be set. The clause is read once by
+      // {@code withMetadata(JSONObject)} first, which is where an unreadable value is reported - the SQL branches do
+      // both inside one try, so the statement never reaches create() with a clause that would raise. A caller that
+      // sets the user clause WITHOUT the parsed one has skipped that validation, and gets the reader's own message
+      // here instead of a friendlier one; there is no such caller, and inventing a second error path for it would
+      // only re-type an exception the reader already words correctly.
       List<String> settingMismatches = List.of();
       if (satisfied) {
         settingMismatches = findUnsatisfiedSettings(existingTypeIndex, userMetadata, indexType);

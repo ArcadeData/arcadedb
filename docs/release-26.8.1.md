@@ -2169,6 +2169,24 @@ statement that names one gets an answer about it, whether or not a rebuild would
 a value into a statement and having it silently discarded is the surprise being removed, and a caller who means the
 no-op leaves the key out.
 
+### BREAKING: a guarded create naming a setting MAY NOW RAISE where it used to be a no-op
+
+This is a semantic change to a path whose whole point is idempotence, so it is the one to check before upgrading. Any
+re-runnable script of the shape
+
+```sql
+CREATE INDEX IF NOT EXISTS ON Doc (embedding) LSM_VECTOR METADATA {"dimensions": 384, "efSearch": 120};
+```
+
+now raises `IllegalArgumentException` (HTTP 400) if the index already there was built with **any** different value for
+a key the clause names - including the runtime-tunable ones a rebuild would not be needed to change (`efSearch`,
+`mutationsBeforeRebuild`, `inactivityRebuildTimeoutMs`, the cache sizes). Previously every one of those was discarded
+in silence.
+
+Two ways to keep such a script idempotent: drop the keys whose value you do not actually require, leaving only the ones
+the index must have; or align the value with what the existing index carries. The error names each differing setting
+with both values, so it says which of the two applies.
+
 The clause is read through the index type's own reader before comparing, so the spellings that reader accepts are the
 value they denote rather than a difference: `{"dimensions": "384"}` matches 384, and `{"similarity": "euclidean"}`
 matches `EUCLIDEAN`. A mismatch is reported naming each differing setting with both values, as an HTTP 400.
