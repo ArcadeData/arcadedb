@@ -293,4 +293,54 @@ class CollectionUtilsTest {
     final List<String> result = CollectionUtils.removeFromUnmodifiableList(original, "z");
     assertThat(result).containsExactly("a", "b");
   }
+
+  /** #5773: under the cap, the retained set itself is the de-duplication - a repeat is not "new". */
+  @Test
+  void addBoundedRetainsAndDeduplicatesUnderTheCap() {
+    final Set<String> retained = new LinkedHashSet<>();
+
+    assertThat(CollectionUtils.addBounded(retained, 3, "a")).isTrue();
+    assertThat(CollectionUtils.addBounded(retained, 3, "b")).isTrue();
+    assertThat(CollectionUtils.addBounded(retained, 3, "a")).as("a repeat is not new").isFalse();
+
+    assertThat(retained).containsExactly("a", "b");
+  }
+
+  /** Past the cap nothing more is retained, so the collection stops growing. */
+  @Test
+  void addBoundedStopsRetainingAtTheCap() {
+    final Set<String> retained = new LinkedHashSet<>();
+    CollectionUtils.addBounded(retained, 2, "a");
+    CollectionUtils.addBounded(retained, 2, "b");
+
+    assertThat(CollectionUtils.addBounded(retained, 2, "c")).as("unseen past the cap is still new").isTrue();
+    assertThat(retained).as("but it is not retained").containsExactly("a", "b");
+  }
+
+  /**
+   * The documented degradation, pinned so it cannot silently change in either direction: past the cap an item that
+   * is STILL retained is recognised (this is the case the two CHECK DATABASE counters used to disagree on), while an
+   * item the cap refused to retain cannot be, so a second sighting of it counts again.
+   */
+  @Test
+  void addBoundedRecognisesARetainedItemPastTheCapButNotADroppedOne() {
+    final Set<String> retained = new LinkedHashSet<>();
+    CollectionUtils.addBounded(retained, 1, "kept");
+
+    assertThat(CollectionUtils.addBounded(retained, 1, "kept")).as("still in the set, so still recognised").isFalse();
+
+    assertThat(CollectionUtils.addBounded(retained, 1, "dropped")).isTrue();
+    assertThat(CollectionUtils.addBounded(retained, 1, "dropped"))
+        .as("never retained, so it cannot be recognised - counted again, by design").isTrue();
+  }
+
+  /** A cap of zero retains nothing and therefore recognises nothing: every call is "new". */
+  @Test
+  void addBoundedWithAZeroCapRetainsNothing() {
+    final Set<String> retained = new LinkedHashSet<>();
+
+    assertThat(CollectionUtils.addBounded(retained, 0, "a")).isTrue();
+    assertThat(CollectionUtils.addBounded(retained, 0, "a")).isTrue();
+    assertThat(retained).isEmpty();
+  }
 }

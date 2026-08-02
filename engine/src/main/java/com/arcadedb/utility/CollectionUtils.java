@@ -284,4 +284,28 @@ public class CollectionUtils {
     // For object arrays, use Arrays.asList
     return Arrays.asList((Object[]) array);
   }
+
+  /**
+   * Records {@code item} in a de-duplicating collection that must not grow past {@code max}, and answers whether this
+   * is the FIRST time it has been recorded - i.e. whether a counter kept alongside {@code retained} should tick.
+   * <p>
+   * Extracted by #5773 so the two {@code CHECK DATABASE} counters (warnings and corrupted records, in
+   * {@code DatabaseChecker} and {@code GraphDatabaseChecker}) cannot drift apart again: they had four near-identical
+   * copies of this rule and two of them disagreed past the cap. There is one rule now, and it is this method.
+   * <p>
+   * De-duplication is EXACT while the collection is under the cap - the collection itself answers "have I seen this",
+   * which is why {@code retained} must be a {@link Set} for the answer to mean anything. Past the cap it degrades to
+   * what the retained collection can still answer: an item already in it is recognised, but one the cap refused to
+   * retain cannot be, so a later sighting of that item counts again. Deliberate: keeping it exact past the cap needs
+   * a second, unbounded collection of every item ever seen, which is precisely the memory the cap exists to refuse.
+   *
+   * @param retained the bounded, de-duplicating collection; not added to once it holds {@code max} items
+   * @param max      the retention cap
+   * @param item     the item to record
+   *
+   * @return true when {@code item} had not been recorded before
+   */
+  public static <T> boolean addBounded(final Collection<T> retained, final int max, final T item) {
+    return retained.size() < max ? retained.add(item) : !retained.contains(item);
+  }
 }

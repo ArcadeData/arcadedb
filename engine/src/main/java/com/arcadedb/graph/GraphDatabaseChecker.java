@@ -29,6 +29,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.ProgressCallback;
@@ -1349,8 +1350,9 @@ public class GraphDatabaseChecker {
   }
 
   /**
-   * Records a warning, bounded by {@code maxWarnings} and de-duplicated exactly the way {@link #addCorrupted} bounds
-   * and de-duplicates the corrupted-record set - the two are one policy, stated once here and once there.
+   * Records a warning under {@link CollectionUtils#addBounded} - the one retain-and-de-duplicate rule shared with
+   * {@link #addCorrupted} and with both {@code DatabaseChecker} counters - and LOGS the message when the cap meant
+   * it could not be retained, so a capped run does not lose it silently.
    * <p>
    * #5773: {@code totalWarnings} used to count OCCURRENCES while {@code DatabaseChecker} publishes the retained
    * warnings as a {@code Set}, so two findings rendering to the same message (a vertex with two null entries in its
@@ -1360,38 +1362,19 @@ public class GraphDatabaseChecker {
    */
   private static void addWarning(final Collection<String> warnings, final AtomicLong totalWarnings, final int maxWarnings,
       final String message) {
-    if (warnings.size() < maxWarnings) {
-      // Under the cap the retained set itself answers "have I already said this". Collection.add() returns false
-      // for an item already present in a Set.
-      if (!warnings.add(message))
-        return;
-    } else if (warnings.contains(message))
-      // Past the cap: still recognised while it is retained (see addCorrupted for the limit of that).
+    // Read BEFORE the record: addBounded grows the collection, so "was it retained" cannot be asked afterwards.
+    final boolean retaining = warnings.size() < maxWarnings;
+    if (!CollectionUtils.addBounded(warnings, maxWarnings, message))
       return;
-    else
-      // Dropped rather than retained, so it is not lost silently.
+    if (!retaining)
       LogManager.instance().log(GraphDatabaseChecker.class, Level.WARNING, message);
     totalWarnings.incrementAndGet();
   }
 
-  /**
-   * Flags an item as corrupted, bounded by {@code maxCorrupted}: the total keeps counting, the retained collection
-   * does not grow without limit.
-   * <p>
-   * De-duplication is EXACT while the collection is under the cap - the collection itself answers "have I seen
-   * this". Past the cap it degrades to what the retained collection can still answer: an item already in it is
-   * recognised (hence the {@code contains} check rather than an unconditional increment, aligned with
-   * {@code DatabaseChecker.addCorrupted} by #5773), but one that was never retained cannot be, so a second flag on
-   * it counts twice. Deliberate: the only way to keep it exact past the cap is a second unbounded collection of
-   * every item ever counted, which is precisely the memory the cap exists to refuse.
-   */
+  /** Flags an item as corrupted under the same bounded, de-duplicating rule {@link #addWarning} uses. */
   private static <T> void addCorrupted(final Collection<T> corrupted, final AtomicLong totalCorrupted, final int maxCorrupted,
       final T item) {
-    if (corrupted.size() < maxCorrupted) {
-      if (!corrupted.add(item))
-        return;
-    } else if (corrupted.contains(item))
-      return;
-    totalCorrupted.incrementAndGet();
+    if (CollectionUtils.addBounded(corrupted, maxCorrupted, item))
+      totalCorrupted.incrementAndGet();
   }
 }
