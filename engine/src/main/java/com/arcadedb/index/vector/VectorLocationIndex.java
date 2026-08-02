@@ -21,9 +21,6 @@ package com.arcadedb.index.vector;
 import com.arcadedb.database.RID;
 
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -44,11 +41,17 @@ import java.util.stream.IntStream;
  * <p>
  * Used by LSMVectorIndex to implement lazy-loading of vectors from disk.
  * <p>
- * The bounded ({@code maxSize > 0}) backend below evicts, and {@link LSMVectorIndex} deliberately never asks for
- * it (issue #5568): there is no vector id to offset index on disk, so an evicted location cannot be recovered, and
- * every reader reads "no location" as "deleted". Bounding it made the index under-report its size and exposed any
- * reader resolving an evicted id to a false "deleted". Do not wire {@code arcadedb.vectorIndex.locationCacheSize}
- * back into the constructor without first giving the file a lookup that makes a miss recoverable.
+ * <b>This map does not evict, and it has no mode in which it can.</b> It used to carry a second, bounded backend -
+ * a {@code Collections.synchronizedMap(LinkedHashMap)} that FIFO-evicted past a {@code maxSize} - selected by
+ * {@code arcadedb.vectorIndex.locationCacheSize}. That was never a cache bound: there is no vector id to offset
+ * index on disk, so an evicted location could not be recovered, and every reader reads "no location" as "deleted".
+ * A cap therefore made {@code countEntries()} under-report and dropped the evicted vectors from every search
+ * (issues #5568 and #5559). #5568 stopped asking for that backend and #5559 removed it, so the failure is now
+ * structurally impossible rather than prevented by policy - and the removal also takes a {@code maxSize} branch
+ * off each of the ten methods that had to pick a backend.
+ * <p>
+ * Reintroducing eviction requires giving the index file a vector id to offset lookup first, so that a miss is
+ * recoverable. Until then, size an index at {@link #APPROX_RETAINED_BYTES_PER_LOCATION} per live vector.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -63,17 +66,16 @@ public class VectorLocationIndex {
    */
   public static final int APPROX_RETAINED_BYTES_PER_LOCATION = 90;
 
-  private final Map<Integer, VectorLocation> locations;
+  private final ConcurrentHashMap<Integer, VectorLocation> locations;
   // Reverse index RID -> vector ids, mirroring the keys stored in `locations`. Lets remove(keys, rid) resolve the
   // vector ids for a single RID in O(k) instead of scanning every id in the index (issue #5318). Kept perfectly in
-  // sync with `locations`: entries are added on addVector/addOrUpdate, dropped when an id is tombstoned, on FIFO
-  // eviction (bounded mode) and on clear().
-  private final Map<RID, int[]>              ridToVectorIds;
+  // sync with `locations`: entries are added on addVector/addOrUpdate, dropped when an id is tombstoned and on
+  // clear().
+  private final ConcurrentHashMap<RID, int[]>              ridToVectorIds;
   // Ids whose location was dropped because they were tombstoned: 1 bit per id instead of a resident VectorLocation
   // (issue #5516). See DeletedIds.
-  private final DeletedIds                   deletedIds;
-  private final AtomicInteger                nextId;
-  private final int                          maxSize;
+  private final DeletedIds                                 deletedIds;
+  private final AtomicInteger                              nextId;
 
   /**
    * Compact set of the vector ids that have been tombstoned, one bit per id (issue #5516).
@@ -84,8 +86,7 @@ public class VectorLocationIndex {
    * map node and its slot in the reverse index: ~90 bytes) resident only to carry a boolean made memory grow with
    * the number of writes instead of with the number of live vectors: re-embedding 4K vectors every few minutes
    * accumulated 9.3M locations, ~970MB of heap, before the process died. One bit per id costs ~1.2MB for the same
-   * workload and is enough to tell "tombstoned" from "evicted from a bounded cache" (which must be reloaded from
-   * the pages) and to know whether a persisted graph carries stale ordinals.
+   * workload and is enough to know whether a persisted graph carries stale ordinals.
    * <p>
    * The array is sized by the highest id handed out since the last {@link #clear()}, not by the number of live
    * vectors: ids are preserved across a compaction rather than renumbered. Every graph rebuild (and therefore every
@@ -176,54 +177,36 @@ public class VectorLocationIndex {
   }
 
   /**
-   * Create an unlimited VectorLocationIndex (backward compatible).
+   * Create a VectorLocationIndex sized for a small index; it grows as entries are added.
    */
   public VectorLocationIndex() {
-    this(-1, 16);
+    this(16);
   }
 
   /**
-   * Create a VectorLocationIndex with a specific maximum size.
+   * Create a VectorLocationIndex with an initial capacity hint. Sizing the map for the set it is about to hold
+   * saves the rehashes a rebuild would otherwise pay on the way up.
+   * <p>
+   * The single-int constructor used to mean {@code maxSize} (issue #5559 removed bounding). A caller that still
+   * passes an eviction limit here would now silently get a capacity hint instead, which is why the old
+   * {@code -1 = unlimited} sentinel is rejected rather than quietly treated as a size.
+   * <p>
+   * That rejection is an {@link IllegalArgumentException}, deliberately NOT the {@code IndexException} that
+   * {@code LSMVectorIndexMetadata.setLocationCacheSize} raises for the same setting. The two guard different
+   * things: that one answers a user who wrote {@code locationCacheSize} in DDL and belongs in the error the
+   * statement reports, while this one can only fire on a caller inside the engine that was not updated for the
+   * changed parameter meaning - programming error, not user input.
    *
-   * @param maxSize Maximum number of entries to cache. Set to -1 for unlimited (backward compatible).
-   *                When the limit is reached, the oldest-inserted entry is evicted automatically (insertion-order, FIFO).
+   * @param initialCapacity Initial capacity hint for the underlying maps, at least 0
    */
-  public VectorLocationIndex(final int maxSize) {
-    this(maxSize, 16);
-  }
+  public VectorLocationIndex(final int initialCapacity) {
+    if (initialCapacity < 0)
+      throw new IllegalArgumentException(
+          "Invalid initial capacity " + initialCapacity + " for a vector location index: this parameter used to be "
+              + "an eviction limit, which issue #5559 removed because an evicted location cannot be recovered");
 
-  /**
-   * Create a VectorLocationIndex with a specific maximum size and initial capacity.
-   *
-   * @param maxSize         Maximum number of entries to cache. Set to -1 for unlimited (backward compatible).
-   * @param initialCapacity Initial capacity hint for the underlying map
-   */
-  public VectorLocationIndex(final int maxSize, final int initialCapacity) {
-    this.maxSize = maxSize;
-    if (maxSize > 0) {
-      // Bounded cache with automatic insertion-order (FIFO) eviction.
-      // Insertion-order (accessOrder=false): a get() must not be a structural modification, otherwise concurrent reads
-      // would corrupt the doubly-linked list while another thread iterates it. Eviction stays least-recently-inserted.
-      // The reverse index shares the wrapper monitor: every mutation below runs inside synchronized(locations), and the
-      // eviction hook prunes the evicted id from ridToVectorIds so the two maps never diverge.
-      this.ridToVectorIds = new HashMap<>(initialCapacity);
-      this.locations = Collections.synchronizedMap(
-          new LinkedHashMap<Integer, VectorLocation>(initialCapacity, 0.75f, false) {
-            @Override
-            protected boolean removeEldestEntry(final Map.Entry<Integer, VectorLocation> eldest) {
-              if (size() <= maxSize)
-                return false;
-              // Keep the reverse index consistent with the FIFO eviction of the eldest entry.
-              removeFromRidIndex(eldest.getValue().rid, eldest.getKey());
-              return true;
-            }
-          }
-      );
-    } else {
-      // Unlimited mode (backward compatible)
-      this.ridToVectorIds = new ConcurrentHashMap<>(initialCapacity);
-      this.locations = new ConcurrentHashMap<>(initialCapacity);
-    }
+    this.ridToVectorIds = new ConcurrentHashMap<>(initialCapacity);
+    this.locations = new ConcurrentHashMap<>(initialCapacity);
     this.deletedIds = new DeletedIds();
     this.nextId = new AtomicInteger(0);
   }
@@ -239,15 +222,8 @@ public class VectorLocationIndex {
    */
   public int addVector(final boolean isCompacted, final long absoluteFileOffset, final RID rid) {
     final int id = nextId.getAndIncrement();
-    if (maxSize > 0) {
-      synchronized (locations) {
-        locations.put(id, new VectorLocation(isCompacted, absoluteFileOffset, rid, false));
-        addToRidIndex(rid, id);
-      }
-    } else {
-      locations.put(id, new VectorLocation(isCompacted, absoluteFileOffset, rid, false));
-      addToRidIndex(rid, id);
-    }
+    locations.put(id, new VectorLocation(isCompacted, absoluteFileOffset, rid, false));
+    addToRidIndex(rid, id);
     return id;
   }
 
@@ -277,17 +253,10 @@ public class VectorLocationIndex {
         deletedIds.remove(id);
 
       final VectorLocation loc = new VectorLocation(isCompacted, absoluteFileOffset, rid, false);
-      if (maxSize > 0) {
-        synchronized (locations) {
-          // Only register the id in the reverse index the first time it appears: later addOrUpdate calls (LSM
-          // overrides) reuse the same id with the same RID, so re-adding would create duplicate reverse entries.
-          if (locations.put(id, loc) == null)
-            addToRidIndex(rid, id);
-        }
-      } else {
-        if (locations.put(id, loc) == null)
-          addToRidIndex(rid, id);
-      }
+      // Only register the id in the reverse index the first time it appears: later addOrUpdate calls (LSM
+      // overrides) reuse the same id with the same RID, so re-adding would create duplicate reverse entries.
+      if (locations.put(id, loc) == null)
+        addToRidIndex(rid, id);
     }
 
     // Update nextId if this ID is higher than current
@@ -320,54 +289,25 @@ public class VectorLocationIndex {
    * @return the matching vector ids, or an empty array if none are resident
    */
   public int[] getVectorIdsForRid(final RID rid) {
-    if (maxSize > 0) {
-      synchronized (locations) {
-        final int[] ids = ridToVectorIds.get(rid);
-        return ids != null ? ids.clone() : EMPTY_IDS;
-      }
-    }
     final int[] ids = ridToVectorIds.get(rid);
     return ids != null ? ids.clone() : EMPTY_IDS;
   }
 
   private static final int[] EMPTY_IDS = new int[0];
 
-  /** Append a vector id to the reverse index bucket for a RID. Callers hold the proper synchronization for the mode. */
+  /** Append a vector id to the reverse index bucket for a RID. */
   private void addToRidIndex(final RID rid, final int id) {
-    if (maxSize > 0) {
-      // Bounded mode: single-threaded under synchronized(locations), a plain get/put is enough.
-      final int[] existing = ridToVectorIds.get(rid);
-      if (existing == null)
-        ridToVectorIds.put(rid, new int[] { id });
-      else {
-        final int[] grown = Arrays.copyOf(existing, existing.length + 1);
-        grown[existing.length] = id;
-        ridToVectorIds.put(rid, grown);
-      }
-    } else {
-      // Unlimited mode: ConcurrentHashMap, merge atomically so concurrent updates for the same RID never lose an id.
-      ridToVectorIds.merge(rid, new int[] { id }, (a, b) -> {
-        final int[] grown = Arrays.copyOf(a, a.length + b.length);
-        System.arraycopy(b, 0, grown, a.length, b.length);
-        return grown;
-      });
-    }
+    // merge() atomically, so concurrent updates for the same RID never lose an id.
+    ridToVectorIds.merge(rid, new int[] { id }, (a, b) -> {
+      final int[] grown = Arrays.copyOf(a, a.length + b.length);
+      System.arraycopy(b, 0, grown, a.length, b.length);
+      return grown;
+    });
   }
 
-  /** Remove a vector id from the reverse index bucket for a RID. Callers hold the proper synchronization for the mode. */
+  /** Remove a vector id from the reverse index bucket for a RID. */
   private void removeFromRidIndex(final RID rid, final int id) {
-    if (maxSize > 0) {
-      final int[] existing = ridToVectorIds.get(rid);
-      if (existing == null)
-        return;
-      final int[] shrunk = withoutValue(existing, id);
-      if (shrunk == null)
-        ridToVectorIds.remove(rid);
-      else if (shrunk != existing)
-        ridToVectorIds.put(rid, shrunk);
-    } else {
-      ridToVectorIds.computeIfPresent(rid, (k, existing) -> withoutValue(existing, id));
-    }
+    ridToVectorIds.computeIfPresent(rid, (k, existing) -> withoutValue(existing, id));
   }
 
   /**
@@ -396,8 +336,8 @@ public class VectorLocationIndex {
    * deleted-id set (issue #5516): a tombstoned id is never read back, and the tombstone itself is persisted on the
    * index pages by the caller, so keeping the location resident only costs heap.
    * <p>
-   * An id that is not resident is left alone: in bounded-cache mode that means "evicted", not "deleted", and
-   * flagging it would hide a live vector.
+   * An id that is not resident is left alone: it was already tombstoned, and the map never drops a location for any
+   * other reason (issue #5559 removed eviction), so there is nothing to record.
    *
    * @param vectorId The vector ID to mark as deleted
    */
@@ -407,8 +347,7 @@ public class VectorLocationIndex {
   }
 
   /**
-   * Return whether the given id has been tombstoned, without touching the pages. Tells a dead id from one merely
-   * evicted from a bounded cache, which must instead be reconstructed by scanning the pages.
+   * Return whether the given id has been tombstoned, without touching the pages.
    *
    * @param vectorId The vector ID
    *
@@ -432,14 +371,6 @@ public class VectorLocationIndex {
    * @return the removed location, or null if the id was not resident
    */
   private VectorLocation removeLocation(final int vectorId) {
-    if (maxSize > 0) {
-      synchronized (locations) {
-        final VectorLocation removed = locations.remove(vectorId);
-        if (removed != null)
-          removeFromRidIndex(removed.rid, vectorId);
-        return removed;
-      }
-    }
     final VectorLocation removed = locations.remove(vectorId);
     if (removed != null)
       removeFromRidIndex(removed.rid, vectorId);
@@ -452,18 +383,8 @@ public class VectorLocationIndex {
    * @return Stream of vector IDs
    */
   public IntStream getAllVectorIds() {
-    if (maxSize > 0) {
-      // Bounded backend is a Collections.synchronizedMap-wrapped LinkedHashMap: iteration requires holding the
-      // wrapper monitor, and the linked list must not be mutated concurrently. Snapshot under the monitor and
-      // stream the detached copy.
-      final int[] ids;
-      synchronized (locations) {
-        ids = locations.keySet().stream().mapToInt(Integer::intValue).toArray();
-      }
-      return IntStream.of(ids);
-    }
-    // Unlimited backend is a ConcurrentHashMap: keySet() iteration is already thread-safe and weakly-consistent,
-    // so stream it lazily without the O(N) snapshot allocation.
+    // ConcurrentHashMap: keySet() iteration is thread-safe and weakly-consistent, so stream it lazily without the
+    // O(N) snapshot allocation.
     return locations.keySet().stream().mapToInt(Integer::intValue);
   }
 
@@ -477,41 +398,18 @@ public class VectorLocationIndex {
    * @return Stream of active vector IDs
    */
   public IntStream getActiveVectorIds() {
-    if (maxSize > 0) {
-      // Bounded backend: snapshot the active ids while holding the wrapper monitor, evaluating the deleted flag
-      // inside the critical section so neither the iteration nor the per-entry read races with concurrent mutation.
-      final int[] ids;
-      synchronized (locations) {
-        ids = locations.entrySet().stream()
-            .filter(e -> !e.getValue().deleted)
-            .mapToInt(Map.Entry::getKey)
-            .toArray();
-      }
-      return IntStream.of(ids);
-    }
-    // Unlimited backend (ConcurrentHashMap): stream entrySet() lazily. Using entrySet() also avoids the extra
-    // get() lookup the original keySet()+get() implementation performed.
+    // ConcurrentHashMap: stream entrySet() lazily. Using entrySet() also avoids the extra get() lookup the original
+    // keySet()+get() implementation performed.
     return locations.entrySet().stream()
         .filter(e -> !e.getValue().deleted)
         .mapToInt(Map.Entry::getKey);
   }
 
   /**
-   * Whether this map evicts. Always false today - {@link LSMVectorIndex} never asks for the bounded backend since
-   * issue #5568 - and asking the map is the point: it is what {@link #size()} being the live count depends on, so a
-   * caller that needs that guarantee can check the thing itself rather than a setting that no longer decides it.
-   *
-   * @return true when locations are capped and can be evicted
-   */
-  public boolean isBounded() {
-    return maxSize > 0;
-  }
-
-  /**
-   * Number of resident locations. Deleted vectors are not among them: {@link #markDeleted} drops the location and
-   * keeps only the id in the tombstone set, so on the unbounded backend this is the live-vector count and callers
-   * such as {@code LSMVectorIndex.estimatePagesForLiveSet} rely on that. A bounded cache evicts, so there it is a
-   * lower bound instead. Constant time either way, unlike {@link #getActiveCount()}.
+   * Number of resident locations, which is the number of LIVE vectors: {@link #markDeleted} drops the location and
+   * keeps only the id in the tombstone set, and nothing else ever removes one (issue #5559 took away the bounded
+   * backend that could evict). Callers such as {@code LSMVectorIndex.estimatePagesForLiveSet} rely on that equality.
+   * Constant time, unlike {@link #getActiveCount()}.
    *
    * @return Number of vectors whose location is currently held
    */
@@ -525,13 +423,7 @@ public class VectorLocationIndex {
    * @return Number of active vectors
    */
   public long getActiveCount() {
-    if (maxSize > 0) {
-      // Bounded backend: iterate the values inside the wrapper monitor as required by Collections.synchronizedMap.
-      synchronized (locations) {
-        return locations.values().stream().filter(loc -> !loc.deleted).count();
-      }
-    }
-    // Unlimited backend (ConcurrentHashMap): values() iteration is already thread-safe and weakly-consistent.
+    // ConcurrentHashMap: values() iteration is thread-safe and weakly-consistent.
     return locations.values().stream().filter(loc -> !loc.deleted).count();
   }
 
@@ -561,15 +453,8 @@ public class VectorLocationIndex {
    * Clear all vector locations.
    */
   public void clear() {
-    if (maxSize > 0) {
-      synchronized (locations) {
-        locations.clear();
-        ridToVectorIds.clear();
-      }
-    } else {
-      locations.clear();
-      ridToVectorIds.clear();
-    }
+    locations.clear();
+    ridToVectorIds.clear();
     deletedIds.clear();
     nextId.set(0);
   }

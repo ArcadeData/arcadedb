@@ -227,7 +227,6 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
         .withEfSearch(250)
         .withInactivityRebuildTimeout(7000)
         .withMutationsBeforeRebuild(4242)
-        .withLocationCacheSize(1024)
         .withGraphBuildCacheSize(2048)
         .withStoreVectorsInGraph(true)
         .create();
@@ -236,7 +235,9 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     assertThat(metadata.efSearch).isEqualTo(250);
     assertThat(metadata.inactivityRebuildTimeoutMs).isEqualTo(7000);
     assertThat(metadata.mutationsBeforeRebuild).isEqualTo(4242);
-    assertThat(metadata.locationCacheSize).isEqualTo(1024);
+    // locationCacheSize is deliberately absent: it is the one setting the builder no longer reaches, because it
+    // cannot be honoured and a capped location index drops vectors (issues #5559 and #5568). See
+    // Issue5559LocationCacheSizeTest for the refusal.
     assertThat(metadata.graphBuildCacheSize).isEqualTo(2048);
     assertThat(metadata.storeVectorsInGraph).isTrue();
   }

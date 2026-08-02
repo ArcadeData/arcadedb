@@ -631,11 +631,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
-    // The location index is always unlimited (see getLocationCacheSize), so it will hold every live entry and is
-    // sized for exactly that. The intermediate is a long: `size() * 4` overflows int past ~536M entries, and a
-    // negative capacity would fail the rebuild rather than merely sizing the map badly.
-    final VectorLocationIndex rebuilt = new VectorLocationIndex(getLocationCacheSize(),
-        (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) liveEntries.size() * 4 / 3 + 1)));
+    // The location index never evicts, so it will hold every live entry and is sized for exactly that: the hint is
+    // the live count itself, NOT the classic size*4/3 load-factor pre-adjustment. ConcurrentHashMap's constructor
+    // argument is an element-count estimate that it divides by the load factor itself (`initialCapacity +
+    // (initialCapacity >>> 1) + 1`, rounded up to a power of two), unlike HashMap's, which is a bucket count.
+    // Pre-adjusting on top of that provisioned ~1.33x more table than the rebuild can ever use.
+    final VectorLocationIndex rebuilt = new VectorLocationIndex(Math.max(16, liveEntries.size()));
     for (final VectorEntryForGraphBuild entry : liveEntries)
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
@@ -781,7 +782,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata = metadata;
 
       this.lock = new ReentrantReadWriteLock();
-      this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
+      warnIfLocationCacheSizeConfigured(database);
+      this.vectorIndex = new VectorLocationIndex();
       this.ordinalToVectorId = new int[0];
       this.nextId = new AtomicInteger(0);
       this.status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
@@ -830,7 +832,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     this.metadata = new LSMVectorIndexMetadata(null, new String[0], -1);
     this.lock = new ReentrantReadWriteLock();
-    this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
+    warnIfLocationCacheSizeConfigured(database);
+    this.vectorIndex = new VectorLocationIndex();
     this.ordinalToVectorId = new int[0];
     this.nextId = new AtomicInteger(0);
     this.status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
@@ -4514,16 +4517,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Explicit COMPACT INDEX only.
       return false;
 
-    if (vectorIndex.isBounded())
-      // A bounded location map evicts, so its size is a lower bound on the live set rather than the live set, and an
-      // index holding more live vectors than it caches would read as permanently bloated and rewrite itself after
-      // nearly every commit. Nothing asks for that backend today - #5568 stopped honouring
-      // arcadedb.vectorIndex.locationCacheSize precisely because an evicted location cannot be recovered - so this
-      // asks the map itself rather than the setting, and answers false. It exists so that wiring bounded mode back
-      // in cannot silently turn the ratio into a rewrite loop; whoever does that owes this an explicit live count,
-      // which COMPACT INDEX already derives by parsing the pages.
-      return false;
-
+    // The ratio below reads VectorLocationIndex.size() as the live-vector count, which holds because that map never
+    // evicts (issue #5559 deleted the bounded backend that could). Anything that gives it back an eviction policy
+    // owes this an explicit live count instead - a map that evicts reports a lower bound, so an index holding more
+    // live vectors than it caches reads as permanently bloated and rewrites itself after nearly every commit.
+    // COMPACT INDEX already derives that count by parsing the pages.
     final int totalPages = totalPagesForBloatRatio();
     if (totalPages < minPages)
       // Too small to be worth a rewrite whatever its garbage ratio is.
@@ -5609,7 +5607,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Size of the location index, which is always unlimited (issue #5568).
+   * Reports, once per index, that a configured location cache limit is being ignored (issues #5568 and #5559).
    * <p>
    * {@code arcadedb.vectorIndex.locationCacheSize} (and its per-index {@code locationCacheSize} metadata) used to
    * cap the location index and let it evict. That is not a cache bound - it is data loss. A location is the only
@@ -5617,29 +5615,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * offset index on disk, so an evicted entry cannot be recovered. Measured: a cap of 100 over 1000 live vectors
    * makes {@code countEntries()} report 100 and {@link #getStats()} under-report by the same 900. Every reader
    * that resolves a vector id reads a missing location as deleted (see the result loops of the search paths), so
-   * a query whose neighbours were evicted drops them; the small reproduction above still answered in full because
-   * its vectors were also in the in-memory delta buffer, which is not a guarantee an index can rely on.
+   * a query whose neighbours were evicted drops them.
    * <p>
    * The cap was introduced when the index held one location per WRITE, so it grew without bound on a re-embedding
    * workload. Issue #5516 removed that: a tombstoned id releases its location, so residency is O(live vectors) -
    * proportional to the data the user asked to index, and roughly 90 bytes each. Capping that buys a memory
    * ceiling by silently returning wrong results, which is never the right trade for a database.
    * <p>
-   * The setting is therefore honoured as a sizing hint only and reported once per index at WARNING. Bringing the
-   * footprint down is a storage question, not an eviction one: laying the locations out in primitive arrays
-   * indexed by vector id would cost ~20 bytes each instead of ~90, with no per-entry objects at all (issue
-   * #5588).
+   * {@code locationCacheSize} is refused outright when it arrives through DDL or a builder
+   * ({@code LSMVectorIndexMetadata.applyUserMetadata}), so the only two ways to reach this warning are the global
+   * setting and a schema persisted by an older version. Both are tolerated - refusing them would stop a server
+   * starting or a database opening - and both are reported here instead. Bringing the footprint down is a storage
+   * question, not an eviction one: laying the locations out in primitive arrays indexed by vector id would cost
+   * ~20 bytes each instead of ~90, with no per-entry objects at all (issue #5588).
    *
    * @param database The database instance, since {@code mutable} may not be initialized yet
-   *
-   * @return always -1, meaning unlimited
    */
-  private int getLocationCacheSize(final DatabaseInternal database) {
+  private void warnIfLocationCacheSizeConfigured(final DatabaseInternal database) {
     final int configured = metadata != null && metadata.locationCacheSize > -1 ?
         metadata.locationCacheSize :
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
 
-    if (configured > 0 && locationCacheCapReported.compareAndSet(false, true)) {
+    if (configured > 0 && locationCacheCapReported.compareAndSet(false, true))
       LogManager.instance().log(this, Level.WARNING,
           """
           Ignoring a location cache limit of %d for vector index '%s': evicting a live vector location deletes the \
@@ -5647,13 +5644,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
           Locations are resident only for live vectors since issue #5516, so the index costs ~90 bytes per indexed \
           vector regardless of this setting""",
           configured, indexName);
-    }
-    return -1;
-  }
-
-  /** @see #getLocationCacheSize(DatabaseInternal) - always -1. */
-  private int getLocationCacheSize() {
-    return getLocationCacheSize(mutable.getDatabase());
   }
 
   /**
