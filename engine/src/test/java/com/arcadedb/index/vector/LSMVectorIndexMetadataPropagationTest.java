@@ -43,6 +43,11 @@ class LSMVectorIndexMetadataPropagationTest extends TestHelper {
    * {@link LSMVectorIndexMetadata#copy} is the hop the settings take from the builder into the index, so a field it
    * forgets is a setting the user cannot reach. Every field is given a non-default value here: a copy() that misses one
    * fails on that field instead of being invisible until someone reports the knob does nothing.
+   * <p>
+   * The positive {@code locationCacheSize} below is NOT a sign that positive values are still accepted - they are
+   * refused at both user-facing entrances (see {@code Issue5559LocationCacheSizeTest}). It is written straight to the
+   * field, and {@code copy()} deliberately bypasses the refusing setter, because a copy of a value tolerated from an
+   * older schema must not throw.
    */
   @Test
   void copyCarriesEverySetting() {
