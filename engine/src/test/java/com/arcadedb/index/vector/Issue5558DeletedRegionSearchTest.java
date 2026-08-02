@@ -32,8 +32,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,10 +52,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       outranked every real vector in the beam, and JVector's own {@code 0 <= score <= 1} assertion tripped when
  *       assertions were on.</li>
  * </ul>
- * The fixture pins both. It uses 12 well-separated clusters on an arc so the correct answer to a query aimed at a
- * deleted cluster is not "something", it is a specific surviving cluster, and it holds the rebuild threshold above
- * the workload so the graph keeps its tombstones for the whole test - which is the steady state of any index whose
- * delete volume sits under the threshold.
+ * The fixture uses 12 well-separated clusters on an arc so the correct answer to a query aimed at a deleted cluster
+ * is not "something", it is a specific surviving cluster, and it holds the rebuild threshold above the workload so
+ * the graph keeps its tombstones for the whole test - which is the steady state of any index whose delete volume sits
+ * under the threshold.
+ * <p>
+ * <b>Which test pins which half.</b> Worth knowing before touching either, because on this fixture <i>each half alone
+ * is enough</i> - the end-to-end tests below stay green if you remove one of them, and they were verified by mutation
+ * rather than assumed:
+ * <ul>
+ *   <li>The <b>accept-filter</b> is pinned by {@link #theApproximatePqSearchAnswersADeletedRegionQuery}, and only by
+ *       it. The PQ path scores tombstones from their own PQ codes, so it is the one path where a floor score cannot
+ *       stand in for the filter; restore {@code Bits.ALL} there and it returns the reported empty list.</li>
+ *   <li>The <b>floor score</b> is pinned by {@link #anUnreadableNodeScoresTheFloorOfItsMetric}, and only by it. No
+ *       end-to-end assertion can see it, because the filter removes a tombstone from the answer whatever it
+ *       scored.</li>
+ *   <li>Everything else pins that a search over a tombstoned graph returns the right vectors, without saying which
+ *       half got it there.</li>
+ * </ul>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -105,6 +121,12 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
         .isEqualTo(VERTICES);
 
     assertNeighborClusterIs(1, DELETED_CLUSTERS);
+
+    // Stronger than "the answer is right": the answer came from the graph walk. The brute-force fallback would have
+    // produced the same list by scanning all 1200 ordinals, which is what happens on main once the beam stops on
+    // tombstones - so without this the test cannot tell a working search from a rescued one.
+    assertThat(vectorIndex().getStats().get("bruteForceScans"))
+        .as("the beam must walk out of the deleted region on its own, not be rescued by a full scan").isEqualTo(0L);
   }
 
   /** The same query far from the hole. If this one ever fails, the fixture is broken rather than the search. */
@@ -288,6 +310,35 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
     assertNeighborClusterIs(1, DELETED_CLUSTERS);
   }
 
+  /**
+   * A RID allow-list narrower than {@code k} caps what any answer could contain, so the search must return the whole
+   * allow-list and not one entry more - including when the allow-list points into the deleted region, where the only
+   * right answer is the part of it that survived.
+   */
+  @Test
+  void anAllowListNarrowerThanKIsAnsweredInFull() {
+    createSchema();
+    insertVertices();
+
+    // Three survivors from the cluster next to the hole, plus two that the delete is about to take - captured now,
+    // because a deleted vertex has no RID left to look up.
+    final Set<RID> allowed = new HashSet<>();
+    for (final int vertex : new int[] { centerOf(DELETED_CLUSTERS), centerOf(DELETED_CLUSTERS) + 1,
+        centerOf(DELETED_CLUSTERS) + 2, centerOf(0), centerOf(1) })
+      allowed.add(ridOf("doc" + vertex));
+
+    deleteFirstClusters();
+
+    final List<Pair<RID, Float>> neighbors = vectorIndex().findNeighborsFromVector(embedding(centerOf(1)), K, -1,
+        allowed);
+
+    assertThat(neighbors).as("three of the five allowed vectors are still alive, so three is the answer").hasSize(3);
+    for (final Pair<RID, Float> neighbor : neighbors) {
+      assertThat(allowed).as("nothing outside the allow-list may come back").contains(neighbor.getFirst());
+      assertThat(clusterOf(idOf(neighbor.getFirst()))).as("and nothing deleted").isEqualTo(DELETED_CLUSTERS);
+    }
+  }
+
   /** A reopen reloads the graph from disk, so the hole has to stay searchable across it. */
   @Test
   void theDeletedRegionStaysSearchableAfterAReopen() {
@@ -356,6 +407,13 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
       for (int i = 0; i < DELETED; i++)
         database.command("sql", "DELETE FROM Doc WHERE id = ?", "doc" + i);
     });
+  }
+
+  private RID ridOf(final String id) {
+    try (final com.arcadedb.query.sql.executor.ResultSet rs = database.query("sql",
+        "SELECT FROM Doc WHERE id = ?", id)) {
+      return rs.next().getIdentity().orElseThrow();
+    }
   }
 
   private String idOf(final RID rid) {

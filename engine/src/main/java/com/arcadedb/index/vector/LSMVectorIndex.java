@@ -1961,11 +1961,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Train PQ codebooks from pre-loaded vectors (all in cache, no disk I/O)
         earlyPq = ProductQuantization.compute(vectors, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
 
-        // Encode all vectors
+        // Encode all vectors. An ordinal whose vector cannot be read yields the placeholder, not null, and encoding
+        // that would put a PQ code carrying the placeholder's own direction into the table - a code the approximate
+        // search then scores as if it meant something. setZero records "no information here" instead, and unlike
+        // skipping the ordinal it keeps the code array dense (issue #5558).
         final MutablePQVectors mutablePqVectors = new MutablePQVectors(earlyPq);
+        final ArcadePageVectorValues earlyPageValues =
+            vectors instanceof final ArcadePageVectorValues p ? p : null;
         for (int i = 0; i < vectors.size(); i++) {
           final VectorFloat<?> vector = vectors.getVector(i);
-          if (vector != null)
+          if (vector == null || (earlyPageValues != null && earlyPageValues.isDeletedSentinel(vector)))
+            mutablePqVectors.setZero(i);
+          else
             mutablePqVectors.encodeAndSet(i, vector);
         }
         earlyPqVectors = mutablePqVectors;
@@ -2399,11 +2406,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Encode all vectors with PQ
       final long encodeStart = System.currentTimeMillis();
       final MutablePQVectors encodedVectors = new MutablePQVectors(pq);
+      // Same as the early-PQ loop above: the placeholder is not null, and a PQ code built from it would carry its
+      // direction into approximate scoring. Record "no information here" instead (issue #5558).
+      final ArcadePageVectorValues encodePageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
       for (int i = 0; i < vectorCount; i++) {
         final VectorFloat<?> vector = vectors.getVector(i);
-        if (vector != null) {
+        if (vector == null || (encodePageValues != null && encodePageValues.isDeletedSentinel(vector)))
+          encodedVectors.setZero(i);
+        else
           encodedVectors.encodeAndSet(i, vector);
-        }
       }
 
       LogManager.instance().log(this, Level.INFO,
@@ -3678,6 +3689,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   Graph search returned only %d results (expected %d, available %d) for index %s - \
                   falling back to brute-force scan (graph may need rebuilding)""",
                   results.size(), expectedResults, availableVectors, indexName);
+          metrics.incrementBruteForceScans();
           bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap);
         }
 
