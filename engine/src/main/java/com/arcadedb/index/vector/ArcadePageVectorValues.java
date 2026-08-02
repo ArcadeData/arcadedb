@@ -308,6 +308,12 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   @Override
   public RandomAccessVectorValues copy() {
     // This implementation is thread-safe for reads (PageManager handles concurrency)
+    //
+    // DO NOT make this return a real copy. {@link #isDeletedSentinel} recognises the placeholder by reference, and
+    // the sentinel is per-instance, so a copy would carry a different one: every caller that scores through the copy
+    // would stop recognising it and would score the placeholder as if it were a vector. That is issue #5558's second
+    // cause, and it would come back silently - the placeholder is finite now, so it produces a plausible score rather
+    // than the Infinity that used to make it obvious. Sharing one instance is what keeps the guard total.
     return this;
   }
 

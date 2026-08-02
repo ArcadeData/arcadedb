@@ -125,6 +125,12 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
     // Stronger than "the answer is right": the answer came from the graph walk. The brute-force fallback would have
     // produced the same list by scanning all 1200 ordinals, which is what happens on main once the beam stops on
     // tombstones - so without this the test cannot tell a working search from a rescued one.
+    //
+    // This is the one assertion here that rides on HNSW recall rather than on a decidable property: it fails if the
+    // beam under-fills k by even one, which a JVector or JVM change could do without anything being broken. If it
+    // ever goes red on its own, check the assertion above first - while the returned cluster is still 4, this is
+    // recall drift and not a regression, and the fix to make is the fixture (a wider cluster gap or a larger k), not
+    // the search.
     assertThat(vectorIndex().getStats().get("bruteForceScans"))
         .as("the beam must walk out of the deleted region on its own, not be rescued by a full scan").isEqualTo(0L);
   }
@@ -410,8 +416,7 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
   }
 
   private RID ridOf(final String id) {
-    try (final com.arcadedb.query.sql.executor.ResultSet rs = database.query("sql",
-        "SELECT FROM Doc WHERE id = ?", id)) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Doc WHERE id = ?", id)) {
       return rs.next().getIdentity().orElseThrow();
     }
   }

@@ -3680,6 +3680,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // does. On a bounded backend it is a lower bound, so this would under-estimate the budget and could leave the
         // fallback unfired when it should run - acceptable, since an evicting location map already makes the whole
         // index approximate, and the same assumption is what the auto-compaction ratio rests on.
+        // It also counts vectors still in the delta buffer, which the scan below cannot reach because it walks graph
+        // ordinals - mergeWithDeltaScan has already covered those. So a search left short only by delta vectors can
+        // still pay for a scan that finds nothing new. Bounded, rare, and now visible through bruteForceScans.
         final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
         final int expectedResults = Math.min(k, availableVectors);
         if (results.size() < expectedResults) {
