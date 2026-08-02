@@ -687,4 +687,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return getFirstUnderlyingIndex().getMetadata();
     return null;
   }
+
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    // Same precedence as getMetadata(), but the delegate answers with the type-specific configuration a wrapper index
+    // keeps outside the underlying LSM-Tree. Same definition across every bucket sub-index, so the first one answers
+    // for all of them.
+    if (metadata != null)
+      return metadata;
+    if (!indexesOnBuckets.isEmpty())
+      return getFirstUnderlyingIndex().getMetadataForNewFile();
+    return null;
+  }
 }
