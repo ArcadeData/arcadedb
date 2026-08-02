@@ -1632,10 +1632,15 @@ the list at:
   chunk pins see nothing. If either head moved since the collection, the delete is refused.
 
 **Visible effect.** As with the two changes above, `vertex.delete()` / `DELETE VERTEX` can now raise a retryable
-`ConcurrentModificationException` where it previously "succeeded" while losing an edge, and the standard retry loops
-absorb it - the retry re-reads the list, finds the appended edge, and deletes it with the rest. Both checks are
-skipped under the internal `force` delete, which is unchanged: `force` means "this record is known broken, get it
-out", and the surviving references are the price its caller accepts.
+`ConcurrentModificationException` where it previously "succeeded" while losing an edge. It is a `NeedRetryException`,
+so `database.transaction(...)` and the server's auto-retry for single-request commands absorb it - the retry re-reads
+the list, finds the appended edge, and deletes it with the rest. The one place it surfaces is the one described for
+the two changes above: a **client-managed explicit transaction over `RemoteDatabase`** spans several HTTP requests, so
+its commit is not auto-retried and the exception reaches the caller, who should retry the transaction. That is the
+contract concurrent updates have always had; what is new is that a vertex delete racing an append is now one of the
+operations that can raise it, instead of quietly committing a graph with an edge pointing at a vertex that is gone.
+Both checks are skipped under the internal `force` delete, which is unchanged: `force` means "this record is known
+broken, get it out", and the surviving references are the price its caller accepts.
 
 Two tolerances are deliberately preserved. A vertex whose own record buffer cannot be decoded has no head to compare,
 so the head check does not apply to it - failing there would make it undeletable again, which is what #4420 and #4432
