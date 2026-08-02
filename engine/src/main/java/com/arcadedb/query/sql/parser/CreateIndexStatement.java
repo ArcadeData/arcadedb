@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -49,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class CreateIndexStatement extends DDLStatement {
@@ -103,6 +105,23 @@ public class CreateIndexStatement extends DDLStatement {
     }
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
+  }
+
+  /**
+   * Reads the {@code METADATA} clause as written, or null when the statement carried none.
+   * <p>
+   * {@code buildGraphNow} is stripped: it is a directive to THIS statement (build the vector graph before returning),
+   * not a setting the index keeps, so comparing it against an existing index would report a mismatch for something no
+   * index stores - and {@code fromUserMetadata} would refuse it as an unknown key. The creation branch below removes
+   * it for the same reason.
+   */
+  private JSONObject readUserMetadata(final CommandContext context) {
+    if (metadata == null)
+      return null;
+
+    final JSONObject json = new JSONObject(metadata.toMap((Result) null, context));
+    json.remove("buildGraphNow");
+    return json;
   }
 
   @Override
@@ -188,6 +207,22 @@ public class CreateIndexStatement extends DDLStatement {
           throw IndexBuilder.conflictWithExistingIndex(existing, indexType, unique, typeName.getStringValue(),
               requestedProperties);
 
+        // The existing index is of the right kind; now the settings this statement SPELLED OUT (issue #5765). Only
+        // the keys written are compared, so a statement with no METADATA names nothing and stays the no-op it has
+        // always been. This shortcut answers before any builder exists, so it has to ask the same question
+        // TypeIndexBuilder.create() asks - hence the shared helper rather than a second copy of the rule.
+        final List<String> settingMismatches;
+        try {
+          settingMismatches = IndexBuilder.findUnsatisfiedSettings(existing, readUserMetadata(context), indexType);
+        } catch (final IndexException | IllegalArgumentException | JSONException e) {
+          // Same treatment the creation branches below give the clause: every value in it comes from the statement,
+          // so one the index type cannot read is a client mistake and must answer 400, not 500.
+          throw new CommandSQLParsingException("Invalid METADATA for " + indexType + " index: " + e.getMessage(), e);
+        }
+        if (!settingMismatches.isEmpty())
+          throw IndexBuilder.conflictWithExistingIndex(existing, indexType, unique, typeName.getStringValue(),
+              requestedProperties, settingMismatches);
+
         final InternalResultSet rs = new InternalResultSet();
         final ResultInternal result = new ResultInternal(context.getDatabase());
         result.setProperty("operation", "create index");
@@ -227,10 +262,12 @@ public class CreateIndexStatement extends DDLStatement {
     builder.withCollations(collations);
     builder.withCallback((document, totalIndexed) -> {
       total.incrementAndGet();
-      if (totalIndexed % 100000 == 0) {
-        System.out.print(".");
-        System.out.flush();
-      }
+      // Progress goes to the log, not to stdout: this runs inside the server process, where a dot written to
+      // System.out reaches nobody while still costing a flush on the build path (issue #5765).
+      if (totalIndexed % 100000 == 0)
+        LogManager.instance()
+            .log(this, Level.INFO, "Building index on type '%s': %d records indexed so far", typeName.getStringValue(),
+                totalIndexed);
     });
 
     // Handle vector-specific metadata
@@ -259,6 +296,9 @@ public class CreateIndexStatement extends DDLStatement {
         jsonMetadata.remove("buildGraphNow");
 
         vectorBuilder.withMetadata(jsonMetadata);
+        // The clause as written, so IF NOT EXISTS can compare an existing index on the settings this statement
+        // actually named rather than answering for any vector index on the same property (issue #5765).
+        vectorBuilder.withUserMetadata(jsonMetadata);
       } catch (final IndexException | IllegalArgumentException | JSONException e) {
         // Every value in this clause comes from the statement, so a value the builder cannot read is a
         // client mistake, not a server fault: an unparsable number ({"dimensions": "abc"} used to escape
@@ -284,6 +324,7 @@ public class CreateIndexStatement extends DDLStatement {
       final TypeFullTextIndexBuilder ftBuilder = builder.withFullTextType();
       try {
         ftBuilder.withMetadata(jsonMetadata);
+        ftBuilder.withUserMetadata(jsonMetadata);
       } catch (final IndexException | IllegalArgumentException | JSONException e) {
         // Same treatment as the LSM_VECTOR and GEOSPATIAL branches: every value in the clause comes from the
         // statement, so an unknown key or an out-of-range BM25 parameter is a client mistake and must answer 400.
@@ -299,6 +340,7 @@ public class CreateIndexStatement extends DDLStatement {
         final JSONObject jsonMetadata = new JSONObject(metadataMap);
         try {
           sparseBuilder.withMetadata(jsonMetadata);
+          sparseBuilder.withUserMetadata(jsonMetadata);
         } catch (final IndexException | IllegalArgumentException | JSONException e) {
           throw new CommandSQLParsingException("Invalid METADATA for LSM_SPARSE_VECTOR index: " + e.getMessage(), e);
         }
@@ -310,8 +352,10 @@ public class CreateIndexStatement extends DDLStatement {
       final TypeGeoIndexBuilder geoBuilder = builder.withGeoType();
       if (metadata != null) {
         final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
+        final JSONObject jsonMetadata = new JSONObject(metadataMap);
         try {
-          geoBuilder.withMetadata(new JSONObject(metadataMap));
+          geoBuilder.withMetadata(jsonMetadata);
+          geoBuilder.withUserMetadata(jsonMetadata);
         } catch (final IndexException | IllegalArgumentException | JSONException e) {
           // The same three exceptions the other branches catch. Every geospatial setter happens to throw
           // IllegalArgumentException today, so catching only that one made the HTTP 400 incidental rather than

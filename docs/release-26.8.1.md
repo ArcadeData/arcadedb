@@ -2012,3 +2012,76 @@ The replacement restores the previous definition on failure, including a manual 
 metadata, the same route `CREATE INDEX <name>` uses) and the page size. It is not atomic, though: the drop and the
 build are separate schema changes, so a process that dies between them leaves the type without an index on those
 properties until one is created again. Only an explicit `withReplaceIfIncompatible` is exposed to that window.
+
+## Manual indexes: creating one no longer fences the database, and a guarded request answers for the index asked for
+
+Two defects, one on top of the other, on the `Schema.buildManualIndex(...)` path - the index kind that is not bound to a
+type and is populated by the application itself. Issue #5765.
+
+### Creating a manual index worked at all only by accident
+
+`ManualIndexBuilder.create()` registered the new index's file under `index instanceof PaginatedComponent`. That test
+never matched: `LSMTreeIndex` and `HashIndex` **wrap** their paginated component rather than being one, so the file
+stayed unknown to the schema. The very next step - the commit that creates it - then failed resolving that file id,
+**after** its WAL append, which fences the database for recovery (#5053):
+
+```java
+database.getSchema().buildManualIndex("idx", new Type[] { Type.STRING })
+    .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
+// DatabaseOperationException: database is fenced after a failure past the WAL commit point
+```
+
+The registration now goes through `index.getComponent()`, the same accessor the type-index path uses. Three smaller
+defects on the same path, each of which the first one hid:
+
+- `Schema.createManualIndex(indexType, ...)` dropped its `indexType` argument on the floor, so every call through that
+  deprecated overload failed with a `NullPointerException` inside the index factory.
+- A **unique** manual index could not commit an entry. Both the commit-time lock collection and the uniqueness check
+  resolved the index's type name to reach the polymorphic index over the same properties; a manual index has neither,
+  and the null reached `getType()`. A manual index is now recognised as its own whole search space, which it is.
+- `withNullStrategy(null)` installed the null instead of leaving the default, and the index constructor then refused
+  it with "Index null strategy is null". `null` now means "not specified", the same convention `withPageSize` follows.
+
+An index kind that cannot be built without a type - `FULL_TEXT`, `GEOSPATIAL`, `LSM_VECTOR`, `LSM_SPARSE_VECTOR` - is
+now refused by name, instead of failing inside the factory with a `NullPointerException` or a `ClassCastException`.
+
+### `withIgnoreIfExists` on a manual index follows the same rule as everywhere else
+
+The guarded branch still carried the two defects #5675 removed from `TypeIndexBuilder`: a request differing only in
+uniqueness **dropped** the existing index and recreated it, behind a dead `x != null && x == null` null-strategy test,
+and the index kind was not compared at all. A manual index is worse off than a type index there - its entries are not
+derived from any record, so the drop destroys the only copy and no rebuild can bring them back.
+
+It now answers the same way the type path does: the existing index is returned when it provides what was asked for
+(same kind, uniqueness at least as strong), and the mismatch is reported otherwise. There is no
+`withReplaceIfIncompatible` on this path: that setter raises `UnsupportedOperationException` on a manual builder,
+because the replacement it authorises elsewhere is a rebuild and here it would be a silent delete.
+
+## `CREATE INDEX IF NOT EXISTS` also compares the settings the `METADATA` clause named
+
+The guard compared the structural definition only - the index kind and its uniqueness - so an existing index configured
+differently satisfied a request that spelled out other settings:
+
+```sql
+CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {"dimensions": 384};
+CREATE INDEX IF NOT EXISTS ON Doc (embedding) LSM_VECTOR METADATA {"dimensions": 768};  -- silent no-op
+```
+
+Every vector written afterwards is 768 long, none of them is indexed, and nothing said so. Same for full-text
+analyzers, geospatial precision and the rest. Issue #5765.
+
+**Only the settings the clause actually named are compared.** A statement that names none compares none and stays the
+plain no-op it has always been, which is what keeps this from reaching any statement that did not ask for it. A
+statement that names one gets an answer about it, whether or not a rebuild would have been needed to change it: writing
+a value into a statement and having it silently discarded is the surprise being removed, and a caller who means the
+no-op leaves the key out.
+
+The clause is read through the index type's own reader before comparing, so the spellings that reader accepts are the
+value they denote rather than a difference: `{"dimensions": "384"}` matches 384, and `{"similarity": "euclidean"}`
+matches `EUCLIDEAN`. A mismatch is reported naming each differing setting with both values, as an HTTP 400.
+
+### Progress dots no longer go to stdout
+
+`CREATE INDEX` and `REBUILD INDEX` printed a dot to `System.out` every 100k indexed records. Inside a server process
+that reaches nobody while still costing a flush on the build path; it is a log line now. The pollable live progress of
+`REBUILD INDEX` (#5376) is unchanged.

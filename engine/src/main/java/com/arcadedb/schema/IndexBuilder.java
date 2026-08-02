@@ -20,7 +20,9 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.List;
 
@@ -70,6 +72,14 @@ public abstract class IndexBuilder<T extends Index> {
    * this package, so a second slot cannot be reintroduced unnoticed.
    */
   IndexMetadata                      metadata;
+  /**
+   * The {@code METADATA} clause exactly as the caller wrote it, or null when none was given. Kept BESIDE the parsed
+   * {@link #metadata} rather than derived from it because the two answer different questions: the parsed form says
+   * what the index would be configured with, this one says which settings the caller actually NAMED - the only ones
+   * an {@code IF NOT EXISTS} request compares against an existing index. See
+   * {@link IndexMetadata#findUserSettingMismatches}.
+   */
+  JSONObject                         userMetadata;
 
   protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexImplementation) {
     this.database = database;
@@ -92,19 +102,38 @@ public abstract class IndexBuilder<T extends Index> {
    * Note that a satisfied request stays a plain no-op: the requested strategy is NOT applied to the existing index,
    * which is what {@code IF NOT EXISTS} asks for.
    * <p>
-   * <b>Not compared either: the settings an index type keeps of its own</b> - vector {@code dimensions}, full-text
-   * analyzers, geospatial precision, collations. Two same-kind indexes configured differently still satisfy each other
-   * here, so a guarded {@code CREATE INDEX ... LSM_VECTOR} over an existing vector index with other dimensions stays a
-   * no-op. That is the same shape of surprise as issue #5675 one level down, and it is left open on purpose: those
-   * settings live in per-index-type {@link IndexMetadata} subclasses with no common notion of "provides at least what
-   * was asked for" (is a 768-dimension index acceptable to a request for 384? is a stricter analyzer?), and answering
-   * it needs a per-type rule rather than the structural comparison above.
+   * This answers the STRUCTURAL half of the question only. The settings an index type keeps of its own - vector
+   * {@code dimensions}, full-text analyzers, geospatial precision - are compared separately by
+   * {@link IndexMetadata#findUserSettingMismatches}, which needs the {@code METADATA} clause as written and so cannot
+   * be folded into this static signature. A caller that guards its request must consult both; {@link TypeIndexBuilder}
+   * does, and {@link #conflictWithExistingIndex} puts the two answers into one message.
    */
   public static boolean satisfiesRequest(final Index existing, final Schema.INDEX_TYPE requestedType,
       final boolean requestedUnique) {
     if (existing.getType() != requestedType)
       return false;
     return existing.isUnique() || !requestedUnique;
+  }
+
+  /**
+   * The other half of {@link #satisfiesRequest}: which of the per-index-type settings {@code requested} NAMES the
+   * existing index does not provide. Empty when the request carried no {@code METADATA} clause, which is what keeps a
+   * guarded statement without one the plain no-op it has always been.
+   * <p>
+   * Kept here rather than inlined at the two call sites - {@link TypeIndexBuilder#create()} and the {@code IF NOT
+   * EXISTS} shortcut of {@code CreateIndexStatement}, which answers before a builder ever exists - so both ask the
+   * same question of the same accessor. {@code getMetadataForNewFile()} is the one to ask: on a wrapper index
+   * {@code getMetadata()} answers what the wrapper stores rather than the type-specific configuration (issue #5723).
+   *
+   * @see IndexMetadata#findUserSettingMismatches
+   */
+  public static List<String> findUnsatisfiedSettings(final Index existing, final JSONObject requested,
+      final Schema.INDEX_TYPE requestedType) {
+    if (requested == null || requested.isEmpty() || !(existing instanceof IndexInternal internal))
+      return List.of();
+
+    final IndexMetadata existingMetadata = internal.getMetadataForNewFile();
+    return existingMetadata == null ? List.of() : existingMetadata.findUserSettingMismatches(requested, requestedType);
   }
 
   /**
@@ -122,12 +151,27 @@ public abstract class IndexBuilder<T extends Index> {
   public static IllegalArgumentException conflictWithExistingIndex(final Index existing,
       final Schema.INDEX_TYPE requestedType, final boolean requestedUnique, final String requestedTypeName,
       final List<String> requestedProperties) {
+    return conflictWithExistingIndex(existing, requestedType, requestedUnique, requestedTypeName, requestedProperties,
+        List.of());
+  }
+
+  /**
+   * Same, naming the per-index-type settings the existing index does not provide - the answer of
+   * {@link IndexMetadata#findUserSettingMismatches}. Empty when the request was refused on its structural definition
+   * alone, which is the only case the overload above covers.
+   */
+  public static IllegalArgumentException conflictWithExistingIndex(final Index existing,
+      final Schema.INDEX_TYPE requestedType, final boolean requestedUnique, final String requestedTypeName,
+      final List<String> requestedProperties, final List<String> settingMismatches) {
     final boolean inherited = !existing.getTypeName().equals(requestedTypeName);
     return new IllegalArgumentException(
         "Cannot create the index on type '" + requestedTypeName + "' properties " + requestedProperties + " as "
             + describeDefinition(requestedType, requestedUnique) + " because the index '" + existing.getName()
             + "' already exists on " + (inherited ? "the parent type '" + existing.getTypeName() + "' and " : "")
             + "the same properties as " + describeDefinition(existing.getType(), existing.isUnique())
+            + (settingMismatches.isEmpty() ?
+            "" :
+            " with a different configuration: " + String.join(", ", settingMismatches))
             + (inherited ?
             ". Drop the parent index or align the definition: it is not replaced implicitly because that would take "
                 + "the index away from the parent type" :
@@ -201,8 +245,15 @@ public abstract class IndexBuilder<T extends Index> {
     return this;
   }
 
+  /**
+   * Requests a null strategy for the index. {@code null} means "the caller did not ask for one" and leaves the
+   * default in place, the same convention {@link #withPageSize(int)} follows: the deprecated {@code create*Index}
+   * overloads all take a nullable strategy, and passing it straight through used to install a null the index
+   * constructor rejects with "Index null strategy is null" (issue #5765).
+   */
   public IndexBuilder<T> withNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
-    this.nullStrategy = nullStrategy;
+    if (nullStrategy != null)
+      this.nullStrategy = nullStrategy;
     return this;
   }
 
@@ -295,5 +346,20 @@ public abstract class IndexBuilder<T extends Index> {
   public IndexBuilder<T> withMetadata(final IndexMetadata metadata) {
     this.metadata = metadata;
     return this;
+  }
+
+  /**
+   * Records the {@code METADATA} clause as written, so a guarded request can be compared against an existing index on
+   * the settings it NAMED - see {@link IndexMetadata#findUserSettingMismatches}. Only callers that have a literal user
+   * clause set it; a builder configured through the typed {@code with*} setters names nothing, and its request is
+   * satisfied by any index of the right kind and uniqueness, exactly as before.
+   */
+  public IndexBuilder<T> withUserMetadata(final JSONObject userMetadata) {
+    this.userMetadata = userMetadata;
+    return this;
+  }
+
+  public JSONObject getUserMetadata() {
+    return userMetadata;
   }
 }
