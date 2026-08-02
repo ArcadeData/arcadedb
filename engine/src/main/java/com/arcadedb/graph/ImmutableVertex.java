@@ -114,6 +114,11 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
+  protected void positionAtProperties() {
+    parseEdgePointers();
+  }
+
+  @Override
   public RID getOutEdgesHeadChunk() {
     checkForLazyLoading();
     return outEdges;

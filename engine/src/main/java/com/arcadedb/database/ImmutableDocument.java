@@ -227,6 +227,24 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Positions the buffer at the start of the properties section. Called by both {@link #reload()} and
+   * {@link #checkForLazyLoading()} after a fresh buffer has been loaded or reloaded. Subclasses with a fixed prefix
+   * (e.g. vertices with edge pointers, edges with out/in RIDs) override this to parse their prefix and set
+   * {@code propertiesStartingPosition} to the right value. The default implementation seeks to the already-known
+   * position, which is correct for plain documents.
+   */
+  protected void positionAtProperties() {
+    buffer.position(propertiesStartingPosition);
+  }
+
+  @Override
+  public void reload() {
+    super.reload();
+    if (buffer != null)
+      positionAtProperties();
+  }
+
+  /**
    * Materialises the record if it has not been loaded yet.
    * <p>
    * <b>Postcondition:</b> on return, either {@code buffer} is {@code null} - the record was filtered away by an
@@ -258,7 +276,7 @@ public class ImmutableDocument extends BaseDocument {
         throw new DatabaseOperationException("Document cannot be loaded because RID is null");
 
       buffer = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
-      buffer.position(propertiesStartingPosition);
+      positionAtProperties();
 
       final Record loaded = database.invokeAfterReadEvents(this);
       if (loaded == null) {
@@ -271,13 +289,13 @@ public class ImmutableDocument extends BaseDocument {
         buffer = database.getSerializer().serialize(database, loaded).getNotReusable();
         // THE SERIALIZER HANDS THE BUFFER BACK AT 0 OR AT 1 DEPENDING ON THE BRANCH IT TOOK: NORMALISE IT SO THE
         // POSTCONDITION OF THIS METHOD HOLDS ON EVERY PATH
-        buffer.position(propertiesStartingPosition);
+        positionAtProperties();
       }
 
       return true;
     }
 
-    buffer.position(propertiesStartingPosition);
+    positionAtProperties();
     return false;
   }
 }

@@ -190,4 +190,12 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     }
     return false;
   }
+
+  @Override
+  protected void positionAtProperties() {
+    buffer.position(1); // SKIP RECORD TYPE
+    out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    propertiesStartingPosition = buffer.position();
+  }
 }
