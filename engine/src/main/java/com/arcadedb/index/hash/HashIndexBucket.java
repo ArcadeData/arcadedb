@@ -983,13 +983,19 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Validates the key types a hash index is about to be created with, so an unsupported one is refused up front with
-   * a message naming it, instead of surfacing as an "unsupported key type" deep inside the first insert (#5677).
+   * Validates the key types a hash index is about to be created with and returns them unchanged, so they can be
+   * assigned directly in the creation constructor. An unsupported one is refused up front with a message naming it,
+   * instead of surfacing as an "unsupported key type" deep inside the first insert (#5677).
    * <p>
-   * The check is now enforced inside the bucket's creation constructor itself, matching the page-size guard
-   * of #5713, so every construction path is covered. The {@code HashIndexFactoryHandler} also calls it for
-   * defensive redundancy, but the constructor guarantee means no bypass path can write a file whose declared
-   * key type the bucket cannot encode.
+   * The creation constructor of this class calls it, and that is what makes the refusal unbypassable: it is the only
+   * path that writes the metadata page, so no caller can declare a key type the bucket cannot encode and leave
+   * {@link #loadMetadata} to report it as corruption on the next open. The load constructor deliberately does NOT
+   * call it - an index already on disk must keep opening, and {@code loadMetadata} already validates what it reads.
+   * <p>
+   * {@code HashIndexFactoryHandler.create()} calls it as well, and that call is not redundant. Unlike
+   * {@link #checkSupportedPageSize}, which is evaluated in the {@code super()} argument list and therefore before the
+   * file exists, this one can only run after {@code super()} has already created and registered it. Refusing in the
+   * handler is what keeps the ordinary creation path from leaving an empty file behind.
    */
   static Type[] checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
     if (keyTypes == null)
