@@ -34,4 +34,19 @@ class CheckDatabaseStatementTestParserTest extends AbstractParserTest {
 
     checkWrongSyntax("check database file:///foo/bar/ foo bar");
   }
+
+  /** #5680: the RECORD scope, the cheap repair path for a single vertex whose edge chain is broken. */
+  @Test
+  void recordScope() {
+    checkRightSyntax("check database record #12:3");
+    checkRightSyntax("CHECK DATABASE RECORD #12:3 FIX");
+    checkRightSyntax("check database record #12:3, #12:9 fix");
+    checkRightSyntax("check database record #12:3 fix compress");
+    // Accepted by the GRAMMAR; rejected at execution, since RECORD plus TYPE/BUCKET has no sensible meaning
+    // (see CheckDatabaseRecordScopeTest.checkDatabaseRecordRejectsBeingCombinedWithTypeOrBucket).
+    checkRightSyntax("check database type Customer record #12:3 fix");
+
+    checkWrongSyntax("check database record");
+    checkWrongSyntax("check database record Customer");
+  }
 }

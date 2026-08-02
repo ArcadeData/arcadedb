@@ -7051,7 +7051,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit CHECK DATABASE statement.
-   * Grammar: CHECK DATABASE (TYPE ident (COMMA ident)*)? (BUCKET (ident|int) (COMMA (ident|int))*)? (FIX)? (COMPRESS)?
+   * Grammar: CHECK DATABASE (TYPE ident (COMMA ident)*)? (BUCKET (ident|int) (COMMA (ident|int))*)?
+   * (RECORD rid (COMMA rid)*)? (FIX)? (COMPRESS)?
    */
   @Override
   public CheckDatabaseStatement visitCheckDatabaseStmt(final SQLParser.CheckDatabaseStmtContext ctx) {
@@ -7091,6 +7092,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           bucketId.bucketName = (Identifier) visit(allIdents.get(i));
           stmt.buckets.add(bucketId);
         }
+      }
+    }
+
+    // Parse RECORD clause - list of RIDs (#5680): scopes the check to those records only
+    if (checkCtx.RECORD() != null) {
+      for (final SQLParser.RidContext ridCtx : checkCtx.rid()) {
+        stmt.records.add(visitRid(ridCtx));
       }
     }
 
