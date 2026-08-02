@@ -63,6 +63,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       (issue #5558).</li>
  *   <li>{@link #anAllowListWiderThanTheIndexStillFilters} covers the crossover: past a certain width the plain scan is
  *       the cheaper way to answer, and taking it must not drop the filter.</li>
+ *   <li>{@link #anAllowedRidWithNoLiveOrdinalIsSkippedOnBothPaths} covers the entries the walk cannot resolve at all,
+ *       which is where an equivalence between "every ordinal, filtered" and "the allow-list, resolved" can quietly
+ *       stop holding.</li>
  * </ul>
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
@@ -274,6 +277,47 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
   }
 
   /**
+   * The allow-list to ordinal mapping has to be total: an entry it cannot resolve must contribute nothing, not a
+   * guessed ordinal. Three kinds of unresolvable entry are in the allow-list here - a RID whose vector was tombstoned,
+   * which keeps its ordinal in the map but loses its location; a RID ingested after the last graph build, which is
+   * only in the delta buffer and has no ordinal at all; and a RID this index never saw. The answer still has to be
+   * what the full scan would have filtered down to.
+   */
+  @Test
+  void anAllowedRidWithNoLiveOrdinalIsSkippedOnBothPaths() throws Exception {
+    createSchemaAndData();
+
+    final RID tombstoned = ridOf("doc5");
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc WHERE id = ?", "doc5"));
+    database.transaction(
+        () -> database.command("sql", "INSERT INTO Doc SET id = ?, embedding = ?", "afterTheBuild", embedding(600)));
+
+    final LSMVectorIndex index = vectorIndex();
+    final int[] ordinalMap = index.getOrdinalToVectorIdForTest();
+    final float[] query = embedding(7);
+
+    final Set<RID> allowed = new LinkedHashSet<>(ridsOf(3, 19, 31));
+    allowed.add(tombstoned);
+    final RID onlyInTheDelta = ridOf("afterTheBuild");
+    allowed.add(onlyInTheDelta);
+    allowed.add(new RID(9999, 0));
+    assertThat(allowed.size()).as("the fixture has to stay on the allow-list walk").isLessThan(ordinalMap.length);
+
+    final List<Pair<RID, Float>> filtered = scan(index, query, K, allowed, ordinalMap);
+
+    final List<Pair<RID, Float>> everything = scan(index, query, ordinalMap.length, null, ordinalMap);
+    final List<Pair<RID, Float>> reference = new ArrayList<>();
+    for (final Pair<RID, Float> candidate : everything)
+      if (allowed.contains(candidate.getFirst()) && reference.size() < K)
+        reference.add(candidate);
+
+    assertThat(reference).as("only the three live indexed RIDs can be answered at all").hasSize(3);
+    assertThat(ridsIn(filtered)).as("an unresolvable allow-list entry contributes nothing, on either path")
+        .isEqualTo(ridsIn(reference));
+    assertThat(ridsIn(filtered)).doesNotContain(tombstoned, onlyInTheDelta);
+  }
+
+  /**
    * The reverse lookup is a binary search, so the ordinal map has to be sorted. Every producer sorts it because the
    * ordinals have to line up with the order the graph was persisted in; this pins that invariant where the search
    * depends on it, since breaking it would not throw, it would silently return fewer neighbors.
@@ -321,7 +365,7 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
   private List<Pair<RID, Float>> scan(final LSMVectorIndex index, final float[] query, final int k,
       final Set<RID> allowedRIDs, final int[] ordinalMap) throws Exception {
     final List<Pair<RID, Float>> results = new ArrayList<>();
-    invokeBruteForceScan(index, query, k, allowedRIDs, results, countingVectorValues(ordinalMap), ordinalMap);
+    invokeBruteForceScan(index, query, k, allowedRIDs, results, vectorValues(ordinalMap), ordinalMap);
     return results;
   }
 
@@ -346,9 +390,14 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
     return locations;
   }
 
-  private CountingVectorValues countingVectorValues(final int[] ordinalMap) {
-    return new CountingVectorValues((DatabaseInternal) database, DIMENSIONS, "embedding", vectorIndex().getVectorIndex(),
-        ordinalMap, vectorIndex());
+  /**
+   * The page-backed reader the index itself would use. It has to be that class and not a decorator around it: the
+   * scan recognises {@link ArcadePageVectorValues} to apply its deleted-placeholder guard, and a wrapper would
+   * silently turn the guard off and move the test onto a different code path.
+   */
+  private ArcadePageVectorValues vectorValues(final int[] ordinalMap) {
+    return new ArcadePageVectorValues((DatabaseInternal) database, DIMENSIONS, "embedding",
+        vectorIndex().getVectorIndex(), ordinalMap, vectorIndex());
   }
 
   private Set<RID> ridsOf(final int... ids) {
@@ -409,26 +458,6 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
     @Override
     public int[] getVectorIdsForRid(final RID rid) {
       return delegate.getVectorIdsForRid(rid);
-    }
-  }
-
-  /**
-   * Counts the reads the scan performs. It extends the real vector values rather than wrapping them so the scan still
-   * recognises it as the page-backed reader and keeps its deleted-placeholder guard - a wrapper would silently turn
-   * that guard off and the count would be measured against a different code path.
-   */
-  private static final class CountingVectorValues extends ArcadePageVectorValues {
-    private int reads;
-
-    CountingVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
-        final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex) {
-      super(database, dimensions, vectorPropertyName, vectorIndex, ordinalToVectorId, lsmIndex);
-    }
-
-    @Override
-    public VectorFloat<?> getVector(final int ordinal) {
-      reads++;
-      return super.getVector(ordinal);
     }
   }
 }
