@@ -763,7 +763,7 @@ public class GraphEngine {
     final VertexInternal mostUpdatedVertex = getMostUpdatedVertex(vertex);
 
     // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
-    final RID[] collectedHeads = readEdgeListHeads(mostUpdatedVertex);
+    final RID[] headsAtWalkStart = readEdgeListHeads(mostUpdatedVertex);
 
     final boolean hadOutList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.OUT, force);
     final boolean hadInList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.IN, force);
@@ -773,8 +773,8 @@ public class GraphEngine {
     if (hadInList)
       deleteRemainingChunks(mostUpdatedVertex, Vertex.DIRECTION.IN);
 
-    if (!force && collectedHeads != null)
-      checkEdgeListHeadsUnchanged(mostUpdatedVertex, collectedHeads[0], collectedHeads[1]);
+    if (!force && headsAtWalkStart != null)
+      checkEdgeListHeadsUnchanged(mostUpdatedVertex, headsAtWalkStart[0], headsAtWalkStart[1]);
 
     // DELETE VERTEX RECORD
     mostUpdatedVertex.getDatabase().getSchema().getBucketById(mostUpdatedVertex.getIdentity().getBucketId())
@@ -830,8 +830,8 @@ public class GraphEngine {
    * A vertex this transaction has WRITTEN itself needs no check: its own copy is authoritative, and a concurrent
    * commit over it cannot pass the version check on that write.
    */
-  private void checkEdgeListHeadsUnchanged(final VertexInternal vertex, final RID collectedOutHead,
-      final RID collectedInHead) {
+  private void checkEdgeListHeadsUnchanged(final VertexInternal vertex, final RID walkedOutHead,
+      final RID walkedInHead) {
     final RID vertexRID = vertex.getIdentity();
 
     final TransactionContext tx = database.getTransactionIfExists();
@@ -867,11 +867,11 @@ public class GraphEngine {
     final RID committedOutHead = committedHeads[0];
     final RID committedInHead = committedHeads[1];
 
-    if (!Objects.equals(collectedOutHead, committedOutHead) || !Objects.equals(collectedInHead, committedInHead))
+    if (!Objects.equals(walkedOutHead, committedOutHead) || !Objects.equals(walkedInHead, committedInHead))
       throw new ConcurrentModificationException(
-          "Edge list head of vertex " + vertexRID + " changed while it was being deleted (OUT " + collectedOutHead
-              + " -> " + committedOutHead + ", IN " + collectedInHead + " -> " + committedInHead
-              + "): a concurrent transaction appended an edge this delete did not collect");
+          "Edge list head of vertex " + vertexRID + " changed while it was being deleted (OUT " + walkedOutHead
+              + " -> " + committedOutHead + ", IN " + walkedInHead + " -> " + committedInHead
+              + "): a concurrent transaction appended an edge this delete did not see");
   }
 
   /**
