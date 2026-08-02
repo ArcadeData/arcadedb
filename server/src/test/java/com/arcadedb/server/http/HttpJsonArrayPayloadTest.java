@@ -18,11 +18,11 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.mcp.MCPConfiguration;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
@@ -31,7 +31,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,61 +47,57 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class HttpJsonArrayPayloadTest extends BaseGraphServerTest {
 
-  @BeforeEach
-  void enableMCP() {
-    // The MCP endpoint is the in-tree handler that opts in to an array body (a JSON-RPC batch).
-    final MCPConfiguration config = getServer(0).getMCPConfiguration();
-    config.setEnabled(true);
-    config.setAllowReads(true);
-    config.setAllowedUsers(List.of("root"));
-    config.setAllowedOrigins(List.of());
+  @Override
+  protected void onServerConfiguration(final ContextConfiguration config) {
+    config.setValue(GlobalConfiguration.SERVER_PLUGINS, ArrayPayloadTestPlugin.class.getName());
   }
 
   @Test
   void arrayBodyReachesAHandlerThatAcceptsIt() throws Exception {
     final JSONArray batch = new JSONArray()
-        .put(new JSONObject().put("jsonrpc", "2.0").put("id", 1).put("method", "ping"))
-        .put(new JSONObject().put("jsonrpc", "2.0").put("id", 2).put("method", "ping"));
+        .put(new JSONObject().put("id", 1))
+        .put(new JSONObject().put("id", 2));
 
-    final Response response = post("/api/v1/mcp", batch.toString());
+    final Response response = post("/api/v1/test/array", batch.toString());
 
     assertThat(response.status()).isEqualTo(200);
-    final JSONArray responses = new JSONArray(response.body());
-    assertThat(responses.length()).isEqualTo(2);
-    assertThat(responses.getJSONObject(0).getInt("id")).isEqualTo(1);
-    assertThat(responses.getJSONObject(1).getInt("id")).isEqualTo(2);
+    final JSONObject json = new JSONObject(response.body());
+    assertThat(json.getString("shape")).isEqualTo("array");
+    assertThat(json.getInt("size")).isEqualTo(2);
   }
 
   @Test
   void leadingWhitespaceDoesNotHideTheArray() throws Exception {
-    final Response response = post("/api/v1/mcp", "\n  [{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}]");
+    final Response response = post("/api/v1/test/array", "\n  [{\"id\":3}]");
 
     assertThat(response.status()).isEqualTo(200);
-    final JSONArray responses = new JSONArray(response.body());
-    assertThat(responses.length()).isEqualTo(1);
-    assertThat(responses.getJSONObject(0).getInt("id")).isEqualTo(3);
+    final JSONObject json = new JSONObject(response.body());
+    assertThat(json.getString("shape")).isEqualTo("array");
+    assertThat(json.getInt("size")).isEqualTo(1);
   }
 
   @Test
   void objectBodyIsUnaffectedOnAHandlerThatAcceptsArrays() throws Exception {
-    final Response response = post("/api/v1/mcp",
-        new JSONObject().put("jsonrpc", "2.0").put("id", 4).put("method", "ping").toString());
+    final Response response = post("/api/v1/test/array", new JSONObject().put("id", 4).toString());
 
     assertThat(response.status()).isEqualTo(200);
     final JSONObject json = new JSONObject(response.body());
+    assertThat(json.getString("shape")).isEqualTo("object");
     assertThat(json.getInt("id")).isEqualTo(4);
-    assertThat(json.has("result")).isTrue();
   }
 
   @Test
-  void malformedArrayBodyIsReportedAsAParseError() throws Exception {
-    // A body that starts as an array but does not parse must not be mistaken for an empty request: the MCP
-    // endpoint answers the JSON-RPC parse error (-32700) over HTTP 200.
-    final Response response = post("/api/v1/mcp", "[{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}");
+  void aBodyThatStartsAsAnArrayButDoesNotParseReachesTheHandlerEmpty() throws Exception {
+    // The pipeline decides the body kind from the first character and then parses once. When that parse fails
+    // it logs and gives up: no 400 is synthesised, and the handler is called with a null payload AND a null
+    // array. Recovering from there is the handler's job - it still has the raw body - which is how the MCP
+    // endpoint turns this same shape into a JSON-RPC parse error instead of mistaking it for an empty request.
+    final Response response = post("/api/v1/test/array", "[{\"id\":5}");
 
     assertThat(response.status()).isEqualTo(200);
     final JSONObject json = new JSONObject(response.body());
-    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32700);
+    assertThat(json.getString("shape")).isEqualTo("object");
+    assertThat(json.getInt("id")).isEqualTo(-1);
   }
 
   @Test

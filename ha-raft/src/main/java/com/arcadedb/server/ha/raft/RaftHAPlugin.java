@@ -71,6 +71,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return PluginInstallationPriority.AFTER_HTTP_ON;
   }
 
+  /**
+   * Raft activates on classpath presence whenever high availability is requested, explicitly via
+   * {@code ha.enabled} or implicitly via a non-blank {@code ha.serverList}. A deployment that configures HA
+   * must not additionally have to name this plugin in {@code SERVER_PLUGINS}.
+   */
+  @Override
+  public boolean isAutoDiscovered(final ContextConfiguration configuration) {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled();
+  }
+
   @Override
   public void startService() {
     if (!isRaftEnabled()) {

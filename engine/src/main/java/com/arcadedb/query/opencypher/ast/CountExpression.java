@@ -53,11 +53,10 @@ public class CountExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    if (CorrelatedSubqueryRunner.canRun(parsedSubquery)) {
-      try (final ResultSet resultSet = CorrelatedSubqueryRunner.run(parsedSubquery, result, context)) {
-        return countRows(resultSet);
-      }
-    }
+    // The number is asked for directly rather than counted off the rows: a body whose row count is its match count -
+    // the shape a bare pattern is normalised into - is then answered by a count push-down instead of a scan (#5715).
+    if (CorrelatedSubqueryRunner.canRun(parsedSubquery))
+      return CorrelatedSubqueryRunner.countRows(parsedSubquery, result, context);
 
     final Map<String, Object> params = CorrelatedSubqueryRewriter.newParams(context);
     final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__count_", params,

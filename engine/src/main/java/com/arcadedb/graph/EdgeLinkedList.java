@@ -29,6 +29,8 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
@@ -36,6 +38,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
+import java.nio.BufferUnderflowException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -83,6 +86,78 @@ public class EdgeLinkedList {
    */
   public Iterator<Edge> edgeIteratorForRemoval() {
     return edgeIterator();
+  }
+
+  /**
+   * #5725: brings EVERY page of this list into the transaction, at the version the caller is about to read the
+   * list at, for a caller that is going to remove the whole list and then delete the vertex that owns it (today,
+   * {@code GraphEngine.deleteVertex}).
+   * <p>
+   * Without this the collection walk leaves no MVCC footprint at all - it reads the chunks through plain
+   * {@code lookupByRID}, which under READ_COMMITTED does not retain their pages - while the writes that follow
+   * capture each page only LATER, at whatever version it has by then. An edge appended between the walk and those
+   * writes is therefore already IN the page the removal rebuilds and the drain deletes: the commit-time check
+   * compares the newer version against itself, finds no conflict, and the vertex goes away with an edge it never
+   * collected. The edge record survives naming a vertex that no longer exists - the same silent graph corruption
+   * #5670/#5680 fixed from the removal side, arriving from the append side. This is the read-modify-write gap
+   * #5147 closed on the append path ({@code GraphEngine.anchorHeadChunkPage}), on the walk that removes.
+   * <p>
+   * Every chunk, not just the head: an appender resolves the head from its own handle of the vertex, so a handle
+   * that predates a head flip appends into a chunk that is no longer the head but is still in the chain. Anchoring
+   * the whole chain costs nothing at the peak either - {@link #deleteAll} deletes every one of these chunks, so
+   * their pages end up in the transaction regardless; this only brings them in EARLY ENOUGH to be worth something.
+   * <p>
+   * Reading through {@link #loadChunkForWrite} is what makes the anchor mean something: it anchors the page and
+   * then re-reads the chunk THROUGH it, so the {@code previous} pointer this walk follows comes from the version
+   * it just pinned rather than from one a concurrent commit may have replaced in between.
+   */
+  public void anchorForFullRemoval() {
+    lastSegment = anchorChain(lastSegment.getIdentity());
+  }
+
+  /**
+   * Anchors every page of the chunk chain starting at {@code headRID}, returning the head re-read through its
+   * anchored page. Shared with {@link StripedEdgeList}, which applies it to one stripe chain at a time.
+   * <p>
+   * A hop this walk cannot follow STOPS the pinning instead of failing it - the pages up to the break stay pinned
+   * and the caller carries on. The reason is that this pass must not become the thing that reports a broken chain:
+   * the collection walk that runs immediately after follows the same pointers in the same order, so it meets the
+   * same wall, and the policy for what to do about it already lives there and is carefully split (a chunk that
+   * cannot be FOUND is retryable and only {@code force} absorbs it; a chunk that cannot be DECODED is tolerated
+   * even without {@code force}, so a vertex whose list is corrupt stays deletable - #4420/#4432). Raising from
+   * here would pre-empt all of that with a failure BEFORE a single edge has been collected, so a delete that used
+   * to disconnect everything in front of the break from its neighbours would now disconnect nothing and leave those
+   * far-end pointers dangling. Nothing is hidden by stopping quietly: the next walk raises what this one saw.
+   * <p>
+   * The HEAD load is deliberately outside that tolerance. It is where an append lands, and unlike the hops it is
+   * not re-read by the collection walk - {@code lastSegment} is already materialised - so continuing past a head
+   * this walk could not pin would leave the collection reading a page it never pinned, which is the exact window
+   * this whole mechanism exists to close.
+   * <p>
+   * The self-reference guard matches every other walk in this class: a chunk pointing at itself ends the chain
+   * instead of looping forever. A longer cycle would hang here exactly as it already hangs {@link #deleteAll},
+   * which walks the same chain immediately afterwards, so this adds no exposure that was not there.
+   */
+  protected final EdgeSegment anchorChain(final RID headRID) {
+    final EdgeSegment head = loadChunkForWrite(headRID);
+    EdgeSegment current = head;
+    while (true) {
+      try {
+        final RID previousRID = current.getPreviousRID();
+        if (previousRID == null || previousRID.equals(current.getIdentity()))
+          return head;
+        current = loadChunkForWrite(previousRID);
+      } catch (final ConcurrentModificationException | SerializationException | NegativeArraySizeException
+                     | BufferUnderflowException | IndexOutOfBoundsException | IllegalArgumentException
+                     | ClassCastException | SchemaException e) {
+        // "This chunk cannot be read", in the two shapes the chain can produce it: loadChunkForWrite maps a
+        // vanished record to a retryable conflict, and a corrupted body fails to decode. Both stop the pinning
+        // here and are re-raised by the collection walk. Anything else - an I/O fault surfacing as
+        // DatabaseOperationException - is not a broken chain and must not be mistaken for one, because the
+        // collection walk might then read a chunk this pass failed to pin.
+        return head;
+      }
+    }
   }
 
   /**

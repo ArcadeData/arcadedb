@@ -939,7 +939,7 @@ class TestVectorSQL:
         LSM_VECTOR
         METADATA {{
             "dimensions": 4,
-            "distanceFunction": "EUCLIDEAN"
+            "similarity": "EUCLIDEAN"
         }}
         """
         test_db.command("sql", sql_index)

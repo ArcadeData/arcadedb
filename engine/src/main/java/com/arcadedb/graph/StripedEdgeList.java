@@ -327,6 +327,26 @@ public class StripedEdgeList extends EdgeLinkedList {
     return iterator;
   }
 
+  /**
+   * #5725: the striped counterpart of {@link EdgeLinkedList#anchorForFullRemoval()}. An append to a promoted
+   * super-node lands either IN a stripe head chunk or in a NEW chunk whose RID is written into a directory slot,
+   * so pinning the whole list means the directory plus every chain of every generation. All of them are deleted
+   * by {@link #deleteAll} moments later, so - as on the classic layout - this only moves their pages into the
+   * transaction early enough for the commit-time version check to catch an append that raced the walk.
+   */
+  @Override
+  public void anchorForFullRemoval() {
+    // The DIRECTORY first, through its own anchored page: a stripe head flip rewrites a slot here, and reading
+    // the slots from the pinned version is what makes "every chain" mean the chains this transaction commits with.
+    directory = loadDirectoryForWrite();
+    for (int g = directory.getGenerationCount() - 1; g >= 0; g--)
+      for (int s = 0; s < directory.getStripes(g); s++) {
+        final RID headRID = directory.getHead(g, s);
+        if (headRID != null)
+          anchorChain(headRID);
+      }
+  }
+
   @Override
   public Iterator<Edge> edgeIteratorConnectedTo(final RID neighbor, final String... edgeTypes) {
     final MultiIterator<Edge> iterator = new MultiIterator<>();

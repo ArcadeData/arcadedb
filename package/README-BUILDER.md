@@ -71,6 +71,7 @@ The script will prompt for:
 - `grpcw` - gRPC wire protocol support
 - `graphql` - GraphQL API support
 - `metrics` - Prometheus metrics integration
+- `mcp` - Model Context Protocol server for LLM clients
 
 ## Usage Examples
 

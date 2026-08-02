@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeGeoIndexBuilder;
@@ -166,6 +167,27 @@ public class CreateIndexStatement extends DDLStatement {
 
     if (database.getSchema().existsIndex(name.getValue())) {
       if (ifNotExists) {
+        // The name this matched on is derived from the indexed property set alone, so it says nothing about what the
+        // index actually does. Answering "already exists" on the name only meant a NOTUNIQUE index reported success to
+        // a request for a UNIQUE one, and the migration that asked for the constraint carried on without it (#5675).
+        final Index existing = database.getSchema().getIndexByName(name.getValue());
+        final List<String> requestedProperties = List.of(fields);
+
+        // Reachable only through a manual index name: the auto-derived form above is built from the type name and the
+        // property list, so a name match implies both already match. Index names are global, so a manual one can name
+        // an index on ANOTHER type, or on other properties of this one - either way it is a different index, and
+        // answering "already exists" would leave the requested one uncreated with nothing said about why.
+        if (!existing.getTypeName().equals(typeName.getStringValue())
+            || !existing.getPropertyNames().equals(requestedProperties))
+          throw new IllegalArgumentException(
+              "Cannot create the index '" + name.getValue() + "' on type '" + typeName.getStringValue() + "' properties "
+                  + requestedProperties + " because an index with that name already exists on type '" + existing.getTypeName()
+                  + "' properties " + existing.getPropertyNames() + ". Drop it first or choose a different index name");
+
+        if (!IndexBuilder.satisfiesRequest(existing, indexType, unique))
+          throw IndexBuilder.conflictWithExistingIndex(existing, indexType, unique, typeName.getStringValue(),
+              requestedProperties);
+
         final InternalResultSet rs = new InternalResultSet();
         final ResultInternal result = new ResultInternal(context.getDatabase());
         result.setProperty("operation", "create index");

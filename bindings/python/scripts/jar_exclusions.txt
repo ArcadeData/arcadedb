@@ -23,7 +23,10 @@ arcadedb-tracing-*.jar
 jline-*.jar
 # Server mode removed 2026-07-05 (embedded-only package; use the official
 # ArcadeDB server distribution/Docker image for client-server deployments).
-# micrometer was only kept for server startup, so it goes with the stack:
+# micrometer was only kept for server startup, so it goes with the stack.
+# arcadedb-mcp is a server plugin: every class in it references com.arcadedb.server.*, so it is dead
+# weight (and unloadable) once the server jar is gone.
+arcadedb-mcp-*.jar
 arcadedb-server-*.jar
 arcadedb-studio-*.jar
 undertow-*.jar

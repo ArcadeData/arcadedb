@@ -43,6 +43,22 @@ public interface CountOp {
   String[] edgeTypes();
 
   /**
+   * Whether this operator can enumerate the set of vertices it starts from.
+   * <p>
+   * Every operator here anchors its walk on one labelled position of the pattern and enumerates that label's
+   * buckets - {@code MATCH (a:Person)-[:KNOWS]->(b)} starts from the {@code Person} vertices. An <b>unlabelled</b>
+   * anchor has no bucket set to enumerate, and each operator reads that missing set as an empty one and answers
+   * <b>0</b>, which for {@code MATCH (a)-[:KNOWS]->(b) RETURN count(*)} is a wrong answer rather than a slow one
+   * (issue #5715).
+   * <p>
+   * An operator that cannot enumerate its anchors is not built at all, and the ordinary materialization pipeline -
+   * which starts from every vertex - answers the query instead.
+   */
+  default boolean canEnumerateAnchors() {
+    return true;
+  }
+
+  /**
    * Returns the prettyPrint description for execution plan display.
    */
   String describe(int depth, int indent);

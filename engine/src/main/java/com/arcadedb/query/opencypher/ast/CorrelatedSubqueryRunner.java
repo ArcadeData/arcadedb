@@ -96,16 +96,28 @@ public final class CorrelatedSubqueryRunner {
    * @param context  the outer command context
    */
   public static ResultSet run(final CypherStatement body, final Result outerRow, final CommandContext context) {
+    return planFor(body, context).executeWithSeedRow(seedRow(outerRow), context);
+  }
+
+  /**
+   * How many rows {@code body} produces against {@code outerRow}, which is all {@code COUNT { }} wants.
+   * <p>
+   * Asking for the number rather than for the rows is what lets a body whose row count is its match count be
+   * answered by a count push-down instead of a materialized scan (issue #5715). A body that is not of that shape
+   * produces its rows and they are counted, exactly as {@link #run} would.
+   */
+  public static long countRows(final CypherStatement body, final Result outerRow, final CommandContext context) {
+    return planFor(body, context).countRows(seedRow(outerRow), context);
+  }
+
+  private static CypherExecutionPlan planFor(final CypherStatement body, final CommandContext context) {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final Map<String, Object> parameters = context.getInputParameters();
 
     // No physical plan: the optimizer is keyed on a query string this body never had, and the seed row is exactly the
     // input the physical operators do not model. The step chain is built per row, as it is for a CALL { } body.
-    final CypherExecutionPlan plan = new CypherExecutionPlan(database, body,
-        parameters != null ? parameters : Map.of(), database.getConfiguration(), null,
-        OpenCypherQueryEngine.getExpressionEvaluator());
-
-    return plan.executeWithSeedRow(seedRow(outerRow), context);
+    return new CypherExecutionPlan(database, body, parameters != null ? parameters : Map.of(),
+        database.getConfiguration(), null, OpenCypherQueryEngine.getExpressionEvaluator());
   }
 
   /**

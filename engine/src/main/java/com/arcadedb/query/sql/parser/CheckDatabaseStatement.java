@@ -25,11 +25,13 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -37,6 +39,16 @@ import java.util.stream.Collectors;
 public class CheckDatabaseStatement extends SimpleExecStatement {
   public final Set<BucketIdentifier> buckets  = new HashSet<>();
   public final Set<Identifier>       types    = new HashSet<>();
+  /**
+   * #5680: {@code RECORD} scope. When set, the check visits ONLY these records instead of scanning whole types -
+   * the cheap answer to "one vertex's edge list is broken and the vertex cannot be deleted", which the strict
+   * {@code GraphEngine.deleteVertex} points operators at. In fix mode the adjacency of each listed vertex is
+   * rebuilt from the surviving edge records exactly as the type-wide check does.
+   * <p>
+   * Cannot be combined with {@code TYPE} or {@code BUCKET}: the grammar accepts the combination, but
+   * {@link DatabaseChecker#check()} rejects it rather than silently letting one scope win.
+   */
+  public final Set<Rid>              records  = new LinkedHashSet<>();
   public       boolean               fix      = false;
   public       boolean               compress = false;
 
@@ -52,12 +64,23 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     if (context.getDatabase().isTransactionActive())
       context.getDatabase().rollback();
 
+    if (!records.isEmpty() && (!types.isEmpty() || !buckets.isEmpty()))
+      // Checked HERE, before the RIDs are resolved, even though DatabaseChecker.check() guards it too: resolving
+      // first means a scope whose RIDs do not resolve reports "none of them resolves to a RID" for a statement
+      // whose actual problem is the clause combination. Diagnose the outer mistake first.
+      throw new IllegalArgumentException(DatabaseChecker.RECORD_SCOPE_CONFLICT_ERROR);
+
     final DatabaseChecker checker = createChecker(context);
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
     checker.setTypes(types.stream().map(x -> x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'") ?
         x.getStringValue().substring(1, x.getStringValue().length() - 1) :
         x.getStringValue()).collect(Collectors.toSet()));
+    // Nulls are passed THROUGH rather than filtered here: toRecordId answers null for a RID form that evaluates to
+    // nothing, and setRecords owns both the filtering and the refusal of a scope that resolves to nothing - it is
+    // the last place that can tell "named records, none usable" from "named no records" (#5680).
+    checker.setRecords(records.stream().map(x -> x.toRecordId((Result) null, context))
+        .collect(Collectors.toCollection(LinkedHashSet::new)));
     checker.setFix(fix);
     checker.setCompress(compress);
 
@@ -110,6 +133,16 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
         if (i > 0)
           builder.append(",");
+      }
+    }
+
+    if (!records.isEmpty()) {
+      builder.append(" RECORD ");
+      final Iterator<Rid> iterator = records.iterator();
+      for (int i = 0; iterator.hasNext(); i++) {
+        if (i > 0)
+          builder.append(",");
+        iterator.next().toString(params, builder);
       }
     }
 

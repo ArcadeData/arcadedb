@@ -133,6 +133,31 @@ public class FullTextIndexMetadata extends IndexMetadata {
     return new FullTextIndexMetadata(typeName, propertyNames, bucketId);
   }
 
+  /**
+   * Carries the analyzers, the query-parser options and the BM25 configuration over, per-field entries included: those
+   * are keyed by property name, which a copy keeps.
+   * <p>
+   * The corpus counters are NOT copied. They describe the documents indexed so far, and the copy is about to index a
+   * different set - starting from none - so inheriting them would skew every BM25 score until something recomputed
+   * them. A fresh instance starts at {@code countersValid == false}, which is the state that makes the first query
+   * validate them against the live data.
+   */
+  @Override
+  public FullTextIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    final FullTextIndexMetadata copy = copyCommonTo(new FullTextIndexMetadata(typeName, propertyNames, bucketId));
+    copy.analyzerClass = analyzerClass;
+    copy.indexAnalyzerClass = indexAnalyzerClass;
+    copy.queryAnalyzerClass = queryAnalyzerClass;
+    copy.allowLeadingWildcard = allowLeadingWildcard;
+    copy.defaultOperator = defaultOperator;
+    copy.fieldAnalyzers.putAll(fieldAnalyzers);
+    copy.similarity = similarity;
+    copy.bm25K1 = bm25K1;
+    copy.bm25B = bm25B;
+    copy.fieldBoosts.putAll(fieldBoosts);
+    return copy;
+  }
+
   @Override
   public void fromJSON(final JSONObject metadata) {
     if (metadata.has("typeName"))

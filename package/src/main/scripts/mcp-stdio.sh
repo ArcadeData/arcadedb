@@ -73,4 +73,4 @@ exec "$JAVA" $JAVA_OPTS \
     $JAVA_OPTS_SCRIPT \
     $ARCADEDB_SETTINGS \
     -cp "$ARCADEDB_HOME/lib/*" \
-    $ARGS com.arcadedb.server.mcp.MCPStdioServer "$@"
+    $ARGS com.arcadedb.mcp.MCPStdioServer "$@"

@@ -104,8 +104,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
    * @param propertyNames indexed properties of the copy
    * @param bucketId      associated bucket, or -1 when not bound yet
    */
+  @Override
   public LSMVectorIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
-    final LSMVectorIndexMetadata copy = new LSMVectorIndexMetadata(typeName, propertyNames, bucketId);
+    final LSMVectorIndexMetadata copy = copyCommonTo(new LSMVectorIndexMetadata(typeName, propertyNames, bucketId));
     copy.dimensions = dimensions;
     copy.similarityFunction = similarityFunction;
     copy.quantizationType = quantizationType;
@@ -126,7 +127,6 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     copy.pqClusters = pqClusters;
     copy.pqCenterGlobally = pqCenterGlobally;
     copy.pqTrainingLimit = pqTrainingLimit;
-    copy.collations = collations;
     return copy;
   }
 

@@ -1699,5 +1699,301 @@ One part of this is rebuild-gated. An unreadable vector is no longer encoded int
 placeholder, but an index built before this release keeps the codes it already has, so PQ navigation past such a
 vector stays slightly degraded until the next graph rebuild. Results are correct either way - what a query may return
 is decided by the live-vector filter, not by the codes.
+## Deleting a vertex no longer loses an edge appended while the delete was running
+
+The two changes above closed this window from the removal side: a piece of an edge list that cannot be read is now a
+retryable conflict rather than "nothing to remove here". They could not close it from the *append* side, and the same
+corruption arrived from there.
+
+`DELETE VERTEX` is a read-modify-write over the whole edge list: collect every edge, disconnect each one from the
+vertex at its other end, drop the chunk records, delete the vertex record. Only the *write* half left an MVCC
+footprint. The collection walked the chain through a plain record lookup, which under `READ_COMMITTED` does not retain
+the pages it reads, while the removals and the chunk drain captured each page only later - at whatever version it had
+by then. An edge appended in between was therefore already part of the page the delete rewrote and then deleted: the
+commit-time version check compared the newer version against itself, found no conflict, and committed. The vertex was
+gone, the chunk holding the new edge was gone with it, and the edge record survived with a live `out` and an `in`
+naming a record that no longer exists. `check database` reports it as an invalid link.
+
+Nothing in the collection could have caught it: the edge did not exist when the walk ran. Measured on four hubs of a
+hundred edges each with six appender threads racing four deleter threads, a surviving edge appeared in roughly one
+round in three, and reproduced identically on the commit before #5680 - it is a pre-existing defect, not a regression
+from that fix.
+
+A vertex delete now pins, in its own transaction, everything its edge list can grow through, at the version it reads
+the list at:
+
+- **Every chunk page of the list**, not just the head. An appender resolves the head from its own handle of the
+  vertex, so a handle taken before a head flip appends into a chunk that is no longer the head but is still in the
+  chain. This costs nothing at the peak - the drain deletes every one of those chunks anyway, so their pages end up in
+  the transaction regardless; the pin only brings them in early enough to be worth something. On a promoted super-node
+  (#5156) the same applies to the stripe directory and to every chain of every generation.
+- **The vertex's own head pointers**, re-read through their page just before the record is deleted. An append that
+  finds the head chunk full writes no chunk at all: it creates a new one and records it in the vertex record, so the
+  chunk pins see nothing. If either head moved since the collection, the delete is refused.
+
+**Visible effect.** As with the two changes above, `vertex.delete()` / `DELETE VERTEX` can now raise a retryable
+`ConcurrentModificationException` where it previously "succeeded" while losing an edge. It is a `NeedRetryException`,
+so `database.transaction(...)` and the server's auto-retry for single-request commands absorb it - the retry re-reads
+the list, finds the appended edge, and deletes it with the rest. The one place it surfaces is the one described for
+the two changes above: a **client-managed explicit transaction over `RemoteDatabase`** spans several HTTP requests, so
+its commit is not auto-retried and the exception reaches the caller, who should retry the transaction. That is the
+contract concurrent updates have always had; what is new is that a vertex delete racing an append is now one of the
+operations that can raise it, instead of quietly committing a graph with an edge pointing at a vertex that is gone.
+Both checks are skipped under the internal `force` delete, which is unchanged: `force` means "this record is known
+broken, get it out", and the surviving references are the price its caller accepts.
+
+Two tolerances are deliberately preserved. A vertex whose own record buffer cannot be decoded has no head to compare,
+so the head check does not apply to it - failing there would make it undeletable again, which is what #4420 and #4432
+fixed. And under `force`, a pin that cannot complete still leaves a usable list behind, so the tolerant walk collects
+what it can and the chunk drain still runs.
+
+**Not addressed here.** `deleteVertex` still materialises every edge into a list before deleting any of them. That is
+unchanged behaviour and predates all of this; the two-phase shape exists precisely *because* the removals relink and
+delete chunks underneath the walk, so streaming it means walking a list while it is being restructured - the class of
+problem this whole series is about. It is tracked separately.
+## Cypher: the two count push-downs now agree, and neither drops a `SKIP` or scans to answer 0
+
+Counting in Cypher was served by two independent push-downs - the O(1) `Type.count()` one and the CSR one that
+propagates path counts through the adjacency arrays - reached from different places and agreeing on neither their
+preconditions nor their entry points. Issue #5715 collected five consequences of that; fixing them uncovered two more.
+
+### `RETURN count(*) LIMIT 0` returns no rows
+
+`SKIP`, `LIMIT` and `ORDER BY` are fields of the statement rather than clauses in its clause list, so the check that
+was supposed to see them - a walk of the clause list - could not. The CSR push-down returns a step that replaces the
+whole chain, so the `SKIP` and `LIMIT` steps were never built and
+
+```cypher
+MATCH (a:Q)-[:LINKS]->(b:Q) RETURN count(*) AS c LIMIT 0
+```
+
+came back with a row holding the count. So did `SKIP 1`. Neo4j applies both to the one-row aggregate result and
+returns nothing for either, and so does the other push-down, so the engine disagreed with itself.
+
+Both are now applied to the row a push-down produces rather than used to refuse the statement that carries them, so a
+count written with a harmless `LIMIT 1` keeps the fast path instead of falling back to a scan. `ORDER BY` still sends
+the statement to the ordinary pipeline, which is the only thing here that knows what an aggregate alias sorts by.
+
+### `MATCH (m:Label) RETURN count(*)` no longer scans
+
+Three shapes were answered by a full scan for a number the type counter already held:
+
+- `MATCH (m:Big) RETURN count(m)` written on its own. The type-count push-down was only reachable from the planner
+  path a top-level query takes when the cost-based optimizer *declines* it - and a single-label `MATCH ... RETURN
+  count(v)` is exactly what the optimizer accepts. The same body inside `COLLECT { }` was answered in O(1); the plain
+  query was not.
+- `MATCH (m:Big) RETURN count(*)`, and `MATCH (:Big) RETURN count(*)`. The type-count detector required the argument
+  to name the MATCH variable, and every `count(*)` detector required at least one relationship, so a single-node
+  pattern with `count(*)` - the spelling Neo4j documents - was claimed by neither.
+- `COUNT { MATCH (m:Big) }` and `COUNT { (m:Big) }`. A body with no `RETURN` of its own is normalised to one row per
+  match and the expression counted those rows. `COUNT { }` now asks for the number rather than for the rows, so a body
+  whose `RETURN` preserves the row count - absent, or neither aggregating nor `DISTINCT` - is answered by the same
+  push-downs.
+
+Both push-downs are now reached through one entry point, from every planner path, which is also what keeps their
+preconditions from drifting apart again.
+
+### A pattern that cannot match is answered without reading anything
+
+The CSR push-down was applied with no cost check at all. 100 vertices with no edge between them cost 200 record reads
+to answer 0, and an edge type absent from the schema cost the same. A count over a pattern whose non-optional part
+names a node label or relationship type that is undeclared, or that holds no record, is now answered with 0 directly.
+
+A `LIGHTWEIGHT` edge type is excluded from that test: it stores its edges in the vertices' edge lists and writes no
+edge record, so its counter is 0 while its edges are there to be counted.
+
+### Two wrong answers, found while doing the above
+
+Both come from the same place - the helper that builds a node label's bucket set returned `null` both for "no label
+was given, so do not filter" and for "the label is declared but does not exist, so nothing matches", and its callers
+did not agree on which one they had been handed.
+
+- `MATCH (a)-[:LINKS]->(b) RETURN count(*)` answered **0**. Every CSR operator walks out from one labelled position of
+  the pattern and enumerates that label's buckets; an unlabelled anchor left it with no set to enumerate, which each
+  operator read as an empty one. A pattern with no label on its first node is no longer given to these operators.
+- `MATCH (a:Q)-[:LINKS]->(b:NoSuchLabel) RETURN count(*)` answered the count **without the filter** - 2, for a pattern
+  that produces no row at all. The undeclared hop label is now recognised as unmatchable.
+
+Neither shape had a test. Both are counted correctly now, and a count over a pattern that does match is unchanged.
+### `CHECK DATABASE RECORD <rid>`: check and repair named records only (#5680)
+
+`CHECK DATABASE` could be narrowed to a `TYPE` or a `BUCKET`, but not to a record. That became the sharp edge of
+the strict vertex delete above: a genuinely broken edge chain makes its vertex undeletable until
+`CHECK DATABASE ... FIX` rebuilds the adjacency from the surviving edge records, and the smallest way to ask for
+that repair was two full passes over the whole vertex type. The new `RECORD` scope visits only the records listed:
+
+```sql
+CHECK DATABASE RECORD #12:3 FIX
+CHECK DATABASE RECORD #12:3, #12:9 FIX
+```
+
+The per-record work and the fix are identical to the type-wide run, including rebuilding a vertex's edge list from
+the surviving edge records. It combines with `FIX` and `COMPRESS`, and is rejected when combined with `TYPE` or
+`BUCKET` - `RECORD` is already the narrowest scope, so the combination has no sensible meaning and silently
+letting one win would run a check nobody asked for. The database-wide passes (buckets, external properties,
+indexes) and the orphaned-segment reclaim are skipped, since none can be narrowed to a record.
+
+Three costs a record scope does **not** bound, worth knowing before reaching for it:
+
+- `COMPRESS` is unaffected by the scope and still compresses the **whole database**. It is opt-in, but it is the
+  one clause that breaks the "naming a record bounds the cost" promise, so do not pair `RECORD ... COMPRESS`
+  expecting a cheap run;
+- rebuilding an adjacency means finding every surviving edge that points at the vertex, and no index maps
+  endpoints back to edges, so the scoped run saves the vertex passes but still scans the edge types - once per
+  distinct vertex **type** named, so naming ten vertices of one type costs one sweep while naming one vertex of
+  each of three types costs three;
+- if a listed record turns out to be *corrupted*, every index on its bucket is dropped and rebuilt, which is a
+  full bucket scan. That matches the type-wide semantics and only fires on genuine corruption - an edge-list
+  rebuild alone deletes no record and triggers none of it - but `RECORD` bounds the check, not necessarily the fix.
+## Copying a type copies its records and its index definitions, not just their names
+
+`Schema.copyType()` - what `DocumentType` → `VertexType` conversion goes through - was reported as losing the page
+size of every index on the copy (#5723). It was, and that turned out to be the least of it. The same thirty lines held
+three defects, and the two that were not reported are the ones that made the copy wrong rather than differently tuned.
+
+**The copy had no data in its indexes.** The indexes were created inside the transaction that copies the records.
+`TypeIndexBuilder.create()` builds each bucket's index in its own transaction (`joinCurrent=false`), which from inside
+an enclosing transaction neither sees the records still pending in it nor commits the entries it produces. So every
+index on the copy came out empty, and any query the planner routed through one answered nothing - silently, since an
+empty index is indistinguishable from a type with no matching rows:
+
+```java
+schema.copyType("Doc", "Doc2", LocalVertexType.class, 1, 65_536, 1_000);
+database.query("sql", "SELECT FROM Doc2 WHERE k = 'v1'");   // 0 rows, and the record is right there
+```
+
+The index build now runs after the record-copy transaction has committed.
+
+**The copied records were empty.** `ImmutableDocument.propertiesAsMap()` was the one accessor of that class that did
+not lazy-load: it answered `Collections.emptyMap()` whenever the record had not been materialised yet, which is the
+state of every record handed out by `iterateType()` and `scanBucket()`. `copyType()` reads each source record that
+way, so it faithfully created the right *number* of records, each with no properties. The same silent emptiness
+affected a `DetachedDocument` built off a record straight from a scan. `propertiesAsMap()` now loads first, like
+`get()`, `has()`, `getPropertyNames()` and `toJSON()` already did; the empty map remains the answer only for a record
+that genuinely cannot be materialised.
+
+**And the index definitions were rebuilt from three attributes.** The copy went through the three-argument
+`createTypeIndex` overload, so the index type, the uniqueness flag and the property list survived and everything else
+was replaced by a default: the tuned page size from the report, the null strategy, the collations that make a lookup
+case-insensitive, and the entire type-specific configuration. That last one is not a tuning difference - a copied
+`FULL_TEXT` index tokenized and ranked with the default analyzer instead of the configured one, a copied `GEOSPATIAL`
+index dropped to the default geohash resolution, and a copied `LSM_VECTOR` index came up with `dimensions` 0.
+
+Carrying a definition into a new index file now has an accessor of its own, `IndexInternal.getMetadataForNewFile()`,
+alongside the `getPageSizeForNewFile()` that #5713 introduced for the page size. It exists because `getMetadata()`
+cannot answer this question for the wrapper index types: a full-text index keeps its analyzers and BM25 parameters in
+its own `FullTextIndexMetadata` and a geospatial one keeps its resolution and layout in plain fields, while
+`getMetadata()` delegates to the underlying LSM-Tree and hands back a definition with none of it. `IndexMetadata.copy()`
+is now polymorphic across all five metadata classes, so each carries its own settings and there is no second field list
+to forget. Per-index runtime state deliberately does not ride along: the copy starts empty, so inheriting the dense
+vector index's build state or the full-text corpus counters would describe a different set of records.
+
+A user-supplied index name is the one attribute not carried over. It is unique across the schema and still belongs to
+the source type, so the copy takes the auto-derived `NewType[properties]` form rather than colliding with it.
+
+**One behaviour change reaches outside `copyType()`.** `LSMVectorIndexMetadata.copy()` already existed and carried only
+the collations; routing it through the shared `copyCommonTo()` means it now also carries the user-supplied index name.
+Its other caller is `TRUNCATE TYPE`, which drops and recreates each index from its own definition - so a manually named
+`LSM_VECTOR` index now keeps its name across a truncate, where before it came back under the auto-derived
+`Type[properties]` form. Nothing else was affected: every other index type already kept its name there, because that
+path hands the original metadata object straight back rather than copying it.
+
+The other sites that rebuild an index from its own definition - `TRUNCATE TYPE`, `CHECK DATABASE FIX`, and the
+propagation to a freshly added bucket or sub type - still read `getMetadata()` and so still lose a full-text or
+geospatial configuration. They are unchanged here and tracked separately: each is a distinct user-visible operation and
+deserves its own regression test rather than riding along with this one. `REBUILD INDEX` is already correct; it
+reconstructs the typed metadata from the persisted JSON.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
+
+## `CREATE INDEX IF NOT EXISTS` no longer reports success for an index that is not the one asked for
+
+`IF NOT EXISTS` matched a pre-existing index on the indexed property set alone. The property set is what the index
+name is derived from, and it says nothing about what the index does, so a `NOTUNIQUE` index answered "already there"
+to a request for a `UNIQUE` one:
+
+```sql
+CREATE INDEX ON T (Scalar) NOTUNIQUE;
+CREATE INDEX IF NOT EXISTS ON T (Scalar) UNIQUE;   -- reported success, created no constraint
+INSERT INTO T SET Scalar = 'x';
+INSERT INTO T SET Scalar = 'x';                    -- accepted
+```
+
+Schema-migration DDL uses `IF NOT EXISTS` precisely so it can be re-applied, so tightening an index from `NOTUNIQUE`
+to `UNIQUE` did nothing while the application carried on believing a uniqueness constraint protected its data. Issue
+#5675. The same statement without the guard reported the clash, which is what made the guard the thing suppressing an
+error the server already knew how to raise.
+
+`IF NOT EXISTS` is now satisfied only when the existing index provides what was asked for: the same index kind, and a
+uniqueness constraint at least as strong.
+
+- A `UNIQUE` index still satisfies a `NOTUNIQUE` request. It indexes exactly the same keys, so the statement stays the
+  no-op it was, and it is never weakened into a plain index.
+- A `NOTUNIQUE` index no longer satisfies a `UNIQUE` request. The statement is refused, naming both definitions.
+- An index of a different KIND on the same properties - a `FULL_TEXT` index where a range index was asked for, or the
+  reverse - is refused for the same reason. That one was silent too.
+
+### An existing index is never dropped implicitly any more
+
+The refusal is the answer even in the case the request could technically be granted by rebuilding. Underneath,
+`TypeIndexBuilder.create()` with `withIgnoreIfExists(true)` used to drop the existing index and rebuild it with the
+requested definition. That is not a recoverable operation: if the rebuild then fails on the data already stored - two
+records sharing the key the new index has to keep unique - the type is left with **no index at all** and an error. On
+an index the type only inherited it took away the parent type's index instead, which is issue #4083.
+
+So `withIgnoreIfExists` now means only what it says. Callers that genuinely mean "make this the definition" opt in
+explicitly:
+
+```java
+database.getSchema().buildTypeIndex("T", new String[] { "Scalar" })
+    .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+    .withReplaceIfIncompatible(true)     // new: may take away the plain index on those properties
+    .create();
+```
+
+and even then the replacement is undone if the new index cannot be built, so a failed upgrade costs an error rather
+than an index. An inherited index is still never replaced.
+
+### Cypher: a uniqueness constraint over a plain index still upgrades it
+
+`CREATE CONSTRAINT ... REQUIRE ... IS UNIQUE` and `... IS NODE KEY` are statements about the data rather than requests
+to create an index if one is missing, so they are the callers that opt into the replacement above. Neo4j keeps the
+range index and the constraint as two separate objects; ArcadeDB has one index per property set and a unique index
+covers both roles, so the upgrade is the equivalent end state and a Neo4j migration script that creates indexes and
+then constraints keeps working. Cypher's own `CREATE INDEX` does not opt in: it finds a unique index sufficient and
+leaves it alone rather than replacing it with a plain one.
+
+### A manual index name that already names a different index
+
+Reachable only through `CREATE INDEX <name> IF NOT EXISTS ...`, since the auto-derived name is built from the property
+list. A name that already belongs to an index on other properties used to satisfy the guard; it is now reported, since
+two different property sets under one name are two different indexes.
+
+### The index kind is now read before the existing-index lookup
+
+`TypeIndexBuilder.create()` validates `indexType` at the top, because deciding whether the index already on those
+properties covers the request needs to know what the request is. One embedded-API shape changes as a result: a builder
+with **no** `withType(...)` and `withIgnoreIfExists(true)` used to hand back the existing index on those properties,
+and now raises `DatabaseMetadataException` the way it always did when no index was there. Every in-tree caller sets the
+type; a get-or-create helper that relied on omitting it has to pass the type it expects.
+
+A failed replacement restores the page size along with the rest of the definition, via `getPageSizeForNewFile()` - the
+same accessor a rebuild uses, so a page size the current file carries but creation would refuse cannot turn the restore
+into a second failure (#5713).
+
+### BREAKING: `getOrCreateTypeIndex` no longer upgrades an incompatible index
+
+This one surfaces at runtime rather than at compile time, so it is the change embedded callers are most likely to meet
+without warning.
+
+`LocalSchema.getOrCreateTypeIndex(...)` sets `withIgnoreIfExists(true)`, so it inherits the change above: asked for a
+`UNIQUE` index where a `NOTUNIQUE` one already covers those properties, it used to drop and rebuild, and now raises
+`IllegalArgumentException` naming both definitions. That is the point of the fix - the rebuild is what could leave the
+type with no index - but embedded callers using it as an "ensure this index" helper across a schema change are the ones
+who will meet the new exception. Either drop the old index explicitly, or build through
+`buildTypeIndex(...).withReplaceIfIncompatible(true)` if replacing it really is what you mean.
+
+The replacement restores the previous definition on failure, including a manual index name (carried on the index
+metadata, the same route `CREATE INDEX <name>` uses) and the page size. It is not atomic, though: the drop and the
+build are separate schema changes, so a process that dies between them leaves the type without an index on those
+properties until one is created again. Only an explicit `withReplaceIfIncompatible` is exposed to that window.

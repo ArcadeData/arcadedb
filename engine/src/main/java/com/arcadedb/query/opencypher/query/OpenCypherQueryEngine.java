@@ -506,6 +506,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withType(Schema.INDEX_TYPE.LSM_TREE);
       b.withUnique(true);
       b.withIgnoreIfExists(ddl.isIfNotExists());
+      // A constraint says what the data must satisfy, so a plain index already on the property is upgraded rather than
+      // reported as being in the way. Neo4j keeps the range index and the constraint as two objects; ArcadeDB has one
+      // index per property set, and a unique one indexes the same keys, so this is the equivalent end state (#5675).
+      b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
       b.create();
@@ -541,6 +545,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withType(Schema.INDEX_TYPE.LSM_TREE);
       b.withUnique(true);
       b.withIgnoreIfExists(ddl.isIfNotExists());
+      // Same reasoning as the UNIQUE arm above: NODE KEY is a constraint, so it upgrades a plain index on the same
+      // properties instead of colliding with it.
+      b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
       b.create();

@@ -81,6 +81,12 @@ public final class PairHashJoinOp implements CountOp {
     return allEdgeTypes;
   }
 
+  /** The build phase walks out from the build-start label; with none there is no set of start nodes to walk from. */
+  @Override
+  public boolean canEnumerateAnchors() {
+    return buildStartLabel != null;
+  }
+
   @Override
   @SuppressWarnings("unchecked")
   public long execute(final GraphTraversalProvider provider, final Database db) {
