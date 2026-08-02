@@ -631,11 +631,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
-    // The location index never evicts, so it will hold every live entry and is sized for exactly that. The
-    // intermediate is a long: `size() * 4` overflows int past ~536M entries, and a negative capacity would fail
-    // the rebuild rather than merely sizing the map badly.
-    final VectorLocationIndex rebuilt = new VectorLocationIndex(
-        (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) liveEntries.size() * 4 / 3 + 1)));
+    // The location index never evicts, so it will hold every live entry and is sized for exactly that: the hint is
+    // the live count itself, NOT the classic size*4/3 load-factor pre-adjustment. ConcurrentHashMap's constructor
+    // argument is an element-count estimate that it divides by the load factor itself (`initialCapacity +
+    // (initialCapacity >>> 1) + 1`, rounded up to a power of two), unlike HashMap's, which is a bucket count.
+    // Pre-adjusting on top of that provisioned ~1.33x more table than the rebuild can ever use.
+    final VectorLocationIndex rebuilt = new VectorLocationIndex(Math.max(16, liveEntries.size()));
     for (final VectorEntryForGraphBuild entry : liveEntries)
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
