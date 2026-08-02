@@ -47,7 +47,7 @@ import java.util.Set;
  * <b>Completeness is claimed for a shape, not in general.</b> The clause types modelled are {@code MATCH},
  * {@code RETURN}, {@code WITH} and {@code UNWIND}; every other one - anything that writes, a {@code FOREACH}, a
  * {@code CALL { }} clause, a {@code LOAD CSV} - makes the answer incomplete, at any nesting depth. The push-downs
- * the caller gates on require {@code hasOnlyMatchAndReturnClauses()}, a subset of those four, <i>and</i> a
+ * the caller gates on require {@code isMatchReturnOnlyStatement()}, a subset of those four, <i>and</i> a
  * {@code RETURN} of exactly one count item, which rules out the one {@code MATCH}/{@code RETURN} shape this class
  * declines - {@code RETURN *}. So a statement they would accept is always one this collector models. Nothing in the
  * code ties the two together, so {@code CypherUncorrelatedSubqueryCountPushDownIssue5686Test} asserts it rather than

@@ -60,6 +60,12 @@ public final class PropagateChainOp implements CountOp {
     return edgeTypes;
   }
 
+  /** The chain is walked from position 0, whose label is the only anchor set this operator knows how to build. */
+  @Override
+  public boolean canEnumerateAnchors() {
+    return nodeLabels[0] != null;
+  }
+
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db) {
     final int nodeCount = provider.getNodeCount();
