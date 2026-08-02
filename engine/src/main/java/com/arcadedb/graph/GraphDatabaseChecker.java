@@ -1351,14 +1351,13 @@ public class GraphDatabaseChecker {
      * not keep.
      */
     void warn(final String message) {
-      // Read BEFORE the record: addBounded grows the set, so "was it retained" cannot be asked afterwards. This
-      // deliberately mirrors addBounded's own boundary test rather than being told the answer - the two read the
-      // same size() before the same add(), so they cannot disagree. If addBounded's retention policy ever stops
-      // being "under the cap", this needs to learn the new answer rather than keep guessing it.
-      final boolean retaining = warnings.size() < maxWarnings;
       if (!CollectionUtils.addBounded(warnings, maxWarnings, message))
         return;
-      if (!retaining && verboseLevel > 0)
+      // The SET answers whether it was retained, so the cap rule stays in addBounded alone rather than being
+      // re-derived here: a new message that is absent AFTER the call is one the cap refused to keep. Asking before
+      // the call instead would mean mirroring addBounded's own boundary test, which is a second copy of the rule
+      // this class exists to have only one of.
+      if (verboseLevel > 0 && !warnings.contains(message))
         LogManager.instance().log(GraphDatabaseChecker.class, Level.WARNING, message);
       totalWarnings.incrementAndGet();
     }
