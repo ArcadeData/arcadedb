@@ -174,6 +174,7 @@ jobs:
 
       - name: Unit Tests Reporter
         uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        continue-on-error: true
         if: success() || failure()
         with:
           name: Unit Tests Report
@@ -229,6 +230,7 @@ jobs:
 
       - name: Unit Tests Reporter
         uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        continue-on-error: true
         if: success() || failure()
         with:
           name: Unit Tests Report
@@ -285,6 +287,7 @@ jobs:
 
       - name: IT Tests Reporter
         uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        continue-on-error: true
         if: success() || failure()
         with:
           name: IT Tests Report
@@ -339,6 +342,7 @@ jobs:
 
       - name: HA IT Tests Reporter
         uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        continue-on-error: true
         if: success() || failure()
         with:
           name: HA IT Tests Report
