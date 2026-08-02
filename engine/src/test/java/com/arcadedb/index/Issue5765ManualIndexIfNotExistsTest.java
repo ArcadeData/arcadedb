@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Component;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
@@ -61,6 +62,35 @@ public class Issue5765ManualIndexIfNotExistsTest extends TestHelper {
       RID_1 = database.newDocument("Doc").set("name", "one").save().getIdentity();
       RID_2 = database.newDocument("Doc").set("name", "two").save().getIdentity();
     });
+  }
+
+  /**
+   * The fix itself, asserted directly rather than inferred from the tests below happening to run: the index's file is
+   * resolvable through the schema by its id.
+   * <p>
+   * That resolution IS the failure this PR is about. {@code TransactionContext.commit2ndPhase} calls
+   * {@code getFileById} for every file whose page count the transaction changed, and it does so AFTER the WAL append -
+   * so an unregistered file did not fail the creation, it fenced the whole database for recovery. Asserting the
+   * registration pins the cause; asserting the database still commits afterwards pins the consequence, since every
+   * operation on a fenced database throws.
+   */
+  @Test
+  void aManualIndexRegistersItsFileAndLeavesTheDatabaseUsable() {
+    final IndexInternal index = (IndexInternal) database.getSchema().buildManualIndex("manualIdx",
+        new Type[] { Type.STRING }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
+
+    final Component component = index.getComponent();
+    assertThat(database.getSchema().getEmbedded().getFileById(component.getFileId()))
+        .as("the index's file must be resolvable by id, which is what the creating commit does past the WAL append")
+        .isSameAs(component);
+
+    // Not fenced: a fenced database refuses every operation, so a plain write that commits is the proof.
+    database.transaction(() -> database.newDocument("Doc").set("name", "after").save());
+    assertThat(database.countType("Doc", false)).isEqualTo(3L);
+
+    // And the index itself still works after that unrelated write.
+    database.transaction(() -> index.put(new Object[] { "a" }, new RID[] { RID_1 }));
+    database.transaction(() -> assertThat(index.get(new Object[] { "a" }).next()).isEqualTo(RID_1));
   }
 
   /**

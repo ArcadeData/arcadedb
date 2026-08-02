@@ -355,7 +355,11 @@ public abstract class IndexBuilder<T extends Index> {
    * satisfied by any index of the right kind and uniqueness, exactly as before.
    */
   public IndexBuilder<T> withUserMetadata(final JSONObject userMetadata) {
-    this.userMetadata = userMetadata;
+    // Deep-copied on the way in. The callers hand the SAME instance to withMetadata(JSONObject) and to this setter,
+    // and the two are read at different times: withMetadata reads it now, this one is read at create(). No
+    // withMetadata overload mutates the clause today, but a copy is a DDL-time cost of nothing and it means a future
+    // one could not silently change what a guarded request ends up comparing against.
+    this.userMetadata = userMetadata == null ? null : userMetadata.copy();
     return this;
   }
 
