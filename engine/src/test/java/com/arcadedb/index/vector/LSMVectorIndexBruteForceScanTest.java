@@ -129,7 +129,12 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
 
     // Capture WARNING logs to confirm the brute-force fallback actually fires.
     final List<String> captured = new CopyOnWriteArrayList<>();
-    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    // #5773: getLogger(), not reflection on the private field - the accessor exists for exactly this
+    // save-and-restore, and a field rename would break the reflective form with no compile error. NOTE that
+    // LogManager is a SINGLETON, so this swap is PROCESS-WIDE until the finally below restores it: safe only
+    // because surefire runs test classes sequentially within a fork. Under class-level parallelism a concurrent
+    // test's WARNING output would land in the list below. There is no per-invocation seam to capture through.
+    final Logger originalLogger = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new CapturingLogger(captured, originalLogger));
     try {
       // Query each surviving vertex with its own exact vector: the correct nearest neighbor is that

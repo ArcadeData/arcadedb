@@ -131,10 +131,11 @@ public class RebuildIndexStatement extends DDLStatement {
         }
       }
 
-      if (totalIndexed % 100000 == 0) {
-        System.out.print(".");
-        System.out.flush();
-      }
+      // Progress goes to the log, not to stdout: this runs inside the server process, where a dot written to
+      // System.out reaches nobody while still costing a flush on the build path (issue #5765). The live,
+      // pollable progress is the OperationProgress registered below.
+      if (totalIndexed % 100000 == 0)
+        LogManager.instance().log(this, Level.INFO, "Rebuilding indexes: %d records indexed so far", totalIndexed);
     };
 
     String indexName = null;

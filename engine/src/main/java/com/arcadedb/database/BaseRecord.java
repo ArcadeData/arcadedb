@@ -68,6 +68,14 @@ public abstract class BaseRecord implements Record {
     return buffer != null ? buffer.size() : -1;
   }
 
+  /**
+   * Reloads the record content from the page, re-applying the after-read events.
+   * <p>
+   * The buffer this installs is NOT positioned at the record's properties: positioning is the subclass's job, because
+   * only the subclass knows how long its fixed prefix is. {@link BaseDocument#reload()} seeks to
+   * {@code propertiesStartingPosition} after calling this, and every document/vertex/edge shape funnels through it. A
+   * future direct subclass that does not override this method inherits an unpositioned buffer.
+   */
   @Override
   public void reload() {
     if (rid != null && database.isOpen()) {
@@ -78,8 +86,11 @@ public abstract class BaseRecord implements Record {
         if (loaded == null) {
           buffer = null;
         } else if (loaded != this) {
-          // CREATE A BUFFER FROM THE MODIFIED RECORD
-          buffer = ((RecordInternal) loaded).getBuffer().copy();
+          // CREATE A BUFFER FROM THE MODIFIED RECORD, THE SAME WAY ImmutableDocument.checkForLazyLoading() DOES.
+          // TAKING getBuffer() INSTEAD WOULD DISCARD WHAT THE LISTENER DID: ON A DIRTY MutableDocument THAT BUFFER
+          // STILL HOLDS THE PRE-MODIFICATION CONTENT, AND IT IS null OUTRIGHT FOR A RECORD BUILT FROM SCRATCH.
+          // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER
+          buffer = database.getSerializer().serialize(database, loaded).getNotReusable();
         }
 
       } catch (final RecordNotFoundException e) {
