@@ -93,13 +93,30 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
     if ((e instanceof RecordNotFoundException || e instanceof SchemaException) &&//
         database.getMode() == ComponentFile.MODE.READ_WRITE) {
 
+      // #5694: the prune below is opportunistic - a best-effort cleanup of a reference whose edge is already gone,
+      // run from inside a READ. It opens a JOINED transaction, so when the caller already has one open the
+      // transaction it joins is the CALLER'S: a retryable condition inside the block makes LocalDatabase.transaction
+      // roll that transaction back and then begin, run and commit one of its own, and the caller - which only
+      // iterated edges - silently loses every write it made before the iteration. Nothing in a read API may end a
+      // transaction it did not open, so the ghost is left to a pass that owns its transaction, or to CHECK DATABASE.
+      //
+      // Skipping is also the right answer when nothing raises: the prune is a WRITE, and performing it inside the
+      // caller's transaction commits or rolls it back with the caller, dirties an edge-list page a read-only
+      // transaction never touched (the conflict unit is the page, so that page can cost the caller a conflict at
+      // commit), and under HA rides along in the caller's replicated transaction.
+      final boolean ownsTransaction = !database.isTransactionActive();
+      final String outcome = ownsTransaction ? "Fixing it..." : "Leaving it to a pass that owns its transaction.";
+
       if (fullStackTracePrinted < 10) {
         ++fullStackTracePrinted;
-        LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it...", e, edge,
-            vertex != null ? "vertex " + vertex : "");
+        LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. %s", e, edge,
+            vertex != null ? "vertex " + vertex : "", outcome);
       } else
-        LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it. Error: %s", edge,
-            vertex != null ? "vertex " + vertex : "", e.getMessage());
+        LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. %s Error: %s", edge,
+            vertex != null ? "vertex " + vertex : "", outcome, e.getMessage());
+
+      if (!ownsTransaction)
+        return;
 
       try {
         database.transaction(() -> {
