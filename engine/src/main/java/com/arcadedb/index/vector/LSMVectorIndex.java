@@ -3535,26 +3535,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // mapping (issue #4581).
     final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
     boolean added = false;
-    for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++) {
-      final int vectorId = ordinalMap[ordinal];
-      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-      if (loc == null || loc.deleted)
-        continue;
-      if (seenRIDs.contains(loc.rid))
-        continue;
-      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
-        continue;
 
-      // The location says the vector is live, but the read can still fail - a document whose vector property was
-      // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
-      // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
-      final VectorFloat<?> vec = vectors.getVector(ordinal);
-      if (vec == null || (pageValues != null && pageValues.isDeletedSentinel(vec)))
-        continue;
-
-      final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
-      results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, score)));
-      added = true;
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowedRIDs.size() < ordinalMap.length) {
+      // Walk the allow-list instead of every ordinal (issue #5748). An allow-list narrower than k never meets the
+      // caller's expected-result threshold, so the fallback fires on every query and the full ordinal walk costs
+      // O(index) each time. Resolving each allowed RID to its ordinals costs O(allow-list * log index) and reads
+      // only the vectors that can actually make the result set, which is where the time goes.
+      // The guard on size() is the crossover: an allow-list wider than the index would pay more reverse lookups
+      // than the plain scan pays ordinal steps, for the same answer.
+      final int[] candidates = collectAllowedOrdinals(allowedRIDs, ordinalMap);
+      for (final int ordinal : candidates)
+        added |= scoreOrdinal(ordinal, queryVectorFloat, allowedRIDs, results, vectors, ordinalMap, seenRIDs, pageValues);
+    } else {
+      for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++)
+        added |= scoreOrdinal(ordinal, queryVectorFloat, allowedRIDs, results, vectors, ordinalMap, seenRIDs, pageValues);
     }
 
     if (added) {
@@ -3562,6 +3556,71 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (results.size() > k)
         results.subList(k, results.size()).clear();
     }
+  }
+
+  /**
+   * Resolve an allow-list to the ordinals it occupies in {@code ordinalMap}, ascending.
+   * <p>
+   * {@code ordinalMap} is always sorted ascending - every producer of {@code ordinalToVectorId} builds it with
+   * {@code sorted()} because the ordinal order has to match the order the graph was persisted in - so the reverse
+   * lookup is a binary search and needs no per-query map. A RID with no live vector id, or one whose vector was
+   * ingested after the last rebuild and is therefore only in the delta buffer, simply contributes no ordinal.
+   * <p>
+   * The result is sorted so the caller scores in ordinal order, exactly the order the full scan uses. Distance ties
+   * would otherwise be broken by the allow-list's iteration order and the two paths could truncate to different
+   * RIDs at k.
+   */
+  private int[] collectAllowedOrdinals(final Set<RID> allowedRIDs, final int[] ordinalMap) {
+    // Start small and grow: the allow-list can be much larger than the number of RIDs actually resident in this
+    // index, and sizing the array for it up front would allocate for entries that never materialize.
+    int[] ordinals = new int[Math.min(allowedRIDs.size(), 256)];
+    int count = 0;
+    for (final RID rid : allowedRIDs) {
+      for (final int vectorId : vectorIndex.getVectorIdsForRid(rid)) {
+        final int ordinal = Arrays.binarySearch(ordinalMap, vectorId);
+        if (ordinal < 0)
+          continue;
+        if (count == ordinals.length)
+          ordinals = Arrays.copyOf(ordinals, count * 2);
+        ordinals[count++] = ordinal;
+      }
+    }
+    if (count < ordinals.length)
+      ordinals = Arrays.copyOf(ordinals, count);
+    Arrays.sort(ordinals);
+    return ordinals;
+  }
+
+  /**
+   * Score one ordinal into {@code results}, returning whether it was added. Both brute-force paths funnel through
+   * here so the allow-list walk and the full scan cannot drift apart on the deleted, duplicate and unreadable-vector
+   * guards.
+   */
+  private boolean scoreOrdinal(final int ordinal, final VectorFloat<?> queryVectorFloat, final Set<RID> allowedRIDs,
+      final List<Pair<RID, Float>> results, final RandomAccessVectorValues vectors, final int[] ordinalMap,
+      final RidHashSet seenRIDs, final ArcadePageVectorValues pageValues) {
+    final int vectorId = ordinalMap[ordinal];
+    final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+    if (loc == null || loc.deleted)
+      return false;
+    if (seenRIDs.contains(loc.rid))
+      return false;
+    // Redundant on the allow-list walk, which only ever resolves allowed RIDs, but it is what keeps the full scan
+    // filtered when the crossover guard sends a wide allow-list here, and it is the single place the membership rule
+    // lives for both paths.
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
+      return false;
+
+    // The location says the vector is live, but the read can still fail - a document whose vector property was
+    // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
+    // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
+    final VectorFloat<?> vec = vectors.getVector(ordinal);
+    if (vec == null || (pageValues != null && pageValues.isDeletedSentinel(vec)))
+      return false;
+
+    final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
+    results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, score)));
+    return true;
   }
 
   /**
