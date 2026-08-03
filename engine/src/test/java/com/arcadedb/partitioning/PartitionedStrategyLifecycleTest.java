@@ -33,8 +33,8 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.List;
 
-import static com.arcadedb.partitioning.WarningCapture.captureSevere;
-import static com.arcadedb.partitioning.WarningCapture.captureWarnings;
+import static com.arcadedb.log.WarningCapture.captureSevere;
+import static com.arcadedb.log.WarningCapture.captureWarnings;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
