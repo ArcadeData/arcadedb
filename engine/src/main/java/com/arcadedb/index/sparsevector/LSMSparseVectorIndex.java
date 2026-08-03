@@ -559,6 +559,16 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     return underlyingIndex.isCompacting();
   }
 
+  /**
+   * Delegated rather than left at the interface default: a sparse-vector posting key is a dimension identifier, so
+   * the key-order mismatch of #5802 should never arise here - but that is an invariant about the keys, not a property
+   * of this class, and answering {@code null} unconditionally would hide the mismatch if it ever did.
+   */
+  @Override
+  public String getUpgradeWarning() {
+    return underlyingIndex.getUpgradeWarning();
+  }
+
   @Override
   public boolean scheduleCompaction() {
     return underlyingIndex.scheduleCompaction();

@@ -57,8 +57,35 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   private static final int MAX_SERIES_CHECKED_ON_LOAD    = 2;
   private static final int MAX_PROBLEMS_REPORTED_ON_LOAD = 3;
 
-  /** The load-time key-order check runs once per loaded instance, not on every schema change that reloads the index. */
+  /**
+   * What an operator is told when the load-time check finds this file sorted under a different key order. Phrased as
+   * the {@code getUpgradeWarning()} contract asks: what is wrong and what it costs, not what to type - the schema
+   * load appends the {@code REBUILD INDEX} command naming the logical index.
+   */
+  private static final String KEY_ORDER_MISMATCH_WARNING =
+      "its pages are physically sorted in a different key order than the one lookups apply, which is the state an "
+          + "index written before the string key order was corrected (issue #5321) is left in when its keys hold "
+          + "non-ASCII characters: until it is rebuilt a lookup on it can return fewer records than a scan, or records "
+          + "of unrelated keys";
+
+  /**
+   * The other verdict the check can reach: it could not read what it needed. Distinct from silence, which would say
+   * the order was confirmed good - see the catch in {@link #checkKeyOrderOnLoad()}.
+   */
+  private static final String KEY_ORDER_UNVERIFIABLE_WARNING =
+      "its physical key order could not be verified when the database opened, so it is not known whether it matches "
+          + "the order lookups apply; run CHECK DATABASE for the full answer, or rebuild it to make the order correct "
+          + "by construction";
+
+  /**
+   * Whether the check has COMPLETED for this instance - not merely been attempted. It suppresses a re-run on every
+   * schema change that reloads the index, but a run that threw leaves it false on purpose so the next load tries
+   * again rather than latching a transient I/O failure into permanent advice (see {@link #checkKeyOrderOnLoad()}).
+   */
   private volatile boolean keyOrderCheckedOnLoad = false;
+
+  /** Set by {@link #checkKeyOrderOnLoad()} when the check found a mismatch, null otherwise. See {@link #getKeyOrderMismatch()}. */
+  private volatile String keyOrderMismatch = null;
 
   /**
    * The live {@link LSMTreeIndexUnderlyingCompactedSeriesCursor}s over this file, one entry per open cursor. Series
@@ -724,26 +751,54 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   /**
-   * Runs {@link #checkRootPagesKeyOrder(int, int)} once per loaded instance and reports the outcome as a WARNING, so an
-   * index left physically mis-ordered by an older build is reported at startup instead of silently under-returning on
-   * every lookup. Never propagates: a failure to run the check must not stop the database from opening.
+   * Runs {@link #checkRootPagesKeyOrder(int, int)} once per loaded instance and records the outcome, so an index left
+   * physically mis-ordered by an older build is reported at startup instead of silently under-returning on every
+   * lookup. Never propagates: a failure to run the check must not stop the database from opening.
+   * <p>
+   * The operator-facing report is {@link LSMTreeIndex#getUpgradeWarning()}, which the schema load logs once per
+   * LOGICAL index together with the {@code REBUILD INDEX} command that repairs it, and which
+   * {@code schema:indexes} exposes so the affected set can be queried rather than grepped out of a startup log
+   * (#5802). What stays here is the physical evidence - page and entry numbers of THIS bucket sub-index - which is
+   * support detail, not something an operator acts on, so it goes to FINE.
    */
   void checkKeyOrderOnLoad() {
     if (keyOrderCheckedOnLoad)
       return;
-    keyOrderCheckedOnLoad = true;
 
     try {
       final List<String> problems = checkRootPagesKeyOrder(MAX_SERIES_CHECKED_ON_LOAD, MAX_PROBLEMS_REPORTED_ON_LOAD);
+      // A completed run always publishes the definitive verdict, INCLUDING the clean one: it is what clears a stale
+      // "could not be verified" left by an earlier attempt that failed.
+      keyOrderMismatch = problems.isEmpty() ? null : KEY_ORDER_MISMATCH_WARNING;
+      keyOrderCheckedOnLoad = true;
       if (!problems.isEmpty())
-        LogManager.instance().log(this, Level.WARNING,
-            "Index '%s' is physically ordered differently than the current key comparator, so lookups can return fewer (or foreign) records than a scan: run 'REBUILD INDEX %s'. Details: %s",
-            null, getName(), getName(), problems);
+        LogManager.instance().log(this, Level.FINE,
+            "Index '%s' is physically ordered differently than the current key comparator. Details: %s", null, getName(),
+            problems);
     } catch (final Exception e) {
+      // A check that could not run must not be reported as a clean one: leaving this null would send an operator back
+      // to grepping the startup log, which is what this path exists to remove. Rebuilding is a valid response to
+      // "unverifiable" too - it makes the order correct by construction - so the remedy the advisory names holds.
+      //
+      // Deliberately WITHOUT setting keyOrderCheckedOnLoad, so the next load of this component retries. This callback
+      // runs on every component load, including the Raft apply path on a replica and a snapshot resync, where a page
+      // read can fail transiently; the component instance is reused across those loads, so latching the failure would
+      // pin false "needs rebuild" advice on a healthy index for the lifetime of the database. The retry costs the
+      // bounded root-page read again and only in the already-failing case, and a later success clears the verdict.
+      keyOrderMismatch = KEY_ORDER_UNVERIFIABLE_WARNING;
       LogManager.instance()
-          .log(this, Level.FINE, "Error on checking the key order of index '%s' at load time (%s)", null, getName(),
-              e.getMessage());
+          .log(this, Level.WARNING, "Cannot verify the physical key order of index '%s', retrying on the next load (error=%s)",
+              null, getName(), e.getMessage());
     }
+  }
+
+  /**
+   * The verdict of {@link #checkKeyOrderOnLoad()}, or {@code null} when it found nothing or could not run. Reading a
+   * cached field is what lets {@link LSMTreeIndex#getUpgradeWarning()} honour its "cheap and side-effect free"
+   * contract: it is called per index on every schema listing and must not touch a page to answer.
+   */
+  String getKeyOrderMismatch() {
+    return keyOrderMismatch;
   }
 
   /**

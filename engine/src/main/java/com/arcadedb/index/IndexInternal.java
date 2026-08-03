@@ -218,11 +218,14 @@ public interface IndexInternal extends Index {
   /**
    * Returns a human-readable reason why this index should be rebuilt, or {@code null} when there is none.
    * <p>
-   * An index whose on-disk layout predates a change the engine cannot apply in place keeps working with the old
-   * layout - correctness first - but does not get whatever the new one buys. This is how it says so: the schema
-   * load logs it once per database open, and it is exposed as {@code upgradeWarning} on {@code schema:indexes} and
-   * {@code schema:index:<name>}, which is what Studio renders. The remedy is always
-   * {@code REBUILD INDEX &lt;name&gt;}, so say what is lost and why, not what to type.
+   * Two shapes reach this. Most often an index whose on-disk layout predates a change the engine cannot apply in
+   * place keeps working with the old layout - correctness first - but does not get whatever the new one buys. The
+   * other is an index the current build can no longer read correctly at all, such as one whose physical key order
+   * predates the string comparison fix of #5321 and whose lookups therefore return fewer records than a scan
+   * (#5802). Either way this is how it says so: the schema load logs it once per database open, and it is exposed as
+   * {@code upgradeWarning} on {@code schema:indexes} and {@code schema:index:<name>}, which is what Studio renders.
+   * The remedy is always {@code REBUILD INDEX &lt;name&gt;}, so say what is lost and why, not what to type - and,
+   * since the two shapes cost the reader very different things, say which one this is.
    * <p>
    * Implementations must keep this cheap and side-effect free: it is called per index on every listing.
    */
