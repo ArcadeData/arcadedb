@@ -2267,3 +2267,58 @@ retained set plus `totalWarnings` still report that something was dropped either
 
 If you run a **capped** check **quietly** and relied on the dropped messages appearing in the log, pass a
 `verboseLevel` above zero. A default `CHECK DATABASE` is unaffected: it runs at verbosity 1.
+
+## Deleting a vertex no longer disconnects its edges from itself
+
+`GraphEngine.deleteVertex` walked the vertex's edge lists, then handed every edge to `deleteEdge`, which disconnects
+it from **both** endpoints. One of those two endpoints is always the vertex being deleted - and its lists are dropped
+in their entirety a few lines later, by `deleteRemainingChunks`. So for every edge the delete walked a chain from the
+head probing each chunk for that entry, anchored and copied the chunk that held it, compacted it and wrote it back,
+over a list that was about to be deleted wholesale (#5760).
+
+Each edge is now disconnected from the vertex at its **other** end only. Matched by the RID recorded on the edge
+rather than by which list it was found in, so an entry whose `out`/`in` does not name the vertex being deleted is
+still disconnected normally; a self-loop, whose both endpoints are that vertex, skips both sides, which is correct
+because both of its lists go.
+
+The self-side **read** is untouched. The strict collection walk - a chunk that cannot be read is a retryable conflict,
+only `force` absorbs it (#5670/#5680), every page of the list pinned so an edge appended behind the walk turns the
+delete into a retry (#5725) - is what decides which edges exist to disconnect, and all of it stays.
+
+100k edges into one hub, on an Apple M-series laptop:
+
+| layout | before | after |
+| --- | --- | --- |
+| promoted super-node (striped, #5156) | 2374 ms | 446 ms |
+| classic single chain | 350 ms | 308 ms |
+
+The striped layout is where it hurt: `StripedEdgeList.removeEdge` resolves one chain per generation for every single
+removal, and generation 0 is the whole pre-promotion chain. On the classic layout the emptied head chunk keeps the
+per-edge probe short, so there was less to win.
+
+### The removal walk streams
+
+Skipping the self side also removed the reason the walk could not. `deleteVertex` used to materialise every edge of
+the vertex into an `ArrayList` and delete them in a second pass, and it had to: while the removals still rewrote this
+vertex's own list, relinking and deleting chunks underneath the iterator, one pass would have been a walk over a list
+being restructured - the class of problem #5155, #5670 and #5680 were all about. The delete now writes the far
+endpoints' lists and the edge records and never the list it is reading, so the second pass is gone, and with it a
+live `Edge` object per edge held for the whole delete. On a million-edge super-node that accumulator was tens of
+megabytes of retained heap; there is no longer a per-degree allocation on the path at all.
+
+There is no behaviour change for callers: `deleteVertex` disconnects, deletes and tolerates exactly what it did
+before, including under `force`.
+
+### One observable worth knowing if you register delete listeners
+
+A self-loop is reachable from **both** of its vertex's edge lists, so deleting that vertex walks it twice and the
+record-delete pipeline - including `BeforeRecordDeleteListener.onBeforeDelete` and the type-level delete events -
+runs for it **twice**. The second pass disconnects nothing (both endpoints are the vertex being deleted, so both
+are skipped) and the record removal is absorbed, so the graph outcome is correct either way; a listener that is not
+idempotent is the only thing that can notice.
+
+This is **not new** in this release - the previous two-phase walk collected the self-loop from each list and called
+`delete()` on it twice as well, and `deleteRecordNoLock` fires the event before anything can short-circuit. It is
+recorded here because it was never written down, and because it holds for lightweight self-loops too, where there
+is no record to go missing on the second pass. Pinned as an exact count by
+`Issue5760VertexDeleteSelfSideSkipTest.aSelfLoopIsWalkedFromBothListsSoItsDeleteEventFiresTwice`.

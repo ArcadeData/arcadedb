@@ -23,6 +23,7 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
@@ -133,6 +134,19 @@ public interface DatabaseInternal extends Database {
   void updateRecordNoLock(Record record, boolean discardRecordAfter);
 
   void deleteRecordNoLock(Record record);
+
+  /**
+   * Deletes an edge record the way {@code edge.delete()} does - index cleanup, external values, delete events and
+   * the graph disconnection - except that it does NOT disconnect the edge from the endpoint vertex named by
+   * {@code skipEndpoint}.
+   * <p>
+   * #5760: for {@code GraphEngine.deleteVertex}, which passes the vertex it is deleting. That vertex's edge lists
+   * are dropped in their entirety a moment later, so removing each edge from them one at a time - a chain walk, a
+   * chunk anchor, a compaction and a write-back per edge - is pure waste. See
+   * {@link com.arcadedb.graph.GraphEngine#deleteEdge(Edge, RID)} for the contract, including why a self-loop skips
+   * both sides and why the self-side READ is untouched.
+   */
+  void deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint);
 
   Record invokeAfterReadEvents(Record record);
 
