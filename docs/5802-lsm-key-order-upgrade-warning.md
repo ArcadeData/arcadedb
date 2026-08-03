@@ -146,10 +146,12 @@ open path can establish cheaply: the compacted sub-index of each index. Two thin
   it can be mis-ordered and still not appear. This is the pre-existing scope of the detection (the old log
   line was compacted-only too), not something this change narrowed, and widening it would mean walking
   every mutable page of every index on the open path.
-- An index whose check could not run - a page read that failed - now says so at `WARNING` rather than
-  `FINE`. Previously that was invisible, which mattered less when the check only fed a log line; now that
-  its verdict backs a query, a check that did not run would otherwise be indistinguishable from a clean
-  one.
+- An index whose check could not run - a page read that failed - reports a distinct "could not be
+  verified" advisory rather than nothing, and logs at `WARNING` rather than `FINE`. Publishing the
+  *unknown* verdict through the same field is the point: leaving it null would answer "healthy" for an
+  index nobody checked, sending the operator back to the startup log this change exists to replace.
+  Rebuilding is a valid response to unverifiable too - it makes the order correct by construction - so
+  the remedy the advisory names still applies.
 
 `CHECK DATABASE` remains the exhaustive answer, at the cost of walking every page. The query is the cheap
 first pass an operator runs on a restart, not a clearance.
@@ -169,7 +171,17 @@ reopens, because the check runs when the sub-index is wired up.
 | `aDisorderedCompactedIndexIsReportedAsAnUpgradeWarning` | The load-time verdict reaches `getUpgradeWarning()` |
 | `theAffectedIndexesAreDiscoverableFromSchemaIndexes` | `schema:indexes` and `schema:index:<name>` expose it, with `typeIndexName` carrying the rebuildable name |
 | `aTypeIndexReportsAWarningRaisedByANonFirstBucket` | The `TypeIndex` fix: a warning from a bucket other than the first is not swallowed |
+| `aDisorderedFullTextIndexReportsThroughTheCompositionWrapper` | The `LSMTreeFullTextIndex` delegate - the half of the report whose keys are user text |
 | `rebuildingTheIndexClearsTheWarning` | `REBUILD INDEX` is a real remedy and the advisory does not persist past it |
+
+The full-text test reaches the compacted component through `getFileIds()` and `Schema.getFileById()`
+rather than a typed accessor, so it works against a wrapper that holds its LSM index by composition
+without adding production API for the test's benefit.
+
+**Untested:** the "could not be verified" branch. Firing it needs a page read to fail, and the layer
+below already converts a key that cannot be read into a reported problem rather than an exception
+(`checkKeyOrderInPage` catches its own), so the remaining path is genuine I/O failure. Staging that needs
+either mocks or page-internal corruption brittle enough to test the fixture rather than the code.
 
 Before the fix four of the five fail; `aHealthyIndexCarriesNoUpgradeWarning` passes throughout.
 `LSMTreeIndexKeyOrderCheckTest` is unchanged and still passes: it asserts on `checkRootPagesKeyOrder`,

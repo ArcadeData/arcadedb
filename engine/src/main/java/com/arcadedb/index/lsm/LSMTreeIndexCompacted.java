@@ -68,7 +68,20 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           + "non-ASCII characters: until it is rebuilt a lookup on it can return fewer records than a scan, or records "
           + "of unrelated keys";
 
-  /** The load-time key-order check runs once per loaded instance, not on every schema change that reloads the index. */
+  /**
+   * The other verdict the check can reach: it could not read what it needed. Distinct from silence, which would say
+   * the order was confirmed good - see the catch in {@link #checkKeyOrderOnLoad()}.
+   */
+  private static final String KEY_ORDER_UNVERIFIABLE_WARNING =
+      "its physical key order could not be verified when the database opened, so it is not known whether it matches "
+          + "the order lookups apply; run CHECK DATABASE for the full answer, or rebuild it to make the order correct "
+          + "by construction";
+
+  /**
+   * The load-time key-order check runs once per loaded instance, not on every schema change that reloads the index.
+   * Set BEFORE the check runs, so a check that throws is not retried on this instance either: it would re-read pages
+   * behind a getter the schema listings call per index, and the failure is already published as a verdict.
+   */
   private volatile boolean keyOrderCheckedOnLoad = false;
 
   /** Set by {@link #checkKeyOrderOnLoad()} when the check found a mismatch, null otherwise. See {@link #getKeyOrderMismatch()}. */
@@ -762,13 +775,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
             problems);
       }
     } catch (final Exception e) {
-      // WARNING, not FINE: the verdict now backs a queryable surface, so a check that could not run leaves
-      // schema:indexes answering "healthy" for an index whose order is in fact UNKNOWN. Say so, or the absence of a
-      // row reads as proof of health.
+      // A check that could not run must not be reported as a clean one. Publishing the UNKNOWN verdict through the
+      // same field is what keeps it queryable: leaving it null would send an operator back to grepping the startup
+      // log, which is the problem this whole path exists to remove. Rebuilding is a valid response to "unverifiable"
+      // too - it makes the order correct by construction - so the remedy the advisory names still applies.
+      keyOrderMismatch = KEY_ORDER_UNVERIFIABLE_WARNING;
       LogManager.instance()
-          .log(this, Level.WARNING,
-              "Cannot verify the physical key order of index '%s': it is not covered by the rebuild advice reported on "
-                  + "schema:indexes, run CHECK DATABASE to check it (error=%s)", null, getName(), e.getMessage());
+          .log(this, Level.WARNING, "Cannot verify the physical key order of index '%s' (error=%s)", null, getName(),
+              e.getMessage());
     }
   }
 

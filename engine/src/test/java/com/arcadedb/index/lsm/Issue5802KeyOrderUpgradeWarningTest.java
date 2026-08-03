@@ -26,6 +26,7 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -213,6 +214,58 @@ class Issue5802KeyOrderUpgradeWarningTest extends TestHelper {
 
     assertThat(bucketIndexes().getFirst().getUpgradeWarning()).as("the first bucket is healthy").isNull();
     assertThat(typeIndex().getUpgradeWarning()).as("the type index answers for every bucket").isNotNull();
+  }
+
+  /**
+   * A full-text index reaches {@code IndexInternal} by composition, not inheritance, so before the delegate was added
+   * it silently answered the interface default of {@code null}. Its keys are analyzed user text - the one place
+   * non-ASCII characters are guaranteed to turn up - which makes it the half of the report most likely to be missed.
+   */
+  @Test
+  void aDisorderedFullTextIndexReportsThroughTheCompositionWrapper() throws Exception {
+    final String ftType = "Article";
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
+
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName(ftType).withTotalBuckets(1).create();
+      database.getSchema().getType(ftType).createProperty("title", String.class);
+      database.getSchema().buildTypeIndex(ftType, new String[] { "title" }).withType(Schema.INDEX_TYPE.FULL_TEXT)
+          .withFullTextType().withPageSize(4096).create();
+    });
+
+    database.transaction(() -> {
+      for (int i = 0; i < 2_000; i++)
+        database.newDocument(ftType).set("title", "sécurité robuste entropie término " + i).save();
+    });
+
+    final TypeIndex ftIndex = (TypeIndex) database.getSchema().getIndexByName(ftType + "[title]");
+    final IndexInternal ftBucketIndex = ftIndex.getIndexesOnBuckets()[0];
+    assertThat(ftBucketIndex).isInstanceOf(LSMTreeFullTextIndex.class);
+
+    if (ftBucketIndex.scheduleCompaction())
+      ftBucketIndex.compact();
+
+    final LSMTreeIndexCompacted subIndex = compactedSubIndexOf(ftBucketIndex);
+    assertThat(subIndex).as("the full-text index was compacted").isNotNull();
+    disorderPages(subIndex);
+
+    reopenDatabase();
+
+    final TypeIndex reloaded = (TypeIndex) database.getSchema().getIndexByName(ftType + "[title]");
+    assertThat(reloaded.getIndexesOnBuckets()[0].getUpgradeWarning())
+        .as("the wrapper delegates instead of answering the interface default").isNotNull();
+    assertThat(reloaded.getUpgradeWarning()).isNotNull();
+  }
+
+  /**
+   * The compacted component of an index, reached through its file ids rather than a typed accessor, so this works
+   * for a wrapper that holds its LSM index by composition just as well as for a plain one.
+   */
+  private LSMTreeIndexCompacted compactedSubIndexOf(final IndexInternal index) {
+    for (final int fileId : index.getFileIds())
+      if (database.getSchema().getFileById(fileId) instanceof final LSMTreeIndexCompacted compacted)
+        return compacted;
+    return null;
   }
 
   @Test
