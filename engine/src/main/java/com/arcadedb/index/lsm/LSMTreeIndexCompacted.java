@@ -78,9 +78,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           + "by construction";
 
   /**
-   * The load-time key-order check runs once per loaded instance, not on every schema change that reloads the index.
-   * Set BEFORE the check runs, so a check that throws is not retried on this instance either: it would re-read pages
-   * behind a getter the schema listings call per index, and the failure is already published as a verdict.
+   * Whether the check has COMPLETED for this instance - not merely been attempted. It suppresses a re-run on every
+   * schema change that reloads the index, but a run that threw leaves it false on purpose so the next load tries
+   * again rather than latching a transient I/O failure into permanent advice (see {@link #checkKeyOrderOnLoad()}).
    */
   private volatile boolean keyOrderCheckedOnLoad = false;
 
@@ -764,25 +764,31 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   void checkKeyOrderOnLoad() {
     if (keyOrderCheckedOnLoad)
       return;
-    keyOrderCheckedOnLoad = true;
 
     try {
       final List<String> problems = checkRootPagesKeyOrder(MAX_SERIES_CHECKED_ON_LOAD, MAX_PROBLEMS_REPORTED_ON_LOAD);
-      if (!problems.isEmpty()) {
-        keyOrderMismatch = KEY_ORDER_MISMATCH_WARNING;
+      // A completed run always publishes the definitive verdict, INCLUDING the clean one: it is what clears a stale
+      // "could not be verified" left by an earlier attempt that failed.
+      keyOrderMismatch = problems.isEmpty() ? null : KEY_ORDER_MISMATCH_WARNING;
+      keyOrderCheckedOnLoad = true;
+      if (!problems.isEmpty())
         LogManager.instance().log(this, Level.FINE,
             "Index '%s' is physically ordered differently than the current key comparator. Details: %s", null, getName(),
             problems);
-      }
     } catch (final Exception e) {
-      // A check that could not run must not be reported as a clean one. Publishing the UNKNOWN verdict through the
-      // same field is what keeps it queryable: leaving it null would send an operator back to grepping the startup
-      // log, which is the problem this whole path exists to remove. Rebuilding is a valid response to "unverifiable"
-      // too - it makes the order correct by construction - so the remedy the advisory names still applies.
+      // A check that could not run must not be reported as a clean one: leaving this null would send an operator back
+      // to grepping the startup log, which is what this path exists to remove. Rebuilding is a valid response to
+      // "unverifiable" too - it makes the order correct by construction - so the remedy the advisory names holds.
+      //
+      // Deliberately WITHOUT setting keyOrderCheckedOnLoad, so the next load of this component retries. This callback
+      // runs on every component load, including the Raft apply path on a replica and a snapshot resync, where a page
+      // read can fail transiently; the component instance is reused across those loads, so latching the failure would
+      // pin false "needs rebuild" advice on a healthy index for the lifetime of the database. The retry costs the
+      // bounded root-page read again and only in the already-failing case, and a later success clears the verdict.
       keyOrderMismatch = KEY_ORDER_UNVERIFIABLE_WARNING;
       LogManager.instance()
-          .log(this, Level.WARNING, "Cannot verify the physical key order of index '%s' (error=%s)", null, getName(),
-              e.getMessage());
+          .log(this, Level.WARNING, "Cannot verify the physical key order of index '%s', retrying on the next load (error=%s)",
+              null, getName(), e.getMessage());
     }
   }
 

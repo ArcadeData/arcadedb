@@ -153,6 +153,15 @@ open path can establish cheaply: the compacted sub-index of each index. Two thin
   Rebuilding is a valid response to unverifiable too - it makes the order correct by construction - so
   the remedy the advisory names still applies.
 
+  That verdict is **not latched**. `checkKeyOrderOnLoad()` marks itself done only when the check
+  *completed*, so a run that threw is retried on the next load of the component, and a later success
+  publishes the clean verdict over the stale one. This matters because the callback runs on every
+  component load - including the Raft apply path on a replica and a snapshot resync, where a page read
+  can fail transiently - and `onAfterLoad` resolves the sub-index through
+  `Schema.getFileById()`, which hands back the *same* instance every time. Latching the first failure
+  would therefore pin false "needs rebuild" advice on a healthy replica index for the lifetime of the
+  database. The retry costs the bounded root-page read again, only in the already-failing case.
+
 `CHECK DATABASE` remains the exhaustive answer, at the cost of walking every page. The query is the cheap
 first pass an operator runs on a restart, not a clearance.
 

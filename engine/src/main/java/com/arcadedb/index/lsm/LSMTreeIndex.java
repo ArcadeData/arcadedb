@@ -738,10 +738,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * CHECK DATABASE remains the exhaustive answer.
    * <p>
    * <b>Deliberately lock-free</b>, unlike the neighbouring {@link #checkIntegrity()}, which takes the read lock
-   * because it walks pages a concurrent compaction could drop underneath it. This reads one volatile field of
-   * whichever sub-index is published at the time, and a compaction that swaps in a fresh one is harmless: the old
-   * instance's verdict was true of the file it was computed from, and the new one carries its own. Taking the lock
-   * would put a getter that every schema listing calls per index behind the compaction's write lock for nothing.
+   * because it walks pages a concurrent compaction could drop underneath it. Two reads happen here and only the
+   * second is synchronized: the sub-index REFERENCE is a plain field, so racing a compaction's swap is a benign data
+   * race that yields either instance or transiently null; the verdict it then reads is volatile. Every outcome is
+   * sound for an advisory - the old instance's verdict was true of the file it was computed from, the new one
+   * carries its own, and null merely withholds advice for an instant. Taking the lock would put a getter that every
+   * schema listing calls per index behind the compaction's write lock to buy none of that.
    */
   @Override
   public String getUpgradeWarning() {
