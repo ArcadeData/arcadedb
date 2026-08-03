@@ -122,7 +122,34 @@ public class BinarySerializer {
     };
   }
 
+  /**
+   * Read-only serialization: creates a buffer-backed representation of the record without writing to the external
+   * bucket. EXTERNAL property values are serialized inline instead of being written to the paired bucket, and the
+   * orphan-cleanup pass is skipped entirely. Use this when re-serializing a record on a read path (e.g., after an
+   * {@code AfterRecordReadListener} returns a modified record) to avoid the surprising side effect of writes and
+   * deletes on the external bucket during a read operation.
+   * <p>
+   * The resulting buffer is complete and self-contained but does NOT carry TYPE_EXTERNAL markers — subsequent
+   * writes through the normal {@link #serialize} path will re-create the external pointers correctly.
+   *
+   * @param database the database
+   * @param record   the record to serialize (must be a MutableDocument, MutableVertex, or MutableEdge)
+   * @return a read-only buffer with inline property values
+   */
+  public Binary serializeForRead(final DatabaseInternal database, final Record record) {
+    return switch (record.getRecordType()) {
+      case Document.RECORD_TYPE, EmbeddedDocument.RECORD_TYPE -> serializeDocument(database, (MutableDocument) record, true);
+      case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record, true);
+      case Edge.RECORD_TYPE -> serializeEdge(database, (MutableEdge) record, true);
+      default -> throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
+    };
+  }
+
   public Binary serializeDocument(final DatabaseInternal database, final Document document) {
+    return serializeDocument(database, document, false);
+  }
+
+  public Binary serializeDocument(final DatabaseInternal database, final Document document, final boolean readOnly) {
     Binary header = ((BaseRecord) document).getBuffer();
 
     final DatabaseContext.DatabaseContextTL context = database.getContext();
@@ -140,12 +167,16 @@ public class BinarySerializer {
     }
 
     if (serializeProperties)
-      return serializeProperties(database, document, header, context.getTemporaryBuffer2());
+      return serializeProperties(database, document, header, context.getTemporaryBuffer2(), readOnly);
 
     return header;
   }
 
   public Binary serializeVertex(final DatabaseInternal database, final VertexInternal vertex) {
+    return serializeVertex(database, vertex, false);
+  }
+
+  public Binary serializeVertex(final DatabaseInternal database, final VertexInternal vertex, final boolean readOnly) {
     Binary header = ((BaseRecord) vertex).getBuffer();
 
     final DatabaseContext.DatabaseContextTL context = database.getContext();
@@ -182,12 +213,16 @@ public class BinarySerializer {
     }
 
     if (serializeProperties)
-      return serializeProperties(database, vertex, header, context.getTemporaryBuffer2());
+      return serializeProperties(database, vertex, header, context.getTemporaryBuffer2(), readOnly);
 
     return header;
   }
 
   public Binary serializeEdge(final DatabaseInternal database, final Edge edge) {
+    return serializeEdge(database, edge, false);
+  }
+
+  public Binary serializeEdge(final DatabaseInternal database, final Edge edge, final boolean readOnly) {
     Binary header = ((BaseRecord) edge).getBuffer();
 
     final DatabaseContext.DatabaseContextTL context = database.getContext();
@@ -209,7 +244,7 @@ public class BinarySerializer {
     serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getIn());
 
     if (serializeProperties)
-      return serializeProperties(database, edge, header, context.getTemporaryBuffer2());
+      return serializeProperties(database, edge, header, context.getTemporaryBuffer2(), readOnly);
 
     return header;
   }
@@ -876,15 +911,19 @@ public class BinarySerializer {
   }
 
   public Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content) {
+    return serializeProperties(database, record, header, content, false);
+  }
+
+  private Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content, final boolean readOnly) {
     final int headerSizePosition = header.position();
     header.putInt(0); // TEMPORARY PLACEHOLDER FOR HEADER SIZE
 
     final Map<String, Object> properties = record.propertiesAsMap();
     final Dictionary dictionary = database.getSchema().getDictionary();
     final DocumentType documentType = record.getType();
-    // For records being UPDATED, look up existing external RIDs from the old buffer so we can update the external bucket
-    // record in place rather than allocating a new one. New records (no identity yet) get an empty map.
-    final Map<String, RID> existingExternalRids = findExistingExternalRids(database, record);
+
+    // In read-only mode no external bucket interactions occur, so we skip the old-buffer scan entirely.
+    final Map<String, RID> existingExternalRids = readOnly ? Collections.emptyMap() : findExistingExternalRids(database, record);
     // Track which existing external RIDs we re-used (kept) so we can delete the rest as orphans below. An entry is
     // orphaned when the property is no longer EXTERNAL (toggled off via ALTER), was renamed, or was dropped entirely.
     final Set<String> consumedExternalProperties = existingExternalRids.isEmpty() ? null : new HashSet<>();
@@ -929,7 +968,7 @@ public class BinarySerializer {
       final int startContentPosition = content.position();
 
       final Property propertyDef = documentType.getPropertyIfExists(propertyName);
-      if (propertyDef != null && propertyDef.isExternal()) {
+      if (propertyDef != null && propertyDef.isExternal() && !readOnly) {
         // NULL is not externalised. set("field", null) is treated semantically the same as remove("field")
         // for storage purposes: we write a TYPE_NULL byte INLINE in the main record and let the orphan-
         // cleanup pass at the end of this method delete any pre-existing external blob (the property is

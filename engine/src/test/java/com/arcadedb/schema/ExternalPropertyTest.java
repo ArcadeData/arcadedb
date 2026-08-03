@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
@@ -1071,5 +1072,45 @@ class ExternalPropertyTest extends TestHelper {
     final ResultSet rs = database.query("sql", "SELECT blob FROM Doc");
     assertThat(rs.hasNext()).isTrue();
     assertThat((String) rs.next().getProperty("blob")).isEqualTo("v");
+  }
+
+  /**
+   * Verifies that {@link BinarySerializer#serializeForRead} renders EXTERNAL property values inline without writing
+   * to the external bucket. When an {@code AfterRecordReadListener} returns a modified record on a read path, the
+   * serializer must use {@code serializeForRead()} to avoid silently creating or updating records in the paired
+   * external bucket.
+   * <p>
+   * This test creates a record with an EXTERNAL property, then directly calls {@code serializeForRead()} on a
+   * modified copy and asserts that the external bucket's record count is unchanged.
+   */
+  @Test
+  void serializeForReadDoesNotWriteToExternalBucket() throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    // Create a record with an external property.
+    database.transaction(() -> database.newDocument("Doc").set("name", "test").set("blob", "hello").save());
+
+    // Count records in the external bucket before the serialization.
+    final var primaryBucket = type.getBuckets(false).getFirst();
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(primaryBucket.getFileId());
+    final LocalBucket extBucket = ((LocalSchema) database.getSchema().getEmbedded())
+        .getBucketById(extBucketId);
+    final long extCountBefore = extBucket.count();
+
+    // Load the record, modify it, and serialize via serializeForRead.
+    final Document loaded = (Document) database.iterateType("Doc", true).next();
+    final MutableDocument modified = loaded.modify().set("name", "modified");
+    final Binary buffer = ((DatabaseInternal) database).getSerializer()
+        .serializeForRead((DatabaseInternal) database, modified);
+
+    // The buffer must be non-null and contain the modified property.
+    assertThat(buffer).isNotNull();
+    assertThat(buffer.size()).isGreaterThan(0);
+
+    // The external bucket count must NOT have changed: serializeForRead must not write.
+    final long extCountAfter = extBucket.count();
+    assertThat(extCountAfter).as("serializeForRead must not write to the external bucket").isEqualTo(extCountBefore);
   }
 }
