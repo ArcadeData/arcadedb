@@ -3854,26 +3854,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Search for k nearest neighbors with traversal-integrated {@code groupBy} (issue #4071). Pushes
-   * the per-group cap into the JVector graph traversal via a {@link GroupedRIDBitsFilter}: nodes
-   * whose group has already reached {@code groupSize} during the HNSW walk are filtered out before
-   * scoring. The search budget is sized to {@code limit * groupSize} so JVector can fill the heap
-   * even when groups are exhausted.
+   * Search for k nearest neighbors with post-search {@code groupBy} (issue #5761, #4071). Runs the
+   * HNSW traversal with a liveness-only {@link LiveVectorBitsFilter} so the beam is not biased by
+   * group membership during entry-point descent, then applies the per-group cap as a post-filter on
+   * the score-sorted result set. The search budget is sized to {@code limit * groupSize * 2} to give
+   * the post-filter sufficient candidates for correct group distribution.
    * <p>
-   * <b>Approximate best-per-group.</b> Unlike the sparse path's per-group min-heap, the dense
-   * traversal cannot consult scores when the {@link Bits} filter runs (it gates eligibility before
-   * scoring). Group admission therefore happens in HNSW visit order. HNSW visits approximately
-   * best-first, so the first {@code groupSize} candidates per group are usually among the best,
-   * but the integration is not score-exact - callers that need a strict best-per-group guarantee
-   * should keep the SQL-layer post-filter, which re-applies {@code GroupAdmissionState} on the
-   * search output and can fall back to the MVP behaviour at higher {@code efSearch}.
+   * <b>Score-exact best-per-group.</b> Unlike the previous traversal-integrated approach (which
+   * admitted groups in HNSW visit order, allowing entry-point descent to consume the group budget
+   * on irrelevant groups), the post-search filter walks the score-sorted JVector output: the first
+   * {@code groupSize} candidates per group in score order are the actual best members of that group,
+   * and the first {@code limit} distinct groups encountered are the highest-scoring groups.
    * <p>
    * <b>Delta scan and brute-force fallback are skipped.</b> The two augmentations would re-admit
    * candidates outside the per-group cap; the delta path because it scores newly-inserted vectors
    * not yet visible to HNSW (no Bits filter applied), the brute-force path because it walks every
    * vector when the graph search returned too few hits. Skipping them is correct for the grouped
    * contract; callers that depend on either should use {@link #findNeighborsFromVector} and apply
-   * the {@code GroupAdmissionState} post-filter at the SQL layer.
+   * the group admission post-filter at the SQL layer.
    *
    * @param queryVector      query embedding
    * @param limit            max number of distinct groups to return; must be {@code > 0}
@@ -3911,7 +3909,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       ensureGraphAvailable();
       rebuildGraphBeforeSearch();
 
-      final int searchK = limit * groupSize;
+      final int searchK = limit * groupSize * 2;
       boolean readLockHeld = false;
       lock.readLock().lock();
       readLockHeld = true;
@@ -3923,12 +3921,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalToVectorId);
 
-        // Group-aware Bits filter. Wraps the same RID validity + allowedRIDs gating that
-        // LiveVectorBitsFilter applies, plus per-group counters that reject candidates whose group has
-        // reached capacity. Per-search state lives on the filter instance; do not reuse the
-        // instance across calls.
-        final Bits bitsFilter = new GroupedRIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex,
-            groupKeyResolver, limit, groupSize);
+        // Liveness-only Bits filter. Unlike the non-grouped path, we do NOT apply group-aware
+        // filtering during traversal — doing so would let HNSW entry-point descent (which pops
+        // candidates far from the query first) consume the per-group budget on irrelevant groups
+        // (issue #5761). Instead, we run the search with a liveness-only filter and apply the
+        // group cap as a post-filter on the score-sorted result set below.
+        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex);
 
         final SearchResult searchResult;
         final GraphSearcherPool pool = getSearcherPool();
@@ -3941,13 +3939,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
-          // Choose efSearch the same way the non-grouped path does, but skip the
-          // resume-on-too-few branch: the Bits filter intentionally rejects candidates whose
-          // group has reached groupSize, so a "too few results" outcome is the contract, not a
-          // beam-width problem. JVector's resume() resets the result state and runs another pass;
-          // when the Bits filter has already locked groups full, the second pass admits nothing
-          // new and we lose the first-pass survivors. Keep the first-pass result and let callers
-          // raise efSearch explicitly when they need wider coverage.
+          // Choose efSearch the same way the non-grouped path does. The group cap is applied as a
+          // post-filter, not during traversal, so a "too few results" outcome here is a genuine
+          // beam-width problem, not the contract. JVector's resume() will re-run the search
+          // with a wider beam when the returned count is below searchK, which is what we want.
           final int effectiveEfSearch;
           if (efSearch > 0) {
             effectiveEfSearch = Math.max(searchK, efSearch);
@@ -3970,7 +3965,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final List<Pair<RID, Float>> results = new ArrayList<>(searchK);
         int skippedOutOfBounds = 0;
         int skippedDeletedOrNull = 0;
+        int skippedGroupFull = 0;
+        // Post-search group filter. The HNSW search ran without a group-aware Bits filter, so
+        // the result set is ordered by score, not by traversal order. We now apply the group cap
+        // on the score-sorted list: the first `groupSize` candidates per group (by their score
+        // rank) are the actual best members of that group, and the first `limit` distinct groups
+        // encountered are the highest-scoring groups.
+        final HashMap<Object, Integer> groupCount = new HashMap<>();
         for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+          if (groupCount.size() >= limit && results.size() >= limit * groupSize)
+            break;
           final int ordinal = nodeScore.node;
           if (ordinal < 0 || ordinal >= ordinalToVectorId.length) {
             skippedOutOfBounds++;
@@ -3983,18 +3987,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
             continue;
           }
           // Defensive post-filter: JVector may include the entry node despite Bits, and the
-          // GroupedRIDBitsFilter has already enforced the group cap, so we only need to re-check
-          // the RID whitelist here for parity with findNeighborsFromVector.
+          // LiveVectorBitsFilter has already enforced the liveness + RID-whitelist contract,
+          // so we only need to re-check the RID whitelist here for parity with findNeighborsFromVector.
           if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
             continue;
+
+          // Resolve group key and apply the per-group cap. Walking the score-sorted result set
+          // means we admit the highest-scoring candidates per group first.
+          final Object groupKey;
+          try {
+            groupKey = groupKeyResolver.apply(loc.rid);
+          } catch (final RuntimeException e) {
+            skippedGroupFull++;
+            continue;
+          }
+          final Integer count = groupCount.get(groupKey);
+          if (count == null) {
+            if (groupCount.size() >= limit) {
+              skippedGroupFull++;
+              continue;
+            }
+            groupCount.put(groupKey, 1);
+          } else if (count >= groupSize) {
+            skippedGroupFull++;
+            continue;
+          } else {
+            groupCount.put(groupKey, count + 1);
+          }
 
           results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, nodeScore.score)));
         }
 
         LogManager.instance()
             .log(this, Level.INFO,
-                "Vector grouped search returned %d results (skipped: %d out of bounds, %d deleted/null)",
-                results.size(), skippedOutOfBounds, skippedDeletedOrNull);
+                "Vector grouped search returned %d results (skipped: %d out of bounds, %d deleted/null, %d group full/admission error)",
+                results.size(), skippedOutOfBounds, skippedDeletedOrNull, skippedGroupFull);
         return results;
 
       } catch (final Exception e) {
