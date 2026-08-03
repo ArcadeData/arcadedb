@@ -491,6 +491,12 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
 
     createSchema();
 
+    // Counted across ALL rounds, not per round. Per round it is a timing assertion - a delete window short enough
+    // that no append happens to COMMIT inside it proves nothing, but it also is not a defect - and asserting it
+    // there would have made this test flaky on a slow runner for a reason unrelated to what it guards. One round
+    // genuinely overlapping is all the non-vacuity argument needs.
+    final AtomicLong appendsDuringDelete = new AtomicLong();
+
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {
@@ -502,7 +508,6 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
             .as("the round must start with a full hub").isEqualTo(neighbours));
 
         final AtomicLong committedAppends = new AtomicLong();
-        final AtomicLong appendsDuringDelete = new AtomicLong();
         final AtomicLong deleteFailures = new AtomicLong();
         final AtomicBoolean deleting = new AtomicBoolean();
         final AtomicBoolean keepAppending = new AtomicBoolean(true);
@@ -584,10 +589,6 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
               .isEqualTo(0L);
         });
 
-        // The appends really did race the delete - committed WHILE it was in flight, not merely at some point -
-        // and none of them was erased by it.
-        assertThat(appendsDuringDelete.get())
-            .as("round " + round + ": appends that committed while the delete was running").isGreaterThan(0L);
         database.transaction(() -> {
           long reachable = 0;
           for (final RID source : sources)
@@ -601,6 +602,12 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
     }
+
+    // The appends really did race the delete somewhere across the rounds - committed WHILE one was in flight, not
+    // merely at some point. Without this the whole test could pass having only ever run the two operations back
+    // to back, which is the ordering it exists to NOT test.
+    assertThat(appendsDuringDelete.get())
+        .as("appends that committed while a delete was running, across all rounds").isGreaterThan(0L);
 
     assertIntegrityClean();
   }

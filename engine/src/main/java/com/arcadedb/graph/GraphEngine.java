@@ -621,7 +621,9 @@ public class GraphEngine {
         // same key (checked on a multi-bucket edge type - 41 records, 41 index entries, identical RID). Anything
         // that breaks that coincidence - a different bucket, a concurrent allocation taking the slot - leaves an
         // index entry naming a record that is gone. A new caller of the public deleteEdge(Edge) must therefore
-        // either arrive through deleteRecordNoLock or clean up after itself.
+        // either arrive through deleteRecordNoLock or clean up after itself. Tracked as #5779, which carries the
+        // measurement above and the ways the coincidence breaks - the comment is where you are, the issue is
+        // where the fix gets scheduled.
         final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edge.getIdentity().getBucketId());
         bucket.deleteRecord(edge.getIdentity());
       } catch (final RecordNotFoundException e) {
@@ -1036,9 +1038,13 @@ public class GraphEngine {
       tolerateUndecodableEdgeList(e, vertex, direction);
     }
 
-    // A null iterator means there is nothing to walk: no list in this direction, or a failure the block above
-    // tolerated. The loop leaves only through a break - the iterator reference itself never changes.
-    while (iterator != null) {
+    // Nothing to walk: no list in this direction, or a failure the block above tolerated. Returned here rather
+    // than folded into the loop condition, which then read as a disguised while(true) - the reference is never
+    // reassigned and every exit below is a break.
+    if (iterator == null)
+      return edges != null;
+
+    while (true) {
       final Edge edge;
       try {
         if (!hasNextEdgeToDelete(iterator, vertex, direction))
