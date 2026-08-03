@@ -731,8 +731,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * {@code upgradeWarning}, so the affected set is queryable rather than something to grep out of a startup log
    * (#5802).
    * <p>
-   * Only the compacted sub-index is covered: verifying the mutable pages means walking all of them, which is what
-   * {@link #checkIntegrity()} does for CHECK DATABASE and what the open path must not do.
+   * <b>Scope.</b> Only the compacted sub-index is covered: verifying the mutable pages means walking all of them,
+   * which is what {@link #checkIntegrity()} does for CHECK DATABASE and what the open path must not do. So an index
+   * small enough never to have been compacted can be mis-ordered and still answer {@code null} here, and the set this
+   * feeds on {@code schema:indexes} is "the affected indexes we can name cheaply", not "every affected index".
+   * CHECK DATABASE remains the exhaustive answer.
    */
   @Override
   public String getUpgradeWarning() {

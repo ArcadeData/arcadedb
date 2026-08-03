@@ -110,12 +110,17 @@ fewer records than a scan.
   already groups the flagged rows by `typeIndexName` and renders one
   ``REBUILD INDEX `Paper[title,abstract]` `` per logical index.
 
-### Not changed
+### Every LSM-backed wrapper reports, invariant or not
 
-`LSMTreeGeoIndex` and `LSMSparseVectorIndex` also wrap an LSM index by composition. Neither is exposed to
-this: geospatial keys are ASCII geohash cells and sparse-vector keys are dimension identifiers, so no key
-either one stores can be ordered differently by the signed/unsigned change. `LSMTreeGeoIndex` additionally
-already overrides `getUpgradeWarning()` for its own layout advisory.
+`LSMTreeGeoIndex` and `LSMSparseVectorIndex` also wrap an LSM index by composition, and neither should
+ever be exposed to this: geohash cells and dimension identifiers are ASCII, so no key either stores can be
+ordered differently by the signed/unsigned change.
+
+They delegate anyway. `LSMTreeGeoIndex` returns its own layout advisory first and falls through to the
+underlying index when it has none; `LSMSparseVectorIndex` delegates outright. The argument for exempting
+them is a claim about the *keys*, not a property of those classes, and an override that returns early
+would hide a mismatch if the claim ever stopped holding - a silent wrong answer being the exact failure
+mode this whole issue is about.
 
 ## What an operator now gets
 
@@ -133,6 +138,21 @@ SELECT name, typeIndexName, upgradeWarning FROM schema:indexes WHERE upgradeWarn
 ```
 
 `typeIndexName` is the name `REBUILD INDEX` takes. Studio flags the same rows.
+
+**That query is not an exhaustive affected-set, and should not be described as one.** It reports what the
+open path can establish cheaply: the compacted sub-index of each index. Two things fall outside it.
+
+- An index small enough never to have been compacted has no compacted sub-index, so it is never checked -
+  it can be mis-ordered and still not appear. This is the pre-existing scope of the detection (the old log
+  line was compacted-only too), not something this change narrowed, and widening it would mean walking
+  every mutable page of every index on the open path.
+- An index whose check could not run - a page read that failed - now says so at `WARNING` rather than
+  `FINE`. Previously that was invisible, which mattered less when the check only fed a log line; now that
+  its verdict backs a query, a check that did not run would otherwise be indistinguishable from a clean
+  one.
+
+`CHECK DATABASE` remains the exhaustive answer, at the cost of walking every page. The query is the cheap
+first pass an operator runs on a restart, not a clearance.
 
 ## Verification
 

@@ -762,9 +762,13 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
             problems);
       }
     } catch (final Exception e) {
+      // WARNING, not FINE: the verdict now backs a queryable surface, so a check that could not run leaves
+      // schema:indexes answering "healthy" for an index whose order is in fact UNKNOWN. Say so, or the absence of a
+      // row reads as proof of health.
       LogManager.instance()
-          .log(this, Level.FINE, "Error on checking the key order of index '%s' at load time (%s)", null, getName(),
-              e.getMessage());
+          .log(this, Level.WARNING,
+              "Cannot verify the physical key order of index '%s': it is not covered by the rebuild advice reported on "
+                  + "schema:indexes, run CHECK DATABASE to check it (error=%s)", null, getName(), e.getMessage());
     }
   }
 

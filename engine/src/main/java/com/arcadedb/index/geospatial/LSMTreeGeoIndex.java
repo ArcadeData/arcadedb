@@ -569,7 +569,13 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   public String getUpgradeWarning() {
     // Built once in the constructor: this is called per index on every schema:indexes / schema:types listing, and the
     // contract on IndexInternal#getUpgradeWarning is that it stays cheap.
-    return upgradeWarning;
+    if (upgradeWarning != null)
+      return upgradeWarning;
+
+    // Falling through to the LSM index the cells are stored in rather than stopping at the layout advisory: a
+    // geohash cell is ASCII, so the key-order mismatch of #5802 should never arise here - but "should never" is the
+    // invariant, not the mechanism, and an override that returns early would hide it if the invariant ever broke.
+    return underlyingIndex.getUpgradeWarning();
   }
 
   // ---- Private helpers ----
