@@ -3,6 +3,53 @@
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
 they land during the 26.8.1 development cycle, so the release notes are ready at tag time.
 
+### Security
+
+This release closes 13 security advisories. Each is published in full - impact, affected versions and
+credit - as a GitHub Security Advisory on the repository; the summaries below are only a map of what
+changed, so upgrading is strongly recommended for any deployment that exposes a wire protocol, the MCP
+endpoint, or accepts queries from untrusted callers.
+
+**Authentication and authorization on the wire protocols**
+
+- **GHSA-fq9c-x968-g278** - the MongoDB protocol accepted commands without authenticating the caller.
+  It now authenticates and enforces per-database authorization.
+- **GHSA-m46c-jh3x-xwrp** - the Redis protocol required no authentication. It now requires `AUTH`,
+  supports the `HELLO` handshake, and can be served over TLS.
+- **GHSA-c287-v325-j5jx** - the Gremlin protocol did not enforce per-database and per-type authorization.
+
+**The authenticated principal is now bound on every execution path**
+
+The engine's per-user permission gates are deliberately no-ops when no principal is bound on the thread,
+which is how embedded and replication contexts skip them. Three paths reached the engine without binding
+it, so every gate silently passed:
+
+- **GHSA-p29f-345w-4qwf** - the gRPC transaction thread.
+- **GHSA-5j4x-3jfw-8xv3** - the async command worker thread.
+- **GHSA-c23x-pqcj-7hfm** - the batch and time-series HTTP handlers, so per-type ACLs did not enforce.
+
+**Privileged operations that were not gated**
+
+- **GHSA-pff6-hp53-pj54** - the server-administration MCP tools (`set_server_setting` and the profiler
+  controls) gated only on the global `allowAdmin` flag and ignored the caller, so in the documented
+  agent-delegation deployment any allowed user reached them. They are root-only now, matching
+  `POST /api/v1/server`. The two read-only server tools deliberately stay open to any allowed user.
+- **GHSA-vv82-qvpf-rjwv** - `DELETE FUNCTION` did not require `UPDATE_SCHEMA`, so any identity with
+  database access could permanently remove a registered function.
+- **GHSA-hfp5-6gcp-8c75** - Cypher `LOAD CSV` could read local files without administrative privilege.
+- **GHSA-qwgr-2c45-63xx** - the database name was not validated when creating or dropping a database,
+  which allowed path traversal outside the configured database directory.
+
+**Untrusted input reaching the host**
+
+- **GHSA-4w2m-77c8-83mw** - a caller-supplied URL was validated only on its first hop and re-resolved
+  after the check, so a redirect or a DNS rebind could reach an address the validation had rejected
+  (SSRF). Every hop is validated now, and the validated address is pinned for the duration of the fetch.
+- **GHSA-wx28-2265-f788** - the scripting host-class allow-list was matched as a regular expression, so
+  an entry could admit far more classes than it names. It is matched literally now.
+- **GHSA-xmjm-8q85-g778** - `range()` materialised every element, so one query could exhaust the heap.
+  The list is lazy now and a range beyond `arcadedb.queryMaxRangeSize` is refused as a client error.
+
 ### Fixes
 
 #### MongoDB protocol: field names and filter values can no longer inject SQL
