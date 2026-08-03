@@ -6080,11 +6080,12 @@ function renderIndexUpgradeWarningBanner(needRebuild) {
     if (names.indexOf(name) < 0) names.push(name);
   }
 
-  // No blanket claim about what a rebuild is worth: these messages no longer all describe an index that still answers
-  // correctly. A key-order mismatch left by an upgrade (#5802) makes lookups return fewer records than a scan, so each
-  // message below says what it costs and the reader is not told up front that it is optional.
-  var html = "<div><i class='fa fa-exclamation-triangle me-1'></i><strong>Some indexes should be rebuilt.</strong> " +
-    "A rebuild can be run at any time.</div>";
+  // The header states no remedy and no severity, because the groups below no longer share either. One index may only
+  // be missing what a newer layout buys, another may be returning fewer records than a scan (#5802), and a third may
+  // simply not have been verifiable at startup. Each message carries its own consequence and its own remedy - saying
+  // "should be rebuilt" up here would overstate the mildest case and understate the worst.
+  var html = "<div><i class='fa fa-exclamation-triangle me-1'></i><strong>Some indexes need attention.</strong> " +
+    "Each note below says what is wrong and what to do about it.</div>";
 
   for (var message in byMessage) {
     var names = byMessage[message].sort();

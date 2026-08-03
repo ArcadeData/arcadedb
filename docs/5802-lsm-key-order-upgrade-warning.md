@@ -104,10 +104,13 @@ fewer records than a scan.
 - `engine/src/main/java/com/arcadedb/index/IndexInternal.java` and
   `engine/src/main/java/com/arcadedb/schema/LocalSchema.java`: the contract now names both shapes and
   asks an implementation to make clear which one it is reporting.
-- `studio/src/main/resources/static/js/studio-database.js`: the banner drops the blanket "they keep
-  working as they are - rebuilding is optional" and just says a rebuild can be run at any time. Each
-  message underneath already states what its own condition costs. No other Studio change was needed - it
-  already groups the flagged rows by `typeIndexName` and renders one
+- `studio/src/main/resources/static/js/studio-database.js`: the banner header now states neither a
+  severity nor a remedy - "Some indexes need attention. Each note below says what is wrong and what to do
+  about it." Three conditions can reach it now (missing a newer layout's benefit, confirmed under-return,
+  and not verifiable at startup), and a shared header naming a remedy would overstate the mildest and
+  understate the worst. The per-message text carries both, and Studio already groups rows by message, so
+  each condition renders as its own block with its own affected index names. No other Studio change was
+  needed - it already keys those blocks on `typeIndexName` and renders one
   ``REBUILD INDEX `Paper[title,abstract]` `` per logical index.
 
 ### Every LSM-backed wrapper reports, invariant or not
@@ -116,11 +119,16 @@ fewer records than a scan.
 ever be exposed to this: geohash cells and dimension identifiers are ASCII, so no key either stores can be
 ordered differently by the signed/unsigned change.
 
-They delegate anyway. `LSMTreeGeoIndex` returns its own layout advisory first and falls through to the
-underlying index when it has none; `LSMSparseVectorIndex` delegates outright. The argument for exempting
-them is a claim about the *keys*, not a property of those classes, and an override that returns early
-would hide a mismatch if the claim ever stopped holding - a silent wrong answer being the exact failure
-mode this whole issue is about.
+They delegate anyway. `LSMSparseVectorIndex` delegates outright; `LSMTreeGeoIndex` asks the underlying
+index **first** and falls back to its own layout advisory. The argument for exempting them is a claim
+about the *keys*, not a property of those classes, and an override that returned early would hide a
+mismatch if the claim ever stopped holding - a silent wrong answer being the exact failure mode this
+whole issue is about.
+
+The geo ordering is deliberate and was corrected during review: asking the layout advisory first would
+have masked a key-order mismatch behind it, which is precisely what the delegation exists to prevent. A
+mismatch is a correctness fault (lookups under-return); the legacy cell layout is a cost advisory. The
+worse of the two wins.
 
 ## What an operator now gets
 
