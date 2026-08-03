@@ -57,8 +57,22 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   private static final int MAX_SERIES_CHECKED_ON_LOAD    = 2;
   private static final int MAX_PROBLEMS_REPORTED_ON_LOAD = 3;
 
+  /**
+   * What an operator is told when the load-time check finds this file sorted under a different key order. Phrased as
+   * the {@code getUpgradeWarning()} contract asks: what is wrong and what it costs, not what to type - the schema
+   * load appends the {@code REBUILD INDEX} command naming the logical index.
+   */
+  private static final String KEY_ORDER_MISMATCH_WARNING =
+      "its pages are physically sorted in a different key order than the one lookups apply, which is the state an "
+          + "index written before the string key order was corrected (issue #5321) is left in when its keys hold "
+          + "non-ASCII characters: until it is rebuilt a lookup on it can return fewer records than a scan, or records "
+          + "of unrelated keys";
+
   /** The load-time key-order check runs once per loaded instance, not on every schema change that reloads the index. */
   private volatile boolean keyOrderCheckedOnLoad = false;
+
+  /** Set by {@link #checkKeyOrderOnLoad()} when the check found a mismatch, null otherwise. See {@link #getKeyOrderMismatch()}. */
+  private volatile String keyOrderMismatch = null;
 
   /**
    * The live {@link LSMTreeIndexUnderlyingCompactedSeriesCursor}s over this file, one entry per open cursor. Series
@@ -724,9 +738,15 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   /**
-   * Runs {@link #checkRootPagesKeyOrder(int, int)} once per loaded instance and reports the outcome as a WARNING, so an
-   * index left physically mis-ordered by an older build is reported at startup instead of silently under-returning on
-   * every lookup. Never propagates: a failure to run the check must not stop the database from opening.
+   * Runs {@link #checkRootPagesKeyOrder(int, int)} once per loaded instance and records the outcome, so an index left
+   * physically mis-ordered by an older build is reported at startup instead of silently under-returning on every
+   * lookup. Never propagates: a failure to run the check must not stop the database from opening.
+   * <p>
+   * The operator-facing report is {@link LSMTreeIndex#getUpgradeWarning()}, which the schema load logs once per
+   * LOGICAL index together with the {@code REBUILD INDEX} command that repairs it, and which
+   * {@code schema:indexes} exposes so the affected set can be queried rather than grepped out of a startup log
+   * (#5802). What stays here is the physical evidence - page and entry numbers of THIS bucket sub-index - which is
+   * support detail, not something an operator acts on, so it goes to FINE.
    */
   void checkKeyOrderOnLoad() {
     if (keyOrderCheckedOnLoad)
@@ -735,15 +755,26 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
     try {
       final List<String> problems = checkRootPagesKeyOrder(MAX_SERIES_CHECKED_ON_LOAD, MAX_PROBLEMS_REPORTED_ON_LOAD);
-      if (!problems.isEmpty())
-        LogManager.instance().log(this, Level.WARNING,
-            "Index '%s' is physically ordered differently than the current key comparator, so lookups can return fewer (or foreign) records than a scan: run 'REBUILD INDEX %s'. Details: %s",
-            null, getName(), getName(), problems);
+      if (!problems.isEmpty()) {
+        keyOrderMismatch = KEY_ORDER_MISMATCH_WARNING;
+        LogManager.instance().log(this, Level.FINE,
+            "Index '%s' is physically ordered differently than the current key comparator. Details: %s", null, getName(),
+            problems);
+      }
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Error on checking the key order of index '%s' at load time (%s)", null, getName(),
               e.getMessage());
     }
+  }
+
+  /**
+   * The verdict of {@link #checkKeyOrderOnLoad()}, or {@code null} when it found nothing or could not run. Reading a
+   * cached field is what lets {@link LSMTreeIndex#getUpgradeWarning()} honour its "cheap and side-effect free"
+   * contract: it is called per index on every schema listing and must not touch a page to answer.
+   */
+  String getKeyOrderMismatch() {
+    return keyOrderMismatch;
   }
 
   /**

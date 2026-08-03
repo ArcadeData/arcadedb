@@ -1,0 +1,156 @@
+# #5802 - a mis-ordered index after an in-place upgrade is only discoverable by grepping the startup log
+
+## Issue
+
+A production install running `26.7.2` had its `lib/*.jar` swapped for a build of current `main` and was
+restarted. Before any query ran, the log emitted one `WARNING` per affected index:
+
+```
+WARNI [LSMTreeIndexCompacted] Index 'Paper_0_84306331895885' is physically ordered differently
+than the current key comparator, so lookups can return fewer (or foreign) records than a scan:
+run 'REBUILD INDEX Paper_0_84306331895885'. Details: [page 20 entry 8: ...]
+```
+
+Both a `FULL_TEXT` index (`Paper[title,abstract]`) and a plain non-unique string index (`Author.name`)
+were reported. The reporter rolled back to `26.7.2` and asked two things:
+
+1. Is this an expected manual migration step, and should it be surfaced more prominently than a
+   `WARNING` log line?
+2. Is there any way to learn *which* indexes are affected without grepping the startup log?
+
+## Root cause of the underlying condition
+
+The report is accurate: the disorder is real, not a false positive from the new detector.
+
+`BinaryComparator.compareBytes(byte[], Binary)` - the routine the LSM binary search uses to place and to
+find a `STRING` key - compared bytes as **signed** until `#5321` (`02d5800ea`), while every other string
+comparison in the engine is unsigned. A UTF-8 lead byte is `>= 0x80`, so it is negative as a Java byte:
+under the old comparison `Á` sorted *before* every ASCII letter, under the new one it sorts after.
+
+That is why the reporter's `Author.name` evidence starts with an accented name and why several of the
+reported pairs are pure ASCII. The mutable index pages were physically laid out in signed order. A
+compaction then reads those pages with cursors that assume ascending order and merges them with
+`LSMTreeIndexAbstract.compareKeys` (object comparison, always unsigned), so once the two orders diverge
+at one accented key the merge emits a stretch of keys out of order - ASCII neighbours included - and
+writes them to the compacted pages as-is. `#5321` did not create the disorder; it made the reader
+disagree with what an older build had already written.
+
+The remedy is therefore correctly `REBUILD INDEX`, and it cannot be applied automatically: rebuilding
+every index of a multi-million-record database on the open path would turn a restart into an outage.
+
+## What was actually wrong
+
+The reporting, not the detection. `LSMTreeIndexCompacted.checkKeyOrderOnLoad()` (added in `8489de7fc`)
+was a dead end for an operator:
+
+- It named the **physical bucket sub-index** (`Paper_0_84306331895885`), the name a user never sees
+  anywhere else. The logical index they would act on is `Paper[title,abstract]`.
+- It existed only as a log line. There was no way to ask the database which indexes were affected, so a
+  restart whose logs had rotated away left no trace at all.
+- `CHECK DATABASE` does report it, but it walks **every page of every index** - not something to run on
+  the box the reporter was trying to bring back up.
+
+Meanwhile the engine already had exactly the right channel for "this index should be rebuilt, here is
+why": `IndexInternal.getUpgradeWarning()`. `LocalSchema.reportUpgradeWarning` logs it once per database
+open per **logical** index with the `REBUILD INDEX` command to run, and it is exposed as `upgradeWarning`
+on `schema:indexes` and `schema:index:<name>`, which is what Studio renders. The key-order check simply
+was not wired into it.
+
+## Fix
+
+`engine/src/main/java/com/arcadedb/index/lsm/LSMTreeIndexCompacted.java`
+
+- `checkKeyOrderOnLoad()` records its verdict in a `volatile String keyOrderMismatch` instead of only
+  logging it, and exposes it through `getKeyOrderMismatch()`. Caching is what lets the reader honour the
+  `getUpgradeWarning()` contract of being cheap and side-effect free - it is called per index on every
+  schema listing and must not touch a page to answer.
+- The remaining log line keeps the physical evidence (page and entry numbers of *this* sub-index) but
+  drops to `FINE`. That detail is support material; the operator-facing warning is now the one below,
+  which names something they can act on. Emitting both at `WARNING` would restate the same finding under
+  two different names, which is the confusion the issue is about.
+
+`engine/src/main/java/com/arcadedb/index/lsm/LSMTreeIndex.java`
+
+- `getUpgradeWarning()` returns the sub-index verdict. Only the compacted sub-index is covered: checking
+  the mutable pages means walking all of them, which is `checkIntegrity()`'s job for `CHECK DATABASE` and
+  not something the open path can afford.
+
+`engine/src/main/java/com/arcadedb/index/TypeIndex.java`
+
+- `getUpgradeWarning()` scans every bucket sub-index instead of answering from the first one. The
+  existing comment - "every bucket sub-index shares one definition, so the first one answers for all of
+  them" - holds for a warning derived from the *definition* (the geospatial cell layout of `#5478`), but
+  a key-order mismatch is physical state that one bucket can be in and another not. Asking only bucket 0
+  would report a type index healthy while one of its buckets needed a rebuild.
+
+`engine/src/main/java/com/arcadedb/index/fulltext/LSMTreeFullTextIndex.java`
+
+- Delegates `getUpgradeWarning()` to the LSM index it stores its terms in. It implements `IndexInternal`
+  by composition rather than inheritance, so without this it silently answered the interface default of
+  `null` - and a full-text index is the one whose keys are user text, where non-ASCII characters actually
+  live. This is the `Paper[title,abstract]` half of the report.
+
+### The channel's premise had to widen
+
+`getUpgradeWarning()` was built for one shape of advice: an index on an older layout that still answers
+correctly and is only missing what the new layout buys (the geospatial cell layout of `#5478`). Its
+contract said so, `LocalSchema.reportUpgradeWarning` repeated it, and Studio's banner told the reader in
+so many words that the flagged indexes "keep working as they are - rebuilding is optional".
+
+A key-order mismatch is the other shape: the index does **not** answer correctly. Reusing the channel
+without saying so would have put a reassurance directly above a message explaining that lookups return
+fewer records than a scan.
+
+- `engine/src/main/java/com/arcadedb/index/IndexInternal.java` and
+  `engine/src/main/java/com/arcadedb/schema/LocalSchema.java`: the contract now names both shapes and
+  asks an implementation to make clear which one it is reporting.
+- `studio/src/main/resources/static/js/studio-database.js`: the banner drops the blanket "they keep
+  working as they are - rebuilding is optional" and just says a rebuild can be run at any time. Each
+  message underneath already states what its own condition costs. No other Studio change was needed - it
+  already groups the flagged rows by `typeIndexName` and renders one
+  ``REBUILD INDEX `Paper[title,abstract]` `` per logical index.
+
+### Not changed
+
+`LSMTreeGeoIndex` and `LSMSparseVectorIndex` also wrap an LSM index by composition. Neither is exposed to
+this: geospatial keys are ASCII geohash cells and sparse-vector keys are dimension identifiers, so no key
+either one stores can be ordered differently by the signed/unsigned change. `LSMTreeGeoIndex` additionally
+already overrides `getUpgradeWarning()` for its own layout advisory.
+
+## What an operator now gets
+
+One `WARNING` per affected logical index at open, naming the command that repairs it:
+
+```
+Index 'Paper[title,abstract]' of database 'papers' should be rebuilt: its pages are physically sorted
+in a different key order than the one lookups apply, ... Run: REBUILD INDEX `Paper[title,abstract]`
+```
+
+and, independent of the log, the affected set as a query:
+
+```sql
+SELECT name, typeIndexName, upgradeWarning FROM schema:indexes WHERE upgradeWarning IS NOT NULL
+```
+
+`typeIndexName` is the name `REBUILD INDEX` takes. Studio flags the same rows.
+
+## Verification
+
+`engine/src/test/java/com/arcadedb/index/lsm/Issue5802KeyOrderUpgradeWarningTest.java`.
+
+The disorder is planted by swapping two pointers of a page's entry array - the same physical state an
+index written under the old comparator ends up in, reproduced without needing the old comparator, and the
+technique the existing `LSMTreeIndexKeyOrderCheckTest` established. Each test compacts, disorders, and
+reopens, because the check runs when the sub-index is wired up.
+
+| Test | Pins |
+|---|---|
+| `aHealthyIndexCarriesNoUpgradeWarning` | No warning on a correctly ordered index, so the others can fail |
+| `aDisorderedCompactedIndexIsReportedAsAnUpgradeWarning` | The load-time verdict reaches `getUpgradeWarning()` |
+| `theAffectedIndexesAreDiscoverableFromSchemaIndexes` | `schema:indexes` and `schema:index:<name>` expose it, with `typeIndexName` carrying the rebuildable name |
+| `aTypeIndexReportsAWarningRaisedByANonFirstBucket` | The `TypeIndex` fix: a warning from a bucket other than the first is not swallowed |
+| `rebuildingTheIndexClearsTheWarning` | `REBUILD INDEX` is a real remedy and the advisory does not persist past it |
+
+Before the fix four of the five fail; `aHealthyIndexCarriesNoUpgradeWarning` passes throughout.
+`LSMTreeIndexKeyOrderCheckTest` is unchanged and still passes: it asserts on `checkRootPagesKeyOrder`,
+`checkIntegrity()` and `CHECK DATABASE`, none of which this touches.

@@ -325,8 +325,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public String getUpgradeWarning() {
-    // Every bucket sub-index of a type index shares one definition, so the first one answers for all of them.
-    return getFirstUnderlyingIndex().getUpgradeWarning();
+    // A definition-derived warning is the same on every bucket sub-index, but a PHYSICAL one - a key order that no
+    // longer matches the comparator (#5802) - is raised per bucket, and asking only the first one would report a type
+    // index healthy while another of its buckets needs a rebuild. The first answer found wins: they read alike, and
+    // the remedy is one REBUILD INDEX over the whole logical index either way.
+    for (final IndexInternal index : indexesOnBuckets) {
+      final String warning = index.getUpgradeWarning();
+      if (warning != null)
+        return warning;
+    }
+    return null;
   }
 
   @Override

@@ -722,6 +722,24 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     });
   }
 
+  /**
+   * Reports the verdict of the bounded key-order check the compacted sub-index runs when it is loaded. That check
+   * already logged the offending pages, but only under the sub-index's physical name ({@code Paper_0_84306331895885}),
+   * which is neither what an operator would search for nor what they would rebuild. Answering here instead routes it
+   * through the standard advisory channel: the schema load logs it once per LOGICAL index with the exact
+   * {@code REBUILD INDEX} to run, and {@code schema:indexes} / {@code schema:index:<name>} expose it as
+   * {@code upgradeWarning}, so the affected set is queryable rather than something to grep out of a startup log
+   * (#5802).
+   * <p>
+   * Only the compacted sub-index is covered: verifying the mutable pages means walking all of them, which is what
+   * {@link #checkIntegrity()} does for CHECK DATABASE and what the open path must not do.
+   */
+  @Override
+  public String getUpgradeWarning() {
+    final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
+    return subIndex != null ? subIndex.getKeyOrderMismatch() : null;
+  }
+
   @Override
   public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
     return mutable.nullStrategy;
