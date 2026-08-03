@@ -2552,10 +2552,12 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Logs, once per opened database and per LOGICAL index, the reason an index should be rebuilt. An index whose
-   * on-disk layout predates a change the engine cannot apply in place keeps working exactly as it did, so this is
-   * advice and never an error; it is the only moment an operator would otherwise have no way of learning that a
-   * `REBUILD INDEX` is worth running. The same text reaches Studio through {@code schema:indexes}.
+   * Logs, once per opened database and per LOGICAL index, the reason an index should be rebuilt. How much that
+   * matters is carried by the message itself: an index whose on-disk layout merely predates a change the engine
+   * cannot apply in place keeps working exactly as it did, while one whose physical key order predates #5321 answers
+   * lookups with fewer records than a scan (#5802). Either way this is the only moment an operator would otherwise
+   * have no way of learning that a `REBUILD INDEX` is worth running - and the reason it names the LOGICAL index, not
+   * the bucket sub-index that raised it. The same text reaches Studio through {@code schema:indexes}.
    *
    * @see IndexInternal#getUpgradeWarning()
    */

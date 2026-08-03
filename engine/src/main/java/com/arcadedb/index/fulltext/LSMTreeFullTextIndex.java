@@ -1124,6 +1124,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return underlyingIndex.isCompacting();
   }
 
+  /**
+   * A full-text index stores its terms in an ordinary LSM string index, so it is exposed to the same physical
+   * key-order mismatch after an upgrade (#5802) - and its terms are user text, which is where non-ASCII characters
+   * actually live.
+   */
+  @Override
+  public String getUpgradeWarning() {
+    return underlyingIndex.getUpgradeWarning();
+  }
+
   @Override
   public boolean scheduleCompaction() {
     return underlyingIndex.scheduleCompaction();

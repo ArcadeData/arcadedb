@@ -6080,8 +6080,12 @@ function renderIndexUpgradeWarningBanner(needRebuild) {
     if (names.indexOf(name) < 0) names.push(name);
   }
 
-  var html = "<div><i class='fa fa-exclamation-triangle me-1'></i><strong>Some indexes should be rebuilt.</strong> " +
-    "They keep working as they are - rebuilding is optional and can be done at any time.</div>";
+  // The header states no remedy and no severity, because the groups below no longer share either. One index may only
+  // be missing what a newer layout buys, another may be returning fewer records than a scan (#5802), and a third may
+  // simply not have been verifiable at startup. Each message carries its own consequence and its own remedy - saying
+  // "should be rebuilt" up here would overstate the mildest case and understate the worst.
+  var html = "<div><i class='fa fa-exclamation-triangle me-1'></i><strong>Some indexes need attention.</strong> " +
+    "Each note below says what is wrong and what to do about it.</div>";
 
   for (var message in byMessage) {
     var names = byMessage[message].sort();
