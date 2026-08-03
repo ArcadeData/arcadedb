@@ -96,6 +96,31 @@ public class MCPToolUtils {
   }
 
   /**
+   * Ensures the caller is authorized to invoke a server-administration tool.
+   * <p>
+   * Server-scoped tools ({@code set_server_setting}, the profiler controls) act on the whole server, not on a database,
+   * so no per-database permission can cover them and the principal binding done by {@link #resolveDatabase} never
+   * reaches them. They previously gated only on the global {@code allowAdmin} MCP flag and ignored the
+   * {@link ServerSecurityUser} they were handed, so in the documented agent-delegation deployment
+   * ({@code allowAdmin=true} with a non-root or {@code "*"} entry in {@code allowedUsers}) ANY allowed user - including
+   * a read-only one - reached the entire server-administration tool surface (GHSA-pff6-hp53-pj54).
+   * <p>
+   * The rule enforced here is the same one the HTTP transport applies to {@code POST /api/v1/server}
+   * ({@code AbstractServerHttpHandler.checkRootUser}): every server command except {@code list databases} is root-only.
+   * The two read-only server tools ({@code server_status}, {@code get_server_settings}) intentionally stay on
+   * {@code allowReads}, matching {@code GET /api/v1/server}, which is likewise open to any authenticated user and
+   * relies on secret redaction (GHSA-46hj-24h4-j8gf / GHSA-p9wc-4fhr-78wm) rather than a root gate.
+   *
+   * @param user      the authenticated MCP caller
+   * @param operation the tool name, used only in the rejection message
+   */
+  public static void checkServerAdmin(final ServerSecurityUser user, final String operation) {
+    if (user == null || !"root".equals(user.getName()))
+      throw new SecurityException("Only the root user is authorized to execute the server administration operation '"
+          + operation + "'");
+  }
+
+  /**
    * Binds the authenticated MCP principal onto the current thread's {@link com.arcadedb.database.DatabaseContext} so
    * the engine's per-user permission gates ({@code LocalDatabase.checkPermissionsOnDatabase} /
    * {@code checkPermissionsOnFile}) actually enforce for MCP callers, exactly as the HTTP, Bolt, Postgres and gRPC

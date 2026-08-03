@@ -139,6 +139,34 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
   }
 
   /**
+   * GHSA-vv82-qvpf-rjwv: {@code DELETE FUNCTION} removed a function from a library and persisted the change with no
+   * permission check. The sibling GHSA-8vr5 fix guarded the library-level {@code unregisterFunctionLibrary}
+   * (UPDATE_SCHEMA), but {@code DeleteFunctionStatement} never routed through it, so any identity with database access
+   * (no {@code updateSchema}) could permanently delete any registered server-side function - including security-relevant
+   * logic. A read-only identity must now be denied (403), while the administrator must still be able to delete.
+   */
+  @Test
+  void readOnlyTokenCannotDeleteFunction() throws Exception {
+    testEachServer(serverIndex -> {
+      // ARRANGE (as admin): a function library with two functions to remove
+      assertThat(adminCommand(serverIndex, "DEFINE FUNCTION vv82.keep \"return 1\" LANGUAGE js")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "DEFINE FUNCTION vv82.victim \"return 2\" LANGUAGE js")).isEqualTo(200);
+
+      final String token = "Bearer " + createReadOnlyToken(serverIndex, "delete-function-token");
+      try {
+        assertThat(command(serverIndex, token, "DELETE FUNCTION vv82.victim"))
+            .as("read-only token must not DELETE a function").isEqualTo(403);
+      } finally {
+        deleteToken(serverIndex, "delete-function-token");
+      }
+
+      // Positive control: the administrator must still be able to delete a function
+      assertThat(adminCommand(serverIndex, "DELETE FUNCTION vv82.victim")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "DELETE FUNCTION vv82.keep")).isEqualTo(200);
+    });
+  }
+
+  /**
    * GHSA-8vr5-263f-x5r3 sibling gap: {@code DEFINE FUNCTION} only routes through the UPDATE_SCHEMA-guarded
    * {@code Schema.registerFunctionLibrary} when it has to CREATE the target library. Adding a function to an
    * <em>already-existing</em> library calls {@code fLib.registerFunction} directly, which is unguarded, so a read-only

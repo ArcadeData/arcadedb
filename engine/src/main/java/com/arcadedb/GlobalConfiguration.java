@@ -513,7 +513,9 @@ public enum GlobalConfiguration {
   OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
       """
       Allow LOAD CSV to access local files via file:/// URLs and bare file paths. \
-      Disable for security in multi-tenant server deployments.""",
+      Disable for security in multi-tenant server deployments. This is only the outer switch: on a server the \
+      local-file branch also requires the administrative 'updateSecurity' permission (the same privilege IMPORT \
+      DATABASE requires), and 'production' server mode force-disables this setting at startup.""",
       Boolean.class, true),
 
   OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY("arcadedb.opencypher.loadCsv.importDirectory", SCOPE.DATABASE,
@@ -595,6 +597,25 @@ public enum GlobalConfiguration {
           // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.
           return 500_000L;
         return Math.max(500_000L, maxHeap / 2048);
+      }),
+
+  QUERY_MAX_RANGE_SIZE("arcadedb.queryMaxRangeSize", SCOPE.DATABASE, """
+      Maximum number of elements a range() expression is allowed to produce. If exceeded, the query is rejected with a \
+      client error before any element is generated. Negative number means no limit (the hard limit of 2147483647 elements, \
+      the maximum size of a Java list, still applies). The range itself is lazy and takes no heap, but its elements are \
+      materialised as soon as the range is copied, sorted or serialised in a response, so this setting caps the memory a \
+      single query can request that way. When left at the default it auto-scales with the JVM max heap (never below \
+      1000000 elements), keeping the worst-case materialisation of a range to a fraction of the heap.""",
+      Long.class, 10_000_000L, null, value -> {
+        // Auto-scale the default with the JVM max heap. A materialised element costs ~24 bytes (boxed Long plus the
+        // reference that holds it) and rendering it in a JSON response costs about as much again, so heap/160 keeps
+        // the worst case around a quarter of the heap. Never below the 1000000 floor, so the common
+        // "UNWIND range(1, 1000000)" data-generation idiom keeps working on small footprints.
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        if (maxHeap == Long.MAX_VALUE)
+          // Heap is unbounded (no -Xmx): keep a conservative cap rather than an effectively unlimited one.
+          return 10_000_000L;
+        return Math.max(1_000_000L, Math.min(Integer.MAX_VALUE, maxHeap / 160));
       }),
 
   QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
@@ -1582,6 +1603,10 @@ public enum GlobalConfiguration {
 
   REDIS_DEFAULT_DATABASE("arcadedb.redis.defaultDatabase", SCOPE.SERVER,
       "Default database name for Redis protocol connections. If set, RAM commands (SET, GET, etc.) will use this database's globalVariables. Empty means no default (requires SELECT command or key prefix)", String.class, ""),
+
+  REDIS_TLS("arcadedb.redis.tls", SCOPE.SERVER,
+      "When true, the Redis wire-protocol listener accepts only TLS connections, using the shared SSL key/trust store settings (arcadedb.ssl.*). The AUTH credentials are then encrypted in transit. Default is false",
+      Boolean.class, false),
 
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,

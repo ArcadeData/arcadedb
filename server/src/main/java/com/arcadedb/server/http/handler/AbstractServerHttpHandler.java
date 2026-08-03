@@ -19,7 +19,9 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
@@ -112,6 +114,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // path is collapsed to a route template or the constant "unmatched", method and status are small
   // enumerations, and db is the finite set of database names.
   private static final ConcurrentHashMap<String, Timer> HTTP_REQUEST_TIMERS = new ConcurrentHashMap<>();
+  // Tracks the database whose DatabaseContext this request bound the authenticated principal onto in
+  // checkAuthorizationOnDatabase, so handleRequest's finally can clear the binding on THIS pooled worker
+  // thread (GHSA-c23x-pqcj-7hfm). Handler instances are shared across threads, so this per-thread marker
+  // - not an instance field - is what makes the cleanup thread-safe and precise (clears only what was bound).
+  private static final ThreadLocal<DatabaseInternal>    BOUND_PRINCIPAL_DB = new ThreadLocal<>();
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -657,6 +664,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
+      // Drop any principal this request bound onto the thread's DatabaseContext in
+      // checkAuthorizationOnDatabase (GHSA-c23x-pqcj-7hfm). This runs on a pooled worker thread, so a
+      // leaked binding would be inherited by the next request served by the same thread. Only the current
+      // user is cleared (not the whole context) so a still-open session transaction is never disturbed;
+      // a no-op when nothing was bound. DatabaseAbstractHandler manages its own binding/cleanup and never
+      // sets this marker.
+      final DatabaseInternal boundDb = BOUND_PRINCIPAL_DB.get();
+      if (boundDb != null) {
+        BOUND_PRINCIPAL_DB.remove();
+        try {
+          final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(boundDb.getDatabasePath());
+          if (context != null)
+            context.setCurrentUser(null);
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.WARNING, "Error clearing bound principal from database context", t);
+        }
+      }
+
       // If execution threw after this request reserved the idempotency key, clear the PENDING marker so a
       // concurrent identical retry is released immediately instead of blocking until the marker's TTL.
       if (idempotencyReservation != null) {
@@ -919,12 +944,34 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * another (cross-database IDOR, GHSA-x8mg-6r4p-87pf). Mirrors the gate in
    * {@link DatabaseAbstractHandler#execute}. Throws {@link SecurityException} (mapped to HTTP 403) when the
    * authenticated user cannot access the database; fails closed on a missing database name.
+   * <p>
+   * The coarse {@code canAccessToDatabase} gate above is database-level only. It is NOT enough for a
+   * deployment that segments data with per-type/per-group ACLs: the engine's fine-grained per-type layer
+   * ({@code LocalDatabase.checkPermissionsOnFile}, {@code LocalBucket} CREATE_RECORD/READ_RECORD) is
+   * deliberately a no-op unless the authenticated principal is bound onto this thread's
+   * {@link DatabaseContext}. Because these handlers do not extend {@link DatabaseAbstractHandler} (which
+   * binds the principal in its own {@code execute}), the engine saw a null current user and silently skipped
+   * every per-type check, so a user with DB access but only per-type READ on some types could read/write
+   * types it was not entitled to (GHSA-c23x-pqcj-7hfm). Binding here - mirroring {@code DatabaseAbstractHandler}
+   * - makes the per-type layer enforce. The binding is dropped in {@link #handleRequest}'s finally so it
+   * cannot leak onto the pooled worker thread and be inherited by a later request.
    */
   protected void checkAuthorizationOnDatabase(final ServerSecurityUser user, final String databaseName) {
     if (databaseName == null || databaseName.isEmpty())
       throw new IllegalArgumentException("Database parameter is null");
     if (user != null && !user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not allowed to access database '" + databaseName + "'");
+
+    // Bind the authenticated principal so the engine's per-type ACL layer enforces on this handler.
+    // A null user (unauthenticated handler) leaves the engine in its no-user no-op mode, matching prior behavior.
+    if (user != null && httpServer.getServer().existsDatabase(databaseName)) {
+      final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
+      DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+      if (context == null)
+        context = DatabaseContext.INSTANCE.init(database);
+      context.setCurrentUser(user.getDatabaseUser(database));
+      BOUND_PRINCIPAL_DB.set(database);
+    }
   }
 
   /**

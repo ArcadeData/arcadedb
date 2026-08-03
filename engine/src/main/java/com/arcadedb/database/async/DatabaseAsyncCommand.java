@@ -19,9 +19,11 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.Map;
 import java.util.logging.Level;
@@ -34,33 +36,59 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   public final Map<String, Object>    parametersMap;
   public final AsyncResultsetCallback userCallback;
   public final ContextConfiguration   configuration;
+  // The principal that submitted the command, captured on the calling (e.g. HTTP) thread. It is bound onto the worker
+  // thread's DatabaseContext before execution so the engine per-user permission gates enforce on the async path too
+  // (GHSA-5j4x-3jfw-8xv3). Null in embedded/internal use, where no user is bound and the gates are a no-op.
+  public final SecurityDatabaseUser   requestUser;
 
   public DatabaseAsyncCommand(final ContextConfiguration configuration, final boolean idempotent, final String language,
       final String command, final Object[] parameters,
       final AsyncResultsetCallback userCallback) {
-    this.configuration = configuration;
-    this.idempotent = idempotent;
-    this.language = language;
-    this.command = command;
-    this.parameters = parameters;
-    this.parametersMap = null;
-    this.userCallback = userCallback;
+    this(configuration, idempotent, language, command, parameters, null, userCallback, null);
   }
 
   public DatabaseAsyncCommand(final ContextConfiguration configuration, final boolean idempotent, final String language,
       final String command, final Map<String, Object> parametersMap,
       final AsyncResultsetCallback userCallback) {
+    this(configuration, idempotent, language, command, null, parametersMap, userCallback, null);
+  }
+
+  public DatabaseAsyncCommand(final ContextConfiguration configuration, final boolean idempotent, final String language,
+      final String command, final Object[] parameters,
+      final AsyncResultsetCallback userCallback, final SecurityDatabaseUser requestUser) {
+    this(configuration, idempotent, language, command, parameters, null, userCallback, requestUser);
+  }
+
+  public DatabaseAsyncCommand(final ContextConfiguration configuration, final boolean idempotent, final String language,
+      final String command, final Map<String, Object> parametersMap,
+      final AsyncResultsetCallback userCallback, final SecurityDatabaseUser requestUser) {
+    this(configuration, idempotent, language, command, null, parametersMap, userCallback, requestUser);
+  }
+
+  private DatabaseAsyncCommand(final ContextConfiguration configuration, final boolean idempotent, final String language,
+      final String command, final Object[] parameters, final Map<String, Object> parametersMap,
+      final AsyncResultsetCallback userCallback, final SecurityDatabaseUser requestUser) {
     this.configuration = configuration;
     this.idempotent = idempotent;
     this.language = language;
     this.command = command;
-    this.parameters = null;
+    this.parameters = parameters;
     this.parametersMap = parametersMap;
     this.userCallback = userCallback;
+    this.requestUser = requestUser;
   }
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+    // Bind the submitting principal onto this worker thread's DatabaseContext so the engine permission gates
+    // (LocalDatabase.checkPermissionsOnDatabase/checkPermissionsOnFile, and the polyglot scripting gate) enforce
+    // exactly as on the synchronous transports. Restore the previous binding afterwards, since the worker thread and
+    // its DatabaseContext are reused across tasks submitted by different users (GHSA-5j4x-3jfw-8xv3).
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    final SecurityDatabaseUser previousUser = dbContext != null ? dbContext.getCurrentUser() : null;
+    if (dbContext != null)
+      dbContext.setCurrentUser(requestUser);
+
     try (final ResultSet resultset = idempotent ?
         parametersMap != null ?
             database.query(language, command, configuration, parametersMap) :
@@ -87,6 +115,9 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
 
       if (userCallback != null)
         userCallback.onError(e);
+    } finally {
+      if (dbContext != null)
+        dbContext.setCurrentUser(previousUser);
     }
   }
 

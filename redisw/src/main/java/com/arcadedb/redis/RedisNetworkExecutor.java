@@ -35,6 +35,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.NumberUtils;
 
 import java.io.EOFException;
@@ -58,7 +60,8 @@ public class RedisNetworkExecutor extends Thread {
   private final    byte[]              buffer           = new byte[32 * 1024];
   private          int                 bytesRead        = 0;
   private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
-  private          DatabaseInternal    selectedDatabase = null;
+  private          String              selectedDatabaseName = null;
+  private          ServerSecurityUser  authenticatedUser    = null;
 
   /**
    * Holds the resolved key and database from key resolution.
@@ -71,15 +74,15 @@ public class RedisNetworkExecutor extends Thread {
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
 
-    // Initialize default database from configuration if set
+    // Initialize default database from configuration if set. The database access is authorized lazily,
+    // once the connection has authenticated (see getAuthorizedDatabase), so here we only record the name.
     final String defaultDbName = GlobalConfiguration.REDIS_DEFAULT_DATABASE.getValueAsString();
     if (defaultDbName != null && !defaultDbName.isEmpty()) {
-      try {
-        this.selectedDatabase = (DatabaseInternal) server.getDatabase(defaultDbName);
-      } catch (final Exception e) {
+      if (server.existsDatabase(defaultDbName))
+        this.selectedDatabaseName = defaultDbName;
+      else
         LogManager.instance().log(this, Level.WARNING,
             "Redis wrapper: Default database '%s' not found, will use connection-local storage", defaultDbName);
-      }
     }
   }
 
@@ -147,7 +150,30 @@ public class RedisNetworkExecutor extends Thread {
       // run()). No query language applies to a native Redis command, so language is null. No-op
       // unless the tracing plugin is active.
       try (final QueryTracer.Span span = QueryTracer.Holder.begin(
-          selectedDatabase != null ? selectedDatabase.getName() : null, null, "command", cmdString)) {
+          selectedDatabaseName, null, "command", cmdString)) {
+
+        // AUTH and HELLO are the only commands accepted before authentication (HELLO must still carry a
+        // valid AUTH option, otherwise it is rejected with NOAUTH). Every other command is rejected with
+        // NOAUTH until the connection has provided valid ArcadeDB credentials, mirroring the Postgres and
+        // MongoDB wire-protocol wrappers.
+        if ("AUTH".equals(cmdString)) {
+          auth(list);
+          appendCrLf();
+          return;
+        }
+
+        if ("HELLO".equals(cmdString)) {
+          hello(list);
+          appendCrLf();
+          return;
+        }
+
+        if (authenticatedUser == null) {
+          value.append("-NOAUTH Authentication required.");
+          appendCrLf();
+          return;
+        }
+
         switch (cmdString) {
           case "DECR":
             decrBy(list);
@@ -311,7 +337,7 @@ public class RedisNetworkExecutor extends Thread {
 
     if (pos < 0) {
       // Transient mode: delete from globalVariables atomically
-      final DatabaseInternal database = (DatabaseInternal) server.getDatabase(bucketName);
+      final DatabaseInternal database = getAuthorizedDatabase(bucketName);
       database.transaction(() -> {
         for (int i = 2; i < list.size(); i++) {
           final String key = (String) list.get(i);
@@ -327,7 +353,7 @@ public class RedisNetworkExecutor extends Thread {
       final String databaseName = bucketName.substring(0, pos);
       final String keyType = bucketName.substring(pos + 1);
 
-      final Database database = server.getDatabase(databaseName);
+      final Database database = getAuthorizedDatabase(databaseName);
 
       if (keyType.startsWith("#")) {
         database.lookupByRID(new RID(keyType), true).delete();
@@ -408,7 +434,7 @@ public class RedisNetworkExecutor extends Thread {
         final String key = keyObj.toString();
         if (key.startsWith("#")) {
           // BY RID - persistent mode
-          final Database database = server.getDatabase(bucketName);
+          final Database database = getAuthorizedDatabase(bucketName);
           final Record record = database.lookupByRID(new RID(key), true);
           respondValue(record != null ? record.toJSON(true) : null, true);
         } else {
@@ -439,7 +465,7 @@ public class RedisNetworkExecutor extends Thread {
     // Check if transient mode: second argument is JSON (starts with '{')
     if (secondArg.startsWith("{")) {
       // Transient mode: store JSON objects in globalVariables atomically
-      final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+      final DatabaseInternal database = getAuthorizedDatabase(databaseName);
       final int[] stored = {0};
       database.transaction(() -> {
         for (int i = 2; i < list.size(); i++) {
@@ -457,7 +483,7 @@ public class RedisNetworkExecutor extends Thread {
     } else {
       // Persistent mode: store documents in database type
       final String typeName = secondArg;
-      final Database database = server.getDatabase(databaseName);
+      final Database database = getAuthorizedDatabase(databaseName);
       database.transaction(() -> {
         for (int i = 3; i < list.size(); i++) {
           final JSONObject v = new JSONObject((String) list.get(i));
@@ -524,15 +550,125 @@ public class RedisNetworkExecutor extends Thread {
     value.append(response);
   }
 
+  /**
+   * Authenticates the connection against ArcadeDB's server security. Only the two-argument form
+   * {@code AUTH <username> <password>} is supported: ArcadeDB has no anonymous "default" user, so the
+   * single-argument Redis form is rejected. On success the authenticated principal is retained for the
+   * life of the connection and bound into {@link DatabaseContext} on every database access, so the
+   * engine's per-user permission gates enforce for Redis callers exactly as they do for the HTTP,
+   * Postgres and MongoDB transports.
+   */
+  private void auth(final List<Object> list) {
+    final String userName;
+    final String password;
+    if (list.size() == 3) {
+      userName = (String) list.get(1);
+      password = (String) list.get(2);
+    } else if (list.size() == 2) {
+      // Single-argument AUTH targets Redis' "default" user, which ArcadeDB does not model.
+      this.authenticatedUser = null;
+      throw new RedisException("WRONGPASS ArcadeDB requires the 'AUTH <username> <password>' form");
+    } else
+      throw new RedisException("ERR wrong number of arguments for 'auth' command");
+
+    try {
+      this.authenticatedUser = server.getSecurity().authenticate(userName, password, null);
+      value.append("+OK");
+    } catch (final ServerSecurityException e) {
+      this.authenticatedUser = null;
+      throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
+    }
+  }
+
+  /**
+   * Handles the {@code HELLO [protover [AUTH username password]]} handshake. Modern Redis clients use it
+   * to authenticate and negotiate the protocol version in a single round-trip. Only the AUTH-carrying
+   * form is accepted before authentication; a plain HELLO on an unauthenticated connection is rejected
+   * with NOAUTH, matching Redis' own behaviour. Both RESP2 and RESP3 protocol versions are accepted but
+   * the reply is always encoded as a RESP2 map (a flat array of key/value pairs).
+   */
+  private void hello(final List<Object> list) {
+    int idx = 1;
+
+    // Optional protocol version.
+    if (list.size() > idx) {
+      final String maybeVersion = (String) list.get(idx);
+      if (NumberUtils.isIntegerNumber(maybeVersion)) {
+        final int proto = Integer.parseInt(maybeVersion);
+        if (proto < 2 || proto > 3)
+          throw new RedisException("NOPROTO unsupported protocol version");
+        idx++;
+      }
+    }
+
+    // Optional AUTH <username> <password> option.
+    if (list.size() > idx && "AUTH".equalsIgnoreCase((String) list.get(idx))) {
+      if (list.size() < idx + 3)
+        throw new RedisException("ERR Syntax error in HELLO");
+      final String userName = (String) list.get(idx + 1);
+      final String password = (String) list.get(idx + 2);
+      try {
+        this.authenticatedUser = server.getSecurity().authenticate(userName, password, null);
+      } catch (final ServerSecurityException e) {
+        this.authenticatedUser = null;
+        throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
+      }
+    }
+
+    if (authenticatedUser == null)
+      throw new RedisException(
+          "NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time");
+
+    // RESP2 map reply: a flat array of alternating key/value elements (7 pairs = 14 elements).
+    value.append("*14");
+    appendHelloEntry("server", Constants.PRODUCT.toLowerCase(Locale.ENGLISH));
+    appendHelloEntry("version", Constants.getVersion());
+    appendHelloEntry("proto", 2L);
+    appendHelloEntry("id", threadId());
+    appendHelloEntry("mode", "standalone");
+    appendHelloEntry("role", "master");
+    // "modules" maps to an empty array.
+    appendCrLf();
+    respondValue("modules", true);
+    appendCrLf();
+    value.append("*0");
+  }
+
+  private void appendHelloEntry(final String key, final Object entryValue) {
+    appendCrLf();
+    respondValue(key, true);
+    appendCrLf();
+    respondValue(entryValue, !(entryValue instanceof Number));
+  }
+
   private void select(final List<Object> list) {
     final String dbName = (String) list.get(1);
-    try {
-      this.selectedDatabase = (DatabaseInternal) server.getDatabase(dbName);
-      value.append("+");
-      value.append("OK");
-    } catch (final Exception e) {
+    if (!server.existsDatabase(dbName))
       throw new RedisException("Database '" + dbName + "' not found");
-    }
+
+    // Authorize access (and bind the principal) before switching the connection's current database.
+    getAuthorizedDatabase(dbName);
+    this.selectedDatabaseName = dbName;
+    value.append("+");
+    value.append("OK");
+  }
+
+  /**
+   * Resolves a database by name, enforcing that the authenticated user is allowed to access it and
+   * binding the user into {@link DatabaseContext} so the engine's per-user permission gates enforce for
+   * the subsequent record/index operations. Every command that touches a database MUST resolve it
+   * through this method rather than calling {@code server.getDatabase(...)} directly.
+   */
+  private DatabaseInternal getAuthorizedDatabase(final String databaseName) {
+    if (authenticatedUser == null)
+      throw new RedisException("NOAUTH Authentication required.");
+
+    if (!authenticatedUser.canAccessToDatabase(databaseName))
+      throw new RedisException("NOPERM this user has no permissions to access the database '" + databaseName + "'");
+
+    final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+    DatabaseContext.INSTANCE.init(database).setCurrentUser(authenticatedUser.getDatabaseUser(database));
+    return database;
   }
 
   /**
@@ -548,18 +684,17 @@ public class RedisNetworkExecutor extends Thread {
     if (dotPos > 0) {
       final String dbName = key.substring(0, dotPos);
       final String actualKey = key.substring(dotPos + 1);
-      try {
-        return new ResolvedKey(actualKey, (DatabaseInternal) server.getDatabase(dbName));
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.FINE,
-            "Could not resolve database '%s' from key '%s'. Treating as a regular key. Error: %s", e, dbName, key,
-            e.getMessage());
-        // Not a valid database prefix, treat as regular key
-      }
+      if (server.existsDatabase(dbName))
+        // A real database prefix: authorize access (throws if not permitted) and bind the principal.
+        return new ResolvedKey(actualKey, getAuthorizedDatabase(dbName));
+      // Not a database prefix, treat as regular key.
     }
 
     // Use selected database (from SELECT command or default config)
-    return new ResolvedKey(key, selectedDatabase);
+    if (selectedDatabaseName != null)
+      return new ResolvedKey(key, getAuthorizedDatabase(selectedDatabaseName));
+
+    return new ResolvedKey(key, null);
   }
 
   private Object getVariable(final String key) {
@@ -731,7 +866,7 @@ public class RedisNetworkExecutor extends Thread {
     final Record record;
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
-      final Database database = server.getDatabase(bucketName);
+      final Database database = getAuthorizedDatabase(bucketName);
 
       if (key.startsWith("#")) {
         // BY RID
@@ -745,7 +880,7 @@ public class RedisNetworkExecutor extends Thread {
       final String databaseName = bucketName.substring(0, pos);
       final String keyType = bucketName.substring(pos + 1);
 
-      final Database database = server.getDatabase(databaseName);
+      final Database database = getAuthorizedDatabase(databaseName);
 
       final Index index = database.getSchema().getIndexByName(keyType);
 
@@ -768,7 +903,7 @@ public class RedisNetworkExecutor extends Thread {
    * Used when bucketName has no dot and key doesn't start with #.
    */
   private String getTransientValue(final String databaseName, final String key) {
-    final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+    final DatabaseInternal database = getAuthorizedDatabase(databaseName);
     final Object value = database.getGlobalVariable(key);
     return value != null ? value.toString() : null;
   }
@@ -779,7 +914,7 @@ public class RedisNetworkExecutor extends Thread {
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
       // BY RID
-      final Database database = server.getDatabase(bucketName);
+      final Database database = getAuthorizedDatabase(bucketName);
 
       for (final Object key : keys) {
         final String k = key.toString();
@@ -795,7 +930,7 @@ public class RedisNetworkExecutor extends Thread {
       final String databaseName = bucketName.substring(0, pos);
       final String keyType = bucketName.substring(pos + 1);
 
-      final Database database = server.getDatabase(databaseName);
+      final Database database = getAuthorizedDatabase(databaseName);
 
       final Index index = database.getSchema().getIndexByName(keyType);
 

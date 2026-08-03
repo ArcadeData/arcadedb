@@ -45,7 +45,15 @@ import java.util.logging.Level;
 public class GraalPolyglotEngine implements AutoCloseable {
   public final         Database            database;
   public final         String              language;
+  /**
+   * Classes a script may resolve via {@code Java.type(...)}. Entries are literal patterns, see
+   * {@link HostClassLookupFilter}. An empty list disables host-class lookup entirely.
+   */
   public final         List<String>        allowedPackages;
+  /**
+   * Extra deny patterns, added on top of {@link HostClassLookupFilter#DENIED} which is always enforced. Deny always
+   * wins over {@link #allowedPackages}.
+   */
   public final         List<String>        restrictedPackages;
   public final         Context             context;
   private static volatile Set<String>      supportedLanguages;
@@ -94,8 +102,12 @@ public class GraalPolyglotEngine implements AutoCloseable {
             // PolyglotAccess.NONE: no cross-language eval, so a script cannot pivot into another GraalVM
             // language that might be on the classpath to escape this language's sandbox.
             allowPolyglotAccess(PolyglotAccess.NONE).//
-            allowHostClassLookup(
-            s -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
+            // Java.type(...) resolution goes through HostClassLookupFilter: allow-list entries are matched
+            // LITERALLY (pkg.* = that package only, pkg.** = recursive, anything else = exact class name) and an
+            // unconditional deny-list rejects the process/reflection/IO/thread class families. Matching each entry
+            // with String.matches() compiled it as a regex, so "java.util.*" also admitted java.util.zip.ZipFile
+            // and java.util.jar.JarFile - a complete arbitrary host-file-read primitive (GHSA-wx28-2265-f788).
+            allowHostClassLookup(new HostClassLookupFilter(this.allowedPackages, this.restrictedPackages));
 
     if (output != null)
       builder.out(output);

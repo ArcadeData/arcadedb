@@ -72,6 +72,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -780,6 +782,8 @@ public class ArcadeDBServer {
   }
 
   public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
+    checkDatabaseNameIsValid(databaseName);
+
     ServerDatabase serverDatabase;
     synchronized (databasesLock) {
       serverDatabase = databases.get(databaseName);
@@ -823,6 +827,31 @@ public class ArcadeDBServer {
    */
   public static boolean isReservedDatabaseName(final String databaseName) {
     return databaseName != null && databaseName.startsWith(RESERVED_DATABASE_PREFIX);
+  }
+
+  /**
+   * Validates a caller-supplied database name before it is used to build an on-disk path, preventing path
+   * traversal outside the configured {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY} (GHSA-qwgr-2c45-63xx).
+   * A database name maps directly to a directory name under the database directory, so it must never contain
+   * filesystem path separators, parent-directory references or null bytes, and the resolved path must remain
+   * inside the configured base directory.
+   *
+   * @throws IllegalArgumentException if the name is empty or would escape the database directory
+   */
+  public void checkDatabaseNameIsValid(final String databaseName) {
+    if (databaseName == null || databaseName.trim().isEmpty())
+      throw new IllegalArgumentException("Database name is empty");
+
+    if (databaseName.indexOf('/') > -1 || databaseName.indexOf('\\') > -1 || databaseName.indexOf(' ') > -1
+        || databaseName.equals(".") || databaseName.equals("..") || databaseName.contains(".."))
+      throw new IllegalArgumentException("Database name '" + databaseName + "' contains invalid characters");
+
+    // Defence in depth: resolve the final path and verify it does not escape the configured base directory.
+    final Path base = Paths.get(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY))
+        .toAbsolutePath().normalize();
+    final Path resolved = base.resolve(databaseName).normalize();
+    if (!resolved.startsWith(base))
+      throw new IllegalArgumentException("Database name '" + databaseName + "' resolves outside the database directory");
   }
 
   public ServerDatabase registerDatabase(final String databaseName, final DatabaseInternal database) {
@@ -970,6 +999,8 @@ public class ArcadeDBServer {
       if (db == null || !db.isOpen()) {
         if (!allowLoad)
           throw new DatabaseOperationException("Database '" + databaseName + "' is not available");
+
+        checkDatabaseNameIsValid(databaseName);
 
         final String path =
             configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;

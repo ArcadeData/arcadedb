@@ -1371,6 +1371,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @param ridsOut    output array for assigned RIDs (must have length >= to - from)
    */
   public void createRecordsBulk(final Binary[] buffers, final int from, final int to, final RID[] ridsOut) {
+      // Enforce the per-type CREATE_RECORD ACL once for the whole bulk (a no-op when no principal is bound,
+      // e.g. internal import or HA apply). The single-record createRecord() path checks this per record; the
+      // bulk edge path (GraphBatch flush) previously skipped it, so an authenticated user with no createRecord
+      // grant on this type could still write edges here once the request thread bound the principal
+      // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
+      database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
       // Always start from a fresh new page for bulk writes.
       // Atomically reserve the next page number to prevent two concurrent transactions
       // from allocating the same page number (which would cause silent data corruption).

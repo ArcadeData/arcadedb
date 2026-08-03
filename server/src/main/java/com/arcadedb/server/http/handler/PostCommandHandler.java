@@ -388,7 +388,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
-    database.async().command(language, command, new AsyncResultsetCallback() {
+    final AsyncResultsetCallback callback = new AsyncResultsetCallback() {
       @Override
       public void onComplete(final ResultSet rs) {
         LogManager.instance().log(this, Level.INFO, "Async command in database \"%s\" completed.", null, database.getName());
@@ -399,6 +399,15 @@ public class PostCommandHandler extends AbstractQueryHandler {
         LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.", null, database.getName());
         LogManager.instance().log(this, Level.SEVERE, "", exception);
       }
-    }, params instanceof Object[] os ? os : (Map<String, Object>) params);
+    };
+
+    // Route to the matching overload explicitly (mirroring the synchronous executeCommand): a ternary would give the
+    // argument the static type Object, forcing the varargs command(...,Object...) overload and wrapping the params in a
+    // single-element array. That makes the polyglot Map path unreachable and every no-param js/map async command throw
+    // "positional parameter is not supported".
+    if (params instanceof Object[] os)
+      database.async().command(language, command, callback, os);
+    else
+      database.async().command(language, command, callback, (Map<String, Object>) params);
   }
 }
