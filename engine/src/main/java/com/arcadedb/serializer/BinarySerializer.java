@@ -247,6 +247,14 @@ public class BinarySerializer {
         throw new SerializationException(
             "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " at position "
                 + initialPosition + ")");
+      if (headerEndOffset >= buffer.limit())
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " >= buffer limit="
+                + buffer.limit() + " at position " + initialPosition + ")");
+      if (headerEndOffset < buffer.position())
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " < current position="
+                + buffer.position() + " at position " + initialPosition + ")");
 
       final int properties = (int) buffer.getUnsignedNumber();
 
@@ -324,7 +332,14 @@ public class BinarySerializer {
 
   public boolean hasProperty(final Database database, final Binary buffer, final String fieldName, final RID rid) {
     try {
-      buffer.getInt(); // headerEndOffset
+      final int headerEndOffset = buffer.getInt();
+      if (headerEndOffset < 0)
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + ")");
+      if (headerEndOffset >= buffer.limit())
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " >= buffer limit="
+                + buffer.limit() + ")");
       final int properties = (int) buffer.getUnsignedNumber();
       if (properties < 0)
         throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
@@ -350,6 +365,13 @@ public class BinarySerializer {
       final String fieldName, final RID rid) {
     try {
       final int headerEndOffset = buffer.getInt();
+      if (headerEndOffset < 0)
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + ")");
+      if (headerEndOffset >= buffer.limit())
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " >= buffer limit="
+                + buffer.limit() + ")");
       final int properties = (int) buffer.getUnsignedNumber();
 
       if (properties < 0)
@@ -494,397 +516,11 @@ public class BinarySerializer {
         final List<Object> list = new ArrayList<>();
         for (Object o : iter)
           list.add(o);
-        serializeListEntries(database, content, list, list.size(), "iterable", applyEncryption);
-      }
-      default -> {
-        // PRIMITIVE ARRAY (component type not matched by the cases above)
-        final int length = Array.getLength(value);
-        content.putUnsignedNumber(length);
-        for (int i = 0; i < length; ++i) {
-          final Object entryValue = Array.get(value, i);
-          try {
-            byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
-            Object valueToWrite = entryValue;
-            if (entryType == -1) {
-              LogManager.instance()
-                  .log(BinaryTypes.class, Level.WARNING,
-                      "Cannot serialize entry in array of type %s, value %s. Stored as null",
-                      entryValue.getClass(), entryValue);
-              entryType = BinaryTypes.TYPE_NULL;
-              valueToWrite = null;
-            }
-            content.putByte(entryType);
-            serializeValue(database, content, entryType, valueToWrite, applyEncryption);
-          } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'",
-                i, entryValue);
-            throw new SerializationException(
-                "Error on serializing array value for element " + i + " = '" + entryValue + "'");
-          }
-        }
-      }
-      }
-      break;
-    }
-    case BinaryTypes.TYPE_MAP: {
-      final Dictionary dictionary = database.getSchema().getDictionary();
+        serializeListEnt
 
-      if (value instanceof JSONObject object)
-        value = object.toMap();
+... [OUTPUT TRUNCATED - 17,083 chars omitted out of 67,010 total] ...
 
-      final Map<Object, Object> map = (Map<Object, Object>) value;
-      final int mapSize = map.size();
-      // Pre-resolve types so the count matches what is written. A partially-written entry
-      // (key without value) desyncs the reader and corrupts the record.
-      // An invalid key drops the entry; an invalid value preserves the key and stores null.
-      final Object[] keys = new Object[mapSize];
-      final Object[] values = new Object[mapSize];
-      final byte[] keyTypes = new byte[mapSize];
-      final byte[] valueTypes = new byte[mapSize];
-      int validCount = 0;
-      for (final Map.Entry<Object, Object> entry : map.entrySet()) {
-        try {
-          Object entryKey = entry.getKey();
-          byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey, null);
-          if (entryKeyType == -1) {
-            LogManager.instance()
-                .log(BinaryTypes.class, Level.WARNING,
-                    "Cannot serialize entry key in map of type %s, value %s. The entry will be ignored",
-                    entryKey.getClass(), entryKey);
-            continue;
-          }
-
-          Object entryValue = entry.getValue();
-          byte entryValueType = BinaryTypes.getTypeFromValue(entryValue, null);
-          if (entryValueType == -1) {
-            LogManager.instance()
-                .log(BinaryTypes.class, Level.WARNING,
-                    "Cannot serialize entry value in map of type %s, value %s. Stored as null",
-                    entryValue.getClass(), entryValue);
-            entryValueType = BinaryTypes.TYPE_NULL;
-            entryValue = null;
-          }
-
-          if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
-            final int id = dictionary.getIdByName((String) entryKey, false);
-            if (id > -1) {
-              // COMPRESSED STRING AS MAP KEY
-              entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
-              entryKey = id;
-            }
-          }
-
-          keys[validCount] = entryKey;
-          values[validCount] = entryValue;
-          keyTypes[validCount] = entryKeyType;
-          valueTypes[validCount] = entryValueType;
-          ++validCount;
-        } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on serializing map value for key '%s' = '%s'",
-              entry.getKey(), entry.getValue());
-          throw new SerializationException(
-              "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'", e);
-        }
-      }
-      content.putUnsignedNumber(validCount);
-      for (int i = 0; i < validCount; ++i) {
-        content.putByte(keyTypes[i]);
-        serializeValue(database, content, keyTypes[i], keys[i], applyEncryption);
-        content.putByte(valueTypes[i]);
-        serializeValue(database, content, valueTypes[i], values[i], applyEncryption);
-      }
-      break;
-    }
-    case BinaryTypes.TYPE_EMBEDDED: {
-      final Document document = (Document) value;
-      final long schemaId = database.getSchema().getDictionary().getIdByName(document.getTypeName(), false);
-      if (schemaId == -1)
-        throw new IllegalArgumentException("Cannot find type '" + document.getTypeName() + "' declared in embedded document");
-      content.putUnsignedNumber(schemaId);
-
-      final Binary header = new Binary(8192);
-      header.setAllocationChunkSize(2048);
-      final Binary body = new Binary(8192);
-      body.setAllocationChunkSize(2048);
-
-      header.putByte(EmbeddedDocument.RECORD_TYPE);
-      serializeProperties(database, document, header, body);
-
-      content.putUnsignedNumber(header.size());
-      content.append(header);
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_SHORTS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Array.getShort(value, i));
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_INTEGERS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Array.getInt(value, i));
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_LONGS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Array.getLong(value, i));
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_FLOATS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Float.floatToIntBits(Array.getFloat(value, i)));
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Double.doubleToLongBits(Array.getDouble(value, i)));
-      break;
-    }
-    default:
-      LogManager.instance().log(this, Level.INFO, "Error on serializing value '%s', type not supported", value);
-    }
-
-    if (encrypt) {
-      switch (type) {
-      case BinaryTypes.TYPE_NULL:
-      case BinaryTypes.TYPE_COMPRESSED_RID:
-      case BinaryTypes.TYPE_RID:
-        break;
-      default:
-        serialized.putBytes(dataEncryption.encrypt(content.toByteArray()));
-      }
-    }
-  }
-
-  /**
-   * Serialize an ordered sequence of entries as a list. Preserves positions: entries whose type can't
-   * be determined are written as TYPE_NULL (and logged) so the deserialized list keeps the same size
-   * and index layout.
-   */
-  private void serializeListEntries(final Database database, final Binary content, final Iterable<?> entries,
-      final int expectedSize, final String kind, final boolean applyEncryption) {
-    content.putUnsignedNumber(expectedSize);
-    for (final Object entryValue : entries) {
-      byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
-      Object valueToWrite = entryValue;
-      if (entryType == -1) {
-        LogManager.instance()
-            .log(BinaryTypes.class, Level.WARNING,
-                "Cannot serialize entry in " + kind + " of type %s, value %s. Stored as null",
-                entryValue.getClass(), entryValue);
-        entryType = BinaryTypes.TYPE_NULL;
-        valueToWrite = null;
-      }
-      content.putByte(entryType);
-      serializeValue(database, content, entryType, valueToWrite, applyEncryption);
-    }
-  }
-
-  public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
-      final EmbeddedModifier embeddedModifier) {
-    return deserializeValue(database, deserialized, type, embeddedModifier, true);
-  }
-
-  public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
-      final EmbeddedModifier embeddedModifier, final boolean applyEncryption) {
-    final Binary content = applyEncryption && dataEncryption != null &&
-        type != BinaryTypes.TYPE_NULL &&
-        type != BinaryTypes.TYPE_COMPRESSED_RID &&
-        type != BinaryTypes.TYPE_RID ? new Binary(dataEncryption.decrypt(deserialized.getBytes())) : deserialized;
-
-    final Object value;
-    switch (type) {
-    case BinaryTypes.TYPE_NULL:
-      value = null;
-      break;
-    case BinaryTypes.TYPE_STRING:
-      // A string reads back as the string that was written, always. This used to sniff the first characters and return
-      // a spatial4j Shape when they looked like the head of a WKT geometry, which broke the identity of a declared
-      // STRING property and mangled any free text starting with POINT/POLYGON/... (issue #5600). Databases written
-      // before 26.2.1 - where shapes were stored as WKT text under TYPE_STRING - keep working because every geometry
-      // consumer accepts WKT: see GeoUtils.parseGeometry(), GeoUtils.parseJtsGeometry() and LSMTreeGeoIndex.toShape().
-      value = content.getString();
-      break;
-    case BinaryTypes.TYPE_COMPRESSED_STRING:
-      value = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());
-      break;
-    case BinaryTypes.TYPE_BINARY:
-      value = content.getBytes();
-      break;
-    case BinaryTypes.TYPE_COMPRESSED_GEOMETRY:
-      value = deserializeGeometryBinary(content);
-      break;
-    case BinaryTypes.TYPE_BYTE:
-      value = content.getByte();
-      break;
-    case BinaryTypes.TYPE_BOOLEAN:
-      value = content.getByte() == 1;
-      break;
-    case BinaryTypes.TYPE_SHORT:
-      value = (short) content.getNumber();
-      break;
-    case BinaryTypes.TYPE_INT:
-      value = (int) content.getNumber();
-      break;
-    case BinaryTypes.TYPE_LONG:
-      value = content.getNumber();
-      break;
-    case BinaryTypes.TYPE_FLOAT:
-      value = Float.intBitsToFloat((int) content.getNumber());
-      break;
-    case BinaryTypes.TYPE_DOUBLE:
-      value = Double.longBitsToDouble(content.getNumber());
-      break;
-    case BinaryTypes.TYPE_DATE:
-      value = DateUtils.date(database, content.getUnsignedNumber(), dateImplementation);
-      break;
-    case BinaryTypes.TYPE_DATETIME_SECOND:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.SECONDS, dateTimeImplementation,
-          ChronoUnit.SECONDS);
-      break;
-    case BinaryTypes.TYPE_DATETIME:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.MILLIS, dateTimeImplementation,
-          ChronoUnit.MILLIS);
-      break;
-    case BinaryTypes.TYPE_DATETIME_MICROS:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.MICROS, dateTimeImplementation,
-          ChronoUnit.MICROS);
-      break;
-    case BinaryTypes.TYPE_DATETIME_NANOS:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.NANOS, dateTimeImplementation, ChronoUnit.NANOS);
-      break;
-    case BinaryTypes.TYPE_DECIMAL:
-      final int scale = (int) content.getNumber();
-      final byte[] unscaledValue = content.getBytes();
-      value = new BigDecimal(new BigInteger(unscaledValue), scale);
-      break;
-    case BinaryTypes.TYPE_COMPRESSED_RID:
-      value = RID.create(database, (int) deserialized.getNumber(), deserialized.getNumber());
-      break;
-    case BinaryTypes.TYPE_RID:
-      value = RID.create(database, deserialized.getInt(), deserialized.getLong());
-      break;
-    case BinaryTypes.TYPE_UUID:
-      value = new UUID(content.getNumber(), content.getNumber());
-      break;
-    case BinaryTypes.TYPE_LIST: {
-      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
-      final List<Object> list = new ArrayList<>(count);
-      for (int i = 0; i < count; ++i) {
-        final byte entryType = content.getByte();
-        list.add(deserializeValue(database, content, entryType, embeddedModifier, applyEncryption));
-      }
-      value = list;
-      break;
-    }
-    case BinaryTypes.TYPE_MAP: {
-      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
-      final Map<Object, Object> map = new LinkedHashMap<>(count);
-      for (int i = 0; i < count; ++i) {
-        final byte entryKeyType = content.getByte();
-        final Object entryKey = deserializeValue(database, content, entryKeyType, embeddedModifier, applyEncryption);
-
-        final byte entryValueType = content.getByte();
-        final Object entryValue = deserializeValue(database, content, entryValueType, embeddedModifier, applyEncryption);
-
-        map.put(entryKey, entryValue);
-      }
-      value = map;
-      break;
-    }
-    case BinaryTypes.TYPE_EMBEDDED: {
-      final String typeName = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());
-
-      final int embeddedObjectSize = (int) content.getUnsignedNumber();
-
-      final Binary embeddedBuffer = content.slice(content.position(), embeddedObjectSize);
-
-      value = ((DatabaseInternal) database).getRecordFactory()
-          .newImmutableRecord(database, database.getSchema().getType(typeName), null, embeddedBuffer, embeddedModifier);
-
-      content.position(content.position() + embeddedObjectSize);
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_SHORTS: {
-      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
-      final short[] array = new short[count];
-      for (int i = 0; i < count; ++i)
-        array[i] = (short) content.getNumber();
-      value = array;
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_INTEGERS: {
-      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
-      final int[] array = new int[count];
-      for (int i = 0; i < count; ++i)
-        array[i] = (int) content.getNumber();
-      value = array;
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_LONGS: {
-      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
-      final long[] array = new long[count];
-      for (int i = 0; i < count; ++i)
-        array[i] = content.getNumber();
-      value = array;
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_FLOATS: {
-      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
-      final float[] array = new float[count];
-      for (int i = 0; i < count; ++i)
-        array[i] = Float.intBitsToFloat((int) content.getNumber());
-      value = array;
-      break;
-    }
-    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES: {
-      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
-      final double[] array = new double[count];
-      for (int i = 0; i < count; ++i)
-        array[i] = Double.longBitsToDouble(content.getNumber());
-      value = array;
-      break;
-    }
-
-    default:
-      throw new SerializationException("Error on deserializing value of unknown type " + type);
-    }
-    return value;
-  }
-
-  /**
-   * Validates an element count/length decoded from a (possibly corrupted) record buffer. A misaligned or corrupted
-   * varint can decode to a value larger than {@link Integer#MAX_VALUE} that wraps to a negative int, producing a cryptic
-   * {@link NegativeArraySizeException} (or an oversized allocation) on the following collection/array creation. Convert
-   * it to a clear, actionable error instead (issue #4420). Every collection element consumes at least one byte, so a
-   * count exceeding the total buffer size is always corruption and this check never rejects valid data.
-   */
-  private static int checkDeserializedCount(final long count, final Binary buffer) {
-    if (count < 0L || count > Integer.MAX_VALUE || count > buffer.size())
-      throw new SerializationException("Invalid element count " + count + " in buffer of size " + buffer.size()
-          + " (corrupted record or misaligned read)");
-    return (int) count;
-  }
-
-  public Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content) {
-    final int headerSizePosition = header.position();
-    header.putInt(0); // TEMPORARY PLACEHOLDER FOR HEADER SIZE
-
-    final Map<String, Object> properties = record.propertiesAsMap();
-    final Dictionary dictionary = database.getSchema().getDictionary();
-    final DocumentType documentType = record.getType();
-    // For records being UPDATED, look up existing external RIDs from the old buffer so we can update the external bucket
-    // record in place rather than allocating a new one. New records (no identity yet) get an empty map.
-    final Map<String, RID> existingExternalRids = findExistingExternalRids(database, record);
+record);
     // Track which existing external RIDs we re-used (kept) so we can delete the rest as orphans below. An entry is
     // orphaned when the property is no longer EXTERNAL (toggled off via ALTER), was renamed, or was dropped entirely.
     final Set<String> consumedExternalProperties = existingExternalRids.isEmpty() ? null : new HashSet<>();
