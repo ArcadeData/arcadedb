@@ -203,3 +203,34 @@ either mocks or page-internal corruption brittle enough to test the fixture rath
 Before the fix four of the five fail; `aHealthyIndexCarriesNoUpgradeWarning` passes throughout.
 `LSMTreeIndexKeyOrderCheckTest` is unchanged and still passes: it asserts on `checkRootPagesKeyOrder`,
 `checkIntegrity()` and `CHECK DATABASE`, none of which this touches.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5804
+
+### Review cycles
+
+| Cycle | Head | Outcome |
+|---|---|---|
+| 1 | `5114ab3` | LGTM, no blockers. Asked that the compacted-only scope be stated (the `schema:indexes` query is not an exhaustive affected-set), that a check which throws not be silently lost, and noted geo/sparse exemption rests entirely on the ASCII-key invariant. All three applied - the third by making both wrappers delegate rather than documenting the invariant harder. |
+| 2 | `d039878` | LGTM, no blockers. Caught that cycle 1 fixed only half of its own point: the failed check was raised to `WARNING` but still left the verdict null, so the query kept answering "healthy". Now published as a distinct unverifiable advisory. Also caught that the `LSMTreeFullTextIndex` delegate - described as half the report - had no test; added, and proven to fail with the delegate stubbed back to `null`. PR body corrected where it contradicted the diff. |
+| 3 | `2bf7243` | LGTM, no blockers. Found a real defect in cycle 2's change: `keyOrderCheckedOnLoad` was set *before* the check ran, and `onAfterLoad` resolves the sub-index through `Schema.getFileById()`, which returns the same instance on every load - so one transient page-read failure on a replica's Raft apply or snapshot resync would have pinned false "needs rebuild" advice on a healthy index for the lifetime of the database. Now only a *completed* check latches, and a later success clears a stale verdict. Also corrected the lock-free javadoc, which called a plain reference read volatile. Declined ranking UNVERIFIABLE below MISMATCH in `TypeIndex`: both name the same remedy, and `schema:indexes` already shows every distinct message on its own bucket row. |
+| 4 | `0d2c395` | LGTM, no blockers. Caught that `LSMTreeGeoIndex` returned its layout advisory *before* falling through, contradicting the comment directly above it - the delegation exists so a mismatch cannot be hidden, and that ordering hid it. Underlying is asked first now. Also flagged the Studio banner collapsing three severities under one "should be rebuilt" header; the header now asserts neither severity nor remedy. Declined adding a severity field to the wire format to reorder information that already renders in full as separate message groups. |
+
+Three of the four cycles found something a previous cycle had introduced or left
+half-finished, all in the reporting path rather than the detection: the queryability of the unknown
+verdict (cycle 2), the latching of a transient failure (cycle 3), and the geo return ordering (cycle 4).
+The detection logic itself was untouched throughout.
+
+### Known gap
+
+The `KEY_ORDER_UNVERIFIABLE_WARNING` branch has no test. `checkKeyOrderInPage` already converts an
+unreadable key into a reported problem rather than an exception, so what remains is genuine I/O failure,
+and staging it needs either mocks or page corruption brittle enough to test the fixture rather than the
+code. Cycle 3 reduced the exposure instead of covering it: the verdict is now self-healing, so the worst
+case is a `WARNING` and an advisory that clears on the next successful load.
+
+### Final state
+
+`max-cycles-reached` - four cycles run, every review LGTM with no blocking finding. Merge is the
+developer's call.
