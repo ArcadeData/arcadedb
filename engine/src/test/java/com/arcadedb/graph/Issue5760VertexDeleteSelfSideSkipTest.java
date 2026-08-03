@@ -26,10 +26,14 @@ import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -460,6 +464,156 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
     });
 
     assertIntegrityClean();
+  }
+
+  /**
+   * The interleaving the streaming rewrite introduces, exercised under real concurrency.
+   * <p>
+   * Before #5760 every far-endpoint write happened in a SECOND pass, after the walk of the hub's own list had
+   * finished. Now they interleave: the delete is reading the hub's chunks while it writes the neighbours' lists.
+   * The safety argument is that those are different records in different buckets, so the walk cannot be disturbed
+   * - but the argument is only as good as the case that tests it, and until now nothing put another transaction
+   * on the far list AT THE SAME TIME. That is what this does: while the hub is being deleted, other threads
+   * append edges to the very neighbour lists the delete is removing the hub's back-references from.
+   * <p>
+   * Two invariants, and both have to hold for the test to mean anything. No edge may outlive the hub - that is the
+   * #5670/#5680 family invariant, and a delete that lost track of its walk under the interleave would leave one.
+   * And the concurrent appends that COMMITTED must still be there, because a delete that rebuilt a neighbour's
+   * chunk from a stale copy would silently erase them - a lost update the version check exists to prevent, and
+   * the shape #5147 was about.
+   */
+  @Test
+  @Tag("slow")
+  void deletingAVertexWhileItsNeighboursListsAreBeingAppendedTo() throws InterruptedException {
+    final int rounds = 6;
+    final int neighbours = 40;
+    final int appenders = 4;
+
+    createSchema();
+
+    final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+    GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
+    try {
+      for (int round = 0; round < rounds; round++) {
+        final RID hubRID = createHub();
+        final List<RID> sources = createIncomingEdges(hubRID, neighbours);
+
+        database.transaction(() -> assertThat(hubRID.asVertex().countEdges(Vertex.DIRECTION.IN, "LINK"))
+            .as("the round must start with a full hub").isEqualTo(neighbours));
+
+        final AtomicLong committedAppends = new AtomicLong();
+        final AtomicLong appendsDuringDelete = new AtomicLong();
+        final AtomicLong deleteFailures = new AtomicLong();
+        final AtomicBoolean deleting = new AtomicBoolean();
+        final AtomicBoolean keepAppending = new AtomicBoolean(true);
+        // Tripped once every appender has committed one edge, so the delete is guaranteed to start while they are
+        // running rather than after they have all finished - without which "appends happened" and "appends raced
+        // the delete" are two different claims and only the first would be tested.
+        final CountDownLatch appendersWarm = new CountDownLatch(appenders);
+        final CountDownLatch start = new CountDownLatch(1);
+        final CountDownLatch done = new CountDownLatch(appenders + 1);
+
+        // Appenders grow the OUT list of the SAME sources the delete is about to remove the hub's edge from, so
+        // the two transactions meet on those chunk pages. They keep going until the delete has finished.
+        for (int t = 0; t < appenders; t++) {
+          final int worker = t;
+          new Thread(() -> {
+            if (!awaitStart(start)) {
+              done.countDown();
+              return;
+            }
+            boolean warm = false;
+            for (int i = 0; keepAppending.get(); i++) {
+              final RID source = sources.get((worker + i) % neighbours);
+              try {
+                database.transaction(() -> {
+                  final MutableVertex target = database.newVertex("Src");
+                  target.save();
+                  source.asVertex().modify().newEdge("LINK", target);
+                }, false, 10_000);
+                committedAppends.incrementAndGet();
+                if (deleting.get())
+                  appendsDuringDelete.incrementAndGet();
+              } catch (final Exception ignored) {
+                // A neighbour whose list the deleter is rewriting can exhaust its retries; only the delete side
+                // and the invariants below are held to a standard.
+              }
+              if (!warm) {
+                warm = true;
+                appendersWarm.countDown();
+              }
+            }
+            done.countDown();
+          }).start();
+        }
+
+        new Thread(() -> {
+          if (!awaitStart(start)) {
+            done.countDown();
+            return;
+          }
+          try {
+            // Wait for the appenders to be mid-flight before touching the hub.
+            if (!appendersWarm.await(1, TimeUnit.MINUTES))
+              deleteFailures.incrementAndGet();
+            deleting.set(true);
+            database.transaction(() -> hubRID.asVertex().delete(), false, 10_000);
+          } catch (final Throwable unexpected) {
+            deleteFailures.incrementAndGet();
+          } finally {
+            deleting.set(false);
+            keepAppending.set(false);
+          }
+          done.countDown();
+        }).start();
+
+        start.countDown();
+        assertThat(done.await(5, TimeUnit.MINUTES)).as("round " + round + ": all workers finished").isTrue();
+        assertThat(deleteFailures.get()).as("round " + round + ": deletes that never completed").isEqualTo(0L);
+
+        final int currentRound = round;
+        database.transaction(() -> {
+          assertThat(database.existsRecord(hubRID)).as("round " + currentRound + ": the hub must be gone").isFalse();
+          long survivingToHub = 0;
+          for (final RID source : sources)
+            for (final Edge edge : source.asVertex().getEdges(Vertex.DIRECTION.OUT, "LINK"))
+              if (hubRID.equals(edge.getIn()))
+                ++survivingToHub;
+          assertThat(survivingToHub)
+              .as("round " + currentRound + ": back-references to the deleted hub left in the neighbours' lists")
+              .isEqualTo(0L);
+        });
+
+        // The appends really did race the delete - committed WHILE it was in flight, not merely at some point -
+        // and none of them was erased by it.
+        assertThat(appendsDuringDelete.get())
+            .as("round " + round + ": appends that committed while the delete was running").isGreaterThan(0L);
+        database.transaction(() -> {
+          long reachable = 0;
+          for (final RID source : sources)
+            for (final Edge edge : source.asVertex().getEdges(Vertex.DIRECTION.OUT, "LINK"))
+              if (!hubRID.equals(edge.getIn()))
+                ++reachable;
+          assertThat(reachable).as("round " + currentRound + ": a committed append was lost by the delete")
+              .isEqualTo(committedAppends.get());
+        });
+      }
+    } finally {
+      GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
+    }
+
+    assertIntegrityClean();
+  }
+
+  /** Blocks until the round starts; false means the wait was interrupted and the worker must give up. */
+  private static boolean awaitStart(final CountDownLatch start) {
+    try {
+      start.await();
+      return true;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------------------------------------------------
