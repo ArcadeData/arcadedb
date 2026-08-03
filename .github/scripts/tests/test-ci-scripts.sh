@@ -22,6 +22,7 @@ cd "$(dirname "$0")/../../.."
 SCRIPTS=".github/scripts"
 DEPS="$SCRIPTS/check-workflow-artifact-deps.py"
 COLLECT="$SCRIPTS/collect-coverage-reports.sh"
+RESULTS="$SCRIPTS/check-test-results.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -490,6 +491,68 @@ if [[ $(id -u) -ne 0 ]]; then
         "$COLLECT" "ha-integration-tests=$work/coverage/unreadable"
     chmod 755 "$work/coverage/unreadable"
 fi
+
+echo
+echo "check-test-results.py"
+
+# Writes what surefire/failsafe write: one file per class, the counts on the root element.
+suite_report() {
+    local path="$1" name="$2" tests="$3" suite_failures="$4" suite_errors="$5"
+    mkdir -p "$(dirname "$path")"
+    cat >"$path" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="$name" time="0.5" tests="$tests" errors="$suite_errors" skipped="0" failures="$suite_failures">
+  <testcase name="aTest" classname="$name" time="0.5"/>
+</testsuite>
+XML
+}
+
+green="$work/results/green"
+suite_report "$green/engine/target/surefire-reports/TEST-com.arcadedb.GreenTest.xml" com.arcadedb.GreenTest 7 0 0
+suite_report "$green/server/target/surefire-reports/TEST-com.arcadedb.server.GreenTest.xml" com.arcadedb.server.GreenTest 3 0 0
+expect "accepts a run in which every suite passed" 0 "10 test(s)" \
+    "$RESULTS" surefire-reports --root "$green"
+
+# #5763's shape: Maven ran with --fail-never and exited 0, so this report is the only evidence
+# there is. A green exit here would publish a failing suite as a passing job.
+failing="$work/results/failing"
+suite_report "$failing/engine/target/surefire-reports/TEST-com.arcadedb.GreenTest.xml" com.arcadedb.GreenTest 7 0 0
+suite_report "$failing/ha-raft/target/surefire-reports/TEST-com.arcadedb.RedTest.xml" com.arcadedb.RedTest 4 1 0
+expect "rejects a run with a failed test" 1 "TEST-com.arcadedb.RedTest.xml" \
+    "$RESULTS" surefire-reports --root "$failing"
+
+# An error is a distinct attribute from a failure and is just as fatal.
+erroring="$work/results/erroring"
+suite_report "$erroring/engine/target/surefire-reports/TEST-com.arcadedb.BrokenTest.xml" com.arcadedb.BrokenTest 4 0 2
+expect "rejects a run with an errored test" 1 "2 error(s)" \
+    "$RESULTS" surefire-reports --root "$erroring"
+
+# Reports for the other test phase are not this job's verdict: the integration jobs run with
+# -DskipTests, and a stale surefire directory must not redden them.
+mixed="$work/results/mixed"
+suite_report "$mixed/engine/target/surefire-reports/TEST-com.arcadedb.RedTest.xml" com.arcadedb.RedTest 4 1 0
+suite_report "$mixed/engine/target/failsafe-reports/TEST-com.arcadedb.GreenIT.xml" com.arcadedb.GreenIT 4 0 0
+expect "reads only the reports of the phase it was asked about" 0 "4 test(s)" \
+    "$RESULTS" failsafe-reports --root "$mixed"
+
+# No report at all means the suite never ran. Answering "no failures" to that is the false green
+# this check exists to prevent.
+mkdir -p "$work/results/absent/engine/target"
+expect "rejects a run that produced no report" 1 "no surefire-reports" \
+    "$RESULTS" surefire-reports --root "$work/results/absent"
+
+# A fork killed mid-write leaves a report that cannot be parsed. It is not evidence of success.
+truncated="$work/results/truncated/engine/target/surefire-reports"
+mkdir -p "$truncated"
+printf '<?xml version="1.0"?>\n<testsuite name="com.arcadedb.CutTest" tests="4"' >"$truncated/TEST-com.arcadedb.CutTest.xml"
+expect "rejects a report it cannot parse" 1 "unreadable" \
+    "$RESULTS" surefire-reports --root "$work/results/truncated"
+
+# A suite that only skipped tests ran and reported; nothing failed.
+skipped="$work/results/skipped"
+suite_report "$skipped/engine/target/surefire-reports/TEST-com.arcadedb.SkippedTest.xml" com.arcadedb.SkippedTest 0 0 0
+expect "accepts a suite whose tests were all skipped" 0 "0 failure(s)" \
+    "$RESULTS" surefire-reports --root "$skipped"
 
 echo
 if [[ $failures -gt 0 ]]; then
