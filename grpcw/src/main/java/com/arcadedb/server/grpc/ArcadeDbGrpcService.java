@@ -32,6 +32,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
@@ -2640,7 +2641,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             dbRef.set(db);
             final GraphBatch.Builder builder = db.batch();
             configureGraphBatchOptions(builder, chunk.hasOptions() ? chunk.getOptions() : null);
-            batch = builder.build();
+            try {
+              batch = builder.build();
+            } catch (final DatabaseOperationException e) {
+              // Another batch already owns the database: that is the caller's problem to retry, not an
+              // internal fault. Scoped to build() so genuine engine failures keep reporting as INTERNAL.
+              errorSent[0] = true;
+              out.onError(Status.FAILED_PRECONDITION.withDescription(
+                  "graphBatchLoad: " + e.getMessage()).asException());
+              return;
+            }
             batchRef.set(batch);
           }
 
@@ -2676,8 +2686,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (final Exception e) {
           errorSent[0] = true;
           // Null batchRef so onCompleted skips processing; skip closeQuietly to avoid blocking the
-          // gRPC thread via async.waitCompletion() (buffered edges have no open transaction).
-          batchRef.set(null);
+          // gRPC thread via async.waitCompletion() (buffered edges have no open transaction). The batch
+          // still has to hand its slot back, or one failed load would stop the database batching for good.
+          final GraphBatch abandoned = batchRef.getAndSet(null);
+          if (abandoned != null)
+            abandoned.abandon();
           out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
           return;
         } finally {
