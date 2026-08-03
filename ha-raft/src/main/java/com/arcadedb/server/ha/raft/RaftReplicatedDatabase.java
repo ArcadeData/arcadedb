@@ -948,6 +948,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint) {
+    proxied.deleteEdgeSkippingEndpoint(edge, skipEndpoint);
+  }
+
+  @Override
   public DocumentIndexer getIndexer() {
     return proxied.getIndexer();
   }

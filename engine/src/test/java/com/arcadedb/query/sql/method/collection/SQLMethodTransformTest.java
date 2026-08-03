@@ -293,6 +293,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public void deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint) {
+
+      }
+
+      @Override
       public void kill() {
 
       }

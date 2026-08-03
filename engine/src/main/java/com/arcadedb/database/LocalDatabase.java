@@ -1217,7 +1217,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint) {
+    executeInReadLock(() -> {
+      deleteRecordNoLock(edge, skipEndpoint);
+      return null;
+    });
+  }
+
+  @Override
   public void deleteRecordNoLock(final Record record) {
+    deleteRecordNoLock(record, null);
+  }
+
+  /**
+   * @param skipEdgeEndpoint when {@code record} is an edge, the endpoint vertex whose edge list must NOT be
+   *                         touched by the disconnection (#5760, see
+   *                         {@link #deleteEdgeSkippingEndpoint(Edge, RID)}). Ignored for any other record type,
+   *                         and always {@code null} on the ordinary delete path.
+   */
+  private void deleteRecordNoLock(final Record record, final RID skipEdgeEndpoint) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
@@ -1277,7 +1295,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       if (record instanceof Edge edge) {
-        graphEngine.deleteEdge(edge);
+        graphEngine.deleteEdge(edge, skipEdgeEndpoint);
       } else if (record instanceof Vertex) {
         try {
           graphEngine.deleteVertex((VertexInternal) record, forceBrokenChainDelete);
