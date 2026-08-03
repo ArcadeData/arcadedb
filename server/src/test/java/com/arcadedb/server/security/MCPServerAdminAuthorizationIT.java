@@ -16,14 +16,16 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.security;
+package com.arcadedb.mcp;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.mcp.MCPConfiguration;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityTestAccess;
+import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
@@ -66,7 +68,7 @@ class MCPServerAdminAuthorizationIT extends BaseGraphServerTest {
   @Test
   void readerCannotInvokeServerAdminTools() throws Exception {
     testEachServer((serverIndex) -> {
-      final MCPConfiguration mcp = getServer(serverIndex).getMCPConfiguration();
+      final MCPConfiguration mcp = MCPPlugin.of(getServer(serverIndex)).getConfiguration();
       final boolean savedEnabled = mcp.isEnabled();
       final boolean savedAdmin = mcp.isAllowAdmin();
       final List<String> savedUsers = mcp.getAllowedUsers();
@@ -121,7 +123,7 @@ class MCPServerAdminAuthorizationIT extends BaseGraphServerTest {
   @Test
   void rootRetainsServerAdminTools() throws Exception {
     testEachServer((serverIndex) -> {
-      final MCPConfiguration mcp = getServer(serverIndex).getMCPConfiguration();
+      final MCPConfiguration mcp = MCPPlugin.of(getServer(serverIndex)).getConfiguration();
       final boolean savedEnabled = mcp.isEnabled();
       final boolean savedAdmin = mcp.isAllowAdmin();
       final List<String> savedUsers = mcp.getAllowedUsers();
@@ -161,7 +163,7 @@ class MCPServerAdminAuthorizationIT extends BaseGraphServerTest {
     final ServerSecurity security = getServer(serverIndex).getSecurity();
 
     // A group that grants record reads but no database-level (admin) permission.
-    security.getDatabaseGroupsConfiguration(getDatabaseName()).put("mcpServerAdminReader",
+    ServerSecurityTestAccess.databaseGroups(security, getDatabaseName()).put("mcpServerAdminReader",
         new JSONObject().put("access", new JSONArray()).put("types",
             new JSONObject().put("*", new JSONObject().put("access", new JSONArray().put("readRecord")))));
     security.saveGroups();
