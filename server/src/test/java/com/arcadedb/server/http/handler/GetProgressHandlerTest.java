@@ -22,6 +22,7 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -48,6 +49,23 @@ import static org.mockito.Mockito.when;
  */
 class GetProgressHandlerTest {
 
+  /**
+   * A mocked {@link HttpServer} that also answers {@link HttpServer#getServer()}. The base handler's
+   * {@code checkAuthorizationOnDatabase} binds the authenticated principal onto the database's
+   * {@code DatabaseContext} so the engine's per-type ACL layer enforces on the ungated handlers
+   * (GHSA-c23x-pqcj-7hfm), and that binding reaches through to the server. This fixture owns no database, so
+   * {@code existsDatabase} answers false and the binding is correctly skipped; the progress registry these
+   * tests drive is server-independent. The binding itself is covered end-to-end, against a real server, by
+   * {@code UngatedHandlerPerTypeAclIT}.
+   */
+  private HttpServer httpServer() {
+    final HttpServer httpServer = mock(HttpServer.class);
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.existsDatabase(anyString())).thenReturn(false);
+    when(httpServer.getServer()).thenReturn(server);
+    return httpServer;
+  }
+
   private HttpServerExchange exchangeFor(final String databaseName) {
     final HttpServerExchange exchange = mock(HttpServerExchange.class);
     final Map<String, Deque<String>> params = new HashMap<>();
@@ -70,7 +88,7 @@ class GetProgressHandlerTest {
 
   @Test
   void returnsRunningOperationsForAuthorizedUser() {
-    final GetProgressHandler handler = new GetProgressHandler(mock(HttpServer.class));
+    final GetProgressHandler handler = new GetProgressHandler(httpServer());
 
     final OperationProgress op = OperationProgressRegistry.instance().register("progressdb", "check database fix");
     try {
@@ -94,7 +112,7 @@ class GetProgressHandlerTest {
 
   @Test
   void emptyResultWhenNothingIsRunning() {
-    final GetProgressHandler handler = new GetProgressHandler(mock(HttpServer.class));
+    final GetProgressHandler handler = new GetProgressHandler(httpServer());
 
     final ExecutionResponse response = handler.execute(exchangeFor("idledb"), userAuthorizedOn("*"), null);
 
@@ -104,7 +122,7 @@ class GetProgressHandlerTest {
 
   @Test
   void unauthorizedDatabaseIsRejected() {
-    final GetProgressHandler handler = new GetProgressHandler(mock(HttpServer.class));
+    final GetProgressHandler handler = new GetProgressHandler(httpServer());
 
     // The consolidated checkAuthorizationOnDatabase gate throws SecurityException, mapped to HTTP 403 by the
     // base handler's catch chain.
@@ -114,7 +132,7 @@ class GetProgressHandlerTest {
 
   @Test
   void missingDatabaseParameterIsRejected() {
-    final GetProgressHandler handler = new GetProgressHandler(mock(HttpServer.class));
+    final GetProgressHandler handler = new GetProgressHandler(httpServer());
 
     // A missing database name throws IllegalArgumentException, mapped to HTTP 400 by the base handler.
     assertThatThrownBy(() -> handler.execute(exchangeFor(null), userAuthorizedOn("*"), null))
