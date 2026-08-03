@@ -1711,25 +1711,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
     lock.writeLock().lock();
     final int[] vectorIds;
     try {
-      // CRITICAL: If we couldn't read any entries from pages (e.g., during database close),
-      // DON'T replace vectorIndex - use what's already in memory!
+      // CRITICAL: If we couldn't read any live entry from pages, DON'T replace vectorIndex - use what's already
+      // in memory! Publishing an empty location index here would drop entries that only exist in RAM.
       if (!ridToLatestVector.isEmpty()) {
         // Update vectorIndex to match what we found on pages (sync it with disk state).
         if (!locationIndexAlreadyPublished)
           publishLocationIndex(ridToLatestVector.values());
         vectorIds = finalActiveVectorIdsFromPages; // Use vector IDs from pages (may include doc-scan fallback)
       } else {
-        LogManager.instance().log(this, Level.SEVERE,
-            "FALLBACK: Could not read vectors from pages (database closing), using existing vectorIndex with %d entries",
-            vectorIndex.size());
         // Build vector IDs from existing vectorIndex
         vectorIds = vectorIndex.getAllVectorIds().filter(id -> {
           final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
           return loc != null && !loc.deleted;
         }).sorted().toArray();
-        LogManager.instance()
-            .log(this, Level.SEVERE, "FALLBACK: Built %d active vector IDs from in-memory vectorIndex",
-                vectorIds.length);
+
+        // Pages holding no live vector is the ordinary state of a brand new index, and of one whose records have
+        // all been deleted: there the tombstones cancel every entry out. Neither says the database is going away,
+        // and neither is worth a level operators alert on. Only a disagreement between the two sources is: memory
+        // still knows about live vectors the pages did not yield, which is what an interrupted rebuild or an
+        // unreadable data file looks like. Report what was observed, never a cause that was not checked.
+        LogManager.instance().log(this, vectorIds.length > 0 ? Level.WARNING : Level.FINE,
+            "No live vector read from the pages of index %s (%d entries parsed): building the graph from the in-memory index instead (%d live of %d entries)",
+            indexName, totalEntriesRead[0], vectorIds.length, vectorIndex.size());
       }
     } finally {
       lock.writeLock().unlock();

@@ -16,18 +16,16 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.partitioning;
+package com.arcadedb.log;
 
-import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
-
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
 /**
- * Collects the WARNING (or worse) lines the engine logs while a block of code runs. Shared by the partitioned
- * strategy tests, whose whole subject is what gets reported and what deliberately does not.
+ * Collects the WARNING (or worse) lines the engine logs while a block of code runs. Shared by every test whose
+ * subject is what the engine reports, what it deliberately does not, and at which level.
  * <p>
  * Deliberately not a {@code java.util.logging} handler. The test resources set {@code com.arcadedb.level=SEVERE}, so
  * whether a WARNING ever reaches a JUL handler depends on which loggers the rest of the suite happened to
@@ -42,25 +40,34 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-final class WarningCapture {
+public final class WarningCapture {
+
+  /** One captured line, kept with its level so a test can assert the level and not only the text. */
+  public record LogLine(Level level, String message) {
+  }
 
   private WarningCapture() {
   }
 
   /** Runs {@code action} and returns the WARNING-or-worse messages the engine logged while it ran. */
-  static List<String> captureWarnings(final Runnable action) {
-    return capture(action, Level.WARNING);
+  public static List<String> captureWarnings(final Runnable action) {
+    return messagesOf(capture(Level.WARNING, action));
   }
 
   /**
    * The same, restricted to SEVERE. Lets a test assert that a condition it expects to be reported is reported at the
    * level that says "this database is configured that way" rather than the one that says "the engine is broken".
    */
-  static List<String> captureSevere(final Runnable action) {
-    return capture(action, Level.SEVERE);
+  public static List<String> captureSevere(final Runnable action) {
+    return messagesOf(capture(Level.SEVERE, action));
   }
 
-  private static List<String> capture(final Runnable action, final Level minimum) {
+  /**
+   * Runs {@code action} and returns every line logged at {@code minimum} or above, level included. Use this when the
+   * assertion is about the level itself: that a routine condition is not shouted at SEVERE, or that a real anomaly is
+   * still reported at WARNING rather than silently swallowed.
+   */
+  public static List<LogLine> capture(final Level minimum, final Runnable action) {
     final CapturingLogger capturing = new CapturingLogger(LogManager.instance().getLogger(), minimum);
     LogManager.instance().setLogger(capturing);
     try {
@@ -71,10 +78,17 @@ final class WarningCapture {
     return capturing.messages;
   }
 
+  private static List<String> messagesOf(final List<LogLine> lines) {
+    final List<String> messages = new ArrayList<>(lines.size());
+    for (final LogLine line : lines)
+      messages.add(line.message());
+    return messages;
+  }
+
   private static final class CapturingLogger implements Logger {
-    private final Logger       delegate;
-    private final Level        minimum;
-    private final List<String> messages = new CopyOnWriteArrayList<>();
+    private final Logger        delegate;
+    private final Level         minimum;
+    private final List<LogLine> messages = new CopyOnWriteArrayList<>();
 
     private CapturingLogger(final Logger delegate, final Level minimum) {
       this.delegate = delegate;
@@ -85,11 +99,11 @@ final class WarningCapture {
       if (message == null || level.intValue() < minimum.intValue())
         return;
       try {
-        messages.add(args.length > 0 ? message.formatted(args) : message);
+        messages.add(new LogLine(level, args.length > 0 ? message.formatted(args) : message));
       } catch (final Exception ignored) {
         // A message whose placeholders do not match the arguments is still worth having in the list verbatim:
         // dropping it would turn a formatting bug into a test that silently stops seeing the line it asserts on.
-        messages.add(message);
+        messages.add(new LogLine(level, message));
       }
     }
 
