@@ -34,7 +34,21 @@
 
     <properties>
         <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
-        <native-maven-plugin.version>1.1.6</native-maven-plugin.version>
+        <!--
+            Do NOT go back to 1.1.6: that release's AbstractNativeImageMojo calls
+            org.apache.maven.shared.utils.logging.MessageUtils.isColorEnabled() to pick the
+            native-image color flag ("-H:+BuildOutputColorful" or "color=never" depending on the
+            builder version), but the plugin's published pom does not declare
+            maven-shared-utils (its Gradle build leaves it compileOnly) and Maven core does not
+            export org.apache.maven.shared.utils from the maven.api realm - the jar in Maven's lib/
+            stays confined to plexus.core. Every goal invocation therefore dies with
+            "A required class was missing ... org/apache/maven/shared/utils/logging/MessageUtils"
+            on all four platforms. 1.1.7 drops the MessageUtils use entirely. If a future bump ever
+            reintroduces it, the alternative fix is a <dependency> on
+            org.apache.maven.shared:maven-shared-utils in the plugin declaration below, which
+            injects the jar into the plugin realm.
+        -->
+        <native-maven-plugin.version>1.1.7</native-maven-plugin.version>
         <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
