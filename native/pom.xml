@@ -253,16 +253,27 @@
                         <!-- Netty holds JNI/native and static state that must not be snapshotted at build time. -->
                         <buildArg>--initialize-at-run-time=io.netty</buildArg>
                         <!--
-                            grpc-netty-shaded relocates the whole of Netty under
-                            io.grpc.netty.shaded.io.netty, which the io.netty prefix above does NOT
-                            match, so the relocated copy needs the identical treatment. Without this
-                            the build aborts in the analysis phase on the tcnative classes
-                            (AsyncSSLPrivateKeyMethod, CertificateCompressionAlgo,
-                            ReferenceCountedOpenSslEngine, ...) with UnsatisfiedLinkError on
-                            NativeStaticallyReferencedJniMethods: their static initializers call
-                            into libnetty_tcnative, which is not loadable in the image builder.
+                            grpc-netty-shaded relocates Netty under io.grpc.netty.shaded.io.netty,
+                            which the io.netty prefix above does NOT match. Only the classes that
+                            reach libnetty_tcnative are listed, NOT the whole relocated package:
+                            their static initializers call NativeStaticallyReferencedJniMethods,
+                            which the image builder cannot load, so build-time initialization dies
+                            with UnsatisfiedLinkError during analysis. These five are the complete
+                            set the builder reports.
+
+                            Deferring the whole io.grpc.netty.shaded.io.netty package instead is
+                            WRONG and was tried first: it also moves PlatformDependent0 to run time,
+                            whose initializer reflectively reads java.nio.Bits.UNALIGNED,
+                            java.nio.Buffer.address, sun.misc.Unsafe.theUnsafe and friends. The
+                            GraalVM reachability metadata repository does register those, but every
+                            entry is conditioned on typeReached of the UNSHADED class (e.g.
+                            io.netty.util.internal.PlatformDependent0$6), a condition the relocated
+                            copy never satisfies. The image then builds cleanly and dies at STARTUP
+                            with MissingReflectionRegistrationError as soon as the gRPC plugin
+                            touches NettyServerBuilder. Everything outside this list therefore stays
+                            build-time initialized, as it was in the last green build.
                         -->
-                        <buildArg>--initialize-at-run-time=io.grpc.netty.shaded.io.netty</buildArg>
+                        <buildArg>--initialize-at-run-time=io.grpc.netty.shaded.io.netty.internal.tcnative,io.grpc.netty.shaded.io.netty.handler.ssl.ReferenceCountedOpenSslEngine</buildArg>
                         <!-- Embed all classpath resources (Studio assets, config templates, Lucene codecs). Tighten later. -->
                         <buildArg>-H:IncludeResources=.*</buildArg>
                         <!--
