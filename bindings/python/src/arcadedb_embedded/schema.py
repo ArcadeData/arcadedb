@@ -82,7 +82,7 @@ class Schema:
 
         Args:
             name: Type name
-            buckets: Number of buckets (default: 3)
+            buckets: Number of buckets (default: 1, the engine default)
 
         Returns:
             Java DocumentType object
@@ -109,7 +109,7 @@ class Schema:
 
         Args:
             name: Type name
-            buckets: Number of buckets (default: 3)
+            buckets: Number of buckets (default: 1, the engine default)
 
         Returns:
             Java VertexType object
@@ -137,7 +137,7 @@ class Schema:
 
         Args:
             name: Type name
-            buckets: Number of buckets (default: 3)
+            buckets: Number of buckets (default: 1, the engine default)
 
         Returns:
             Java EdgeType object
@@ -166,7 +166,7 @@ class Schema:
 
         Args:
             name: Type name
-            buckets: Number of buckets (default: 3) if creating new type
+            buckets: Number of buckets (default: 1, the engine default) if creating new type
 
         Returns:
             Java DocumentType object
@@ -188,7 +188,7 @@ class Schema:
 
         Args:
             name: Type name
-            buckets: Number of buckets (default: 3) if creating new type
+            buckets: Number of buckets (default: 1, the engine default) if creating new type
 
         Returns:
             Java VertexType object
@@ -208,7 +208,7 @@ class Schema:
 
         Args:
             name: Type name
-            buckets: Number of buckets (default: 3) if creating new type
+            buckets: Number of buckets (default: 1, the engine default) if creating new type
 
         Returns:
             Java EdgeType object
@@ -229,8 +229,8 @@ class Schema:
         Args:
             name: Type name to drop
 
-        Raises:
-            ArcadeDBError: If type doesn't exist or database is closed
+        Returns:
+            The type, or None if it doesn't exist or database is closed
 
         Example:
             >>> db.schema.drop_type("OldType")
@@ -251,8 +251,8 @@ class Schema:
         Returns:
             Java DocumentType/VertexType/EdgeType object
 
-        Raises:
-            ArcadeDBError: If type doesn't exist
+        Returns:
+            The type, or None if it doesn't exist
 
         Example:
             >>> user_type = db.schema.get_type("User")
@@ -314,8 +314,8 @@ class Schema:
         Returns:
             Java Property object
 
-        Raises:
-            ArcadeDBError: If type doesn't exist or property already exists
+        Returns:
+            The type, or None if it doesn't exist or property already exists
 
         Example:
             >>> db.schema.create_property("User", "email", "STRING")
@@ -462,8 +462,8 @@ class Schema:
         Returns:
             Java Index object
 
-        Raises:
-            ArcadeDBError: If type doesn't exist or index creation fails
+        Returns:
+            The type, or None if it doesn't exist or index creation fails
 
         Example:
             >>> # Simple index

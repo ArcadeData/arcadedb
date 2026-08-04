@@ -838,11 +838,29 @@ def demonstrate_gremlin_queries(db):
         print("      • Sorting with ORDER BY")
 
     except Exception as e:
-        print(f"    ❌ Error in OpenCypher queries: {e}")
-        print("    💡 Note: OpenCypher support depends on your ArcadeDB build")
-        import traceback
+        # Name the language that actually failed. This block guards Gremlin
+        # queries, but it used to report "Error in OpenCypher queries" and
+        # advise that "OpenCypher support depends on your ArcadeDB build",
+        # which is false and points the reader at the wrong feature: Cypher
+        # and OpenCypher both work in this wheel, and Gremlin is the one that
+        # is absent, because arcadedb-gremlin is excluded to keep the wheel
+        # small (see scripts/jar_exclusions.txt). Reading the old message, a
+        # user would reasonably conclude Cypher was unavailable.
+        if "gremlin" in str(e).lower():
+            print(
+                "    ⏭️  Gremlin is not bundled in this package, so this "
+                "section is skipped."
+            )
+            print(
+                "    💡 arcadedb-gremlin is excluded from the wheel on "
+                "purpose. SQL, Cypher and OpenCypher all work; the Cypher "
+                "section above ran against the same data."
+            )
+        else:
+            print(f"    ❌ Error in Gremlin queries: {e}")
+            import traceback
 
-        traceback.print_exc()
+            traceback.print_exc()
 
 
 def compare_query_languages(db):
