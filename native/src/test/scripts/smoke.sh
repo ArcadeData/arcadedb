@@ -34,9 +34,15 @@ set -euo pipefail
 EXE="${1:?path to server executable required}"
 shift || true
 
-HOST=127.0.0.1
-HTTP=2480
-PG=5432
+# Overridable so the script can run on a machine that already has something on 2480/5432 (a
+# locally installed ArcadeDB, for instance): polling a port held by ANOTHER server turns this
+# smoke test into a false green. CI sets none of these, so the defaults below are what the
+# matrix keeps using. When overriding HTTP, pass the matching
+# -Darcadedb.server.httpIncomingPort=<port> as an extra argument so the server under test
+# actually listens where exercise.sh looks.
+HOST="${HOST:-127.0.0.1}"
+HTTP="${HTTP:-2480}"
+PG="${PG:-5432}"
 DB_USER=root
 PASS="${ARCADEDB_ROOT_PASSWORD:-PlayWithData123!}"
 

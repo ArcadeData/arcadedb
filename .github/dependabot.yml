@@ -39,6 +39,18 @@ updates:
       # frozen 4.9.1 sits below the engine's current 4.13.2, so any range that
       # blocked the gremlin bump would silently freeze the engine too. The
       # gremlin ANTLR PR is closed by hand instead.
+      #
+      # The GraalVM Truffle/polyglot coordinates (org.graalvm.*) are unlisted for
+      # the same reason. They appear with two different intents:
+      # native/pom.xml's native.graalvm.version MUST equal the native-image
+      # builder pinned by native-image.yml's java-version (a mismatch aborts the
+      # image build with NoSuchMethodError getLoopNodeFactory()), while
+      # engine/pom.xml's graalvm.version tracks the latest independently for the
+      # JVM-side JS engine. A coordinate-wide ignore would freeze the engine
+      # along with the native pin. A GraalVM PR is therefore reviewed by hand:
+      # merge it only together with a matching java-version bump in
+      # native-image.yml, otherwise close it. Bump 3fecba4bf did exactly this
+      # wrong and broke all four native legs.
       - dependency-name: "org.apache.groovy:*"
         update-types: ["version-update:semver-major"]
 
