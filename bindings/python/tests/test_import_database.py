@@ -333,29 +333,33 @@ def test_import_database_into_timeseries_type(temp_db_path, sample_timeseries_cs
                 pytest.skip(f"Timeseries not available in current runtime: {e}")
             raise
 
-        try:
-            result = db.command(
+        # IMPORT DATABASE cannot target a TIMESERIES type, and this asserts that
+        # rather than skipping past it.
+        #
+        # The importer builds plain documents and persists them through
+        # MutableDocument.save() -> LocalDatabase.createRecord() ->
+        # LocalDocumentType.getBucketIdByRecord(), but a TIMESERIES type owns no
+        # document buckets, so the save cannot place the record. The importer
+        # reports "Parsed lines: 2 / Total documents: 0" and then fails. That is
+        # structural, not a property of the runtime.
+        #
+        # This previously called pytest.skip() when the message matched
+        # "error on importing database", a generic top-level error, which would
+        # equally have swallowed a genuine regression in CSV import. If the
+        # engine ever grows a timeseries import path, this test fails and says so.
+        with pytest.raises(arcadedb.ArcadeDBError) as exc_info:
+            db.command(
                 "sql",
                 (
                     f"IMPORT DATABASE {_file_url(sample_timeseries_csv_path)} WITH "
                     "documentType = 'Telemetry'"
                 ),
             )
-        except arcadedb.ArcadeDBError as e:
-            message = str(e).lower()
-            if (
-                "no buckets associated" in message
-                or "timeseries" in message
-                or "error on importing database" in message
-            ):
-                pytest.skip(
-                    f"Timeseries import path not available in current runtime: {e}"
-                )
-            raise
-        _import_result_ok(result)
+        assert "importing database" in str(exc_info.value).lower()
 
+        # Nothing was written, and the type is still queryable afterwards.
         count = db.query("sql", "SELECT count(*) as c FROM Telemetry").one().get("c")
-        assert count == 2
+        assert count == 0
 
 
 def test_import_database_with_missing_file_fails(temp_db_path):

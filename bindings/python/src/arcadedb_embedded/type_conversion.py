@@ -289,12 +289,25 @@ def _conv_iter_to_list(value):
 def _conv_primitive_array(value):
     # Bulk copy through the buffer protocol: ~200x faster than per-element
     # recursion for a 384-float vector.
-    return memoryview(value).tolist()
+    mv = memoryview(value)
+    if (
+        mv.format.startswith("=")
+        or mv.format.startswith("<")
+        or mv.format.startswith(">")
+    ):
+        # CPython's memoryview.tolist() rejects standard-size-prefixed
+        # formats ('=i' for int[], '=q' for long[]) with NotImplementedError
+        # (issue #4). Recast through bytes to the native format char.
+        mv = mv.cast("b").cast(mv.format[1:])
+    return mv.tolist()
 
 
 def _register(value, converter):
+    # Convert FIRST: caching before the first successful conversion pins a
+    # broken converter for the process lifetime (issue #4).
+    result = converter(value)
     _CONVERTER_CACHE[type(value)] = converter
-    return converter(value)
+    return result
 
 
 def _convert_and_register(value):

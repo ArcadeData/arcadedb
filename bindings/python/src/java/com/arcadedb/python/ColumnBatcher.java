@@ -5,8 +5,7 @@
  * (column names/types/sizes) followed by per-column buffers — fixed-width
  * little-endian for numerics/bools/temporals (epoch millis), offset+UTF-8
  * for strings, plus a null bitmap per column. Columns whose values don't
- * fit those encodings are serialized as a JSON array ("json" type) using
- * RowBatcher's normalization. Python decodes with numpy.frombuffer
+ * fit those encodings are serialized as one JSON array ("json" type). Python decodes with numpy.frombuffer
  * (ResultSet.to_columns / the fast to_dataframe path). Measured ~1.2x of
  * Java-native iteration on 100k-row scans (vs 3.4x for the JSON row path).
  */
@@ -90,10 +89,14 @@ public final class ColumnBatcher {
           t = "b1";
         else if (v instanceof java.util.Date || v instanceof java.time.LocalDateTime
             || v instanceof java.time.LocalDate || v instanceof java.time.Instant
-            || v instanceof java.time.ZonedDateTime)
+            || v instanceof java.time.ZonedDateTime || v instanceof java.time.OffsetDateTime)
           t = "dt";
         else if (v instanceof String || v instanceof Character)
           t = "str";
+        else if (v instanceof float[])
+          t = "f4v";
+        else if (v instanceof double[])
+          t = "f8v";
         else
           t = "json";
         if (type == null)
@@ -110,6 +113,23 @@ public final class ColumnBatcher {
       }
       if (type == null)
         type = "str"; // all-null column
+
+      int vdim = -1;
+      if (type.equals("f4v") || type.equals("f8v")) {
+        // vector columns must be uniform-length; ragged degrades to json
+        for (int r = 0; r < count && vdim != -2; r++) {
+          final Object v = rows.get(r)[c];
+          if (v == null)
+            continue;
+          final int len = type.equals("f4v") ? ((float[]) v).length : ((double[]) v).length;
+          if (vdim == -1)
+            vdim = len;
+          else if (vdim != len)
+            vdim = -2;
+        }
+        if (vdim < 0)
+          type = "json";
+      }
 
       byte[] colBuf;
       if (type.equals("i8") || type.equals("dt")) {
@@ -145,6 +165,32 @@ public final class ColumnBatcher {
             bb.put((byte) 0);
           } else
             bb.put((byte) (((Boolean) v) ? 1 : 0));
+        }
+        colBuf = bb.array();
+      } else if (type.equals("f4v")) {
+        final ByteBuffer bb = ByteBuffer.allocate(count * vdim * 4).order(ByteOrder.LITTLE_ENDIAN);
+        for (int r = 0; r < count; r++) {
+          final Object v = rows.get(r)[c];
+          if (v == null) {
+            nulls[r >> 3] |= (1 << (r & 7));
+            for (int k = 0; k < vdim; k++)
+              bb.putFloat(Float.NaN);
+          } else
+            for (final float x : (float[]) v)
+              bb.putFloat(x);
+        }
+        colBuf = bb.array();
+      } else if (type.equals("f8v")) {
+        final ByteBuffer bb = ByteBuffer.allocate(count * vdim * 8).order(ByteOrder.LITTLE_ENDIAN);
+        for (int r = 0; r < count; r++) {
+          final Object v = rows.get(r)[c];
+          if (v == null) {
+            nulls[r >> 3] |= (1 << (r & 7));
+            for (int k = 0; k < vdim; k++)
+              bb.putDouble(Double.NaN);
+          } else
+            for (final double x : (double[]) v)
+              bb.putDouble(x);
         }
         colBuf = bb.array();
       } else if (type.equals("json")) {
@@ -184,7 +230,10 @@ public final class ColumnBatcher {
       if (c > 0)
         header.append(',');
       header.append("{\"name\":\"").append(columns[c]).append("\",\"type\":\"").append(type)
-          .append("\",\"nulls\":").append(nulls.length).append(",\"bytes\":").append(colBuf.length).append('}');
+          .append("\",\"nulls\":").append(nulls.length).append(",\"bytes\":").append(colBuf.length);
+      if (vdim > 0 && (type.equals("f4v") || type.equals("f8v")))
+        header.append(",\"dim\":").append(vdim);
+      header.append('}');
       body.write(nulls, 0, nulls.length);
       body.write(colBuf, 0, colBuf.length);
     }

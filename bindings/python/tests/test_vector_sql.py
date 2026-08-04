@@ -599,7 +599,6 @@ class TestVectorSQL:
                 "idPropertyName": "slug",
                 "storeVectorsInGraph": true,
                 "addHierarchy": true,
-                "locationCacheSize": 123,
                 "graphBuildCacheSize": 456,
                 "mutationsBeforeRebuild": 789
             }
@@ -615,9 +614,25 @@ class TestVectorSQL:
         assert metadata.idPropertyName == "slug"
         assert metadata.storeVectorsInGraph is True
         assert metadata.addHierarchy is True
-        assert metadata.locationCacheSize == 123
         assert metadata.graphBuildCacheSize == 456
         assert metadata.mutationsBeforeRebuild == 789
+
+        # locationCacheSize was removed in #5559/#5568 and the engine now
+        # rejects it outright, so a SQL METADATA block that still carries it
+        # fails index creation rather than ignoring the key. Asserting the
+        # rejection (not the field's absence) is the durable check: hasattr on
+        # a JPype proxy answers True for names the Java class does not define.
+        test_db.command("sql", "CREATE VERTEX TYPE SqlMetaRejectDoc")
+        test_db.command("sql", "CREATE PROPERTY SqlMetaRejectDoc.vec ARRAY_OF_FLOATS")
+        with pytest.raises(Exception, match="locationCacheSize"):
+            test_db.command(
+                "sql",
+                """
+                CREATE INDEX ON SqlMetaRejectDoc (vec)
+                LSM_VECTOR
+                METADATA { "dimensions": 4, "locationCacheSize": 123 }
+                """,
+            )
 
     def test_vector_neighbors_by_key_sql(self, test_db):
         """SQL vector.neighbors should search from an existing record key."""

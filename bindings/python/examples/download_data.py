@@ -564,9 +564,10 @@ def introduce_null_values_movielens(extract_dir):
         # Count total rows for progress bar
         total_rows = sum(1 for _ in open(csv_path, encoding="utf-8")) - 1
 
-        with open(csv_path, "r", encoding="utf-8") as f_in, open(
-            temp_path, "w", encoding="utf-8", newline=""
-        ) as f_out:
+        with (
+            open(csv_path, "r", encoding="utf-8") as f_in,
+            open(temp_path, "w", encoding="utf-8", newline="") as f_out,
+        ):
             reader = csv.DictReader(f_in)
             writer = csv.DictWriter(f_out, fieldnames=reader.fieldnames)
             writer.writeheader()
@@ -922,9 +923,10 @@ def _write_stackoverflow_subset(
     row_count = 0
     closed = False
 
-    with source_path.open(
-        "r", encoding="utf-8", errors="ignore"
-    ) as fin, target_path.open("w", encoding="utf-8") as fout:
+    with (
+        source_path.open("r", encoding="utf-8", errors="ignore") as fin,
+        target_path.open("w", encoding="utf-8") as fout,
+    ):
         for line in fin:
             if root_tag is None:
                 fout.write(line)
@@ -969,9 +971,10 @@ def _write_stackoverflow_subset_by_bytes(
     closed = False
     bytes_written = 0
 
-    with source_path.open(
-        "r", encoding="utf-8", errors="ignore"
-    ) as fin, target_path.open("w", encoding="utf-8") as fout:
+    with (
+        source_path.open("r", encoding="utf-8", errors="ignore") as fin,
+        target_path.open("w", encoding="utf-8") as fout,
+    ):
         for line in fin:
             if root_tag is None:
                 fout.write(line)

@@ -108,17 +108,27 @@ Building a movie recommendation engine:
 
 ---
 
-### ⏱️ [14_lifecycle_timing.py](./14_lifecycle_timing.py)
-**JVM Startup | DB Create/Open | Transaction Load | Query Phases | Reopen Timing**
+### 🗃️ [07_stackoverflow_tables_oltp.py](./07_stackoverflow_tables_oltp.py)
+**Table OLTP | Mixed CRUD Workload | Cross-DB Benchmarking**
 
-Lifecycle benchmark for embedded ArcadeDB with mixed workloads:
-- Measures JVM startup time in-process
-- Creates schema and loads table/graph/vector data
-- Runs query workload before and after reopen
-- Prints per-run timings and final averages
-- Uses random `/tmp` database path and always cleans up
+Table-oriented Stack Overflow OLTP benchmark:
+- Loads Stack Overflow XML tables and runs a mixed OLTP workload (CRUD)
+- CRUD operations are point-oriented and randomly target one table per operation
+- For cross-database comparability, running with `--threads 1` is recommended
 
-**Learn:** Cold-start behavior, lifecycle costs, and realistic mixed-workload timing patterns
+**Learn:** Table-oriented OLTP benchmarking and cross-database workload fairness
+
+---
+
+### 📉 [08_stackoverflow_tables_olap.py](./08_stackoverflow_tables_olap.py)
+**Table OLAP | Fixed Query Suite | Dockerized Runs**
+
+Table-oriented Stack Overflow OLAP benchmark:
+- Loads all Stack Overflow XML tables and runs a fixed OLAP query suite
+- All work happens inside a Docker container when launched on the host
+- Reports load/index timing and repeated query runs
+
+**Learn:** Analytical query benchmarking over table-shaped data
 
 ---
 
@@ -149,6 +159,30 @@ Fixed query-suite benchmark for Stack Overflow graph analytics:
 
 ---
 
+### 🏗️ [11_vector_index_build.py](./11_vector_index_build.py)
+**Vector Index Build | Build-Only Benchmark | Multi-Backend Comparison**
+
+Build-only vector index benchmark:
+- Backends: ArcadeDB (embedded), pgvector, Qdrant, Milvus, FAISS, LanceDB
+- Datasets: MSMARCO and Stack Overflow embedding vectors
+- For client-server backends, peak RSS combines client process and server process tree
+
+**Learn:** Vector index build cost and memory comparison across backends
+
+---
+
+### 🔎 [12_vector_search.py](./12_vector_search.py)
+**Vector Search | Search-Only Benchmark | ef_search Sweeps**
+
+Search-only vector benchmark that reuses Example 11 output:
+- Backends: ArcadeDB (embedded), FAISS, LanceDB, brute-force NumPy scan, pgvector, Qdrant, Milvus
+- Sweeps explicit `ef_search` values for HNSW-style backends
+- Measures client + server process RSS for client-server backends
+
+**Learn:** Search latency/recall tradeoffs and backend-specific search parameters
+
+---
+
 ### 🔀 [13_stackoverflow_hybrid_queries.py](./13_stackoverflow_hybrid_queries.py)
 **Hybrid SQL + Graph + Vector | Standalone Workflow**
 
@@ -158,6 +192,20 @@ hybrid queries:
 - Graph edge creation uses RID-based directed endpoints
 
 **Learn:** End-to-end hybrid querying across SQL, OpenCypher, and vector search
+
+---
+
+### ⏱️ [14_lifecycle_timing.py](./14_lifecycle_timing.py)
+**JVM Startup | DB Create/Open | Transaction Load | Query Phases | Reopen Timing**
+
+Lifecycle benchmark for embedded ArcadeDB with mixed workloads:
+- Measures JVM startup time in-process
+- Creates schema and loads table/graph/vector data
+- Runs query workload before and after reopen
+- Prints per-run timings and final averages
+- Uses random `/tmp` database path and always cleans up
+
+**Learn:** Cold-start behavior, lifecycle costs, and realistic mixed-workload timing patterns
 
 ---
 
@@ -253,6 +301,33 @@ SQL-first Graph Analytical View workflow:
 - reopens the database to confirm persisted GAV restoration
 
 **Learn:** How to use Graph Analytical Views from Python without introducing a dedicated Python object API
+
+---
+
+### 🔢 [22_numpy_bulk_io.py](./22_numpy_bulk_io.py)
+**numpy Bulk I/O | insert_many | append_samples | Columnar Export**
+
+Batched Python/Java boundary crossings for bulk workloads:
+- Bulk document ingest with `Database.insert_many` (rows as one JSON batch), transactional and `parallel=True`
+- Time-series ingest straight from numpy arrays via `AsyncExecutor.append_samples`
+- Time-bucketed aggregation over the native `TIMESERIES` type
+- Columnar export with `to_columns()`: scalar columns as 1-D numpy arrays and embeddings as a contiguous 2-D array
+
+**Learn:** Why one crossing per batch (not per value) makes bulk ingest and export fast
+
+### 🌐 [23_server_mode_http_access.py](./23_server_mode_http_access.py)
+**Server Mode | HTTP API | Bearer Auth | Mixed Access Pattern**
+
+Embedded-first server workflow, all in one process:
+- starts ArcadeDB server mode from the Python package
+- reads server metadata over HTTP
+- creates a database through the server-managed Java API
+- mixes embedded writes with HTTP queries and updates
+- opens Studio against the same in-process database
+
+**Learn:** How to expose an embedded database over HTTP without running a
+separate container, and when you should reach for the Docker distribution
+instead
 
 ---
 
