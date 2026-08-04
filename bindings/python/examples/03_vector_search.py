@@ -177,7 +177,8 @@ with arcadedb.create_database(db_path) as db:
     print("Step 4: Inserting data...")
     step_start = time.time()
 
-    # Insert in batches for better performance
+    # Per-row inserts inside one transaction; BATCH_SIZE only paces the
+    # progress output (for true batched ingest see example 22 / insert_many)
     BATCH_SIZE = 1000
     total_inserted = 0
 

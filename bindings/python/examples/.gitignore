@@ -14,5 +14,12 @@ data/
 benchmark_logs/
 benchmark_work/
 
+# Example exports
+exports/
+
+# Example run logs
+example-results.txt
+examples-ran.txt
+
 # scratch logs (e.g. `... | tee foo`)
 /foo

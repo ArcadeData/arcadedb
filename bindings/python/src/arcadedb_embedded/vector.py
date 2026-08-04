@@ -511,7 +511,9 @@ class VectorIndex:
                 "max_connections": int(meta.maxConnections),
                 "beam_width": int(meta.beamWidth),
                 "ef_search": int(meta.efSearch),
-                "location_cache_size": int(meta.locationCacheSize),
+                # location_cache_size is absent on purpose: the engine dropped
+                # the field in #5559/#5568, so reading it here would raise on
+                # every get_metadata() call.
                 "graph_build_cache_size": int(meta.graphBuildCacheSize),
                 "mutations_before_rebuild": int(meta.mutationsBeforeRebuild),
                 "store_vectors_in_graph": bool(meta.storeVectorsInGraph),
@@ -524,6 +526,56 @@ class VectorIndex:
             }
         except Exception as e:
             raise ArcadeDBError(f"Failed to read vector index metadata: {e}") from e
+
+    def get_stats(self):
+        """
+        Get live runtime counters for the vector index.
+
+        Unlike :meth:`get_metadata`, which returns the index's stable
+        configuration, this returns counters that change as the index is
+        built and queried: graph state, cache capacities and hit/miss
+        counts, and where vectors were read from (index pages, graph, or
+        the documents themselves). Keys follow the engine and may grow
+        between releases.
+
+        Useful for sizing caches and diagnosing build cost, for example
+        ``vectorFetchFromDocuments`` being non-zero after a build means
+        the build cache did not hold the whole vector set.
+
+        Returns:
+            dict: Counter name to value, for the primary bucket index
+            (see ``get_metadata()["bucket_index_name"]``).
+
+        Examples:
+            >>> stats = index.get_stats()  # doctest: +SKIP
+            >>> stats["vectorCacheHits"], stats["vectorCacheMisses"]
+            (10399017, 1840948)
+        """
+        try:
+            raw = self._get_primary_lsm_index().getStats()
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to read vector index stats: {e}") from e
+
+        stats = {}
+        for java_key in raw.keySet():
+            key = str(java_key)
+            value = raw.get(java_key)
+            if value is None:
+                stats[key] = None
+                continue
+            try:
+                kind = str(value.getClass().getSimpleName())
+            except Exception:
+                kind = ""
+            if kind in ("Long", "Integer", "Short", "Byte", "BigInteger"):
+                stats[key] = int(value)
+            elif kind in ("Double", "Float"):
+                stats[key] = float(value)
+            elif kind == "Boolean":
+                stats[key] = bool(value)
+            else:
+                stats[key] = str(value)
+        return stats
 
     def find_nearest_by_key(
         self,

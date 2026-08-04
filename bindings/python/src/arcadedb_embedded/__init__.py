@@ -5,12 +5,21 @@ A native Python bindings for ArcadeDB that embeds the Java database engine
 directly in the Python process using JPype.
 """
 
-# Import version from generated _version.py file (created during build).
-# Source checkouts may not have the generated file yet.
+# The installed distribution's version is the single source of truth: the
+# wheel is versioned from the release tag, while the generated _version.py
+# is derived from the Maven pom, so the two disagree on tagged releases
+# (a 26.8.1.dev20 wheel carried __version__ == "26.8.1.dev0"). Fall back to
+# the generated file, then to a placeholder, for source checkouts that were
+# never installed.
 try:
-    from ._version import __version__
-except ModuleNotFoundError:
-    __version__ = "0.0.0"
+    from importlib.metadata import version as _dist_version
+
+    __version__ = _dist_version("arcadedb-embedded")
+except Exception:  # not installed: fall back to the build-time file
+    try:
+        from ._version import __version__
+    except ModuleNotFoundError:
+        __version__ = "0.0.0"
 
 # Import async execution
 from .async_executor import AsyncExecutor
@@ -42,11 +51,18 @@ from .graph_batch import GraphBatch
 # Import importer helpers
 from .importer import ImportResult
 
+# Which engine this install actually carries. __version__ is the PACKAGE
+# version and can disagree with the bundled JARs without any error.
+from .jvm import jar_fingerprint
+
 # Import result classes
 from .results import Result, ResultSet
 
 # Import schema classes
 from .schema import IndexType, PropertyType, Schema
+
+# Import server classes
+from .server import ArcadeDBServer, create_server
 
 # Import transaction management
 from .transactions import TransactionContext
@@ -69,6 +85,14 @@ __all__ = [
     # Core classes
     "Database",
     "DatabaseFactory",
+    # Record wrappers
+    "Document",
+    "Vertex",
+    "Edge",
+    # Citation
+    "cite",
+    # Build provenance
+    "jar_fingerprint",
     "create_database",
     "open_database",
     "database_exists",
@@ -93,6 +117,9 @@ __all__ = [
     "to_java_byte_array",
     "to_java_float_array",
     "to_python_array",
+    # Server classes
+    "ArcadeDBServer",
+    "create_server",
     # Data export
     "export_database",
     "export_to_csv",

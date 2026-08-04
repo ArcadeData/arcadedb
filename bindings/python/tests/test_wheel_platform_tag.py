@@ -134,3 +134,24 @@ def test_module_exposes_public_api() -> None:
     assert hasattr(verifier, "max_glibc_in_dir")
     assert hasattr(verifier, "parse_wheel_tag")
     assert hasattr(verifier, "main")
+
+
+def test_dunder_version_matches_distribution_metadata():
+    """__version__ must equal the installed distribution version.
+
+    Regression: _version.py is generated from the Maven pom (26.8.1-SNAPSHOT
+    -> 26.8.1.dev0) while the wheel is versioned from the release tag, so a
+    published 26.8.1.dev20 wheel reported __version__ == "26.8.1.dev0".
+    Anything reading the version programmatically (our own benchmark
+    provenance did) recorded the wrong build.
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as dist_version
+
+    import arcadedb_embedded
+
+    try:
+        expected = dist_version("arcadedb-embedded")
+    except PackageNotFoundError:  # source checkout, nothing to compare against
+        return
+    assert arcadedb_embedded.__version__ == expected

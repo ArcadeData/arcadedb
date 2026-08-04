@@ -202,11 +202,18 @@ class TestVectorParams:
         test_db.command("sql", "CREATE VERTEX TYPE CacheDoc")
         test_db.command("sql", "CREATE PROPERTY CacheDoc.embedding ARRAY_OF_FLOATS")
 
+        # location_cache_size was removed by the engine (#5559, #5568). The
+        # binding must reject it with an explanation rather than forward it and
+        # let index creation blow up inside withMetadata().
+        with pytest.raises(ValueError, match="no longer supported"):
+            test_db.create_vector_index(
+                "CacheDoc", "embedding", dimensions=4, location_cache_size=123
+            )
+
         index = test_db.create_vector_index(
             "CacheDoc",
             "embedding",
             dimensions=4,
-            location_cache_size=123,
             graph_build_cache_size=456,
             mutations_before_rebuild=789,
         )
@@ -220,15 +227,10 @@ class TestVectorParams:
 
         # Direct field access is available on LSMVectorIndexMetadata; fall back to string inspection if not.
         try:
-            assert metadata.locationCacheSize == 123
             assert metadata.graphBuildCacheSize == 456
             assert metadata.mutationsBeforeRebuild == 789
         except AttributeError:
             meta_str = metadata.toString()
-            assert (
-                "locationCacheSize=123" in meta_str
-                or "locationCacheSize: 123" in meta_str
-            )
             assert (
                 "graphBuildCacheSize=456" in meta_str
                 or "graphBuildCacheSize: 456" in meta_str

@@ -252,15 +252,12 @@ class GraphBatch:
                 anything else falls back to per-edge buffering.
         """
         self._check_not_closed()
-        import jpype
+        from .results import _bridge_class
 
-        try:
-            edge_batcher = jpype.JClass("com.arcadedb.python.EdgeBatcher")
-        except Exception:
-            edge_batcher = None
-
+        edge_batcher = _bridge_class("EdgeBatcher")
         if edge_batcher is None:
-            # bridge jar unavailable: fall back to the per-edge path
+            # bridge jar unavailable (warned once): per-edge fallback,
+            # documented ~24x slower than the bulk path
             props_iter = properties or [None] * len(source_rids)
             for src, dst, p in zip(source_rids, destination_rids, props_iter):
                 self.new_edge(src, edge_type, dst, **(p or {}))

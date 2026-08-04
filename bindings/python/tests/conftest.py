@@ -9,6 +9,53 @@ import tempfile
 import pytest
 
 
+def pytest_configure(config):
+    # HotSpot routinely raises access violations it handles itself
+    # (safepoints, implicit null checks). On Windows, pytest's faulthandler
+    # prints a fatal-looking Python stack for each one even though nothing
+    # crashed. Disable it there; real crashes still fail the run.
+    import sys
+
+    if sys.platform == "win32":
+        import faulthandler
+
+        if faulthandler.is_enabled():
+            faulthandler.disable()
+
+
+# Shared test password used by server-mode tests. ArcadeDB requires >= 8 chars.
+# Hardcoded test fixture, not a real credential.
+TEST_PASSWORD = "test12345"  # nosec B105
+
+
+@pytest.fixture
+def temp_server_root():
+    """Create a temporary server root directory."""
+    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_server_")
+    yield temp_dir
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+
+
+def has_server_support():
+    """Is the server stack bundled in this wheel?
+
+    The server JARs (arcadedb-server, studio, undertow, xnio, wildfly, jboss,
+    micrometer) are shipped by default, but a slim build can exclude them via
+    scripts/jar_exclusions.txt. Probing for the studio JAR keeps the suite
+    honest either way: server tests skip rather than fail on a slim wheel.
+    """
+    try:
+        from arcadedb_embedded.jvm import get_jar_path
+
+        jar_dir = get_jar_path()
+        if not os.path.exists(jar_dir):
+            return False
+        return any("studio" in j.lower() for j in os.listdir(jar_dir))
+    except Exception:
+        return False
+
+
 @pytest.fixture
 def temp_db_path():
     """Create a temporary database path."""
@@ -114,6 +161,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "graph_export: tests that require GraphML/GraphSON support",
+    )
+    config.addinivalue_line(
+        "markers",
+        "server: tests that require server support (available in base package)",
     )
 
 

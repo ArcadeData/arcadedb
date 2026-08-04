@@ -185,7 +185,7 @@ class Vertex(Document):
             props.append(k)
             props.append(convert_python_to_java(v))
 
-        # Use non-deprecated Java API (bidirectional is determined by EdgeType schema)
+        # bidirectional is determined by the EdgeType schema
         java_edge = self._java_document.newEdge(label, target_java, *props)
         return Edge(java_edge)
 

@@ -219,6 +219,74 @@ class Database:
                 f"Failed to create document of type '{type_name}': {e}"
             ) from e
 
+    def insert_many(
+        self,
+        type_name: str,
+        rows,
+        commit_every: int = 10_000,
+        parallel: bool = False,
+    ) -> int:
+        """Bulk-insert documents with one FFI crossing per batch.
+
+        Rows are serialized to a single JSON string and looped Java-side
+        (``DocumentBatcher``), avoiding the per-row JNI cost that caps
+        ``new_document``-loop ingest. Values must be JSON-representable
+        (str/int/float/bool/None and nested lists/dicts); rows containing
+        other types (e.g. datetime, bytes) fall back transparently to the
+        per-row path.
+
+        Args:
+            type_name: Target document type (must exist).
+            rows: Iterable of dicts, one per document.
+            commit_every: Transaction batch size for the synchronous mode.
+            parallel: If True, route rows through the async executor's
+                parallel bucket writers and wait for completion before
+                returning (higher throughput, out-of-order writes).
+
+        Returns:
+            Number of documents inserted.
+        """
+        self._check_not_closed()
+        import json as _json
+
+        rows = list(rows)
+        if not rows:
+            return 0
+        try:
+            payload = _json.dumps(rows)
+        except (TypeError, ValueError):
+            # Non-JSON-representable values (note: numpy integer scalars land
+            # here too, since json.dumps rejects np.int64): per-row fallback,
+            # honoring commit_every batches like the fast path.
+            n = 0
+            was_active = self.is_transaction_active()
+            if not was_active:
+                self.begin()
+            for row in rows:
+                doc = self.new_document(type_name)
+                for k, v in row.items():
+                    doc.set(k, v)
+                doc.save()
+                n += 1
+                if not was_active and commit_every > 0 and n % commit_every == 0:
+                    self.commit()
+                    self.begin()
+            if not was_active:
+                self.commit()
+            return n
+        try:
+            batcher = _java_class("com.arcadedb.python.DocumentBatcher")
+            count = int(
+                batcher.insertManyJson(
+                    self._java_db, type_name, payload, int(commit_every), bool(parallel)
+                )
+            )
+            if parallel:
+                self._java_db.async_().waitCompletion()
+            return count
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
+
     def close(self):
         """Close the database."""
         if not self._closed and self._java_db is not None:
@@ -227,6 +295,17 @@ class Database:
                 async_close_error = self._close_async_executors()
                 self._java_db.close()
             except Exception as e:
+                # A server-managed database is owned by the server lifecycle,
+                # not by this handle: the engine raises
+                # UnsupportedOperationException rather than closing it. That is
+                # the expected outcome for a Database obtained from
+                # ArcadeDBServer.get_database(), so treat it as closed here and
+                # let the server own the real shutdown.
+                if "cannot be closed" in str(e).lower():
+                    self._closed = True
+                    if async_close_error is not None:
+                        raise async_close_error
+                    return
                 raise ArcadeDBError(f"Failed to close database: {e}") from e
             finally:
                 self._closed = True
@@ -388,14 +467,13 @@ class Database:
                 Use "INT8" when the document property stores pre-quantized bytes in a
                 `BINARY` property. When using INT8 encoding, set quantization to "NONE"
                 to avoid double quantization.
-            location_cache_size: Per-index override for vector location cache size
-                (maps to Java metadata key "locationCacheSize"; uses
-                GlobalConfiguration default if None). Typical ranges by corpus size
-                (vectors):
-                - ~100K: 50k–100k
-                - ~1M: 100k–200k
-                - ~10M: 300k–500k
-                - ~100M: 500k–800k (scale with heap)
+            location_cache_size: REMOVED by the engine (issues #5559, #5568).
+                Passing anything other than None raises ValueError. A vector
+                location is the only mapping from a vector id to its record, so
+                capping it does not spill to disk, it drops vectors from searches
+                and from countEntries(). Size the heap instead. The parameter is
+                kept only so that upgrading callers get this explanation rather
+                than an unexplained TypeError.
             graph_build_cache_size: Per-index override for graph build cache size
                 (maps to Java metadata key "graphBuildCacheSize"; uses
                 GlobalConfiguration default if None). Typical ranges (higher = faster
@@ -432,6 +510,22 @@ class Database:
             VectorIndex object
         """
         self._check_not_closed()
+
+        # The engine removed this in #5559/#5568 and now rejects it in
+        # withMetadata(), so a wheel that still forwards it cannot create an
+        # index at all. Refuse here instead, with the reason: a vector location
+        # is the only mapping from a vector id to its record, so a bound on it
+        # is not a cache eviction, it silently drops vectors from searches and
+        # from countEntries().
+        if location_cache_size is not None:
+            raise ValueError(
+                "location_cache_size is no longer supported (ArcadeDB issues "
+                "#5559 and #5568): a vector location is the only mapping from a "
+                "vector id to its record, so capping the location index drops "
+                "vectors from searches and from countEntries() instead of "
+                "spilling them to disk. Remove the argument and size the heap "
+                "for the live vector set instead."
+            )
 
         # Create the index using the Java Builder API directly to pass configuration
         try:
@@ -508,8 +602,6 @@ class Database:
                 metadata_cfg["storeVectorsInGraph"] = True
             if add_hierarchy is not None:
                 metadata_cfg["addHierarchy"] = bool(add_hierarchy)
-            if location_cache_size is not None:
-                metadata_cfg["locationCacheSize"] = int(location_cache_size)
             if graph_build_cache_size is not None:
                 metadata_cfg["graphBuildCacheSize"] = int(graph_build_cache_size)
             if mutations_before_rebuild is not None:
@@ -690,7 +782,7 @@ class Database:
         """
         Get async executor for parallel operations.
 
-        Experimental: not advised for production use yet.
+        The engine's parallel bulk-write path; insert_many(parallel=True) routes through it.
 
         Returns async executor that enables:
         - Parallel record creation (3-5x faster bulk inserts)
@@ -999,6 +1091,8 @@ class Database:
         interpreter is shutting down and logging may already be unavailable,
         so we narrow the catch to AttributeError/RuntimeError that JPype can
         raise when the JVM has been torn down before this finalizer runs.
+        Server-managed databases raise UnsupportedOperationException on close,
+        which close() handles itself and which is also suppressed here.
         """
         try:
             self.close()

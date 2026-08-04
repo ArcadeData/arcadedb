@@ -2,7 +2,7 @@
 
 Native Python bindings for ArcadeDB - the multi-model database that supports Graph, Document, Key/Value, Search Engine, Time Series, and Vector models.
 
-**Status**: ✅ Production Ready | **Tests**: 351 Passed | **Platforms**: 4 Supported
+**Status**: ✅ Production Ready | **Tests**: 397 Passed | **Platforms**: 4 Supported
 
 ---
 
@@ -58,10 +58,11 @@ with arcadedb.create_database("./mydb") as db:
 
 - ☕ **No Java Installation Required**: Bundled JRE (~63MB uncompressed)
 - 🌍 **4 Platforms Supported**: Linux (x86_64, ARM64), macOS (ARM64), Windows (x86_64)
-- 🚀 **Embedded Mode**: Direct database access in Python process (no network); for client-server or multi-process deployments, use the official [ArcadeDB server](https://arcadedb.com/) alongside
-- 📦 **Self-contained**: All dependencies bundled (~62MB current Linux wheel)
+- 🚀 **Embedded Mode**: Direct database access in Python process (no network)
+- 🌐 **Server Mode**: Optional in-process HTTP server with the Studio web UI — costs ~8MB of wheel and nothing at runtime until you call `create_server()`
+- 📦 **Self-contained**: All dependencies bundled (~67MB current Linux wheel)
 - 🔄 **Multi-model**: Graph, Document, Key/Value, Vector, Time Series
-- 🔍 **Multiple query languages**: SQL, OpenCypher, MongoDB
+- 🔍 **Multiple query languages**: SQL, OpenCypher
 - ⚡ **High performance**: Direct JVM integration via JPype
 - 🔒 **ACID transactions**: Full transaction support
 - 🎯 **Vector storage**: Store and query vector embeddings with HNSW (JVector) indexing
@@ -75,15 +76,21 @@ The `arcadedb-embedded` package is platform-specific and self-contained:
 
 **Package Contents (current Linux x86_64 dev build; varies by platform and version):**
 
-- **Wheel size (compressed)**: ~62MB
-- **ArcadeDB JARs (uncompressed)**: ~24MB
-- **Bundled JRE (uncompressed)**: ~63MB (platform-specific Java 25 runtime via jlink, 16 modules)
-- **Installed package size**: ~87MB
+- **Wheel size (compressed)**: ~67MB
+- **ArcadeDB JARs (uncompressed)**: ~31MB across 63 JARs
+- **Bundled JRE (uncompressed)**: ~63MB (platform-specific Java 25 runtime via jlink)
+- **Installed package size**: ~94MB
 
 The compressed wheel size is measured from `dist/*.whl`, and the installed package size
 is measured from the extracted `site-packages/arcadedb_embedded/` directory.
 
-**Note**: The package is embedded-only — server/Studio and other unused JARs are excluded to optimize size (e.g., gRPC wire protocol). See [`scripts/jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/scripts/jar_exclusions.txt) for details.
+Of that, the optional **server stack is 12 JARs, 7.65MB uncompressed**, and it adds
+~8MB to the wheel (the extra ~0.8MB beyond the JARs is JRE modules that only the
+server needs). [Server Mode](https://docs.humem.ai/arcadedb/latest/guide/server/)
+breaks the cost down and explains what you pay at runtime (nothing, until you start
+a server).
+
+**Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`scripts/jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/scripts/jar_exclusions.txt) for details.
 
 Import: `import arcadedb_embedded as arcadedb`
 
@@ -91,7 +98,7 @@ Import: `import arcadedb_embedded as arcadedb`
 
 ## 🧪 Testing
 
-**Status**: 351 passed
+**Status**: 397 passed
 
 Tests run against the built wheel via the uv project at the repo root — no
 virtualenv activation needed, and `uv run` works from anywhere in the repo:
@@ -146,10 +153,14 @@ arcadedb_embedded/
 ├── exceptions.py        # ArcadeDBError exception
 ├── exporter.py          # Data export (JSONL, GraphML, GraphSON, CSV)
 ├── graph.py             # Graph wrappers
+├── graph_batch.py       # GraphBatch high-throughput graph ingest wrapper
+├── importer.py          # Data import (CSV, XML, ArcadeDB JSONL)
 ├── __init__.py          # Public API exports
 ├── jvm.py               # JVM lifecycle management
+├── _logging.py          # Internal logging helpers
 ├── results.py           # ResultSet and Result wrappers
 ├── schema.py            # Schema management API
+├── server.py            # ArcadeDBServer for optional HTTP/Studio mode
 ├── transactions.py      # TransactionContext manager
 ├── type_conversion.py   # Python-Java type conversion utilities
 └── vector.py            # Vector search and HNSW (JVector) indexing

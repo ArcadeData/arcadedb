@@ -1918,6 +1918,30 @@ def run_in_docker(args) -> bool:
             continue
         filtered_args.append(arg)
 
+    # Same host-path translation as 11_vector_index_build.py, and needed for the
+    # same reason: this example re-runs itself in a container with the repo at
+    # /workspace, so a host-absolute --db-path names a directory that does not
+    # exist there. Example 12 is the more certain case of the two, because it is
+    # always handed the absolute path that example 11 wrote.
+    if workspace_mount_dst != workspace_mount_src:
+        src_prefix = workspace_mount_src.rstrip("/")
+
+        def _to_container_path(value: str) -> str:
+            if value == src_prefix:
+                return workspace_mount_dst
+            if value.startswith(src_prefix + "/"):
+                return workspace_mount_dst + value[len(src_prefix) :]
+            return value
+
+        remapped: list[str] = []
+        for arg in filtered_args:
+            if arg.startswith("--") and "=" in arg:
+                flag, _, value = arg.partition("=")
+                remapped.append(f"{flag}={_to_container_path(value)}")
+            else:
+                remapped.append(_to_container_path(arg))
+        filtered_args = remapped
+
     if args.backend == "milvus":
         has_milvus_host = any(
             arg == "--milvus-host" or arg.startswith("--milvus-host=")

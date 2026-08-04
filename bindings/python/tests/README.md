@@ -7,7 +7,8 @@ For detailed test documentation, examples, and best practices, see the **[Testin
 ## Quick Stats
 
 - Current bindings suite
-- Package includes the embedded ArcadeDB features (SQL, OpenCypher, vectors, graphs)
+- Package includes the embedded ArcadeDB features (SQL, OpenCypher, vectors,
+  graphs) **and** the optional in-process HTTP server with Studio
 
 ## Running Tests
 
@@ -30,16 +31,35 @@ pytest -k "transaction" -v
 | File | Coverage |
 |------|----------|
 | `test_core.py` | Core CRUD, transactions, queries, graphs, vectors |
+| `test_server.py` | Server lifecycle, HTTP API, Studio, configuration |
+| `test_server_packaging.py` | The server stack is really in the wheel (fails, never skips) |
+| `test_server_patterns.py` | Embedded, server-managed, and HTTP access patterns |
 | `test_concurrency.py` | File locking, thread safety, multi-process |
 | `test_import_database.py` | SQL `IMPORT DATABASE`, CSV/XML/Neo4j and restore flows |
-| `test_docs_examples.py` | Validates runnable Python snippets from installation, quickstart, query, and graph docs |
+| `test_docs_examples.py` | Validates runnable Python snippets from installation, quickstart, query, graph, and API-access docs |
 | `test_cypher.py` | OpenCypher query language, path modes, and planner regressions |
+
+### A note on the server tests
+
+`test_server.py` and `test_server_patterns.py` skip themselves when server
+support is absent, which is convenient but has a failure mode: in 26.7.2 the
+server JARs were dropped from the wheel and those tests **skipped instead of
+failing**, so the suite stayed green while the feature was gone. That is what
+`test_server_packaging.py` is for. It never skips. If you deliberately want a
+slim wheel, delete that file on purpose rather than letting the suite go quiet.
+
+```bash
+uv run pytest -m server -v      # only the server tests
+uv run pytest -m "not server"   # skip them (they start a real HTTP listener)
+```
 
 ## Documentation Links
 
 - **[Testing Overview](https://docs.humem.ai/arcadedb/latest/development/testing/overview/)** - Quick start guide
 - **[Core Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-core/)** - Database operations
+- **[Server Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-server/)** - HTTP API
 - **[Concurrency Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-concurrency/)** - Multi-process, threads
+- **[Server Patterns](https://docs.humem.ai/arcadedb/latest/development/testing/test-server-patterns/)** - Best practices
 - **[Data Import Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-importer/)** - SQL import workflows and format coverage
 - **[OpenCypher Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-opencypher/)** - Graph queries
 - **[Best Practices](https://docs.humem.ai/arcadedb/latest/development/testing/best-practices/)** - Summary checklist
@@ -61,13 +81,24 @@ for t in threads: t.start()
 for t in threads: t.join()
 ```
 
-### Multi-Process ❌
+### Multi-Process ❌ → ✅
 ```python
-# Multiple processes CANNOT access the same database file (file lock).
-# This package is embedded-only: for multi-process/client-server access,
-# run the official ArcadeDB server (e.g. the arcadedata/arcadedb Docker
-# image) and connect over HTTP.
+# Multiple processes CANNOT open the same database file (file lock).
+# Server mode is the in-process answer: one process holds the database and
+# serves HTTP, everyone else connects over it.
+
+server = arcadedb.create_server("./databases", root_password="...")
+server.start()
+# "mydb" is created at ./databases/databases/mydb
+db = server.create_database("mydb")
+
+# The owning process keeps embedded (in-JVM) access to db, and HTTP clients
+# in other processes reach the same data through the server.
 ```
+
+For a database whose lifetime should outlive your Python process, or for
+HA/TLS, run the official ArcadeDB server distribution instead. See
+[Server Mode](https://docs.humem.ai/arcadedb/latest/guide/server/).
 
 ## Need Help?
 

@@ -13,6 +13,13 @@
 
 set -euo pipefail
 
+# Stamped before anything is built, so the wheel check at the end can ask
+# whether an artifact is newer than this run rather than merely present.
+# A marker file rather than an epoch: `test -nt` is portable, while
+# `find -newermt` is GNU-only and this script also runs on macOS hosts.
+BUILD_START_MARKER=$(mktemp -t arcadedb-build-start.XXXXXX)
+trap 'rm -f "$BUILD_START_MARKER"' EXIT
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_BINDINGS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -338,15 +345,40 @@ else
     # Create dist directory if it doesn't exist
     mkdir -p dist
 
+    # Record what was in dist/ BEFORE extracting. The check below used to be
+    # `ls dist/*.whl`, which asks "is there a wheel here?" when the question is
+    # "did THIS build produce one?". Nothing cleans dist/, so a wheel left by
+    # any earlier build satisfied that test: an export stage that yielded
+    # nothing still printed the success banner and exited 0, handing back a
+    # stale wheel that looks like a fresh one. build-native.sh already avoids
+    # this by clearing the directory first; the Docker path had no equivalent.
+    # Compare identities rather than clearing, so deliberately kept wheels for
+    # other platforms survive a build.
+    WHEELS_BEFORE=$(ls -1 dist/*.whl 2> /dev/null | sort || true)
+
     # Extract the wheel from the export container
     echo -e "${CYAN}📋 Extracting wheel file...${NC}"
     CONTAINER_ID=$(docker create arcadedb-python-package-export)
     docker cp ${CONTAINER_ID}:/build/dist/. ./dist/
     docker rm ${CONTAINER_ID}
 
-    # Verify wheel was extracted
-    if ls dist/*.whl 1> /dev/null 2>&1; then
+    # Verify THIS build produced a wheel, not merely that dist/ contains one
+    WHEELS_AFTER=$(ls -1 dist/*.whl 2> /dev/null | sort || true)
+    NEW_WHEELS=$(comm -13 <(echo "$WHEELS_BEFORE") <(echo "$WHEELS_AFTER") || true)
+    if [[ -n "$NEW_WHEELS" ]]; then
         echo -e "${GREEN}✅ Wheel file created successfully!${NC}"
+    elif [[ -n "$WHEELS_AFTER" ]]; then
+        # Same filename as before: only trust it if the export actually rewrote
+        # it. A rebuild of the same version legitimately lands here.
+        NEWEST=$(ls -t dist/*.whl | head -n1)
+        if [[ "$NEWEST" -nt "$BUILD_START_MARKER" ]]; then
+            echo -e "${GREEN}✅ Wheel file created successfully!${NC}"
+        else
+            echo -e "${RED}❌ No wheel was produced by this build${NC}"
+            echo -e "${YELLOW}💡 dist/ still holds only wheels older than this run:${NC}"
+            ls -lh dist/*.whl
+            exit 1
+        fi
     else
         echo -e "${RED}❌ Failed to extract wheel file${NC}"
         exit 1

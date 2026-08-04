@@ -8,6 +8,7 @@ import glob
 import os
 import platform
 import shlex
+import sys
 import zipfile
 from pathlib import Path
 from typing import Iterable, Optional, Union
@@ -58,6 +59,120 @@ def get_jar_path() -> str:
     """Get the path to bundled JAR files."""
     jar_dir = _extract_runtime_resource("jars")
     return str(jar_dir)
+
+
+_JAR_FINGERPRINT_CACHE = None
+
+# JARs this project compiles, as opposed to the ArcadeDB engine JARs staged
+# from the image. Excluded from engine_sha256 because they are built here and
+# are not byte-reproducible: the PyPI 26.8.1 wheel and a local build of the
+# same version differ in this JAR alone, at identical size.
+_OUR_JARS = frozenset({"arcadedb-python-bridge.jar"})
+
+
+def jar_fingerprint(per_jar: bool = False) -> dict:
+    """Identify the engine this install actually carries.
+
+    ``__version__`` is a *package* version. It says nothing about which JARs
+    are in the wheel, and the two can disagree without any error: a wheel built
+    from a locally patched Java tree still reports the released version number
+    while carrying a different engine.
+
+    That is not hypothetical. A local build of 26.8.1.dev-something shipped 59
+    JARs instead of 64 and a bt-server-patched engine, and it was caught only
+    because one packaging test happened to count JAR names. Benchmarks run
+    against it would have recorded the released version string beside numbers
+    the release cannot reproduce, which is how a fix gets credited to the wrong
+    commit (see the false null on ArcadeDB #5388).
+
+    So: hash what is actually on disk. Two installs agree iff this agrees.
+
+        >>> import arcadedb_embedded as adb
+        >>> adb.jar_fingerprint()["sha256"][:12]
+        'a3f1c0d8b214'
+
+    Benchmark harnesses should record ``sha256`` next to the engine version, so
+    a results row proves which engine produced it rather than asserting it.
+
+    Args:
+        per_jar: also return the sorted (name, size, sha256) of every JAR, for
+            diffing two installs that disagree.
+
+    Two hashes, because they answer different questions.
+
+    ``sha256`` covers every JAR: "is this the same build?" ``engine_sha256``
+    excludes our own compiled shim: "is this the same ArcadeDB?"
+
+    The distinction is measured, not defensive. Comparing the released 26.8.1
+    wheel from PyPI against a local build of the same version: identical file
+    size, identical JAR count, identical total JAR bytes, and a different
+    ``sha256``. Diffing found 63 of 64 JARs byte-identical, with the only
+    difference in ``arcadedb-python-bridge.jar`` at the *same* 10907 bytes.
+    That JAR is compiled during the build, so it carries timestamps and is not
+    reproducible; the 63 engine JARs come from the ArcadeDB image and are.
+
+    So a bare ``sha256`` comparison would report "different engine" for two
+    builds of the same engine, and anyone using it that way would stop
+    believing it. Use ``engine_sha256`` to ask whether two installs are running
+    the same ArcadeDB.
+
+    Returns:
+        ``{"count", "bytes", "sha256", "engine_sha256", "engine_count",
+        "jar_dir"}``, plus ``"jars"`` when ``per_jar`` is set. Each hash covers
+        the JAR names and contents it spans, so a renamed, added, removed or
+        modified JAR all change it.
+    """
+    global _JAR_FINGERPRINT_CACHE
+    if _JAR_FINGERPRINT_CACHE is not None and not per_jar:
+        return dict(_JAR_FINGERPRINT_CACHE)
+
+    import hashlib
+    import os
+
+    jar_dir = get_jar_path()
+    names = sorted(n for n in os.listdir(jar_dir) if n.endswith(".jar"))
+    combined = hashlib.sha256()
+    engine = hashlib.sha256()
+    total = 0
+    engine_count = 0
+    entries = []
+    for name in names:
+        path = os.path.join(jar_dir, name)
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        size = os.path.getsize(path)
+        total += size
+        # Name AND digest, so swapping two JARs' contents is not a collision.
+        combined.update(name.encode())
+        combined.update(h.digest())
+        if name not in _OUR_JARS:
+            engine.update(name.encode())
+            engine.update(h.digest())
+            engine_count += 1
+        if per_jar:
+            entries.append(
+                {
+                    "name": name,
+                    "bytes": size,
+                    "sha256": h.hexdigest(),
+                    "engine": name not in _OUR_JARS,
+                }
+            )
+
+    out = {
+        "count": len(names),
+        "bytes": total,
+        "sha256": combined.hexdigest(),
+        "engine_sha256": engine.hexdigest(),
+        "engine_count": engine_count,
+        "jar_dir": jar_dir,
+    }
+    _JAR_FINGERPRINT_CACHE = dict(out)
+    if per_jar:
+        out["jars"] = entries
+    return out
 
 
 def get_bundled_jre_lib_path() -> str:
@@ -179,28 +294,25 @@ def start_jvm(
                 common_pool_parallelism=common_pool_parallelism,
             )
         )
-        if _JVM_CONFIG is not None:
-            if candidate_args != _JVM_CONFIG:
-                raise ArcadeDBError(
-                    "JVM is already started. Configure JVM args/heap before the "
-                    "first database creation."
-                )
-            return
-
         has_overrides = (
             jvm_args is not None
             or (heap_size not in (None, "4g"))
             or (disable_xml_limits is not True)
             or (common_pool_parallelism is not None)
         )
-        if has_overrides:
-            raise ArcadeDBError(
-                "JVM is already started. Configure JVM args/heap before the "
-                "first database creation."
-            )
+        if not has_overrides:
+            # No explicit configuration requested: join the running JVM
+            # (e.g. open_database() after create_database(jvm_kwargs=...)).
+            if _JVM_CONFIG is None:
+                _JVM_CONFIG = candidate_args
+            return
 
-        _JVM_CONFIG = candidate_args
-        return
+        if _JVM_CONFIG is not None and candidate_args == _JVM_CONFIG:
+            return
+        raise ArcadeDBError(
+            "JVM is already started with different settings. Configure JVM "
+            "args/heap before the first database or server creation."
+        )
 
     jar_path = get_jar_path()
     jar_files = glob.glob(os.path.join(jar_path, "*.jar"))
@@ -230,11 +342,41 @@ def start_jvm(
     except Exception as e:
         raise ArcadeDBError(f"Failed to start JVM: {e}") from e
 
-    # NOTE: an atexit hook used to close the engine's PageManager here as a
-    # workaround for ArcadeData/arcadedb#4991 (failed open() leaked a
-    # non-daemon AsyncFlush thread and the process could never exit). The
-    # engine fixed the root cause in 26.7.2; the exit-hang regression test in
-    # tests/test_core.py still guards the behavior.
+    # Registered AFTER JPype's own atexit hook so it runs BEFORE it (atexit
+    # is LIFO): close any Database left open. Engine >= 850ce7c37 (#5418)
+    # also daemonizes its background threads and installs its own JVM
+    # shutdown hook, so this is defense-in-depth for older jars and for
+    # deterministic teardown before JPype detaches.
+    import atexit
+
+    atexit.register(_close_active_databases)
+
+    if sys.platform == "win32":
+        # HotSpot handles SEH access violations internally (safepoint polls,
+        # implicit null checks), but any enabled Python faulthandler prints
+        # them as fake "Windows fatal exception" dumps. Disabling at
+        # configure time is not enough: tools (e.g. pytest's faulthandler
+        # plugin) may re-enable it before the JVM starts, so disable at the
+        # last reliable point, right after JVM start.
+        import faulthandler
+
+        faulthandler.disable()
+
+
+def _close_active_databases():
+    """Close every Database still open so JVM shutdown cannot block."""
+    if not jpype.isJVMStarted():
+        return
+    try:
+        factory = jpype.JClass("com.arcadedb.database.DatabaseFactory")
+        for db in list(factory.getActiveDatabaseInstances()):
+            try:
+                if db.isOpen():
+                    db.close()
+            except Exception:  # nosec B110 - best-effort cleanup at exit
+                pass
+    except Exception:  # nosec B110 - best-effort cleanup at exit
+        pass
 
 
 def _normalize_jvm_args(jvm_args: Optional[Union[Iterable[str], str]]) -> list[str]:
@@ -401,6 +543,7 @@ def shutdown_jvm():
     nothing left for us to do.
     """
     if jpype.isJVMStarted():
+        _close_active_databases()
         try:
             jpype.shutdownJVM()
         except RuntimeError:
