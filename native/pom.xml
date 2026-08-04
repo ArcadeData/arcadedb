@@ -53,14 +53,26 @@
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
             GraalVM polyglot/Truffle version used ONLY for the native image build. It MUST match the
-            native-image builder (GraalVM CE 25.0.2) shipped with the local GRAALVM_HOME, otherwise
-            the in-image Truffle feature (TruffleBaseFeature.afterRegistration) fails at build time
-            with NoSuchMethodError OptimizedTruffleRuntime.getLoopNodeFactory() because the SVM
-            Truffle runtime bundled in the builder is compiled against a different Truffle API than
-            the one the engine pulls transitively (25.1.3). Pinning here (native module only) leaves
-            the JVM engine build untouched while letting the JS language embed into the image.
+            native-image builder (GraalVM CE 25.0.2) shipped with the local GRAALVM_HOME and pinned
+            by native-image.yml's java-version, otherwise the in-image Truffle feature
+            (TruffleBaseFeature.afterRegistration) fails at build time with NoSuchMethodError
+            OptimizedTruffleRuntime.getLoopNodeFactory() because the SVM Truffle runtime bundled in
+            the builder is compiled against a different Truffle API than the one the engine pulls
+            transitively. Pinning here (native module only) leaves the JVM engine build untouched
+            (engine/pom.xml's own graalvm.version tracks latest independently) while letting the JS
+            language embed into the image.
+
+            DEPENDABOT WILL TRY TO BUMP THIS AND MUST BE REFUSED unless native-image.yml's
+            java-version moves in the same change. Its last attempt (3fecba4bf, merged [skip ci] as
+            d463a31d0) raised this to 25.2.4 and broke every native leg with exactly the
+            getLoopNodeFactory() error above. 25.2.4 is NOT a drop-in for the builder: it is a
+            GraalVM intermediate release, published by graalvm/graalvm-ce-builds under the tag
+            graal-25.2.4 with assets named graalvm-community-jdk-25i2-25.0.4_*, which
+            graalvm/setup-graalvm cannot select through a plain java-version. jdk-25.0.2 is the
+            newest mainline JDK 25 Community build, so 25.0.2 is the version both sides can agree
+            on. A newer pin needs the builder side proven first.
         -->
-        <native.graalvm.version>25.2.4</native.graalvm.version>
+        <native.graalvm.version>25.0.2</native.graalvm.version>
         <!--
             Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
             Activates the native-static profile below, which appends the fully-static musl
@@ -240,6 +252,17 @@
                         <buildArg>--initialize-at-build-time=org.slf4j,org.slf4j.helpers,org.slf4j.spi,org.slf4j.event,org.slf4j.jul</buildArg>
                         <!-- Netty holds JNI/native and static state that must not be snapshotted at build time. -->
                         <buildArg>--initialize-at-run-time=io.netty</buildArg>
+                        <!--
+                            grpc-netty-shaded relocates the whole of Netty under
+                            io.grpc.netty.shaded.io.netty, which the io.netty prefix above does NOT
+                            match, so the relocated copy needs the identical treatment. Without this
+                            the build aborts in the analysis phase on the tcnative classes
+                            (AsyncSSLPrivateKeyMethod, CertificateCompressionAlgo,
+                            ReferenceCountedOpenSslEngine, ...) with UnsatisfiedLinkError on
+                            NativeStaticallyReferencedJniMethods: their static initializers call
+                            into libnetty_tcnative, which is not loadable in the image builder.
+                        -->
+                        <buildArg>--initialize-at-run-time=io.grpc.netty.shaded.io.netty</buildArg>
                         <!-- Embed all classpath resources (Studio assets, config templates, Lucene codecs). Tighten later. -->
                         <buildArg>-H:IncludeResources=.*</buildArg>
                         <!--
