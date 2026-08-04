@@ -34,17 +34,43 @@
 
     <properties>
         <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
-        <native-maven-plugin.version>0.10.6</native-maven-plugin.version>
+        <!--
+            Do NOT go back to 1.1.6: that release's AbstractNativeImageMojo calls
+            org.apache.maven.shared.utils.logging.MessageUtils.isColorEnabled() to pick the
+            native-image color flag ("-H:+BuildOutputColorful" or "color=never" depending on the
+            builder version), but the plugin's published pom does not declare
+            maven-shared-utils (its Gradle build leaves it compileOnly) and Maven core does not
+            export org.apache.maven.shared.utils from the maven.api realm - the jar in Maven's lib/
+            stays confined to plexus.core. Every goal invocation therefore dies with
+            "A required class was missing ... org/apache/maven/shared/utils/logging/MessageUtils"
+            on all four platforms. 1.1.7 drops the MessageUtils use entirely. If a future bump ever
+            reintroduces it, the alternative fix is a <dependency> on
+            org.apache.maven.shared:maven-shared-utils in the plugin declaration below, which
+            injects the jar into the plugin realm.
+        -->
+        <native-maven-plugin.version>1.1.7</native-maven-plugin.version>
         <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
             GraalVM polyglot/Truffle version used ONLY for the native image build. It MUST match the
-            native-image builder (GraalVM CE 25.0.2) shipped with the local GRAALVM_HOME, otherwise
-            the in-image Truffle feature (TruffleBaseFeature.afterRegistration) fails at build time
-            with NoSuchMethodError OptimizedTruffleRuntime.getLoopNodeFactory() because the SVM
-            Truffle runtime bundled in the builder is compiled against a different Truffle API than
-            the one the engine pulls transitively (25.1.3). Pinning here (native module only) leaves
-            the JVM engine build untouched while letting the JS language embed into the image.
+            native-image builder (GraalVM CE 25.0.2) shipped with the local GRAALVM_HOME and pinned
+            by native-image.yml's java-version, otherwise the in-image Truffle feature
+            (TruffleBaseFeature.afterRegistration) fails at build time with NoSuchMethodError
+            OptimizedTruffleRuntime.getLoopNodeFactory() because the SVM Truffle runtime bundled in
+            the builder is compiled against a different Truffle API than the one the engine pulls
+            transitively. Pinning here (native module only) leaves the JVM engine build untouched
+            (engine/pom.xml's own graalvm.version tracks latest independently) while letting the JS
+            language embed into the image.
+
+            DEPENDABOT WILL TRY TO BUMP THIS AND MUST BE REFUSED unless native-image.yml's
+            java-version moves in the same change. Its last attempt (3fecba4bf, merged [skip ci] as
+            d463a31d0) raised this to 25.2.4 and broke every native leg with exactly the
+            getLoopNodeFactory() error above. 25.2.4 is NOT a drop-in for the builder: it is a
+            GraalVM intermediate release, published by graalvm/graalvm-ce-builds under the tag
+            graal-25.2.4 with assets named graalvm-community-jdk-25i2-25.0.4_*, which
+            graalvm/setup-graalvm cannot select through a plain java-version. jdk-25.0.2 is the
+            newest mainline JDK 25 Community build, so 25.0.2 is the version both sides can agree
+            on. A newer pin needs the builder side proven first.
         -->
         <native.graalvm.version>25.0.2</native.graalvm.version>
         <!--
@@ -226,6 +252,28 @@
                         <buildArg>--initialize-at-build-time=org.slf4j,org.slf4j.helpers,org.slf4j.spi,org.slf4j.event,org.slf4j.jul</buildArg>
                         <!-- Netty holds JNI/native and static state that must not be snapshotted at build time. -->
                         <buildArg>--initialize-at-run-time=io.netty</buildArg>
+                        <!--
+                            grpc-netty-shaded relocates Netty under io.grpc.netty.shaded.io.netty,
+                            which the io.netty prefix above does NOT match. Only the classes that
+                            reach libnetty_tcnative are listed, NOT the whole relocated package:
+                            their static initializers call NativeStaticallyReferencedJniMethods,
+                            which the image builder cannot load, so build-time initialization dies
+                            with UnsatisfiedLinkError during analysis. These five are the complete
+                            set the builder reports.
+
+                            Deferring the whole io.grpc.netty.shaded.io.netty package instead is
+                            WRONG and was tried first: it also moves PlatformDependent0 to run time,
+                            whose initializer reflectively reads java.nio.Bits.UNALIGNED,
+                            java.nio.Buffer.address, sun.misc.Unsafe.theUnsafe and friends. The
+                            GraalVM reachability metadata repository does register those, but every
+                            entry is conditioned on typeReached of the UNSHADED class (e.g.
+                            io.netty.util.internal.PlatformDependent0$6), a condition the relocated
+                            copy never satisfies. The image then builds cleanly and dies at STARTUP
+                            with MissingReflectionRegistrationError as soon as the gRPC plugin
+                            touches NettyServerBuilder. Everything outside this list therefore stays
+                            build-time initialized, as it was in the last green build.
+                        -->
+                        <buildArg>--initialize-at-run-time=io.grpc.netty.shaded.io.netty.internal.tcnative,io.grpc.netty.shaded.io.netty.handler.ssl.ReferenceCountedOpenSslEngine</buildArg>
                         <!-- Embed all classpath resources (Studio assets, config templates, Lucene codecs). Tighten later. -->
                         <buildArg>-H:IncludeResources=.*</buildArg>
                         <!--
