@@ -24,95 +24,183 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #5771: {@code reload()} on an {@link ImmutableVertex} does not refresh the edge pointers,
- * so the vertex keeps reporting its pre-reload edges after a reload that should pick up another transaction's changes.
+ * Regression test for issue #5771: {@code reload()} on an {@link ImmutableVertex} kept the edge pointers it had parsed
+ * out of the previous buffer, so a vertex reloaded to pick up another transaction's changes went on reporting its
+ * pre-reload edges.
  * <p>
- * The fix introduced a {@code positionAtProperties()} hook in {@link com.arcadedb.database.ImmutableDocument}
- * that both {@code reload()} and {@code checkForLazyLoading()} call after a fresh buffer is available.
- * {@link ImmutableVertex} overrides it to call {@code parseEdgePointers()}, {@link ImmutableEdge} overrides it to
- * re-parse the out/in RIDs.
+ * The pointers are re-derived from the buffer by {@code parseRecordPrefix()}, which
+ * {@link com.arcadedb.database.BaseDocument#reload()} calls on the buffer it has just installed. The test holds the
+ * immutable instance across the transaction that adds the edge, which is the only shape that meets the defect: an edge
+ * added through a freshly looked-up vertex never sees a stale parse.
  */
 public class Issue5771VertexReloadEdgePointerTest extends BaseGraphTest {
 
   @Test
-  void vertexReloadRefreshesEdgePointers() {
-    // 1. Materialise the vertex BEFORE any edge exists (so edge pointers are null)
+  void reloadRefreshesOutEdgesHeadChunk() {
+    final RID[] rids = createTwoUnconnectedVertices();
+    final RID sourceRID = rids[0];
+    final RID targetRID = rids[1];
+
+    // MATERIALISE THE IMMUTABLE VERTEX WHILE IT STILL HAS NO EDGES: THIS IS WHAT PARSES THE PREFIX THE FIX HAS TO REDO
     database.begin();
-    final ImmutableVertex v1 = (ImmutableVertex) database.lookupByRID(root, false);
-    // Force materialisation by calling any accessor that triggers checkForLazyLoading + parseEdgePointers
-    assertThat(v1.getOutEdgesHeadChunk()).isNull();
-    assertThat(v1.getInEdgesHeadChunk()).isNull();
+    final ImmutableVertex source = (ImmutableVertex) database.lookupByRID(sourceRID, true);
+    assertThat(source.getOutEdgesHeadChunk()).isNull();
     database.commit();
 
-    // 2. In a new transaction, add an edge to the vertex
+    database.transaction(() -> database.lookupByRID(sourceRID, true).asVertex()
+        .newEdge(EDGE1_TYPE_NAME, database.lookupByRID(targetRID, true), "name", "reloaded"));
+
     database.begin();
-    final Vertex v2 = (Vertex) database.lookupByRID(root, true);
-    final Vertex other = database.newVertex(VERTEX2_TYPE_NAME);
-    other.set("name", "other");
-    other.save();
-    v2.newEdge(EDGE1_TYPE_NAME, other, "name", "E1");
-    database.commit();
+    try {
+      source.reload();
 
-    // 3. Now reload the ORIGINAL vertex reference (v1, not v2) in a fresh transaction
-    database.begin();
-    v1.reload();
-
-    // 4. After reload, the edge pointers should reflect the new edge
-    final RID outEdges = v1.getOutEdgesHeadChunk();
-    assertThat(outEdges).as("reload() should refresh outEdges to pick up the new edge").isNotNull();
-
-    // 5. Verify countEdges also reflects the new state
-    assertThat(v1.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(1);
-    database.commit();
+      assertThat(source.getOutEdgesHeadChunk()).as("reload() must re-read the out-edge head chunk from the fresh buffer")
+          .isEqualTo(((VertexInternal) database.lookupByRID(sourceRID, true)).getOutEdgesHeadChunk());
+      assertThat(source.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
+    } finally {
+      database.commit();
+    }
   }
 
   @Test
-  void vertexReloadRefreshesInEdgesOnTarget() {
-    // 1. Create two vertices, materialise them both before any edges
+  void reloadRefreshesInEdgesHeadChunk() {
+    final RID[] rids = createTwoUnconnectedVertices();
+    final RID sourceRID = rids[0];
+    final RID targetRID = rids[1];
+
     database.begin();
-    final ImmutableVertex v1 = (ImmutableVertex) database.lookupByRID(root, false);
-    final Vertex target = database.newVertex(VERTEX2_TYPE_NAME);
-    target.set("name", "target");
-    target.save();
-    final ImmutableVertex immutableTarget = (ImmutableVertex) database.lookupByRID(target.getIdentity(), false);
-    assertThat(immutableTarget.getInEdgesHeadChunk()).isNull();
+    final ImmutableVertex target = (ImmutableVertex) database.lookupByRID(targetRID, true);
+    assertThat(target.getInEdgesHeadChunk()).isNull();
     database.commit();
 
-    // 2. Add an edge from v1 to target
-    database.begin();
-    final Vertex v1Mut = (Vertex) database.lookupByRID(root, true);
-    v1Mut.newEdge(EDGE1_TYPE_NAME, target, "name", "E1");
-    database.commit();
+    database.transaction(() -> database.lookupByRID(sourceRID, true).asVertex()
+        .newEdge(EDGE1_TYPE_NAME, database.lookupByRID(targetRID, true), "name", "reloaded"));
 
-    // 3. Reload the target vertex
     database.begin();
-    immutableTarget.reload();
+    try {
+      target.reload();
 
-    // 4. Verify inEdges is now populated
-    assertThat(immutableTarget.getInEdgesHeadChunk())
-        .as("reload() on the target vertex should refresh inEdges").isNotNull();
-    assertThat(immutableTarget.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(1);
-    database.commit();
+      assertThat(target.getInEdgesHeadChunk()).as("reload() must re-read the in-edge head chunk from the fresh buffer")
+          .isEqualTo(((VertexInternal) database.lookupByRID(targetRID, true)).getInEdgesHeadChunk());
+      assertThat(target.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
+    } finally {
+      database.commit();
+    }
   }
 
+  /**
+   * The properties have to survive the re-parse: the prefix is read again to find where they start, and getting that
+   * wrong reads the properties from the middle of the edge pointers instead.
+   */
   @Test
-  void vertexReloadWithNoEdgesStillWorks() {
-    // 1. Materialise a vertex that will never get edges
+  void reloadKeepsReadingTheVertexProperties() {
+    final RID[] rids = createTwoUnconnectedVertices();
+    final RID sourceRID = rids[0];
+    final RID targetRID = rids[1];
+
     database.begin();
-    final Vertex isolated = database.newVertex(VERTEX2_TYPE_NAME);
-    isolated.set("name", "isolated");
-    isolated.save();
-    final ImmutableVertex iso = (ImmutableVertex) database.lookupByRID(isolated.getIdentity(), false);
-    assertThat(iso.getOutEdgesHeadChunk()).isNull();
-    assertThat(iso.getInEdgesHeadChunk()).isNull();
+    final ImmutableVertex source = (ImmutableVertex) database.lookupByRID(sourceRID, true);
+    assertThat(source.getString("name")).isEqualTo("source");
     database.commit();
 
-    // 2. Reload in a fresh transaction — should not throw
+    database.transaction(() -> {
+      database.lookupByRID(sourceRID, true).asVertex().newEdge(EDGE1_TYPE_NAME, database.lookupByRID(targetRID, true));
+      database.lookupByRID(sourceRID, true).asVertex().modify().set("name", "renamed").save();
+    });
+
     database.begin();
-    iso.reload();
-    // Edge pointers should still be null (no edges were added)
-    assertThat(iso.getOutEdgesHeadChunk()).isNull();
-    assertThat(iso.getInEdgesHeadChunk()).isNull();
+    try {
+      source.reload();
+
+      assertThat(source.getString("name")).isEqualTo("renamed");
+      assertThat(source.getPropertyNames()).contains("name");
+      assertThat(source.getOutEdgesHeadChunk()).isNotNull();
+    } finally {
+      database.commit();
+    }
+  }
+
+  /**
+   * A vertex that never gains an edge must come back from a reload with both pointers still null, and must not blow up
+   * on the re-parse of a prefix whose RIDs are the {@code -1} markers.
+   */
+  @Test
+  void reloadOfAVertexWithoutEdgesKeepsBothPointersNull() {
+    final RID[] rids = createTwoUnconnectedVertices();
+    final RID isolatedRID = rids[0];
+
+    database.begin();
+    final ImmutableVertex isolated = (ImmutableVertex) database.lookupByRID(isolatedRID, true);
+    assertThat(isolated.getOutEdgesHeadChunk()).isNull();
+    assertThat(isolated.getInEdgesHeadChunk()).isNull();
     database.commit();
+
+    database.begin();
+    try {
+      isolated.reload();
+
+      assertThat(isolated.getOutEdgesHeadChunk()).isNull();
+      assertThat(isolated.getInEdgesHeadChunk()).isNull();
+      assertThat(isolated.getString("name")).isEqualTo("source");
+    } finally {
+      database.commit();
+    }
+  }
+
+  /**
+   * The edge shape of the same hook: {@link ImmutableEdge} re-derives its out/in RIDs and its properties offset from
+   * the reloaded buffer rather than from the fields the previous buffer left behind.
+   */
+  @Test
+  void reloadOfAnEdgeKeepsItsEndpointsAndSeesTheNewProperty() {
+    final RID[] rids = createTwoUnconnectedVertices();
+    final RID sourceRID = rids[0];
+    final RID targetRID = rids[1];
+
+    final RID[] edgeRID = new RID[1];
+    database.transaction(() -> edgeRID[0] = database.lookupByRID(sourceRID, true).asVertex()
+        .newEdge(EDGE1_TYPE_NAME, database.lookupByRID(targetRID, true), "name", "before").getIdentity());
+
+    database.begin();
+    final ImmutableEdge edge = (ImmutableEdge) database.lookupByRID(edgeRID[0], true);
+    assertThat(edge.getString("name")).isEqualTo("before");
+    database.commit();
+
+    database.transaction(() -> database.lookupByRID(edgeRID[0], true).asEdge().modify().set("name", "after").save());
+
+    database.begin();
+    try {
+      edge.reload();
+
+      assertThat(edge.getOut()).isEqualTo(sourceRID);
+      assertThat(edge.getIn()).isEqualTo(targetRID);
+      assertThat(edge.getString("name")).isEqualTo("after");
+    } finally {
+      database.commit();
+    }
+  }
+
+  /**
+   * Creates a source and a target vertex with no edge between them. {@code BaseGraphTest} wires its own {@code root}
+   * vertex up with edges in the fixture, so a test about "the pointers were null when the vertex was parsed" needs
+   * vertices of its own.
+   *
+   * @return the source RID at index 0 and the target RID at index 1
+   */
+  private RID[] createTwoUnconnectedVertices() {
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex source = database.newVertex(VERTEX1_TYPE_NAME);
+      source.set("name", "source");
+      source.save();
+
+      final MutableVertex target = database.newVertex(VERTEX2_TYPE_NAME);
+      target.set("name", "target");
+      target.save();
+
+      rids[0] = source.getIdentity();
+      rids[1] = target.getIdentity();
+    });
+    return rids;
   }
 }
