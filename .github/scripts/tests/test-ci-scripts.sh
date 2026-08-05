@@ -23,6 +23,7 @@ SCRIPTS=".github/scripts"
 DEPS="$SCRIPTS/check-workflow-artifact-deps.py"
 COLLECT="$SCRIPTS/collect-coverage-reports.sh"
 RESULTS="$SCRIPTS/check-test-results.py"
+GUARDS="$SCRIPTS/check-test-reporter-guards.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -553,6 +554,102 @@ skipped="$work/results/skipped"
 suite_report "$skipped/engine/target/surefire-reports/TEST-com.arcadedb.SkippedTest.xml" com.arcadedb.SkippedTest 0 0 0
 expect "accepts a suite whose tests were all skipped" 0 "0 failure(s)" \
     "$RESULTS" surefire-reports --root "$skipped"
+
+echo
+echo "check-test-reporter-guards.py"
+
+# The #5763 fix: the reporter is decorative, so it must not redden a job whose tests passed. It is
+# only decorative while the job can still fail on its own, and these fixtures pin both directions.
+
+# The e2e shape. `mvnw verify` exits non-zero on a failing test, so the job's verdict is the test
+# step itself and exempting the reporter costs nothing.
+mkdir -p "$work/reporter-e2e"
+cat >"$work/reporter-e2e/ci.yml" <<'YAML'
+name: e2e
+on: [ push ]
+jobs:
+  java-e2e-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: E2E Tests
+        run: ./mvnw verify -Pintegration -pl e2e
+      - name: E2E Tests Reporter
+        uses: dorny/test-reporter@v3
+        if: success() || failure()
+        continue-on-error: true
+YAML
+expect "accepts an exempt reporter in a job whose test step is the verdict" 0 "" \
+    "$GUARDS" "$work/reporter-e2e"
+
+# The unit-tests shape: --fail-never makes the test step exit 0 regardless, and check-test-results.py
+# is what turns a failing test back into a failing job. Exempting the reporter is safe here too.
+mkdir -p "$work/reporter-verdict"
+cat >"$work/reporter-verdict/ci.yml" <<'YAML'
+name: verdict
+on: [ push ]
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Tests with Coverage
+        run: ./mvnw verify --fail-never -Pcoverage
+      - name: Unit Tests Reporter
+        uses: dorny/test-reporter@v3
+        continue-on-error: true
+      - name: Check test results
+        run: ./.github/scripts/check-test-results.py surefire-reports
+YAML
+expect "accepts an exempt reporter in a --fail-never job that checks its results" 0 "" \
+    "$GUARDS" "$work/reporter-verdict"
+
+# The false green. Same --fail-never job with the verdict step removed: the test command cannot
+# fail, and now neither can the reporter, so every failing test publishes as a green job.
+mkdir -p "$work/reporter-false-green"
+grep -v "check-test-results.py" "$work/reporter-verdict/ci.yml" |
+    grep -v "name: Check test results" >"$work/reporter-false-green/ci.yml"
+expect "rejects an exempt reporter in a --fail-never job with no verdict step" 1 "--fail-never" \
+    "$GUARDS" "$work/reporter-false-green"
+
+# The nightly workflows are that same shape, and are correct precisely because their reporters are
+# not exempt: there, the reporter failing is the only thing that reports a failing test.
+mkdir -p "$work/reporter-nightly"
+grep -v "continue-on-error: true" "$work/reporter-false-green/ci.yml" >"$work/reporter-nightly/ci.yml"
+expect "accepts a --fail-never job whose reporter is not exempt" 0 "" \
+    "$GUARDS" "$work/reporter-nightly"
+
+# `continue-on-error` takes an expression, and an expression that evaluates true on some runs is
+# the same hazard on those runs. It cannot be resolved statically, so it is read as exempt.
+mkdir -p "$work/reporter-expression"
+sed 's/continue-on-error: true/continue-on-error: ${{ github.event_name == '"'"'push'"'"' }}/' \
+    "$work/reporter-false-green/ci.yml" >"$work/reporter-expression/ci.yml"
+expect "rejects a reporter exempted by an unresolvable expression" 1 "supplies a verdict" \
+    "$GUARDS" "$work/reporter-expression"
+
+# A `|| true` on a step that is not the tests must not be read as a swallowed test failure: it
+# would report every job that guards an optional cleanup, in a check that gates the whole build.
+mkdir -p "$work/reporter-unrelated-guard"
+cat >"$work/reporter-unrelated-guard/ci.yml" <<'YAML'
+name: guarded
+on: [ push ]
+jobs:
+  js-e2e-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: E2E Node.js Tests
+        run: |
+          npm ci
+          npm test
+      - name: JS E2E Tests Reporter
+        uses: dorny/test-reporter@v3
+        continue-on-error: true
+YAML
+expect "accepts a job whose test step exits on failure" 0 "" \
+    "$GUARDS" "$work/reporter-unrelated-guard"
+
+# The live workflows are the point of the check, so they are asserted directly as well: mvn-test.yml
+# must stay clean with the e2e reporters exempt, and the nightly workflows with theirs not.
+expect "accepts the workflows as they stand" 0 "no unguarded reporter exemptions" \
+    "$GUARDS"
 
 echo
 if [[ $failures -gt 0 ]]; then
