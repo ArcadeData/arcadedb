@@ -51,8 +51,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * A view is a performance feature, so the oracle here is that every query returns the same rows
  * with and without the view. Each scenario is asserted both ways.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CypherGAVFusedChainIssue5746Test {
   private Database database;

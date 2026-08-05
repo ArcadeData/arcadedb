@@ -89,3 +89,32 @@ it read as "I added a view to make my graph queries faster and they started retu
 Issue #5306 shares the visible symptom but not the cause: that one was anchor selection over
 unidirectional edges. This one is variable materialization inside the fused chain and reproduces on
 the default bidirectional edge type.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5827
+
+### Review cycles
+
+**Cycle 1 - `67c0b07`.** Claude review: approving, no correctness or performance objections. It
+independently confirmed both root causes, checked that the optimizer call ordering keeps
+`fuseGAVExpandChain` and `applyDeferredVertexLoading` consistent on both the fused and the
+bailed-out path, and rated the with/without-view oracle as the right property for a performance
+feature. Three minor nits raised; two applied, one skipped:
+
+- *Applied* - tracking doc placement. Verified against `origin/main`: top-level `docs/` holds only
+  user-facing documents (`multitenant.md`, `native-image.md`, `release-26.8.1.md`), while per-issue
+  root-cause notes live under `docs/superpowers/` (`4861-engine-traverse-npe-issue.md`). Moved
+  this file there.
+- *Applied* - the test carried an `@author Luca Garulli` tag copied from the neighbouring #5306
+  test. Attributing it to someone who did not write it is worse than having no tag, so the tag was
+  removed rather than reassigned.
+- *Skipped* - dropping the `Co-Authored-By` trailer from the first commit. That commit is already
+  pushed, and removing the trailer would mean rewriting published history. The repo rule it cites
+  ("do not add Claude as author of any source code") is about source authorship tags, which the
+  `@author` removal above already covers. Whether the trailer survives is the merger's call, and a
+  squash merge lets it be edited at merge time without any history rewrite.
+
+### Final state
+
+`clean-approval` - approved on cycle 1 with no actionable correctness feedback.
