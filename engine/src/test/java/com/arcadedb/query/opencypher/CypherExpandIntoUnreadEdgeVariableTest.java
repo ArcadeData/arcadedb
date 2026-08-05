@@ -36,8 +36,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (bound-target hops, e.g. the closing edge of a cycle) took {@code relationship.getVariable()}
  * straight off the pattern. That kept a named-but-unread variable off the CSR-backed
  * {@code GAVExpandInto} path even though the identical hop, walked anonymously, would use it.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CypherExpandIntoUnreadEdgeVariableTest {
   // `r` closes the cycle back onto the anchor (bound-target / ExpandInto branch) but is never read.
@@ -78,6 +76,9 @@ class CypherExpandIntoUnreadEdgeVariableTest {
 
   @Test
   void namedButUnreadRelVarOnBoundTargetHopReachesGAVExpandInto() {
+    // Without a view covering the edge type there is nothing to pin the hop to, so it plans as the
+    // edge-list ExpandInto. Asserting this first pins down that the view below is what flips it.
+    assertThat(planOf(CYCLE)).contains("ExpandInto").doesNotContain("GAVExpandInto");
     final long withoutView = countOf(CYCLE);
 
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
