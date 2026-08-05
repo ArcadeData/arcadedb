@@ -40,7 +40,8 @@ import java.util.Set;
  * Collects and provides runtime statistics for query optimization.
  * Statistics are collected on-demand and stored in-memory for the current query.
  *
- * Uses ArcadeDB's cached Bucket.count() (O(1)) for cardinality estimation.
+ * Most estimators use ArcadeDB's cached Bucket.count() (O(1)); {@link #getMeanEdgesPerConnectedPair}
+ * is the exception - it samples up to {@value #MULTIPLICITY_SAMPLE_LIMIT} edge records per call.
  */
 public class StatisticsProvider {
   // Bounded sample size for multiplicity estimation, so a busy edge type is never fully scanned during planning.
@@ -314,6 +315,12 @@ public class StatisticsProvider {
   /**
    * Calculates mean edges per connected pair by sampling edges of the type and counting how many
    * distinct (out, in) pairs they resolve to.
+   * <p>
+   * The sample is the first {@value #MULTIPLICITY_SAMPLE_LIMIT} edges in storage order, not a
+   * uniform or reservoir sample - edges for one pair are often created (and therefore stored)
+   * together, so a prefix can over- or under-represent multiplicity depending on where the cut
+   * falls relative to that clustering. Acceptable for a cost-model heuristic; not a statistically
+   * unbiased estimator.
    */
   private double calculateMeanEdgesPerConnectedPair(final String edgeType) {
     final Schema schema = database.getSchema();

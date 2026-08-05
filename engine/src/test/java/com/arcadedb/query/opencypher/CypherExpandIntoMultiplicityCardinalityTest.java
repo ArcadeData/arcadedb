@@ -37,8 +37,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * encodes only "does the pair connect at all", which is right on a simple graph but backwards on a
  * multigraph: a pair joined by several parallel edges must scale the estimate up, not clamp it to the
  * bare filter probability (issue #5690).
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CypherExpandIntoMultiplicityCardinalityTest {
   private static final Pattern BOUND_TARGET_ROWS = Pattern.compile("rows=(\\d+)] .*BOUND-TARGET");
@@ -82,6 +80,12 @@ class CypherExpandIntoMultiplicityCardinalityTest {
       // Five parallel SETTLED edges joining the one connected pair: a real multiplicity of 5.
       for (int i = 0; i < 5; i++)
         shared.newEdge("SETTLED", hub, true, (Object[]) null);
+
+      // Same multiplicity, stored in the opposite direction, so the IN-direction bound-target hop
+      // below exercises a distinct edge type and cannot be conflated with SETTLED's statistic.
+      database.getSchema().createEdgeType("SETTLEDBACK");
+      for (int i = 0; i < 5; i++)
+        hub.newEdge("SETTLEDBACK", shared, true, (Object[]) null);
     });
   }
 
@@ -103,6 +107,18 @@ class CypherExpandIntoMultiplicityCardinalityTest {
     // ExpandAll INITIATED (a->t): 1 * DEFAULT_AVG_DEGREE(10) -> 10.
     // ExpandInto SETTLED (t->a, bound-target): 10 * DEFAULT_EXPAND_INTO_SELECTIVITY(0.1) * meanEdgesPerConnectedPair(5) -> 5.
     // Before the fix this line reads rows=1 (the plain 10 * 0.1, ignoring the type's real multiplicity of 5).
+    assertThat(boundTargetRows(plan)).isEqualTo(5L);
+  }
+
+  @Test
+  void boundTargetHopScalesTheEstimateRegardlessOfHopDirection() {
+    // Same shape, but the closing hop is written IN (arrow points at the intermediate node) instead
+    // of OUT. The statistic is keyed by edge type, not by query direction, so the estimate must still
+    // reflect SETTLEDBACK's real multiplicity of 5.
+    final String cycle = "MATCH (a:Account {code: 'HUB'})-[:INITIATED]->(t:Txn)<-[:SETTLEDBACK]-(a) RETURN a, t";
+
+    final String plan = planOf(cycle);
+    assertThat(plan).contains("ExpandInto").doesNotContain("GAVExpandInto");
     assertThat(boundTargetRows(plan)).isEqualTo(5L);
   }
 
