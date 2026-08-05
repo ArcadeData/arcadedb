@@ -7116,6 +7116,91 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit RESTORE DOCUMENT statement.
+   * Grammar: RESTORE DOCUMENT identifier RID rid (SET updateItem (COMMA updateItem)* | CONTENT (json|jsonArray|inputParameter))?
+   */
+  @Override
+  public RestoreDocumentStatement visitRestoreDocumentStmt(final SQLParser.RestoreDocumentStmtContext ctx) {
+    final RestoreDocumentStatement stmt = new RestoreDocumentStatement(-1);
+    final SQLParser.RestoreDocumentStatementContext bodyCtx = ctx.restoreDocumentStatement();
+
+    stmt.targetType = (Identifier) visit(bodyCtx.identifier());
+    stmt.targetRid = visitRid(bodyCtx.rid());
+    stmt.insertBody = buildRestoreInsertBody(bodyCtx.SET(), bodyCtx.updateItem(), bodyCtx.json(), bodyCtx.jsonArray(),
+        bodyCtx.inputParameter());
+
+    return stmt;
+  }
+
+  /**
+   * Visit RESTORE VERTEX statement.
+   * Grammar: RESTORE VERTEX identifier RID rid (SET updateItem (COMMA updateItem)* | CONTENT (json|jsonArray|inputParameter))?
+   */
+  @Override
+  public RestoreVertexStatement visitRestoreVertexStmt(final SQLParser.RestoreVertexStmtContext ctx) {
+    final RestoreVertexStatement stmt = new RestoreVertexStatement(-1);
+    final SQLParser.RestoreVertexStatementContext bodyCtx = ctx.restoreVertexStatement();
+
+    stmt.targetType = (Identifier) visit(bodyCtx.identifier());
+    stmt.targetRid = visitRid(bodyCtx.rid());
+    stmt.insertBody = buildRestoreInsertBody(bodyCtx.SET(), bodyCtx.updateItem(), bodyCtx.json(), bodyCtx.jsonArray(),
+        bodyCtx.inputParameter());
+
+    return stmt;
+  }
+
+  /**
+   * Visit RESTORE EDGE statement.
+   * Grammar: RESTORE EDGE identifier RID rid FROM rid TO rid (SET updateItem (COMMA updateItem)* | CONTENT (json|jsonArray|inputParameter))?
+   */
+  @Override
+  public RestoreEdgeStatement visitRestoreEdgeStmt(final SQLParser.RestoreEdgeStmtContext ctx) {
+    final RestoreEdgeStatement stmt = new RestoreEdgeStatement(-1);
+    final SQLParser.RestoreEdgeStatementContext bodyCtx = ctx.restoreEdgeStatement();
+
+    stmt.targetType = (Identifier) visit(bodyCtx.identifier());
+    // rid() order matches grammar order: target, FROM, TO.
+    stmt.targetRid = visitRid(bodyCtx.rid(0));
+    stmt.fromRid = visitRid(bodyCtx.rid(1));
+    stmt.toRid = visitRid(bodyCtx.rid(2));
+    stmt.insertBody = buildRestoreInsertBody(bodyCtx.SET(), bodyCtx.updateItem(), bodyCtx.json(), bodyCtx.jsonArray(),
+        bodyCtx.inputParameter());
+
+    return stmt;
+  }
+
+  /**
+   * Shared SET/CONTENT parsing for the three RESTORE statements - identical trailing clause in each grammar rule,
+   * mirroring how visitCreateVertexStmt builds an {@link InsertBody} from the same shape.
+   */
+  private InsertBody buildRestoreInsertBody(final org.antlr.v4.runtime.tree.TerminalNode setToken,
+      final java.util.List<SQLParser.UpdateItemContext> updateItemCtxList, final SQLParser.JsonContext jsonCtx,
+      final SQLParser.JsonArrayContext jsonArrayCtx, final SQLParser.InputParameterContext inputParameterCtx) {
+    if (setToken == null && jsonCtx == null && jsonArrayCtx == null && inputParameterCtx == null)
+      return null;
+
+    final InsertBody body = new InsertBody(-1);
+
+    if (setToken != null && updateItemCtxList != null && !updateItemCtxList.isEmpty()) {
+      body.setExpressions = new ArrayList<>();
+      for (final SQLParser.UpdateItemContext updateItemCtx : updateItemCtxList) {
+        final InsertSetExpression setExpr = new InsertSetExpression();
+        setExpr.left = (Identifier) visit(updateItemCtx.propertyName());
+        setExpr.right = (Expression) visit(updateItemCtx.expression());
+        body.setExpressions.add(setExpr);
+      }
+    } else if (jsonCtx != null) {
+      body.contentJson = (Json) visit(jsonCtx);
+    } else if (jsonArrayCtx != null) {
+      body.contentArray = (JsonArray) visit(jsonArrayCtx);
+    } else if (inputParameterCtx != null) {
+      body.contentInputParam = (InputParameter) visit(inputParameterCtx);
+    }
+
+    return body;
+  }
+
+  /**
    * Visit ALIGN DATABASE statement.
    * Grammar: ALIGN DATABASE
    */

@@ -54,6 +54,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -357,6 +358,96 @@ public class GraphEngine {
   private static VertexInternal asVertexInternal(final Identifiable identifiable) {
     final Vertex vertex = identifiable.asVertex();
     return vertex instanceof VertexInternal vertexInternal ? vertexInternal : (VertexInternal) vertex.getRecord();
+  }
+
+  /**
+   * Rebuilds the OUT and/or IN adjacency list of each given vertex from scratch, by scanning every edge type in the
+   * schema for edges whose {@code out}/{@code in} endpoint names one of the given vertex RIDs, and re-adding each
+   * match found. Used by an emergency vertex restore (a freshly recreated vertex shell has no edges of its own;
+   * this finds every surviving edge that still names it) - see {@link #restoreVertexAt}.
+   * <p>
+   * {@code GraphDatabaseChecker}'s own rebuild-from-surviving-edges repair keeps a separate, near-identical
+   * implementation rather than calling this: it additionally excludes edges the same FIX pass is about to delete
+   * and warns per unreadable edge, both of which need its {@code CheckReport}. Keep the two in sync by hand if the
+   * scan-and-rewire mechanics change here.
+   * <p>
+   * A rebuilt vertex ends up with a brand-new chain; any old, now-orphaned chunks it used to point at are left
+   * untouched on disk (harmless - reclaimed by compaction). An edge this transaction cannot read is skipped, not
+   * fatal: the surviving, readable edges still reconnect.
+   *
+   * @return the number of outgoing and incoming edge entries reconnected, respectively (index 0 = out, 1 = in)
+   */
+  public long[] reconnectEdgesFromSurvivors(final Set<RID> reconnectOutVertices, final Set<RID> reconnectInVertices) {
+    final List<EdgeType> edgeTypes = new ArrayList<>();
+    for (final DocumentType schemaType : database.getSchema().getTypes())
+      if (schemaType instanceof EdgeType t)
+        edgeTypes.add(t);
+
+    final List<Edge> outEdgesToReconnect = new ArrayList<>();
+    final List<Edge> inEdgesToReconnect = new ArrayList<>();
+
+    for (final EdgeType edgeType : edgeTypes) {
+      final boolean bidirectional = edgeType.isBidirectional();
+      database.scanType(edgeType.getName(), false, record -> {
+        try {
+          final Edge e = record.asEdge(true);
+          if (reconnectOutVertices.contains(e.getOut()))
+            outEdgesToReconnect.add(e);
+          // A unidirectional edge is never stored in the target's IN list: rebuilding it there would invent
+          // adjacency that never existed.
+          if (bidirectional && reconnectInVertices.contains(e.getIn()))
+            inEdgesToReconnect.add(e);
+        } catch (final Exception ignore) {
+          // Unreadable edge record: skip it, the surviving edges still reconnect.
+        }
+        return true;
+      }, (rid, exception) -> true);
+    }
+
+    for (final Edge e : outEdgesToReconnect) {
+      final MutableVertex vertex = e.getOutVertex().modify();
+      getOrCreateEdgeList(vertex, Vertex.DIRECTION.OUT).add(e.getIdentity(), e.getIn());
+    }
+
+    for (final Edge e : inEdgesToReconnect) {
+      final MutableVertex vertex = e.getInVertex().modify();
+      getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
+    }
+
+    return new long[] { outEdgesToReconnect.size(), inEdgesToReconnect.size() };
+  }
+
+  /**
+   * Emergency repair: recreates an empty vertex shell of type {@code typeName} at the exact RID {@code targetRid}
+   * used to hold, then immediately rebuilds its adjacency from surviving edge records via
+   * {@link #reconnectEdgesFromSurvivors}, unconditionally - it does not rely on {@code CHECK DATABASE}'s
+   * corruption heuristics, which never flag a freshly created, legitimately edge-less vertex as needing a rebuild.
+   * <p>
+   * Restores graph STRUCTURE only: {@code targetRid}'s original property values are not recoverable from its
+   * edges and are not set here (the caller may set them afterward if known from another source). Refuses if the
+   * slot is occupied (see {@link LocalBucket#restoreRecordAtPosition}) or if {@code typeName} does not own
+   * {@code targetRid}'s bucket.
+   */
+  public Vertex restoreVertexAt(final RID targetRid, final String typeName) {
+    final DocumentType type = database.getSchema().getType(typeName);
+    if (!(type instanceof VertexType))
+      throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex type");
+    if (type.getBucketIds(true).stream().noneMatch(id -> id == targetRid.getBucketId()))
+      throw new IllegalArgumentException(
+          "Type '" + typeName + "' does not own bucket " + targetRid.getBucketId() + ", cannot restore " + targetRid + " as this type");
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(targetRid.getBucketId());
+    final MutableVertex shell = database.newVertex(typeName);
+    bucket.restoreRecordAtPosition(targetRid.getPosition(), shell);
+
+    final Set<RID> asSet = Set.of(targetRid);
+    final long[] counts = reconnectEdgesFromSurvivors(asSet, asSet);
+
+    LogManager.instance()
+            .log(this, Level.WARNING, "Restored vertex %s (type=%s): reconnected %d outgoing and %d incoming edge(s) from surviving records",
+                    null, targetRid, typeName, counts[0], counts[1]);
+
+    return targetRid.asVertex(true);
   }
 
   /**

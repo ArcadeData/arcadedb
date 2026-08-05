@@ -1011,6 +1011,147 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Emergency repair primitive: force-writes {@code record} into the EXPLICIT slot identified by {@code position},
+   * bypassing the normal space allocator entirely. Used to recreate a record at the exact RID it held before an
+   * out-of-band deletion (a raw delete that skipped graph cascade, or physical corruption), so existing references
+   * to that RID - edge endpoints, adjacency-list entries - become valid again without rewriting every one of them.
+   * <p>
+   * Refuses if the slot is occupied by a live record (this can never silently overwrite data), or if its page does
+   * not already exist (a RID that never held a record on this bucket has nothing to restore). A record too large
+   * to fit in a single page is written as a multi-page chunk chain, same as a normal insert would - only the
+   * FIRST chunk is pinned to the exact target slot (see {@link #writeMultiPageRecord}); continuation chunks need
+   * no fixed position and are placed by the normal allocator, possibly on other pages. This includes position 0 of
+   * the bucket: {@code getAvailableSpaceInPage}'s "never CHOOSE position 0 for a multi-page record" preference
+   * (a legacy sentinel-collision guard - {@code nextChunkPointer == 0} also means "no next chunk") only applies
+   * when the allocator is free to pick a different slot for a CONTINUATION chunk; it is never consulted for the
+   * head/first chunk, whose position is fixed by the caller here exactly as it already is by an UPDATE that grows
+   * an existing record into a chunk chain in place (same {@link #writeMultiPageRecord} call, no special-casing).
+   * <p>
+   * Unlike a normal allocator-driven insert, the content-insertion offset is computed directly against the target
+   * page's CURRENT record count rather than via the allocator's free-page search - that search exists to let an
+   * insert move to a DIFFERENT page when this one lacks room or its slot table is at capacity, which is not an
+   * option here: the caller already committed to an exact slot on this exact page.
+   * <p>
+   * Always poisons the page for the commit-time disjoint-slot merge (unlike a normal allocator-driven insert):
+   * this write's target slot was not discovered via the normal free-space search the merge's replay assumes, so any
+   * real commit-time conflict on this page falls back to a full-transaction retry instead of attempting a replay.
+   *
+   * @throws DatabaseOperationException if the slot is occupied or its page does not exist.
+   */
+  public RID restoreRecordAtPosition(final long position, final Record record) {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
+    final int pageId = (int) (position / maxRecordsInPage);
+    final int positionInPage = (int) (position % maxRecordsInPage);
+
+    final Binary buffer = database.getSerializer().serialize(database, record);
+    while (buffer.size() < MINIMUM_RECORD_SIZE)
+      buffer.append((byte) 0);
+    final int bufferSize = buffer.size();
+    final int spaceNeeded = Binary.getNumberSpace(bufferSize) + bufferSize;
+
+    try {
+      final int txPageCount = getTotalPages();
+      if (pageId >= txPageCount)
+        throw new DatabaseOperationException(
+            "Cannot restore record at position " + position + " in bucket '" + componentName + "': its page (" + pageId
+                + ") does not exist");
+
+      final MutablePage selectedPage = database.getTransaction()
+              .getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
+
+      final short currentRecordCountInPage = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (positionInPage < currentRecordCountInPage) {
+        final int existingPos = getRecordPositionInPage(selectedPage, positionInPage);
+        if (existingPos != 0)
+          throw new DatabaseOperationException(
+              "Cannot restore record at position " + position + " in bucket '" + componentName
+                  + "': the slot is occupied by a live record");
+      }
+
+      final int newRecordPositionInPage = findContentInsertionOffset(selectedPage, currentRecordCountInPage);
+      final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newRecordPositionInPage;
+
+      final RID rid = new RID(file.getFileId(), position);
+
+      LogManager.instance()
+              .log(this, Level.WARNING, "Restoring record %s at its original position (records=%d threadId=%d)", rid,
+                      positionInPage, Thread.currentThread().threadId());
+
+      // Out-of-band write: always poison, never attempt a disjoint-slot-merge replay of this insert (see javadoc).
+      final int previousCoverage = selectedPage.beginCoveredWrite(0);
+      try {
+        selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, newRecordPositionInPage);
+
+        if (positionInPage + 1 > currentRecordCountInPage)
+          selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (positionInPage + 1));
+
+        if (spaceNeeded > spaceAvailableInCurrentPage) {
+          // MULTI-PAGE RECORD: only the first chunk is pinned to this slot; writeMultiPageRecord places the rest.
+          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage);
+        } else {
+          final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage, bufferSize);
+          selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+          updatePageStatistics(selectedPage.pageId.getPageNumber(), spaceAvailableInCurrentPage, -spaceNeeded);
+        }
+      } finally {
+        selectedPage.endCoveredWrite(previousCoverage);
+      }
+
+      final TransactionContext slotTx = database.getTransactionIfExists();
+      if (slotTx != null && slotTx.isSlotMergeEnabled())
+        slotTx.poisonSlotRebasePage(fileId, selectedPage.getPageId().getPageNumber());
+
+      ((RecordInternal) record).setBuffer(buffer.getNotReusable());
+      ((RecordInternal) record).setIdentity(rid);
+
+      return rid;
+
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot restore record at position " + position + " in bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * Computes the content-byte offset where a new record's bytes should start within {@code page}, given the
+   * page's CURRENT record count - i.e. right after the last live record/placeholder/chunk head on the page.
+   * Mirrors the core of {@link #getFreeSpaceInPage}, minus the free-slot search (the caller already has an exact
+   * target slot) and minus its {@code totalRecordsInPage >= maxRecordsInPage} short-circuit: that short-circuit
+   * exists only to make the ALLOCATOR give up on this page and try a different one, which is not an option for
+   * {@link #restoreRecordAtPosition} - the target page is fixed.
+   */
+  private int findContentInsertionOffset(final BasePage page, final int totalRecordsInPage) throws IOException {
+    int lastRecordPositionInPage = -1;
+    for (int i = 0; i < totalRecordsInPage; i++) {
+      final int recordPositionInPage = getRecordPositionInPage(page, i);
+      if (recordPositionInPage > lastRecordPositionInPage)
+        lastRecordPositionInPage = recordPositionInPage;
+    }
+
+    if (lastRecordPositionInPage == -1)
+      // EMPTY PAGE (OR EVERY SLOT IS A HOLE): START RIGHT AFTER THE HEADER
+      return contentHeaderSize;
+
+    final long[] lastRecordSize = page.readNumberAndSize(lastRecordPositionInPage);
+    if (lastRecordSize[0] == 0)
+      // DELETED (V<24.1.1)
+      return lastRecordPositionInPage + (int) lastRecordSize[1];
+    else if (lastRecordSize[0] > 0)
+      // RECORD PRESENT, CONSIDER THE RECORD SIZE + VARINT SIZE
+      return lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
+    else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
+      // PLACEHOLDER, CONSIDER NEXT 9 BYTES
+      return lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
+    else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
+      // CHUNK
+      final int chunkSize = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
+      return lastRecordPositionInPage + (int) lastRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize;
+    } else
+      // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
+      return lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
+  }
+
+  /**
    * Reserves, for the current transaction, the slot the record being created will occupy on the REUSED page the
    * allocator picked (issue #5279), and registers the reservation so it is given back when the transaction ends.
    *
