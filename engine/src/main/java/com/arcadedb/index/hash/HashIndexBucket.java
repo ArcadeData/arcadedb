@@ -170,7 +170,7 @@ public class HashIndexBucket extends PaginatedComponent {
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
-    this.keyTypes = keyTypes;
+    this.keyTypes = checkSupportedKeyTypes(name, keyTypes);
     this.declaredKeyTypes = new byte[keyTypes.length];
     this.binaryKeyTypes = new byte[keyTypes.length];
     for (int i = 0; i < keyTypes.length; i++) {
@@ -983,18 +983,23 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Validates the key types a hash index is about to be created with, so an unsupported one is refused up front with
-   * a message naming it, instead of surfacing as an "unsupported key type" deep inside the first insert (#5677).
+   * Validates the key types a hash index is about to be created with and returns them unchanged, so they can be
+   * assigned directly in the creation constructor. An unsupported one is refused up front with a message naming it,
+   * instead of surfacing as an "unsupported key type" deep inside the first insert (#5677).
    * <p>
-   * This is called from {@code HashIndexFactoryHandler.create()}, which is the only path that reaches the creation
-   * constructor of {@link HashIndex} (and through it the creation constructor of this class) - every hash index is
-   * built by {@code IndexFactory.createIndex()}. A new construction path must call this too, or it can write a file
-   * whose declared key type the bucket cannot encode; the {@link #loadMetadata} check would then only catch it on the
-   * next open.
+   * The creation constructor of this class calls it, and that is what makes the refusal unbypassable: it is the only
+   * path that writes the metadata page, so no caller can declare a key type the bucket cannot encode and leave
+   * {@link #loadMetadata} to report it as corruption on the next open. The load constructor deliberately does NOT
+   * call it - an index already on disk must keep opening, and {@code loadMetadata} already validates what it reads.
+   * <p>
+   * {@code HashIndexFactoryHandler.create()} calls it as well, and that call is not redundant. Unlike
+   * {@link #checkSupportedPageSize}, which is evaluated in the {@code super()} argument list and therefore before the
+   * file exists, this one can only run after {@code super()} has already created and registered it. Refusing in the
+   * handler is what keeps the ordinary creation path from leaving an empty file behind.
    */
-  static void checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
+  static Type[] checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
     if (keyTypes == null)
-      return;
+      return null;
     for (final Type keyType : keyTypes)
       if (keyType == null || !isSupportedKeyType(keyType.getBinaryType()))
         throw new IndexException(
@@ -1004,6 +1009,7 @@ public class HashIndexBucket extends PaginatedComponent {
                 + (keyType == null ? "a key column has no type" : "the key type " + keyType.name() + " cannot be used")
                 + " as a HASH index key. Supported key types are: " + SUPPORTED_KEY_TYPE_NAMES
                 + ". Create the index as LSM_TREE instead");
+    return keyTypes;
   }
 
   /**
