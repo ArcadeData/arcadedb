@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.File;
 import java.lang.reflect.InvocationTargetException;
@@ -50,6 +51,12 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
+    // EXPORT DATABASE reads the ENTIRE database - every type and bucket - bypassing the per-type read grants the
+    // identity actually holds, and writes the dump to the server filesystem (data exfiltration). Like its sibling
+    // whole-database operation IMPORT DATABASE (which requires UPDATE_SECURITY), it is restricted to administrative
+    // users (GHSA / arcadedb-operations#654). In embedded mode (no security configured) this check is a no-op.
+    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+
     if (this.url == null) {
       // ASSIGN DEFAULT NAME
       this.url = new Url("%s-export-%s.%s.tgz".formatted(//
