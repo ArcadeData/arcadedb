@@ -361,6 +361,11 @@ public class ResultInternal implements Result {
 
   @Override
   public Map<String, Object> toMap() {
+    // Deliberately element-first, which is the opposite precedence to getProperty()/getPropertyNames().
+    // The JSON flattening of a whole-entity projection depends on it: a Cypher `RETURN f` row carries
+    // content {f: vertex} plus the vertex as element, and JsonSerializer flattens it through this map.
+    // Do not "align" this with getPropertyNames() - that would nest the vertex under its alias and
+    // reintroduce the null columns of issue #5613 from the other side.
     if (element == null)
       return content;
 

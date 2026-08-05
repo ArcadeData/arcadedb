@@ -127,6 +127,20 @@ class Issue5613WholeVertexNullColumnsTest {
   }
 
   /**
+   * {@code toMap()} keeps the opposite (element-first) precedence on purpose: the JSON flattening of a
+   * whole-entity projection goes through it. Aligning it with {@code getPropertyNames()} would nest the
+   * vertex under its alias and bring the null columns back from the other side.
+   */
+  @Test
+  void wholeVertexRowStillFlattensThroughToMap() {
+    final Result result = database.query("opencypher", "MATCH (f:Person) WHERE f.id = 1 RETURN f").next();
+
+    assertThat(result.getPropertyNames()).containsExactly("f");
+    assertThat(result.toMap()).containsKeys("id", "name", "age", "city").doesNotContainKey("f");
+    assertThat(result.toMap()).containsEntry("name", "n1");
+  }
+
+  /**
    * The point of the issue: openCypher and the equivalent SQL MATCH must describe the same answer
    * with the same columns.
    */
