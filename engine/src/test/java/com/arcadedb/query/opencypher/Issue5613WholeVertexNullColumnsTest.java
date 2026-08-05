@@ -121,6 +121,9 @@ class Issue5613WholeVertexNullColumnsTest {
     assertThat(json.getLong("id")).isEqualTo(1L);
     assertThat(json.getInt("age")).isEqualTo(21);
     assertThat(json.getString("city")).isEqualTo("c1");
+    // The vertex is flattened, never nested under the alias, so no stray column survives on the
+    // surfaces that build their columns from the row itself (Postgres, gRPC, Bolt).
+    assertThat(json.has("f")).isFalse();
   }
 
   /**
