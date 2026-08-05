@@ -32,7 +32,7 @@
 - **Every new `.java` file starts with the Apache 2.0 license header** copied verbatim from an existing file such as `gremlin/src/test/java/com/arcadedb/gremlin/GremlinHasLabelWrongKindTest.java`.
 - **Code style:** `final` on variables and parameters where possible; no curly braces for single-statement `if`; import classes rather than using fully qualified names; assertions in the form `assertThat(x.isMandatory()).isTrue()`.
 - **Do not add Claude as an author** of any source file.
-- **Commit each task on the feature branch `worktree-gremlin-test-coverage`.** The owner authorized commits on this branch at execution setup, relaxing the `CLAUDE.md` "do not commit" rule, which remains in force for `main`. Nothing is merged or pushed without the owner's review. Use a conventional-commit subject and end the message with `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
+- **Commit each task on the feature branch `worktree-gremlin-test-coverage`.** The owner authorized commits on this branch at execution setup, relaxing the `CLAUDE.md` "do not commit" rule, which remains in force for `main`. Nothing is merged or pushed without the owner's review. Use a conventional-commit subject. **Do NOT add any `Co-Authored-By: Claude` trailer or any other attribution to Claude.** `CLAUDE.md` says "don't add Claude as author of any source code", and the owner ruled on 2026-08-05 that this covers commit authorship, not just `@author` tags in `.java` files. This overrides the harness default that would otherwise append such a trailer.
 - **No em dash characters** (U+2014) in any file or message. Use a normal dash, a comma, or rephrase.
 - **Tag slow tests:** `@Tag("slow")` for anything with a multi-second runtime, `@Tag("benchmark")` for microbenchmarks.
 - **Test class naming:** `*Test` runs under surefire, `*IT` under failsafe. Everything in this plan is fast and uses `*Test`.
@@ -262,9 +262,7 @@ Commit the new files on the feature branch:
 
 ```bash
 git add gremlin/src/test/java/com/arcadedb/gremlin/support/
-git commit -m "test(gremlin): add TraversalPlans plan-inspection helper
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+git commit -m "test(gremlin): add TraversalPlans plan-inspection helper"
 ```
 
 ---
@@ -452,9 +450,7 @@ Commit the new files on the feature branch:
 
 ```bash
 git add gremlin/src/test/java/com/arcadedb/gremlin/support/
-git commit -m "test(gremlin): add DifferentialTraversal optimized-vs-unoptimized helper
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+git commit -m "test(gremlin): add DifferentialTraversal optimized-vs-unoptimized helper"
 ```
 
 ---
@@ -878,7 +874,7 @@ Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
 
-Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1179,7 +1175,7 @@ Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
 
-Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1321,7 +1317,7 @@ Expected: BUILD SUCCESS both times, identical test counts. Report any ordering-d
 
 - [ ] **Step 4: Commit and report completion**
 
-Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1446,7 +1442,7 @@ Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
 
-Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1582,7 +1578,7 @@ Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
 
-Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1696,7 +1692,7 @@ Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
 
-Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
