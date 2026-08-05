@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -60,6 +62,20 @@ class Issue5696ExistsRelationshipVariableCorrelationTest extends TestHelper {
       assertThat(rs.next().<Number>getProperty("c").longValue()).as("Alice-Bob row").isEqualTo(1L);
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Number>getProperty("c").longValue()).as("Bob-Charlie row").isEqualTo(1L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /** {@code COLLECT { }} flows through the same {@code executeWithSeedRow} path as EXISTS/COUNT. */
+  @Test
+  void collectSubqueryCorrelatesOnTheOuterRelationshipVariable() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person)-[r:KNOWS]->(q) RETURN COLLECT { MATCH (p)-[r:KNOWS]->(x) RETURN x.name } AS names "
+            + "ORDER BY p.name")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<List<Object>>getProperty("names")).as("Alice-Bob row").containsExactly("Bob");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<List<Object>>getProperty("names")).as("Bob-Charlie row").containsExactly("Charlie");
       assertThat(rs.hasNext()).isFalse();
     }
   }
