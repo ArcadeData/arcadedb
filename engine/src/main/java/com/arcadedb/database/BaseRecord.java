@@ -89,8 +89,10 @@ public abstract class BaseRecord implements Record {
           // CREATE A BUFFER FROM THE MODIFIED RECORD, THE SAME WAY ImmutableDocument.checkForLazyLoading() DOES.
           // TAKING getBuffer() INSTEAD WOULD DISCARD WHAT THE LISTENER DID: ON A DIRTY MutableDocument THAT BUFFER
           // STILL HOLDS THE PRE-MODIFICATION CONTENT, AND IT IS null OUTRIGHT FOR A RECORD BUILT FROM SCRATCH.
+          // serializeForRead() INSTEAD OF serialize(): THIS IS A READ, SO AN EXTERNAL PROPERTY MUST BE RENDERED INLINE
+          // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
           // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER
-          buffer = database.getSerializer().serialize(database, loaded).getNotReusable();
+          buffer = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
         }
 
       } catch (final RecordNotFoundException e) {

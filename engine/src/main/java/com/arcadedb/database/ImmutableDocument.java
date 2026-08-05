@@ -266,9 +266,11 @@ public class ImmutableDocument extends BaseDocument {
         return false;
       } else if (loaded != this) {
         // CREATE A BUFFER FROM THE MODIFIED RECORD. THIS IS NEEDED FOR ENCRYPTION THAT UPDATE THE RECORD WITH A MUTABLE.
+        // serializeForRead() INSTEAD OF serialize(): THIS IS A READ, SO AN EXTERNAL PROPERTY MUST BE RENDERED INLINE
+        // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
         // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER, WHICH
         // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS
-        buffer = database.getSerializer().serialize(database, loaded).getNotReusable();
+        buffer = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
         // THE SERIALIZER HANDS THE BUFFER BACK AT 0 OR AT 1 DEPENDING ON THE BRANCH IT TOOK: NORMALISE IT SO THE
         // POSTCONDITION OF THIS METHOD HOLDS ON EVERY PATH
         buffer.position(propertiesStartingPosition);
