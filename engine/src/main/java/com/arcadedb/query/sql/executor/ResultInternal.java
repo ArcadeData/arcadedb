@@ -303,7 +303,11 @@ public class ResultInternal implements Result {
     if (similarity > 0)
       result.add("$similarity");
 
-    if (element != null) {
+    // Mirror getProperty()'s precedence: once content is present the element is never consulted, so
+    // merging the element's names here would advertise columns that can only ever resolve to null
+    // (issue #5613: a Cypher `RETURN n` row carries content {n: vertex} plus the vertex as element,
+    // and every declared property of the vertex's type surfaced as an extra null column).
+    if (element != null && (content == null || content.isEmpty())) {
       if (tombstones == null || tombstones.isEmpty())
         result.addAll(element.getPropertyNames());
       else
