@@ -171,11 +171,29 @@ public abstract class BaseDocument extends BaseRecord implements Document, Docum
     return RECORD_TYPE;
   }
 
+  /**
+   * Re-derives the fixed prefix of a <b>freshly installed</b> buffer and leaves the buffer on the first byte of the
+   * properties section, updating {@link #propertiesStartingPosition} to match. {@link #reload()} is its only caller,
+   * deliberately: the already-materialised read path only has to move a cursor, and re-deriving the prefix there would
+   * charge every property read of every vertex and edge for a prefix parse and two RID allocations.
+   * <p>
+   * A plain document has no prefix beyond the record-type byte, so the inherited {@code propertiesStartingPosition} of
+   * 1 already describes any buffer of this shape and seeking to it is enough. The shapes that do carry a prefix - a
+   * vertex with its two edge-list head pointers, an edge with its out/in RIDs - override this to read the prefix out of
+   * the <i>current</i> buffer instead of trusting a field that described the previous one. Without that, a
+   * {@link #reload()} left the parsed prefix pointing at the pre-reload content: the vertex kept answering with the
+   * edges it had before the reload (issue #5771), and an edge whose replacement buffer had shorter compressed RIDs kept
+   * a {@code propertiesStartingPosition} pointing past its own properties.
+   */
+  protected void parseRecordPrefix() {
+    buffer.position(propertiesStartingPosition);
+  }
+
   @Override
   public void reload() {
     super.reload();
     if (buffer != null)
-      buffer.position(propertiesStartingPosition);
+      parseRecordPrefix();
   }
 
   @Override

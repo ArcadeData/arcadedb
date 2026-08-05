@@ -53,12 +53,19 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   public ImmutableEdge(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
-    if (buffer != null) {
-      buffer.position(1); // SKIP RECORD TYPE
-      out = (RID) database.getSerializer().deserializeValue(graph, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      in = (RID) database.getSerializer().deserializeValue(graph, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      propertiesStartingPosition = buffer.position();
-    }
+    if (buffer != null)
+      parseVertexPointers();
+  }
+
+  /**
+   * Reads the fixed edge prefix - the record-type byte followed by the out and in vertex RIDs, both compressed, so the
+   * prefix has no fixed length - and leaves the buffer on the first byte of the properties.
+   */
+  private void parseVertexPointers() {
+    buffer.position(1); // SKIP RECORD TYPE
+    out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    propertiesStartingPosition = buffer.position();
   }
 
   public synchronized MutableEdge modify() {
@@ -182,12 +189,20 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   @Override
   protected boolean checkForLazyLoading() {
     if (rid != null && (super.checkForLazyLoading() || (buffer != null && buffer.position() == 1))) {
-      buffer.position(1); // SKIP RECORD TYPE
-      out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      propertiesStartingPosition = buffer.position();
+      parseVertexPointers();
       return true;
     }
     return false;
+  }
+
+  /**
+   * Same reason as {@code ImmutableVertex.parseRecordPrefix()}: the out/in RIDs and the offset they push the
+   * properties to belong to the buffer they were read from, and a reload installs another one. The prefix is not even
+   * a fixed length here, the two RIDs being compressed, so a stale {@code propertiesStartingPosition} can point past
+   * the properties rather than merely at the wrong one.
+   */
+  @Override
+  protected void parseRecordPrefix() {
+    parseVertexPointers();
   }
 }
