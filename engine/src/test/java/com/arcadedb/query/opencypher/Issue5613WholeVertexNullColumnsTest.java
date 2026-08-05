@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
@@ -44,7 +46,11 @@ class Issue5613WholeVertexNullColumnsTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/testissue5613").create();
+    // create() throws when the directory survives, so a crash before tearDown would break every later run.
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/testissue5613");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.command("sql", "CREATE VERTEX TYPE Person");
     database.command("sql", "CREATE PROPERTY Person.id LONG");
     database.command("sql", "CREATE PROPERTY Person.name STRING");
@@ -124,6 +130,25 @@ class Issue5613WholeVertexNullColumnsTest {
     // The vertex is flattened, never nested under the alias, so no stray column survives on the
     // surfaces that build their columns from the row itself (Postgres, gRPC, Bolt).
     assertThat(json.has("f")).isFalse();
+  }
+
+  /**
+   * The invariant the fix establishes, asserted directly on {@link ResultInternal} so it holds
+   * independently of the Cypher engine: {@code getPropertyNames()} must never advertise a column that
+   * {@code getProperty()} cannot resolve. Its guard is the exact complement of the content-precedence
+   * branch in {@code getProperty()}, and this test fails if a future edit desyncs the two.
+   */
+  @Test
+  void everyListedColumnIsResolvableByGetProperty() {
+    final Document person = database.query("sql", "SELECT FROM Person WHERE id = 1").next().getElement().get();
+
+    final ResultInternal row = new ResultInternal();
+    row.setProperty("f", person);
+    row.setElement(person);
+
+    assertThat(row.getPropertyNames()).containsExactly("f");
+    for (final String name : row.getPropertyNames())
+      assertThat(row.<Object>getProperty(name)).as("column %s is listed so it must resolve", name).isNotNull();
   }
 
   /**
