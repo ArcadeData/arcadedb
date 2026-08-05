@@ -948,8 +948,7 @@ public class CypherOptimizer {
     if (op == null)
       return;
     if (op instanceof FilterOperator filter) {
-      if (filter.getPredicate() != null)
-        vars.addAll(WhereClause.collectVariables(filter.getPredicate()));
+      vars.addAll(WhereClause.collectVariables(filter.getPredicate()));
       collectFilterVariables(filter.getChild(), vars);
     } else if (op instanceof GAVExpandAll gav)
       collectFilterVariables(gav.getChild(), vars);

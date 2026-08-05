@@ -69,7 +69,12 @@ class CypherGAVFusedChainIssue5746Test {
   }
 
   private void setUp(final boolean withGav) {
-    database = new DatabaseFactory(DB_PATH).create();
+    // Every test builds this database twice at the same path, so a run killed mid-test would
+    // otherwise leave a directory that makes create() fail with already-exists.
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
 
     final Schema schema = database.getSchema();
     final VertexType person = schema.createVertexType("Person");

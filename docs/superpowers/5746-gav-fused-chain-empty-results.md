@@ -115,6 +115,31 @@ feature. Three minor nits raised; two applied, one skipped:
   `@author` removal above already covers. Whether the trailer survives is the merger's call, and a
   squash merge lets it be edited at merge time without any history rewrite.
 
+**Cycle 2 - `8e14d1b`.** Claude review: approving again, no correctness objections. It re-traced both
+fixes independently, walked the unfiltered `RETURN DISTINCT b.id` case through the pre- and post-fix
+slot arrays, and confirmed that `collectFilterVariables` descends through exactly the operator types
+`markDeferredRecursive` walks, so no filter that deferral can reach is missed. Three more
+non-blocking notes; two applied, one skipped:
+
+- *Applied* - null-check asymmetry. `collectFilterVariables` guarded `getPredicate() != null` while
+  the new line in `fuseGAVExpandChain` did not. Verified that `WhereClause.collectVariablesRecursive`
+  returns early on a null expression, so the guard was redundant; removed it so the two sites read
+  the same.
+- *Applied* - test database path reuse. All 12 tests build the database twice at the same fixed
+  path, so a run killed mid-test left a directory that made the next `create()` fail with
+  already-exists. `setUp` now drops a leftover database first.
+- *Skipped* - `collectExpressionVariables` tokenizes RETURN/WITH text on a non-alphanumeric regex
+  and admits function names and literals as variables. Pre-existing, out of scope for this fix, and
+  the failure mode is over-materialization, which is safe. Worth its own issue rather than a drive-by
+  change inside a correctness fix.
+
 ### Final state
 
-`clean-approval` - approved on cycle 1 with no actionable correctness feedback.
+`clean-approval` - approved on both cycles with no actionable correctness feedback. Every change
+after cycle 1 was a non-blocking nit.
+
+### Deferred for the developer
+
+- The `Co-Authored-By` trailer on the first commit (cycle 1, nit 3) cannot be removed without
+  rewriting pushed history. Editable at squash-merge time if wanted.
+- `collectExpressionVariables`'s over-broad tokenizer (cycle 2, nit 2) deserves its own issue.
