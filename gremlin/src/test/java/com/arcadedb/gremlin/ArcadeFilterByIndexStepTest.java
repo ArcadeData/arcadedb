@@ -20,19 +20,30 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.gremlin.support.DifferentialTraversal;
 import com.arcadedb.gremlin.support.TraversalPlans;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
+import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import javax.script.SimpleBindings;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Covers the index-backed rewrite. Ages are 10, 20, 30, 40, 50 and every range predicate is probed
  * AT a stored boundary value, so an inverted inclusive/exclusive flag on the index cursor changes
- * the result set and the differential comparison catches it.
+ * the result set and the differential comparison catches it. Also covers the multi-cursor
+ * intersection path (including a case where the indexed predicate alone still leaves more than one
+ * candidate row) and confirms the rewrite installs equally whether the traversal arrives via the
+ * fluent Java API or is parsed from a string through gremlin-lang.
  */
 class ArcadeFilterByIndexStepTest {
 
@@ -131,14 +142,85 @@ class ArcadeFilterByIndexStepTest {
   }
 
   @Test
-  void anIndexedAndAnUnindexedPredicateCombineCorrectly() {
+  void aRedundantUnindexedPredicateOnAnAlreadyUniqueIndexedMatchStillAgrees() {
+    // age=30 alone already narrows to exactly one row (P30), so the unindexed name predicate that
+    // follows is redundant here: it confirms the residual HasStep does not reject a genuine match, but
+    // a residual HasStep that was silently dropped or broken would still pass this test, because the
+    // index cursor alone already produced the right single row. See
+    // anIndexedPredicateWithMultipleCandidatesPlusAnUnindexedPredicateDiscriminate for the case that
+    // actually requires the unindexed predicate to do work.
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("age", 30).has("name", "P30").values("name"));
+  }
+
+  @Test
+  void anIndexedPredicateWithMultipleCandidatesPlusAnUnindexedPredicateDiscriminate() {
+    // city=Rome alone must leave more than one candidate (P10 and P20), otherwise the unindexed name
+    // predicate that follows never gets a chance to discriminate and a broken or dropped residual
+    // HasStep would go unnoticed, as it did in the test above.
+    final List<Object> cityOnly = DifferentialTraversal.on(graph)
+        .optimized(g -> g.V().hasLabel("Person").has("city", "Rome").values("name"));
+    assertThat(cityOnly)
+        .as("city=Rome must narrow to more than one row for this test to be meaningful")
+        .containsExactlyInAnyOrder("P10", "P20");
+
+    DifferentialTraversal.on(graph)
+        .assertSameResults(g -> g.V().hasLabel("Person").has("city", "Rome").has("name", "P20").values("name"));
   }
 
   @Test
   void aRangeAndAnEqualityCombineCorrectly() {
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("city", "Milan").has("age", P.gte(30)).values("name"));
+  }
+
+  @Test
+  void theIndexRewriteEngagesWhenTheQueryArrivesAsAString() throws Exception {
+    // graph.gremlin(String) parses through gremlin-lang, a different front end from the fluent Java
+    // API every other test in this class uses. Task 4/5 found that the GAV VertexStep rewrite is blind
+    // on this path: gremlin-lang builds a VertexStepPlaceholder for labeled hops that
+    // GValueReductionStrategy only resolves after ArcadeTraversalStrategy has already run, so the
+    // rewrite's "step instanceof VertexStep" check never matches. This test establishes, as a committed
+    // regression guard rather than a deleted throwaway probe, that the INDEX rewrite does not share that
+    // gap: it asserts ArcadeFilterByIndexStep is actually installed in the plan gremlin-lang builds.
+    //
+    // ArcadeGraph.getGremlinJavaEngine() is the same GremlinLangScriptEngine that
+    // ArcadeGremlin.executeStatement() calls internally for the "java" engine (the default, and the
+    // first one "auto" tries), so this test drives the traversal through the identical parsing entry
+    // point graph.gremlin(String) uses in production. What it does NOT prove: it does not go through
+    // ArcadeGremlin/ResultSet itself, so it does not exercise result serialization or the "auto"
+    // fallback to Groovy.
+    final GremlinLangScriptEngine engine = graph.getGremlinJavaEngine();
+    final SimpleBindings bindings = new SimpleBindings();
+    bindings.put("g", graph.traversal());
+    final Object result = engine.eval("g.V().hasLabel('Person').has('age', 30)", bindings);
+
+    assertThat(result).isInstanceOf(Traversal.class);
+    final Traversal<?, ?> stringPathTraversal = (Traversal<?, ?>) result;
+
+    assertThat(TraversalPlans.hasStepOfType(stringPathTraversal, ArcadeFilterByIndexStep.class))
+        .as("plan was: %s", TraversalPlans.describe(stringPathTraversal))
+        .isTrue();
+  }
+
+  @Test
+  void theStringEntryPointProducesTheSameRowsAsTheFluentPath() {
+    // Complements the plan-shape assertion above with an end-to-end behavioral check: executes the
+    // query through the actual public graph.gremlin(String) entry point (unlike the test above, this
+    // one does go through ArcadeGremlin/ResultSet) and compares against the fluent-API optimized path.
+    // This does not by itself prove which step ran on the string path - the plan-shape test above is
+    // what proves that - but it confirms the string path's answer is not merely plausible, it is
+    // identical to the fluent path's.
+    final List<Object> stringPathNames = new ArrayList<>();
+    final ResultSet resultSet = graph.gremlin("g.V().hasLabel('Person').has('age', 30).values('name')").execute();
+    while (resultSet.hasNext()) {
+      final Result row = resultSet.next();
+      stringPathNames.add(row.getProperty("result"));
+    }
+
+    final List<Object> fluentPathNames = DifferentialTraversal.on(graph)
+        .optimized(g -> g.V().hasLabel("Person").has("age", 30).values("name"));
+
+    assertThat(stringPathNames).containsExactlyInAnyOrderElementsOf(fluentPathNames);
   }
 }
