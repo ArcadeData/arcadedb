@@ -526,10 +526,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 continue;
             }
 
-            // If the relationship variable is already bound from a previous step,
-            // verify the traversed edge matches the bound value (identity check)
-            if (relationshipVariable != null && boundVariableNames != null
-                && boundVariableNames.contains(relationshipVariable)) {
+            // If the relationship variable is already bound from a previous step, verify the traversed
+            // edge matches the bound value (identity check). `boundVariableNames` is a plan-time set and
+            // can be empty for a body seeded directly from an outer row (EXISTS/COUNT/COLLECT with no
+            // leading WITH), so also check the incoming row itself - mirroring MatchNodeStep's runtime
+            // check for a pre-bound node variable (see #5696).
+            if (relationshipVariable != null
+                && ((boundVariableNames != null && boundVariableNames.contains(relationshipVariable))
+                    || lastResult.getPropertyNames().contains(relationshipVariable))) {
               final Object boundRel = lastResult.getProperty(relationshipVariable);
               if (boundRel instanceof Edge) {
                 if (!((Edge) boundRel).getIdentity().equals(edge.getIdentity()))
