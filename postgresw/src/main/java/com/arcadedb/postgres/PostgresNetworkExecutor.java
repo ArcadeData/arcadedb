@@ -74,6 +74,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -779,6 +780,25 @@ public class PostgresNetworkExecutor extends Thread {
     return Collections.emptyList();
   }
 
+  /**
+   * Column names advertised for a row, kept deliberately independent of {@code Result.getPropertyNames()}.
+   * <p>
+   * A whole-entity projection (OpenCypher {@code RETURN n}) yields a row whose content holds only the
+   * variable while the record's own properties live on the backing element. This surface flattens such a
+   * row: {@code writeDataRows} reads those values straight off the element, so the names have to be
+   * collected from the element as well. Relying on {@code getPropertyNames()} tied the announced columns
+   * to that accessor's element/content precedence, and narrowing it for issue #5613 silently dropped every
+   * flattened column here. Element names come first so the column order matches what this surface has
+   * always emitted.
+   */
+  private Set<String> columnNamesOf(final Result row) {
+    final Set<String> names = new LinkedHashSet<>();
+    if (row.isElement())
+      names.addAll(row.getElement().get().getPropertyNames());
+    names.addAll(row.getPropertyNames());
+    return names;
+  }
+
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
@@ -787,8 +807,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (row.isElement())
         atLeastOneElement = true;
 
-      final Set<String> propertyNames = row.getPropertyNames();
-      for (final String p : propertyNames) {
+      for (final String p : columnNamesOf(row)) {
         if (!columns.containsKey(p)) {
           // Determine the PostgreSQL type based on the actual value.
           // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
