@@ -228,6 +228,13 @@ public class ResultInternal implements Result {
     return result;
   }
 
+  /**
+   * Unlike the single-argument {@link #getProperty(String)}, this falls back to the element when content
+   * lacks the key, so it can answer a name that {@link #getPropertyNames()} does not list. Pairing a
+   * {@code getPropertyNames()} loop with this getter therefore reads values for columns nobody announced -
+   * the mismatch that made the Postgres wire depend on the pre-#5613 union. Iterate with the single-argument
+   * getter, or collect the names from the element too, as {@code PostgresNetworkExecutor} now does.
+   */
   public <T> T getProperty(final String name, final Object defaultValue) {
     T result;
     if (tombstones != null && tombstones.contains(name))
@@ -244,6 +251,10 @@ public class ResultInternal implements Result {
     return result;
   }
 
+  /**
+   * Falls back to the element when content lacks the key, so the same caveat as
+   * {@link #getProperty(String, Object)} applies: it can resolve a name {@link #getPropertyNames()} omits.
+   */
   @Override
   public Record getElementProperty(final String name) {
     Object result = null;
@@ -303,7 +314,11 @@ public class ResultInternal implements Result {
     if (similarity > 0)
       result.add("$similarity");
 
-    if (element != null) {
+    // Mirror getProperty()'s precedence: once content is present the element is never consulted, so
+    // merging the element's names here would advertise columns that can only ever resolve to null
+    // (issue #5613: a Cypher `RETURN n` row carries content {n: vertex} plus the vertex as element,
+    // and every declared property of the vertex's type surfaced as an extra null column).
+    if (element != null && (content == null || content.isEmpty())) {
       if (tombstones == null || tombstones.isEmpty())
         result.addAll(element.getPropertyNames());
       else
@@ -317,6 +332,13 @@ public class ResultInternal implements Result {
     return result;
   }
 
+  /**
+   * Deliberately the union of both stores, so it stays broader than {@link #getPropertyNames()}: for a
+   * whole-entity projection this answers {@code true} for a name that is not listed as a column and that
+   * {@link #getProperty(String)} resolves to {@code null}. FinalProjectionStep uses it to decide which
+   * requested properties to project, not to describe columns, so narrowing it here would change
+   * projection selection rather than the reported column list. See the note on {@link #toMap()}.
+   */
   public boolean hasProperty(final String propName) {
     // $score is always available as a special property
     if ("$score".equals(propName))
@@ -357,6 +379,11 @@ public class ResultInternal implements Result {
 
   @Override
   public Map<String, Object> toMap() {
+    // Deliberately element-first, which is the opposite precedence to getProperty()/getPropertyNames().
+    // The JSON flattening of a whole-entity projection depends on it: a Cypher `RETURN f` row carries
+    // content {f: vertex} plus the vertex as element, and JsonSerializer flattens it through this map.
+    // Do not "align" this with getPropertyNames() - that would nest the vertex under its alias and
+    // reintroduce the null columns of issue #5613 from the other side.
     if (element == null)
       return content;
 

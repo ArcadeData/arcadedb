@@ -1241,6 +1241,37 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * A whole-entity Cypher projection is flattened on this wire: the record's own properties are
+   * advertised as columns and read off the backing element, alongside the variable column itself.
+   * The column names must NOT be taken from {@code Result.getPropertyNames()}, whose element/content
+   * precedence was narrowed for issue #5613 - doing so silently dropped every flattened column here.
+   */
+  @Test
+  void wholeVertexCypherProjectionFlattensItsColumns() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("create vertex type Town");
+        st.execute("{opencypher} CREATE (n:Town {code: 'T1', label: 'Springfield'})");
+      }
+
+      try (var st = conn.createStatement();
+          var rs = st.executeQuery("{opencypher} MATCH (n:Town) WHERE n.code = 'T1' RETURN n")) {
+        assertThat(rs.next()).isTrue();
+
+        final var metaData = rs.getMetaData();
+        final List<String> columns = new ArrayList<>();
+        for (int i = 1; i <= metaData.getColumnCount(); i++)
+          columns.add(metaData.getColumnName(i));
+
+        assertThat(columns).contains("code", "label", "n");
+        assertThat(rs.getString("code")).isEqualTo("T1");
+        assertThat(rs.getString("label")).isEqualTo("Springfield");
+        assertThat(rs.next()).isFalse();
+      }
+    }
+  }
+
   @Test
   void createVertexCypherQueryParams() throws Exception {
     try (var conn = getConnection()) {
