@@ -5111,7 +5111,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Build and persist graph if it hasn't been built yet
       // This ensures the graph is available on next database open (fast restart)
       // Build graph if it's in LOADING (never built) or MUTABLE (has pending changes) state
-      if (vectorIndex.size() > 0 && (graphState == GraphState.LOADING || graphState == GraphState.MUTABLE)) {
+      //
+      // LOADING means "not loaded into memory", which is not the same as "not
+      // persisted on disk": the graph loads lazily on the first search, so a
+      // session that never searched leaves it LOADING even when a complete
+      // graph is already on disk, and rebuilding then only reproduces a file
+      // that already exists. initializeGraphIndex() already draws exactly this
+      // distinction with the same predicate.
+      final boolean graphAlreadyOnDisk = graphFile != null && graphFile.hasPersistedGraph();
+      if (vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
+          || (graphState == GraphState.LOADING && !graphAlreadyOnDisk))) {
         try {
           LogManager.instance()
               .log(this, Level.FINE, "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
