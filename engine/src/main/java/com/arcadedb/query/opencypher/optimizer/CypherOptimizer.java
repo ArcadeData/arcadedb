@@ -874,18 +874,13 @@ public class CypherOptimizer {
     final String sourceVar = chain.get(chainLen - 1).getSourceVariable();
 
     // Determine which variables need materialization (referenced in WHERE/WITH/RETURN)
-    final Set<String> usedVariables = new HashSet<>();
-    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
-      usedVariables.addAll(WhereClause.collectVariables(statement.getWhereClause().getConditionExpression()));
-    for (final MatchClause mc : statement.getMatchClauses())
-      if (mc.hasWhereClause() && mc.getWhereClause().getConditionExpression() != null)
-        usedVariables.addAll(WhereClause.collectVariables(mc.getWhereClause().getConditionExpression()));
-    if (statement.getReturnClause() != null)
-      for (final var item : statement.getReturnClause().getReturnItems())
-        collectExpressionVariables(item.getExpression(), usedVariables);
-    for (final var wc : statement.getWithClauses())
-      for (final var item : wc.getItems())
-        collectExpressionVariables(item.getExpression(), usedVariables);
+    final Set<String> usedVariables = collectDownstreamVariables();
+
+    // A filter that is about to be pushed INTO the chain still has to be evaluated there, so every
+    // variable it reads must be materialized. Inline property maps (MATCH (p:Person {id: 0})) become
+    // such a filter and mention no variable that WHERE/WITH/RETURN necessarily names (#5746).
+    if (topFilter instanceof FilterOperator filter)
+      usedVariables.addAll(WhereClause.collectVariables(filter.getPredicate()));
 
     final boolean[] materialize = new boolean[chainLen + 1];
     materialize[0] = usedVariables.contains(sourceVar); // source
@@ -916,26 +911,47 @@ public class CypherOptimizer {
    * Skipping the OLTP vertex load for these variables can save ~2μs per row.
    */
   private void applyDeferredVertexLoading(final PhysicalOperator rootOperator) {
-    // Collect variables referenced in WHERE/WITH/RETURN expressions
+    final Set<String> usedVariables = collectDownstreamVariables();
+
+    // Any filter still standing in the plan is evaluated on the rows the expansions produce, so its
+    // variables must stay materialized even when nothing downstream projects them (#5746).
+    collectFilterVariables(rootOperator, usedVariables);
+
+    // Walk the operator tree and mark GAVExpandAll operators for deferred loading
+    // The root operator's target should NOT be deferred (it's the final output)
+    markDeferredRecursive(rootOperator, usedVariables, true);
+  }
+
+  /**
+   * Collects every variable a downstream clause reads: the statement WHERE, each MATCH's own WHERE,
+   * RETURN, and WITH. A variable absent from this set is only a stepping stone for traversal and
+   * never has to be loaded from OLTP.
+   */
+  private Set<String> collectDownstreamVariables() {
     final Set<String> usedVariables = new HashSet<>();
-    // From WHERE
     if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
       usedVariables.addAll(WhereClause.collectVariables(statement.getWhereClause().getConditionExpression()));
     for (final MatchClause mc : statement.getMatchClauses())
       if (mc.hasWhereClause() && mc.getWhereClause().getConditionExpression() != null)
         usedVariables.addAll(WhereClause.collectVariables(mc.getWhereClause().getConditionExpression()));
-    // From RETURN
     if (statement.getReturnClause() != null)
       for (final var item : statement.getReturnClause().getReturnItems())
         collectExpressionVariables(item.getExpression(), usedVariables);
-    // From WITH
     for (final var wc : statement.getWithClauses())
       for (final var item : wc.getItems())
         collectExpressionVariables(item.getExpression(), usedVariables);
+    return usedVariables;
+  }
 
-    // Walk the operator tree and mark GAVExpandAll operators for deferred loading
-    // The root operator's target should NOT be deferred (it's the final output)
-    markDeferredRecursive(rootOperator, usedVariables, true);
+  /** Adds the variables read by every FilterOperator in the operator tree. */
+  private static void collectFilterVariables(final PhysicalOperator op, final Set<String> vars) {
+    if (op == null)
+      return;
+    if (op instanceof FilterOperator filter) {
+      vars.addAll(WhereClause.collectVariables(filter.getPredicate()));
+      collectFilterVariables(filter.getChild(), vars);
+    } else if (op instanceof GAVExpandAll gav)
+      collectFilterVariables(gav.getChild(), vars);
   }
 
   private void markDeferredRecursive(final PhysicalOperator op, final Set<String> usedVariables, final boolean isRoot) {

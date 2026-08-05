@@ -511,14 +511,15 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
   /**
    * Pre-computes the output variable names array. Shared across all rows (interned).
+   * <p>
+   * The names must line up slot-for-slot with the values written by {@link #emitResult}, which
+   * only writes a slot for a variable it actually materializes. Reserving a slot for a
+   * non-materialized source shifts every subsequent variable by one, so each one reads back the
+   * next one's vertex and the last one reads back null (#5746).
    */
   private String[] buildOutputNames() {
     final List<String> names = new ArrayList<>();
     if (materializeVariable[0])
-      names.add(sourceVariable);
-    // When source is not materialized, we pass through input properties — those names come at runtime
-    // For now, add source variable name as placeholder
-    else
       names.add(sourceVariable);
 
     for (int i = 0; i < hopTargetVariables.length; i++)
