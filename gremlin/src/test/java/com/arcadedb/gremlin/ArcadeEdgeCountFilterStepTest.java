@@ -81,26 +81,29 @@ class ArcadeEdgeCountFilterStepTest {
 
   @Test
   @Disabled("""
-      Whether ArcadeEdgeCountFilterStep installs for this exact traversal is NOT stable: directly \
-      observed both outcomes for byte-identical code, flipping between mvn invocations that changed \
-      nothing about this method (only the presence/order of unrelated methods elsewhere in this class). \
-      Captured failing plan (top-level only; TraversalPlans.describe() does not recurse into children):
+      Whether ArcadeEdgeCountFilterStep installs for this exact traversal is NOT stable across JVMs, \
+      even for byte-identical code and unchanged test-method order. Captured failing plan (top-level \
+      only; TraversalPlans.describe() does not recurse into children):
         plan was: GraphStep -> TraversalFilterStep
-      Root cause, confirmed by recursively dumping the where-child (see the companion test \
+      Verified mechanism (see the companion test \
       whenTheRewriteDoesNotInstallTinkerPopsCountStrategyExplainsWhy below, which is written to hold \
       under either outcome instead of asserting one): TinkerPop's own CountStrategy is not declared in \
       ArcadeTraversalStrategy.applyPrior() (only InlineFilterStrategy is), so their relative application \
-      order is left to TinkerPop's default resolution. When CountStrategy wins that unconstrained race \
-      for a bounded predicate such as gt(1), it rewrites the where-child from
+      order is left to TinkerPop's TraversalStrategies.sortStrategies() tie-break, which resolves ties \
+      via a HashSet<Class<?>>. Class does not override hashCode(), so iteration order follows JVM \
+      identity hashes - arbitrary per JVM process, not per test-method order. ArcadeGraph's static block \
+      registers the strategy set exactly once, freezing that arbitrary order for the JVM's lifetime: \
+      within a single Surefire fork the outcome is fully deterministic, but it flips depending on WHICH \
+      Surefire fork (i.e. which JVM process, seeded with its own identity hashes) runs the test - not on \
+      the presence/order of unrelated methods and not on which traversal happens to run first. When \
+      CountStrategy wins that race for a bounded predicate such as gt(1), it rewrites the where-child from
         VertexStep(OUT,[KNOWS],edge), CountGlobalStep, IsStep(gt(1))            (3 steps - matches)
       to
         VertexStep(OUT,[KNOWS],edge), RangeGlobalStep(0,2), CountGlobalStep, IsStep(gt(1))  (4 steps)
       which permanently defeats applyEdgeCountFilterOptimization's exact-3-substep check, so the O(1) \
-      GAV path silently does not fire for this query shape on that run. Whether ArcadeTraversalStrategy \
-      or CountStrategy wins is an accident of which traversal happens to run first against the \
-      ArcadeGraph class in the JVM, not anything under the query author's control - a genuine, \
-      order-dependent "sometimes unreachable in normal use" defect in ArcadeTraversalStrategy, not \
-      merely an untested branch. See task-7-report.md for the full writeup.
+      GAV path silently does not fire for this query shape on that JVM - a genuine, \
+      JVM-identity-hash-dependent "sometimes unreachable in normal use" defect in ArcadeTraversalStrategy, \
+      not merely an untested branch. Full writeup: PR #5829.
       """)
   void theDegreeFilterStepIsInstalled() {
     assertThat(TraversalPlans.hasStepOfType(
@@ -129,17 +132,27 @@ class ArcadeEdgeCountFilterStepTest {
     }
   }
 
+  /**
+   * CHARACTERIZATION TEST OF A KNOWN DEFECT. This asserts the CURRENT WRONG behavior on purpose, to pin
+   * it and detect if it silently changes. It is NOT a statement of the intended contract.
+   * <p>
+   * graph.gremlin(String) parses through gremlin-lang, a different front end from the fluent Java API
+   * every other test in this class uses. Task 4/5 found the GAV VertexStep rewrite is blind on this path
+   * for labeled hops: gremlin-lang builds a VertexStepPlaceholder that GValueReductionStrategy only
+   * resolves after ArcadeTraversalStrategy has already run, so "step instanceof VertexStep" never
+   * matches. This rewrite keys off VertexStep the same way, so it inherits the same gap: confirmed, the
+   * O(1) degree-check optimization does not fire for this query shape when it arrives as a string.
+   * ArcadeGraph.getGremlinJavaEngine() is the same GremlinLangScriptEngine that
+   * ArcadeGremlin.executeStatement() uses internally for the "java" engine (the default, and the first
+   * one "auto" tries), so this drives the traversal through the identical parsing entry point
+   * graph.gremlin(String) uses in production.
+   * <p>
+   * WHEN THE VertexStepPlaceholder GAP IS FIXED, INVERT THIS TEST: the expectation becomes that the
+   * rewrite DOES install on the string path, and the method should be renamed accordingly (e.g.
+   * theRewriteEngagesViaTheStringEntryPoint). See PR #5829 for the full writeup.
+   */
   @Test
-  void theRewriteDoesNotEngageViaTheStringEntryPoint() throws Exception {
-    // graph.gremlin(String) parses through gremlin-lang, a different front end from the fluent Java API
-    // every other test in this class uses. Task 4/5 found the GAV VertexStep rewrite is blind on this
-    // path for labeled hops: gremlin-lang builds a VertexStepPlaceholder that GValueReductionStrategy
-    // only resolves after ArcadeTraversalStrategy has already run, so "step instanceof VertexStep" never
-    // matches. This rewrite keys off VertexStep the same way, so it is a strong candidate for the same
-    // gap. ArcadeGraph.getGremlinJavaEngine() is the same GremlinLangScriptEngine that
-    // ArcadeGremlin.executeStatement() uses internally for the "java" engine (the default, and the first
-    // one "auto" tries), so this drives the traversal through the identical parsing entry point
-    // graph.gremlin(String) uses in production.
+  void characterizesTheRewriteNotEngagingViaTheStringEntryPoint() throws Exception {
     final GremlinLangScriptEngine engine = graph.getGremlinJavaEngine();
     final SimpleBindings bindings = new SimpleBindings();
     bindings.put("g", graph.traversal());
@@ -148,7 +161,6 @@ class ArcadeEdgeCountFilterStepTest {
     assertThat(result).isInstanceOf(Traversal.class);
     final Traversal<?, ?> stringPathTraversal = (Traversal<?, ?>) result;
 
-    // Confirmed absent on the string path: the VertexStepPlaceholder gap from Task 4/5 applies here too.
     assertThat(TraversalPlans.hasStepOfType(stringPathTraversal, ArcadeEdgeCountFilterStep.class))
         .as("plan was: %s",
             describeWithChildren(

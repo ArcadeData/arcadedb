@@ -93,24 +93,48 @@ class ArcadeFilterByIndexStepTest {
 
   @Test
   void greaterThanAtABoundaryValueMatchesTheUnoptimizedPath() {
+    // Plan-shape guard: a future change that skipped the rewrite for non-eq predicates would leave the
+    // differential assertion below green (both paths would run through the same unoptimized code) while
+    // coverage of the index rewrite itself silently vanished. Assert the rewrite installs before
+    // asserting its results agree.
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").has("age", P.gt(30)), ArcadeFilterByIndexStep.class))
+        .as("plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().hasLabel("Person").has("age", P.gt(30))))
+        .isTrue();
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("age", P.gt(30)).values("name"));
   }
 
   @Test
   void greaterThanOrEqualAtABoundaryValueMatchesTheUnoptimizedPath() {
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").has("age", P.gte(30)), ArcadeFilterByIndexStep.class))
+        .as("plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().hasLabel("Person").has("age", P.gte(30))))
+        .isTrue();
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("age", P.gte(30)).values("name"));
   }
 
   @Test
   void lessThanAtABoundaryValueMatchesTheUnoptimizedPath() {
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").has("age", P.lt(30)), ArcadeFilterByIndexStep.class))
+        .as("plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().hasLabel("Person").has("age", P.lt(30))))
+        .isTrue();
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("age", P.lt(30)).values("name"));
   }
 
   @Test
   void lessThanOrEqualAtABoundaryValueMatchesTheUnoptimizedPath() {
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").has("age", P.lte(30)), ArcadeFilterByIndexStep.class))
+        .as("plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().hasLabel("Person").has("age", P.lte(30))))
+        .isTrue();
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("age", P.lte(30)).values("name"));
   }
@@ -131,12 +155,23 @@ class ArcadeFilterByIndexStepTest {
   void twoIndexedPredicatesIntersectCorrectly() {
     // Exercises the multi-cursor intersection loop, where cursor 0 seeds the set and later cursors
     // retainAll. A wrong intersection silently widens or empties the result.
+    // Plan-shape guard first: see the comment on greaterThanAtABoundaryValueMatchesTheUnoptimizedPath.
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").has("city", "Rome").has("age", 20), ArcadeFilterByIndexStep.class))
+        .as("plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().hasLabel("Person").has("city", "Rome").has("age", 20)))
+        .isTrue();
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("city", "Rome").has("age", 20).values("name"));
   }
 
   @Test
   void twoIndexedPredicatesWithAnEmptyIntersectionReturnNothing() {
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").has("city", "Turin").has("age", 10), ArcadeFilterByIndexStep.class))
+        .as("plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().hasLabel("Person").has("city", "Turin").has("age", 10)))
+        .isTrue();
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("city", "Turin").has("age", 10).values("name"));
   }
@@ -170,6 +205,11 @@ class ArcadeFilterByIndexStepTest {
 
   @Test
   void aRangeAndAnEqualityCombineCorrectly() {
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").has("city", "Milan").has("age", P.gte(30)), ArcadeFilterByIndexStep.class))
+        .as("plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().hasLabel("Person").has("city", "Milan").has("age", P.gte(30))))
+        .isTrue();
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("city", "Milan").has("age", P.gte(30)).values("name"));
   }

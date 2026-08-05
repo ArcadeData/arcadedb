@@ -829,6 +829,16 @@ class ArcadeFilterByTypeStepTest {
     assertThat(TraversalPlans.hasStepOfType(
         graph.traversal().V().hasLabel("Person", "Company"), ArcadeFilterByTypeStep.class)).isFalse();
   }
+  // CORRECTION (post-implementation, PR #5829): the comment above this snippet is WRONG about what it
+  // covers. hasLabel("Person", "Company") builds a single HasStep wrapping ONE P.within(["Person",
+  // "Company"]) container, so ArcadeTraversalStrategy's totalLabels>1 branch is never reached -
+  // totalLabels counts label CONTAINERS, not the labels inside one container. This test still passes
+  // in the committed version, but for a different, narrower reason: it exercises the
+  // "totalLabels==1 && typeNameToMatch==null" guard (typeNameToMatch stays null because the predicate
+  // is P.within, not Compare.eq), not the totalLabels>1 branch. The committed test file keeps this test
+  // under the same name, with its comment corrected to say what it actually covers, and adds a sibling,
+  // twoChainedLabelContainersSuppressTheRewrite, using chained .hasLabel("Person").hasLabel("Company")
+  // - which really does produce two separate label containers - to genuinely exercise totalLabels>1.
 
   @Test
   void twoLabelsStillReturnTheRightRows() {
@@ -1013,6 +1023,16 @@ class ArcadeFilterByIndexStepTest {
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person").has("age", 30).has("name", "P30").values("name"));
   }
+  // CORRECTION (post-implementation, PR #5829): this snippet as written CANNOT FAIL for the reason its
+  // name implies. age=30 alone already narrows the fixture to exactly one row (P30), so the trailing
+  // unindexed has("name", "P30") predicate never actually has to discriminate anything - a residual
+  // HasStep that was silently dropped or broken by a defect would still leave this test green, because
+  // the indexed predicate alone already produced the right single row. The committed test
+  // (aRedundantUnindexedPredicateOnAnAlreadyUniqueIndexedMatchStillAgrees) keeps this exact case, with
+  // its comment now saying plainly what it does and does not prove, and adds a sibling,
+  // anIndexedPredicateWithMultipleCandidatesPlusAnUnindexedPredicateDiscriminate, which first asserts
+  // (via the differential path) that the indexed predicate alone leaves more than one candidate row,
+  // so the trailing unindexed predicate is actually forced to do discriminating work.
 
   @Test
   void aRangeAndAnEqualityCombineCorrectly() {
@@ -1415,6 +1435,19 @@ class ArcadeGremlinAnalyzeTest {
     assertThat(analyzed.isIdempotent()).isFalse();
     assertThat(analyzed.getOperationTypes()).contains(OperationType.UPDATE);
   }
+  // CORRECTION (post-implementation, PR #5829): addVertexIsNotIdempotentAndIsACreate, addEdgeIsACreate,
+  // and addPropertyIsAnUpdate above all use .contains(OperationType.X), which cannot distinguish the
+  // correct, narrow result from the actual defect: parse() sees the gremlin-lang GValue placeholder step
+  // types (AddVertexStartStepPlaceholder / AddEdgeStepPlaceholder / AddPropertyStepPlaceholder) instead
+  // of the concrete step types its instanceof chain tests for, falls into the "unknown mutating step"
+  // branch, and widens getOperationTypes() to ALL THREE write types - [CREATE, UPDATE, DELETE] - instead
+  // of just the one that actually applies. .contains(OperationType.CREATE) is satisfied by that widened
+  // set exactly as it would be by the correct [CREATE] alone, so these three snippets pass identically
+  // whether the bug is present or fixed. The committed test file keeps these three tests as coarse
+  // idempotency/category checks but adds .containsExactly(...) siblings -
+  // addVertexOperationTypeIsExactlyCreate, addEdgeOperationTypeIsExactlyCreate,
+  // addPropertyOperationTypeIsExactlyUpdate - that do discriminate, and which are committed @Disabled
+  // with the actual-vs-expected values documented, because the widening defect is real and confirmed.
 
   @Test
   void analysisIsNeverDDL() {
@@ -1675,6 +1708,12 @@ class ArcadeGraphFactoryPoolTest {
     factory.close();
     factory = null;
   }
+  // CORRECTION (post-implementation, PR #5829): this snippet asserts NOTHING after factory.close() - it
+  // cannot fail no matter what factory.close() does or does not dispose, including doing nothing at all.
+  // The committed version captures the pooled instance's underlying BasicDatabase before closing it,
+  // asserts database.isOpen() is still true while the instance merely sits released in the pool (proving
+  // g.close() alone does not tear anything down), then asserts database.isOpen() is false after
+  // factory.close(), which is the actual disposal behavior this test's name claims to cover.
 }
 ```
 

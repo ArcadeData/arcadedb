@@ -26,6 +26,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -36,19 +38,28 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ArcadeGremlinEngineSelectionTest {
 
   private ArcadeGraph graph;
-  private String      originalEngine;
+  private Long        originalTimeout;
 
+  // NOTE: no save/restore of GlobalConfiguration.GREMLIN_ENGINE here. Every test in this class writes
+  // the PER-DATABASE ContextConfiguration (((Database) graph.getDatabase()).getConfiguration().setValue(...)),
+  // never the global GlobalConfiguration.GREMLIN_ENGINE field - so a global guard would be protecting
+  // something these tests never mutate. It is also unnecessary: setup()/teardown() open a fresh
+  // ArcadeGraph backed by a freshly created database on every test and graph.drop() deletes that
+  // database's files afterwards, so the per-database config from one test can never carry over to the
+  // next. What genuinely IS process-wide and must be restored is ArcadeGremlin.timeout (see
+  // originalTimeout below and characterizesTheProcessWideTimeoutLeak).
   @BeforeEach
   void setup() {
-    originalEngine = GlobalConfiguration.GREMLIN_ENGINE.getValueAsString();
     graph = ArcadeGraph.open("./target/test-gremlin-engine");
     graph.getDatabase().getSchema().createVertexType("Person");
     graph.getDatabase().transaction(() -> graph.addVertex("Person").property("name", "Alice"));
+    originalTimeout = graph.gremlin("g.V().count()").getTimeout();
   }
 
   @AfterEach
   void teardown() {
-    GlobalConfiguration.GREMLIN_ENGINE.setValue(originalEngine);
+    if (originalTimeout != null)
+      graph.gremlin("g.V().count()").setTimeout(originalTimeout, TimeUnit.MILLISECONDS);
     if (graph != null)
       graph.drop();
   }
@@ -95,8 +106,13 @@ class ArcadeGremlinEngineSelectionTest {
   @Test
   void autoModeFallsBackToGroovyForAClosure() {
     ((Database) graph.getDatabase()).getConfiguration().setValue(GlobalConfiguration.GREMLIN_ENGINE, "auto");
-    // 'auto' is documented as opting in to the Groovy fallback for compatibility.
-    assertThat((Long) graph.gremlin("g.V().count()").execute().nextIfAvailable().getProperty("result"))
+    // 'auto' is documented as opting in to the Groovy fallback for compatibility. A Groovy closure is
+    // exactly the shape gremlin-lang (the "java" engine) rejects with a ScriptException - see
+    // aGroovyClosureIsRejectedAsAParsingErrorUnderTheJavaEngine above, same query shape - so this query
+    // genuinely forces the fallback path in executeStatement(boolean) rather than merely succeeding on
+    // the java engine under a different config value.
+    assertThat((Long) graph.gremlin("g.V().filter { it.get().value('name') == 'Alice' }.count()").execute()
+        .nextIfAvailable().getProperty("result"))
         .isEqualTo(1L);
   }
 
