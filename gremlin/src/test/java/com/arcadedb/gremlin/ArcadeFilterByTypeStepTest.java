@@ -89,8 +89,12 @@ class ArcadeFilterByTypeStepTest {
 
   @Test
   void twoLabelsSuppressTheRewrite() {
-    // ArcadeTraversalStrategy bails out when totalLabels > 1: it clears typeNameToMatch and the
-    // containersToRemove set. Removing only one of two label containers would silently widen results.
+    // NOTE: hasLabel(String, String...) compiles to ONE HasContainer with a P.within(labels)
+    // predicate, not two ~label containers - see TraversalPlans-based verification in the task
+    // report. This test therefore exercises the "totalLabels == 1 && typeNameToMatch != null"
+    // guard (typeNameToMatch stays null because the predicate is P.within, not Compare.eq), not
+    // ArcadeTraversalStrategy's totalLabels > 1 branch. See twoChainedLabelContainersSuppressTheRewrite
+    // below for a test that reaches the totalLabels > 1 branch.
     assertThat(TraversalPlans.hasStepOfType(
         graph.traversal().V().hasLabel("Person", "Company"), ArcadeFilterByTypeStep.class)).isFalse();
   }
@@ -99,6 +103,29 @@ class ArcadeFilterByTypeStepTest {
   void twoLabelsStillReturnTheRightRows() {
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().hasLabel("Person", "Company").values("name"));
+  }
+
+  @Test
+  void twoChainedLabelContainersSuppressTheRewrite() {
+    // Chained .hasLabel(a).hasLabel(b) calls merge onto the SAME HasStep as two separate
+    // Compare.eq ~label HasContainers (confirmed by direct pre-strategy inspection), so this
+    // genuinely reaches ArcadeTraversalStrategy's totalLabels > 1 branch: it clears typeNameToMatch
+    // and the containersToRemove set, and both label containers survive on the HasStep. Removing
+    // only one of them (e.g. dropping the containersToRemove.clear() call) would silently widen the
+    // AND semantics of two chained hasLabel calls into a single-label filter.
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().hasLabel("Person").hasLabel("Company"), ArcadeFilterByTypeStep.class))
+        .isFalse();
+  }
+
+  @Test
+  void twoChainedLabelContainersStillReturnTheRightRows() {
+    // Two ~label containers on one HasStep are ANDed: no vertex can be both a Person and a Company,
+    // so the correct result is empty. A broken suppression that dropped the Person container would
+    // widen this to "every Company vertex" (Acme, from the fixture below) - a non-empty result that
+    // would diverge from the unoptimized path and fail this assertion.
+    DifferentialTraversal.on(graph)
+        .assertSameResults(g -> g.V().hasLabel("Person").hasLabel("Company").values("name"));
   }
 
   @Test
