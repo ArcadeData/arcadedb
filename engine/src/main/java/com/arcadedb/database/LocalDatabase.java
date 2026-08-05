@@ -1439,6 +1439,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         return createdNewTx;
 
       } catch (final NeedRetryException | DuplicatedKeyException e) {
+        // #661: when we joined a transaction owned by the caller (createdNewTx == false) we must NOT retry
+        // here. Retrying would roll back the caller's outer transaction - discarding work the caller did
+        // before this call and resetting the RID of any records it created to null (surfacing later as
+        // "Target vertex is not persistent" when a stale, now-unsaved record reference is reused) - and
+        // re-running the block against the same conflicted state cannot succeed anyway. Propagate the
+        // exception so the real transaction owner retries the whole logical unit with fresh bindings.
+        if (!createdNewTx)
+          throw e;
+
         // RETRY
         lastException = e;
         if (wrappedDatabaseInstance.isTransactionActive())
