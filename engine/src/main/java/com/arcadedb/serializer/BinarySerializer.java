@@ -123,25 +123,35 @@ public class BinarySerializer {
   }
 
   /**
-   * Read-only serialization: creates a buffer-backed representation of the record without writing to the external
-   * bucket. EXTERNAL property values are serialized inline instead of being written to the paired bucket, and the
-   * orphan-cleanup pass is skipped entirely. Use this when re-serializing a record on a read path (e.g., after an
-   * {@code AfterRecordReadListener} returns a modified record) to avoid the surprising side effect of writes and
-   * deletes on the external bucket during a read operation.
+   * Read-only serialization: renders the record into a buffer without touching the paired external bucket. The value
+   * of a property flagged EXTERNAL is serialized INLINE (it is already in memory, deserialized by the read that got
+   * us here) instead of being written to the external bucket, and the orphan-cleanup pass is skipped entirely.
    * <p>
-   * The resulting buffer is complete and self-contained but does NOT carry TYPE_EXTERNAL markers — subsequent
-   * writes through the normal {@link #serialize} path will re-create the external pointers correctly.
+   * Use it on a read path, where the caller has to materialize a record an {@code AfterRecordReadListener} handed
+   * back modified: {@link com.arcadedb.database.ImmutableDocument#checkForLazyLoading()} and
+   * {@link com.arcadedb.database.BaseRecord#reload()} are the two such callers. Going through {@link #serialize}
+   * there makes a plain read create or update records in the external bucket, and lets orphan cleanup DELETE them,
+   * wherever the read happens to be running (issue #5770).
+   * <p>
+   * The buffer that comes back is complete and self-contained for READING: every value resolves without a second
+   * lookup. It carries no TYPE_EXTERNAL pointer though, so it is not a substitute for the stored record: a later
+   * update of that same in-memory record cannot recover the RIDs of its external blobs from it and will allocate
+   * new ones, leaving the previous blobs to the orphan scan. That is the accepted cost of not writing on a read.
+   * <p>
+   * Record types that have no properties at all (edge segments, stripe directories, external value records) never
+   * reach the external bucket, so they fall through to the normal {@link #serialize} path unchanged.
    *
    * @param database the database
-   * @param record   the record to serialize (must be a MutableDocument, MutableVertex, or MutableEdge)
-   * @return a read-only buffer with inline property values
+   * @param record   the record to serialize
+   *
+   * @return a buffer with EXTERNAL property values rendered inline
    */
   public Binary serializeForRead(final DatabaseInternal database, final Record record) {
     return switch (record.getRecordType()) {
-      case Document.RECORD_TYPE, EmbeddedDocument.RECORD_TYPE -> serializeDocument(database, (MutableDocument) record, true);
-      case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record, true);
-      case Edge.RECORD_TYPE -> serializeEdge(database, (MutableEdge) record, true);
-      default -> throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
+      case Document.RECORD_TYPE, EmbeddedDocument.RECORD_TYPE -> serializeDocument(database, (Document) record, true);
+      case Vertex.RECORD_TYPE -> serializeVertex(database, (VertexInternal) record, true);
+      case Edge.RECORD_TYPE -> serializeEdge(database, (Edge) record, true);
+      default -> serialize(database, record);
     };
   }
 
@@ -914,7 +924,12 @@ public class BinarySerializer {
     return serializeProperties(database, record, header, content, false);
   }
 
-  private Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content, final boolean readOnly) {
+  /**
+   * @param readOnly when true the record is being rendered for a READ ({@link #serializeForRead}): EXTERNAL properties
+   *                 are serialized inline and no record in the paired external bucket is created, updated or deleted.
+   */
+  private Binary serializeProperties(final Database database, final Document record, final Binary header,
+      final Binary content, final boolean readOnly) {
     final int headerSizePosition = header.position();
     header.putInt(0); // TEMPORARY PLACEHOLDER FOR HEADER SIZE
 
@@ -968,6 +983,7 @@ public class BinarySerializer {
       final int startContentPosition = content.position();
 
       final Property propertyDef = documentType.getPropertyIfExists(propertyName);
+      // ON A READ (readOnly) THE VALUE IS WRITTEN INLINE BY THE else BRANCH BELOW: THE EXTERNAL BUCKET IS NEVER TOUCHED
       if (propertyDef != null && propertyDef.isExternal() && !readOnly) {
         // NULL is not externalised. set("field", null) is treated semantically the same as remove("field")
         // for storage purposes: we write a TYPE_NULL byte INLINE in the main record and let the orphan-
