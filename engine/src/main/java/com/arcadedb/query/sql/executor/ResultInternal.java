@@ -228,6 +228,13 @@ public class ResultInternal implements Result {
     return result;
   }
 
+  /**
+   * Unlike the single-argument {@link #getProperty(String)}, this falls back to the element when content
+   * lacks the key, so it can answer a name that {@link #getPropertyNames()} does not list. Pairing a
+   * {@code getPropertyNames()} loop with this getter therefore reads values for columns nobody announced -
+   * the mismatch that made the Postgres wire depend on the pre-#5613 union. Iterate with the single-argument
+   * getter, or collect the names from the element too, as {@code PostgresNetworkExecutor} now does.
+   */
   public <T> T getProperty(final String name, final Object defaultValue) {
     T result;
     if (tombstones != null && tombstones.contains(name))
@@ -244,6 +251,10 @@ public class ResultInternal implements Result {
     return result;
   }
 
+  /**
+   * Falls back to the element when content lacks the key, so the same caveat as
+   * {@link #getProperty(String, Object)} applies: it can resolve a name {@link #getPropertyNames()} omits.
+   */
   @Override
   public Record getElementProperty(final String name) {
     Object result = null;
