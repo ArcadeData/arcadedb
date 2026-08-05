@@ -168,6 +168,11 @@ statement
     | checkDatabaseStatement                         # checkDatabaseStmt
     | alignDatabaseStatement                         # alignDatabaseStmt
 
+    // Emergency record repair (recreate a deleted record at its exact original RID)
+    | restoreDocumentStatement                       # restoreDocumentStmt
+    | restoreVertexStatement                         # restoreVertexStmt
+    | restoreEdgeStatement                           # restoreEdgeStmt
+
     // Function Management
     | defineFunctionStatement                        # defineFunctionStmt
     ;
@@ -1099,6 +1104,42 @@ checkDatabaseStatement
       (COMPRESS)?
     ;
 
+/**
+ * Emergency repair: recreate a deleted DOCUMENT record at the exact RID it used to hold, so existing references to
+ * that RID stay valid. Refuses if the slot is occupied by a live record. See LocalBucket.restoreRecordAtPosition.
+ */
+restoreDocumentStatement
+    : RESTORE DOCUMENT identifier RID rid
+      ( SET updateItem (COMMA updateItem)*
+      | CONTENT (json | jsonArray | inputParameter)
+      )?
+    ;
+
+/**
+ * Emergency repair: recreate a deleted VERTEX record at the exact RID it used to hold, then rebuild its adjacency
+ * from every surviving edge that still names it - restoring structure only (the vertex's own property values are
+ * not recoverable from its edges; SET/CONTENT lets the caller supply them if known from another source).
+ */
+restoreVertexStatement
+    : RESTORE VERTEX identifier RID rid
+      ( SET updateItem (COMMA updateItem)*
+      | CONTENT (json | jsonArray | inputParameter)
+      )?
+    ;
+
+/**
+ * Emergency repair: recreate a deleted EDGE record at the exact RID it used to hold, with the given OUT/IN
+ * endpoints. If those vertices' adjacency lists still reference this RID (the usual case this repairs), no further
+ * reconnection is needed - only the edge record itself was missing.
+ */
+restoreEdgeStatement
+    : RESTORE EDGE identifier RID rid
+      FROM rid TO rid
+      ( SET updateItem (COMMA updateItem)*
+      | CONTENT (json | jsonArray | inputParameter)
+      )?
+    ;
+
 alignDatabaseStatement
     : ALIGN DATABASE
     ;
@@ -1579,6 +1620,7 @@ identifier
     | DOCUMENT
     | VIEW
     | REFRESH
+    | RESTORE
     | EVERY
     | SECOND
     | MINUTE
