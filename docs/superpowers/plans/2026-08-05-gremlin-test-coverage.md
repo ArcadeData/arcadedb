@@ -1266,11 +1266,19 @@ class ArcadeGremlinEngineSelectionTest {
         .isEqualTo(1L);
   }
 
+  /**
+   * CHARACTERIZATION TEST OF A KNOWN DEFECT. This asserts the WRONG behavior on purpose, to pin it
+   * and to detect if it silently changes. It is not a statement of the intended contract.
+   * <p>
+   * {@code ArcadeGremlin.timeout} is declared {@code private static Long} but assigned by the
+   * INSTANCE method {@code setTimeout(long, TimeUnit)}, so a timeout set on one graph applies to
+   * every ArcadeGremlin in the process.
+   * <p>
+   * WHEN THE FIELD IS MADE NON-STATIC, INVERT THIS TEST: the expectation becomes that {@code second}
+   * does NOT observe {@code first}'s timeout, and the method should be renamed accordingly.
+   */
   @Test
-  void theTimeoutIsProcessWideNotPerGraph() {
-    // ArcadeGremlin.timeout is declared `private static Long` but assigned by the INSTANCE method
-    // setTimeout(long, TimeUnit). One graph's timeout therefore becomes every graph's timeout.
-    // This test documents the current behavior; see the defect report.
+  void characterizesTheProcessWideTimeoutLeak() {
     final ArcadeGremlin first = graph.gremlin("g.V().count()");
     final ArcadeGremlin second = graph.gremlin("g.V().count()");
     first.setTimeout(1234, java.util.concurrent.TimeUnit.MILLISECONDS);
@@ -1286,7 +1294,7 @@ class ArcadeGremlinEngineSelectionTest {
 Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeGremlinEngineSelectionTest`
 Expected: PASS.
 
-`theTimeoutIsProcessWideNotPerGraph` is expected to PASS, because it asserts the buggy behavior deliberately. Do **not** mark it `@Disabled`. Record the static-field leak in the defect report as a confirmed defect with this test as its evidence, and note that the test must be inverted once the field is made non-static.
+`characterizesTheProcessWideTimeoutLeak` is expected to PASS, because it asserts the buggy behavior deliberately. Do **not** mark it `@Disabled`. Record the static-field leak in the defect report as a confirmed defect with this test as its evidence, and note that the test must be inverted once the field is made non-static.
 
 If `autoModeFallsBackToGroovyForAClosure` produces a security warning in the log, that is expected: the Groovy engine logs a warning by design.
 
@@ -1723,7 +1731,7 @@ Known entries to include:
    Task 3 and Task 4 subsequently surfaced.
 2. ArcadeGremlin.timeout is a private static field assigned by an instance setter, so a timeout set
    on one graph applies process-wide. Pinned by
-   ArcadeGremlinEngineSelectionTest.theTimeoutIsProcessWideNotPerGraph, which asserts the current
+   ArcadeGremlinEngineSelectionTest.characterizesTheProcessWideTimeoutLeak, which asserts the current
    (wrong) behavior and must be inverted when fixed. Severity: medium.
 3. GraphAnalyticalView(Database) is public and documented as a backward-compatibility shim, but a
    view built through it never registers as a traversal provider and can never accelerate a query.
