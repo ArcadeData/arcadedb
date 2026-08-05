@@ -321,6 +321,13 @@ public class ResultInternal implements Result {
     return result;
   }
 
+  /**
+   * Deliberately the union of both stores, so it stays broader than {@link #getPropertyNames()}: for a
+   * whole-entity projection this answers {@code true} for a name that is not listed as a column and that
+   * {@link #getProperty(String)} resolves to {@code null}. FinalProjectionStep uses it to decide which
+   * requested properties to project, not to describe columns, so narrowing it here would change
+   * projection selection rather than the reported column list. See the note on {@link #toMap()}.
+   */
   public boolean hasProperty(final String propName) {
     // $score is always available as a special property
     if ("$score".equals(propName))
