@@ -28,6 +28,8 @@ import com.arcadedb.database.EmbeddedModifierProperty;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
@@ -37,6 +39,8 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -756,5 +760,166 @@ class BinarySerializerTest extends TestHelper {
       assertThat(result).containsEntry("a", "alpha");
       assertThat(result).containsEntry("c", "gamma");
     });
+  }
+
+  /**
+   * Regression: a buffer positioned on the record type byte instead of on the properties section must not be answered
+   * with property names the record never had. The misread decodes a zero header end offset and a garbage count that
+   * both pass a bound against the buffer size alone, so the loop walks off the header into the values and resolves
+   * whatever it finds against the dictionary: the accessors used to return {beta=null, Misaligned=null}, mixing a real
+   * property name with the type name.
+   */
+  @Test
+  void deserializeReportsMisalignedReadInsteadOfInventingProperties() throws Exception {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Misaligned");
+
+      final MutableDocument doc = database.newDocument("Misaligned");
+      doc.set("alpha", "one");
+      doc.set("beta", "two");
+
+      final byte[] record = serializer.serialize((DatabaseInternal) database, doc).toByteArray();
+
+      // Aligned read at position 1, right after the record type byte: the record is intact and stays readable.
+      assertThat(serializer.deserializeProperties(database, bufferPositionedAt(record, 1), null, null))
+          .containsEntry("alpha", "one")
+          .containsEntry("beta", "two");
+
+      // Misaligned read at position 0, the record type byte. Every accessor reading the property header must refuse
+      // the header rather than invent properties out of the garbage it decodes.
+      assertThat(serializer.deserializeProperties(database, bufferPositionedAt(record, 0), null, null)).isEmpty();
+      assertThat(serializer.getPropertyNames(database, bufferPositionedAt(record, 0), null)).isEmpty();
+      assertThat(serializer.hasProperty(database, bufferPositionedAt(record, 0), "beta", null)).isFalse();
+      assertThat(serializer.deserializeProperty(database, bufferPositionedAt(record, 0), null, "beta", null)).isNull();
+    });
+  }
+
+  /**
+   * Regression: a property count that does not fit in the bytes left before the header ends is refused outright rather
+   * than half-read. Bounding the count against the buffer size alone is not enough, because a count of 10 in a 20 byte
+   * record passes that bound and still walks the header loop past the end of the header into the values section, where
+   * whatever it decodes is invented. This particular byte pattern happens to yield the two real properties before it
+   * runs out of buffer, but that is luck, not a contract: the same read shape is what answers
+   * {beta=null, Misaligned=null} one byte earlier. Refusing a header that cannot be true is the point.
+   */
+  @Test
+  void deserializeRejectsPropertyCountThatDoesNotFitTheHeader() throws Exception {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Inflated");
+
+      final MutableDocument doc = database.newDocument("Inflated");
+      doc.set("alpha", "one");
+      doc.set("beta", "two");
+
+      final byte[] record = serializer.serialize((DatabaseInternal) database, doc).toByteArray();
+
+      // The count varint follows the record type byte and the header end offset int.
+      final int countPosition = Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
+      assertThat(record[countPosition]).isEqualTo((byte) 2);
+      record[countPosition] = 10;
+
+      assertThat(serializer.deserializeProperties(database, bufferPositionedAt(record, 1), null, null)).isEmpty();
+      assertThat(serializer.getPropertyNames(database, bufferPositionedAt(record, 1), null)).isEmpty();
+    });
+  }
+
+  /**
+   * Regression: a misalignment whose garbage header end offset lands past the end of the buffer used to return an
+   * empty map with nothing logged at all, indistinguishable from a record that genuinely has no properties. The empty
+   * map is the right answer, but it has to be reported.
+   */
+  @Test
+  void deserializeReportsMisalignedReadThatDecodesToAnEmptyMap() throws Exception {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    final List<String> reported = new CopyOnWriteArrayList<>();
+    final Logger originalLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(new CapturingLogger(reported, originalLogger));
+    try {
+      database.transaction(() -> {
+        database.getSchema().createDocumentType("SilentlyEmpty");
+
+        final MutableDocument doc = database.newDocument("SilentlyEmpty");
+        doc.set("alpha", "one");
+        doc.set("beta", "two");
+
+        final byte[] record = serializer.serialize((DatabaseInternal) database, doc).toByteArray();
+
+        // Position 2 is one byte past the properties section: the header end offset decodes to a value far beyond the
+        // buffer, which used to fall through to a silent empty map.
+        assertThat(serializer.deserializeProperties(database, bufferPositionedAt(record, 2), null, null)).isEmpty();
+      });
+
+      assertThat(reported.stream().filter(m -> m.contains("Possible corrupted record")).toList())
+          .as("a misaligned read must be reported instead of passing for an empty record (captured=%s)", reported)
+          .isNotEmpty();
+    } finally {
+      LogManager.instance().setLogger(originalLogger);
+    }
+  }
+
+  /**
+   * Wraps a serialized record in a fresh {@link Binary} whose size is exactly the record size, positioned at the given
+   * offset. A separate copy per call keeps each accessor under test independent of the others.
+   */
+  private static Binary bufferPositionedAt(final byte[] record, final int position) {
+    final ByteBuffer dest = ByteBuffer.allocate(record.length);
+    dest.put(record);
+    dest.flip();
+    final Binary buffer = new Binary(dest);
+    buffer.position(position);
+    return buffer;
+  }
+
+  /**
+   * Captures WARNING-and-above messages into a list while forwarding every record to the production logger, so the
+   * assertion does not depend on JUL configuration left behind by earlier tests in the same JVM.
+   */
+  private static final class CapturingLogger implements Logger {
+    private final List<String> messages;
+    private final Logger       delegate;
+
+    CapturingLogger(final List<String> messages, final Logger delegate) {
+      this.messages = messages;
+      this.delegate = delegate;
+    }
+
+    private void capture(final Level level, final String message, final Object... args) {
+      if (message == null || level.intValue() < Level.WARNING.intValue())
+        return;
+      String formatted = message;
+      if (args != null && args.length > 0) {
+        try {
+          formatted = message.formatted(args);
+        } catch (final Exception ignored) {
+          // Fall back to the raw template, good enough for the substring matching above.
+        }
+      }
+      messages.add(formatted);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+        final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
+        final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+      capture(level, message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15,
+          arg16, arg17);
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+          arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      capture(level, message, args);
+      delegate.log(requester, level, message, exception, context, args);
+    }
+
+    @Override
+    public void flush() {
+      delegate.flush();
+    }
   }
 }

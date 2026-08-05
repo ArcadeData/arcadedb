@@ -221,8 +221,9 @@ public class BinarySerializer {
   public Set<String> getPropertyNames(final Database database, final Binary buffer, final RID rid) {
     final Set<String> result = new LinkedHashSet<>();
     try {
-      buffer.getInt(); // HEADER-SIZE
-      final int properties = (int) buffer.getUnsignedNumber();
+      final int initialPosition = buffer.position();
+      final int headerEndOffset = buffer.getInt(); // HEADER-SIZE
+      final int properties = checkPropertyCount(buffer, headerEndOffset, initialPosition);
 
       for (int i = 0; i < properties; ++i) {
         final int nameId = (int) buffer.getUnsignedNumber();
@@ -243,16 +244,9 @@ public class BinarySerializer {
     try {
       final int initialPosition = buffer.position();
       final int headerEndOffset = buffer.getInt();
-      if (headerEndOffset < 0)
-        throw new SerializationException(
-            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " at position "
-                + initialPosition + ")");
+      final int properties = checkPropertyCount(buffer, headerEndOffset, initialPosition);
 
-      final int properties = (int) buffer.getUnsignedNumber();
-
-      if (properties < 0)
-        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-      else if (properties == 0)
+      if (properties == 0)
         // EMPTY: NOT FOUND
         return values;
 
@@ -324,11 +318,10 @@ public class BinarySerializer {
 
   public boolean hasProperty(final Database database, final Binary buffer, final String fieldName, final RID rid) {
     try {
-      buffer.getInt(); // headerEndOffset
-      final int properties = (int) buffer.getUnsignedNumber();
-      if (properties < 0)
-        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-      else if (properties == 0)
+      final int initialPosition = buffer.position();
+      final int headerEndOffset = buffer.getInt();
+      final int properties = checkPropertyCount(buffer, headerEndOffset, initialPosition);
+      if (properties == 0)
         // EMPTY: NOT FOUND
         return false;
 
@@ -349,12 +342,11 @@ public class BinarySerializer {
   public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier,
       final String fieldName, final RID rid) {
     try {
+      final int initialPosition = buffer.position();
       final int headerEndOffset = buffer.getInt();
-      final int properties = (int) buffer.getUnsignedNumber();
+      final int properties = checkPropertyCount(buffer, headerEndOffset, initialPosition);
 
-      if (properties < 0)
-        throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
-      else if (properties == 0)
+      if (properties == 0)
         // EMPTY: NOT FOUND
         return null;
 
@@ -874,6 +866,42 @@ public class BinarySerializer {
       throw new SerializationException("Invalid element count " + count + " in buffer of size " + buffer.size()
           + " (corrupted record or misaligned read)");
     return (int) count;
+  }
+
+  /**
+   * Reads the property count that follows the header end offset in a record header, validating both against the
+   * buffer and against each other.
+   * <p>
+   * A misaligned read - a buffer positioned even one byte away from the properties section - decodes garbage as a
+   * header, and the per-property loop cannot tell the difference: it resolves the invented name ids against the
+   * dictionary and hands the caller property names the record never had, or an empty map indistinguishable from a
+   * record that genuinely has none. The header is self-describing enough to reject that. Every property contributes
+   * exactly two varints to it (the name id and the content position), each at least one byte, and all of them live
+   * between the count and {@code headerEndOffset}. A count that cannot fit in the header bytes left before the
+   * header ends is therefore always corruption, and this check never rejects a well-formed record.
+   *
+   * @param buffer          buffer positioned right after the header end offset
+   * @param headerEndOffset absolute offset in {@code buffer} where the property header ends and the values begin
+   * @param initialPosition position the header started at, reported in the error to locate the misalignment
+   *
+   * @return the validated number of properties in the header
+   */
+  private static int checkPropertyCount(final Binary buffer, final int headerEndOffset, final int initialPosition) {
+    if (headerEndOffset < 0 || headerEndOffset > buffer.size())
+      throw new SerializationException(
+          "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " at position "
+              + initialPosition + ", buffer size=" + buffer.size() + ")");
+
+    final int properties = checkDeserializedCount(buffer.getUnsignedNumber(), buffer);
+
+    final int headerBytesLeft = headerEndOffset - buffer.position();
+    if (headerBytesLeft < properties * 2L)
+      throw new SerializationException(
+          "Error on deserialize record. It may be corrupted (properties=" + properties + " do not fit in the "
+              + headerBytesLeft + " header bytes before headerEndOffset=" + headerEndOffset + " at position " + initialPosition
+              + ")");
+
+    return properties;
   }
 
   public Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content) {
