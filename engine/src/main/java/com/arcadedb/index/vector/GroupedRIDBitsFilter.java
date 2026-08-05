@@ -32,6 +32,15 @@ import java.util.function.Function;
  * {@code groupSize} during traversal so JVector returns at most {@code limit * groupSize} eligible
  * nodes spread across at most {@code limit} distinct groups.
  * <p>
+ * <b>Not wired into any search since #5761.</b> {@code LSMVectorIndex.findNeighborsFromVectorGrouped}
+ * traverses with a liveness-only {@link LiveVectorBitsFilter} and applies the group cap to the
+ * score-sorted output instead. The reason is the caveat two paragraphs down, which turned out to
+ * understate the damage: the traversal order this filter admits in begins with the entry-point
+ * descent, which starts far from the query, so the distinct-group budget was spent before the beam
+ * arrived and the nearest group could be missing from the answer altogether. The class is kept
+ * because a score-aware variant of it - one that admits into a per-group min-heap so a better
+ * candidate can evict a worse one - is the way to prune by group during the walk again.
+ * <p>
  * <b>Decision caching is mandatory.</b> JVector calls {@link #get(int)} multiple times for the
  * same ordinal during navigation and scoring; the contract for {@link Bits} is that the answer is
  * stable within one search. We cache admitted and rejected ordinals so repeat calls are O(1) and

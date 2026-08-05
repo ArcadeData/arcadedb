@@ -3854,17 +3854,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Search for k nearest neighbors with post-search {@code groupBy} (issue #5761, #4071). Runs the
+   * Search for k nearest neighbors with post-search {@code groupBy} (issues #5761, #4071). Runs the
    * HNSW traversal with a liveness-only {@link LiveVectorBitsFilter} so the beam is not biased by
-   * group membership during entry-point descent, then applies the per-group cap as a post-filter on
-   * the score-sorted result set. The search budget is sized to {@code limit * groupSize * 2} to give
-   * the post-filter sufficient candidates for correct group distribution.
+   * group membership during the entry-point descent, then applies the per-group cap as a post-filter
+   * on the score-sorted result set.
    * <p>
-   * <b>Score-exact best-per-group.</b> Unlike the previous traversal-integrated approach (which
-   * admitted groups in HNSW visit order, allowing entry-point descent to consume the group budget
-   * on irrelevant groups), the post-search filter walks the score-sorted JVector output: the first
-   * {@code groupSize} candidates per group in score order are the actual best members of that group,
-   * and the first {@code limit} distinct groups encountered are the highest-scoring groups.
+   * <b>Score-exact within the candidate pool.</b> The traversal-integrated predecessor admitted
+   * groups in HNSW visit order, and the descent starts far from the query, so the distinct-group
+   * budget was spent on whatever the beam met on its way in and the nearest group could be locked
+   * out of its own answer entirely (#5761). The post-filter instead walks JVector's output in score
+   * order: the first {@code groupSize} candidates of a group really are its best members, and the
+   * groups admitted really are the highest-scoring ones present in the pool.
+   * <p>
+   * <b>The candidate pool bounds how many groups can come back.</b> Nothing prunes by group during
+   * the walk any more, so a group dense enough to fill the pool on its own leaves no room for the
+   * next one and fewer than {@code limit} groups are returned - correct as far as it goes, but short.
+   * The pool is the whole search beam, so {@code efSearch} is the lever: it has to be at least as
+   * large as the number of candidates that separate the query from the {@code limit}-th group.
    * <p>
    * <b>Delta scan and brute-force fallback are skipped.</b> The two augmentations would re-admit
    * candidates outside the per-group cap; the delta path because it scores newly-inserted vectors
@@ -3909,7 +3915,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       ensureGraphAvailable();
       rebuildGraphBeforeSearch();
 
-      final int searchK = limit * groupSize * 2;
+      // Floor on the candidate pool the post-filter gets to work with. It is a floor and not the pool
+      // itself: with the cap applied after the search, a single dense group can fill a pool this narrow
+      // on its own and no other group ever gets a chance, so the pool is widened to the whole beam below.
+      final int minCandidates = limit * groupSize * 2;
       boolean readLockHeld = false;
       lock.readLock().lock();
       readLockHeld = true;
@@ -3921,11 +3930,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalToVectorId);
 
-        // Liveness-only Bits filter. Unlike the non-grouped path, we do NOT apply group-aware
-        // filtering during traversal — doing so would let HNSW entry-point descent (which pops
-        // candidates far from the query first) consume the per-group budget on irrelevant groups
-        // (issue #5761). Instead, we run the search with a liveness-only filter and apply the
-        // group cap as a post-filter on the score-sorted result set below.
+        // Liveness-only Bits filter. Unlike the previous grouped implementation, we do NOT apply
+        // group-aware filtering during traversal: doing so lets the HNSW entry-point descent (which
+        // pops candidates far from the query first) consume the per-group budget on irrelevant groups
+        // (issue #5761). Instead, we run the search with a liveness-only filter and apply the group
+        // cap as a post-filter on the score-sorted result set below.
         final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex);
 
         final SearchResult searchResult;
@@ -3939,33 +3948,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
-          // Choose efSearch the same way the non-grouped path does. The group cap is applied as a
-          // post-filter, not during traversal, so a "too few results" outcome here is a genuine
-          // beam-width problem, not the contract. JVector's resume() will re-run the search
-          // with a wider beam when the returned count is below searchK, which is what we want.
+          // Choose efSearch the same way the non-grouped path does, with minCandidates as the floor.
+          // The resume-on-too-few branch stays out of this path: resume() drains the result queue and
+          // starts a fresh one, so the survivors of the first pass would be lost, and a short answer
+          // here means the candidate pool held fewer than limit groups, which a second pass over the
+          // same beam does not change.
           final int effectiveEfSearch;
           if (efSearch > 0) {
-            effectiveEfSearch = Math.max(searchK, efSearch);
+            effectiveEfSearch = Math.max(minCandidates, efSearch);
           } else if (metadata.efSearch != 100) {
-            effectiveEfSearch = Math.max(searchK, metadata.efSearch);
+            effectiveEfSearch = Math.max(minCandidates, metadata.efSearch);
           } else {
             final int graphSize = graphIndex.size();
-            effectiveEfSearch = graphSize < 10_000 ? Math.max(searchK, 100) : Math.max(searchK * 2, 20);
+            effectiveEfSearch = graphSize < 10_000 ? Math.max(minCandidates, 100) : Math.max(minCandidates * 2, 20);
           }
-          searchResult = searcher.search(ssp, searchK, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+          // Take the whole beam, not just minCandidates. The group cap now runs after the search, so
+          // the candidate pool is what decides how many distinct groups can be returned: asking for
+          // limit * groupSize * 2 nodes lets one dense group consume the pool and the caller gets a
+          // single group back where it asked for limit of them. The beam has already scored every
+          // candidate it retained - topK is not read by the layer-0 traversal, only by the pop that
+          // fills the result array - so taking all of them costs no extra graph work, and it makes
+          // efSearch the lever for group coverage that the contract below promises.
+          searchResult = searcher.search(ssp, effectiveEfSearch, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
         } finally {
           pool.release(searcher, pooledGraph, poolEpoch);
         }
 
         LogManager.instance()
-            .log(this, Level.INFO,
+            .log(this, Level.FINE,
                 "GraphSearcher (grouped) returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d, limit=%d, groupSize=%d",
                 searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length, limit, groupSize);
 
-        final List<Pair<RID, Float>> results = new ArrayList<>(searchK);
+        final List<Pair<RID, Float>> results = new ArrayList<>(limit * groupSize);
         int skippedOutOfBounds = 0;
         int skippedDeletedOrNull = 0;
         int skippedGroupFull = 0;
+        int skippedUnresolvedGroup = 0;
         // Post-search group filter. The HNSW search ran without a group-aware Bits filter, so
         // the result set is ordered by score, not by traversal order. We now apply the group cap
         // on the score-sorted list: the first `groupSize` candidates per group (by their score
@@ -3998,7 +4016,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           try {
             groupKey = groupKeyResolver.apply(loc.rid);
           } catch (final RuntimeException e) {
-            skippedGroupFull++;
+            // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it.
+            // Counted apart from the cap hits so the log does not read a resolver fault as a full group.
+            skippedUnresolvedGroup++;
             continue;
           }
           final Integer count = groupCount.get(groupKey);
@@ -4019,9 +4039,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         LogManager.instance()
-            .log(this, Level.INFO,
-                "Vector grouped search returned %d results (skipped: %d out of bounds, %d deleted/null, %d group full/admission error)",
-                results.size(), skippedOutOfBounds, skippedDeletedOrNull, skippedGroupFull);
+            .log(this, Level.FINE,
+                "Vector grouped search returned %d results (skipped: %d out of bounds, %d deleted/null, %d group full, %d unresolved group)",
+                results.size(), skippedOutOfBounds, skippedDeletedOrNull, skippedGroupFull, skippedUnresolvedGroup);
         return results;
 
       } catch (final Exception e) {
