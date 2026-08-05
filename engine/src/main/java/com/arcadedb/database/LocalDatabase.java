@@ -1261,6 +1261,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // removal must then also use the force path, otherwise deleteRecordInternal would re-hit the broken link and throw
       // the #4932 retry signal, leaving the record undeletable. Scoped to the exact record the caller asked to delete.
       boolean forceBrokenChainDelete = false;
+      final boolean tolerateBrokenChain = configuration.getValueAsBoolean(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN);
 
       if (record instanceof Document document) {
         try {
@@ -1289,7 +1290,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // chain: only a genuinely broken chain (a bad continuation pointer - the case that would otherwise make the
           // record undeletable forever) takes the tolerant path below; transient contention rethrows, preserving the
           // NeedRetryException semantics so the retry machinery re-runs the DELETE with intact index cleanup.
-          if (!bucket.isChunkChainBroken(record.getIdentity()))
+          if (!tolerateBrokenChain || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
           forceBrokenChainDelete = true;
           logBrokenChainForceDelete(record.getIdentity(), e);
@@ -1305,7 +1306,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // The physical removal can raise the #4932 retry signal even when index cleanup did not (e.g. the type has no
           // index left to read, so the broken chain is only discovered here). Fall back to force ONLY when the chain is
           // confirmed structurally broken; a genuine transient conflict (or an already-forced delete) rethrows to retry.
-          if (forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
+          if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
           logBrokenChainForceDelete(record.getIdentity(), e);
           graphEngine.deleteVertex((VertexInternal) record, true);
@@ -1314,7 +1315,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         try {
           bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
         } catch (final ConcurrentModificationException e) {
-          if (forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
+          if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
           logBrokenChainForceDelete(record.getIdentity(), e);
           bucket.deleteRecord(record.getIdentity(), true);
