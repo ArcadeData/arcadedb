@@ -130,8 +130,13 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
   @Test
   void directSqlDeleteRemovesBrokenMultiPageRecordNoIndex() {
     // No index on the type: index cleanup reads nothing, so the broken chain is only discovered by the PHYSICAL
-    // delete. The physical-delete force fallback (gated by the structural probe) must still remove the record.
+    // delete. The physical-delete force fallback (gated by the structural probe) must still remove the record when
+    // the operator opts into DELETE_TOLERATE_BROKEN_CHAIN - disabled by default (see GlobalConfiguration), so a
+    // plain DELETE no longer force-removes a broken chain unless this is explicitly enabled.
+    // createBrokenMultiPageVertex reopens the database internally, which replaces database.getConfiguration() with
+    // a fresh instance - so the opt-in must be set AFTER, not before.
     final RID broken = createBrokenMultiPageVertex(false);
+    database.getConfiguration().setValue(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN, true);
 
     database.transaction(() -> database.command("sql", "DELETE FROM " + broken));
 
@@ -142,8 +147,12 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
   void directSqlDeleteRemovesBrokenMultiPageRecordWithIndex() {
     // With an index the broken chain surfaces during index-key extraction (loadMultiPageRecord -> CME); the tolerant
     // catch must confirm the break with the structural probe and force both the index-cleanup skip and the physical
-    // removal. Mirrors the client's Chat[sourceRID] scenario.
+    // removal, when the operator has opted into DELETE_TOLERATE_BROKEN_CHAIN (disabled by default). Mirrors the
+    // client's Chat[sourceRID] scenario.
+    // createBrokenMultiPageVertex reopens the database internally, which replaces database.getConfiguration() with
+    // a fresh instance - so the opt-in must be set AFTER, not before.
     final RID broken = createBrokenMultiPageVertex(true);
+    database.getConfiguration().setValue(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN, true);
 
     database.transaction(() -> database.command("sql", "DELETE FROM " + broken));
 

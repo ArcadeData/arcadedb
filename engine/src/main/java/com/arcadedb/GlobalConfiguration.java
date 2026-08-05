@@ -461,6 +461,10 @@ public enum GlobalConfiguration {
       "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
       Integer.class, 100),
 
+  DELETE_TOLERATE_BROKEN_CHAIN("arcadedb.deleteTolerateBrokenChain", SCOPE.DATABASE,
+      "When deleting a record whose own multi-page chunk chain is structurally broken, complete the deletion anyway instead of failing (for a vertex, this also disconnects its edges best-effort, which can leave dangling edges if some cannot be reached). Disabled by default: such a delete fails loudly instead, requiring an explicit CHECK DATABASE FIX to repair or remove the broken record deliberately - CHECK DATABASE FIX itself is unaffected by this setting either way, so the record is never permanently stuck (issues #4420/#4432). Enable only to restore the older behavior of a normal DELETE silently forcing through instead",
+      Boolean.class, false),
+
   GRAPH_EDGE_APPEND_MERGE("arcadedb.graph.edgeAppendMerge", SCOPE.DATABASE,
       "At commit, when the only conflict on an edge-list page is concurrent in-chunk edge appends (which commute), re-apply the appends on top of the newer page version instead of failing the whole transaction with a ConcurrentModificationException. Removes the retry storm on super-node (hot vertex) edge insertion",
       Boolean.class, true),
