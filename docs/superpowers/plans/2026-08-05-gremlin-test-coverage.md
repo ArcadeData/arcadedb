@@ -13,7 +13,21 @@
 - **No production code changes.** This plan adds test code only. If a defect is found, it is pinned by a `@Disabled` test, not fixed here.
 - **The suite stays green.** Every task ends with the full `gremlin-it` suite passing.
 - **Tests live in `gremlin/src/test/java/`, and run only from `gremlin-it`.** `gremlin/pom.xml` sets `<skipTests>true</skipTests>` for both surefire and failsafe. Running `./mvnw -pl gremlin ...` prints `Tests are skipped.` and `BUILD SUCCESS` while executing zero tests.
-- **Verification command is always `./mvnw -pl gremlin-it -DskipITs=false verify`.** Single class: `./mvnw -pl gremlin-it test -Dtest=ClassName`.
+- **Every verification run MUST be preceded by `./mvnw -pl gremlin install -DskipTests -q`.** This is not optional and not a performance detail. `gremlin-it` executes the gremlin module's tests from its **installed test-jar in `~/.m2`** via `dependenciesToScan`, so `./mvnw -pl gremlin-it test ...` on its own silently runs the LAST INSTALLED code and ignores your working tree entirely. This was proven during Task 1: deliberately breaking `TraversalPlans.hasStepOfType` to `return true` still reported 3/3 passing until the install step was added, after which the self-test correctly failed. A run without the install step is not evidence of anything.
+
+  Scoped run:
+  ```bash
+  ./mvnw -pl gremlin install -DskipTests -q
+  ./mvnw -pl gremlin-it test -Dtest=ClassName
+  ```
+
+  Full gate:
+  ```bash
+  ./mvnw -pl gremlin install -DskipTests -q
+  ./mvnw -pl gremlin-it -DskipITs=false verify
+  ```
+
+  Do NOT substitute `-pl gremlin-it -am`: that also builds `arcadedb-engine`, where `-Dtest=ClassName` matches nothing and the build fails with "No tests matching pattern".
 - **A new test dependency must be added to both `gremlin/pom.xml` and `gremlin-it/pom.xml`.** `gremlin-it` re-declares every dependency by hand because it consumes the shaded artifact with `<exclusions>*</exclusions>`. No new dependency is expected in this plan; JUnit 5 and AssertJ are already present in both.
 - **Every new `.java` file starts with the Apache 2.0 license header** copied verbatim from an existing file such as `gremlin/src/test/java/com/arcadedb/gremlin/GremlinHasLabelWrongKindTest.java`.
 - **Code style:** `final` on variables and parameters where possible; no curly braces for single-statement `if`; import classes rather than using fully qualified names; assertions in the form `assertThat(x.isMandatory()).isTrue()`.
@@ -178,7 +192,7 @@ class TraversalPlansTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=TraversalPlansTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=TraversalPlansTest`
 Expected: FAIL at compilation, `cannot find symbol: class TraversalPlans`.
 
 - [ ] **Step 3: Write the helper**
@@ -232,7 +246,7 @@ Note: `ArcadeFilterByTypeStep` is public, so the self-test can reference it. `Ar
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=TraversalPlansTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=TraversalPlansTest`
 Expected: PASS, 3 tests.
 
 - [ ] **Step 5: Prove the helper can fail**
@@ -342,7 +356,7 @@ class DifferentialTraversalTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=DifferentialTraversalTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=DifferentialTraversalTest`
 Expected: FAIL at compilation, `cannot find symbol: class DifferentialTraversal`.
 
 - [ ] **Step 3: Write the helper**
@@ -412,7 +426,7 @@ public class DifferentialTraversal {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=DifferentialTraversalTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=DifferentialTraversalTest`
 Expected: PASS, 3 tests.
 
 - [ ] **Step 5: Verify the unoptimized side really lacks the strategy**
@@ -429,7 +443,7 @@ Expected: PASS. If it fails, `withoutStrategies` is not removing the strategy an
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS, 0 failures.
 
 - [ ] **Step 7: Commit and report completion**
@@ -478,7 +492,7 @@ Add this test to `GremlinGAVTest`, and add the imports `com.arcadedb.gremlin.sup
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=GremlinGAVTest#theGAVStepIsActuallyInstalledInThePlan`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=GremlinGAVTest#theGAVStepIsActuallyInstalledInThePlan`
 Expected: FAIL. The assertion message shows a plan containing `VertexStep` rather than `ArcadeGAVVertexStep`. Record this output in the scratchpad report as the proof that the pre-existing tests were vacuous.
 
 - [ ] **Step 3: Fix the fixture to register the view**
@@ -508,7 +522,7 @@ with:
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=GremlinGAVTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=GremlinGAVTest`
 Expected: `theGAVStepIsActuallyInstalledInThePlan` PASSES.
 
 **The other 8 tests may now fail.** They were only ever green on the fallback. Any failure here is a genuine GAV defect surfacing for the first time. Do not fix production code. For each failure: record actual against expected in the scratchpad report, and mark that single test `@Disabled` with a comment naming the concrete wrong behavior, for example:
@@ -522,12 +536,12 @@ Expected: `theGAVStepIsActuallyInstalledInThePlan` PASSES.
 
 `teardown()` calls `gav.drop()`, which calls `GraphTraversalProviderRegistry.unregister(database, this)`. Verify no provider leaks across tests by running the class twice in one JVM:
 
-Run: `./mvnw -pl gremlin-it test -Dtest=GremlinGAVTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=GremlinGAVTest`
 Expected: PASS on the same set of tests both times, with no ordering dependence. If a later test sees a provider it did not create, report it: a leaked registry entry is a real defect.
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 7: Re-measure coverage and report**
@@ -632,7 +646,7 @@ class ArcadeGAVStepsTest {
 
 - [ ] **Step 2: Run to verify both plan tests pass**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeGAVStepsTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeGAVStepsTest`
 Expected: PASS. If `twoConsecutiveHopsFuseIntoASingleStep` fails, the fusion in `ArcadeTraversalStrategy.applyGAVOptimization` phase 2 never triggers. That is a finding: record it and mark the test `@Disabled` with the observed plan string.
 
 - [ ] **Step 3: Add the differential behavior tests**
@@ -693,7 +707,7 @@ Append to `ArcadeGAVStepsTest`:
 
 - [ ] **Step 4: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeGAVStepsTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeGAVStepsTest`
 Expected: all PASS if the GAV steps are correct.
 
 For each failure, the differential helper's message names the disagreeing rows. Record actual against expected in the scratchpad report and mark that test `@Disabled` with a concrete comment. A mismatch here is a wrong-result defect in a performance feature, which per issue #5746 is worse than a slow query because nothing downstream can distinguish it from a real answer. Flag any such finding as high severity.
@@ -718,7 +732,7 @@ For each failure, the differential helper's message names the disagreeing rows. 
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 7: Re-measure coverage and report**
@@ -854,12 +868,12 @@ class ArcadeFilterByTypeStepTest {
 
 - [ ] **Step 2: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeFilterByTypeStepTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeFilterByTypeStepTest`
 Expected: PASS. Triage failures per the Task 4 Step 4 procedure.
 
 - [ ] **Step 3: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
@@ -1014,7 +1028,7 @@ class ArcadeFilterByIndexStepTest {
 
 - [ ] **Step 2: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeFilterByIndexStepTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeFilterByIndexStepTest`
 Expected: PASS. Triage failures per the Task 4 Step 4 procedure. A boundary failure on `gt` against `gte`, or on `lt` against `lte`, is a real defect: report it with the exact predicate and the two result sets.
 
 - [ ] **Step 3: Verify the index step is actually chosen**
@@ -1023,7 +1037,7 @@ If `anIndexedEqualityInstallsTheIndexStep` fails, the strategy fell through to `
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 5: Re-measure coverage and report**
@@ -1153,14 +1167,14 @@ class ArcadeEdgeCountFilterStepTest {
 
 - [ ] **Step 2: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeEdgeCountFilterStepTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeEdgeCountFilterStepTest`
 Expected: PASS.
 
 If `theDegreeFilterStepIsInstalled` fails, capture the plan string. The rewrite requires exactly 3 sub-steps; TinkerPop's `InlineFilterStrategy` runs first (declared in `applyPrior()`) and may reshape the child traversal so the pattern no longer matches. That is a genuine finding worth reporting: the optimization would then be unreachable in normal use, not merely untested.
 
 - [ ] **Step 3: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
@@ -1291,7 +1305,7 @@ class ArcadeGremlinEngineSelectionTest {
 
 - [ ] **Step 2: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeGremlinEngineSelectionTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeGremlinEngineSelectionTest`
 Expected: PASS.
 
 `characterizesTheProcessWideTimeoutLeak` is expected to PASS, because it asserts the buggy behavior deliberately. Do **not** mark it `@Disabled`. Record the static-field leak in the defect report as a confirmed defect with this test as its evidence, and note that the test must be inverted once the field is made non-static.
@@ -1302,7 +1316,7 @@ If `autoModeFallsBackToGroovyForAClosure` produces a security warning in the log
 
 The timeout field is static, so `ArcadeGremlinEngineSelectionTest` can affect later tests in the same JVM. Run the full suite twice and compare results:
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS both times, identical test counts. Report any ordering-dependent failure.
 
 - [ ] **Step 4: Commit and report completion**
@@ -1422,12 +1436,12 @@ class ArcadeGremlinAnalyzeTest {
 
 - [ ] **Step 2: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeGremlinAnalyzeTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeGremlinAnalyzeTest`
 Expected: PASS. A wrong `OperationType` is a high-severity finding because HA routing consumes it; report the query, the expected set, and the actual set.
 
 - [ ] **Step 3: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
@@ -1558,12 +1572,12 @@ class ArcadeIoRegistryTest {
 
 - [ ] **Step 2: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeIoRegistryTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeIoRegistryTest`
 Expected: PASS. If `new RID(BasicDatabase, int, long)` does not compile, check the actual `RID` constructor signatures in `engine/src/main/java/com/arcadedb/database/RID.java` and use `RID.create(database, bucketId, position)` instead, which `newRID` itself uses.
 
 - [ ] **Step 3: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
@@ -1670,14 +1684,14 @@ class ArcadeGraphFactoryPoolTest {
 
 - [ ] **Step 2: Run and triage**
 
-Run: `./mvnw -pl gremlin-it test -Dtest=ArcadeGraphFactoryPoolTest`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it test -Dtest=ArcadeGraphFactoryPoolTest`
 Expected: PASS.
 
 Note on `totalInstancesCreated`: it increments on creation and is never decremented on release. `releasingThenReacquiringDoesNotTripTheLimit` verifies that reuse does not inflate it. If that test fails, the counter grows on reuse and the pool would eventually refuse service after `maxInstances` total acquisitions regardless of releases. Report that as a defect.
 
 - [ ] **Step 3: Run the full suite**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
 - [ ] **Step 4: Commit and report completion**
@@ -1697,7 +1711,7 @@ Commit the new test file on the feature branch with a `test(gremlin): ...` subje
 
 - [ ] **Step 1: Run the full suite one final time**
 
-Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
+Run: `./mvnw -pl gremlin install -DskipTests -q && ./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS, 0 failures, 0 errors.
 
 - [ ] **Step 2: Measure final coverage**
