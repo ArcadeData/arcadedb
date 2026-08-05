@@ -18,7 +18,7 @@
 - **Every new `.java` file starts with the Apache 2.0 license header** copied verbatim from an existing file such as `gremlin/src/test/java/com/arcadedb/gremlin/GremlinHasLabelWrongKindTest.java`.
 - **Code style:** `final` on variables and parameters where possible; no curly braces for single-statement `if`; import classes rather than using fully qualified names; assertions in the form `assertThat(x.isMandatory()).isTrue()`.
 - **Do not add Claude as an author** of any source file.
-- **Do not commit to git.** The repository owner reviews and commits. Steps below that say "Commit" mean: stage nothing, report the completed work, and let the owner commit. (Deviation from the skill default, per `CLAUDE.md`.)
+- **Commit each task on the feature branch `worktree-gremlin-test-coverage`.** The owner authorized commits on this branch at execution setup, relaxing the `CLAUDE.md` "do not commit" rule, which remains in force for `main`. Nothing is merged or pushed without the owner's review. Use a conventional-commit subject and end the message with `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 - **No em dash characters** (U+2014) in any file or message. Use a normal dash, a comma, or rephrase.
 - **Tag slow tests:** `@Tag("slow")` for anything with a multi-second runtime, `@Tag("benchmark")` for microbenchmarks.
 - **Test class naming:** `*Test` runs under surefire, `*IT` under failsafe. Everything in this plan is fast and uses `*Test`.
@@ -242,9 +242,16 @@ Expected: `doesNotReportAStepThatIsAbsent` FAILS. Revert the change and re-run t
 
 This step is mandatory. Record the observed failure output in the scratchpad report.
 
-- [ ] **Step 6: Report completion**
+- [ ] **Step 6: Commit and report completion**
 
-Report the new file paths and the test count to the owner for commit. Do not run `git commit`.
+Commit the new files on the feature branch:
+
+```bash
+git add gremlin/src/test/java/com/arcadedb/gremlin/support/
+git commit -m "test(gremlin): add TraversalPlans plan-inspection helper
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
 
 ---
 
@@ -425,7 +432,16 @@ Expected: PASS. If it fails, `withoutStrategies` is not removing the strategy an
 Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS, 0 failures.
 
-- [ ] **Step 7: Report completion**
+- [ ] **Step 7: Commit and report completion**
+
+Commit the new files on the feature branch:
+
+```bash
+git add gremlin/src/test/java/com/arcadedb/gremlin/support/
+git commit -m "test(gremlin): add DifferentialTraversal optimized-vs-unoptimized helper
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
 
 ---
 
@@ -846,7 +862,9 @@ Expected: PASS. Triage failures per the Task 4 Step 4 procedure.
 Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
-- [ ] **Step 4: Report completion**
+- [ ] **Step 4: Commit and report completion**
+
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1145,7 +1163,9 @@ If `theDegreeFilterStepIsInstalled` fails, capture the plan string. The rewrite 
 Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
-- [ ] **Step 4: Report completion**
+- [ ] **Step 4: Commit and report completion**
+
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1277,7 +1297,9 @@ The timeout field is static, so `ArcadeGremlinEngineSelectionTest` can affect la
 Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS both times, identical test counts. Report any ordering-dependent failure.
 
-- [ ] **Step 4: Report completion**
+- [ ] **Step 4: Commit and report completion**
+
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1400,7 +1422,9 @@ Expected: PASS. A wrong `OperationType` is a high-severity finding because HA ro
 Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
-- [ ] **Step 4: Report completion**
+- [ ] **Step 4: Commit and report completion**
+
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1534,7 +1558,9 @@ Expected: PASS. If `new RID(BasicDatabase, int, long)` does not compile, check t
 Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
-- [ ] **Step 4: Report completion**
+- [ ] **Step 4: Commit and report completion**
+
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1646,7 +1672,9 @@ Note on `totalInstancesCreated`: it increments on creation and is never decremen
 Run: `./mvnw -pl gremlin-it -DskipITs=false verify`
 Expected: BUILD SUCCESS.
 
-- [ ] **Step 4: Report completion**
+- [ ] **Step 4: Commit and report completion**
+
+Commit the new test file on the feature branch with a `test(gremlin): ...` subject and the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer. Report files added, tests added, and any test marked `@Disabled` with its reason.
 
 ---
 
@@ -1711,7 +1739,7 @@ One line per defect worth filing.
 
 - [ ] **Step 4: Hand off**
 
-Report to the owner: files added, tests added, tests disabled and why, coverage delta, and the defect list. Do not commit and do not open a PR.
+Commit the report reference on the feature branch if any plan file changed, then report to the owner: files added, tests added, tests disabled and why, coverage delta, and the defect list. Do not push and do not open a PR; the owner decides what happens to the branch.
 
 ---
 
