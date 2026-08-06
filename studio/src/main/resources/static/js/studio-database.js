@@ -3139,7 +3139,9 @@ function executeCommand(language, query) {
 }
 
 // Live progress for long-running maintenance commands (issue #5372): while a matching command is in flight,
-// poll the server's progress endpoint and render a small progress bar next to the execute spinner.
+// poll the server's progress endpoint and render a small progress bar below the editor toolbar.
+// #commandProgress is a static placeholder in query.html, kept outside the circular run button so its
+// label/bar never overflow into it (it previously overlapped the button, see issue report).
 let globalCommandProgressTimer = null;
 
 function startCommandProgressMonitor(database, command) {
@@ -3147,6 +3149,8 @@ function startCommandProgressMonitor(database, command) {
   if (!/^\s*(check\s+database|rebuild\s+index|compact\s+index|backup\s+database|import\s+database)/i.test(command)) return;
 
   stopCommandProgressMonitor();
+
+  $("#commandProgress").show();
 
   globalCommandProgressTimer = setInterval(function () {
     jQuery
@@ -3165,17 +3169,6 @@ function startCommandProgressMonitor(database, command) {
         let pct = op.percentage >= 0 ? op.percentage : null;
         let label = escapeHtml(op.operation) + " [step " + op.stepIndex + "/" + op.totalSteps + "] " + escapeHtml(op.stepName) + (pct != null ? " - " + pct + "%" : "");
 
-        let container = $("#commandProgress");
-        if (container.length == 0) {
-          $("#executeSpinner").after(
-            "<div id='commandProgress' class='ms-2' style='display: inline-block; min-width: 320px; vertical-align: middle;'>" +
-              "<div id='commandProgressLabel' style='font-size: 12px;'></div>" +
-              "<div class='progress' style='height: 6px;'>" +
-                "<div id='commandProgressBar' class='progress-bar progress-bar-striped progress-bar-animated' role='progressbar' style='width: 0%'></div>" +
-              "</div>" +
-            "</div>",
-          );
-        }
         $("#commandProgressLabel").html(label);
         $("#commandProgressBar").css("width", (pct != null ? pct : 100) + "%");
       })
@@ -3192,7 +3185,9 @@ function stopCommandProgressMonitor() {
     clearInterval(globalCommandProgressTimer);
     globalCommandProgressTimer = null;
   }
-  $("#commandProgress").remove();
+  $("#commandProgress").hide();
+  $("#commandProgressLabel").html("");
+  $("#commandProgressBar").css("width", "0%");
 }
 
 function executeCommandTable() {
