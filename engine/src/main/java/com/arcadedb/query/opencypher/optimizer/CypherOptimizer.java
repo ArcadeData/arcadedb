@@ -465,10 +465,20 @@ public class CypherOptimizer {
       final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
           rel.getClauseIndex(), Collections.emptySet());
 
+      // A relationship variable nobody reads is as good as anonymous: the hop can be walked
+      // through the CSR adjacency view, which never materializes an edge object. The step-based
+      // executor has always made that call; both branches below have to make the same one, or the
+      // same query treats an unread variable as anonymous on one branch and as edge-carrying on the
+      // other depending only on whether the hop happened to land on ExpandAll or ExpandInto (#5691).
+      final boolean edgeIsMaterialized = rel.getVariable() != null && !rel.getVariable().isEmpty()
+          && (needsEdgeTracking.contains(rel)
+              || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
+
       // Check if we should use ExpandInto (both endpoints bound)
       if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
-        currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding, needsEdgeTracking.contains(rel));
+        currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding, needsEdgeTracking.contains(rel),
+            edgeIsMaterialized);
 
         // An anonymous hop still binds a relationship, and a later same-clause hop must not reuse it.
         // Must run before anything wraps currentOp.
@@ -482,14 +492,6 @@ public class CypherOptimizer {
               .add(synVar);
         }
       } else {
-        // A relationship variable nobody reads is as good as anonymous: the hop can be walked
-        // through the CSR adjacency view, which never materializes an edge object. The step-based
-        // executor has always made that call; the operators have to make the same one, or the same
-        // query traverses edges here and adjacency ids there (10x on the expansion).
-        final boolean edgeIsMaterialized = rel.getVariable() != null && !rel.getVariable().isEmpty()
-            && (needsEdgeTracking.contains(rel)
-                || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
-
         // Use ExpandAll for unbounded patterns
         currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding, edgeIsMaterialized);
 
@@ -638,11 +640,14 @@ public class CypherOptimizer {
       final LogicalRelationship relationship,
       final PhysicalOperator input,
       final Set<String> sameClausePrecedingRelVars,
-      final boolean needsEdgeTracking) {
-    // Extract parameters from relationship
+      final boolean needsEdgeTracking,
+      final boolean edgeIsMaterialized) {
+    // Extract parameters from relationship. A variable nobody reads binds nothing worth carrying -
+    // same rule createExpandAllOperator applies, so a named-but-unread variable does not keep this
+    // hop off the CSR-backed GAVExpandInto path below.
     final String sourceVariable = relationship.getSourceVariable();
     final String targetVariable = relationship.getTargetVariable();
-    final String edgeVariable = relationship.getVariable();
+    final String edgeVariable = edgeIsMaterialized ? relationship.getVariable() : null;
     final Direction direction = relationship.getDirection();
     final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
 
