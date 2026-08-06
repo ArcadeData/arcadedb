@@ -32,6 +32,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.sparsevector.RidScore;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
+import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
