@@ -26,6 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,10 +59,39 @@ class ArcadeGremlinEngineSelectionTest {
 
   @AfterEach
   void teardown() {
-    if (originalTimeout != null)
-      graph.gremlin("g.V().count()").setTimeout(originalTimeout, TimeUnit.MILLISECONDS);
-    if (graph != null)
-      graph.drop();
+    // The drop must happen even if the restore throws. Otherwise a failing restore leaves
+    // ./target/test-gremlin-engine on disk and the NEXT run fails in setup() against a database that
+    // already has the Person type, masking the real cause behind a confusing cascade.
+    try {
+      restoreProcessWideTimeout();
+    } finally {
+      if (graph != null)
+        graph.drop();
+    }
+  }
+
+  /**
+   * Restores {@code ArcadeGremlin.timeout} to whatever it held before this test, INCLUDING when that
+   * value was {@code null}, which is its default.
+   * <p>
+   * Reflection is required rather than the public setter: {@code setTimeout(long, TimeUnit)} takes a
+   * primitive and therefore cannot express null. Restoring only when the previous value was non-null
+   * would leave {@code characterizesTheProcessWideTimeoutLeak}'s 1234 in place for the remainder of
+   * the Surefire fork (forkCount=1, reuseForks=true), leaking into every later test class. That is
+   * harmless only for as long as nothing reads the field - so the isolation guarantee here must not
+   * depend on the very defect this class characterizes staying unfixed.
+   * <p>
+   * If the field is ever made non-static (the fix this class asks for), this call throws and the
+   * test class must be updated alongside it. Failing loudly is the intent.
+   */
+  private void restoreProcessWideTimeout() {
+    try {
+      final Field field = ArcadeGremlin.class.getDeclaredField("timeout");
+      field.setAccessible(true);
+      field.set(null, originalTimeout);
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException("Unable to restore the process-wide ArcadeGremlin.timeout", e);
+    }
   }
 
   @Test
@@ -131,7 +161,7 @@ class ArcadeGremlinEngineSelectionTest {
   void characterizesTheProcessWideTimeoutLeak() {
     final ArcadeGremlin first = graph.gremlin("g.V().count()");
     final ArcadeGremlin second = graph.gremlin("g.V().count()");
-    first.setTimeout(1234, java.util.concurrent.TimeUnit.MILLISECONDS);
+    first.setTimeout(1234, TimeUnit.MILLISECONDS);
     assertThat(second.getTimeout())
         .as("timeout leaked across ArcadeGremlin instances via the static field")
         .isEqualTo(1234L);
