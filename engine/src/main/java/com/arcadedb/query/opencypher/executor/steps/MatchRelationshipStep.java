@@ -481,6 +481,20 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         } else
           whereEvalResult = null;
 
+        // Resolve the pre-bound relationship edge (if any) once per source vertex: `lastResult` and
+        // `relationshipVariable` are loop-invariant across the candidate-edge iteration below.
+        // `boundVariableNames` is a plan-time set and can be empty for a body seeded directly from an
+        // outer row (EXISTS/COUNT/COLLECT with no leading WITH), so also check the incoming row itself -
+        // mirroring MatchNodeStep's runtime check for a pre-bound node variable (see #5696).
+        final Edge boundRelationshipEdge;
+        if (relationshipVariable != null
+            && ((boundVariableNames != null && boundVariableNames.contains(relationshipVariable))
+                || lastResult.getPropertyNames().contains(relationshipVariable))
+            && lastResult.getProperty(relationshipVariable) instanceof Edge)
+          boundRelationshipEdge = (Edge) lastResult.getProperty(relationshipVariable);
+        else
+          boundRelationshipEdge = null;
+
         while (currentEdges.hasNext() && buffer.size() < n) {
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
@@ -526,16 +540,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 continue;
             }
 
-            // If the relationship variable is already bound from a previous step,
-            // verify the traversed edge matches the bound value (identity check)
-            if (relationshipVariable != null && boundVariableNames != null
-                && boundVariableNames.contains(relationshipVariable)) {
-              final Object boundRel = lastResult.getProperty(relationshipVariable);
-              if (boundRel instanceof Edge) {
-                if (!((Edge) boundRel).getIdentity().equals(edge.getIdentity()))
-                  continue;
-              }
-            }
+            // If the relationship variable is already bound from a previous step, verify the traversed
+            // edge matches the bound value (identity check)
+            if (boundRelationshipEdge != null && !boundRelationshipEdge.getIdentity().equals(edge.getIdentity()))
+              continue;
 
             // If the target variable is already bound from a previous step,
             // verify the traversed vertex matches the bound value (identity check)
