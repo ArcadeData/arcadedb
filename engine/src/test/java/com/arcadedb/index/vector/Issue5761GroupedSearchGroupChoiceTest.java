@@ -33,7 +33,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -120,30 +122,40 @@ class Issue5761GroupedSearchGroupChoiceTest extends TestHelper {
 
     assertThat(clusters).as("vector.neighbors must not answer a query at cluster 1 without cluster 1, got %s", clusters)
         .contains(1);
-    assertThat(clusters).as("got %s", clusters).isSubsetOf(0, 1, 2);
+    assertThat(clusters).as("and it must answer with the three nearest groups the arc has, got %s", clusters)
+        .containsExactlyInAnyOrder(0, 0, 1, 1, 2, 2);
   }
 
   /**
-   * The cost of moving the cap out of the traversal, and the lever that pays it. Cluster 1 has a hundred members and
-   * every one of them outranks the nearest member of any other cluster, so a candidate pool narrower than that holds
-   * one group and one group only - the answer is right, but it is one group where three were asked for. Widening the
-   * beam widens the pool, and the three nearest clusters come back.
-   * <p>
-   * This is the assertion that pins the pool to the beam. With the pool fixed at {@code limit * groupSize * 2} the
-   * search returns cluster 1 twice at every {@code efSearch}, because {@code efSearch} only widens the beam and the
-   * beam is not what is being read.
+   * The other half of the contract, and the half a one-shot beam cannot keep. {@code limit} is a count of
+   * <em>distinct groups</em>, so a query at cluster 1 with {@code limit=3} has to come back with three of them - the
+   * arc puts clusters 0 and 2 next in line. Cluster 1 has a hundred members and every one of them outranks the
+   * nearest member of any other cluster, so a candidate pool the width of the default beam holds cluster 1 and
+   * nothing else: reading a fixed pool answers one group where three were asked for. The search has to keep walking
+   * until the groups are filled, not stop at the first beam.
    */
   @Test
-  void aWiderBeamWidensTheGroupCoverage() {
+  void theAnswerCarriesAsManyGroupsAsWereAskedFor() {
     createSchema();
     insertVertices();
 
-    final List<Integer> narrow = clustersOf(grouped(centerOf(1), LIMIT, GROUP_SIZE, -1));
-    assertThat(narrow).as("the default pool is a hundred candidates and cluster 1 fills it on its own, got %s", narrow)
-        .containsOnly(1);
+    final List<Integer> clusters = clustersOf(grouped(centerOf(1), LIMIT, GROUP_SIZE, -1));
+
+    assertThat(clusters).as("limit counts distinct groups, and the arc has three to give here, got %s", clusters)
+        .containsExactlyInAnyOrder(0, 0, 1, 1, 2, 2);
+  }
+
+  /**
+   * {@code efSearch} stays a quality lever rather than a correctness requirement: a wider beam reaches the same
+   * answer, it just gets there in one pass instead of several.
+   */
+  @Test
+  void aWiderBeamReachesTheSameGroups() {
+    createSchema();
+    insertVertices();
 
     final List<Integer> wide = clustersOf(grouped(centerOf(1), LIMIT, GROUP_SIZE, 400));
-    assertThat(wide).as("a pool of 400 reaches past cluster 1 into both its neighbours, got %s", wide)
+    assertThat(wide).as("a pool of 400 reaches past cluster 1 into both its neighbours in one pass, got %s", wide)
         .containsExactlyInAnyOrder(0, 0, 1, 1, 2, 2);
   }
 
@@ -155,18 +167,112 @@ class Issue5761GroupedSearchGroupChoiceTest extends TestHelper {
 
     for (int cluster = 0; cluster < CLUSTERS; cluster++) {
       final List<Integer> clusters = clustersOf(grouped(centerOf(cluster), LIMIT, GROUP_SIZE, -1));
-      assertThat(clusters).as("a query at the centre of cluster %d must answer cluster %d, got %s", cluster, cluster,
-          clusters).containsOnly(cluster);
+      // The arc is ordered and the clusters are evenly spaced, so the LIMIT nearest groups to a query at the centre
+      // of one of them are that cluster and its neighbours - clamped at the two ends of the arc, where the window
+      // slides inwards because there is nothing further out to reach for.
+      final int firstOfWindow = Math.min(Math.max(cluster - 1, 0), CLUSTERS - LIMIT);
+      final List<Integer> expected = new ArrayList<>(LIMIT * GROUP_SIZE);
+      for (int i = 0; i < LIMIT; i++)
+        for (int j = 0; j < GROUP_SIZE; j++)
+          expected.add(firstOfWindow + i);
+
+      assertThat(clusters).as("a query at the centre of cluster %d must answer the %d groups nearest to it, got %s",
+          cluster, LIMIT, clusters).containsExactlyInAnyOrderElementsOf(expected);
+      assertThat(clusters.getFirst()).as("and the nearest row must belong to cluster %d itself", cluster)
+          .isEqualTo(cluster);
     }
+  }
+
+  /**
+   * The walk is resumed, not restarted: {@code GraphSearcher.resume} keeps the visited set, so a node the first pass
+   * already returned can never come back in a later one. If it could, the per-group counters would be spent twice on
+   * the same row and the answer would carry duplicates.
+   */
+  @Test
+  void resumingTheWalkNeverReturnsTheSameRowTwice() {
+    createSchema();
+    insertVertices();
+
+    // Deliberately more groups than the arc has clusters, so the loop runs until the graph is exhausted rather than
+    // stopping early on a filled budget - the longest walk this fixture can produce.
+    final List<Pair<RID, Float>> neighbors = grouped(centerOf(6), CLUSTERS + 4, GROUP_SIZE, -1);
+
+    final List<RID> rids = new ArrayList<>(neighbors.size());
+    for (final Pair<RID, Float> neighbor : neighbors)
+      rids.add(neighbor.getFirst());
+
+    assertThat(rids).as("a resumed pass must not re-offer a row the previous pass already admitted")
+        .doesNotHaveDuplicates();
+    // The declared contract is "ascending by distance", and it has to survive the pass boundary: a resumed pass can
+    // expand a node the previous one left on the frontier and turn up a neighbour that outranks a row already
+    // admitted, so the answer is sorted before it is returned.
+    for (int i = 1; i < neighbors.size(); i++)
+      assertThat(neighbors.get(i).getSecond()).as("row %d is nearer than row %d, so the answer is not sorted", i,
+          i - 1).isGreaterThanOrEqualTo(neighbors.get(i - 1).getSecond());
+  }
+
+  /**
+   * When the data cannot supply {@code limit} groups, the walk has to stop rather than resume forever. Every vertex
+   * here carries the same group key, so no pass will ever open a second group; the search must come back with the one
+   * group it can fill, and say so through {@code groupedSearchesShortOfLimit}.
+   */
+  @Test
+  void aGroupKeyWithOneValueStopsInsteadOfWalkingTheWholeGraph() {
+    createSchema();
+    insertVertices();
+
+    final long shortBefore = vectorIndex().getStats().get("groupedSearchesShortOfLimit");
+
+    final List<Pair<RID, Float>> neighbors = vectorIndex().findNeighborsFromVectorGrouped(embedding(centerOf(1)), LIMIT,
+        GROUP_SIZE, -1, null, rid -> "one-and-only");
+
+    assertThat(neighbors).as("the one group it can fill still has to come back, filled to groupSize")
+        .hasSize(GROUP_SIZE);
+    assertThat(vectorIndex().getStats().get("groupedSearchesShortOfLimit"))
+        .as("a search that could not open limit groups has to be visible to the operator")
+        .isEqualTo(shortBefore + 1);
+  }
+
+  /** A whitelist has to keep holding across the pass boundary, not just on the first beam. */
+  @Test
+  void theRidWhitelistSurvivesAResumedWalk() {
+    createSchema();
+    insertVertices();
+
+    // Two members of cluster 4 and two of cluster 7, both far enough from the query that reaching them takes more
+    // than the first beam.
+    final Set<RID> allowed = new HashSet<>();
+    for (final int vertex : new int[] { centerOf(4), centerOf(4) + 1, centerOf(7), centerOf(7) + 1 })
+      allowed.add(ridOf("doc" + vertex));
+
+    final List<Pair<RID, Float>> neighbors = grouped(centerOf(1), LIMIT, GROUP_SIZE, -1, allowed);
+
+    assertThat(neighbors).as("the whitelisted rows are reachable, so the walk has to find them").isNotEmpty();
+    for (final Pair<RID, Float> neighbor : neighbors)
+      assertThat(allowed).as("a row outside the whitelist leaked out of a resumed pass").contains(
+          neighbor.getFirst().asVertex().getIdentity());
+    assertThat(clustersOf(neighbors)).as("and the group cap still applies to what survives")
+        .containsExactlyInAnyOrder(4, 4, 7, 7);
   }
 
   // ------------------------------------------------------------------------------------------------- helpers
 
   private List<Pair<RID, Float>> grouped(final int vertex, final int limit, final int groupSize, final int efSearch) {
+    return grouped(vertex, limit, groupSize, efSearch, null);
+  }
+
+  private List<Pair<RID, Float>> grouped(final int vertex, final int limit, final int groupSize, final int efSearch,
+      final Set<RID> allowedRIDs) {
     // The resolver receives the raw (unbound) RID the location map holds, exactly as the SQL function's does, so it
     // has to go through the database to read the record.
-    return vectorIndex().findNeighborsFromVectorGrouped(embedding(vertex), limit, groupSize, efSearch, null,
+    return vectorIndex().findNeighborsFromVectorGrouped(embedding(vertex), limit, groupSize, efSearch, allowedRIDs,
         rid -> ((Document) database.lookupByRID(rid, true)).getInteger("cluster"));
+  }
+
+  private RID ridOf(final String id) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Doc WHERE id = ?", id)) {
+      return rs.next().getIdentity().orElseThrow();
+    }
   }
 
   private List<Integer> clustersOf(final List<Pair<RID, Float>> neighbors) {

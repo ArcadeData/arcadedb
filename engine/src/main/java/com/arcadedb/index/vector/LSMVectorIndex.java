@@ -98,6 +98,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -158,6 +159,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Squared bounds, so the sample costs one multiply-add per component and no square root at all.
   private static final double MIN_UNIT_MAGNITUDE_SQUARED = (1.0 - UNIT_MAGNITUDE_TOLERANCE) * (1.0 - UNIT_MAGNITUDE_TOLERANCE);
   private static final double MAX_UNIT_MAGNITUDE_SQUARED = (1.0 + UNIT_MAGNITUDE_TOLERANCE) * (1.0 + UNIT_MAGNITUDE_TOLERANCE);
+
+  // Ceiling on how far findNeighborsFromVectorGrouped will resume a search that has not yet opened `limit` distinct
+  // groups, expressed in beams (issue #5761). How far it *needs* to go is a property of the data - a group whose
+  // members are all closer to the query than any other group's nearest member has to be walked past before a second
+  // group appears - so the choice is between a bound that under-answers on pathological data and an unbounded walk
+  // that degenerates to a full scan on a low-cardinality group key. Sixteen beams is ~1,600 candidates at the default
+  // efSearch: it covers group densities into the low thousands, and costs well under a millisecond even when it is
+  // all spent. A query that exhausts it returns fewer than `limit` groups and is counted in
+  // groupedSearchesShortOfLimit, which is the operator's cue to raise efSearch.
+  private static final int GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR = 16;
 
   // Not final: a compaction swaps in a new data file, and this index is named after its component - see
   // getMostRecentFileName(). Every node names the index after the file it holds, so the leader has to
@@ -3854,23 +3865,38 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Search for k nearest neighbors with post-search {@code groupBy} (issues #5761, #4071). Runs the
-   * HNSW traversal with a liveness-only {@link LiveVectorBitsFilter} so the beam is not biased by
-   * group membership during the entry-point descent, then applies the per-group cap as a post-filter
-   * on the score-sorted result set.
+   * Search for k nearest neighbors with {@code groupBy} (issues #5761, #4071). Runs the HNSW traversal
+   * with a liveness-only {@link LiveVectorBitsFilter}, applies the per-group cap to the score-ordered
+   * output, and {@linkplain GraphSearcher#resume(int, int) resumes} the same walk while the answer is
+   * still short of {@code limit} distinct groups.
    * <p>
-   * <b>Score-exact within the candidate pool.</b> The traversal-integrated predecessor admitted
-   * groups in HNSW visit order, and the descent starts far from the query, so the distinct-group
-   * budget was spent on whatever the beam met on its way in and the nearest group could be locked
-   * out of its own answer entirely (#5761). The post-filter instead walks JVector's output in score
-   * order: the first {@code groupSize} candidates of a group really are its best members, and the
-   * groups admitted really are the highest-scoring ones present in the pool.
+   * <b>Why the cap is not in the traversal.</b> The first implementation pushed it into a group-aware
+   * {@code Bits} filter. {@code Bits} is score-blind - JVector calls it on each popped candidate,
+   * before any score is available to the caller - so groups were admitted in HNSW visit order. The
+   * layer-0 walk starts wherever the greedy descent through the upper layers landed, which on a
+   * sparse upper layer can be an entirely different cluster, and the {@code limit} distinct-group
+   * slots were handed out there. The nearest group could be locked out of its own answer (#5761).
+   * A score-aware variant cannot fix that either: once JVector has admitted a node into its result
+   * heap, no filter can take it back, so a later better group has nothing to evict.
    * <p>
-   * <b>The candidate pool bounds how many groups can come back.</b> Nothing prunes by group during
-   * the walk any more, so a group dense enough to fill the pool on its own leaves no room for the
-   * next one and fewer than {@code limit} groups are returned - correct as far as it goes, but short.
-   * The pool is the whole search beam, so {@code efSearch} is the lever: it has to be at least as
-   * large as the number of candidates that separate the query from the {@code limit}-th group.
+   * <b>Why one beam is not enough.</b> Reading the cap off a single fixed-width beam is score-exact
+   * but under-answers: a group dense enough to fill the beam on its own leaves no room for the next
+   * one, and a query aimed at a 100-member cluster comes back with one group where {@code limit}
+   * were asked for. That is not a corner case, it is what {@code groupBy} exists for.
+   * <p>
+   * <b>Resume is what closes the gap.</b> {@code GraphSearcher.resume} continues the <em>same</em>
+   * walk: the visited set and the candidate queue survive, so each pass yields strictly new nodes
+   * further from the query, and the group state accumulates across passes. The search therefore
+   * costs one beam in the common case and pays for more ground only when the groups are genuinely
+   * short. It stops at the first of: all {@code limit} groups filled, the graph exhausted (a pass
+   * that could not fill its beam), or the candidate budget below.
+   * <p>
+   * <b>The budget, and the one case that still under-answers.</b> Finding the {@code limit}-th
+   * nearest group costs however many candidates separate the query from it, which the data decides -
+   * a group with a million members closer than anything else needs a million candidates. The pool is
+   * therefore capped at {@link #GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR} times the beam; hitting that
+   * cap returns fewer than {@code limit} groups and increments {@code groupedSearchesShortOfLimit} in
+   * {@link #getStats()}. Raise {@code efSearch} when that counter moves.
    * <p>
    * <b>Delta scan and brute-force fallback are skipped.</b> The two augmentations would re-admit
    * candidates outside the per-group cap; the delta path because it scores newly-inserted vectors
@@ -3915,10 +3941,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       ensureGraphAvailable();
       rebuildGraphBeforeSearch();
 
-      // Floor on the candidate pool the post-filter gets to work with. It is a floor and not the pool
-      // itself: with the cap applied after the search, a single dense group can fill a pool this narrow
-      // on its own and no other group ever gets a chance, so the pool is widened to the whole beam below.
-      final int minCandidates = limit * groupSize * 2;
+      // Rows the caller can receive at most: limit groups of groupSize each. Used as the floor on the
+      // beam exactly the way the ungrouped path uses k, so the two efSearch policies stay in step.
+      final int maxRows = limit * groupSize;
       boolean readLockHeld = false;
       lock.readLock().lock();
       readLockHeld = true;
@@ -3930,118 +3955,94 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalToVectorId);
 
-        // Liveness-only Bits filter. Unlike the previous grouped implementation, we do NOT apply
-        // group-aware filtering during traversal: doing so lets the HNSW entry-point descent (which
-        // pops candidates far from the query first) consume the per-group budget on irrelevant groups
-        // (issue #5761). Instead, we run the search with a liveness-only filter and apply the group
-        // cap as a post-filter on the score-sorted result set below.
+        // Liveness-only Bits filter. Unlike the first grouped implementation, we do NOT apply
+        // group-aware filtering during traversal: Bits is score-blind, so doing so lets the HNSW walk
+        // hand the per-group budget to whatever cluster the entry-point descent happened to land in
+        // (issue #5761). The group cap is applied to the score-ordered output below instead.
         final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex);
 
-        final SearchResult searchResult;
+        final List<Pair<RID, Float>> results = new ArrayList<>(maxRows);
+        final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
+        final GroupedSearchTally tally = new GroupedSearchTally();
+
         final GraphSearcherPool pool = getSearcherPool();
         final long poolEpoch = searcherPoolEpoch();
         // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
         // agree on which graph the searcher belongs to.
         final ImmutableGraphIndex pooledGraph = graphIndex;
         final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+        final int graphSize = graphIndex.size();
+        int passes = 1;
         try {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
-          // Choose efSearch the same way the non-grouped path does, with minCandidates as the floor.
-          // The resume-on-too-few branch stays out of this path: resume() drains the result queue and
-          // starts a fresh one, so the survivors of the first pass would be lost, and a short answer
-          // here means the candidate pool held fewer than limit groups, which a second pass over the
-          // same beam does not change.
+          // Beam width is chosen exactly the way the ungrouped path chooses it, with maxRows in place of k.
           final int effectiveEfSearch;
-          if (efSearch > 0) {
-            effectiveEfSearch = Math.max(minCandidates, efSearch);
-          } else if (metadata.efSearch != 100) {
-            effectiveEfSearch = Math.max(minCandidates, metadata.efSearch);
-          } else {
-            final int graphSize = graphIndex.size();
-            effectiveEfSearch = graphSize < 10_000 ? Math.max(minCandidates, 100) : Math.max(minCandidates * 2, 20);
+          if (efSearch > 0)
+            effectiveEfSearch = Math.max(maxRows, efSearch);
+          else if (metadata.efSearch != 100)
+            effectiveEfSearch = Math.max(maxRows, metadata.efSearch);
+          else
+            effectiveEfSearch = graphSize < 10_000 ? Math.max(maxRows, 100) : Math.max(maxRows * 2, 20);
+
+          final int candidateBudget = Math.min(graphSize,
+              (int) Math.min(Integer.MAX_VALUE, (long) effectiveEfSearch * GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR));
+
+          // topK is the whole beam, not maxRows: it is candidates, not rows, that the group cap consumes, and a
+          // narrower topK would throw away scored candidates the cap still has a use for. It costs nothing to keep
+          // them - topK never reaches the layer-0 traversal (searchLayer0 passes only rerankK to searchOneLayer) and
+          // reranking is driven by rerankK too, so every one of these was already scored and reranked.
+          SearchResult searchResult = searcher.search(ssp, effectiveEfSearch, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+          int examined = 0;
+          while (true) {
+            final int returned = searchResult.getNodes().length;
+            examined += returned;
+            admitGroupedCandidates(searchResult, ordinalToVectorId, allowedRIDs, groupKeyResolver, groups, results,
+                tally);
+
+            if (groups.isFull())
+              break;
+            // A pass that could not fill its beam ran the candidate queue dry: the reachable graph is
+            // exhausted and no further pass can add anything. This is also what makes the loop terminate -
+            // every pass that does not break here grew `examined` by a full beam.
+            if (returned < effectiveEfSearch)
+              break;
+            if (examined >= candidateBudget)
+              break;
+
+            // resume() continues this same walk - the visited set and the candidate queue survive - so the
+            // next pass returns strictly new nodes, further from the query than everything already seen.
+            searchResult = searcher.resume(effectiveEfSearch, effectiveEfSearch);
+            passes++;
           }
-          // Take the whole beam, not just minCandidates. The group cap now runs after the search, so
-          // the candidate pool is what decides how many distinct groups can be returned: asking for
-          // limit * groupSize * 2 nodes lets one dense group consume the pool and the caller gets a
-          // single group back where it asked for limit of them. The beam has already scored every
-          // candidate it retained - topK is not read by the layer-0 traversal, only by the pop that
-          // fills the result array - so taking all of them costs no extra graph work, and it makes
-          // efSearch the lever for group coverage that the contract below promises.
-          searchResult = searcher.search(ssp, effectiveEfSearch, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
         } finally {
           pool.release(searcher, pooledGraph, poolEpoch);
         }
 
-        LogManager.instance()
-            .log(this, Level.FINE,
-                "GraphSearcher (grouped) returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d, limit=%d, groupSize=%d",
-                searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length, limit, groupSize);
+        // Each pass is score-ordered and starts below where the previous one stopped, so the rows are collected in
+        // rank order - with one exception: a resumed pass expands nodes the previous one left on the frontier, and a
+        // neighbour of a mediocre node can outrank the worst row already admitted. That is the same greedy-stop
+        // approximation the ungrouped path lives with, and it is far too rare to justify buffering every candidate
+        // and sorting before the cap; but the return contract says "ascending by distance", so make it true. At most
+        // limit * groupSize entries, so the sort is free.
+        results.sort(Comparator.comparing(Pair::getSecond));
 
-        final List<Pair<RID, Float>> results = new ArrayList<>(limit * groupSize);
-        int skippedOutOfBounds = 0;
-        int skippedDeletedOrNull = 0;
-        int skippedGroupFull = 0;
-        int skippedUnresolvedGroup = 0;
-        // Post-search group filter. The HNSW search ran without a group-aware Bits filter, so
-        // the result set is ordered by score, not by traversal order. We now apply the group cap
-        // on the score-sorted list: the first `groupSize` candidates per group (by their score
-        // rank) are the actual best members of that group, and the first `limit` distinct groups
-        // encountered are the highest-scoring groups.
-        final HashMap<Object, Integer> groupCount = new HashMap<>();
-        for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
-          if (groupCount.size() >= limit && results.size() >= limit * groupSize)
-            break;
-          final int ordinal = nodeScore.node;
-          if (ordinal < 0 || ordinal >= ordinalToVectorId.length) {
-            skippedOutOfBounds++;
-            continue;
-          }
-          final int vectorId = ordinalToVectorId[ordinal];
-          final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-          if (loc == null || loc.deleted) {
-            skippedDeletedOrNull++;
-            continue;
-          }
-          // Defensive post-filter: JVector may include the entry node despite Bits, and the
-          // LiveVectorBitsFilter has already enforced the liveness + RID-whitelist contract,
-          // so we only need to re-check the RID whitelist here for parity with findNeighborsFromVector.
-          if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
-            continue;
-
-          // Resolve group key and apply the per-group cap. Walking the score-sorted result set
-          // means we admit the highest-scoring candidates per group first.
-          final Object groupKey;
-          try {
-            groupKey = groupKeyResolver.apply(loc.rid);
-          } catch (final RuntimeException e) {
-            // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it.
-            // Counted apart from the cap hits so the log does not read a resolver fault as a full group.
-            skippedUnresolvedGroup++;
-            continue;
-          }
-          final Integer count = groupCount.get(groupKey);
-          if (count == null) {
-            if (groupCount.size() >= limit) {
-              skippedGroupFull++;
-              continue;
-            }
-            groupCount.put(groupKey, 1);
-          } else if (count >= groupSize) {
-            skippedGroupFull++;
-            continue;
-          } else {
-            groupCount.put(groupKey, count + 1);
-          }
-
-          results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, nodeScore.score)));
+        if (groups.distinctGroups() < limit) {
+          metrics.incrementGroupedSearchesShortOfLimit();
+          LogManager.instance()
+              .log(this, Level.FINE,
+                  "Vector grouped search on index %s filled only %d of %d groups after %d pass(es) - raise efSearch for wider group coverage",
+                  indexName, groups.distinctGroups(), limit, passes);
         }
 
         LogManager.instance()
             .log(this, Level.FINE,
-                "Vector grouped search returned %d results (skipped: %d out of bounds, %d deleted/null, %d group full, %d unresolved group)",
-                results.size(), skippedOutOfBounds, skippedDeletedOrNull, skippedGroupFull, skippedUnresolvedGroup);
+                """
+                Vector grouped search returned %d results in %d group(s) over %d pass(es) (graphSize=%d, limit=%d, \
+                groupSize=%d, skipped: %d out of bounds, %d deleted/null, %d group full, %d unresolved group)""",
+                results.size(), groups.distinctGroups(), passes, graphSize, limit, groupSize, tally.outOfBounds,
+                tally.deletedOrNull, tally.groupFull, tally.unresolvedGroup);
         return results;
 
       } catch (final Exception e) {
@@ -4055,6 +4056,64 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final long elapsed = System.currentTimeMillis() - startTime;
       metrics.addSearchLatency(elapsed);
     }
+  }
+
+  /**
+   * Offers one pass of {@link #findNeighborsFromVectorGrouped}'s search output to the group cap. The nodes arrive in
+   * descending score order and every pass is strictly worse than the one before it, so feeding successive passes into
+   * the same {@link GroupAdmissionState} keeps the whole walk in rank order: the {@code groupSize} members admitted
+   * for a group really are its best, and the {@code limit} groups admitted really are the nearest.
+   */
+  private void admitGroupedCandidates(final SearchResult searchResult, final int[] ordinalToVectorId,
+      final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver, final GroupAdmissionState groups,
+      final List<Pair<RID, Float>> results, final GroupedSearchTally tally) {
+    for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+      if (groups.isFull())
+        return;
+      final int ordinal = nodeScore.node;
+      if (ordinal < 0 || ordinal >= ordinalToVectorId.length) {
+        tally.outOfBounds++;
+        continue;
+      }
+      final int vectorId = ordinalToVectorId[ordinal];
+      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+      if (loc == null || loc.deleted) {
+        tally.deletedOrNull++;
+        continue;
+      }
+      // Defensive post-filter: JVector may include the entry node despite Bits, and the LiveVectorBitsFilter has
+      // already enforced the liveness + RID-whitelist contract, so we only need to re-check the RID whitelist here
+      // for parity with findNeighborsFromVector.
+      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
+        continue;
+
+      final Object groupKey;
+      try {
+        groupKey = groupKeyResolver.apply(loc.rid);
+      } catch (final RuntimeException e) {
+        // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it. Counted apart from
+        // the cap hits so the log does not read a resolver fault as a full group.
+        tally.unresolvedGroup++;
+        continue;
+      }
+      if (!groups.admit(groupKey)) {
+        tally.groupFull++;
+        continue;
+      }
+
+      results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, nodeScore.score)));
+    }
+  }
+
+  /**
+   * Per-query skip counters for the grouped search, kept in one object so the multi-pass loop can accumulate them
+   * across passes without four parameters travelling by reference. Query-scoped, never shared, never thread-safe.
+   */
+  private static final class GroupedSearchTally {
+    private int outOfBounds;
+    private int deletedOrNull;
+    private int groupFull;
+    private int unresolvedGroup;
   }
 
   /**

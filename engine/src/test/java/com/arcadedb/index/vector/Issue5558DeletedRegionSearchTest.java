@@ -200,11 +200,8 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
    * It also says which cluster wins, which it could not do until #5761 was fixed: the grouped path used to spend its
    * distinct-group budget in traversal order rather than score order, so the groups it picked were whichever ones the
    * beam met on its way in, and one of the three was always a cluster that has no business being in the answer.
-   * Group admission now runs on the score-sorted output, so the answer is the nearest surviving cluster and nothing
-   * else: cluster 4 has a hundred live members and every one of them outranks the nearest member of cluster 5, so it
-   * fills the candidate pool on its own and the other two group slots go unused. That is the documented cost of the
-   * post-filter, and {@code Issue5761GroupedSearchGroupChoiceTest} pins the {@code efSearch} lever that buys the
-   * missing groups back.
+   * Group admission now runs on the score-ordered output of a walk that resumes until the groups are filled, so the
+   * three groups are the three nearest surviving clusters, in that order, and nothing that was deleted comes back.
    */
   @Test
   void theGroupedSearchAnswersADeletedRegionQuery() {
@@ -222,9 +219,11 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
     final List<Integer> clusters = new ArrayList<>(neighbors.size());
     for (final Pair<RID, Float> neighbor : neighbors)
       clusters.add(clusterOf(idOf(neighbor.getFirst())));
-    assertThat(clusters).as("the nearest surviving cluster is the group, and no deleted vector may come back, got %s",
-        clusters).containsOnly(DELETED_CLUSTERS);
-    assertThat(clusters).as("and the per-group cap holds").hasSize(2);
+    assertThat(clusters).as("the three nearest surviving clusters are the groups, and nothing deleted may come back, "
+        + "got %s", clusters)
+        .containsExactlyInAnyOrder(DELETED_CLUSTERS, DELETED_CLUSTERS, DELETED_CLUSTERS + 1, DELETED_CLUSTERS + 1,
+            DELETED_CLUSTERS + 2, DELETED_CLUSTERS + 2);
+    assertThat(clusters).as("three groups of two, which is what limit=3 groupSize=2 asks for").hasSize(6);
   }
 
   /**
