@@ -129,3 +129,65 @@ bound-target defect reported here.
   `JoinOrderRuleTest`, `CostModelTest`, `ExpandIntoRuleTest` - all pass (`BUILD SUCCESS`).
 - No existing test asserted the exact numeric output of `createExpandIntoOperator`'s old formula, so no
   existing assertions needed updating.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5832
+
+## Review cycles
+
+Reviewer: `claude[bot]` (posts as a PR issue comment, not a formal GitHub review). `--max-cycles=4`
+was reached; the loop stopped per the max-cycles guard, not a clean approval.
+
+- **Cycle 1** (head `ba95f20f9`): 5 points - planning-time sampling cost, prefix-sampling bias,
+  cache thread-safety (non-blocking), GC/primitive-key nit (low priority), test nits (stray
+  `@author`, factory-close claim, direction coverage). Applied: qualified the stale "O(1)" class
+  Javadoc, added a prefix-bias comment, removed the copy-pasted `@author` tag, added an IN-direction
+  hop test. Verified the factory-close claim against sibling tests and found it false (matches
+  established convention) - skipped. Deferred the cache-sharing/CSR question to a
+  `review-deferred-*.md` notes file. Pushed as `0651306fd`.
+- **Cycle 2** (head `0651306fd`): reviewer accepted cycle 1's deferral, flagged that prefix-clustering
+  could *overestimate* by orders of magnitude (asymmetric risk vs. the bug being fixed), a minor
+  field-alignment nit, and that the `review-deferred-*.md` notes file itself shouldn't be committed.
+  Applied: a `1000.0` upper clamp (matching `calculateAverageDegree`'s existing clamp style, with a
+  new test proving it), the alignment fix, removed the notes file, and opened follow-up issue
+  https://github.com/ArcadeData/arcadedb/issues/5834 for the deferred architectural items instead.
+  Pushed as `7b66e3716`.
+- **Cycle 3** (head `7b66e3716`): "none blocking" overall. Asked for one-line comments explaining
+  why multi-type hops average rather than sum multiplicity, and why `ExpandInto`'s cost intentionally
+  stays keyed off `inputCardinality` while cardinality scales; noted a redundant lower `Math.max`
+  clamp as dead code; raised (as a question for the maintainers, not a demand) whether an issue-scoped
+  design doc under `docs/` is consistent with removing the review-notes file in cycle 2. Applied both
+  comments and removed the dead clamp. The doc-policy question is left for the developer - see
+  "Handoff notes" below. Pushed as `2cad89465`.
+- **Cycle 4** (head `2cad89465`, final cycle): praised the overall thoroughness; asked to confirm
+  the `CypherPlanCache` amortization claim against the code (verified true - see "Planning-time cost
+  of the sample" above) and document it; called out two missing one-line test cases (union-type
+  averaging, untyped-hop fallback) and a wasted double-`save()` in test setup; reiterated the
+  CSR-shortcut/memoization ask (already tracked in #5834); floated a `Math.max(1, ...)` floor for the
+  pre-existing zero-truncation on small inputs. Applied: the verified doc note, both missing tests,
+  the test fix. Documented (without implementing) the zero-truncation floor - see "Truncation to zero
+  on small inputs" above. Pushed as `6f6b4d2f5`.
+
+## Final state: max-cycles-reached
+
+Four review cycles ran; each received genuinely new, substantive feedback and each was answered with
+either a code change or a documented, reasoned deferral - not a rubber-stamp. Nothing outstanding
+blocks correctness of the reported defect. What remains open for the developer's judgment:
+
+1. **Follow-up issue #5834** (database-scoped memoization/invalidation for the sampling cache, and a
+   CSR-exact multiplicity path when a `GraphAnalyticalView` covers the type) - raised on cycles 1, 2,
+   and 4. The reviewer's cycle-4 framing ("the main thing I would want resolved before merge") is
+   stronger than earlier cycles; worth a final read before merging.
+2. **The zero-truncation floor** (`Math.max(1, ...)` on `outputCardinality`) - pre-existing, not a
+   regression, but flagged twice (cycles 1 implicitly via the `Math.max` clamp precedent, and
+   explicitly in cycle 4).
+3. **Doc-policy question** (cycle 3): whether `docs/5690-*.md` belongs in the repo at all, given the
+   project's convention of purging review-cycle tracking docs (a signal independently corroborated
+   by the reviewer's own cycle-2 request to drop `review-deferred-*.md`). This orchestration kept the
+   design doc per this skill's own workflow; the developer may want to fold its content into the PR
+   description and drop the file before merging, consistent with project convention.
+
+## Handoff notes
+
+**Merge is the developer's responsibility - this orchestration does not merge PRs.**
