@@ -151,6 +151,31 @@ class EdgeTypeVertexRidOptimizationTest extends TestHelper {
   }
 
   @Test
+  void selectFromEdgeWhereOutEqualsRidWithRemainingLetReferencingConditionStaysCorrect() {
+    // The remaining (non-@out/@in) AND condition references a per-record LET variable, which is
+    // only computed after the fetch step runs. A rewrite that pushes this remaining condition into
+    // the fetch-side plan (ahead of LET) would silently drop every row - see
+    // LetWherePredicatePushdownTest and RidInScanOptimizationTest for the same hazard on the
+    // generic predicate-pushdown and @rid IN [...] paths. Issue #5856.
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql",
+          "SELECT since, $recent AS recent FROM Knows LET $recent = (since > 2020) WHERE @out = "
+              + v1Rid + " AND $recent = true");
+
+      int count = 0;
+      while (result.hasNext()) {
+        final Result r = result.next();
+        final int since = r.getProperty("since");
+        final boolean recent = r.getProperty("recent");
+        assertThat(recent).isTrue();
+        assertThat(since).isGreaterThan(2020);
+        count++;
+      }
+      assertThat(count).isEqualTo(1); // Only Alice->Charlie (since=2021)
+    });
+  }
+
+  @Test
   void executionPlanUsesVertexFetch() {
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
