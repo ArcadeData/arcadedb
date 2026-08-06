@@ -143,7 +143,7 @@ class GremlinGAVTest {
 
   @Test
   void outWithNoEdgeLabelWithGAV() {
-    // g.V().has('name','Alice').out() — no label filter, should return Bob (KNOWS) and Charlie (LIKES)
+    // g.V().has('name','Alice').out() with no label filter, should return Bob (KNOWS) and Charlie (LIKES)
     final ResultSet rs = graph.gremlin("g.V().has('name','Alice').out().values('name')").execute();
     final List<String> names = new ArrayList<>();
     while (rs.hasNext())
