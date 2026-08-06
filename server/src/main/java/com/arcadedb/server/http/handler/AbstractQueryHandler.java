@@ -216,8 +216,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     return command.length() > MAX_LOGGED_COMMAND_CHARS ? result + "..." : result;
   }
 
+  /**
+   * @param includeTypeHints whether to emit the per-column {@code @props} type hint on non-element result rows
+   *                         (issue #5812). Off by default on the HTTP surface: only a caller that must rebuild
+   *                         the exact Java type of a projection/aggregate column - today the RemoteDatabase Java
+   *                         driver - opts in by sending the {@code typeHints} request flag.
+   */
   protected SerializationOutcome serializeResultSet(final Database database, final String serializer, final int limit,
-      final JSONObject response, final ResultSet qResult) {
+      final JSONObject response, final ResultSet qResult, final boolean includeTypeHints) {
     if (qResult == null)
       return SerializationOutcome.EMPTY;
 
@@ -267,6 +273,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           .setExpandVertexEdges(false);
       // Don't use collection size for edges - we want COLLECT(rel) to return edge objects, not counts (issue #3404)
       serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
+      serializerImpl.setIncludeTypeHints(includeTypeHints);
 
       final Set<RID> includedVertices = new HashSet<>();
       final Set<RID> includedEdges = new HashSet<>();
@@ -352,13 +359,15 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       return serializeRows(database, qResult, limit, response, JsonSerializer.createJsonSerializer()
           .setIncludeVertexEdges(false)
           .setUseCollectionSize(false)
-          .setUseCollectionSizeForEdges(false));
+          .setUseCollectionSizeForEdges(false)
+          .setIncludeTypeHints(includeTypeHints));
 
     default:
       return serializeRows(database, qResult, limit, response, JsonSerializer.createJsonSerializer()
           .setIncludeVertexEdges(true)
           .setUseCollectionSize(false)
-          .setUseCollectionSizeForEdges(false));
+          .setUseCollectionSizeForEdges(false)
+          .setIncludeTypeHints(includeTypeHints));
     }
     } finally {
       qResult.close();

@@ -317,6 +317,10 @@ public class RemoteHttpComponent extends RWLockContext {
             jsonRequest.put("language", language);
           jsonRequest.put("command", payloadCommand);
           jsonRequest.put("serializer", "record");
+          // Issue #5812: the @props per-column type hint is off by default on the HTTP surface - a generic
+          // client never asked for it - so this driver, which needs it to rebuild the exact Java type of a
+          // non-element (projection/aggregate) column, opts in explicitly.
+          jsonRequest.put("typeHints", true);
           jsonRequest.put("retries", txRetries);
           if (maxResultRows != null)
             jsonRequest.put("limit", maxResultRows);

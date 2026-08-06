@@ -177,6 +177,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final Integer requestLimit = optionalIntField(requestMap, "limit");
     final String serializer = requireStringField(requestMap, "serializer", "record");
     final String profileExecution = requireStringField(requestMap, "profileExecution", null);
+    // Issue #5812: off unless the caller explicitly asks for the @props type hint on non-element rows.
+    final boolean includeTypeHints = requestMap.get("typeHints") instanceof Boolean b && b;
 
     if (command == null || command.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
@@ -269,7 +271,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
-          outcome = serializeResultSet(database, serializer, limit, response, qResult);
+          outcome = serializeResultSet(database, serializer, limit, response, qResult, includeTypeHints);
           response.put("explain", explainText);
           response.put("explainPlan", executionPlan.toResult().toJSON());
           profile.addSerializationNanos(System.nanoTime() - serializationStart);
@@ -283,7 +285,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
-          outcome = serializeResultSet(database, serializer, limit, response, qResult);
+          outcome = serializeResultSet(database, serializer, limit, response, qResult, includeTypeHints);
 
           if (qResult != null) {
             final var qStats = qResult.getStatistics();

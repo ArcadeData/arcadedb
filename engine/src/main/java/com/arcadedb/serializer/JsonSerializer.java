@@ -73,6 +73,11 @@ public class JsonSerializer {
   private boolean  includeVertexEdges        = true;
   private boolean  useVertexEdgeSize         = true;
   private boolean  useCollectionSizeForEdges = true;
+  // Issue #5812: off by default. The @props type hint only matters to a consumer that must rebuild the exact
+  // Java type of a non-element (projection/aggregate) column - today that is the RemoteDatabase Java driver,
+  // which turns this on explicitly for its own requests. A generic HTTP/JSON client (curl, Postman, another
+  // language) never asked for it and should get plain JSON back.
+  private boolean  includeTypeHints          = false;
   private Database database;
 
   JsonSerializer() {
@@ -154,7 +159,7 @@ public class JsonSerializer {
       }
     }
 
-    final StringBuilder propertyTypes = new StringBuilder();
+    final StringBuilder propertyTypes = includeTypeHints ? new StringBuilder() : null;
 
     for (final String propertyName : result.getPropertyNames()) {
       Object value = result.getProperty(propertyName);
@@ -164,36 +169,39 @@ public class JsonSerializer {
       // only reliable source for column-precision-aware formatting.
       final Type schemaPropertyType =
           type != null && type.existsProperty(propertyName) ? type.getProperty(propertyName).getType() : null;
-      final Type propertyType;
-      if (schemaPropertyType != null)
-        propertyType = schemaPropertyType;
-      else if (value != null)
-        propertyType = Type.getTypeByClass(value.getClass());
-      else
-        propertyType = null;
 
-      if (propertyType != null && !JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType)) {
-        if (!propertyTypes.isEmpty())
-          propertyTypes.append(",");
-        propertyTypes.append(propertyName).append(":").append(propertyType.getId());
-
-        // Issue #4849: a LIST/MAP column only carries a container hint, so temporal items would reach
-        // the remote client as raw epoch-millis Numbers with no metadata to coerce them back to the
-        // configured Java temporal type (the client returned List<Long>/Map<String,Long> instead of
-        // List<LocalDateTime>/Map<String,LocalDateTime>). When the items share a temporal type, append
-        // the element-type id in parentheses (e.g. "dates:9(6)") so the client can rebuild each item
-        // as the configured temporal implementation.
-        final Collection<?> elements;
-        if (propertyType == Type.LIST && value instanceof Collection<?> collection)
-          elements = collection;
-        else if (propertyType == Type.MAP && value instanceof Map<?, ?> map)
-          elements = map.values();
+      if (includeTypeHints) {
+        final Type propertyType;
+        if (schemaPropertyType != null)
+          propertyType = schemaPropertyType;
+        else if (value != null)
+          propertyType = Type.getTypeByClass(value.getClass());
         else
-          elements = null;
-        if (elements != null) {
-          final Type elementType = detectHomogeneousTemporalElementType(elements);
-          if (elementType != null)
-            propertyTypes.append('(').append(elementType.getId()).append(')');
+          propertyType = null;
+
+        if (propertyType != null && !JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType)) {
+          if (!propertyTypes.isEmpty())
+            propertyTypes.append(",");
+          propertyTypes.append(propertyName).append(":").append(propertyType.getId());
+
+          // Issue #4849: a LIST/MAP column only carries a container hint, so temporal items would reach
+          // the remote client as raw epoch-millis Numbers with no metadata to coerce them back to the
+          // configured Java temporal type (the client returned List<Long>/Map<String,Long> instead of
+          // List<LocalDateTime>/Map<String,LocalDateTime>). When the items share a temporal type, append
+          // the element-type id in parentheses (e.g. "dates:9(6)") so the client can rebuild each item
+          // as the configured temporal implementation.
+          final Collection<?> elements;
+          if (propertyType == Type.LIST && value instanceof Collection<?> collection)
+            elements = collection;
+          else if (propertyType == Type.MAP && value instanceof Map<?, ?> map)
+            elements = map.values();
+          else
+            elements = null;
+          if (elements != null) {
+            final Type elementType = detectHomogeneousTemporalElementType(elements);
+            if (elementType != null)
+              propertyTypes.append('(').append(elementType.getId()).append(')');
+          }
         }
       }
 
@@ -212,7 +220,8 @@ public class JsonSerializer {
     // clients can restore the original Java type (e.g. count(*) is a long; JSON would otherwise
     // collapse it to Integer when it fits). Element rows already carry their type via @type and
     // the schema, so adding @props there would only change existing JSON shapes without benefit.
-    if (type == null && !propertyTypes.isEmpty())
+    // Issue #5812: gated behind includeTypeHints (off by default) - see the field javadoc.
+    if (type == null && propertyTypes != null && !propertyTypes.isEmpty())
       object.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes.toString());
 
     return object;
@@ -380,6 +389,19 @@ public class JsonSerializer {
 
   public JsonSerializer setUseCollectionSizeForEdges(final boolean useCollectionSizeForEdges) {
     this.useCollectionSizeForEdges = useCollectionSizeForEdges;
+    return this;
+  }
+
+  public boolean isIncludeTypeHints() {
+    return includeTypeHints;
+  }
+
+  /**
+   * Enables the per-column {@code @props} type hint on non-element (projection/aggregate) result rows -
+   * see the {@link #includeTypeHints} field javadoc for who needs this and why it is off by default.
+   */
+  public JsonSerializer setIncludeTypeHints(final boolean includeTypeHints) {
+    this.includeTypeHints = includeTypeHints;
     return this;
   }
 
