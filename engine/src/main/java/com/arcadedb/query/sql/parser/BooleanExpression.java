@@ -194,6 +194,18 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public abstract Boolean evaluate(final Result currentRecord, final CommandContext context);
 
+  /**
+   * Collapses SQL three-valued logic (TRUE/FALSE/UNKNOWN) down to a primitive boolean, the same way
+   * {@link WhereClause#matchesFilters}  does at the outermost WHERE boundary. A nested {@link BooleanExpression}
+   * (e.g. an IN condition) can legitimately {@code evaluate()} to {@code null} (UNKNOWN); callers that
+   * consume the result in a primitive boolean context (an {@code if}/{@code while}/{@code !}) must go
+   * through this helper instead of unboxing the {@link Boolean} directly, or a null right-hand value
+   * throws a {@link NullPointerException} on auto-unboxing.
+   */
+  protected static boolean isTrue(final Boolean value) {
+    return Boolean.TRUE.equals(value);
+  }
+
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     return null;
   }
