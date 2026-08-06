@@ -1,5 +1,7 @@
 # ![ArcadeDB](https://arcadedb.com/assets/images/arcadedb-logo.png)
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.ArcadeData%2Farcadedb.svg)](https://mcptoplist.com/server/io.github.ArcadeData%2Farcadedb)
+
 <h2 align="center">Multi Model DBMS Built for Extreme Performance</h2>
 
 <p align="center">
