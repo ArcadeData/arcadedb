@@ -408,6 +408,9 @@ class RemoteDatabaseTest {
             final InputStream in = client.getInputStream();
             final byte[] buf = new byte[8192];
             int total = 0;
+            // Stops at the header terminator without draining a request body (begin() sends one): safe here
+            // because the client never reuses the connection (Connection: close) and does not wait for us to
+            // read the body before it reads our response.
             while (total < buf.length) {
               final int n = in.read(buf, total, buf.length - total);
               if (n < 0)
