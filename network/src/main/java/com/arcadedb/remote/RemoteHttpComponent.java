@@ -342,15 +342,8 @@ public class RemoteHttpComponent extends RWLockContext {
         HttpResponse<String> response = sendWithWatchdog(request);
 
         // Capture commit-index from response for read-your-writes consistency.
-        if (this instanceof RemoteDatabase remoteDb) {
-          response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
-            try {
-              remoteDb.updateLastCommitIndex(Long.parseLong(val));
-            } catch (final NumberFormatException ignored) {
-              // server sent an invalid header; ignore
-            }
-          });
-        }
+        if (this instanceof RemoteDatabase remoteDb)
+          remoteDb.captureCommitIndexHeader(response);
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);

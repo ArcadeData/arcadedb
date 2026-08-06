@@ -352,6 +352,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         throw new TransactionException("Error on transaction begin", detail);
       }
 
+      captureCommitIndexHeader(response);
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
@@ -391,6 +392,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
         throw new TransactionException("Error on transaction commit", detail);
       }
+      captureCommitIndexHeader(response);
       committed = true;
     } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       throw e;
@@ -425,12 +427,30 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         final Exception detail = manageException(response, "rollback transaction");
         throw new TransactionException("Error on transaction rollback", detail);
       }
+      captureCommitIndexHeader(response);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
     } finally {
       resetCreatedRecordsIdentity();
       setSessionId(null);
     }
+  }
+
+  /**
+   * Captures the {@code X-ArcadeDB-Commit-Index} response header on raw {@link #begin()}/{@link #commit()}/
+   * {@link #rollback()} sends, which bypass {@link RemoteHttpComponent#httpCommand} and its bookmark capture
+   * (issue #5845). The server emits this header on every begin/commit/rollback response once the database
+   * has an applied index, so all three call sites can carry the just-committed bookmark forward for the next
+   * {@link ReadConsistency#READ_YOUR_WRITES} read.
+   */
+  void captureCommitIndexHeader(final HttpResponse<String> response) {
+    response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
+      try {
+        updateLastCommitIndex(Long.parseLong(val));
+      } catch (final NumberFormatException ignored) {
+        // server sent an invalid header; ignore
+      }
+    });
   }
 
   /**
