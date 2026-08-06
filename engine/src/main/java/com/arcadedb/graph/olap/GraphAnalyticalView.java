@@ -908,6 +908,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * convention. Each node's forward-neighbor slice is sorted (built that way for {@link #hasForwardEdge}'s
    * binary search), so parallel edges to the same target form a contiguous run and the whole type can be
    * measured with a single linear pass - no per-pair lookups.
+   * <p>
+   * Unlike {@link com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider
+   * #calculateMeanEdgesPerConnectedPair}'s sampled estimate, the result here is deliberately not clamped
+   * to {@code MAX_MEAN_EDGES_PER_CONNECTED_PAIR} (1000.0): that clamp exists to bound the damage a
+   * pathologically clustered *sample* can do to a cost estimate, and this method has no such sampling
+   * bias to guard against - it is the type's true population mean.
    */
   @Override
   public double getMeanEdgesPerConnectedPair(final String edgeType) {

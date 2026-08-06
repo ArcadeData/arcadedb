@@ -68,10 +68,17 @@ item 3) stays the only sound source for this statistic; caching (item 1) and CSR
   the CSR does not yet reflect) and holds a CSR for the type, it computes the *exact* mean by scanning
   the type's sorted forward-adjacency array once (total edges / distinct (node, neighbor) pairs -
   parallel edges are adjacent duplicates in the sorted per-node neighbor list, the same property
-  `countEdgesBetween`'s binary search relies on). The result is memoized on the current `Snapshot`
-  instance, so it is naturally invalidated by a CSR rebuild/compaction (which swaps in a new `Snapshot`)
-  without any extra bookkeeping. When an overlay is active, or the type has no CSR, it returns `-1.0` and
-  the caller falls back to sampling.
+  `countEdgesBetween`'s binary search relies on). When an overlay is active, or the type has no CSR, it
+  returns `-1.0` and the caller falls back to sampling.
+- The provider method itself is *not* memoized on the `Snapshot` - it recomputes the O(edges) scan on
+  every call. That is intentional, not an oversight: `StatisticsProvider`'s database-scoped
+  `GraphStatisticsCache` (item 1) already dedupes repeated calls across queries, keyed by the edge type's
+  record count, so a second memoization layer inside `GraphAnalyticalView` would only save the first call
+  after a rebuild - not worth the extra state for that. The unclamped exact value (see below) also makes
+  a per-Snapshot cache slightly more delicate to get right than it looks, so the simpler "recompute,
+  let the caller cache" design was kept. Also unlike the sampled path, the exact CSR value is
+  *deliberately not clamped* to `MAX_MEAN_EDGES_PER_CONNECTED_PAIR` - that clamp exists to bound a
+  sampling artifact (a pathologically clustered prefix), which does not apply to a true population mean.
 - `CypherOptimizer.estimateMeanEdgesPerConnectedPair` now looks up a covering
   `GraphTraversalProvider` once per hop and, for each edge type, prefers its exact answer over
   `StatisticsProvider`'s sampled one when the provider returns a non-negative value. This applies
