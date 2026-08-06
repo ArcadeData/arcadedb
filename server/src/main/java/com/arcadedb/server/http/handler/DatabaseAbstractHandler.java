@@ -114,8 +114,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
 
     // Resolve HA database for read consistency (may be wrapped inside ServerDatabase).
-    final HAReplicatedDatabase haDbForRead = database instanceof HAReplicatedDatabase h ? h
-        : (database != null && database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase h2 ? h2 : null);
+    final HAReplicatedDatabase haDbForRead = resolveHAReplicatedDatabase(database);
 
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
@@ -183,11 +182,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         database.commit();
 
       // Emit bookmark header for read-your-writes consistency
-      if (haDbForRead != null) {
-        final long lastApplied = haDbForRead.getLastAppliedIndex();
-        if (lastApplied >= 0)
-          exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), String.valueOf(lastApplied));
-      }
+      emitCommitIndexBookmark(exchange, haDbForRead);
 
     } finally {
       // Clear read consistency context
