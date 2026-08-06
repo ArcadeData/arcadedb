@@ -65,6 +65,32 @@ cost model," and this stays scoped to that.
       it is out of scope for this issue's regression test.
 - [x] A test that a multigraph pattern's estimated cardinality tracks the real one
 
+## Planning-time cost of the sample
+
+`getMeanEdgesPerConnectedPair` is the one estimator in `StatisticsProvider` that is not O(1): on a
+cache miss it loads up to `MULTIPLICITY_SAMPLE_LIMIT` (2000) edge records. This is amortized by
+`CypherPlanCache` (`OpenCypherQueryEngine.java:330-343`), which caches the whole `PhysicalPlan` keyed
+by query string and skips `CypherOptimizer`/statistics collection entirely on a hit - verified against
+the code, not assumed. So the sampling cost is paid once per distinct query **string** that is not
+already in the (bounded, LRU-like) plan cache, not once per execution. A high-cardinality or
+frequently-evicted set of distinct query strings against a large edge type still re-pays it; tracked as
+part of the memoization discussion in #5834, along with skipping the sample entirely on the CSR/GAV
+path where an exact count could be had instead (raised again on review cycles 2-4; intentionally left
+for #5834 rather than folded into this fix, since it needs the same cache-placement/invalidation design
+decision).
+
+## Truncation to zero on small inputs (not fixed here)
+
+`(long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY * meanEdgesPerConnectedPair)` still
+floors to `0` when `inputCardinality` is small (e.g. `1`) and `meanEdgesPerConnectedPair` is under
+`10`. This is pre-existing - the bare `inputCardinality * 0.1` already floored to `0` before this fix
+- so it is not a regression, and the multigraph fix does not need to rescue it to close #5690. A
+`Math.max(1, ...)` floor (matching `calculateAverageDegree`'s existing clamp style) would prevent a
+bound-target hop from ever being estimated at zero rows, which could still mislead `JoinOrderRule`.
+Left out of this PR because it changes behaviour for every small-input `ExpandInto` hop, not just the
+multigraph case this issue reports - a broader blast radius than this fix's scope, and worth its own
+look (possibly alongside the `createExpandAllOperator` follow-up below) rather than bundled in here.
+
 ### `createExpandAllOperator` finding (not fixed in this PR)
 
 `createExpandAllOperator` (`CypherOptimizer.java`) estimates `ExpandAll` cardinality with a flat

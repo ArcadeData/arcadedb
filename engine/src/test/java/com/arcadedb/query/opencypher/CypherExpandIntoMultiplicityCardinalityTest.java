@@ -60,11 +60,10 @@ class CypherExpandIntoMultiplicityCardinalityTest {
       // a round, deterministic estimate instead of a single-row type collapsing to zero.
       MutableVertex hub = null;
       for (int i = 0; i < 10; i++) {
-        final MutableVertex account = database.newVertex("Account").set("code", "A" + i).save();
-        if (i == 0) {
-          account.set("code", "HUB").save();
+        final String code = i == 0 ? "HUB" : "A" + i;
+        final MutableVertex account = database.newVertex("Account").set("code", code).save();
+        if (i == 0)
           hub = account;
-        }
       }
 
       MutableVertex shared = null;
@@ -86,6 +85,11 @@ class CypherExpandIntoMultiplicityCardinalityTest {
       database.getSchema().createEdgeType("SETTLEDBACK");
       for (int i = 0; i < 5; i++)
         hub.newEdge("SETTLEDBACK", shared, true, (Object[]) null);
+
+      // A third type with a real multiplicity of 1, distinct from SETTLED's 5, so a union hop over
+      // both types can tell "average" (3) apart from "sum" (6).
+      database.getSchema().createEdgeType("LOWMULT");
+      hub.newEdge("LOWMULT", shared, true, (Object[]) null);
     });
   }
 
@@ -120,6 +124,27 @@ class CypherExpandIntoMultiplicityCardinalityTest {
     final String plan = planOf(cycle);
     assertThat(plan).contains("ExpandInto").doesNotContain("GAVExpandInto");
     assertThat(boundTargetRows(plan)).isEqualTo(5L);
+  }
+
+  @Test
+  void boundTargetHopAveragesRatherThanSumsAcrossUnionTypes() {
+    // SETTLED has multiplicity 5, LOWMULT has multiplicity 1. Averaging gives 3; summing would give 6.
+    final String cycle = "MATCH (a:Account {code: 'HUB'})-[:INITIATED]->(t:Txn)-[:SETTLED|LOWMULT]->(a) RETURN a, t";
+
+    final String plan = planOf(cycle);
+    assertThat(plan).contains("ExpandInto").doesNotContain("GAVExpandInto");
+    assertThat(boundTargetRows(plan)).isEqualTo(3L);
+  }
+
+  @Test
+  void untypedBoundTargetHopKeepsThePlainSelectivity() {
+    // No edge type restriction on the closing hop: cannot be attributed to any type's statistic, so
+    // multiplicity stays 1.0 and the estimate is the plain 10 * DEFAULT_EXPAND_INTO_SELECTIVITY(0.1).
+    final String cycle = "MATCH (a:Account {code: 'HUB'})-[:INITIATED]->(t:Txn)-[]->(a) RETURN a, t";
+
+    final String plan = planOf(cycle);
+    assertThat(plan).contains("ExpandInto").doesNotContain("GAVExpandInto");
+    assertThat(boundTargetRows(plan)).isEqualTo(1L);
   }
 
   private long boundTargetRows(final String plan) {
