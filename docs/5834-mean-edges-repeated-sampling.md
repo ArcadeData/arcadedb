@@ -79,14 +79,16 @@ item 3) stays the only sound source for this statistic; caching (item 1) and CSR
   let the caller cache" design was kept. Also unlike the sampled path, the exact CSR value is
   *deliberately not clamped* to `MAX_MEAN_EDGES_PER_CONNECTED_PAIR` - that clamp exists to bound a
   sampling artifact (a pathologically clustered prefix), which does not apply to a true population mean.
-- `CypherOptimizer.estimateMeanEdgesPerConnectedPair` now looks up a covering
-  `GraphTraversalProvider` once per hop and, for each edge type, prefers its exact answer over
-  `StatisticsProvider`'s sampled one when the provider returns a non-negative value. This applies
-  regardless of whether the hop ultimately executes as `GAVExpandInto` or plain `ExpandInto` - the
-  original code only checked `findProvider` (for choosing which operator to run) after computing the
-  sampled `outputCardinality`, so a hop that fell back to `ExpandInto` for other reasons (e.g. its edge
-  variable is read) still paid the sampling cost even with a covering GAV. The fix makes the cardinality
-  *estimate* independent of the *execution operator* choice.
+- The provider lookup lives in `StatisticsProvider.exactMeanFromTraversalProvider` (called from
+  `getMeanEdgesPerConnectedPair`'s cache-miss path), not in `CypherOptimizer` - `CypherOptimizer.java` is
+  untouched by this PR. Every caller of `StatisticsProvider.getMeanEdgesPerConnectedPair`, including
+  `CypherOptimizer.estimateMeanEdgesPerConnectedPair`, benefits automatically. This applies regardless of
+  whether the hop ultimately executes as `GAVExpandInto` or plain `ExpandInto` - the pre-existing
+  `createExpandIntoOperator` code only checked `findProvider` (for choosing which *operator* to run)
+  after computing the sampled `outputCardinality`, so a hop that fell back to `ExpandInto` for other
+  reasons (e.g. its edge variable is read) still paid the sampling cost even with a covering GAV. The fix
+  makes the cardinality *estimate* independent of the *execution operator* choice, and doing it inside
+  `StatisticsProvider` means it also gets the database-scoped caching from item 1 for free.
 
 ## Test plan
 
