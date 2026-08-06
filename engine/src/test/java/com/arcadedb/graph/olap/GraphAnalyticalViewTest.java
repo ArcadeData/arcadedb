@@ -4543,4 +4543,102 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     gav.drop();
   }
+
+  // --- getMeanEdgesPerConnectedPair (issue #5834): exact multiplicity from the CSR, so the Cypher
+  // optimizer can skip StatisticsProvider's sampled estimate when a view covers the edge type ---
+
+  @Test
+  void meanEdgesPerConnectedPairComputesTheExactValueFromTheCSR() {
+    // pair (a,b) joined by 3 parallel edges, pair (c,d) joined by 1: exact mean = 4 edges / 2 pairs = 2.0.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    for (int i = 0; i < 3; i++)
+      a.newEdge("FOLLOWS", b);
+    final MutableVertex c = database.newVertex("Person").save();
+    final MutableVertex d = database.newVertex("Person").save();
+    c.newEdge("FOLLOWS", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    assertThat(gav.getMeanEdgesPerConnectedPair("FOLLOWS")).isEqualTo(2.0);
+
+    gav.drop();
+  }
+
+  @Test
+  void meanEdgesPerConnectedPairOnASimpleGraphIsOne() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    assertThat(gav.getMeanEdgesPerConnectedPair("FOLLOWS")).isEqualTo(1.0);
+
+    gav.drop();
+  }
+
+  @Test
+  void meanEdgesPerConnectedPairIsUnknownWhenTheViewHasNoCSRForTheType() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("BLOCKS"); // present in schema, but excluded from the view below
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    // View built covering only BLOCKS - no CSR entry for FOLLOWS, caller must fall back to sampling.
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "BLOCKS" });
+
+    assertThat(gav.getMeanEdgesPerConnectedPair("FOLLOWS")).isNegative();
+
+    gav.drop();
+  }
+
+  @Test
+  void meanEdgesPerConnectedPairIsUnknownWhileADeltaOverlayIsActive() {
+    // A SYNCHRONOUS view applies post-commit changes to an in-memory overlay rather than rebuilding the
+    // CSR immediately. The overlay is not scanned by the multiplicity computation, so answering from the
+    // CSR alone would silently ignore the just-added edges - the honest answer is "unknown".
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getMeanEdgesPerConnectedPair("FOLLOWS")).isEqualTo(1.0);
+
+    database.begin();
+    a.asVertex().modify().newEdge("FOLLOWS", b);
+    database.commit();
+
+    assertThat(gav.getMeanEdgesPerConnectedPair("FOLLOWS")).isNegative();
+
+    gav.drop();
+  }
 }

@@ -74,6 +74,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
@@ -985,6 +986,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public CypherPlanCache getCypherPlanCache() {
     return proxied.getCypherPlanCache();
+  }
+
+  @Override
+  public GraphStatisticsCache getGraphStatisticsCache() {
+    return proxied.getGraphStatisticsCache();
   }
 
   @Override

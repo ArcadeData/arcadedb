@@ -25,6 +25,7 @@ import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
@@ -163,6 +164,8 @@ public interface DatabaseInternal extends Database {
   CypherStatementCache getCypherStatementCache();
 
   CypherPlanCache getCypherPlanCache();
+
+  GraphStatisticsCache getGraphStatisticsCache();
 
   <RET> RET recordFileChanges(final Callable<Object> callback);
 

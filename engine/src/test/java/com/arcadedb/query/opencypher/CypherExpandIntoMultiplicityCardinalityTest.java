@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -145,6 +146,45 @@ class CypherExpandIntoMultiplicityCardinalityTest {
     final String plan = planOf(cycle);
     assertThat(plan).contains("ExpandInto").doesNotContain("GAVExpandInto");
     assertThat(boundTargetRows(plan)).isEqualTo(1L);
+  }
+
+  @Test
+  void boundTargetHopUsesTheExactGAVMultiplicityInsteadOfTheSample() {
+    // Prove the optimizer consults a covering GraphAnalyticalView instead of sampling (issue #5834), not
+    // just that the two happen to agree: build a SETTLED population where the first 2000 edges in
+    // storage order (what the sample sees) yield a different mean than the type's true population.
+    //
+    // Base setup already wrote 5 SETTLED edges on pair (shared, hub). Add a second pair with 1995 more,
+    // filling the 2000-edge sample window with exactly those two pairs (sampled mean = 2000/2 = 1000).
+    // A third pair with a single edge, added afterward, sits outside the sample window entirely but is
+    // part of the type's true population: exact mean = 2001 edges / 3 pairs = 667.
+    database.transaction(() -> {
+      final MutableVertex fillA = database.newVertex("Account").set("code", "FILL_A").save();
+      final MutableVertex fillB = database.newVertex("Account").set("code", "FILL_B").save();
+      for (int i = 0; i < 1995; i++)
+        fillA.newEdge("SETTLED", fillB, true, (Object[]) null);
+
+      final MutableVertex tailA = database.newVertex("Account").set("code", "TAIL_A").save();
+      final MutableVertex tailB = database.newVertex("Account").set("code", "TAIL_B").save();
+      tailA.newEdge("SETTLED", tailB, true, (Object[]) null);
+    });
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withEdgeTypes("SETTLED")
+        .build();
+    try {
+      // Materialize and read the edge variable so this stays a plain ExpandInto: the fix must apply
+      // independent of whether the hop ends up executing as GAVExpandInto or not (#5834).
+      final String cycle = "MATCH (a:Account {code: 'HUB'})-[:INITIATED]->(t:Txn)-[s:SETTLED]->(a) RETURN a, t, s";
+
+      final String plan = planOf(cycle);
+      assertThat(plan).contains("ExpandInto").doesNotContain("GAVExpandInto");
+
+      // 667 (exact CSR answer), not 1000 (what the 2000-edge prefix sample would have produced).
+      assertThat(boundTargetRows(plan)).isEqualTo(667L);
+    } finally {
+      gav.drop();
+    }
   }
 
   private long boundTargetRows(final String plan) {

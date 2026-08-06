@@ -51,6 +51,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
@@ -329,6 +330,11 @@ class SQLMethodTransformTest {
 
       @Override
       public CypherPlanCache getCypherPlanCache() {
+        return null;
+      }
+
+      @Override
+      public GraphStatisticsCache getGraphStatisticsCache() {
         return null;
       }
 

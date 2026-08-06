@@ -123,4 +123,13 @@ class GraphTraversalProviderCountEdgesBetweenTest {
     // and a pair nothing joins is zero, never negative: the default always knows the answer
     assertThat(provider.countEdgesBetween(1, 0, Vertex.DIRECTION.OUT)).isZero();
   }
+
+  @Test
+  void theDefaultMeanEdgesPerConnectedPairIsUnknown() {
+    // A provider that does not override getMeanEdgesPerConnectedPair (issue #5834) cannot answer the
+    // question at all; the SPI default must say so via a negative result rather than guessing 1.0, so a
+    // caller relying on "negative means fall back to sampling" is never handed a silently wrong answer.
+    final GraphTraversalProvider provider = new RawAdjacencyProvider();
+    assertThat(provider.getMeanEdgesPerConnectedPair("FOLLOWS")).isNegative();
+  }
 }
