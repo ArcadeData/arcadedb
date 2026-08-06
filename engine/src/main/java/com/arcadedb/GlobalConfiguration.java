@@ -501,6 +501,20 @@ public enum GlobalConfiguration {
       "Deprecated, has no effect. The ANTLR4-based SQL parser is always used.",
       String.class, "antlr"),
 
+  SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
+      """
+      Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
+      nested function/statement calls, ...). The ANTLR-generated SQL parser resolves ambiguity between several \
+      grammar rules that all start with '(' (a parenthesized expression, condition, or sub-statement) by first \
+      trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
+      nested parentheses that fallback's cost grows so steeply that a query of only a few KB can tie up a worker \
+      thread for minutes without ever crashing, which is worse than a fast failure since it is not distinguishable \
+      from a slow legitimate query. This is checked on the token stream before any parse is attempted, so a query \
+      past the limit is rejected in O(n) time with a normal parse error. Real-world queries rarely nest more than a \
+      handful of parentheses, so the default is deliberately generous. Raise it only if a legitimate, deeply-nested \
+      or generated query needs it.""",
+      Integer.class, 200),
+
   // OPENCYPHER
   OPENCYPHER_STATEMENT_CACHE("arcadedb.opencypher.statementCache", SCOPE.DATABASE,
       "Maximum number of parsed OpenCypher statements to keep in cache", Integer.class, 300),

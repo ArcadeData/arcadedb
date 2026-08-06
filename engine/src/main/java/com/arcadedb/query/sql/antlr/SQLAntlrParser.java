@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.antlr;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.grammar.SQLLexer;
@@ -30,6 +31,7 @@ import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.DefaultErrorStrategy;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.atn.PredictionMode;
 import org.antlr.v4.runtime.misc.ParseCancellationException;
 
@@ -74,7 +76,7 @@ public record SQLAntlrParser(Database database) {
       final SQLLexer lexer = new SQLLexer(input);
 
       // Create token stream
-      final CommonTokenStream tokens = new CommonTokenStream(lexer);
+      final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
@@ -139,7 +141,7 @@ public record SQLAntlrParser(Database database) {
       final SQLLexer lexer = new SQLLexer(input);
 
       // Create token stream
-      final CommonTokenStream tokens = new CommonTokenStream(lexer);
+      final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
@@ -203,7 +205,7 @@ public record SQLAntlrParser(Database database) {
       final SQLLexer lexer = new SQLLexer(input);
 
       // Create token stream
-      final CommonTokenStream tokens = new CommonTokenStream(lexer);
+      final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
@@ -257,7 +259,7 @@ public record SQLAntlrParser(Database database) {
       final SQLLexer lexer = new SQLLexer(input);
 
       // Create token stream
-      final CommonTokenStream tokens = new CommonTokenStream(lexer);
+      final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
@@ -305,5 +307,43 @@ public record SQLAntlrParser(Database database) {
   @Override
   public Database database() {
     return database;
+  }
+
+  /**
+   * Builds the token stream and bounds its parenthesis nesting depth before any parse is attempted.
+   * <p>
+   * The grammar resolves the ambiguity between the several rules that all start with a bare '(' - a
+   * parenthesized expression, condition, or sub-statement - by trying a fast SLL prediction first and
+   * falling back to full ALL(*) prediction on failure. For deeply nested parentheses that fallback's cost
+   * grows steeply enough that a query of only a few KB can tie up a worker thread for minutes without ever
+   * crashing (issue #5851's follow-up: unlike the OpenCypher parser, this one is not at risk of a
+   * StackOverflowError from the same input - it costs far fewer Java stack frames per nesting level - but it
+   * is at risk of this far worse failure mode, an unbounded hang rather than a fast error). Counting on the
+   * token stream rather than raw characters means a '(' inside a string literal or comment - already lexed
+   * as part of that token, never as a standalone LPAREN - is not miscounted.
+   */
+  private static CommonTokenStream tokenize(final SQLLexer lexer) {
+    final CommonTokenStream tokens = new CommonTokenStream(lexer);
+    tokens.fill(); // the parser reuses this same fully-buffered stream
+    checkExpressionDepth(tokens);
+    return tokens;
+  }
+
+  private static void checkExpressionDepth(final CommonTokenStream tokens) {
+    final int maxDepth = GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH.getValueAsInteger();
+    int depth = 0;
+    for (final Token token : tokens.getTokens()) {
+      if (token.getChannel() != Token.DEFAULT_CHANNEL)
+        continue;
+      if (token.getType() == SQLLexer.LPAREN) {
+        if (++depth > maxDepth)
+          throw new CommandSQLParsingException(
+              "Expression nesting exceeds the maximum allowed depth of " + maxDepth
+                  + " (parentheses nested inside one another). This protects the server from a query that ties up "
+                  + "a worker thread for a very long time without crashing; raise 'arcadedb.sql.maxExpressionDepth' "
+                  + "if this is a legitimate query.");
+      } else if (token.getType() == SQLLexer.RPAREN && depth > 0)
+        --depth;
+    }
   }
 }
