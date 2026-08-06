@@ -1924,6 +1924,14 @@ public class SelectExecutionPlanner {
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() != 1)
       return false; // only handle simple AND conditions (single flattened block, no OR)
 
+    // A remaining (non-@out/@in) condition that references a per-record LET variable can't be
+    // evaluated here: LET is computed after the fetch step, in handleLet(), which runs after this
+    // method (called from handleFetchFromTarget). Chaining it into a FilterStep on the fetch-side
+    // plan would evaluate it before LET populates the variable, silently dropping every row. Defer
+    // to the normal scan path, which applies WHERE only after LET. See issue #5856.
+    if (info.perRecordLetClause != null && info.whereClause != null && info.whereClause.toString().contains("$"))
+      return false;
+
     final AndBlock andBlock = info.flattenedWhereClause.get(0);
     final String edgeTypeName = docType.getName();
 
@@ -2014,7 +2022,7 @@ public class SelectExecutionPlanner {
     if (info.perRecordLetClause != null && info.whereClause != null && info.whereClause.toString().contains("$"))
       return false;
 
-    final AndBlock andBlock = info.flattenedWhereClause.getFirst();
+    final AndBlock andBlock = info.flattenedWhereClause.get(0);
 
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
       final BooleanExpression expr = andBlock.getSubBlocks().get(i);
