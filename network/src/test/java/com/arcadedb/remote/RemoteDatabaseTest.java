@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
@@ -359,6 +360,73 @@ class RemoteDatabaseTest {
 
         db.begin();
         db.commit();
+
+        assertThat(db.getLastCommitIndex()).isEqualTo(-1L);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  // commit-index bookmark capture tests, regression for issue #5862
+
+  @Test
+  void sendBatchCapturesCommitIndexHeaderForReadYourWrites() throws Exception {
+    withHttpServer(List.of(
+        new StubResponse(200, "{\"verticesCreated\":1,\"edgesCreated\":0}", Map.of("X-ArcadeDB-Commit-Index", "42"))
+    ), port -> {
+      final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", port, "testdb", "root", "test");
+      try {
+        db.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+
+        db.sendBatch("{\"@type\":\"V\",\"@id\":\"v1\"}\n", Map.of());
+
+        // PostBatchHandler bypasses DatabaseAbstractHandler and commits internally (commitEvery), so the
+        // bookmark it publishes on the response is the only place a READ_YOUR_WRITES client can learn how
+        // far a bulk import got - without capturing it here the next read is silently served at EVENTUAL
+        // consistency (issue #5862).
+        assertThat(db.getLastCommitIndex())
+            .as("sendBatch() must capture the X-ArcadeDB-Commit-Index response header")
+            .isEqualTo(42);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  @Test
+  void sendBatchCapturesCommitIndexHeaderEvenOnPartialCommitFailure() throws Exception {
+    // GraphBatch is NOT atomic: a non-200 response mid-stream can still carry chunks committed before the
+    // failure (PostBatchHandler's partialCommit response), so the bookmark must be captured regardless of
+    // the HTTP status code, not only on success.
+    withHttpServer(List.of(
+        new StubResponse(400, "{\"error\":\"boom\",\"verticesCreated\":1,\"edgesCreated\":0,\"partialCommit\":true}",
+            Map.of("X-ArcadeDB-Commit-Index", "7"))
+    ), port -> {
+      final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", port, "testdb", "root", "test");
+      try {
+        db.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+
+        assertThatThrownBy(() -> db.sendBatch("bad-line\n", Map.of()))
+            .isInstanceOf(DatabaseOperationException.class);
+
+        assertThat(db.getLastCommitIndex()).isEqualTo(7);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  @Test
+  void sendBatchWithoutCommitIndexHeaderLeavesLastCommitIndexUnchanged() throws Exception {
+    withHttpServer(List.of(
+        new StubResponse(200, "{\"verticesCreated\":1,\"edgesCreated\":0}", Map.of())
+    ), port -> {
+      final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", port, "testdb", "root", "test");
+      try {
+        db.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+
+        db.sendBatch("{\"@type\":\"V\",\"@id\":\"v1\"}\n", Map.of());
 
         assertThat(db.getLastCommitIndex()).isEqualTo(-1L);
       } finally {

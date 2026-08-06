@@ -782,6 +782,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
+      // GraphBatch commits internally every commitEvery records (issue #5862), so unlike a single
+      // begin/commit/rollback a non-200 response here can still carry chunks the server already made
+      // durable (see PostBatchHandler's partialCommit responses): the bookmark is captured unconditionally,
+      // not only on success, or a READ_YOUR_WRITES client would silently miss the records that did commit.
+      captureCommitIndexHeader(response);
+
       if (response.statusCode() != 200) {
         final Exception detail = manageException(response, "batch import");
         throw new DatabaseOperationException("Error on batch import", detail);

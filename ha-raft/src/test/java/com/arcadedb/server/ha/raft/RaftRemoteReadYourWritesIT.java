@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.ReadConsistency;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteGraphBatch;
 import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.Test;
@@ -137,6 +138,112 @@ class RaftRemoteReadYourWritesIT extends BaseRaftHATest {
             .as("Reader's lastCommitIndex must advance after querying the follower")
             .isGreaterThanOrEqualTo(finalWriterIndex);
       }
+    }
+  }
+
+  /**
+   * Regression test for issue #5862: {@code RemoteGraphBatch} imports go through
+   * {@code RemoteDatabase.sendBatch()} / the server's {@code PostBatchHandler}, a write path that bypasses
+   * {@code DatabaseAbstractHandler} entirely (GraphBatch commits internally, one Raft entry per
+   * {@code commitEvery} chunk). Before the fix neither side of that path touched the
+   * {@code X-ArcadeDB-Commit-Index} bookmark, so a client importing through {@code RemoteGraphBatch} had no
+   * bookmark to carry into a follower read - unlike the {@code writer.command(...)} path exercised by
+   * {@link #remoteClientSeesWriteOnFollowerWithReadYourWrites()} above.
+   * <p>
+   * {@code writer} is a connection dedicated to the batch call and nothing else: its {@code lastCommitIndex}
+   * starts at the documented sentinel {@code -1} and the ONLY request it ever issues is the GraphBatch
+   * import, so an unchanged {@code -1} afterward can only mean {@code sendBatch()} failed to capture the
+   * response header. A shared connection that had already run a prior command (whose own response also
+   * carries the header) would leave that question ambiguous - a stale-but-non-negative index looks
+   * identical to a freshly captured one.
+   */
+  @Test
+  void remoteClientSeesGraphBatchWriteOnFollowerWithReadYourWrites() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final int followerIndex = leaderIndex == 0 ? 1 : 0;
+    final int leaderPort = 2480 + leaderIndex;
+    final int followerPort = 2480 + followerIndex;
+    final String dbName = getDatabaseName();
+    final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+    final String vertexType = "RywBatchVertex";
+
+    // Dedicated connection, used only to create the vertex type: kept separate from "writer" below so the
+    // regression assertion is not muddied by an earlier response's bookmark.
+    try (final RemoteDatabase setup = new RemoteDatabase("127.0.0.1", leaderPort, dbName, "root", password)) {
+      setup.command("sql", "CREATE VERTEX TYPE " + vertexType);
+    }
+
+    try (final RemoteDatabase writer = new RemoteDatabase("127.0.0.1", leaderPort, dbName, "root", password)) {
+      writer.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+      assertThat(writer.getLastCommitIndex()).as("Fresh connection must start with no bookmark captured").isEqualTo(-1L);
+
+      try (final RemoteGraphBatch batch = writer.batch().build()) {
+        batch.createVertex(vertexType, "id", "v1");
+        batch.createVertex(vertexType, "id", "v2");
+      }
+
+      final long writerIndex = writer.getLastCommitIndex();
+      assertThat(writerIndex)
+          .as("sendBatch() must capture the X-ArcadeDB-Commit-Index header from the PostBatchHandler response")
+          .isGreaterThanOrEqualTo(0);
+
+      try (final RemoteDatabase reader = new RemoteDatabase("127.0.0.1", followerPort, dbName, "root", password)) {
+        reader.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+
+        // Seed the reader with the writer's commit index via reflection, since
+        // updateLastCommitIndex is package-private in com.arcadedb.remote.
+        final var updateMethod = RemoteDatabase.class.getDeclaredMethod("updateLastCommitIndex", long.class);
+        updateMethod.setAccessible(true);
+        updateMethod.invoke(reader, writerIndex);
+
+        final ResultSet rs = reader.query("sql", "SELECT FROM " + vertexType);
+        final long count = rs.stream().count();
+        assertThat(count)
+            .as("Follower must see the vertices batch-imported on the leader when using READ_YOUR_WRITES")
+            .isEqualTo(2);
+      }
+    }
+  }
+
+  /**
+   * Regression test for issue #5862's forwarding half: a batch request that lands on a follower is
+   * relayed to the leader by {@code PostBatchHandler.forwardBatchToLeader}, and {@code ExecutionResponse}
+   * carries only status + body - so the leader's {@code X-ArcadeDB-Commit-Index} header has to be copied
+   * onto the follower's own response explicitly, or a client that happened to connect to a follower would
+   * never see the bookmark despite the leader having just emitted it.
+   */
+  @Test
+  void remoteClientOnFollowerCapturesCommitIndexForwardedFromLeaderOnGraphBatch() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final int followerIndex = leaderIndex == 0 ? 1 : 0;
+    final int leaderPort = 2480 + leaderIndex;
+    final int followerPort = 2480 + followerIndex;
+    final String dbName = getDatabaseName();
+    final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+    final String vertexType = "RywBatchForwardedVertex";
+
+    try (final RemoteDatabase setup = new RemoteDatabase("127.0.0.1", leaderPort, dbName, "root", password)) {
+      setup.command("sql", "CREATE VERTEX TYPE " + vertexType);
+    }
+
+    // Connected directly to the FOLLOWER: PostBatchHandler on this node sees ha.isLeader() == false and
+    // forwards the request to the leader instead of running GraphBatch locally.
+    try (final RemoteDatabase writer = new RemoteDatabase("127.0.0.1", followerPort, dbName, "root", password)) {
+      writer.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+      assertThat(writer.getLastCommitIndex()).as("Fresh connection must start with no bookmark captured").isEqualTo(-1L);
+
+      try (final RemoteGraphBatch batch = writer.batch().build()) {
+        batch.createVertex(vertexType, "id", "v1");
+      }
+
+      assertThat(writer.getLastCommitIndex())
+          .as("The follower must relay the leader's X-ArcadeDB-Commit-Index header back to the client, "
+              + "not just the status code and body of the forwarded response")
+          .isGreaterThanOrEqualTo(0);
     }
   }
 }

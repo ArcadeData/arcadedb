@@ -28,6 +28,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
@@ -994,6 +995,37 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (user == null || user.canAccessToDatabase(databaseName))
         authorized.add(databaseName);
     return authorized;
+  }
+
+  /**
+   * Resolves the {@link HAReplicatedDatabase} backing {@code database}, either directly or through
+   * {@link DatabaseInternal#getWrappedDatabaseInstance()}, or {@code null} on a standalone (non-HA)
+   * database. Shared by {@link DatabaseAbstractHandler} and {@link PostBatchHandler} so the
+   * wrapper-unwrapping rule for HA read-your-writes support (bookmark header, read-consistency context)
+   * lives in one place.
+   */
+  protected static HAReplicatedDatabase resolveHAReplicatedDatabase(final DatabaseInternal database) {
+    if (database == null)
+      return null;
+    if (database instanceof HAReplicatedDatabase haDb)
+      return haDb;
+    return database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb ? haDb : null;
+  }
+
+  /**
+   * Emits the {@code X-ArcadeDB-Commit-Index} response header, the read-your-writes bookmark a
+   * {@code READ_YOUR_WRITES} client captures and carries into its next read. A no-op when {@code haDb} is
+   * {@code null} (standalone database) or has not applied anything yet. Shared by
+   * {@link DatabaseAbstractHandler} (issue #5845) and {@link PostBatchHandler} (issue #5862), the only two
+   * write paths whose commit happens outside, or beyond, the generic per-request wrapper in
+   * {@link #handleRequest}.
+   */
+  protected static void emitCommitIndexBookmark(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
+    if (haDb == null)
+      return;
+    final long lastApplied = haDb.getLastAppliedIndex();
+    if (lastApplied >= 0)
+      exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), String.valueOf(lastApplied));
   }
 
   /**

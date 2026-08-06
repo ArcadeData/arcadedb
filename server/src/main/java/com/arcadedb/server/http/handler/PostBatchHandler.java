@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.batch.BatchRecord;
@@ -38,6 +39,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
+import io.undertow.util.HttpString;
 import org.xnio.Options;
 
 import java.io.FilterInputStream;
@@ -242,8 +244,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final GraphBatch.Builder builder = database.batch();
       configureBuilder(exchange, builder);
 
-      return streamRecords(exchange, databaseName, isCsv, builder, inputStream, newVertexRefResolver(exchange),
-          System.currentTimeMillis(), parseVertexBatchSize(exchange), parseExpectedRecords(exchange));
+      // GraphBatch commits incrementally (commitEvery), so unlike every other write endpoint the
+      // READ_YOUR_WRITES bookmark has to be emitted even when the load ends in a partial-commit error
+      // (408/400): whatever chunk got through is already durable, and a client must be able to read it
+      // back regardless of how the request itself was answered (issue #5862).
+      final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
+      try {
+        return streamRecords(exchange, databaseName, isCsv, builder, inputStream, newVertexRefResolver(exchange),
+            System.currentTimeMillis(), parseVertexBatchSize(exchange), parseExpectedRecords(exchange));
+      } finally {
+        emitCommitIndexBookmark(exchange, haDb);
+      }
     } finally {
       restoreConnectionReadTimeout(exchange, previousReadTimeout);
     }
@@ -966,6 +977,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+
+      // ExecutionResponse carries only status + body, so the leader's X-ArcadeDB-Commit-Index bookmark
+      // (issue #5862) has to be copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
+      // landed on a follower would never see it despite the leader having just emitted it.
+      response.headers().firstValue("X-ArcadeDB-Commit-Index")
+          .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
+
       return new ExecutionResponse(response.statusCode(), response.body());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
