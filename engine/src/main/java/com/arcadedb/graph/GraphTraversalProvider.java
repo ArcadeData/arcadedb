@@ -137,6 +137,26 @@ public interface GraphTraversalProvider {
   Object getProperty(int nodeId, String propertyName);
 
   /**
+   * Estimates the mean number of parallel edges joining a connected pair of vertices for an edge type,
+   * i.e. the same statistic {@link com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider
+   * #getMeanEdgesPerConnectedPair} samples from the OLTP edge list. A provider backed by a structure that
+   * can answer this exactly (e.g. a CSR adjacency index) lets the query planner skip that sample.
+   * <p>
+   * <b>A negative result means the provider cannot answer exactly</b> and the caller must fall back to
+   * sampling - the same "negative means unknown" convention {@link #countEdgesBetween} uses, and for the
+   * same reason: a provider whose backing structure does not currently reflect every committed edge (or
+   * has none for this type) can only honestly say "unknown", never a value it cannot stand behind.
+   * <p>
+   * The default always answers unknown; a CSR-backed provider overrides it with an exact computation.
+   *
+   * @param edgeType the edge type name
+   * @return the exact mean edges per connected pair, or a negative value if this provider cannot answer
+   */
+  default double getMeanEdgesPerConnectedPair(final String edgeType) {
+    return -1.0;
+  }
+
+  /**
    * Returns true if this provider has edge property columns materialized.
    * When true, {@link #getEdgeProperty} can be used to retrieve edge properties from CSR storage.
    */

@@ -77,6 +77,7 @@ import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
@@ -186,6 +187,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final      ExecutionPlanCache                        executionPlanCache;
   private final      CypherStatementCache                      cypherStatementCache;
   private final      CypherPlanCache                           cypherPlanCache;
+  private final      GraphStatisticsCache                      graphStatisticsCache      = new GraphStatisticsCache();
   private final      File                                      configurationFile;
   private            DatabaseInternal                          wrappedDatabaseInstance   = this;
   private final      SecurityManager                           security;
@@ -2011,6 +2013,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   public CypherPlanCache getCypherPlanCache() {
     return cypherPlanCache;
+  }
+
+  @Override
+  public GraphStatisticsCache getGraphStatisticsCache() {
+    return graphStatisticsCache;
   }
 
   @Override
