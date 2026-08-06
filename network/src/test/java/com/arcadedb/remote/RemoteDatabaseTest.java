@@ -27,8 +27,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -316,6 +320,53 @@ class RemoteDatabaseTest {
     }
   }
 
+  // commit-index bookmark capture tests, regression for issue #5845
+
+  @Test
+  void commitCapturesCommitIndexHeaderForReadYourWrites() throws Exception {
+    withHttpServer(List.of(
+        new StubResponse(204, "", Map.of(RemoteDatabase.ARCADEDB_SESSION_ID, "test-session")),
+        new StubResponse(204, "", Map.of("X-ArcadeDB-Commit-Index", "42"))
+    ), port -> {
+      final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", port, "testdb", "root", "test");
+      try {
+        db.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+
+        db.begin();
+        db.commit();
+
+        // The X-ArcadeDB-Commit-Index header on the commit response is the only place the server
+        // publishes the bookmark for the just-committed transaction: a raw commit() that ignores it
+        // silently degrades READ_YOUR_WRITES to EVENTUAL for the next read.
+        assertThat(db.getLastCommitIndex())
+            .as("commit() must capture the X-ArcadeDB-Commit-Index response header")
+            .isEqualTo(42);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  @Test
+  void commitWithoutCommitIndexHeaderLeavesLastCommitIndexUnchanged() throws Exception {
+    withHttpServer(List.of(
+        new StubResponse(204, "", Map.of(RemoteDatabase.ARCADEDB_SESSION_ID, "test-session")),
+        new StubResponse(204, "", Map.of())
+    ), port -> {
+      final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", port, "testdb", "root", "test");
+      try {
+        db.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+
+        db.begin();
+        db.commit();
+
+        assertThat(db.getLastCommitIndex()).isEqualTo(-1L);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
   /**
    * Testable subclass that injects a fake leader address via the cluster-configuration hook.
    */
@@ -331,6 +382,60 @@ class RemoteDatabaseTest {
     @Override
     Pair<String, Integer> getLeaderServer() {
       return fakeLeader;
+    }
+  }
+
+  private record StubResponse(int statusCode, String body, Map<String, String> headers) {
+  }
+
+  @FunctionalInterface
+  private interface ServerAction {
+    void run(int port) throws Exception;
+  }
+
+  /**
+   * Starts a loopback HTTP server that answers the given responses in order, one per connection, then runs
+   * {@code action} against its port. Used to test raw-send call sites (begin/commit/rollback) that bypass
+   * httpCommand() and must capture response headers on their own.
+   */
+  private void withHttpServer(final List<StubResponse> responses, final ServerAction action) throws Exception {
+    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+      final int port = serverSocket.getLocalPort();
+
+      final Thread serverThread = new Thread(() -> {
+        for (final StubResponse stub : responses) {
+          try (final Socket client = serverSocket.accept()) {
+            final InputStream in = client.getInputStream();
+            final byte[] buf = new byte[8192];
+            int total = 0;
+            // Stops at the header terminator without draining a request body (begin() sends one): safe here
+            // because the client never reuses the connection (Connection: close) and does not wait for us to
+            // read the body before it reads our response.
+            while (total < buf.length) {
+              final int n = in.read(buf, total, buf.length - total);
+              if (n < 0)
+                break;
+              total += n;
+              if (new String(buf, 0, total, StandardCharsets.ISO_8859_1).contains("\r\n\r\n"))
+                break;
+            }
+            final byte[] body = stub.body().getBytes(StandardCharsets.UTF_8);
+            final StringBuilder header = new StringBuilder("HTTP/1.1 " + stub.statusCode() + " \r\nContent-Type: application/json\r\n");
+            for (final Map.Entry<String, String> h : stub.headers().entrySet())
+              header.append(h.getKey()).append(": ").append(h.getValue()).append("\r\n");
+            header.append("Content-Length: ").append(body.length).append("\r\nConnection: close\r\n\r\n");
+            client.getOutputStream().write(header.toString().getBytes(StandardCharsets.ISO_8859_1));
+            client.getOutputStream().write(body);
+            client.getOutputStream().flush();
+          } catch (final Exception ignored) {
+            // best-effort: the test assertions cover the client side
+          }
+        }
+      });
+      serverThread.setDaemon(true);
+      serverThread.start();
+
+      action.run(port);
     }
   }
 }

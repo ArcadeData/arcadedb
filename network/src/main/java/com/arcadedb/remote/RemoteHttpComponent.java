@@ -320,6 +320,10 @@ public class RemoteHttpComponent extends RWLockContext {
             jsonRequest.put("language", language);
           jsonRequest.put("command", payloadCommand);
           jsonRequest.put("serializer", "record");
+          // Issue #5812: the @props per-column type hint is off by default on the HTTP surface - a generic
+          // client never asked for it - so this driver, which needs it to rebuild the exact Java type of a
+          // non-element (projection/aggregate) column, opts in explicitly.
+          jsonRequest.put("typeHints", true);
           jsonRequest.put("retries", txRetries);
           if (maxResultRows != null)
             jsonRequest.put("limit", maxResultRows);
@@ -345,15 +349,8 @@ public class RemoteHttpComponent extends RWLockContext {
         HttpResponse<String> response = sendWithWatchdog(request);
 
         // Capture commit-index from response for read-your-writes consistency.
-        if (this instanceof RemoteDatabase remoteDb) {
-          response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
-            try {
-              remoteDb.updateLastCommitIndex(Long.parseLong(val));
-            } catch (final NumberFormatException ignored) {
-              // server sent an invalid header; ignore
-            }
-          });
-        }
+        if (this instanceof RemoteDatabase remoteDb)
+          remoteDb.captureCommitIndexHeader(response);
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);

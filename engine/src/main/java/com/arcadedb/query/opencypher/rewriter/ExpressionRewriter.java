@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.rewriter;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 
 /**
@@ -36,6 +38,13 @@ import com.arcadedb.query.opencypher.ast.*;
  */
 public abstract class ExpressionRewriter {
 
+  // Bounds the recursion depth of rewrite()/visitXxx() so a pathologically deep or long expression tree
+  // (e.g. tens of thousands of chained OR/AND terms, or string-concatenation terms) fails with a normal
+  // CommandParsingException instead of a StackOverflowError - see issue #5851. A ThreadLocal is required
+  // rather than a plain instance field because CypherASTBuilder.AST_REWRITER is a single ExpressionRewriter
+  // instance shared and visited concurrently by every query on the JVM.
+  private static final ThreadLocal<int[]> REWRITE_DEPTH = ThreadLocal.withInitial(() -> new int[1]);
+
   /**
    * Main entry point: rewrite an expression or boolean expression.
    * Dispatches to specific visit methods based on expression type.
@@ -47,6 +56,23 @@ public abstract class ExpressionRewriter {
     if (expression == null)
       return null;
 
+    final int[] depth = REWRITE_DEPTH.get();
+    if (++depth[0] > GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger()) {
+      --depth[0];
+      throw new CommandParsingException(
+          "Expression is too deeply nested or chained (exceeds " + GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger()
+              + " levels). This protects the server against a stack overflow from a pathologically nested or long "
+              + "expression, for example thousands of chained AND/OR terms; raise 'arcadedb.cypher.maxExpressionDepth' "
+              + "if this is a legitimate query.");
+    }
+    try {
+      return rewriteDispatch(expression);
+    } finally {
+      --depth[0];
+    }
+  }
+
+  private Object rewriteDispatch(final Object expression) {
     // Dispatch to specific visit methods based on concrete type
     // BooleanExpression implementers
     if (expression instanceof BooleanCoercionExpression)

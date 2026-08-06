@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
@@ -92,6 +93,10 @@ public class Cypher25AntlrParser {
       // Custom error handling
       parser.removeErrorListeners();
       parser.addErrorListener(new CypherErrorListener());
+
+      // Bound expression nesting depth so a pathologically nested/long query fails with a normal parse
+      // error instead of a StackOverflowError (issue #5851)
+      parser.addParseListener(new CypherExpressionDepthGuard(GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger()));
 
       // Parse the statement
       final Cypher25Parser.StatementContext statementContext = parser.statement();

@@ -59,6 +59,9 @@ public class GetQueryHandler extends AbstractQueryHandler {
       if (serializer == null)
         serializer = "record";
 
+      // Issue #5812: off unless the caller explicitly asks for the @props type hint on non-element rows.
+      final boolean includeTypeHints = Boolean.parseBoolean(getQueryParameter(exchange, "typeHints"));
+
       final String limitPar = getQueryParameter(exchange, "limit");
       profile.addDeserializationNanos(System.nanoTime() - deserializationStart);
 
@@ -78,7 +81,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
         profile.addEngineNanos(System.nanoTime() - engineStart);
 
         final long serializationStart = System.nanoTime();
-        final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult);
+        final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult, includeTypeHints);
         reportLimits(response, limit, outcome);
         logIfTruncatedByDefault(database.getName(), text, limit, requestLimit, planLimit, outcome);
         profile.addSerializationNanos(System.nanoTime() - serializationStart);
