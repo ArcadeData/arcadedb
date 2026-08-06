@@ -656,6 +656,10 @@ public class CypherOptimizer {
     final long inputCardinality = input.getEstimatedCardinality();
     final double meanEdgesPerConnectedPair = estimateMeanEdgesPerConnectedPair(edgeTypes);
     final long outputCardinality = (long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY * meanEdgesPerConnectedPair);
+    // Cost intentionally stays keyed off inputCardinality alone, not the multiplicity-scaled
+    // outputCardinality: it models the per-input-row pointer-comparison work of walking to the pinned
+    // target, which does not grow with how many edges happen to join the pair once found. The corrected
+    // outputCardinality is what JoinOrderRule orders by, which is the actual defect this fixes.
     final double expandIntoCost = inputCardinality * 1.0; // pointer comparisons per input row, no record load
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
 
@@ -692,6 +696,11 @@ public class CypherOptimizer {
    * Averages the sampled parallel-edge multiplicity across a bound-target hop's edge types. An
    * untyped hop cannot be attributed to one edge type's statistic, so it keeps the plain selectivity
    * behaviour (multiplicity 1.0, i.e. simple-graph assumption).
+   * <p>
+   * Averaging (rather than summing) is exact for the single-type hop this issue reports and stays a
+   * reasonable heuristic for a union hop ({@code [:A|:B]}): summing would assume the pair is joined by
+   * an edge of every listed type, which is not guaranteed either, so neither combination is exact for
+   * a union - averaging was chosen as the more conservative of the two.
    *
    * @param edgeTypes the hop's edge types
    *

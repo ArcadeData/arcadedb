@@ -347,8 +347,10 @@ public class StatisticsProvider {
     if (distinctPairs.isEmpty())
       return DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR;
 
+    // mean is always >= 1.0 here: every sampled edge contributes to exactly one pair, so sampledEdges
+    // can never be smaller than distinctPairs.size(). Only the upper clamp is needed.
     final double mean = (double) sampledEdges / distinctPairs.size();
-    return Math.min(MAX_MEAN_EDGES_PER_CONNECTED_PAIR, Math.max(DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR, mean));
+    return Math.min(MAX_MEAN_EDGES_PER_CONNECTED_PAIR, mean);
   }
 
   /**
