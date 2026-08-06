@@ -188,7 +188,7 @@ class ArcadeGremlinAnalyzeTest {
       on MCPPermissions). Concrete effect: an MCP execute_command call with language "gremlin" and \
       command "g.addV('Person')", against a profile with allowInsert=true but allowUpdate=false (a \
       realistic, supported profile), is wrongly rejected with "Update operations are not allowed by MCP \
-      configuration" even though the query is a pure insert. Full writeup: PR #5829. \
+      configuration" even though the query is a pure insert. Tracked as issue #5838; full writeup: PR #5829. \
       Root cause: parse() sees AddVertexStartStepPlaceholder for 'g.addV(\\'Person\\')', not the \
       AddVertexStartStep its instanceof check tests for (TinkerPop 3.8.1's gremlin-lang parser builds a \
       GValue placeholder that GValueReductionStrategy - which parse() never runs - would normally resolve). \
@@ -205,7 +205,7 @@ class ArcadeGremlinAnalyzeTest {
       BUG (test-coverage finding): OperationType over-widening defect. getOperationTypes() only - \
       isIdempotent() is correct and HA routing is unaffected (see the sibling addVertexOperationTypeIsExactlyCreate \
       for the full HA-routing analysis and the confirmed, already-shipping MCP permission over-denial \
-      this causes; full writeup: PR #5829). Root cause: parse() sees \
+      this causes; tracked as issue #5838, full writeup: PR #5829). Root cause: parse() sees \
       AddEdgeStepPlaceholder for \"g.V().hasLabel('Person').as('a').addE('KNOWS').to('a')\", not the \
       AddEdgeStep its instanceof check tests for, same GValue-placeholder reason as addV (see \
       mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps). Falls into the 'unknown mutating step' \
@@ -221,7 +221,7 @@ class ArcadeGremlinAnalyzeTest {
       BUG (test-coverage finding): OperationType over-widening defect. getOperationTypes() only - \
       isIdempotent() is correct and HA routing is unaffected (see the sibling addVertexOperationTypeIsExactlyCreate \
       for the full HA-routing analysis and the confirmed, already-shipping MCP permission over-denial \
-      this causes; full writeup: PR #5829). Root cause: parse() sees \
+      this causes; tracked as issue #5838, full writeup: PR #5829). Root cause: parse() sees \
       AddPropertyStepPlaceholder for \"g.V().hasLabel('Person').property('age', 30)\", not the \
       AddPropertyStep its instanceof check tests for, same GValue-placeholder reason as addV/addE. Falls \
       into the 'unknown mutating step' branch, which adds ALL THREE write OperationTypes. Expected \

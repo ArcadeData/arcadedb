@@ -154,6 +154,9 @@ class ArcadeGremlinEngineSelectionTest {
    * INSTANCE method {@code setTimeout(long, TimeUnit)}, so a timeout set on one graph applies to
    * every ArcadeGremlin in the process.
    * <p>
+   * Tracked as issue #5842, which also records that nothing reads the field, so {@code setTimeout}
+   * is currently a no-op regardless of the static-versus-instance question.
+   * <p>
    * WHEN THE FIELD IS MADE NON-STATIC, INVERT THIS TEST: the expectation becomes that {@code second}
    * does NOT observe {@code first}'s timeout, and the method should be renamed accordingly.
    */

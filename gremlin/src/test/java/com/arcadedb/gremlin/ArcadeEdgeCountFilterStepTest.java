@@ -103,7 +103,7 @@ class ArcadeEdgeCountFilterStepTest {
       which permanently defeats applyEdgeCountFilterOptimization's exact-3-substep check, so the O(1) \
       GAV path silently does not fire for this query shape on that JVM - a genuine, \
       JVM-identity-hash-dependent "sometimes unreachable in normal use" defect in ArcadeTraversalStrategy, \
-      not merely an untested branch. Full writeup: PR #5829.
+      not merely an untested branch. Tracked as issue #5841; full writeup: PR #5829.
       """)
   void theDegreeFilterStepIsInstalled() {
     assertThat(TraversalPlans.hasStepOfType(
@@ -149,7 +149,7 @@ class ArcadeEdgeCountFilterStepTest {
    * <p>
    * WHEN THE VertexStepPlaceholder GAP IS FIXED, INVERT THIS TEST: the expectation becomes that the
    * rewrite DOES install on the string path, and the method should be renamed accordingly (e.g.
-   * theRewriteEngagesViaTheStringEntryPoint). See PR #5829 for the full writeup.
+   * theRewriteEngagesViaTheStringEntryPoint). Tracked as issue #5840; see PR #5829 for the full writeup.
    */
   @Test
   void characterizesTheRewriteNotEngagingViaTheStringEntryPoint() throws Exception {
