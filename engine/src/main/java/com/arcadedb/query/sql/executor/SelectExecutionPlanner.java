@@ -53,6 +53,7 @@ import com.arcadedb.query.sql.parser.GeOperator;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.IsNullCondition;
@@ -104,6 +105,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1847,6 +1849,13 @@ public class SelectExecutionPlanner {
       return;
     }
 
+    // RID-address optimization: for queries like SELECT FROM Type WHERE @rid = <RID> or
+    // WHERE @rid IN [<RID list>], fetch the records directly by RID address instead of
+    // scanning the whole type. This is always cheaper than an index lookup, so it is checked
+    // before the index-based paths below. See issue #5824.
+    if (handleTypeWithRidFilter(plan, identifier, info, context))
+      return;
+
     if (handleTypeAsTargetWithIndexedFunction(plan, effectiveClusters, identifier, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
@@ -1980,6 +1989,138 @@ public class SelectExecutionPlanner {
     final String exprStr = expr.toString().trim();
     if (exprStr.startsWith("@"))
       return exprStr;
+    return null;
+  }
+
+  /**
+   * RID-address optimization: rewrites {@code WHERE @rid = <RID>} or {@code WHERE @rid IN [<RID list>]}
+   * on a type target into a direct {@link FetchFromRidsStep} instead of a full type scan with a
+   * per-record filter. The address-based fetch is O(k) in the number of RIDs, while the scan it
+   * replaces is O(n) in the size of the type. Only applies to a single AND-block (no OR at the top
+   * level, mirroring {@link #handleEdgeTypeWithVertexRidFilter}) so every surviving branch of the
+   * WHERE clause is guaranteed to still require these RIDs. See issue #5824.
+   *
+   * @return true if the optimization was applied
+   */
+  private boolean handleTypeWithRidFilter(final SelectExecutionPlan plan, final Identifier identifier, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() != 1)
+      return false; // OR at the top level: other branches may match records outside this RID set
+
+    // A remaining (non-@rid) condition that references a per-record LET variable can't be
+    // evaluated here: LET is computed after the fetch step, in handleLet(), which runs after this
+    // method. Chaining it into a FilterStep on the fetch-side plan would evaluate it before LET
+    // populates the variable. Defer to the normal scan path, which applies WHERE only after LET.
+    if (info.perRecordLetClause != null && info.whereClause != null && info.whereClause.toString().contains("$"))
+      return false;
+
+    final AndBlock andBlock = info.flattenedWhereClause.getFirst();
+
+    for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
+      final BooleanExpression expr = andBlock.getSubBlocks().get(i);
+      final List<RID> rids = extractRidEqualityOrInList(expr, context);
+      if (rids == null)
+        continue;
+
+      if (rids.isEmpty()) {
+        // The RID list is definitely empty (e.g. an empty IN-list or a null bind parameter):
+        // no record can match, whatever the remaining conditions are.
+        plan.chain(new EmptyStep(context));
+        info.whereClause = null;
+        info.flattenedWhereClause = null;
+        return true;
+      }
+
+      plan.chain(new FetchFromRidsStep(rids, context));
+      plan.chain(new FilterByTypeStep(identifier, context));
+
+      final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
+      remaining.remove(i);
+      if (!remaining.isEmpty()) {
+        final AndBlock remainingBlock = new AndBlock(-1);
+        remainingBlock.getSubBlocks().addAll(remaining);
+        final WhereClause remainingWhere = new WhereClause(-1);
+        remainingWhere.setBaseExpression(remainingBlock);
+        plan.chain(new FilterStep(remainingWhere, context));
+      }
+
+      info.whereClause = null;
+      info.flattenedWhereClause = null;
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also {@code IN (<RID list>)}
+   * and {@code IN <bind parameter>}) and resolves the RID(s) at plan time. Returns {@code null} if
+   * {@code expr} isn't one of these shapes, or if any element can't be resolved to a RID at plan
+   * time (e.g. it's computed from a per-record field) - the caller falls back to the normal scan
+   * in that case, which still evaluates correctly. Returns an empty list if the condition can
+   * never match any record (empty IN-list, or a bind parameter bound to null) so the caller can
+   * short-circuit to no results. {@code @rid NOT IN [...]} is deliberately not handled here:
+   * excluding a RID set still requires scanning every other record of the type, which this
+   * optimization cannot help with.
+   */
+  private static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
+    if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
+        && RID_PROPERTY.equalsIgnoreCase(bc.getLeft().toString())) {
+      final RID rid = extractRidValue(bc.getRight(), context);
+      return rid == null ? null : List.of(rid);
+    }
+
+    if (!(expr instanceof InCondition in) || in.not || !RID_PROPERTY.equalsIgnoreCase(in.getLeft().toString()))
+      return null;
+
+    final Object rawValue;
+    if (in.right instanceof List<?> list) {
+      final List<Object> values = new ArrayList<>(list.size());
+      for (final Object item : list)
+        values.add(item instanceof Expression itemExpr ? extractRidValue(itemExpr, context) : item);
+      rawValue = values;
+    } else if (in.getRightMathExpression() != null) {
+      try {
+        rawValue = in.getRightMathExpression().execute((Result) null, context);
+      } catch (final Exception e) {
+        return null; // not resolvable at plan time (e.g. references a per-record field)
+      }
+    } else if (in.getRightParam() != null) {
+      rawValue = in.getRightParam().getValue(context.getInputParameters());
+    } else
+      return null; // subquery on the right: not a plan-time-resolvable RID list
+
+    if (rawValue == null)
+      return List.of(); // WHERE @rid IN <null> matches nothing
+
+    // A scan evaluates the IN-list as a per-record membership test, so a duplicate RID in the
+    // list must not multiply the matching record into duplicate rows: dedupe with a Set.
+    final Set<RID> rids = new LinkedHashSet<>();
+    if (rawValue instanceof Iterable<?> iterable) {
+      for (final Object item : iterable) {
+        final RID rid = toRid(item, context);
+        if (rid == null)
+          return null;
+        rids.add(rid);
+      }
+    } else {
+      final RID rid = toRid(rawValue, context);
+      if (rid == null)
+        return null;
+      rids.add(rid);
+    }
+    return new ArrayList<>(rids);
+  }
+
+  private static RID toRid(final Object value, final CommandContext context) {
+    if (value instanceof RID rid)
+      return rid;
+    if (value instanceof Identifiable identifiable)
+      return identifiable.getIdentity();
+    if (value instanceof Result result && result.getIdentity().isPresent())
+      return result.getIdentity().get();
+    if (value instanceof String s && RID.is(s))
+      return context.getDatabase().newRID(s);
     return null;
   }
 
