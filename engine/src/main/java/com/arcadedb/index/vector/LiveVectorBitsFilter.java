@@ -38,9 +38,9 @@ import java.util.Set;
  * The predicate is deliberately identical to the post-filter applied to the search output, so nothing that would have
  * survived it is dropped here.
  * <p>
- * <b>Deliberately not memoized</b>, unlike {@link GroupedRIDBitsFilter}, which caches its per-ordinal verdicts so
- * JVector sees a stable answer across repeated calls within one search. That filter has to: its verdict consumes a
- * group budget, so answering twice would count an ordinal twice. This one has no state to protect, so it reads the
+ * <b>Deliberately not memoized.</b> A filter whose verdict consumes a budget would have to cache it, so that a repeat
+ * call within one search cannot spend the budget twice - that is what the withdrawn {@code GroupedRIDBitsFilter} did
+ * before #5761 moved the {@code groupBy} cap out of the traversal. This one has no state to protect, so it reads the
  * location map live and a delete committed mid-traversal takes effect immediately. The freshness is worth more than
  * the stability here, and it is safe because the result loop re-checks the same predicate before emitting - an
  * ordinal admitted just before its delete lands is dropped at the output rather than returned.
@@ -85,35 +85,22 @@ public class LiveVectorBitsFilter implements Bits {
     this.vectorIndex = vectorIndex;
   }
 
+  /**
+   * A graph ordinal may be answered with unless it is outside the ordinal map, no longer live, or outside the
+   * allow-list.
+   */
   @Override
   public boolean get(final int ordinal) {
-    if (allowedRIDs == null)
-      // The common case: liveness alone, answered by one presence bit and no allocation at all.
-      return ordinal >= 0 && ordinal < ordinalToVectorIdSnapshot.length
-          && vectorIndex.isLive(ordinalToVectorIdSnapshot[ordinal]);
-
-    return admissibleRid(ordinal, ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs) != null;
-  }
-
-  /**
-   * The RID a graph ordinal may be answered with, or {@code null} if it may not: out of the ordinal map, no longer
-   * live, or outside the allow-list. Shared with {@link GroupedRIDBitsFilter}, which needs the RID to resolve a group
-   * key and would otherwise carry a second copy of this predicate for the two to drift apart on.
-   *
-   * @param allowedRIDs optional RID allow-list; {@code null} or empty means "every live vector"
-   */
-  static RID admissibleRid(final int ordinal, final int[] ordinalToVectorIdSnapshot,
-      final VectorLocationIndex vectorIndex, final Set<RID> allowedRIDs) {
     if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
-      return null;
+      return false;
 
-    final RID rid = vectorIndex.getRid(ordinalToVectorIdSnapshot[ordinal]);
-    if (rid == null)
-      return null;
+    final int vectorId = ordinalToVectorIdSnapshot[ordinal];
+    if (allowedRIDs == null)
+      // The common case, and the one every unrestricted search takes: liveness alone, answered by one presence bit
+      // with nothing materialized (issue #5588). The constructor already collapsed an empty allow-list to null.
+      return vectorIndex.isLive(vectorId);
 
-    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
-      return null;
-
-    return rid;
+    final RID rid = vectorIndex.getRid(vectorId);
+    return rid != null && allowedRIDs.contains(rid);
   }
 }

@@ -453,6 +453,41 @@ class Issue5588PrimitiveLocationIndexTest {
   }
 
   /**
+   * Re-pointing a live vector id at a different record retires the id for the duration of the write, so a
+   * lock-free search running through that window does not see a vector that is live. The branch does the safe
+   * thing - the alternative is a torn RID, which is how a delete of record A tombstones the vector of record B -
+   * but no engine path may take it, and {@code LSMVectorIndexTombstoneMemoryTest} pins that on the re-embedding
+   * workload that would trip it first. This is the other half: proof the counter that pins it is not dead code.
+   */
+  @Test
+  void rewritingALiveIdsRidInPlaceIsCountedAndStillCorrect() {
+    final VectorLocationIndex index = new VectorLocationIndex();
+    final RID first = new RID(1, 10);
+    final RID second = new RID(2, 20);
+
+    final int id = index.addVector(false, 100, first);
+    assertThat(index.inPlaceRidRewriteCount()).as("an ordinary insert is not a rewrite").isZero();
+
+    // A re-publication of the same id at a new offset is not a rewrite either - it is what a replicated page
+    // replay does on every compaction - and counting it would make the pin above meaningless.
+    index.addOrUpdate(id, true, 200, first, false);
+    assertThat(index.inPlaceRidRewriteCount()).isZero();
+    assertThat(index.getVectorIdsForRid(first)).containsExactly(id);
+
+    index.addOrUpdate(id, false, 300, second, false);
+    assertThat(index.inPlaceRidRewriteCount()).as("re-pointing the id at another record is").isEqualTo(1);
+
+    // ...and having taken the branch, the index is still consistent: the old RID resolves to nothing, the new one
+    // to the id, and the location reads back whole.
+    assertThat(index.getVectorIdsForRid(first)).isEmpty();
+    assertThat(index.getVectorIdsForRid(second)).containsExactly(id);
+    assertThat(index.getRid(id)).isEqualTo(second);
+    assertThat(VectorLocationIndex.offsetOf(index.getOffsetAndFlag(id))).isEqualTo(300);
+    assertThat(index.size()).isEqualTo(1);
+    assertThat(index.getActiveCount()).isEqualTo(1);
+  }
+
+  /**
    * The acceptance criterion of issue #5588, measured off the arrays the index has actually allocated rather than
    * inferred from object headers.
    */

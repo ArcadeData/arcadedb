@@ -27,6 +27,39 @@ legitimate query needs it. Real-world queries essentially never nest this deep, 
 wide margin; the SQL parser was never at risk from the same input because its hand-written recursive-descent
 implementation costs far fewer stack frames per nesting level, not because it enforces a limit of its own.
 
+### Follow-up: the chain-length gap, and a matching guard for SQL
+
+Two things turned out to be wrong in the paragraph above, found while auditing for the same class of bug
+elsewhere in both engines.
+
+First, the Cypher fix was incomplete. `ExpressionRewriter`'s guard only fires from
+`CypherASTBuilder#visitWhereClause`, so a long OR/AND/NOT/comparison/arithmetic chain written anywhere
+*other* than a top-level `WHERE` condition - a `RETURN` projection, an `ORDER BY` item, a function
+argument - was never rewritten and so never hit that guard. A 30000-term OR chain in a `RETURN` projection
+still overflowed the stack, this time inside `CypherSemanticValidator#checkExpressionScope` - a completely
+different recursive walker from `ExpressionRewriter`, invoked during semantic validation on every clause.
+Chasing down and patching every such walker individually is exactly the kind of fragile, incomplete-prone
+fix that let this one through in the first place, so `CypherExpressionDepthGuard` (the same `ParseTreeListener`
+already attached to the parser for nesting depth) now also bounds the term count of every `(OP operand)*`-shaped
+grammar rule directly - OR, XOR, AND, `NOT*`, chained comparisons, and the three arithmetic precedence
+levels - using each rule's own generated accessor, exactly as every AST builder does. This rejects an
+oversized chain during parsing, before any tree is built, regardless of which clause it is in and regardless
+of which pass would eventually have walked it.
+
+Second, "the SQL parser was never at risk... not because it enforces a limit of its own" undersold the
+actual risk: it isn't at risk of a `StackOverflowError` from nested parentheses (confirmed - its grammar
+costs far fewer Java stack frames per nesting level, exactly as claimed), but it is at risk of something
+worse. The production SQL parser is `SQLAntlrParser` (ANTLR4-based, like Cypher's), which resolves the
+ambiguity between the several grammar rules that all start with a bare `(` - a parenthesized expression,
+condition, or sub-statement - by trying a fast SLL prediction first and falling back to full ALL(*)
+prediction on failure. For deeply nested parentheses that fallback's cost grows steeply enough that a query
+of only a few KB (about 6000 nested parentheses) tied up a worker thread for well over two minutes of CPU
+without ever crashing - worse than a fast error, since a slow hang is not distinguishable from a legitimately
+slow query. `SQLAntlrParser` now counts parenthesis nesting on the token stream before attempting any parse,
+rejecting a query past `arcadedb.sql.maxExpressionDepth` (default 200) in O(n) time - the same depth that
+previously burned minutes of CPU is now rejected in single-digit milliseconds. Counting on the token stream
+rather than raw characters means a `(` inside a string literal or comment is not miscounted.
+
 ## Vector index: the location index is laid out in primitive arrays, ~3x less heap
 
 The `LSM_VECTOR` location index is the only mapping from a vector id to the record it belongs to and to the byte
@@ -59,6 +92,8 @@ garbage collector no longer traces one object graph per indexed vector.
   cost. On a 10M-vector index that was a transient ~900MB spike; it is now ~200MB.
 - **No new search allocation.** Every reader was moved onto accessors that answer one field without materializing
   anything, so the liveness filter each search applies per traversed graph ordinal costs one presence bit as before.
+- **`countEntries()` on a dense `LSM_VECTOR` is a popcount** over the presence bits - one word per 128 ids -
+  instead of a stream over the whole location map.
 - `ArcadePageVectorValues` is built through `forSearch(...)` / `forGraphBuild(...)` factories instead of six
   constructors: the two roles now take the same argument types and differ only in whether the reader may
   short-circuit to the vectors persisted inline in the graph file.

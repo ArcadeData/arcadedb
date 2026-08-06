@@ -172,6 +172,10 @@ public class VectorLocationIndex {
    */
   private volatile int     liveCount;
 
+  // Times a present id had its RID rewritten in place, which retires it for the duration of the write. Zero on
+  // every engine path; see put(). Guarded by writeLock.
+  private          int     inPlaceRidRewrites;
+
   private final RidIndex   ridIndex;
   // Ids whose location was dropped because they were tombstoned: 1 bit per id instead of a resident location
   // (issue #5516). See DeletedIds.
@@ -379,7 +383,9 @@ public class VectorLocationIndex {
             final int slot = (w << 6) + Long.numberOfTrailingZeros(word);
             word &= word - 1;
             final int vectorId = base + slot;
-            int idx = hash(vectorId) & mask;
+            // Hash from the RID in hand, not through hash(vectorId): that overload re-resolves the chunk this loop
+            // is already standing in.
+            int idx = hash(chunk.bucketId[slot], chunk.position[slot]) & mask;
             while (replacement[idx] != EMPTY)
               idx = (idx + 1) & mask;
             replacement[idx] = vectorId;
@@ -636,12 +642,22 @@ public class VectorLocationIndex {
     final long position = rid.getPosition();
     final boolean ridChanged = !wasPresent || chunk.bucketId[slot] != bucketId || chunk.position[slot] != position;
 
-    if (wasPresent && ridChanged)
-      // The RID of a present id is never rewritten in place: bucketId and position are two words and a reader
-      // pairing one from each generation could fabricate a RID that matches an unrelated record, which is how a
-      // delete of record A ends up tombstoning the vector of record B. Nothing does this today - an update takes a
-      // new id - so the cost of retiring the id for the duration of the write is not paid on any real path.
+    if (wasPresent && ridChanged) {
+      // The RID of a present id is never rewritten in place: bucketId and position are two words, and a reader
+      // pairing one from each generation could fabricate a RID that matches an unrelated record - which is how a
+      // delete of record A ends up tombstoning the vector of record B.
+      //
+      // Retiring the id for the duration of the write is the safe answer, and it is the one taken here, but it is
+      // not free: unlike the atomic reference swap the ConcurrentHashMap this replaces performed, it opens a
+      // window in which a lock-free search reads the id as absent and skips a LIVE vector. No engine path does
+      // this - an update takes a new id, and a page replay carries the id's own RID - and that is a precondition
+      // worth more than a comment, so it is counted rather than asserted: `inPlaceRidRewrites` stays zero on
+      // every engine workload and LSMVectorIndexTombstoneMemoryTest pins it there across the re-embedding cycles
+      // that would trip it first. An assert would have been louder and wrong - it would also fire on the tests
+      // that exist to prove this branch does the safe thing.
+      inPlaceRidRewrites++;
       LONGS.setRelease(chunk.present, word, chunk.present[word] & ~bit);
+    }
 
     chunk.bucketId[slot] = bucketId;
     chunk.position[slot] = position;
@@ -961,6 +977,10 @@ public class VectorLocationIndex {
    * <p>
    * Counted independently of {@link #size()}, by popcount over the presence bits, so the two are a cross-check on
    * each other rather than two names for one counter.
+   * <p>
+   * O(allocated chunks), i.e. one word pair per 128 ids, against the O(live vectors) stream it replaces. Still not
+   * something to call per query - {@code countEntries()} is its caller and {@code engine/CLAUDE.md} already says
+   * so - but the reason is the walk, not the counter: {@link #size()} is the O(1) answer.
    *
    * @return Number of active vectors
    */
@@ -1037,6 +1057,9 @@ public class VectorLocationIndex {
    * {@code estimatedLocationIndexBytes}, so an operator sizing a heap reads a measurement of this index and not an
    * assumption about its density.
    *
+   * O(allocated chunks), like {@link #getActiveCount()}, so it belongs on the stats path it is called from and
+   * nowhere hotter.
+   *
    * @return retained bytes, on a 64-bit JVM with compressed oops
    */
   public long estimatedRetainedBytes() {
@@ -1046,6 +1069,15 @@ public class VectorLocationIndex {
       if (DIRECTORY.getAcquire(directory, c) != null)
         bytes += CHUNK_RETAINED_BYTES;
     return bytes + ridIndex.retainedBytes() + deletedIds.retainedBytes();
+  }
+
+  /**
+   * Times a live vector id has had its RID rewritten in place since this instance was created. Exposed because it
+   * must stay zero: that write retires the id for the duration of the write, so a lock-free search running through
+   * it does not see a vector that is live. See {@code put()} for why the branch still exists.
+   */
+  int inPlaceRidRewriteCount() {
+    return inPlaceRidRewrites;
   }
 
   /** Chunks currently allocated. Exposed so a test can assert that a drained id space is actually handed back. */

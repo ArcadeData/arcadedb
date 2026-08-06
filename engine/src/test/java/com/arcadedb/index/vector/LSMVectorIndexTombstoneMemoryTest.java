@@ -64,6 +64,13 @@ class LSMVectorIndexTombstoneMemoryTest extends TestHelper {
         .isEqualTo(VERTICES);
     assertThat(locations.getDeletedCount()).as("every superseded id is tracked as one bit").isEqualTo(VERTICES * CYCLES);
 
+    // Re-embedding is the workload that would rewrite a live id's RID in place if an update ever reused its id
+    // instead of minting a new one, and that write retires the id for as long as it takes - a lock-free search
+    // running through the window does not see a live vector (issue #5588). Ten cycles of it must not do it once.
+    assertThat(locations.inPlaceRidRewriteCount())
+        .as("no engine path may re-point a live vector id at a different record")
+        .isZero();
+
     // Each update must mint exactly ONE new vector id: the commit used to index the record twice (once while
     // serializing the updated record, once replaying the queued index operations), so every re-embedding cycle
     // burned two ids and wrote two entries plus two tombstones per vertex.
