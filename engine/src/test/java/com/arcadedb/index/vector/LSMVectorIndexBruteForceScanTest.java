@@ -226,8 +226,8 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
     final VectorLocationIndex vectorIndex = readField(index, "vectorIndex");
 
     // Build the vectors view from snapshot A (exactly as findNeighborsFromVector does).
-    final RandomAccessVectorValues vectorsFromA = new ArcadePageVectorValues((DatabaseInternal) database, DIMENSIONS,
-        "vector", vectorIndex, ordinalA, index);
+    final RandomAccessVectorValues vectorsFromA = ArcadePageVectorValues.forSearch((DatabaseInternal) database,
+        DIMENSIONS, "vector", vectorIndex, ordinalA, index);
 
     // Probe ordinal whose mapping differs between A and its reverse, so the bug (if present) is visible.
     final int probeOrdinal = 0;

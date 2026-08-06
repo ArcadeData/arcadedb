@@ -208,9 +208,13 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
     }
 
     assertThat(filtered).as("and it still answers the query").hasSize(allowed.size());
+    // Three lookups per resolved ordinal since issue #5588: the scan asks for the RID to apply the membership
+    // test, and the vector read asks for the packed offset and then, when it has to fall back to the document,
+    // for the RID again. It was two when one call answered the whole tuple. What the test pins is unchanged -
+    // the cost follows the allow-list and not the size of the index.
     assertThat(filteredLookups)
         .as("the filtered scan resolves the allow-list and nothing else, so its cost follows the allow-list")
-        .isLessThanOrEqualTo(allowed.size() * 2);
+        .isLessThanOrEqualTo(allowed.size() * 3);
     assertThat(fullLookups).as("while the unfiltered scan costs one lookup per ordinal, which is the baseline")
         .isGreaterThanOrEqualTo(ordinalMap.length);
     assertThat(filteredLookups).as("and the gap is what issue #5748 is about").isLessThan(fullLookups / 4);
@@ -234,8 +238,8 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
     final float[] query = embedding(7);
     final Set<RID> allowed = ridsOf(3, 19, 31);
 
-    final RandomAccessVectorValues unreadable = new ArcadePageVectorValues((DatabaseInternal) database, DIMENSIONS,
-        "thereIsNoSuchProperty", index.getVectorIndex(), ordinalMap, index);
+    final RandomAccessVectorValues unreadable = ArcadePageVectorValues.forSearch((DatabaseInternal) database,
+        DIMENSIONS, "thereIsNoSuchProperty", index.getVectorIndex(), ordinalMap, index);
 
     assertThat(unreadable.getVector(0)).as("the fixture must really produce the placeholder, not a vector")
         .matches(v -> ((ArcadePageVectorValues) unreadable).isDeletedSentinel(v));
@@ -396,7 +400,7 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
    * silently turn the guard off and move the test onto a different code path.
    */
   private ArcadePageVectorValues vectorValues(final int[] ordinalMap) {
-    return new ArcadePageVectorValues((DatabaseInternal) database, DIMENSIONS, "embedding",
+    return ArcadePageVectorValues.forSearch((DatabaseInternal) database, DIMENSIONS, "embedding",
         vectorIndex().getVectorIndex(), ordinalMap, vectorIndex());
   }
 
@@ -440,7 +444,14 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
     return vector;
   }
 
-  /** Counts the location lookups the scan performs, delegating the answers to the real map. */
+  /**
+   * Counts the location lookups the scan performs, delegating the answers to the real index.
+   * <p>
+   * Every way of asking for one entry's location counts, not just {@code getLocation}: since issue #5588 the scan
+   * asks for the RID and the vector reader asks for the packed offset, where both used to ask for the whole tuple.
+   * The count per ordinal is unchanged - two - which is what keeps the bounds below comparable to the ones this
+   * test was written with.
+   */
   private static final class CountingLocationIndex extends VectorLocationIndex {
     private final VectorLocationIndex delegate;
     private       int                 lookups;
@@ -453,6 +464,30 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
     public VectorLocation getLocation(final int vectorId) {
       lookups++;
       return delegate.getLocation(vectorId);
+    }
+
+    @Override
+    public RID getRid(final int vectorId) {
+      lookups++;
+      return delegate.getRid(vectorId);
+    }
+
+    @Override
+    public long getOffsetAndFlag(final int vectorId) {
+      lookups++;
+      return delegate.getOffsetAndFlag(vectorId);
+    }
+
+    @Override
+    public boolean isLive(final int vectorId) {
+      lookups++;
+      return delegate.isLive(vectorId);
+    }
+
+    @Override
+    public boolean isLocationOf(final int vectorId, final RID rid) {
+      lookups++;
+      return delegate.isLocationOf(vectorId, rid);
     }
 
     @Override

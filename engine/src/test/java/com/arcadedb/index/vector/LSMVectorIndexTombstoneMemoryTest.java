@@ -160,6 +160,36 @@ class LSMVectorIndexTombstoneMemoryTest extends TestHelper {
     assertThat(index.countEntries()).as("still one live vector for the RID").isEqualTo(1);
   }
 
+  /**
+   * The id sequence must survive an index whose every vector was deleted, across a reopen.
+   * <p>
+   * Nothing resident carries it at that point: {@code loadVectorsFromPages} computes the high-water mark as
+   * {@code max(highest live id + 1, getNextId())}, and with no live id the first term is 0. Only the location
+   * index's own sequence - which every {@code addOrUpdate} advances, tombstones included - stops the next insert
+   * from reusing an id that a persisted tombstone still refers to, which the LSM merge-on-read would then resolve
+   * to "deleted" and bury the new vector with the old one.
+   */
+  @Test
+  void theIdSequenceSurvivesAnIndexWhereEveryVectorWasDeleted() {
+    createSchema();
+    insertVertices();
+
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc"));
+
+    final LSMVectorIndex index = getVectorIndex();
+    assertThat(index.getVectorIndex().size()).isZero();
+    final int idsHandedOut = index.getVectorIndex().getNextId();
+    assertThat(idsHandedOut).isGreaterThanOrEqualTo(VERTICES);
+
+    reopenDatabase();
+
+    final VectorLocationIndex reopened = getVectorIndex().getVectorIndex();
+    assertThat(reopened.size()).as("nothing is live any more").isZero();
+    assertThat(reopened.getNextId())
+        .as("but the sequence must not restart, or the next insert reuses a tombstoned id")
+        .isGreaterThanOrEqualTo(idsHandedOut);
+  }
+
   @Test
   void dropIndexReleasesInMemoryLocations() {
     createSchema();

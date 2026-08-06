@@ -55,10 +55,14 @@ import java.util.Set;
  * <b>Cost.</b> This runs on every search, not only on the RID-restricted ones that used to need a filter, so it is
  * worth knowing what it costs an index with no deletions at all. JVector calls {@code acceptOrds.get()} once per
  * <i>popped</i> candidate, not once per scored neighbour, so it does not scale with beam width times graph fan-out:
- * measured at 28.7 calls per query on a 50k-vector, 128-dimension INT8 index at {@code k=10}. One call is a
- * {@code getLocation} lookup at 7.5 ns, so the whole filter adds 0.22 us to a 172 us query - 0.13%. That is why there
- * is no "no tombstones, use Bits.ALL" fast path here: it would buy nothing measurable and would cost a second, subtly
+ * measured at 28.7 calls per query on a 50k-vector, 128-dimension INT8 index at {@code k=10}. One call is a location
+ * lookup at 7.5 ns, so the whole filter adds 0.22 us to a 172 us query - 0.13%. That is why there is no "no
+ * tombstones, use Bits.ALL" fast path here: it would buy nothing measurable and would cost a second, subtly
  * different definition of which nodes a search may return.
+ * <p>
+ * Since issue #5588 the location index holds no resident objects, so the unrestricted case asks it for the single
+ * presence bit rather than for a location tuple it would have to materialize. Only the allow-list case pays for a
+ * {@link RID}, and it pays for it because {@code Set<RID>} membership needs the object.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -83,28 +87,33 @@ public class LiveVectorBitsFilter implements Bits {
 
   @Override
   public boolean get(final int ordinal) {
-    return admissibleLocation(ordinal, ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs) != null;
+    if (allowedRIDs == null)
+      // The common case: liveness alone, answered by one presence bit and no allocation at all.
+      return ordinal >= 0 && ordinal < ordinalToVectorIdSnapshot.length
+          && vectorIndex.isLive(ordinalToVectorIdSnapshot[ordinal]);
+
+    return admissibleRid(ordinal, ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs) != null;
   }
 
   /**
-   * The location a graph ordinal may be answered with, or {@code null} if it may not: out of the ordinal map, no
-   * longer live, or outside the allow-list. Shared with {@link GroupedRIDBitsFilter}, which needs the location itself
-   * to resolve a group key and would otherwise carry a second copy of this predicate for the two to drift apart on.
+   * The RID a graph ordinal may be answered with, or {@code null} if it may not: out of the ordinal map, no longer
+   * live, or outside the allow-list. Shared with {@link GroupedRIDBitsFilter}, which needs the RID to resolve a group
+   * key and would otherwise carry a second copy of this predicate for the two to drift apart on.
    *
    * @param allowedRIDs optional RID allow-list; {@code null} or empty means "every live vector"
    */
-  static VectorLocationIndex.VectorLocation admissibleLocation(final int ordinal, final int[] ordinalToVectorIdSnapshot,
+  static RID admissibleRid(final int ordinal, final int[] ordinalToVectorIdSnapshot,
       final VectorLocationIndex vectorIndex, final Set<RID> allowedRIDs) {
     if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
       return null;
 
-    final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(ordinalToVectorIdSnapshot[ordinal]);
-    if (loc == null || loc.deleted)
+    final RID rid = vectorIndex.getRid(ordinalToVectorIdSnapshot[ordinal]);
+    if (rid == null)
       return null;
 
-    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
       return null;
 
-    return loc;
+    return rid;
   }
 }

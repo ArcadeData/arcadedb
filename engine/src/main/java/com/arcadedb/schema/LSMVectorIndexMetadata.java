@@ -272,7 +272,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
           + "location is the only mapping from a vector id to its record, so capping the location index drops "
           + "vectors from searches and from countEntries() instead of spilling them to disk. Remove the setting and "
           + "size the heap for ~" + VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION
-          + " bytes per live vector (~90MB per million)");
+          + " bytes per live vector (~" + VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION + "MB per million)");
 
     this.locationCacheSize = locationCacheSize;
   }

@@ -93,10 +93,9 @@ public class GroupedRIDBitsFilter implements Bits {
       return false;
 
     // Same liveness and allow-list predicate the ungrouped search applies, borrowed from LiveVectorBitsFilter so the
-    // two cannot drift; it hands back the location because the group key below needs the RID anyway.
-    final VectorLocationIndex.VectorLocation loc = LiveVectorBitsFilter.admissibleLocation(ordinal,
-        ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs);
-    if (loc == null) {
+    // two cannot drift; it hands back the RID because the group key below needs it anyway.
+    final RID rid = LiveVectorBitsFilter.admissibleRid(ordinal, ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs);
+    if (rid == null) {
       rejected.add(ordinal);
       return false;
     }
@@ -106,7 +105,7 @@ public class GroupedRIDBitsFilter implements Bits {
     // null bucket) to match the MVP's HashMap null-key handling.
     final Object groupKey;
     try {
-      groupKey = groupKeyResolver.apply(loc.rid);
+      groupKey = groupKeyResolver.apply(rid);
     } catch (final RuntimeException e) {
       rejected.add(ordinal);
       return false;
