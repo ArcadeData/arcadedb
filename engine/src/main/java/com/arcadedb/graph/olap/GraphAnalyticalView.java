@@ -899,6 +899,51 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
+   * Computes the exact mean number of parallel edges joining a connected pair of vertices for an edge
+   * type, from the CSR forward-adjacency array - see {@link com.arcadedb.graph.GraphTraversalProvider
+   * #getMeanEdgesPerConnectedPair}.
+   * <p>
+   * Returns {@link #MULTIPLICITY_UNKNOWN} when a delta overlay is active (uncommitted-to-CSR edges would
+   * be silently missed) or when this view holds no CSR for the type, matching {@link #countEdgesBetween}'s
+   * convention. Each node's forward-neighbor slice is sorted (built that way for {@link #hasForwardEdge}'s
+   * binary search), so parallel edges to the same target form a contiguous run and the whole type can be
+   * measured with a single linear pass - no per-pair lookups.
+   */
+  @Override
+  public double getMeanEdgesPerConnectedPair(final String edgeType) {
+    final Snapshot snap = checkBuilt();
+    if (snap.overlay != null)
+      return MULTIPLICITY_UNKNOWN;
+
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    if (csr == null)
+      return MULTIPLICITY_UNKNOWN;
+
+    final int totalEdges = csr.getEdgeCount();
+    if (totalEdges == 0)
+      return 1.0;
+
+    final int[] offsets = csr.getForwardOffsets();
+    final int[] neighbors = csr.getForwardNeighbors();
+
+    long distinctPairs = 0;
+    final int n = snap.nodeMapping.size();
+    for (int node = 0; node < n; node++) {
+      final int start = offsets[node];
+      final int end = offsets[node + 1];
+      if (start == end)
+        continue;
+      // Sorted slice: a run of equal neighbor ids is one distinct pair with several parallel edges.
+      distinctPairs++;
+      for (int i = start + 1; i < end; i++)
+        if (neighbors[i] != neighbors[i - 1])
+          distinctPairs++;
+    }
+
+    return distinctPairs == 0 ? 1.0 : (double) totalEdges / distinctPairs;
+  }
+
+  /**
    * Counts common neighbors between two nodes, optionally filtered by edge types.
    */
   public int countCommonNeighbors(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,

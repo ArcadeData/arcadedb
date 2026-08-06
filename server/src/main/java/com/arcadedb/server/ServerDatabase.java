@@ -51,6 +51,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
@@ -637,6 +638,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public CypherPlanCache getCypherPlanCache() {
     return wrapped.getCypherPlanCache();
+  }
+
+  @Override
+  public GraphStatisticsCache getGraphStatisticsCache() {
+    return wrapped.getGraphStatisticsCache();
   }
 
   public WALFileFactory getWALFileFactory() {

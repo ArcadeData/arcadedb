@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.optimizer.statistics;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -34,6 +36,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 /**
@@ -56,6 +59,9 @@ public class StatisticsProvider {
   private final Map<String, List<IndexStatistics>> indexStatsCache;
   private final Map<String, Double> averageDegreeCache;
   private final Map<String, Double> meanEdgesPerConnectedPairCache;
+  // Database-scoped, shared across every StatisticsProvider (i.e. every CypherOptimizer/query) on this
+  // database, so a hot edge type is not resampled on every plan (#5834).
+  private final GraphStatisticsCache graphStatisticsCache;
 
   public StatisticsProvider(final DatabaseInternal database) {
     this.database = database;
@@ -63,6 +69,9 @@ public class StatisticsProvider {
     this.indexStatsCache = new HashMap<>();
     this.averageDegreeCache = new HashMap<>();
     this.meanEdgesPerConnectedPairCache = new HashMap<>();
+    // Some tests subclass StatisticsProvider with a null database, overriding every method that would
+    // touch it - preserve that contract by not dereferencing database here.
+    this.graphStatisticsCache = database != null ? database.getGraphStatisticsCache() : null;
   }
 
   /**
@@ -207,16 +216,30 @@ public class StatisticsProvider {
       final String sourceVertexLabel,
       final String targetVertexLabel) {
 
-    // Check cache first
+    // Check the per-query cache first
     final String cacheKey = relationshipType + ":" + sourceVertexLabel + ":" + targetVertexLabel;
     if (averageDegreeCache.containsKey(cacheKey)) {
       return averageDegreeCache.get(cacheKey);
     }
 
-    // Calculate average degree
-    final double avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
-    averageDegreeCache.put(cacheKey, avgDegree);
+    final Schema schema = database.getSchema();
+    final boolean isEdgeType = schema.existsType(relationshipType) && schema.getType(relationshipType) instanceof EdgeType;
 
+    final double avgDegree;
+    if (isEdgeType) {
+      final long currentEdgeCount = database.countType(relationshipType, false);
+      final Double cached = graphStatisticsCache.getAverageDegree(cacheKey, currentEdgeCount);
+      if (cached != null) {
+        avgDegree = cached;
+      } else {
+        avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
+        graphStatisticsCache.putAverageDegree(cacheKey, avgDegree, currentEdgeCount);
+      }
+    } else {
+      avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
+    }
+
+    averageDegreeCache.put(cacheKey, avgDegree);
     return avgDegree;
   }
 
@@ -310,9 +333,38 @@ public class StatisticsProvider {
     if (meanEdgesPerConnectedPairCache.containsKey(edgeType))
       return meanEdgesPerConnectedPairCache.get(edgeType);
 
-    final double mean = calculateMeanEdgesPerConnectedPair(edgeType);
+    final Schema schema = database.getSchema();
+    final boolean isEdgeType = schema.existsType(edgeType) && schema.getType(edgeType) instanceof EdgeType;
+
+    final double mean;
+    if (isEdgeType) {
+      final long currentEdgeCount = database.countType(edgeType, false);
+      final Double cached = graphStatisticsCache.getMeanEdgesPerConnectedPair(edgeType, currentEdgeCount);
+      if (cached != null) {
+        mean = cached;
+      } else {
+        mean = exactMeanFromTraversalProvider(edgeType).orElseGet(() -> calculateMeanEdgesPerConnectedPair(edgeType));
+        graphStatisticsCache.putMeanEdgesPerConnectedPair(edgeType, mean, currentEdgeCount);
+      }
+    } else {
+      mean = calculateMeanEdgesPerConnectedPair(edgeType);
+    }
+
     meanEdgesPerConnectedPairCache.put(edgeType, mean);
     return mean;
+  }
+
+  /**
+   * Checks whether a registered {@link GraphTraversalProvider} (e.g. a {@code GraphAnalyticalView})
+   * covering this edge type can answer the multiplicity exactly, so the caller can skip the sample
+   * entirely (#5834) instead of paying for it and then discovering a provider existed all along.
+   */
+  private OptionalDouble exactMeanFromTraversalProvider(final String edgeType) {
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeType);
+    if (provider == null)
+      return OptionalDouble.empty();
+    final double exact = provider.getMeanEdgesPerConnectedPair(edgeType);
+    return exact >= 0 ? OptionalDouble.of(exact) : OptionalDouble.empty();
   }
 
   /**

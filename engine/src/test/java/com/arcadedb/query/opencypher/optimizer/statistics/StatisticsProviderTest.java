@@ -267,6 +267,75 @@ class StatisticsProviderTest {
   }
 
   @Test
+  void meanEdgesPerConnectedPairIsSharedAcrossStatisticsProviderInstancesOnTheSameDatabase() {
+    // Simulates two distinct queries planning over the same edge type: each CypherOptimizer creates
+    // its own StatisticsProvider, so without a database-scoped cache each would re-sample from scratch.
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      final var a = database.newVertex("Person").save();
+      final var b = database.newVertex("Person").save();
+      for (int i = 0; i < 5; i++)
+        a.newEdge("KNOWS", b, true, (Object[]) null);
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(5.0);
+
+    // A second provider (a second query's planning) must reuse the cached value from the shared,
+    // database-scoped cache rather than resampling - observable via the cache having an entry already.
+    final StatisticsProvider secondProvider = new StatisticsProvider((DatabaseInternal) database);
+    assertThat(((DatabaseInternal) database).getGraphStatisticsCache().size()).isGreaterThan(0);
+    assertThat(secondProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(5.0);
+  }
+
+  @Test
+  void meanEdgesPerConnectedPairResamplesAfterEdgesAreAddedToTheType() {
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      final var a = database.newVertex("Person").save();
+      final var b = database.newVertex("Person").save();
+      for (int i = 0; i < 5; i++)
+        a.newEdge("KNOWS", b, true, (Object[]) null);
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(5.0);
+
+    // More edges land on a new pair after the first query planned - the shared cache entry is now stale
+    // (edge count changed) and a fresh StatisticsProvider must resample rather than serve 5.0 forever.
+    database.transaction(() -> {
+      final var c = database.newVertex("Person").save();
+      final var d = database.newVertex("Person").save();
+      c.newEdge("KNOWS", d, true, (Object[]) null);
+    });
+
+    final StatisticsProvider secondProvider = new StatisticsProvider((DatabaseInternal) database);
+    // 6 edges / 2 pairs = 3.0, not the stale 5.0.
+    assertThat(secondProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(3.0);
+  }
+
+  @Test
+  void averageDegreeIsSharedAcrossStatisticsProviderInstancesOnTheSameDatabase() {
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++) {
+        final var a = database.newVertex("Person").save();
+        final var b = database.newVertex("Person").save();
+        a.newEdge("KNOWS", b, true, (Object[]) null);
+      }
+    });
+    statisticsProvider.collectStatistics(Arrays.asList("Person", "KNOWS"));
+
+    final double degree = statisticsProvider.getAverageDegree("KNOWS", "Person", "Person");
+
+    final StatisticsProvider secondProvider = new StatisticsProvider((DatabaseInternal) database);
+    secondProvider.collectStatistics(Arrays.asList("Person", "KNOWS"));
+    assertThat(((DatabaseInternal) database).getGraphStatisticsCache().size()).isGreaterThan(0);
+    assertThat(secondProvider.getAverageDegree("KNOWS", "Person", "Person")).isEqualTo(degree);
+  }
+
+  @Test
   void preferUniqueIndexOverNonUnique() {
     // Create type with unique and non-unique indexes on different properties
     final var personType = database.getSchema().getOrCreateVertexType("Person");
