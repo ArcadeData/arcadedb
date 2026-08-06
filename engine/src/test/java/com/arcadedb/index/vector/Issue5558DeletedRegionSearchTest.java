@@ -197,10 +197,11 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
    * return a wrong answer, it threw JVector's {@code 0 <= score <= 1} AssertionError out of the search. It has no
    * brute-force fallback to hide behind either, so this is the raw traversal.
    * <p>
-   * The assertion is deliberately about liveness and not about which cluster wins: the grouped path spends its
-   * distinct-group budget in traversal order rather than score order, so the groups it picks are the ones the beam
-   * met on its way in. That is out of scope here (see the {@code findNeighborsFromVectorGrouped} contract, which
-   * documents the admission as approximate) and is tracked separately.
+   * It also says which cluster wins, which it could not do until #5761 was fixed: the grouped path used to spend its
+   * distinct-group budget in traversal order rather than score order, so the groups it picked were whichever ones the
+   * beam met on its way in, and one of the three was always a cluster that has no business being in the answer.
+   * Group admission now runs on the score-ordered output of a walk that resumes until the groups are filled, so the
+   * three groups are the three nearest surviving clusters, in that order, and nothing that was deleted comes back.
    */
   @Test
   void theGroupedSearchAnswersADeletedRegionQuery() {
@@ -214,9 +215,15 @@ class Issue5558DeletedRegionSearchTest extends TestHelper {
         -1, null, rid -> clusterOf(((Document) database.lookupByRID(rid, true)).getString("id")));
     assertThat(neighbors).as("the grouped path has no brute-force fallback: an empty answer here is the raw defect")
         .isNotEmpty();
+
+    final List<Integer> clusters = new ArrayList<>(neighbors.size());
     for (final Pair<RID, Float> neighbor : neighbors)
-      assertThat(clusterOf(idOf(neighbor.getFirst()))).as("no deleted vector may come back").isGreaterThanOrEqualTo(
-          DELETED_CLUSTERS);
+      clusters.add(clusterOf(idOf(neighbor.getFirst())));
+    assertThat(clusters).as("the three nearest surviving clusters are the groups, and nothing deleted may come back, "
+        + "got %s", clusters)
+        .containsExactlyInAnyOrder(DELETED_CLUSTERS, DELETED_CLUSTERS, DELETED_CLUSTERS + 1, DELETED_CLUSTERS + 1,
+            DELETED_CLUSTERS + 2, DELETED_CLUSTERS + 2);
+    assertThat(clusters).as("three groups of two, which is what limit=3 groupSize=2 asks for").hasSize(6);
   }
 
   /**

@@ -38,9 +38,9 @@ import java.util.Set;
  * The predicate is deliberately identical to the post-filter applied to the search output, so nothing that would have
  * survived it is dropped here.
  * <p>
- * <b>Deliberately not memoized</b>, unlike {@link GroupedRIDBitsFilter}, which caches its per-ordinal verdicts so
- * JVector sees a stable answer across repeated calls within one search. That filter has to: its verdict consumes a
- * group budget, so answering twice would count an ordinal twice. This one has no state to protect, so it reads the
+ * <b>Deliberately not memoized.</b> A filter whose verdict consumes a budget would have to cache it, so that a repeat
+ * call within one search cannot spend the budget twice - that is what the withdrawn {@code GroupedRIDBitsFilter} did
+ * before #5761 moved the {@code groupBy} cap out of the traversal. This one has no state to protect, so it reads the
  * location map live and a delete committed mid-traversal takes effect immediately. The freshness is worth more than
  * the stability here, and it is safe because the result loop re-checks the same predicate before emitting - an
  * ordinal admitted just before its delete lands is dropped at the output rather than returned.
@@ -81,30 +81,19 @@ public class LiveVectorBitsFilter implements Bits {
     this.vectorIndex = vectorIndex;
   }
 
+  /**
+   * A graph ordinal may be answered with unless it is outside the ordinal map, no longer live, or outside the
+   * allow-list.
+   */
   @Override
   public boolean get(final int ordinal) {
-    return admissibleLocation(ordinal, ordinalToVectorIdSnapshot, vectorIndex, allowedRIDs) != null;
-  }
-
-  /**
-   * The location a graph ordinal may be answered with, or {@code null} if it may not: out of the ordinal map, no
-   * longer live, or outside the allow-list. Shared with {@link GroupedRIDBitsFilter}, which needs the location itself
-   * to resolve a group key and would otherwise carry a second copy of this predicate for the two to drift apart on.
-   *
-   * @param allowedRIDs optional RID allow-list; {@code null} or empty means "every live vector"
-   */
-  static VectorLocationIndex.VectorLocation admissibleLocation(final int ordinal, final int[] ordinalToVectorIdSnapshot,
-      final VectorLocationIndex vectorIndex, final Set<RID> allowedRIDs) {
     if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
-      return null;
+      return false;
 
     final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(ordinalToVectorIdSnapshot[ordinal]);
     if (loc == null || loc.deleted)
-      return null;
+      return false;
 
-    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
-      return null;
-
-    return loc;
+    return allowedRIDs == null || allowedRIDs.contains(loc.rid);
   }
 }

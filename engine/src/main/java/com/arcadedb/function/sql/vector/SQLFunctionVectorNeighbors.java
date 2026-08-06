@@ -29,6 +29,7 @@ import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -197,10 +198,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * Search across multiple vector indexes and merge the results.
    * This is used when searching within a specific type that may have multiple buckets.
    * <p>
-   * When {@code groupBy} is set, the index is asked for an over-fetched candidate pool and the
-   * top-{@code limit} <em>groups</em> are returned, each capped at {@code groupSize} rows. Best-effort:
-   * fewer groups may be returned if the candidate pool runs out before {@code limit} groups are filled,
-   * in which case raising the index's {@code efSearch} option improves coverage.
+   * When {@code groupBy} is set, each index applies the {@code limit} / {@code groupSize} cap to its own
+   * score-ordered search output, resuming the graph walk until it has {@code limit} distinct groups or runs
+   * out of candidate budget (#5761), and the {@link GroupAdmissionState} below re-applies the same cap once
+   * across every index so the caller never sees a {@code (limit + 1)}-th group. Still best-effort: an index
+   * whose nearest group is denser than its candidate budget returns fewer groups and counts the query in
+   * {@code groupedSearchesShortOfLimit}, which is the signal to raise the index's {@code efSearch}.
    * <p>
    * <b>Parameter sprawl</b> (8 positional args). Each new option that lands here adds another
    * parameter. The next addition should refactor to a {@code VectorSearchOptions} record - keeping
@@ -212,11 +215,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.get(0), context);
 
-    // Memory-budget guard for the integrated path (issue #4071): the per-group Bits filter caps
-    // memory at O(limit * groupSize) per bucket, but we still reject pathological combinations
-    // (e.g. limit=10000, groupSize=10000 = 100M candidates) so the search loop does not allocate
-    // arrays in the GiB range. Same shape (and exception text) as the MVP cap so existing tests
-    // probing the boundary remain valid.
+    // Memory-budget guard for the grouped path (issue #4071): the per-group accounting is O(limit * groupSize)
+    // per bucket, but we still reject pathological combinations (e.g. limit=10000, groupSize=10000 = 100M
+    // candidates) so the search loop does not allocate arrays in the GiB range. Same shape (and exception text)
+    // as the MVP cap so existing tests probing the boundary remain valid.
     if (groupBy != null) {
       final long requested = Math.max((long) limit * groupSize * 5L, (long) limit);
       if (requested > MAX_FETCH_CANDIDATES)

@@ -183,67 +183,6 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
-   * Parses a {@code filter} option (a list of RIDs / Identifiables / RID-string forms) into a
-   * {@link Set} of {@link RID} suitable for the post-filter step in vector neighbour searches.
-   * Returns {@code null} for null or empty inputs so callers can distinguish "no filter" from
-   * "empty filter" with a single null-check.
-   *
-   * @param items   the {@code filter} option contents, typically the value of
-   *                {@code FunctionOptions.getList("filter")}
-   * @param functionName the calling function's SQL name, used to build helpful error messages
-   * @param context the command context (used to coerce string-form RIDs through
-   *                {@link BasicDatabase#newRID})
-   *
-   * @return a set of allowed RIDs, or {@code null} when no whitelist should apply
-   *
-   * @throws CommandSQLParsingException if the list contains a value that cannot be coerced to a RID
-   */
-  /**
-   * Mutable accounting state shared by the three vector functions that apply a post-traversal
-   * {@code groupBy} / {@code groupSize} filter. Encapsulates the per-group counter map plus the
-   * {@code filledGroups} O(1) early-exit counter so the three call sites do not drift in lockstep.
-   * <p>
-   * Lifetime is one query: instantiate, call {@link #admit(Object)} per candidate row in rank order,
-   * call {@link #isFull(int)} to decide whether the loop can stop, discard.
-   */
-  protected static final class GroupAdmissionState {
-    private final HashMap<Object, Integer> perGroup = new HashMap<>();
-    private final int                                 limit;
-    private final int                                 groupSize;
-    private       int                                 filledGroups = 0;
-
-    public GroupAdmissionState(final int limit, final int groupSize) {
-      this.limit = limit;
-      this.groupSize = groupSize;
-    }
-
-    /**
-     * Decides whether a candidate row with the given group key should be kept. Side-effects the
-     * internal counters when admitting. Returns {@code true} if admitted, {@code false} if the row
-     * must be skipped (group already full, or this would open a {@code (limit + 1)}-th group).
-     */
-    public boolean admit(final Object groupKey) {
-      final int existing = perGroup.getOrDefault(groupKey, 0);
-      if (existing == 0 && perGroup.size() >= limit)
-        return false;
-      if (existing >= groupSize)
-        return false;
-      perGroup.put(groupKey, existing + 1);
-      if (existing + 1 == groupSize)
-        filledGroups++;
-      return true;
-    }
-
-    /**
-     * Returns {@code true} when {@code limit} groups have all reached {@code groupSize}, signalling
-     * the caller to break out of its scoring loop. O(1).
-     */
-    public boolean isFull() {
-      return filledGroups >= limit;
-    }
-  }
-
-  /**
    * Narrows {@code allowedBucketIds} (the per-type bucket allow-list assembled from
    * {@code DocumentType.getBuckets(false)}) to the partition-pruned subset stashed on the
    * {@link CommandContext} by {@code SelectExecutionPlanner.derivePartitionPrunedClusters}.
