@@ -45,8 +45,11 @@ import java.util.Set;
  */
 public class StatisticsProvider {
   // Bounded sample size for multiplicity estimation, so a busy edge type is never fully scanned during planning.
-  private static final int    MULTIPLICITY_SAMPLE_LIMIT               = 2000;
+  private static final int    MULTIPLICITY_SAMPLE_LIMIT             = 2000;
   private static final double DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR = 1.0;
+  // Prefix sampling can overestimate badly if the sampled prefix happens to land entirely inside one
+  // heavily-parallel pair's edges; cap the blast radius the same way calculateAverageDegree does.
+  private static final double MAX_MEAN_EDGES_PER_CONNECTED_PAIR     = 1000.0;
 
   private final DatabaseInternal database;
   private final Map<String, TypeStatistics> typeStatsCache;
@@ -344,7 +347,8 @@ public class StatisticsProvider {
     if (distinctPairs.isEmpty())
       return DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR;
 
-    return Math.max(DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR, (double) sampledEdges / distinctPairs.size());
+    final double mean = (double) sampledEdges / distinctPairs.size();
+    return Math.min(MAX_MEAN_EDGES_PER_CONNECTED_PAIR, Math.max(DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR, mean));
   }
 
   /**

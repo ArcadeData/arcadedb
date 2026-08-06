@@ -250,6 +250,23 @@ class StatisticsProviderTest {
   }
 
   @Test
+  void getMeanEdgesPerConnectedPairClampsAPathologicallyClusteredSample() {
+    // Prefix sampling reads storage order, so if every sampled edge belongs to a single pair the raw
+    // ratio would be sampledEdges / 1, unboundedly large. The estimate must not inflate the planner's
+    // cardinality by orders of magnitude on that pathological case - it is capped at 1000.
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      final var a = database.newVertex("Person").save();
+      final var b = database.newVertex("Person").save();
+      for (int i = 0; i < 1200; i++)
+        a.newEdge("KNOWS", b, true, (Object[]) null);
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(1000.0);
+  }
+
+  @Test
   void preferUniqueIndexOverNonUnique() {
     // Create type with unique and non-unique indexes on different properties
     final var personType = database.getSchema().getOrCreateVertexType("Person");
