@@ -415,7 +415,7 @@ public class CypherExecutionPlan {
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     final AbstractExecutionStep rootStep;
     if (clausesInOrder != null && !clausesInOrder.isEmpty())
-      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep, seedIsRead(seedRow));
+      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep, seedIsRead(seedRow), seedRow.getPropertyNames());
     else
       rootStep = seedStep; // Fallback: just return the seed
 
@@ -1036,7 +1036,7 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder) {
-    return buildExecutionStepsWithOrder(context, clausesInOrder, null, false);
+    return buildExecutionStepsWithOrder(context, clausesInOrder, null, false, Set.of());
   }
 
   /**
@@ -1044,13 +1044,20 @@ public class CypherExecutionPlan {
    * When initialStep is provided (e.g., for CALL subqueries), it serves as the starting point
    * of the step chain, providing input rows to the first clause.
    *
-   * @param seedIsRead whether this body reads anything the seed row carries, i.e. whether it is correlated to the
-   *                   enclosing query at all. A body that reads none of the seeded names is answered the same way
-   *                   with the seed as without it, which is what lets the count push-downs below still apply.
+   * @param seedIsRead         whether this body reads anything the seed row carries, i.e. whether it is correlated
+   *                           to the enclosing query at all. A body that reads none of the seeded names is answered
+   *                           the same way with the seed as without it, which is what lets the count push-downs
+   *                           below still apply.
+   * @param seedVariableNames  the seed row's own variable names, empty when there is no seed. Pre-populates
+   *                           {@code boundVariables} the way an explicit leading {@code WITH} would: without it, a
+   *                           body's first clause has no way to tell that one of its own pattern variables (a
+   *                           relationship in particular - see #5696) is not fresh but already carries the outer
+   *                           binding, because {@link CypherVariableUsage#isEdgeVariableReferenced} only sees this
+   *                           body's own text, never the enclosing query that actually names it again.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder,
-      final AbstractExecutionStep initialStep, final boolean seedIsRead) {
+      final AbstractExecutionStep initialStep, final boolean seedIsRead, final Set<String> seedVariableNames) {
     AbstractExecutionStep currentStep = initialStep;
 
     // Get function factory from evaluator for steps that need it
@@ -1059,7 +1066,7 @@ public class CypherExecutionPlan {
 
     // Track variables bound across MATCH clauses so subsequent MATCHes
     // can detect already-bound variables and avoid Cartesian products
-    final Set<String> boundVariables = new HashSet<>();
+    final Set<String> boundVariables = new HashSet<>(seedVariableNames);
 
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
     // never look at the incoming rows. That makes them wrong the moment the seed row binds one of those pattern
@@ -1830,7 +1837,8 @@ public class CypherExecutionPlan {
           // Anonymous edge: null if GAV-eligible, internal var if edge tracking needed.
           final String relVar;
           if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
-            if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable()))
+            if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable())
+                || boundVariables.contains(relPattern.getVariable()))
               relVar = relPattern.getVariable();
             else
               relVar = hopNeedsEdgeTracking[i] ? ("  rel" + anonymousVarCounter++) : null;
