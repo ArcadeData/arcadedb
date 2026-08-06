@@ -68,16 +68,27 @@ class GraphStatisticsCacheTest {
   @Test
   void averageDegreeMissesWhenNeverPut() {
     final GraphStatisticsCache cache = new GraphStatisticsCache();
-    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L)).isNull();
+    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L, 5L, 5L)).isNull();
   }
 
   @Test
-  void averageDegreeHitsWhenGenerationMatchesAndMissesOnChange() {
+  void averageDegreeHitsWhenGenerationMatchesAndMissesOnEdgeCountChange() {
     final GraphStatisticsCache cache = new GraphStatisticsCache();
-    cache.putAverageDegree("KNOWS:Person:Person", 2.5, 10L);
+    cache.putAverageDegree("KNOWS:Person:Person", 2.5, 10L, 5L, 5L);
 
-    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L)).isEqualTo(2.5);
-    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 11L)).isNull();
+    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L, 5L, 5L)).isEqualTo(2.5);
+    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 11L, 5L, 5L)).isNull();
+  }
+
+  @Test
+  void averageDegreeMissesWhenOnlyASourceOrTargetVertexCountChanges() {
+    // avgDegree = 2*edgeCount / (sourceCount + targetCount): the edge count alone does not determine it,
+    // so a vertex-only mutation (e.g. bulk-loading vertices before wiring edges) must also invalidate.
+    final GraphStatisticsCache cache = new GraphStatisticsCache();
+    cache.putAverageDegree("KNOWS:Person:Person", 2.5, 10L, 5L, 5L);
+
+    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L, 6L, 5L)).isNull();
+    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L, 5L, 6L)).isNull();
   }
 
   @Test
@@ -94,13 +105,13 @@ class GraphStatisticsCacheTest {
   void clearRemovesAllEntries() {
     final GraphStatisticsCache cache = new GraphStatisticsCache();
     cache.putMeanEdgesPerConnectedPair("KNOWS", 3.0, 10L);
-    cache.putAverageDegree("KNOWS:Person:Person", 2.5, 10L);
+    cache.putAverageDegree("KNOWS:Person:Person", 2.5, 10L, 5L, 5L);
     assertThat(cache.size()).isEqualTo(2);
 
     cache.clear();
 
     assertThat(cache.size()).isEqualTo(0);
     assertThat(cache.getMeanEdgesPerConnectedPair("KNOWS", 10L)).isNull();
-    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L)).isNull();
+    assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L, 5L, 5L)).isNull();
   }
 }

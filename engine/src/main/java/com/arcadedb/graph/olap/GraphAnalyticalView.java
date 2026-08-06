@@ -467,7 +467,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   private void invalidateGraphStatisticsCache() {
     final Database unwrapped = DatabaseInternal.unwrap(database);
-    if (unwrapped instanceof DatabaseInternal di)
+    if (unwrapped instanceof DatabaseInternal di && di.getGraphStatisticsCache() != null)
       di.getGraphStatisticsCache().clear();
   }
 

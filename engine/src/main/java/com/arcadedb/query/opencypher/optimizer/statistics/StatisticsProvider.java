@@ -228,12 +228,14 @@ public class StatisticsProvider {
     final double avgDegree;
     if (isEdgeType && graphStatisticsCache != null) {
       final long currentEdgeCount = database.countType(relationshipType, false);
-      final Double cached = graphStatisticsCache.getAverageDegree(cacheKey, currentEdgeCount);
+      final long currentSourceCount = currentVertexTypeCount(sourceVertexLabel);
+      final long currentTargetCount = currentVertexTypeCount(targetVertexLabel);
+      final Double cached = graphStatisticsCache.getAverageDegree(cacheKey, currentEdgeCount, currentSourceCount, currentTargetCount);
       if (cached != null) {
         avgDegree = cached;
       } else {
         avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
-        graphStatisticsCache.putAverageDegree(cacheKey, avgDegree, currentEdgeCount);
+        graphStatisticsCache.putAverageDegree(cacheKey, avgDegree, currentEdgeCount, currentSourceCount, currentTargetCount);
       }
     } else {
       avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
@@ -324,6 +326,12 @@ public class StatisticsProvider {
    * pair, so a hop bound at both ends filters rather than multiplies. A result above 1.0 means the type
    * is a multigraph - connected pairs are typically joined by more than one edge - which a bound-target
    * hop's cardinality estimate must scale by rather than ignore.
+   * <p>
+   * When a covering {@link GraphTraversalProvider} answers this exactly (see
+   * {@link #exactMeanFromTraversalProvider}), the result is cached under the current edge-type record
+   * count the same as a sampled value would be. If the provider's own data lags committed edges (a stale
+   * but still-{@code isReady} view outside the guarded delta-overlay window), the cached "exact" value can
+   * itself be a hair stale until the edge count next changes. Acceptable for a cost-model estimate.
    *
    * @param edgeType the edge type name
    * @return estimated mean edges per connected pair, at least 1.0; 1.0 as fallback when the type is
@@ -352,6 +360,22 @@ public class StatisticsProvider {
 
     meanEdgesPerConnectedPairCache.put(edgeType, mean);
     return mean;
+  }
+
+  /**
+   * Returns the current O(1) record count for a vertex type, or 0 if the label is null, does not exist,
+   * or is not a vertex type. Used only as a {@link GraphStatisticsCache} generation stamp for
+   * {@link #getAverageDegree} - deliberately independent of whether {@link #collectStatistics} has
+   * populated {@link #typeStatsCache} for this query, since the shared cache must detect a vertex-count
+   * change regardless of what this particular query happened to collect.
+   */
+  private long currentVertexTypeCount(final String vertexLabel) {
+    if (vertexLabel == null)
+      return 0;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(vertexLabel) || !(schema.getType(vertexLabel) instanceof VertexType))
+      return 0;
+    return database.countType(vertexLabel, false);
   }
 
   /**

@@ -339,6 +339,36 @@ class StatisticsProviderTest {
   }
 
   @Test
+  void averageDegreeResamplesAfterAVertexOnlyMutationEvenThoughTheEdgeCountIsUnchanged() {
+    // avgDegree = 2*edgeCount / (sourceCount+targetCount): a vertex-only mutation (e.g. bulk-loading more
+    // vertices without touching the edge type) changes the true answer without changing the edge count,
+    // so the cache stamp must include vertex counts, not just the edge count.
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      final var vertices = new MutableVertex[5];
+      for (int i = 0; i < 5; i++)
+        vertices[i] = database.newVertex("Person").save();
+      for (int i = 0; i < 20; i++)
+        vertices[i % 5].newEdge("KNOWS", vertices[(i + 1) % 5], true, (Object[]) null);
+    });
+
+    // 2*20 edges / (5+5) vertices = 4.0.
+    assertThat(statisticsProvider.getAverageDegree("KNOWS", "Person", "Person")).isEqualTo(4.0);
+
+    // 5 more Person vertices, no new KNOWS edges: edge count is unchanged, vertex count is not.
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newVertex("Person").save();
+    });
+
+    final StatisticsProvider afterGrowth = new StatisticsProvider((DatabaseInternal) database);
+    afterGrowth.collectStatistics(Arrays.asList("Person", "KNOWS"));
+    // 2*20 edges / (10+10) vertices = 2.0, not the stale 4.0 an edge-count-only stamp would still serve.
+    assertThat(afterGrowth.getAverageDegree("KNOWS", "Person", "Person")).isEqualTo(2.0);
+  }
+
+  @Test
   void meanEdgesPerConnectedPairPicksUpANewlyBuiltGAVEvenThoughTheEdgeCountDidNotChange() {
     // Same divergence trick as CypherExpandIntoMultiplicityCardinalityTest: the first 2000 edges in
     // creation order (what a sample sees) yield a different mean than the type's true population.

@@ -30,20 +30,28 @@ import java.util.concurrent.ConcurrentHashMap;
  * cache lives one level up, on the database, so repeated planning of the same edge type reuses the
  * previously sampled (or CSR-exact) value.
  * <p>
- * Each entry is stamped with the edge type's record count at the time it was computed. A read is a hit
- * only if the caller's current count still matches - any insert or delete on that edge type since the
- * entry was cached is treated as a miss, forcing a fresh sample. A count that returns to its original
- * value after a balanced insert+delete is not detected and can serve a stale entry; this is an accepted
- * heuristic-cache tradeoff, since a stale entry degrades plan quality rather than query correctness, and
- * it reuses the O(1) cached bucket counter that already backs {@code count(*)} rather than adding new
- * event-listener plumbing.
+ * Each entry is stamped with the record count(s) it depends on at the time it was computed. A read is a
+ * hit only if the caller's current count(s) still match - any insert or delete since the entry was
+ * cached is treated as a miss, forcing a fresh sample. A count that returns to its original value after
+ * a balanced insert+delete is not detected and can serve a stale entry; this is an accepted heuristic-
+ * cache tradeoff, since a stale entry degrades plan quality rather than query correctness, and it reuses
+ * the O(1) cached bucket counter that already backs {@code count(*)} rather than adding new event-
+ * listener plumbing. Concurrent recompute-and-overwrite on a cache miss is intentional and harmless: the
+ * underlying map is a {@link ConcurrentHashMap}, and the worst case of two threads racing a miss is a
+ * redundant recompute, never a torn or inconsistent read.
  */
 public class GraphStatisticsCache {
-  private record CachedStat(double value, long generation) {
+  private record MultiplicityStat(double value, long edgeCount) {
   }
 
-  private final Map<String, CachedStat> meanEdgesPerConnectedPairCache = new ConcurrentHashMap<>();
-  private final Map<String, CachedStat> averageDegreeCache             = new ConcurrentHashMap<>();
+  // Average degree is a function of edge count AND both endpoint vertex counts (avgDegree = 2*edgeCount /
+  // (sourceCount + targetCount)) - stamping on edge count alone would miss a vertex-only mutation (e.g.
+  // bulk-loading vertices before wiring edges), which is common enough not to treat as a rare corner case.
+  private record DegreeStat(double value, long edgeCount, long sourceVertexCount, long targetVertexCount) {
+  }
+
+  private final Map<String, MultiplicityStat> meanEdgesPerConnectedPairCache = new ConcurrentHashMap<>();
+  private final Map<String, DegreeStat> averageDegreeCache = new ConcurrentHashMap<>();
 
   /**
    * @param edgeType         the edge type name
@@ -51,29 +59,34 @@ public class GraphStatisticsCache {
    * @return the cached mean, or {@code null} if absent or stale (the edge count changed since it was cached)
    */
   public Double getMeanEdgesPerConnectedPair(final String edgeType, final long currentEdgeCount) {
-    return getIfValid(meanEdgesPerConnectedPairCache, edgeType, currentEdgeCount);
+    final MultiplicityStat entry = meanEdgesPerConnectedPairCache.get(edgeType);
+    return entry != null && entry.edgeCount() == currentEdgeCount ? entry.value() : null;
   }
 
   public void putMeanEdgesPerConnectedPair(final String edgeType, final double value, final long currentEdgeCount) {
-    meanEdgesPerConnectedPairCache.put(edgeType, new CachedStat(value, currentEdgeCount));
+    meanEdgesPerConnectedPairCache.put(edgeType, new MultiplicityStat(value, currentEdgeCount));
   }
 
   /**
-   * @param cacheKey         {@code relationshipType:sourceLabel:targetLabel}, matching {@link StatisticsProvider}'s key
-   * @param currentEdgeCount the relationship type's current record count
+   * @param cacheKey            {@code relationshipType:sourceLabel:targetLabel}, matching {@link StatisticsProvider}'s key
+   * @param currentEdgeCount    the relationship type's current record count
+   * @param currentSourceCount  the source vertex type's current record count (0 if not applicable)
+   * @param currentTargetCount  the target vertex type's current record count (0 if not applicable)
    * @return the cached average degree, or {@code null} if absent or stale
    */
-  public Double getAverageDegree(final String cacheKey, final long currentEdgeCount) {
-    return getIfValid(averageDegreeCache, cacheKey, currentEdgeCount);
+  public Double getAverageDegree(final String cacheKey, final long currentEdgeCount, final long currentSourceCount,
+      final long currentTargetCount) {
+    final DegreeStat entry = averageDegreeCache.get(cacheKey);
+    return entry != null
+        && entry.edgeCount() == currentEdgeCount
+        && entry.sourceVertexCount() == currentSourceCount
+        && entry.targetVertexCount() == currentTargetCount
+        ? entry.value() : null;
   }
 
-  public void putAverageDegree(final String cacheKey, final double value, final long currentEdgeCount) {
-    averageDegreeCache.put(cacheKey, new CachedStat(value, currentEdgeCount));
-  }
-
-  private static Double getIfValid(final Map<String, CachedStat> cache, final String key, final long currentGeneration) {
-    final CachedStat entry = cache.get(key);
-    return entry != null && entry.generation() == currentGeneration ? entry.value() : null;
+  public void putAverageDegree(final String cacheKey, final double value, final long currentEdgeCount,
+      final long currentSourceCount, final long currentTargetCount) {
+    averageDegreeCache.put(cacheKey, new DegreeStat(value, currentEdgeCount, currentSourceCount, currentTargetCount));
   }
 
   /**
