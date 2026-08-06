@@ -19,6 +19,10 @@
 package com.arcadedb.query.opencypher.optimizer.statistics;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -28,26 +32,46 @@ import com.arcadedb.schema.VertexType;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
+import java.util.Set;
 
 /**
  * Collects and provides runtime statistics for query optimization.
  * Statistics are collected on-demand and stored in-memory for the current query.
  *
- * Uses ArcadeDB's cached Bucket.count() (O(1)) for cardinality estimation.
+ * Most estimators use ArcadeDB's cached Bucket.count() (O(1)); {@link #getMeanEdgesPerConnectedPair}
+ * is the exception - it samples up to {@value #MULTIPLICITY_SAMPLE_LIMIT} edge records per call.
  */
 public class StatisticsProvider {
+  // Bounded sample size for multiplicity estimation, so a busy edge type is never fully scanned during planning.
+  private static final int    MULTIPLICITY_SAMPLE_LIMIT             = 2000;
+  private static final double DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR = 1.0;
+  // Prefix sampling can overestimate badly if the sampled prefix happens to land entirely inside one
+  // heavily-parallel pair's edges; cap the blast radius the same way calculateAverageDegree does.
+  private static final double MAX_MEAN_EDGES_PER_CONNECTED_PAIR     = 1000.0;
+
   private final DatabaseInternal database;
   private final Map<String, TypeStatistics> typeStatsCache;
   private final Map<String, List<IndexStatistics>> indexStatsCache;
   private final Map<String, Double> averageDegreeCache;
+  private final Map<String, Double> meanEdgesPerConnectedPairCache;
+  // Database-scoped, shared across every StatisticsProvider (i.e. every CypherOptimizer/query) on this
+  // database, so a hot edge type is not resampled on every plan (#5834).
+  private final GraphStatisticsCache graphStatisticsCache;
 
   public StatisticsProvider(final DatabaseInternal database) {
     this.database = database;
     this.typeStatsCache = new HashMap<>();
     this.indexStatsCache = new HashMap<>();
     this.averageDegreeCache = new HashMap<>();
+    this.meanEdgesPerConnectedPairCache = new HashMap<>();
+    // Some tests subclass StatisticsProvider with a null database, overriding every method that would
+    // touch it - preserve that contract by not dereferencing database here.
+    this.graphStatisticsCache = database != null ? database.getGraphStatisticsCache() : null;
   }
 
   /**
@@ -192,16 +216,32 @@ public class StatisticsProvider {
       final String sourceVertexLabel,
       final String targetVertexLabel) {
 
-    // Check cache first
+    // Check the per-query cache first
     final String cacheKey = relationshipType + ":" + sourceVertexLabel + ":" + targetVertexLabel;
     if (averageDegreeCache.containsKey(cacheKey)) {
       return averageDegreeCache.get(cacheKey);
     }
 
-    // Calculate average degree
-    final double avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
-    averageDegreeCache.put(cacheKey, avgDegree);
+    final Schema schema = database.getSchema();
+    final boolean isEdgeType = schema.existsType(relationshipType) && schema.getType(relationshipType) instanceof EdgeType;
 
+    final double avgDegree;
+    if (isEdgeType && graphStatisticsCache != null) {
+      final long currentEdgeCount = database.countType(relationshipType, false);
+      final long currentSourceCount = currentVertexTypeCount(sourceVertexLabel);
+      final long currentTargetCount = currentVertexTypeCount(targetVertexLabel);
+      final Double cached = graphStatisticsCache.getAverageDegree(cacheKey, currentEdgeCount, currentSourceCount, currentTargetCount);
+      if (cached != null) {
+        avgDegree = cached;
+      } else {
+        avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
+        graphStatisticsCache.putAverageDegree(cacheKey, avgDegree, currentEdgeCount, currentSourceCount, currentTargetCount);
+      }
+    } else {
+      avgDegree = calculateAverageDegree(relationshipType, sourceVertexLabel, targetVertexLabel);
+    }
+
+    averageDegreeCache.put(cacheKey, avgDegree);
     return avgDegree;
   }
 
@@ -279,6 +319,117 @@ public class StatisticsProvider {
   }
 
   /**
+   * Estimates the mean number of parallel edges joining a connected pair of vertices for an edge type,
+   * sampled from a bounded prefix of the type instead of a full scan.
+   * <p>
+   * A result of 1.0 means the type behaves like a simple graph: at most one edge per (source, target)
+   * pair, so a hop bound at both ends filters rather than multiplies. A result above 1.0 means the type
+   * is a multigraph - connected pairs are typically joined by more than one edge - which a bound-target
+   * hop's cardinality estimate must scale by rather than ignore.
+   * <p>
+   * When a covering {@link GraphTraversalProvider} answers this exactly (see
+   * {@link #exactMeanFromTraversalProvider}), the result is cached under the current edge-type record
+   * count the same as a sampled value would be. If the provider's own data lags committed edges (a stale
+   * but still-{@code isReady} view outside the guarded delta-overlay window), the cached "exact" value can
+   * itself be a hair stale until the edge count next changes. Acceptable for a cost-model estimate.
+   *
+   * @param edgeType the edge type name
+   * @return estimated mean edges per connected pair, at least 1.0; 1.0 as fallback when the type is
+   *         unknown, is not an edge type, or has no edges
+   */
+  public double getMeanEdgesPerConnectedPair(final String edgeType) {
+    if (meanEdgesPerConnectedPairCache.containsKey(edgeType))
+      return meanEdgesPerConnectedPairCache.get(edgeType);
+
+    final Schema schema = database.getSchema();
+    final boolean isEdgeType = schema.existsType(edgeType) && schema.getType(edgeType) instanceof EdgeType;
+
+    final double mean;
+    if (isEdgeType && graphStatisticsCache != null) {
+      final long currentEdgeCount = database.countType(edgeType, false);
+      final Double cached = graphStatisticsCache.getMeanEdgesPerConnectedPair(edgeType, currentEdgeCount);
+      if (cached != null) {
+        mean = cached;
+      } else {
+        mean = exactMeanFromTraversalProvider(edgeType).orElseGet(() -> calculateMeanEdgesPerConnectedPair(edgeType));
+        graphStatisticsCache.putMeanEdgesPerConnectedPair(edgeType, mean, currentEdgeCount);
+      }
+    } else {
+      mean = calculateMeanEdgesPerConnectedPair(edgeType);
+    }
+
+    meanEdgesPerConnectedPairCache.put(edgeType, mean);
+    return mean;
+  }
+
+  /**
+   * Returns the current O(1) record count for a vertex type, or 0 if the label is null, does not exist,
+   * or is not a vertex type. Used only as a {@link GraphStatisticsCache} generation stamp for
+   * {@link #getAverageDegree} - deliberately independent of whether {@link #collectStatistics} has
+   * populated {@link #typeStatsCache} for this query, since the shared cache must detect a vertex-count
+   * change regardless of what this particular query happened to collect.
+   */
+  private long currentVertexTypeCount(final String vertexLabel) {
+    if (vertexLabel == null)
+      return 0;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(vertexLabel) || !(schema.getType(vertexLabel) instanceof VertexType))
+      return 0;
+    return database.countType(vertexLabel, false);
+  }
+
+  /**
+   * Checks whether a registered {@link GraphTraversalProvider} (e.g. a {@code GraphAnalyticalView})
+   * covering this edge type can answer the multiplicity exactly, so the caller can skip the sample
+   * entirely (#5834) instead of paying for it and then discovering a provider existed all along.
+   */
+  private OptionalDouble exactMeanFromTraversalProvider(final String edgeType) {
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeType);
+    if (provider == null)
+      return OptionalDouble.empty();
+    final double exact = provider.getMeanEdgesPerConnectedPair(edgeType);
+    return exact >= 0 ? OptionalDouble.of(exact) : OptionalDouble.empty();
+  }
+
+  /**
+   * Calculates mean edges per connected pair by sampling edges of the type and counting how many
+   * distinct (out, in) pairs they resolve to.
+   * <p>
+   * The sample is the first {@value #MULTIPLICITY_SAMPLE_LIMIT} edges in storage order, not a
+   * uniform or reservoir sample - edges for one pair are often created (and therefore stored)
+   * together, so a prefix can over- or under-represent multiplicity depending on where the cut
+   * falls relative to that clustering. Acceptable for a cost-model heuristic; not a statistically
+   * unbiased estimator.
+   */
+  private double calculateMeanEdgesPerConnectedPair(final String edgeType) {
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(edgeType))
+      return DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR;
+
+    final DocumentType type = schema.getType(edgeType);
+    if (!(type instanceof EdgeType))
+      return DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR;
+
+    final Set<Map.Entry<RID, RID>> distinctPairs = new HashSet<>();
+    long sampledEdges = 0;
+
+    for (final Iterator<Edge> it = database.<Edge>iterateType(edgeType, false); it.hasNext(); ) {
+      final Edge edge = it.next();
+      distinctPairs.add(Map.entry(edge.getOut(), edge.getIn()));
+      if (++sampledEdges >= MULTIPLICITY_SAMPLE_LIMIT)
+        break;
+    }
+
+    if (distinctPairs.isEmpty())
+      return DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR;
+
+    // mean is always >= 1.0 here: every sampled edge contributes to exactly one pair, so sampledEdges
+    // can never be smaller than distinctPairs.size(). Only the upper clamp is needed.
+    final double mean = (double) sampledEdges / distinctPairs.size();
+    return Math.min(MAX_MEAN_EDGES_PER_CONNECTED_PAIR, mean);
+  }
+
+  /**
    * Clears all cached statistics.
    * Useful for testing or when schema changes.
    */
@@ -286,6 +437,7 @@ public class StatisticsProvider {
     typeStatsCache.clear();
     indexStatsCache.clear();
     averageDegreeCache.clear();
+    meanEdgesPerConnectedPairCache.clear();
   }
 
   @Override
