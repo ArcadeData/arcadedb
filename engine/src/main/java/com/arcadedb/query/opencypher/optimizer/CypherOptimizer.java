@@ -653,9 +653,18 @@ public class CypherOptimizer {
 
     // Estimate cost and cardinality for ExpandInto
     // ExpandInto is much cheaper than ExpandAll because the edge list is filtered on the neighbour
-    // pointer, so only the edges reaching the pinned target are ever materialised
+    // pointer, so only the edges reaching the pinned target are ever materialised.
+    // DEFAULT_EXPAND_INTO_SELECTIVITY alone assumes the hop can only filter (at most one edge per
+    // pair), which is backwards on a multigraph: it emits one row per edge joining the pair. Scale
+    // it by the type's sampled mean-edges-per-connected-pair so a multi-edge type is not undercounted
+    // (#5690).
     final long inputCardinality = input.getEstimatedCardinality();
-    final long outputCardinality = (long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY);
+    final double meanEdgesPerConnectedPair = estimateMeanEdgesPerConnectedPair(edgeTypes);
+    final long outputCardinality = (long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY * meanEdgesPerConnectedPair);
+    // Cost intentionally stays keyed off inputCardinality alone, not the multiplicity-scaled
+    // outputCardinality: it models the per-input-row pointer-comparison work of walking to the pinned
+    // target, which does not grow with how many edges happen to join the pair once found. The corrected
+    // outputCardinality is what JoinOrderRule orders by, which is the actual defect this fixes.
     final double expandIntoCost = inputCardinality * 1.0; // pointer comparisons per input row, no record load
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
 
@@ -686,6 +695,30 @@ public class CypherOptimizer {
     );
     expandInto.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
     return expandInto;
+  }
+
+  /**
+   * Averages the sampled parallel-edge multiplicity across a bound-target hop's edge types. An
+   * untyped hop cannot be attributed to one edge type's statistic, so it keeps the plain selectivity
+   * behaviour (multiplicity 1.0, i.e. simple-graph assumption).
+   * <p>
+   * Averaging (rather than summing) is exact for the single-type hop this issue reports and stays a
+   * reasonable heuristic for a union hop ({@code [:A|:B]}): summing would assume the pair is joined by
+   * an edge of every listed type, which is not guaranteed either, so neither combination is exact for
+   * a union - averaging was chosen as the more conservative of the two.
+   *
+   * @param edgeTypes the hop's edge types
+   *
+   * @return the mean estimated edges per connected pair across the given types
+   */
+  private double estimateMeanEdgesPerConnectedPair(final String[] edgeTypes) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return 1.0;
+
+    double sum = 0.0;
+    for (final String edgeType : edgeTypes)
+      sum += statisticsProvider.getMeanEdgesPerConnectedPair(edgeType);
+    return sum / edgeTypes.length;
   }
 
   /**

@@ -204,6 +204,69 @@ class StatisticsProviderTest {
   }
 
   @Test
+  void getMeanEdgesPerConnectedPairOnSimpleGraph() {
+    // Every pair below is joined by exactly one edge - a simple graph for this type
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++) {
+        final var v1 = database.newVertex("Person").save();
+        final var v2 = database.newVertex("Person").save();
+        v1.newEdge("KNOWS", v2, true, (Object[]) null);
+      }
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(1.0);
+  }
+
+  @Test
+  void getMeanEdgesPerConnectedPairOnMultigraph() {
+    // One pair joined by 5 parallel edges, another joined by 1: mean = 6 edges / 2 pairs = 3.0
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      final var a = database.newVertex("Person").save();
+      final var b = database.newVertex("Person").save();
+      for (int i = 0; i < 5; i++)
+        a.newEdge("KNOWS", b, true, (Object[]) null);
+
+      final var c = database.newVertex("Person").save();
+      final var d = database.newVertex("Person").save();
+      c.newEdge("KNOWS", d, true, (Object[]) null);
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(3.0);
+  }
+
+  @Test
+  void getMeanEdgesPerConnectedPairFallsBackToOneWhenUnknown() {
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("Nonexistent")).isEqualTo(1.0);
+
+    database.getSchema().getOrCreateEdgeType("KNOWS"); // no edges inserted
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(1.0);
+
+    database.getSchema().getOrCreateVertexType("Person"); // not an edge type
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("Person")).isEqualTo(1.0);
+  }
+
+  @Test
+  void getMeanEdgesPerConnectedPairClampsAPathologicallyClusteredSample() {
+    // Prefix sampling reads storage order, so if every sampled edge belongs to a single pair the raw
+    // ratio would be sampledEdges / 1, unboundedly large. The estimate must not inflate the planner's
+    // cardinality by orders of magnitude on that pathological case - it is capped at 1000.
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("KNOWS");
+    database.transaction(() -> {
+      final var a = database.newVertex("Person").save();
+      final var b = database.newVertex("Person").save();
+      for (int i = 0; i < 1200; i++)
+        a.newEdge("KNOWS", b, true, (Object[]) null);
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("KNOWS")).isEqualTo(1000.0);
+  }
+
+  @Test
   void preferUniqueIndexOverNonUnique() {
     // Create type with unique and non-unique indexes on different properties
     final var personType = database.getSchema().getOrCreateVertexType("Person");
