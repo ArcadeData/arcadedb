@@ -226,7 +226,7 @@ public class StatisticsProvider {
     final boolean isEdgeType = schema.existsType(relationshipType) && schema.getType(relationshipType) instanceof EdgeType;
 
     final double avgDegree;
-    if (isEdgeType) {
+    if (isEdgeType && graphStatisticsCache != null) {
       final long currentEdgeCount = database.countType(relationshipType, false);
       final Double cached = graphStatisticsCache.getAverageDegree(cacheKey, currentEdgeCount);
       if (cached != null) {
@@ -337,7 +337,7 @@ public class StatisticsProvider {
     final boolean isEdgeType = schema.existsType(edgeType) && schema.getType(edgeType) instanceof EdgeType;
 
     final double mean;
-    if (isEdgeType) {
+    if (isEdgeType && graphStatisticsCache != null) {
       final long currentEdgeCount = database.countType(edgeType, false);
       final Double cached = graphStatisticsCache.getMeanEdgesPerConnectedPair(edgeType, currentEdgeCount);
       if (cached != null) {

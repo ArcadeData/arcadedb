@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
@@ -290,6 +291,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.snapshot = snapshotFromResult(result, durationMs);
       this.status = Status.READY;
       this.notifyAll();
+      invalidateGraphStatisticsCache();
 
       if (deltaCollector == null)
         registerChangeListeners();
@@ -337,6 +339,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               if (deltaCollector == null)
                 registerChangeListeners();
             }
+            invalidateGraphStatisticsCache();
           } finally {
             if (database.isTransactionActive())
               database.rollback();
@@ -448,6 +451,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (name != null)
         GraphAnalyticalViewRegistry.unregister(database, name);
     }
+    invalidateGraphStatisticsCache();
+  }
+
+  /**
+   * Clears the database-scoped {@link com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider}
+   * multiplicity cache whenever this view transitions between being available and unavailable as a
+   * {@link GraphTraversalProvider} (initial build, or shutdown/drop). Without this, a mean-edges estimate
+   * cached from sampling (before this view existed, or after it was dropped) would keep being served
+   * unchanged even though a newly built view could now answer it exactly - the count-stamp alone cannot
+   * detect this, since building or dropping a view does not change the edge type's record count.
+   * <p>
+   * Not called from the incremental delta/compaction rebuild paths: those fire on data mutations, which
+   * already change the edge count and invalidate the cache stamp on their own.
+   */
+  private void invalidateGraphStatisticsCache() {
+    final Database unwrapped = DatabaseInternal.unwrap(database);
+    if (unwrapped instanceof DatabaseInternal di)
+      di.getGraphStatisticsCache().clear();
   }
 
   /**

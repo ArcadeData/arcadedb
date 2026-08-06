@@ -126,6 +126,22 @@ doubles (`CostModelTest`, `AnchorSelectorTest`, `IndexSelectionRuleTest`) that s
 preserving the pre-existing "null database is fine as long as you don't call the DB-touching methods"
 contract those test doubles rely on.
 
+## Review follow-ups (post-initial-PR)
+
+Two more fixes landed from review, both with regression tests (see `docs/review-deferred-*.md` for the
+full per-cycle disposition of every review comment):
+
+- **GAV build/drop now invalidates the shared cache.** The count-stamp alone cannot detect "a covering
+  `GraphAnalyticalView` was just built (or dropped)" - building or dropping a view does not change the
+  edge type's record count. `GraphAnalyticalView.build()`/`buildAsync()`/`shutdown()` now clear the
+  database's `GraphStatisticsCache`, so a value cached from sampling before a view existed (or from the
+  view's exact answer before it was dropped) does not keep being served unchanged. Regression test
+  verified to fail (1000 vs 667) when the invalidation calls are reverted.
+- **Null-safety for a `DatabaseInternal` whose `getGraphStatisticsCache()` returns null.** The
+  constructor already guarded against a null `database`; `getMeanEdgesPerConnectedPair`/`getAverageDegree`
+  now also guard against a non-null database returning a null cache (e.g. a minimal test double), falling
+  back to direct computation without the shared cache instead of NPE-ing.
+
 ## Status
 
 Implementation complete, all tests green. Ready for PR.
