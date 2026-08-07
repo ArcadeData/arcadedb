@@ -43,6 +43,16 @@ dereferenceable through the same expression shape across the transaction boundar
 the second option the issue proposed ("preserve stable dereference semantics across
 transaction boundaries").
 
+Following review feedback, the dereferenced value also goes through the same temporal-type
+restoration (`Duration`/`LocalTime`/`Time` strings back to their `Cypher*` wrapper types) that
+`PropertyAccessExpression` already applied - otherwise a temporal property on the dereferenced
+target would come back as a raw ISO-8601 `String` on the chained path while still resolving to
+a proper `CypherDuration`/etc. on the single-level path. That conversion logic
+(`convertFromStorage`) was extracted out of `PropertyAccessExpression` into a new
+`TemporalUtil.convertFromStorage()` shared utility (both AST nodes live in different packages,
+and the method was `private`), so both access paths call the same code instead of duplicating
+~80 lines of string-sniffing logic a third time.
+
 No storage format or write-path change was needed or made; this is a read-path fix only.
 
 ## Tests
@@ -54,12 +64,19 @@ New regression test:
   scenario: writes `holder.ref = target` and confirms `holder.ref.id` still works in the writing
   query, then opens a new transaction and confirms `holder.ref.id` resolves to `42` instead of
   throwing.
+- `chainedPropertyAccessOnPersistedLinkRestoresTemporalType` - added during review: confirms a
+  `Duration`-typed property on the dereferenced target restores to a `CypherDuration` (so
+  `.seconds` resolves) rather than staying a raw `String`, pinning the `TemporalUtil` extraction
+  above. Verified this test fails with the exact predicted `TypeError: Cannot access property
+  'seconds' on String value` when the `convertFromStorage` call is temporarily removed, and
+  passes with it restored.
 - `directPropertyAccessOnPersistedLinkStillDereferences` - control test pinning down that the
   single-level, variable-bound property access path (`WITH holder.ref AS r RETURN r.id`), which
   already handled `RID` before this fix, keeps working.
 
-Both tests failed before the fix (the first with the exact reported `TypeError`, matching the
-stack trace through `ChainedPropertyAccessExpression.evaluate`) and pass after it.
+All new tests failed before their respective fix landed (the first with the exact reported
+`TypeError`, matching the stack trace through `ChainedPropertyAccessExpression.evaluate`; the
+temporal one with the predicted `TypeError` on the raw `String`) and pass after it.
 
 ## Verification
 
@@ -77,8 +94,10 @@ stack trace through `ChainedPropertyAccessExpression.evaluate`) and pass after i
   edge mandatory property, parameterized property maps, existing property-access type-error
   test #5285, etc.): all passed.
 - Broad regression sweep across `com.arcadedb.query.opencypher.{ast,executor,parser,procedures,
-  rewriter,optimizer,functions}` (excluding the `benchmark`/`slow`-tagged and TCK-suite tests,
-  per repository convention): see PR for pass/fail summary.
+  rewriter,optimizer,functions}` plus all top-level `com.arcadedb.query.opencypher` test classes
+  (excluding the `benchmark`/`slow`-tagged and TCK-suite/benchmark tests, per repository
+  convention): 7629 tests, 0 failures, 0 errors - both before and after the `TemporalUtil`
+  extraction added during review.
 
 ## Impact analysis
 
@@ -95,7 +114,12 @@ pattern already used by `PropertyAccessExpression`, so there is no new performan
   change requiring its own design discussion - out of scope for this fix, which preserves
   ArcadeDB's existing intentional LINK-property behavior and only fixes its read-path
   inconsistency.
-- Consider whether `holder.ref.someUndeclaredProp` (dereferencing a RID whose target vertex has
-  since been deleted) should raise a clearer, Cypher-flavored error than the raw
-  `RecordNotFoundException` `asVertex()` would throw - not reproduced or in scope here, but
-  worth a follow-up issue if it surfaces in practice.
+- Dereferencing a RID whose target no longer resolves to a live `Vertex` (record deleted, or a
+  LINK pointing at a `Document`/`Edge`) raises the raw `RecordNotFoundException`/
+  `ClassCastException` from `asVertex()` rather than a Cypher-flavored `TypeError`. This is
+  pre-existing behavior inherited unchanged from `PropertyAccessExpression`, but this fix makes
+  it reachable from the far more common chained-access path too. Tracked as
+  [#5898](https://github.com/ArcadeData/arcadedb/issues/5898).
+- `OrderByStep.java` has its own separate, near-duplicate `convertFromStorage` implementation
+  that was not consolidated into `TemporalUtil.convertFromStorage()` here, since it's pre-existing
+  and out of scope for this bug fix - worth a small follow-up cleanup.
