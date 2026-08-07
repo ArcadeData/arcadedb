@@ -45,6 +45,20 @@ public class ColumnStore {
   private final Map<String, Column> columns;
   private final int                 nodeCount;
 
+  // Single-slot memoization of the last resolved (name, column) pair. Query loops
+  // (e.g. GAVExpandAll reading a far-endpoint property once per traversed edge) call
+  // getColumn()/getValue() with the SAME propertyName across many rows in a row, so
+  // caching the last resolution turns a HashMap probe per row into a String#equals
+  // check. `columns` is only ever populated during CSR build (see CSRBuilder), never
+  // mutated afterward, so a cached entry can never go stale; and since both the name
+  // and the column travel together inside one record referenced through a single
+  // volatile field, a racing reader can only ever see a fully-formed pair, never one
+  // field from an older resolution and the other from a newer one.
+  private volatile CachedColumn lastResolved;
+
+  private record CachedColumn(String name, Column column) {
+  }
+
   public ColumnStore(final int nodeCount) {
     this.nodeCount = nodeCount;
     this.columns = new HashMap<>();
@@ -63,14 +77,20 @@ public class ColumnStore {
    * Returns the column for the given property name, or null if not present.
    */
   public Column getColumn(final String name) {
-    return columns.get(name);
+    final CachedColumn cached = lastResolved;
+    if (cached != null && cached.name().equals(name))
+      return cached.column();
+
+    final Column column = columns.get(name);
+    lastResolved = new CachedColumn(name, column);
+    return column;
   }
 
   /**
    * Returns the property value for a given node, or null if not set or column doesn't exist.
    */
   public Object getValue(final int nodeId, final String propertyName) {
-    final Column column = columns.get(propertyName);
+    final Column column = getColumn(propertyName);
     if (column == null || column.isNull(nodeId))
       return null;
 
