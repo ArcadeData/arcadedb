@@ -1289,6 +1289,9 @@ public class PostgresNetworkExecutor extends Thread {
           final long paramSize = channel.readUnsignedInt();
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
+          if (paramSize > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger())
+            throw new IOException("Postgres bind parameter too large: " + paramSize + " bytes (max "
+                + GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger() + ")");
           final byte[] paramValue = new byte[(int) paramSize];
           channel.readBytes(paramValue);
           if (DEBUG)
@@ -1358,6 +1361,8 @@ public class PostgresNetworkExecutor extends Thread {
       try {
         for (int i = paramsConsumed; i < totalParamValues; i++) {
           final long sz = channel.readUnsignedInt();
+          if (sz > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger())
+            throw new IOException("Postgres bind parameter too large: " + sz + " bytes");
           if (sz > 0)
             channel.readBytes(new byte[(int) sz]);
         }
