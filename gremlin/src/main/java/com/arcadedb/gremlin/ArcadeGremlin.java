@@ -41,11 +41,9 @@ import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTrav
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DropStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStartStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStartStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStepContract;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStepContract;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStepContract;
 
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
@@ -202,12 +200,17 @@ public class ArcadeGremlin extends ArcadeQuery {
       for (final Object step : resultSet.getSteps()) {
         if (step instanceof Mutating) {
           idempotent = false;
-          if (step instanceof AddVertexStep || step instanceof AddVertexStartStep
-              || step instanceof AddEdgeStep || step instanceof AddEdgeStartStep)
+          // TinkerPop 3.8.1's gremlin-lang parser hands parse() GValue-based placeholder step types for
+          // addV/addE/property (e.g. AddVertexStartStepPlaceholder) instead of the concrete step classes
+          // (AddVertexStep, AddEdgeStep, AddPropertyStep) - those are only resolved by GValueReductionStrategy,
+          // which parse() never runs. Both the placeholder and the concrete step implement the *StepContract
+          // interface TinkerPop introduced for exactly this purpose, so check against the contract rather than
+          // the concrete class. See #5838. DropStep has no placeholder variant in 3.8.1, so it stays a direct check.
+          if (step instanceof AddVertexStepContract || step instanceof AddEdgeStepContract)
             ops.add(OperationType.CREATE);
           else if (step instanceof DropStep)
             ops.add(OperationType.DELETE);
-          else if (step instanceof AddPropertyStep)
+          else if (step instanceof AddPropertyStepContract)
             ops.add(OperationType.UPDATE);
           else {
             // Unknown mutating step: assume all write types

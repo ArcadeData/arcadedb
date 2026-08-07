@@ -23,7 +23,6 @@ import com.arcadedb.query.QueryEngine;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -36,10 +35,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Covers ArcadeGremlin.parse(). Its isIdempotent() verdict drives HA follower routing
  * (RaftReplicatedDatabase consults only isIdempotent()/isDDL(), never getOperationTypes()); the
  * placeholder step types gremlin-lang hands to parse() DO implement Mutating (via Writing/Deleting,
- * javap-verified), so isIdempotent() is correct and HA routing is unaffected. getOperationTypes() is a
- * separate story: it over-widens for addV/addE/property (see
- * mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps and the @Disabled tests below), and the
- * confirmed impact of that is MCP permission over-denial, not HA misrouting.
+ * javap-verified), so isIdempotent() is correct and HA routing is unaffected. getOperationTypes() used to
+ * be a separate story: it over-widened for addV/addE/property because the placeholder step types are not
+ * subtypes of the concrete step classes parse() checked for (see
+ * mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps) - fixed in #5838 by checking the
+ * AddVertexStepContract/AddEdgeStepContract/AddPropertyStepContract interfaces both the placeholder and the
+ * concrete steps implement, instead of the concrete classes alone.
  */
 class ArcadeGremlinAnalyzeTest {
 
@@ -67,14 +68,12 @@ class ArcadeGremlinAnalyzeTest {
    * Reflects into the private {@code ArcadeGremlin.executeStatement(boolean)} to inspect exactly what
    * step types reach {@code parse()}'s instanceof checks, without triggering iteration (parse() itself
    * never calls hasNext()/next() before reading getSteps(), so this mirrors it precisely). This directly
-   * answers whether TinkerPop 3.8.1's gremlin-lang parser hands parse() placeholder step types (e.g.
-   * AddVertexStartStepPlaceholder, which does NOT extend AddVertexStep) that would be missed by the
-   * instanceof checks in ArcadeGremlin.parse(). Confirmed impact: the placeholders DO implement
-   * Mutating (via Writing/Deleting, javap-verified), so isIdempotent() still comes back correctly false
-   * and HA routing is unaffected; what actually breaks is getOperationTypes(), which falls into the
-   * "unknown mutating step" branch and widens to all three write types instead of the one that
-   * actually applies - see mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps below and the
-   * MCP permission over-denial impact documented on the @Disabled tests.
+   * confirms TinkerPop 3.8.1's gremlin-lang parser hands parse() placeholder step types (e.g.
+   * AddVertexStartStepPlaceholder, which does NOT extend AddVertexStep) rather than the concrete classes.
+   * The placeholders DO implement Mutating (via Writing/Deleting, javap-verified), so isIdempotent() is
+   * correct and HA routing is unaffected; getOperationTypes() is fixed by checking against the
+   * AddVertexStepContract/AddEdgeStepContract/AddPropertyStepContract interfaces the placeholders
+   * implement (see addVertexOperationTypeIsExactlyCreate and siblings, and #5838).
    */
   private List<String> analysisStepClassNames(final String query) throws Exception {
     final ArcadeGremlin gremlin = graph.gremlin(query);
@@ -101,7 +100,7 @@ class ArcadeGremlinAnalyzeTest {
 
   @Test
   // NOTE: .contains() cannot distinguish this from the widened [CREATE,UPDATE,DELETE] fallback;
-  // see addVertexOperationTypeIsExactlyCreate (disabled).
+  // see addVertexOperationTypeIsExactlyCreate for the narrow assertion.
   void addVertexIsNotIdempotentAndIsACreate() {
     final QueryEngine.AnalyzedQuery analyzed = analyze("g.addV('Person')");
     assertThat(analyzed.isIdempotent()).isFalse();
@@ -111,7 +110,7 @@ class ArcadeGremlinAnalyzeTest {
 
   @Test
   // NOTE: .contains() cannot distinguish this from the widened [CREATE,UPDATE,DELETE] fallback;
-  // see addEdgeOperationTypeIsExactlyCreate (disabled).
+  // see addEdgeOperationTypeIsExactlyCreate for the narrow assertion.
   void addEdgeIsACreate() {
     final QueryEngine.AnalyzedQuery analyzed =
         analyze("g.V().hasLabel('Person').as('a').addE('KNOWS').to('a')");
@@ -128,7 +127,7 @@ class ArcadeGremlinAnalyzeTest {
 
   @Test
   // NOTE: .contains() cannot distinguish this from the widened [CREATE,UPDATE,DELETE] fallback;
-  // see addPropertyOperationTypeIsExactlyUpdate (disabled).
+  // see addPropertyOperationTypeIsExactlyUpdate for the narrow assertion.
   void addPropertyIsAnUpdate() {
     final QueryEngine.AnalyzedQuery analyzed =
         analyze("g.V().hasLabel('Person').property('age', 30)");
@@ -177,55 +176,23 @@ class ArcadeGremlinAnalyzeTest {
   }
 
   @Test
-  @Disabled("""
-      BUG (test-coverage finding): OperationType over-widening defect. getOperationTypes() only - \
-      isIdempotent() is correct and HA routing (RaftReplicatedDatabase, which consults only isIdempotent()/ \
-      isDDL(), never getOperationTypes()) is unaffected. The real, confirmed impact is MCP permission \
-      over-denial: ExecuteCommandTool.execute() calls GremlinQueryEngine.analyze(), which delegates \
-      straight to this parse() method, then checkPermission(Set<OperationType>, MCPPermissions) rejects \
-      the whole command if ANY OperationType present lacks its matching permission bit (CREATE needs \
-      isAllowInsert(), UPDATE needs isAllowUpdate(), DELETE needs isAllowDelete() - independent booleans \
-      on MCPPermissions). Concrete effect: an MCP execute_command call with language "gremlin" and \
-      command "g.addV('Person')", against a profile with allowInsert=true but allowUpdate=false (a \
-      realistic, supported profile), is wrongly rejected with "Update operations are not allowed by MCP \
-      configuration" even though the query is a pure insert. Tracked as issue #5838; full writeup: PR #5829. \
-      Root cause: parse() sees AddVertexStartStepPlaceholder for 'g.addV(\\'Person\\')', not the \
-      AddVertexStartStep its instanceof check tests for (TinkerPop 3.8.1's gremlin-lang parser builds a \
-      GValue placeholder that GValueReductionStrategy - which parse() never runs - would normally resolve). \
-      The instanceof chain in ArcadeGremlin.parse() misses it and falls into the 'unknown mutating step' \
-      branch, which adds ALL THREE write OperationTypes. Query: g.addV('Person'). Expected \
-      getOperationTypes(): [CREATE]. Actual: [CREATE, UPDATE, DELETE].""")
+  // FIXED (#5838): parse() now checks the AddVertexStepContract/AddEdgeStepContract/AddPropertyStepContract
+  // interfaces, which both the GValue placeholder steps and the resolved concrete steps implement, instead of
+  // the concrete classes alone. See the comment in ArcadeGremlin.parse() for the full explanation.
   void addVertexOperationTypeIsExactlyCreate() {
     assertThat(analyze("g.addV('Person')").getOperationTypes())
         .containsExactly(OperationType.CREATE);
   }
 
   @Test
-  @Disabled("""
-      BUG (test-coverage finding): OperationType over-widening defect. getOperationTypes() only - \
-      isIdempotent() is correct and HA routing is unaffected (see the sibling addVertexOperationTypeIsExactlyCreate \
-      for the full HA-routing analysis and the confirmed, already-shipping MCP permission over-denial \
-      this causes; tracked as issue #5838, full writeup: PR #5829). Root cause: parse() sees \
-      AddEdgeStepPlaceholder for \"g.V().hasLabel('Person').as('a').addE('KNOWS').to('a')\", not the \
-      AddEdgeStep its instanceof check tests for, same GValue-placeholder reason as addV (see \
-      mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps). Falls into the 'unknown mutating step' \
-      branch, which adds ALL THREE write OperationTypes. Expected getOperationTypes(): [CREATE]. Actual: \
-      [CREATE, UPDATE, DELETE].""")
+  // FIXED (#5838): see addVertexOperationTypeIsExactlyCreate above.
   void addEdgeOperationTypeIsExactlyCreate() {
     assertThat(analyze("g.V().hasLabel('Person').as('a').addE('KNOWS').to('a')").getOperationTypes())
         .containsExactly(OperationType.CREATE);
   }
 
   @Test
-  @Disabled("""
-      BUG (test-coverage finding): OperationType over-widening defect. getOperationTypes() only - \
-      isIdempotent() is correct and HA routing is unaffected (see the sibling addVertexOperationTypeIsExactlyCreate \
-      for the full HA-routing analysis and the confirmed, already-shipping MCP permission over-denial \
-      this causes; tracked as issue #5838, full writeup: PR #5829). Root cause: parse() sees \
-      AddPropertyStepPlaceholder for \"g.V().hasLabel('Person').property('age', 30)\", not the \
-      AddPropertyStep its instanceof check tests for, same GValue-placeholder reason as addV/addE. Falls \
-      into the 'unknown mutating step' branch, which adds ALL THREE write OperationTypes. Expected \
-      getOperationTypes(): [UPDATE]. Actual: [CREATE, UPDATE, DELETE].""")
+  // FIXED (#5838): see addVertexOperationTypeIsExactlyCreate above.
   void addPropertyOperationTypeIsExactlyUpdate() {
     assertThat(analyze("g.V().hasLabel('Person').property('age', 30)").getOperationTypes())
         .containsExactly(OperationType.UPDATE);
