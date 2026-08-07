@@ -147,6 +147,12 @@ public class RebuildIndexStatement extends DDLStatement {
 
       final List<Index> targetIndexes = new ArrayList<>();
       if (all) {
+        // `*` deliberately excludes TypeIndex: it walks bucket sub-indexes one at a time through buildBucketIndex()
+        // below, which rebuilds each sub-index in place. This still loses the logical index's own name (issue #5791):
+        // dropping the LAST remaining sub-index under a TypeIndex also drops the wrapper (LocalSchema.dropIndex), so
+        // a single-bucket type - the common default - loses its TypeIndex on every rebuild and mints a fresh one.
+        // BucketIndexBuilder.create() and the withIndexName(...) call further down carry the owning TypeIndex's name
+        // through that recreation, the same fix applied below to the direct typeIndexRebuild path.
         for (final Index idx : database.getSchema().getIndexes())
           if (idx.isAutomatic() && !(idx instanceof TypeIndex))
             targetIndexes.add(idx);
@@ -344,6 +350,13 @@ public class RebuildIndexStatement extends DDLStatement {
 
         final boolean typeIndexRebuild = typeName != null && idx instanceof TypeIndex;
 
+        // Captured BEFORE the drop below (issue #5791): dropping a bucket sub-index that is the LAST one left under
+        // its TypeIndex also removes the wrapper (LocalSchema.dropIndex), which is the normal case for a
+        // single-bucket type - the common default. The rebuilt bucket index then finds no existing TypeIndex to
+        // reattach to and mints a new one, which - without the name carried through explicitly - always takes the
+        // auto-derived form even for an explicitly-named logical index.
+        final TypeIndex ownerTypeIndex = typeIndexRebuild ? null : ((IndexInternal) idx).getTypeIndex();
+
         // For a bucket sub-index, resolve its target bucket BEFORE the destructive drop below, so a truly orphaned
         // index (its bucket gone) is reported without first being deleted. Self-heal a lost association
         // (associatedBucketId == -1, e.g. an orphan that stayed registered in indexMap after a failed reload) from
@@ -382,10 +395,14 @@ public class RebuildIndexStatement extends DDLStatement {
           database.getSchema().dropIndex(idx.getName());
 
           if (typeIndexRebuild) {
+            // Preserve the logical index's own name (issue #5791, follow-up to #4732/#4139): without this the
+            // builder falls back to the auto-derived "typeName[properties]" form, so a REBUILD silently renames
+            // any explicitly-named index and every SEARCH_INDEX / name-based lookup against the old name breaks.
             database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
                 .withUnique(unique).withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize)
                 .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)
                 .withMetadata(rebuildMetadata)
+                .withIndexName(idx.getName())
                 .create();
 
           } else {
@@ -395,6 +412,7 @@ public class RebuildIndexStatement extends DDLStatement {
                 .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
                 .withNullStrategy(nullStrategy)
                 .withMetadata(rebuildMetadata)
+                .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
                 .create();
           }
           return null;
