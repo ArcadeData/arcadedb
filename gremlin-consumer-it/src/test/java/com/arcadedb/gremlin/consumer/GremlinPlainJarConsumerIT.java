@@ -24,8 +24,8 @@ import com.arcadedb.gremlin.ArcadeGraph;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,8 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GremlinPlainJarConsumerIT {
 
   @Test
-  void fluentTraversalWorksWithOnlyThePlainCoordinateOnTheClasspath() throws Exception {
-    final Path dir = Files.createTempDirectory("gremlin-consumer-it");
+  void fluentTraversalWorksWithOnlyThePlainCoordinateOnTheClasspath(@TempDir final Path dir) {
     try (final DatabaseFactory factory = new DatabaseFactory(dir.resolve("db").toString());
         final Database db = factory.create()) {
       db.getSchema().createVertexType("V");
@@ -58,8 +57,6 @@ class GremlinPlainJarConsumerIT {
         final GraphTraversalSource g = graph.traversal();
         assertThat(g.V().count().next()).isEqualTo(1L);
       }
-    } finally {
-      deleteRecursively(dir);
     }
   }
 
@@ -77,19 +74,5 @@ class GremlinPlainJarConsumerIT {
   void textualQueryEngineOnThePlainCoordinateStillCrashesUntilShaded() {
     // final Path dir = ...
     // db.getQueryEngine("gremlin").analyze("g.V()"); // ExceptionInInitializerError: ATN v3 vs v4
-  }
-
-  private static void deleteRecursively(final Path dir) throws Exception {
-    if (!Files.exists(dir))
-      return;
-    try (final var paths = Files.walk(dir)) {
-      paths.sorted((a, b) -> b.compareTo(a)).forEach(p -> {
-        try {
-          Files.delete(p);
-        } catch (final Exception e) {
-          // BEST EFFORT CLEANUP
-        }
-      });
-    }
   }
 }
