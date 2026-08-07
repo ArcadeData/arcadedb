@@ -49,3 +49,24 @@ Also re-ran the related existing suites to confirm no regression:
 - `SQLMethodSubStringTest` (3 tests) - the separate SQL-side substring implementation, unaffected.
 
 All 136 tests pass with 0 failures.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5882
+
+## Review cycles
+
+### Cycle 1 - `b9664b2d5`
+
+`claude[bot]` posted a review as an issue comment (not a formal PR review) verifying the fix's
+control-flow ordering line by line and confirming it is correct and minimal. It flagged one
+non-blocking consistency suggestion: reuse `CypherFunctionHelper.isExplicitNull(args, position)`
+- the codebase's canonical helper for exactly this check, already used by `RoundFunction`,
+`NormalizeFunction`, `FormatFunction`, the `*TruncateFunction` family, `VectorDistanceFunction`,
+and the sibling `com.arcadedb.function.text.SubstringFunction` - instead of the hand-rolled
+`args.length == 3 && args[2] == null`.
+
+Applied: replaced the hand-rolled check with `CypherFunctionHelper.isExplicitNull(args, 2)` and
+added the import. Re-ran the same 136-test suite; all pass with 0 failures.
+
+No deferred items from this cycle.
