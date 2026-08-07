@@ -20,6 +20,7 @@ package com.arcadedb.serializer.json;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
@@ -200,44 +201,130 @@ public class JSONArray implements Iterable<Object> {
     return array.size();
   }
 
+  /**
+   * Returns the string value at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a string.
+   */
   public String getString(final int i) {
-    return array.get(i).getAsString();
+    final JsonElement value = getNotNullElement(i);
+    try {
+      return value.getAsString();
+    } catch (UnsupportedOperationException | IllegalStateException e) {
+      throw typeError(i, "string", value, e);
+    }
   }
 
+  /**
+   * Returns the integer value at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a number.
+   */
   public int getInt(final int i) {
-    return array.get(i).getAsInt();
+    final JsonElement value = getNotNullElement(i);
+    try {
+      return value.getAsInt();
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
+      throw typeError(i, "int", value, e);
+    }
   }
 
+  /**
+   * Returns the long value at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a number.
+   */
   public long getLong(final int i) {
-    return array.get(i).getAsLong();
+    final JsonElement value = getNotNullElement(i);
+    try {
+      return value.getAsLong();
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
+      throw typeError(i, "long", value, e);
+    }
   }
 
+  /**
+   * Returns the number at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a number.
+   */
   public Number getNumber(final int i) {
-    return array.get(i).getAsNumber();
+    final JsonElement value = getNotNullElement(i);
+    try {
+      return value.getAsNumber();
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
+      throw typeError(i, "number", value, e);
+    }
   }
 
+  /**
+   * Returns the float value at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a number.
+   */
   public float getFloat(final int i) {
-    return array.get(i).getAsFloat();
+    final JsonElement value = getNotNullElement(i);
+    try {
+      return value.getAsFloat();
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
+      throw typeError(i, "float", value, e);
+    }
   }
 
+  /**
+   * Returns the double value at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a number.
+   */
   public double getDouble(final int i) {
-    return array.get(i).getAsDouble();
+    final JsonElement value = getNotNullElement(i);
+    try {
+      return value.getAsDouble();
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
+      throw typeError(i, "double", value, e);
+    }
   }
 
+  /**
+   * Returns the nested object at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a JSON object.
+   */
   public JSONObject getJSONObject(final int i) {
-    return new JSONObject(array.get(i).getAsJsonObject());
+    final JsonElement value = getNotNullElement(i);
+    if (!value.isJsonObject())
+      throw typeError(i, "JSON object", value, null);
+    return new JSONObject(value.getAsJsonObject());
   }
 
+  /**
+   * Returns the nested array at the given position.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a JSON array.
+   */
   public JSONArray getJSONArray(final int i) {
-    return new JSONArray(array.get(i).getAsJsonArray());
+    final JsonElement value = getNotNullElement(i);
+    if (!value.isJsonArray())
+      throw typeError(i, "JSON array", value, null);
+    return new JSONArray(value.getAsJsonArray());
   }
 
+  /**
+   * Returns the value at the given position, or {@code null} if the value is JSON null.
+   *
+   * @throws JSONException if the position is out of range.
+   */
   public Object get(final int i) {
-    return JSONObject.elementToObject(array.get(i));
+    return JSONObject.elementToObject(getElement(i));
   }
 
+  /**
+   * Returns {@code true} if the value at the given position is JSON null.
+   *
+   * @throws JSONException if the position is out of range.
+   */
   public boolean isNull(final int i) {
-    return array.get(i).isJsonNull();
+    return getElement(i).isJsonNull();
   }
 
   public JSONArray put(final String object) {
@@ -253,6 +340,7 @@ public class JSONArray implements Iterable<Object> {
   }
 
   public JSONArray put(final int index, final Object object) {
+    checkIndex(index);
     array.set(index, JSONObject.objectToElement(object));
     return this;
   }
@@ -277,7 +365,13 @@ public class JSONArray implements Iterable<Object> {
     return this;
   }
 
+  /**
+   * Removes the value at the given position and returns it.
+   *
+   * @throws JSONException if the position is out of range.
+   */
   public Object remove(final int i) {
+    checkIndex(i);
     final JsonElement old = array.remove(i);
     if (old != null)
       return JSONObject.elementToObject(old);
@@ -294,6 +388,38 @@ public class JSONArray implements Iterable<Object> {
 
   public JsonArray getInternal() {
     return array;
+  }
+
+  /**
+   * Validates the position against the array bounds, reporting the failure as a {@link JSONException} instead of the
+   * {@code IndexOutOfBoundsException} raised by the backing list.
+   */
+  private void checkIndex(final int i) {
+    if (i < 0 || i >= array.size())
+      throw new JSONException("JSONArray[" + i + "] not found: the array has " + array.size() + " element(s)");
+  }
+
+  private JsonElement getElement(final int i) {
+    checkIndex(i);
+    return array.get(i);
+  }
+
+  /**
+   * Returns the element at the given position, guaranteed to be neither out of range nor JSON null. GSON models an
+   * explicit JSON null as a {@link JsonNull} entry, whose converters raise
+   * {@code UnsupportedOperationException} instead of the documented {@link JSONException} (issue #5935).
+   */
+  private JsonElement getNotNullElement(final int i) {
+    final JsonElement value = getElement(i);
+    if (value.isJsonNull())
+      throw new JSONException("JSONArray[" + i + "] is null");
+
+    return value;
+  }
+
+  private static JSONException typeError(final int i, final String expectedType, final JsonElement value,
+      final RuntimeException cause) {
+    return new JSONException("JSONArray[" + i + "] is not a " + expectedType + " (" + JSONObject.describe(value) + ")", cause);
   }
 
   @Override

@@ -229,3 +229,51 @@ exists to prevent, on the one path it never covered. The hop is also pinned to H
 failure mode is re-sending a request whose body cannot be rewound.
 
 [#5618](https://github.com/ArcadeData/arcadedb/issues/5618)
+
+## JSON: a property explicitly set to `null` raised `UnsupportedOperationException` instead of `JSONException` (#5935)
+
+`JSONObject.getElement()` guarded only against an absent property (`object.get(name) == null`). GSON, however,
+models an explicit JSON `null` as a regular `JsonNull` entry in the backing map, so `{"a": null}` sailed straight
+through the guard and the conversion in `getString("a")` raised GSON's `UnsupportedOperationException: JsonNull`
+- not the `JSONException` the getters document and callers catch.
+
+All the raising getters of `JSONObject` (`getString`, `getInt`, `getLong`, `getFloat`, `getDouble`, `getBoolean`,
+`getBigDecimal`, `getJSONObject`, `getJSONArray`) now screen the JSON null and answer
+`JSONObject[a] is null`, keeping the distinct `JSONObject[a] not found` wording for a genuinely absent property.
+A type mismatch is reported the same way (`JSONObject[a] is not a int (...)`), with the original GSON
+`UnsupportedOperationException` / `IllegalStateException` / `NumberFormatException` preserved as the cause,
+instead of leaking out of the API.
+
+`JSONArray` shared both defects and gets the same treatment: its accessors raise `JSONException` for a null
+element, a type mismatch, and an out-of-range position (`JSONArray[3] not found: the array has 3 element(s)`,
+previously a bare `IndexOutOfBoundsException`).
+
+`getBoolean()` was a second, quieter hole found in review: GSON's `getAsBoolean()` falls back to
+`Boolean.parseBoolean()`, which never raises and answers `false` for anything that is not literally `"true"`. So
+`{"name": "Alice"}` read through `getBoolean("name")` returned a silently wrong `false` rather than reporting the
+mismatch. It now accepts a JSON boolean and the strings `"true"` / `"false"` (case-insensitive, the form
+configuration files and query strings use) and raises `JSONException` for anything else.
+
+The null-tolerant accessors keep answering `null`: `get(name)`, `opt(name)` and `toMap()` are unchanged for a JSON
+null, and `isNull(name)` / `has(name)` still report it.
+
+**Behaviour change worth calling out.** The two-argument getters still answer their default for an absent or null
+property, but they no longer swallow a *type mismatch*: `getBoolean("flag", false)` on `{"flag": "yes"}` used to
+return `false` and now raises. Anything reading loosely-typed external JSON through them is affected - MCP tool
+arguments, the MCP configuration flags, and the HTTP handlers that read their payload this way. The default was
+only ever meant to cover "not there", not "there but wrong", and a default silently standing in for a value the
+caller did supply is how `{"addHierarchy": "yes"}` disabled the setting it was asking to enable (issue #5639).
+Booleans-as-integers are not accepted either: `1` is not `true`.
+
+**A malformed payload now answers HTTP 400 instead of 500.** Because more of these paths raise where they
+previously returned a silent default, `AbstractServerHttpHandler` gained a `JSONException` arm - wrapped and
+un-wrapped, matching how `IllegalArgumentException` and `CommandParsingException` are already treated - reporting
+`Invalid JSON payload`. A request whose JSON is missing a property, carries a null where a value is required, or
+holds the wrong type for it is a client error, and it used to fall through to the generic `500 Internal error`.
+
+**The MCP JSON-RPC contract is unaffected.** `MCPDispatcher` guards its `params` / `arguments` reads to turn a
+malformed member into a `-32600` / `-32602` envelope over HTTP 200, and the setting-key read to keep secret masking
+from raising while the request log line is built. Those guards named the Gson exception types the accessors used to
+let escape, so they now cover `JSONException` too and keep answering an envelope rather than the transport's 400.
+
+[#5935](https://github.com/ArcadeData/arcadedb/issues/5935)

@@ -27,6 +27,7 @@ import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpAuthSession;
@@ -487,6 +488,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                       e.getMessage());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
+    } catch (final JSONException e) {
+      // The request payload is missing a property, carries a null where a value is required, or holds the wrong type
+      // for it: a malformed request, not a server fault. Without this arm it degraded to 500 (issue #5935).
+      LogManager.instance()
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
+      sendErrorResponse(exchange, 400, "Invalid JSON payload", e, null);
     } catch (final CommandExecutionException | CommandParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
@@ -546,6 +554,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         reported.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
+      } else if (realException instanceof JSONException) {
+        // Symmetric with the un-wrapped JSONException arm above: a command planner that wraps the payload read in a
+        // CommandExecutionException must not turn the client's malformed JSON into a 500 (issue #5935).
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Invalid JSON payload", realException, null);
       } else {
         // UNEXPECTED INTERNAL ERROR (not a client/validation error handled above): log the FULL stack trace so
         // an internal fault - e.g. a BufferUnderflowException from a truncated/corrupted record read - is
@@ -589,6 +604,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
+      } else if (realException instanceof JSONException) {
+        // Symmetric with the un-wrapped JSONException arm above: a malformed request payload read inside the
+        // auto-commit transaction wrapper must still answer 400, not the generic 500 (issue #5935).
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Invalid JSON payload", realException, null);
       } else if (realException instanceof TransactionCommittedRemotelyException committedRemotely) {
         // Same as the un-wrapped committed-remotely arm above (#5064/#5075), reached when the auto-commit
         // wrapper re-wrapped it: the non-retryable 409 must survive the wrapping.
