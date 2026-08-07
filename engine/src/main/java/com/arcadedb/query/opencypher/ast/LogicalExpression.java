@@ -66,9 +66,13 @@ public class LogicalExpression implements BooleanExpression {
 
   private Object evaluateAnd(final Result result, final CommandContext context) {
     final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
-    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
 
-    if (Boolean.FALSE.equals(leftBool) || Boolean.FALSE.equals(rightBool))
+    // false AND anything = false: the right operand is result-irrelevant, do not evaluate it.
+    if (Boolean.FALSE.equals(leftBool))
+      return false;
+
+    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
+    if (Boolean.FALSE.equals(rightBool))
       return false;
     if (leftBool == null || rightBool == null)
       return null;
@@ -77,9 +81,13 @@ public class LogicalExpression implements BooleanExpression {
 
   private Object evaluateOr(final Result result, final CommandContext context) {
     final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
-    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
 
-    if (Boolean.TRUE.equals(leftBool) || Boolean.TRUE.equals(rightBool))
+    // true OR anything = true: the right operand is result-irrelevant, do not evaluate it.
+    if (Boolean.TRUE.equals(leftBool))
+      return true;
+
+    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
+    if (Boolean.TRUE.equals(rightBool))
       return true;
     if (leftBool == null || rightBool == null)
       return null;
