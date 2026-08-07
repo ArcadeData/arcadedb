@@ -62,6 +62,8 @@ public class RedisNetworkExecutor extends Thread {
   private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
   private          String              selectedDatabaseName = null;
   private          ServerSecurityUser  authenticatedUser    = null;
+  private final    int                 maxMultiBulkDepth;
+  private final    int                 maxMultiBulkLength;
 
   /**
    * Holds the resolved key and database from key resolution.
@@ -73,6 +75,8 @@ public class RedisNetworkExecutor extends Thread {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
+    this.maxMultiBulkDepth = GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH.getValueAsInteger();
+    this.maxMultiBulkLength = GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH.getValueAsInteger();
 
     // Initialize default database from configuration if set. The database access is authorized lazily,
     // once the connection has authenticated (see getAuthorizedDatabase), so here we only record the name.
@@ -101,6 +105,19 @@ public class RedisNetworkExecutor extends Thread {
           close();
         } catch (final SocketTimeoutException e) {
           // IGNORE IT
+        } catch (final RedisProtocolLimitException e) {
+          // The message violates a configured protocol limit (issue #5895): the stream position can no
+          // longer be trusted, so report the error and close rather than trying to resync and continue.
+          LogManager.instance().log(this, Level.WARNING, "Redis wrapper: %s, closing connection", e.getMessage());
+          try {
+            value.setLength(0);
+            value.append("-ERR ").append(e.getMessage());
+            appendCrLf();
+            replyToClient(value);
+          } catch (final IOException ignored) {
+            // the connection is already gone; nothing left to notify
+          }
+          close();
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
         }
@@ -736,6 +753,20 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private Object parseNext() throws IOException {
+    return parseNext(0);
+  }
+
+  /**
+   * Parses the next RESP value from the wire. {@code depth} counts RESP array nesting: a RESP array
+   * element can itself be an array, so without a bound a maliciously deep, unauthenticated client payload
+   * recurses once per nesting level and overflows the connection thread's JVM stack (issue #5895). The
+   * array element count is bounded the same way, so a single client-declared length like
+   * {@code *2000000000\r\n} cannot start a parse loop with billions of iterations.
+   */
+  private Object parseNext(final int depth) throws IOException {
+    if (depth > maxMultiBulkDepth)
+      throw new RedisProtocolLimitException("Protocol error: RESP array nesting exceeds the maximum allowed depth (" + maxMultiBulkDepth + ")");
+
     final byte b = readNext();
 
     if (b == '+')
@@ -751,10 +782,17 @@ public class RedisNetworkExecutor extends Thread {
       return value;
     } else if (b == '*') {
       // ARRAY
-      final List<Object> array = new ArrayList<>();
       final int arraySize = Integer.parseInt(parseValueUntilLF());
+      if (arraySize <= 0)
+        // RESP2 null array (*-1) or an explicit empty array (*0): nothing to read.
+        return new ArrayList<>();
+      if (arraySize > maxMultiBulkLength)
+        throw new RedisProtocolLimitException(
+            "Protocol error: invalid multibulk length " + arraySize + " (maximum allowed is " + maxMultiBulkLength + ")");
+
+      final List<Object> array = new ArrayList<>();
       for (int i = 0; i < arraySize; ++i)
-        array.add(parseNext());
+        array.add(parseNext(depth + 1));
       return array;
     } else {
       LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s'", (char) b);

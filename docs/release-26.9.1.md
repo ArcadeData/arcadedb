@@ -165,4 +165,20 @@ garbage collector no longer traces one object graph per indexed vector.
   constructors: the two roles now take the same argument types and differ only in whether the reader may
   short-circuit to the vectors persisted inline in the graph file.
 
+## Redis wire protocol: an unauthenticated RESP array could overflow the connection thread's stack (#5895)
+
+`RedisNetworkExecutor.parseNext()` decoded RESP arrays recursively, once per nesting level, with no bound
+on either the nesting depth or the client-declared element count - and it runs before the `NOAUTH` check,
+since the whole message has to be parsed before a command exists to reject. On the default JVM stack, about
+47KB of `*1\r\n` repeated ~11,860 times was enough to overflow the connection thread with an uncaught
+`StackOverflowError`, reachable by anyone who can open the Redis port, no credentials required. Separately,
+an unbounded array-length header such as `*2000000000\r\n` started a parse loop the client could keep alive
+indefinitely just by trickling bytes, tying up a connection thread for as long as it liked.
+
+Both are now bounded by two new settings mirroring Redis' own protocol limits: `arcadedb.redis.maxMultiBulkDepth`
+(default 32 - no real command nests anywhere close to that) and `arcadedb.redis.maxMultiBulkLength` (default
+1,048,576, the same hard cap Redis itself enforces on multibulk requests). Either violation now fails fast with
+a RESP `-ERR Protocol error: ...` reply and the connection is closed, since the stream position past a rejected
+message can no longer be trusted to resynchronize on.
+
 [#5588](https://github.com/ArcadeData/arcadedb/issues/5588)
