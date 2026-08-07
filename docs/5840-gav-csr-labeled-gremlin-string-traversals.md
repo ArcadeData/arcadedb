@@ -55,8 +55,6 @@ either way.
   `applyPrior()` override removed.
 - `gremlin/src/test/java/com/arcadedb/gremlin/GremlinStringPathGAVTest.java`: new regression test
   covering the string-submission path.
-- `docs/review-deferred-2475d2e.md`: verbatim record of a review finding deferred to follow-up work (see
-  "Known trade-off" below).
 
 ## Tests
 
@@ -99,5 +97,21 @@ regression, not a correctness one, and out of this issue's scope to fix (it woul
 `NotStep`-dismissal case for `is(0)`/`is(1)`-adjacent predicates that has no relation to the 3-step
 pattern at all).
 
-Recommended as separate follow-up work against #5841. See `docs/review-deferred-2475d2e.md` for the full
-review thread and verification.
+This makes the rationale comments on two pre-existing, `@Disabled`-or-otherwise-unmodified tests in
+`ArcadeEdgeCountFilterStepTest.java` (untouched by this PR, last modified by PR #5829) stale:
+
+- `theDegreeFilterStepIsInstalled` (`@Disabled`): its javadoc says the outcome is "NOT stable across
+  JVMs." That framing no longer holds; the outcome is now stable (CountStrategy always wins), just
+  stably wrong from the optimization's point of view.
+- `characterizesTheRewriteNotEngagingViaTheStringEntryPoint`: its javadoc instructs "WHEN THE
+  VertexStepPlaceholder GAP IS FIXED, INVERT THIS TEST: the expectation becomes that the rewrite DOES
+  install on the string path." This PR does fix that gap, but the test's query
+  (`g.V().where(outE('KNOWS').count().is(gt(1)))`) uses a bounded predicate (`gt(1)`), exactly the shape
+  `CountStrategy` now deterministically wins on for the reason above - so inverting the assertion as
+  instructed would fail immediately, for an unrelated reason the docstring doesn't anticipate.
+
+Neither test was edited by this PR: per `resolve-issue`'s hard constraint, existing tests are never
+modified, only added to. Both docstrings should be corrected together with whatever change ships the
+`CountStrategy`-shape fix described above, since that is the change whose outcome they're describing.
+
+Recommended as separate follow-up work against #5841.
