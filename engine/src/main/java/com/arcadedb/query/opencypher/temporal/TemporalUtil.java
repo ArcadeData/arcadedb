@@ -382,7 +382,7 @@ public final class TemporalUtil {
    *
    * CypherDateTime is kept as its ISO-8601 string representation (not unwrapped to ZonedDateTime)
    * so that: (a) untyped properties store it as TYPE_STRING, preserving timezone info for
-   * later component access via PropertyAccessExpression.convertFromStorage(); and (b) for
+   * later component access via {@link #convertFromStorage(Object)}; and (b) for
    * schema-typed DATETIME properties, Type.convert() parses the string into the target Java type
    * (timezone is dropped on a LocalDateTime target, matching the SQL sysdate() semantics).
    *
