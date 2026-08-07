@@ -32,7 +32,7 @@ every strategy in a later category. `ProviderOptimizationStrategy` sorts strictl
 `ArcadeTraversalStrategy.apply()` runs, every `VertexStepPlaceholder` (including ones freshly rebuilt by
 `AdjacentToIncidentStrategy`) has already been resolved to a concrete step.
 
-This also makes the ordering deterministic across JVMs — previously `ArcadeTraversalStrategy`'s position
+This also makes the ordering deterministic across JVMs, previously `ArcadeTraversalStrategy`'s position
 relative to other same-category `OptimizationStrategy` strategies (besides its one explicit
 `applyPrior()` entry) depended on `LinkedHashSet`/topo-sort iteration order.
 
@@ -45,16 +45,18 @@ Since category ordering now guarantees `ArcadeTraversalStrategy` runs after ever
 A top-level `.out().count()` shape is rewritten by TinkerPop's `AdjacentToIncidentStrategy` into
 `.outE().count()` (edge-returning), regardless of the ordering fix. `ArcadeGAVVertexStep` only replaces
 vertex-returning `VertexStep`s, so this shape is not, and was never, GAV-accelerated by
-`ArcadeTraversalStrategy` — that is a distinct, out-of-scope enhancement (an edge-returning GAV step),
+`ArcadeTraversalStrategy`, that is a distinct, out-of-scope enhancement (an edge-returning GAV step),
 not a consequence of the ordering bug this issue reports. Results stay correct via the OLTP fallback
 either way.
 
 ## Files changed
 
-- `gremlin/src/main/java/com/arcadedb/gremlin/ArcadeTraversalStrategy.java` — category change,
+- `gremlin/src/main/java/com/arcadedb/gremlin/ArcadeTraversalStrategy.java`: category change,
   `applyPrior()` override removed.
-- `gremlin/src/test/java/com/arcadedb/gremlin/GremlinStringPathGAVTest.java` — new regression test
+- `gremlin/src/test/java/com/arcadedb/gremlin/GremlinStringPathGAVTest.java`: new regression test
   covering the string-submission path.
+- `docs/review-deferred-2475d2e.md`: verbatim record of a review finding deferred to follow-up work (see
+  "Known trade-off" below).
 
 ## Tests
 
@@ -72,3 +74,30 @@ asserts the compiled plan the same way the existing fluent-path tests do (`Trave
 
 All were confirmed to fail against the pre-fix code (labeled-hop cases) before the fix was applied, per
 TDD.
+
+## Known trade-off (flagged in review, deferred)
+
+Reclassifying `ArcadeTraversalStrategy` also changes its ordering relative to TinkerPop's own
+`CountStrategy` (still `OptimizationStrategy`), not only against `GValueReductionStrategy`. Before this
+fix, whether `CountStrategy` or `ArcadeTraversalStrategy` ran first for a given JVM process was an
+unresolved tie inside the shared `OptimizationStrategy` category (per issue #5841's per-JVM
+nondeterminism), so `ArcadeEdgeCountFilterStep`'s O(1) degree-check optimization for
+`where(outE(label).count().is(boundedPredicate))` engaged on roughly half of JVM processes and silently
+fell back to OLTP on the other half (documented in the pre-existing, already-`@Disabled`
+`ArcadeEdgeCountFilterStepTest.theDegreeFilterStepIsInstalled`, untouched by this PR).
+
+After this fix, `CountStrategy` is guaranteed to run before `ArcadeTraversalStrategy` on every JVM
+(category ordering is unconditional), so `CountStrategy`'s own rewrite of
+`VertexStep -> CountGlobalStep -> IsStep` into a 4-step
+`VertexStep -> RangeGlobalStep -> CountGlobalStep -> IsStep` for bounded numeric predicates always
+happens first, and `applyEdgeCountFilterOptimization`'s exact-3-substep pattern match can never fire for
+that shape again. The optimization goes from "intermittently unreachable" to "permanently unreachable"
+for that one query shape. Results stay correct throughout via the OLTP fallback (differential tests
+`greaterThanMatchesTheUnoptimizedPath` and siblings pass either way); this is a performance-determinism
+regression, not a correctness one, and out of this issue's scope to fix (it would mean extending
+`applyEdgeCountFilterOptimization` to recognize `CountStrategy`'s several rewritten shapes, including a
+`NotStep`-dismissal case for `is(0)`/`is(1)`-adjacent predicates that has no relation to the 3-step
+pattern at all).
+
+Recommended as separate follow-up work against #5841. See `docs/review-deferred-2475d2e.md` for the full
+review thread and verification.
