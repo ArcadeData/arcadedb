@@ -115,3 +115,49 @@ modified, only added to. Both docstrings should be corrected together with whate
 `CountStrategy`-shape fix described above, since that is the change whose outcome they're describing.
 
 Recommended as separate follow-up work against #5841.
+
+More generally (flagged in review cycle 4, non-actionable): the category move doesn't only change
+ordering relative to `GValueReductionStrategy` and `CountStrategy`, it now runs
+`ArcadeTraversalStrategy` after *every* built-in `OptimizationStrategy` (`RepeatUnrollStrategy`,
+`AdjacentToIncidentStrategy`/`IncidentToAdjacentStrategy`, `FilterRankingStrategy`, etc.),
+deterministically rather than nondeterministically. Two such interactions (`AdjacentToIncidentStrategy`
+via the `.out().count()` scope note above, and `CountStrategy` via this section) were found and
+documented during this fix; others may exist and would need the same treatment if found later.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5899
+
+## Review cycles
+
+All four review cycles were run by `claude[bot]` against the PR's HTTP endpoint / issue-comment surface
+(this repo's `claude-review` GitHub Actions workflow posts as a PR issue comment, not a formal review).
+
+1. **Cycle 1** - head `99464c553` (initial fix + test): reviewer asked, as a non-blocking nit, to pin
+   the exact TinkerPop 3.8.1 source reference for the `applyPost()` claim in the class javadoc instead of
+   asserting it as an unsourced implementation detail. Applied: added the exact class/line and a source
+   quote (commit `2475d2efd`).
+2. **Cycle 2** - head `2475d2efd`: reviewer confirmed (CONFIRMED verdict, independently re-derived from
+   `CountStrategy`'s TinkerPop 3.8.1 source) that the category change also makes `CountStrategy` always
+   win its ordering race against `ArcadeTraversalStrategy`, permanently foreclosing
+   `ArcadeEdgeCountFilterStep` for bounded-predicate `where(outE(label).count().is(...))` shapes
+   (previously ~50/50 per JVM, per #5841). Deferred: extending the pattern match is out of this issue's
+   scope; documented the trade-off instead (commit `3793187cb`).
+3. **Cycle 3** - head `3793187cb`: reviewer found the deferred-item notes file
+   (`docs/review-deferred-2475d2e.md`) read as an internal review-transcript artifact with a dangling
+   reference to tooling not present in this repo, and found a SECOND pre-existing test
+   (`characterizesTheRewriteNotEngagingViaTheStringEntryPoint`) whose docstring is stale for the same
+   `CountStrategy` reason. Applied: dropped the ephemeral file, folded its content into this doc's "Known
+   trade-off" section, and extended that section to cover the second test (commits `6be42a2c8`,
+   `d48b59291`; the first of those two accidentally omitted the doc edit due to a `git add` typo, caught
+   and fixed in the second).
+4. **Cycle 4** - head `d48b59291`: reviewer found no blocking issues. Re-verified the core fix,
+   confirmed the `CountStrategy` trade-off analysis, confirmed adherence to the "never modify existing
+   tests" constraint, and flagged one non-actionable, "worth a sentence" generalization (the reordering
+   affects every `OptimizationStrategy`, not only the two discussed) - added as a closing note above,
+   not a code change. **Clean approval**, loop exited.
+
+## Final state
+
+`clean-approval` (4 review cycles, all handled; cycle 4 returned no blocking issues on an empty working
+tree). Merge remains the developer's decision.
