@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BetweenCondition;
@@ -40,6 +41,8 @@ import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -389,24 +392,23 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (convertedTo.length == 0)
         convertedTo = null;
 
-      try {
-        if (Arrays.equals(convertedFrom, convertedTo) && fromKeyIncluded && toKeyIncluded
-            && convertedFrom != null && index.getPropertyNames().size() == convertedFrom.length)
-          cursor = index.get(convertedFrom);
-        else if (index.supportsOrderedIterations()) {
-          if (orderAsc)
-            cursor = index.range(true, convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
-          else
-            cursor = index.range(false, convertedTo, toKeyIncluded, convertedFrom, fromKeyIncluded);
-        } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
-          cursor = index.iterator(isOrderAsc(), convertedFrom, true);
-        } else {
-          throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
-        }
-      } catch (final IllegalArgumentException e) {
+      if (!valuesConvertToIndexKeyTypes(convertedFrom) || !valuesConvertToIndexKeyTypes(convertedTo))
         // This combination's bound has no defined ordering against the index's declared key type: it matches no
         // indexed row, consistent with the row-scan operators (#5900). Skip it rather than aborting the whole scan.
         continue;
+
+      if (Arrays.equals(convertedFrom, convertedTo) && fromKeyIncluded && toKeyIncluded
+          && convertedFrom != null && index.getPropertyNames().size() == convertedFrom.length)
+        cursor = index.get(convertedFrom);
+      else if (index.supportsOrderedIterations()) {
+        if (orderAsc)
+          cursor = index.range(true, convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
+        else
+          cursor = index.range(false, convertedTo, toKeyIncluded, convertedFrom, fromKeyIncluded);
+      } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
+        cursor = index.iterator(isOrderAsc(), convertedFrom, true);
+      } else {
+        throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
       }
       nextCursors.add(cursor);
 
@@ -532,15 +534,14 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     final Object secondValue = second.execute((Result) null, context);
     final Object thirdValue = third.execute((Result) null, context);
-    try {
-      if (isOrderAsc())
-        cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
-      else
-        cursor = index.range(false, new Object[] { thirdValue }, true, new Object[] { secondValue }, true);
-    } catch (final IllegalArgumentException e) {
-      // A bound with no defined ordering against the index's declared key type: no indexed row can match (#5900).
+
+    if (!valuesConvertToIndexKeyTypes(new Object[] { secondValue }) || !valuesConvertToIndexKeyTypes(new Object[] { thirdValue }))
+      // A bound has no defined ordering against the index's declared key type: no indexed row can match (#5900).
       cursor = null;
-    }
+    else if (isOrderAsc())
+      cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
+    else
+      cursor = index.range(false, new Object[] { thirdValue }, true, new Object[] { secondValue }, true);
 
     if (cursor != null)
       fetchNextEntry();
@@ -600,26 +601,50 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     else
       values = (Object[]) value;
 
-    try {
-      if (operator instanceof EqualsCompareOperator) {
-        return index.get(values);
-      } else if (operator instanceof GeOperator) {
-        return index.iterator(true, values, true);
-      } else if (operator instanceof GtOperator) {
-        return index.iterator(true, values, false);
-      } else if (operator instanceof LeOperator) {
-        return index.iterator(false, values, true);
-      } else if (operator instanceof LtOperator) {
-        return index.iterator(false, values, false);
-      } else {
-        throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
-      }
-    } catch (final IllegalArgumentException e) {
-      // The bound has no defined ordering against the index's declared key type (e.g. a non-numeric String bound
-      // on a numeric column): no indexed row can match, consistent with the row-scan operators (#5900). Type.convert()
-      // always surfaces a failed conversion as an IllegalArgumentException (NumberFormatException is a subtype).
+    if (!valuesConvertToIndexKeyTypes(values))
+      // A bound has no defined ordering against the index's declared key type (e.g. a non-numeric String bound on
+      // a numeric column): no indexed row can match, consistent with the row-scan operators (#5900).
       return null;
+
+    if (operator instanceof EqualsCompareOperator) {
+      return index.get(values);
+    } else if (operator instanceof GeOperator) {
+      return index.iterator(true, values, true);
+    } else if (operator instanceof GtOperator) {
+      return index.iterator(true, values, false);
+    } else if (operator instanceof LeOperator) {
+      return index.iterator(false, values, true);
+    } else if (operator instanceof LtOperator) {
+      return index.iterator(false, values, false);
+    } else {
+      throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
+  }
+
+  /**
+   * Best-effort check that every non-null value converts to the index's declared key type, mirroring exactly what
+   * the index's own key conversion does internally ({@code Type.convert} against
+   * {@code BinaryTypes.getClassFromType(...)}, e.g. {@code LSMTreeIndexAbstract.convertKeys()}). Run BEFORE calling
+   * into the index so a genuine type mismatch is what gets treated as "no match" here - catching whatever
+   * {@code IllegalArgumentException} the index call happens to throw would also silently swallow unrelated causes
+   * (a NULL-strategy violation, a non-range-capable composite sub-index) as the same "no rows" outcome.
+   */
+  private boolean valuesConvertToIndexKeyTypes(final Object[] values) {
+    if (values == null || !(index instanceof IndexInternal internalIndex))
+      return true;
+
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    final Database database = context.getDatabase();
+    for (int i = 0; i < values.length && i < keyTypes.length; i++) {
+      if (values[i] == null)
+        continue;
+      try {
+        Type.convert(database, values[i], BinaryTypes.getClassFromType(keyTypes[i]));
+      } catch (final IllegalArgumentException e) {
+        return false;
+      }
+    }
+    return true;
   }
 
   protected boolean isOrderAsc() {
