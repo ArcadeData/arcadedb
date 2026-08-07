@@ -41,6 +41,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeFullTextIndexBuilder;
+import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -195,6 +197,19 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
                   return;
                 }
 
+                // FULL_TEXT (analyzer, BM25 tuning, per-field boosts) and LSM_SPARSE_VECTOR (dimensions, modifier,
+                // weightQuantization) keep their real configuration entirely in their metadata, same as LSM_VECTOR
+                // above. getOrCreateTypeIndex() carries no metadata, so routing them through it silently dropped
+                // every one of those settings on restore even though the export carries them (issue #5650).
+                if (idxType == Schema.INDEX_TYPE.FULL_TEXT) {
+                  loadFullTextIndex(databaseSchema, typeName, idxFields, idx);
+                  return;
+                }
+                if (idxType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
+                  loadSparseVectorIndex(databaseSchema, typeName, idxFields, idx);
+                  return;
+                }
+
                 var typeIndex = docType.getOrCreateTypeIndex(idxType, idx.getBoolean("unique"), idxFields);
                 typeIndex.setNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
               });
@@ -233,6 +248,46 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     final TypeLSMVectorIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
         .withType(Schema.INDEX_TYPE.LSM_VECTOR)
         .withLSMVectorType();
+    builder.withPersistedMetadata(idx);
+    builder.withIgnoreIfExists(true);
+    builder.create();
+  }
+
+  /**
+   * Recreates a {@code FULL_TEXT} index from its exported schema definition (issue #5650), mirroring
+   * {@link #loadVectorIndex}. Unlike LSM_VECTOR, the persisted definition of a FULL_TEXT index does carry
+   * {@code unique}/{@code nullStrategy} (see {@code LSMTreeFullTextIndex.toJSON()}), so those are still applied
+   * explicitly; everything else (analyzers, BM25 tuning, per-field boosts) comes back through the dedicated builder.
+   * <p>
+   * {@code withFreshCorpusCounters()} is required here and only here: this index is created empty and then
+   * repopulated by replaying every document afterwards ({@link #loadDocument}/{@link #loadVertex}), so the BM25
+   * corpus counters {@code withPersistedMetadata} just restored - describing the SOURCE database's already-indexed
+   * corpus - must NOT carry through, or every replayed document would double-count on top of them.
+   */
+  private void loadFullTextIndex(final Schema databaseSchema, final String typeName, final String[] fields, final JSONObject idx) {
+    final TypeFullTextIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
+        .withType(Schema.INDEX_TYPE.FULL_TEXT)
+        .withFullTextType();
+    builder.withUnique(idx.getBoolean("unique"));
+    builder.withNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
+    builder.withPersistedMetadata(idx);
+    builder.withFreshCorpusCounters();
+    builder.withIgnoreIfExists(true);
+    builder.create();
+  }
+
+  /**
+   * Recreates an {@code LSM_SPARSE_VECTOR} index from its exported schema definition (issue #5650), mirroring
+   * {@link #loadVectorIndex}. Unlike LSM_VECTOR, the persisted definition of a sparse index does carry
+   * {@code unique}/{@code nullStrategy} (see {@code LSMSparseVectorIndex.toJSON()}), so those are still applied
+   * explicitly; everything else (dimensions, modifier, weightQuantization) comes back through the dedicated builder.
+   */
+  private void loadSparseVectorIndex(final Schema databaseSchema, final String typeName, final String[] fields, final JSONObject idx) {
+    final TypeLSMSparseVectorIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
+        .withType(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR)
+        .withSparseVectorType();
+    builder.withUnique(idx.getBoolean("unique"));
+    builder.withNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
     builder.withPersistedMetadata(idx);
     builder.withIgnoreIfExists(true);
     builder.create();
