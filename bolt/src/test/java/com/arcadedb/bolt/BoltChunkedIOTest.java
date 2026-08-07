@@ -18,13 +18,17 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for BOLT chunked I/O classes.
@@ -239,6 +243,63 @@ class BoltChunkedIOTest {
     final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
 
     assertThat(chunkedInput.available()).isEqualTo(3);
+  }
+
+  /**
+   * Regression for issue #5918: a client that never sends the terminating zero-length chunk previously grew the
+   * reassembly buffer without limit, before the BOLT handshake or authentication ever ran. Two 10-byte chunks
+   * against a 15-byte bound must be rejected once the running total crosses the bound, without ever seeing (or
+   * needing) a terminator.
+   */
+  @Test
+  void readMessageExceedingMaxSizeRejectedBeforeUnboundedGrowth() {
+    final byte[] input = {
+        0x00, 0x0A, // first chunk size = 10
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0x00, 0x0A, // second chunk size = 10 (running total 20 > bound 15)
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0x00, 0x00  // terminator (never reached)
+    };
+    final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input), 15);
+
+    assertThatThrownBy(chunkedInput::readMessage)
+        .isExactlyInstanceOf(IOException.class)
+        .hasMessageContaining("too large");
+  }
+
+  @Test
+  void readMessageWithinMaxSizeStillParses() throws Exception {
+    final byte[] input = {
+        0x00, 0x0A, // chunk size = 10
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+        0x00, 0x00  // terminator
+    };
+    final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input), 10);
+
+    assertThat(chunkedInput.readMessage()).containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+  }
+
+  /**
+   * A {@code maxMessageSize} of 0 (or negative) would reject essentially every real BOLT message outright. The
+   * config-reading constructor must fall back to the built-in default rather than enforcing the misconfigured
+   * value literally.
+   */
+  @Test
+  void maxMessageSizeBelowUsableFloorFallsBackToDefault() throws Exception {
+    final int original = GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getValueAsInteger();
+    GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.setValue(0);
+    try {
+      final byte[] input = {
+          0x00, 0x0A, // chunk size = 10; would be rejected outright by a literal maxMessageSize=0
+          1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+          0x00, 0x00  // terminator
+      };
+      final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
+
+      assertThat(chunkedInput.readMessage()).containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+    } finally {
+      GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.setValue(original);
+    }
   }
 
   // ============ Round-trip tests ============
