@@ -604,6 +604,15 @@ public class VectorLocationIndex {
       } else {
         // LSM merge-on-read: a live entry read after a tombstone for the same id wins (it cannot happen through the
         // write path, which never reuses an id, but page order is the authority here).
+        //
+        // This is the mirror image of the delete path above and leaves the same transient combination - not
+        // deleted, no location yet - between the bit coming down and the presence bit going up. It is benign here,
+        // and the asymmetry is worth stating because the ordering above exists precisely to avoid it: what makes
+        // that window dangerous on the delete path is that a reader falling through to the pages finds the id's
+        // PRE-tombstone entry, an older generation than the one being installed. Here the pages hold the live
+        // entry this call is installing - it is where the call came from - so a reader that falls through in the
+        // window resolves to the same answer it would get after it. Ordering it the other way would be worse: a
+        // location that is resident while the id still reads as deleted makes the delta scan skip a live vector.
         if (deletedIds.contains(id))
           deletedIds.remove(id);
 

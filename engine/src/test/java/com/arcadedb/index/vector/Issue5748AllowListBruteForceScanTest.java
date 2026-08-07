@@ -41,6 +41,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -449,8 +450,12 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
    * <p>
    * Every way of asking for one entry's location counts, not just {@code getLocation}: since issue #5588 the scan
    * asks for the RID and the vector reader asks for the packed offset, where both used to ask for the whole tuple.
-   * The count per ordinal is unchanged - two - which is what keeps the bounds below comparable to the ones this
-   * test was written with.
+   * <p>
+   * It has to extend {@link VectorLocationIndex} rather than wrap it, because the field it is installed into is
+   * typed as one. That makes it a subclass whose OWN inherited state is permanently empty, so any method left
+   * un-overridden answers about nothing rather than about the delegate - a silent wrong answer, not a failure.
+   * Everything {@code LSMVectorIndex} reads is therefore forwarded below, not just the methods this test counts:
+   * a read that is not forwarded would report an empty index and the scan under test would find no vectors at all.
    */
   private static final class CountingLocationIndex extends VectorLocationIndex {
     private final VectorLocationIndex delegate;
@@ -458,6 +463,54 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
 
     CountingLocationIndex(final VectorLocationIndex delegate) {
       this.delegate = delegate;
+    }
+
+    // --- forwarded but NOT counted: the scan's cost is measured in per-entry location lookups, and these are
+    // either O(1) bookkeeping or whole-index walks that no per-ordinal bound should charge to.
+
+    @Override
+    public int size() {
+      return delegate.size();
+    }
+
+    @Override
+    public long getActiveCount() {
+      return delegate.getActiveCount();
+    }
+
+    @Override
+    public IntStream getAllVectorIds() {
+      return delegate.getAllVectorIds();
+    }
+
+    @Override
+    public IntStream getActiveVectorIds() {
+      return delegate.getActiveVectorIds();
+    }
+
+    @Override
+    public boolean isDeleted(final int vectorId) {
+      return delegate.isDeleted(vectorId);
+    }
+
+    @Override
+    public int getDeletedCount() {
+      return delegate.getDeletedCount();
+    }
+
+    @Override
+    public int getNextId() {
+      return delegate.getNextId();
+    }
+
+    @Override
+    public int getMaxVectorId() {
+      return delegate.getMaxVectorId();
+    }
+
+    @Override
+    public long estimatedRetainedBytes() {
+      return delegate.estimatedRetainedBytes();
     }
 
     @Override

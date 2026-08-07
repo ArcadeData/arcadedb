@@ -240,6 +240,11 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     // Fall back to reading from document (for non-quantized indexes or if quantized read failed). This is the
     // only branch that needs the RID as an object, so it is the only one that materializes it - and it is about to
     // do a record read, so the allocation is noise next to what it enables.
+    //
+    // It is also the only branch that resolves the id's chunk twice, having already done so for the offset above,
+    // where the single getLocation() this replaces resolved it once. Quantized indexes never reach here, and the
+    // second resolution is an array index and a volatile read against the lookupByRID on the next line, so the
+    // asymmetry is real but not worth a combined accessor that would exist for one caller.
     final RID rid = locations.getRid(vectorId);
     if (rid == null)
       return deletedSentinelVector;
