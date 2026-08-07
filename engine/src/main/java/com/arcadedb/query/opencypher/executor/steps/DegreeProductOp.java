@@ -255,6 +255,16 @@ public final class DegreeProductOp implements CountOp {
       final String edgeType = arms[a].edgeTypes[0];
       final Vertex.DIRECTION dir = arms[a].directions[0];
 
+      // An undeclared edge type has no edges by definition. db.iterateType() resolves the type
+      // via Schema#getType() and throws for a name the schema does not know, unlike the vertex-local
+      // edge-list filtering the ordinary pipeline uses (EdgeLinkedList#count, fixed for issue #4199).
+      // A mandatory arm over an undeclared type is already short-circuited to a constant 0 before
+      // this operator is even built (see mandatoryPatternElementIsEmpty()), but an OPTIONAL MATCH
+      // arm reaches here and must simply contribute degree 0 to every central vertex rather than
+      // throw (issue #5790).
+      if (!db.getSchema().existsType(edgeType))
+        continue;
+
       for (final Iterator<? extends Identifiable> it = db.iterateType(edgeType, true); it.hasNext(); ) {
         final Edge edge = it.next().asEdge();
         // The central vertex is the vertex on the "source" side of the arm direction:
