@@ -165,13 +165,55 @@ public class CypherOptimizer {
       rootOperator = buildExpansionChain(logicalPlan, anchor, anchorOperator);
     }
 
+    // 5a. A later MATCH clause can introduce a node that shares no variable with the relationship
+    // pattern above (e.g. "MATCH (n)-[:E]->(m) MATCH (x)"). shouldUseOptimizer() only lets such a
+    // query reach the optimizer when every disconnected component is a single, standalone node, so
+    // any pattern node not reachable from the anchor via a relationship is exactly that: an
+    // independent scan that must Cartesian-join with the rest, the same way optimizeMultiMatchIndependent
+    // handles a query with no relationships at all. Without this, the node is silently dropped from the
+    // plan and its variable resolves to null downstream instead of expanding one row per match (#5810).
+    // getPatternNodes() (rather than the named-only getNodes()) is used so an anonymous disconnected
+    // node, e.g. "MATCH (n)-[:E]->(m) MATCH (:Label)", is caught too - it still multiplies the row
+    // count even though nothing reads its variable.
+    final Set<String> connectedVariables = new HashSet<>();
+    connectedVariables.add(anchor.getVariable());
+    for (final LogicalRelationship rel : logicalPlan.getRelationships()) {
+      connectedVariables.add(rel.getSourceVariable());
+      connectedVariables.add(rel.getTargetVariable());
+    }
+    final List<LogicalNode> disconnectedNodes = new ArrayList<>();
+    for (final LogicalNode node : logicalPlan.getPatternNodes().values())
+      if (!connectedVariables.contains(node.getVariable()))
+        disconnectedNodes.add(node);
+
     // 6. Apply ExpandInto optimization
     // ExpandInto is detected during expansion chain building (step 5)
     // and applied automatically when both endpoints are bound
 
-    // 7. Push down filters
-    if (!logicalPlan.getWhereFilters().isEmpty()) {
-      rootOperator = applyFilterPushdown(logicalPlan, rootOperator, anchor.getVariable(), anchorOperator);
+    // 7. Push down filters. A filter that reads a disconnected node's variable can only be evaluated
+    // once that node has been Cartesian-joined in, so it is deferred to step 9a; every other filter
+    // is applied here as before, so it still benefits from anchor pushdown and GAV fusion below.
+    final List<WhereClause> connectedFilters;
+    final List<WhereClause> deferredFilters;
+    if (disconnectedNodes.isEmpty()) {
+      connectedFilters = logicalPlan.getWhereFilters();
+      deferredFilters = Collections.emptyList();
+    } else {
+      final Set<String> disconnectedVariables = new HashSet<>();
+      for (final LogicalNode node : disconnectedNodes)
+        disconnectedVariables.add(node.getVariable());
+      connectedFilters = new ArrayList<>();
+      deferredFilters = new ArrayList<>();
+      for (final WhereClause whereClause : logicalPlan.getWhereFilters()) {
+        final Set<String> vars = WhereClause.collectVariables(whereClause.getConditionExpression());
+        if (Collections.disjoint(vars, disconnectedVariables))
+          connectedFilters.add(whereClause);
+        else
+          deferredFilters.add(whereClause);
+      }
+    }
+    if (!connectedFilters.isEmpty()) {
+      rootOperator = applyFilterPushdown(connectedFilters, logicalPlan, rootOperator, anchor.getVariable(), anchorOperator);
     }
 
     // 8. Fuse consecutive GAVExpandAll operators into a single GAVFusedChainOperator
@@ -180,6 +222,19 @@ public class CypherOptimizer {
 
     // 9. Defer vertex loading for remaining (non-fused) intermediate GAVExpandAll hops
     applyDeferredVertexLoading(rootOperator);
+
+    // 9a. Cartesian-join every disconnected single-node component, then apply any filter that
+    // needed one of them bound first.
+    for (final LogicalNode node : disconnectedNodes) {
+      final AnchorSelection nodeAnchor = anchorSelector.evaluateNodeDirect(node, logicalPlan);
+      final PhysicalOperator nodeOperator = createAnchorOperator(nodeAnchor);
+      final double cost = rootOperator.getEstimatedCost() + nodeAnchor.getEstimatedCost();
+      final long cardinality = rootOperator.getEstimatedCardinality() * Math.max(1, nodeAnchor.getEstimatedCardinality());
+      rootOperator = new CartesianProduct(rootOperator, nodeOperator, cost, cardinality);
+    }
+    if (!deferredFilters.isEmpty()) {
+      rootOperator = applyFilterPushdown(deferredFilters, logicalPlan, rootOperator, null, null);
+    }
 
     // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();
@@ -731,7 +786,7 @@ public class CypherOptimizer {
    */
   private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan,
       final PhysicalOperator rootOperator) {
-    return applyFilterPushdown(logicalPlan, rootOperator, null, null);
+    return applyFilterPushdown(logicalPlan.getWhereFilters(), logicalPlan, rootOperator, null, null);
   }
 
   /**
@@ -741,8 +796,12 @@ public class CypherOptimizer {
    * A predicate that reads only the anchor variable answers "is this row worth expanding at all", so
    * evaluating it at the scan drops the row before the expansion multiplies it. Left at the top, the
    * plan expanded every vertex of the label and threw most of the rows away afterwards.
+   *
+   * @param filters the WHERE predicates to apply (a subset of {@code logicalPlan.getWhereFilters()}
+   *                when the caller has already routed some elsewhere, e.g. filters referencing a
+   *                Cartesian-joined disconnected node that is not bound yet at this point in the plan)
    */
-  private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan,
+  private PhysicalOperator applyFilterPushdown(final List<WhereClause> filters, final LogicalPlan logicalPlan,
       final PhysicalOperator rootOperator, final String anchorVariable, final PhysicalOperator anchorOperator) {
     // Wrap the root operator with a FilterOperator for each WHERE clause
     // In a full implementation, we would analyze which filters can be pushed down
@@ -751,7 +810,7 @@ public class CypherOptimizer {
 
     PhysicalOperator currentOp = rootOperator;
 
-    for (final WhereClause whereClause : logicalPlan.getWhereFilters()) {
+    for (final WhereClause whereClause : filters) {
       BooleanExpression filterExpression = whereClause.getConditionExpression();
 
       if (anchorOperator instanceof NodeByLabelScan scan && anchorVariable != null)
