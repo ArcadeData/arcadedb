@@ -103,4 +103,57 @@ skips, unrelated to this change)**.
   still exist and are still implemented by both the placeholder and concrete step for
   addV/addE/property, and that `DropStep` still has no placeholder variant - the test
   `mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps` in `ArcadeGremlinAnalyzeTest` pins
-  the current placeholder class names and will fail loudly if TinkerPop changes this shape.
+  the current placeholder class names and will fail loudly if TinkerPop changes this shape. A
+  cross-reference comment was added next to `gremlin.version` in the root `pom.xml` pointing back
+  here (see cycle 1 below).
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5903
+
+## Review cycles
+
+### Cycle 1 - `5046a7958`
+
+`claude[bot]` posted a review as an issue comment confirming the root-cause analysis by tracing
+`ExecuteCommandTool.checkPermission()` and verifying it really does deny on any missing
+permission bit across the whole `OperationType` set. Confirmed the `*StepContract` fix is the
+right shape and that HA routing (`isIdempotent()`/`isDDL()`) is untouched. Raised one actionable,
+non-blocking suggestion: add a one-line cross-reference comment near the `gremlin.version`
+property in the root `pom.xml` pointing at the doc/test, mirroring the existing `#5535` antlr
+cross-reference comment in `gremlin/pom.xml`.
+
+Applied: added a comment block above `<gremlin.version>3.8.1</gremlin.version>` in the root
+`pom.xml` explaining the `*StepContract` requirement and cross-referencing this doc, the
+regression test, and the `#5535` antlr-pairing comment. Validated with `mvn -N validate`.
+
+No deferred items from this cycle.
+
+### Cycle 2 - `9d0a3a7f1`
+
+`claude[bot]` re-reviewed after the cycle 1 push. Independently re-confirmed the root cause
+against `ExecuteCommandTool.checkPermission()`, confirmed the fix doesn't touch `isIdempotent()`
+(HA routing unaffected), and noted it could not itself run `javap` against `gremlin-core:3.8.1`
+in its sandbox but that the PR's claim is backed by a regression test
+(`mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps`) that pins the exact placeholder
+class names, so a future TinkerPop upgrade that changes the shape fails loudly rather than
+regressing silently. Explicitly called out the new `pom.xml` cross-reference comment as a "nice
+touch."
+
+One optional, explicitly-non-blocking note: "consider trimming some of the very verbose in-code
+comments if the team wants `docs/5838-*.md` to be the single source of truth." Framed as "my only
+optional ask" - a style nitpick, not a defect. Skipped: the inline comments explain a genuinely
+version-sensitive TinkerPop internal (placeholder vs. concrete step, contract interface, the
+`DropStep` exception) at the exact point a future reader needs it, which is more discoverable
+than requiring a jump to `docs/`; the first review round explicitly praised the same level of
+detail. No code changes required, working tree clean. Treated as a clean approval - loop exited
+after 2 cycles.
+
+### Deferred items
+
+None. The one optional nit from cycle 2 (trim in-code comment verbosity) was evaluated and
+intentionally skipped with rationale recorded above, not deferred for developer follow-up.
+
+### Final state
+
+`clean-approval`
