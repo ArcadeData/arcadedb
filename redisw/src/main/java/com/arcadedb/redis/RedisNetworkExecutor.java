@@ -102,7 +102,11 @@ public class RedisNetworkExecutor extends Thread {
    * Reads a protocol-limit setting, falling back to its built-in default (with a warning) if configured below
    * {@code floor}. A value that low would reject every command outright - e.g. a max nesting depth of 0 rejects
    * even a flat {@code PING}, whose single argument is already one level of RESP array nesting deep - so it is
-   * treated as a misconfiguration rather than an intentional (if impractical) lockdown.
+   * treated as a misconfiguration rather than an intentional (if impractical) lockdown. "Usable" here means
+   * "a connection can still parse a command at all", not "usable for real traffic": the floor of 1 used for
+   * {@code maxMultiBulkLength}/{@code maxBulkLength} still lets a configured value through that is far too low
+   * for any real command (e.g. a 1-byte max bulk length rejects even the shortest command name) - that is an
+   * intentionally low, if impractical, configuration rather than the 0-or-negative case this guards against.
    */
   private int sanitizedLimit(final GlobalConfiguration setting, final int floor) {
     final int configured = setting.getValueAsInteger();
@@ -138,7 +142,10 @@ public class RedisNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.WARNING, "Redis wrapper: %s, closing connection", e.getMessage());
           try {
             value.setLength(0);
-            value.append("-ERR ").append(e.getMessage());
+            // respErrorMessage() strips embedded \r/\n: the malformed-length message embeds the raw
+            // client-supplied token verbatim, and a bare \n (no preceding \r) survives parseValueUntilLF()
+            // uncaught, so without this an adversarial token could break a RESP reply across two lines.
+            value.append("-ERR ").append(respErrorMessage(e));
             appendCrLf();
             replyToClient(value);
           } catch (final IOException ignored) {

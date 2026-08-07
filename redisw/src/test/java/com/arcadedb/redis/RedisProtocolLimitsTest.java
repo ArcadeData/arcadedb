@@ -159,6 +159,36 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
+  void malformedLengthReplyDoesNotEmbedRawNewline() throws IOException {
+    // parseValueUntilLF() only treats \r as the start of the CRLF terminator, so a malformed length token
+    // can itself contain a bare \n; that used to be echoed verbatim into the RESP -ERR reply instead of
+    // going through respErrorMessage()'s \r/\n sanitization, breaking the single-line contract every other
+    // RESP error reply relies on.
+    final String payload = "$1\nA\r\n";
+
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+      socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+
+      final byte[] buffer = new byte[512];
+      final int    read   = socket.getInputStream().read(buffer);
+      assertThat(read).isGreaterThan(0);
+      final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).endsWith("\r\n");
+      final String body = reply.substring(0, reply.length() - 2);
+      assertThat(body).doesNotContain("\r").doesNotContain("\n");
+    }
+
+    // The listener/thread pool must still be healthy: a fresh connection behaves normally.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    }
+  }
+
+  @Test
   void configuredDepthLimitIsHonored() throws IOException {
     // Confirms arcadedb.redis.maxMultiBulkDepth is actually wired end to end, rather than the tests above
     // only ever exercising the (also never-directly-asserted) built-in default.
