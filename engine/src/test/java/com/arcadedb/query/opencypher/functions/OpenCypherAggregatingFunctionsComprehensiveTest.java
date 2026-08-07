@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.functions;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +27,7 @@ import java.util.List;
 
 import org.assertj.core.api.Assertions;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -82,6 +84,34 @@ class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
         "UNWIND [null, null] AS val RETURN avg(val) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
+  // Issue #5799: avg() must report a client-facing type error instead of silently ignoring
+  // non-numeric input (which used to make avg(['a','b']) indistinguishable from avg([null,null])).
+  @Test
+  void avgRejectsNonNumericStrings() {
+    assertThatThrownBy(() -> consume("UNWIND ['a', 'b'] AS val RETURN avg(val) AS result"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("avg()")
+        .hasMessageContaining("STRING");
+  }
+
+  @Test
+  void avgRejectsBoolean() {
+    assertThatThrownBy(() -> consume("UNWIND [true, 1] AS val RETURN avg(val) AS result"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("avg()")
+        .hasMessageContaining("BOOLEAN");
+  }
+
+  @Test
+  void avgRejectsNonNumericListLiteral() {
+    // avg() aggregates one scalar expression per row; handing it a LIST directly (rather than an
+    // UNWOUND scalar) is the same out-of-domain mistake, not an implicit "sum the list" request.
+    assertThatThrownBy(() -> consume("RETURN avg(['a', 'b']) AS result"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("avg()")
+        .hasMessageContaining("LIST");
   }
 
   // ==================== collect() Tests ====================
@@ -379,6 +409,40 @@ class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
     assertThat(((Number) result.next().getProperty("result")).intValue()).isEqualTo(0);
   }
 
+  // Issue #5799: sum() must report a client-facing type error instead of silently ignoring
+  // non-numeric input (which used to make sum(['1','2']) indistinguishable from sum([null,null])).
+  @Test
+  void sumRejectsNonNumericStrings() {
+    assertThatThrownBy(() -> consume("UNWIND ['1', '2'] AS val RETURN sum(val) AS result"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sum()");
+  }
+
+  @Test
+  void sumRejectsBoolean() {
+    assertThatThrownBy(() -> consume("UNWIND [true, 1] AS val RETURN sum(val) AS result"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sum()");
+  }
+
+  @Test
+  void sumRejectsMixedNumericAndNonNumeric() {
+    // A partially-valid input must not be silently summed as if the bad values were absent -
+    // it must fail loudly rather than return a plausible-looking partial total.
+    assertThatThrownBy(() -> consume("UNWIND [1, 'a', 2] AS val RETURN sum(val) AS result"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sum()");
+  }
+
+  @Test
+  void sumRejectsNonNumericListLiteral() {
+    // sum(<list>) sums the list's own elements (unlike avg(), which has no such fallback), so each
+    // element is still held to the numeric domain.
+    assertThatThrownBy(() -> consume("RETURN sum(['1', '2']) AS result"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sum()");
+  }
+
   // ==================== Combined/Integration Tests ====================
 
   @Test
@@ -552,5 +616,12 @@ class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
         "UNWIND [null, null] AS val RETURN stdev_pop(val) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
+  private void consume(final String query) {
+    try (final ResultSet rs = database.command("opencypher", query)) {
+      while (rs.hasNext())
+        rs.next();
+    }
   }
 }
