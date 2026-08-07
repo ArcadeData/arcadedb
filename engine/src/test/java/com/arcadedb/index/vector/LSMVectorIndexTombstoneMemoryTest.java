@@ -64,6 +64,13 @@ class LSMVectorIndexTombstoneMemoryTest extends TestHelper {
         .isEqualTo(VERTICES);
     assertThat(locations.getDeletedCount()).as("every superseded id is tracked as one bit").isEqualTo(VERTICES * CYCLES);
 
+    // Re-embedding is the workload that would rewrite a live id's RID in place if an update ever reused its id
+    // instead of minting a new one, and that write retires the id for as long as it takes - a lock-free search
+    // running through the window does not see a live vector (issue #5588). Ten cycles of it must not do it once.
+    assertThat(locations.inPlaceRidRewriteCount())
+        .as("no engine path may re-point a live vector id at a different record")
+        .isZero();
+
     // Each update must mint exactly ONE new vector id: the commit used to index the record twice (once while
     // serializing the updated record, once replaying the queued index operations), so every re-embedding cycle
     // burned two ids and wrote two entries plus two tombstones per vertex.
@@ -158,6 +165,36 @@ class LSMVectorIndexTombstoneMemoryTest extends TestHelper {
         .as("the replica applies the update itself: exactly one new vector id, and not zero")
         .isEqualTo(idsBefore + 1);
     assertThat(index.countEntries()).as("still one live vector for the RID").isEqualTo(1);
+  }
+
+  /**
+   * The id sequence must survive an index whose every vector was deleted, across a reopen.
+   * <p>
+   * Nothing resident carries it at that point: {@code loadVectorsFromPages} computes the high-water mark as
+   * {@code max(highest live id + 1, getNextId())}, and with no live id the first term is 0. Only the location
+   * index's own sequence - which every {@code addOrUpdate} advances, tombstones included - stops the next insert
+   * from reusing an id that a persisted tombstone still refers to, which the LSM merge-on-read would then resolve
+   * to "deleted" and bury the new vector with the old one.
+   */
+  @Test
+  void theIdSequenceSurvivesAnIndexWhereEveryVectorWasDeleted() {
+    createSchema();
+    insertVertices();
+
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc"));
+
+    final LSMVectorIndex index = getVectorIndex();
+    assertThat(index.getVectorIndex().size()).isZero();
+    final int idsHandedOut = index.getVectorIndex().getNextId();
+    assertThat(idsHandedOut).isGreaterThanOrEqualTo(VERTICES);
+
+    reopenDatabase();
+
+    final VectorLocationIndex reopened = getVectorIndex().getVectorIndex();
+    assertThat(reopened.size()).as("nothing is live any more").isZero();
+    assertThat(reopened.getNextId())
+        .as("but the sequence must not restart, or the next insert reuses a tombstoned id")
+        .isGreaterThanOrEqualTo(idsHandedOut);
   }
 
   @Test

@@ -148,7 +148,8 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @throws com.arcadedb.index.IndexException on any positive value
    * @deprecated since 26.8.1 (issues #5559 and #5568): the location index cannot be capped, because a vector
    * location is the only mapping from a vector id to its record and nothing on disk can rebuild an evicted one. The
-   * index costs ~90 bytes per LIVE vector; size the heap for that instead. Only {@code -1}/{@code 0} ("no limit",
+   * index costs {@value com.arcadedb.index.vector.VectorLocationIndex#APPROX_RETAINED_BYTES_PER_LOCATION} bytes
+   * per LIVE vector; size the heap for that instead. Only {@code -1}/{@code 0} ("no limit",
    * the default) are still accepted, so an existing call passing one of those keeps working.
    */
   @Deprecated

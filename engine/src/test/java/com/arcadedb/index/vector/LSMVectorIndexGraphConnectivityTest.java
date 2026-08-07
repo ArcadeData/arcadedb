@@ -91,7 +91,8 @@ class LSMVectorIndexGraphConnectivityTest extends TestHelper {
   @Test
   void theSentinelIsDistinguishableFromARealVector() {
     final VectorLocationIndex locations = new VectorLocationIndex();
-    final ArcadePageVectorValues values = new ArcadePageVectorValues((DatabaseInternal) database, 4, "vector", locations, new int[] { 7 });
+    final ArcadePageVectorValues values = ArcadePageVectorValues.forSearch((DatabaseInternal) database, 4, "vector",
+        locations, new int[] { 7 });
 
     // Ordinal 0 maps to vectorId 7, which has no location at all, so the read cannot succeed.
     final VectorFloat<?> unreadable = values.getVector(0);
