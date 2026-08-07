@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -240,6 +241,11 @@ public class SetStep extends AbstractExecutionStep {
       // Expression target: SET (CASE WHEN ... THEN t END).prop = value
       // Evaluate the target expression to get the document
       obj = evaluator.evaluate(item.getTargetExpression(), result, context);
+      // #5795: the CASE branch (or bracket-syntax base) can itself resolve to a variable that
+      // was deleted earlier in the same query, e.g. SET (CASE WHEN true THEN t END).v = 99 after
+      // DELETE t. Unlike the plain-variable branch below, this path never goes through
+      // resolveLatestDoc(), so the DeletedEntityMarker check has to be applied here too.
+      DeletedEntityMarker.checkNotDeleted(obj);
       if (obj == null)
         return; // CASE returned null — no-op (conditional SET pattern)
       variableToUpdate = null;
@@ -393,6 +399,11 @@ public class SetStep extends AbstractExecutionStep {
   private Document resolveLatestDoc(final String variable, final Result result,
       final Map<RID, MutableDocument> writtenDocs) {
     final Object raw = result.getProperty(variable);
+    // #5795: a node deleted earlier in the same query is replaced in the result row with a
+    // DeletedEntityMarker (see DeleteStep). Using it as a SET write target must fail the same
+    // way reading a property from it already does, instead of silently no-op'ing (which let the
+    // preceding DELETE commit while the SET vanished).
+    DeletedEntityMarker.checkNotDeleted(raw);
     if (!(raw instanceof Document rawDoc))
       return null;
     final RID rid = rawDoc.getIdentity();
@@ -446,6 +457,9 @@ public class SetStep extends AbstractExecutionStep {
   private void applyLabels(final SetClause.SetItem item, final Result result,
       final Map<RID, MutableDocument> writtenDocs, final Map<RID, Vertex> labelReplacements) {
     final Object obj = result.getProperty(item.getVariable());
+    // #5795: reject a label write targeting a node deleted earlier in the same query instead of
+    // silently no-op'ing.
+    DeletedEntityMarker.checkNotDeleted(obj);
     if (!(obj instanceof Vertex vertex))
       return;
 
