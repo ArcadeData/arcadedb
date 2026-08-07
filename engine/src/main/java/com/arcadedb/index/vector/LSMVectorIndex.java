@@ -118,7 +118,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.stream.IntStream;
 
 /**
  * Vector index implementation using JVector library with page-based transactional storage.
@@ -252,6 +254,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // long-running build operations that would otherwise block server shutdown.
   private volatile ForkJoinPool graphBuildPool;
 
+  /** {@link ForkJoinPool} rejects anything above this, so a configured graph-build width is clamped to it. */
+  private static final int MAX_GRAPH_BUILD_PARALLELISM = 0x7fff;
+
   // Live incremental graph builder: inserts vectors one at a time via addGraphNode()
   // instead of rebuilding the entire graph. The builder stays alive across put() calls.
   // Search uses builder.getGraph() which is immediately searchable after each insert.
@@ -300,7 +305,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     /**
      * Called periodically during graph index construction.
      *
-     * @param phase          Current phase: "validating", "building", or "persisting"
+     * @param phase          Current phase: "validating", "building", "optimizing" or "persisting". "building" inserts
+     *                       every vector into the graph and reports {@code processedNodes} out of {@code totalNodes};
+     *                       "optimizing" is JVector's second pass over the finished graph (neighbor refinement and
+     *                       degree enforcement) and exposes no per-node progress, so it repeats the final counts.
+     *                       It is not a quick finalisation - on a large corpus it can cost as much wall clock as the
+     *                       insertion it follows (issue #5577)
      * @param processedNodes Number of unique nodes processed so far
      * @param totalNodes     Total number of nodes to process
      * @param vectorAccesses Total number of vector accesses (getVector calls)
@@ -1428,11 +1438,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Returns the dedicated ForkJoinPool for graph building, creating it if needed.
-   * Using a per-index pool allows us to cancel long-running builds on shutdown
-   * by calling shutdownNow() on this pool.
-   */
-  /**
    * Ordinals that no path from the entry node reaches. Beam search only ever follows edges forward from the entry
    * node, so such a node can never be returned no matter how wide the beam - the graph build occasionally leaves one
    * with a full out-degree and no in-edges (issue #5615). Callers keep those vectors searchable through the delta
@@ -1517,14 +1522,62 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Returns this index's dedicated graph-build pool, creating it on first use and replacing it when the configured
+   * width has changed since it was created.
+   * <p>
+   * The pool is dedicated rather than shared with {@code QueryEngineManager}'s so that {@code shutdownNow()} can
+   * cancel an in-flight build on close: JVector's {@code GraphIndexBuilder} does not observe an interrupt on the
+   * calling thread, only on its workers.
+   * <p>
+   * <b>Width.</b> It used to be hard-wired to {@code availableProcessors() / 2}, which was never a measured choice -
+   * it arrived with the pool itself, whose reason for existing was cancellation. A DEEP-10M A/B contributed on
+   * issue #5577 put the price of the halving at 17.1% of the whole build with recall unchanged, so the automatic
+   * width is now the core count minus one. The core left free is deliberate and is the only reason not to take them
+   * all: a rebuild can fire on a live index at any time, and it must not be able to occupy every core that the
+   * request, I/O and GC threads need. Deployments at either extreme - a bulk import with nothing else running, or a
+   * latency-sensitive index that must not feel a rebuild at all - set
+   * {@link GlobalConfiguration#VECTOR_INDEX_GRAPH_BUILD_PARALLELISM} explicitly.
+   */
   private synchronized ForkJoinPool getOrCreateGraphBuildPool() {
+    final int wanted = computeGraphBuildParallelism();
+
     ForkJoinPool pool = graphBuildPool;
-    if (pool == null || pool.isShutdown()) {
-      final int cores = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
-      pool = new ForkJoinPool(cores);
-      graphBuildPool = pool;
-    }
+    if (pool != null && !pool.isShutdown() && pool.getParallelism() == wanted)
+      return pool;
+
+    // A reconfigured width takes effect on the next build. The pool being replaced can never have a build running
+    // on it: every live caller of this method is inside buildGraphFromScratchExclusively, which runs under
+    // graphBuildLock, so at most one build per index exists at a time and it is the one asking for this pool.
+    // (The other caller, ensureLiveBuilder, is dead code.) shutdown() rather than shutdownNow() keeps that true
+    // even if a future caller breaks the invariant: the work would finish rather than fail.
+    if (pool != null && !pool.isShutdown())
+      pool.shutdown();
+
+    final int cores = Runtime.getRuntime().availableProcessors();
+    if (wanted > cores)
+      LogManager.instance().log(this, Level.WARNING,
+          "Vector index %s will build its graph with %d threads on %d available cores. Graph construction is "
+              + "CPU-bound, so oversubscribing it makes the build slower, not faster: lower %s unless the core count "
+              + "is deliberately understated for this process",
+          indexName, wanted, cores, GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_PARALLELISM.getKey());
+
+    pool = new ForkJoinPool(wanted);
+    graphBuildPool = pool;
     return pool;
+  }
+
+  /**
+   * @return the configured graph-build pool width, or the automatic one (all cores but one) when unset. A configured
+   * value is clamped to what {@link ForkJoinPool} accepts, so a typo in the setting cannot turn every rebuild into an
+   * {@code IllegalArgumentException} from the pool constructor.
+   */
+  private int computeGraphBuildParallelism() {
+    final int configured = getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_PARALLELISM);
+    if (configured > 0)
+      return Math.min(configured, MAX_GRAPH_BUILD_PARALLELISM);
+    return Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
   }
 
   /**
@@ -2074,21 +2127,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
           buildPool,       // simdExecutor - dedicated pool for cancellation support
           buildPool)) {    // parallelExecutor
 
+        final int totalNodes = vectors.size();
+
+        // Nodes whose insertion has returned. This is the only honest progress signal available.
+        //
+        // The monitor used to poll builder.getGraph().getIdUpperBound(), which JVector defines as
+        // "highest node id seen so far + 1". Insertion runs as IntStream.range(0, size).parallel(), so a worker
+        // reaches the top of the range within seconds of the start and that number pins at 100% while nearly the
+        // whole build is still ahead: on a 10M-vector corpus the first progress line already read 90.7% and the
+        // last one reported completion with 23 minutes of work left (issue #5577). Worse than useless as a
+        // progress bar, it also made the build look like it had a second, silent phase - three rounds of external
+        // profiling went into explaining a phase boundary that was only the meter saturating.
+        final AtomicInteger insertedNodes = new AtomicInteger();
+        final AtomicReference<String> currentPhase = new AtomicReference<>("building");
+
+        // The monitor thread polls, but the phase boundaries are pushed from here so that they are reported whatever
+        // the poll happens to land on: a build that finishes between two polls must still report its last node, not
+        // whatever fraction the previous poll caught. Serialized because the two producers would otherwise race on
+        // whatever state the callback keeps - the default one below keeps throttling state in plain arrays.
+        final Object progressLock = new Object();
+        final GraphBuildCallback reportProgress = (phase, processedNodes, total, vectorAccesses) -> {
+          if (effectiveGraphCallback == null)
+            return;
+          synchronized (progressLock) {
+            effectiveGraphCallback.onGraphBuildProgress(phase, processedNodes, total, vectorAccesses);
+          }
+        };
+
         // Start progress monitoring thread if callback provided
         final Thread progressMonitor;
         final AtomicBoolean buildComplete = new AtomicBoolean(false);
         if (effectiveGraphCallback != null) {
-          final int totalNodes = vectors.size();
           progressMonitor = new Thread(() -> {
             try {
               while (!buildComplete.get()) {
-                // Poll JVector's internal state
-                final int nodesAdded = builder.getGraph().getIdUpperBound();
-                final int insertsInProgress = builder.insertsInProgress();
+                // Read the counters under the same lock that publishes them, not before taking it. Capturing
+                // outside would let a sample read just before the insertion join is pushed after the main thread's
+                // end-of-insertion sample, so a consumer would see progress go backwards from complete.
+                // The monitor holds the lock across the callback either way, so this only adds the two reads.
+                synchronized (progressLock) {
+                  final int inserted = insertedNodes.get();
+                  final int insertsInProgress = builder.insertsInProgress();
 
-                // Report progress
-                effectiveGraphCallback.onGraphBuildProgress("building", nodesAdded, totalNodes,
-                    nodesAdded + insertsInProgress);
+                  // Report progress
+                  reportProgress.onGraphBuildProgress(currentPhase.get(), inserted, totalNodes,
+                      inserted + insertsInProgress);
+                }
 
                 // Sleep briefly before next poll
                 Thread.sleep(100); // Poll every 100ms
@@ -2107,7 +2191,54 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         try {
-          builtGraph = builder.build(vectors);
+          // This is GraphIndexBuilder.build() unrolled: the same parallel insertion over the same pool, followed by
+          // the same cleanup(). Driving the two steps here is what lets the counter above see a completed insertion
+          // and what makes the boundary between them observable at all - JVector emits nothing between them, and
+          // cleanup() is not a quick finalisation but a second refinement pass over the graph that can be worth as
+          // much wall clock as the insertion itself (issue #5577).
+          //
+          // MAINTENANCE: this mirrors GraphIndexBuilder.build() as of JVector 4.0.0-rc.9, which is exactly
+          //   simdExecutor.submit(() -> IntStream.range(0, size).parallel().forEach(
+          //       n -> addGraphNode(n, vv.get().getVector(n)))).join();
+          //   cleanup();
+          //   return graph;
+          // Nothing here detects it if a future jvector.version adds a step around those two, so re-read build()
+          // when bumping the dependency. The alternative - calling build() and keeping the broken meter - is worse:
+          // it is what hid a phase worth half the wall clock of a large build.
+          final Supplier<RandomAccessVectorValues> vectorSupplier = vectors.threadLocalSupplier();
+
+          // One shared atomic per node is affordable here in a way the vector cache counters were not: a node costs
+          // a whole beam search over the graph built so far, thousands of distance evaluations, so the increment is
+          // orders of magnitude below the work it measures rather than comparable to it.
+          final long insertStart = System.currentTimeMillis();
+          buildPool.submit(() -> IntStream.range(0, totalNodes).parallel().forEach(node -> {
+            builder.addGraphNode(node, vectorSupplier.get().getVector(node));
+            insertedNodes.incrementAndGet();
+          })).join();
+          final long insertElapsed = System.currentTimeMillis() - insertStart;
+
+          // Close the insertion phase and open the next one atomically with respect to the monitor. Flipping the
+          // phase first and pushing the final sample after left a window in which the monitor could emit an
+          // "optimizing" sample and the explicit "building" one land behind it, so a live progress bar would see
+          // the phase go forwards and then back.
+          synchronized (progressLock) {
+            reportProgress.onGraphBuildProgress("building", totalNodes, totalNodes, totalNodes);
+            currentPhase.set("optimizing");
+          }
+          LogManager.instance().log(this, Level.INFO,
+              "Graph insertion completed for index %s: %d vectors inserted in %d ms with %d build threads. "
+                  + "Starting the optimization phase (neighbor refinement and degree enforcement)",
+              indexName, totalNodes, insertElapsed, buildPool.getParallelism());
+
+          final long cleanupStart = System.currentTimeMillis();
+          builder.cleanup();
+          builtGraph = builder.getGraph();
+
+          reportProgress.onGraphBuildProgress("optimizing", totalNodes, totalNodes, totalNodes);
+          LogManager.instance().log(this, Level.INFO,
+              "Graph optimization completed for index %s in %d ms (insertion %d ms, total %d ms)",
+              indexName, System.currentTimeMillis() - cleanupStart, insertElapsed,
+              System.currentTimeMillis() - insertStart);
         } finally {
           // Stop progress monitoring. Interrupt as well as flagging: the monitor sleeps 100ms between polls,
           // so flag-only shutdown made every rebuild pay up to an extra 100ms of pure wait (issue #5391).
@@ -5484,15 +5615,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Populate metrics from LSMVectorIndexMetrics
     metrics.populateStats(stats);
 
-    // Index-scoped search cache shared by every query (issue #5412). It is the authority on the vector cache
-    // counters, so it overwrites the placeholders above. A hit ratio well below 1 on a steady workload means
-    // the working set does not fit: raise arcadedb.vectorIndex.searchCacheSize.
+    // Index-scoped search cache shared by every query (issue #5412), and the only authority on the vector cache
+    // counters. A hit ratio well below 1 on a steady workload means the working set does not fit: raise
+    // arcadedb.vectorIndex.searchCacheSize. The counters are striped per thread and so are approximate under
+    // concurrency - see VectorCache for why they cannot be atomic (issue #5577).
     final VectorCache searchCache = searchVectorCache;
     stats.put("searchVectorCacheCapacity", searchCache != null ? (long) searchCache.capacity() : 0L);
     final GraphSearcherPool searchers = searcherPool;
     stats.put("pooledGraphSearchers", searchers != null ? (long) searchers.size() : 0L);
     stats.put("vectorCacheHits", searchCache != null ? searchCache.getHits() : 0L);
     stats.put("vectorCacheMisses", searchCache != null ? searchCache.getMisses() : 0L);
+
+    // Width of the pool that builds the graph (issue #5577). Report the width the next build would use, not the
+    // one of the live pool, so the effect of changing the setting is visible before a rebuild rather than after.
+    stats.put("graphBuildParallelism", (long) computeGraphBuildParallelism());
 
     // NEW: Memory estimates
     // Measured, not multiplied out: the location index reports the heap its own arrays occupy (issue #5588), so

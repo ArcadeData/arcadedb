@@ -786,6 +786,19 @@ public enum GlobalConfiguration {
       searcher per query.""",
       Integer.class, 0),
 
+  VECTOR_INDEX_GRAPH_BUILD_PARALLELISM("arcadedb.vectorIndex.graphBuildParallelism", SCOPE.DATABASE,
+      """
+      Number of threads in the dedicated pool that builds the HNSW graph of a vector index. Graph construction \
+      is by far the most expensive part of building a dense index - on a 10M-vector corpus it is over 90% of the \
+      total - and it parallelizes well, so this setting is the main lever on build time. \
+      0 (default) sizes the pool automatically as the available cores minus one, which leaves a core for request, \
+      I/O and GC threads so a rebuild triggered on a live index cannot starve concurrent query traffic. \
+      Raise it to the full core count when build time matters more than query headroom, for example during a bulk \
+      import; lower it to protect a latency-sensitive workload from an online rebuild. A value above the core count \
+      only oversubscribes a CPU-bound phase and is logged as a warning; anything above what ForkJoinPool accepts is \
+      clamped rather than failing the build.""",
+      Integer.class, 0),
+
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
       """
       Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. \

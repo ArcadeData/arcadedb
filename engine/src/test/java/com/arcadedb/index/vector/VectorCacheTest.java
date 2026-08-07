@@ -135,6 +135,97 @@ class VectorCacheTest {
   }
 
   @Test
+  void resetStatsZeroesBothCounters() {
+    final VectorCache cache = new VectorCache(64);
+    cache.put(1, vector(1));
+    cache.get(1);
+    cache.get(99);
+    assertThat(cache.getHits() + cache.getMisses()).isEqualTo(2);
+
+    cache.resetStats();
+
+    assertThat(cache.getHits()).isZero();
+    assertThat(cache.getMisses()).isZero();
+
+    // The reset must not have cost the cache its contents.
+    cache.get(1);
+    assertThat(cache.getHits()).isEqualTo(1);
+  }
+
+  @Test
+  void everyThreadsStripeIsIncludedInTheTotals() throws Exception {
+    // The counters are striped per thread and summed on read (issue #5577). Run the threads one at a time so no
+    // update can be lost, which makes the totals exact and turns this into a deterministic check that every
+    // thread's stripe is inside the range sum() walks: a stripe index that ran off the end of its own array, or a
+    // sum() that strode wrong, would drop a whole thread's contribution and show up here as a shortfall.
+    final int threads = 8;
+    final int lookupsPerThread = 1_000;
+    final VectorCache cache = new VectorCache(64);
+    cache.put(1, vector(1));
+
+    for (int t = 0; t < threads; t++) {
+      final Thread thread = new Thread(() -> {
+        for (int i = 0; i < lookupsPerThread; i++) {
+          cache.get(1);   // hit
+          cache.get(99);  // miss
+        }
+      });
+      thread.start();
+      thread.join();
+    }
+
+    final long expected = (long) threads * lookupsPerThread;
+    assertThat(cache.getHits()).isEqualTo(expected);
+    assertThat(cache.getMisses()).isEqualTo(expected);
+  }
+
+  @Test
+  void countersNeverOverCountUnderConcurrency() throws Exception {
+    // Incrementing without atomics is the whole point (a locked read-modify-write per lookup cost 26.4% of a
+    // 10M-vector graph build), and it accepts lost updates: two threads sharing a stripe can interleave between
+    // the read and the write. The direction is what must hold - a count can come out low, never high. A high one
+    // would mean a thread is adding into a slot another thread also owns, or that sum() double-counts a stripe.
+    //
+    // No tight lower bound is asserted: the stripe count follows the core count, so on a small runner the threads
+    // here are deliberately oversubscribed onto shared stripes and the loss rate is a property of the scheduler,
+    // not of the code. The bound below only has to exclude the degenerate case where every thread lands on one
+    // stripe, which loses the large majority of increments rather than a fraction of a percent. Exactness is
+    // covered by the single-threaded and the sequential tests instead.
+    final int threads = 8;
+    final int lookupsPerThread = 50_000;
+    final VectorCache cache = new VectorCache(64);
+    cache.put(1, vector(1));
+
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(threads);
+
+    for (int t = 0; t < threads; t++) {
+      new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < lookupsPerThread; i++) {
+            cache.get(1);   // hit
+            cache.get(99);  // miss
+          }
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          done.countDown();
+        }
+      }).start();
+    }
+
+    start.countDown();
+    assertThat(done.await(60, TimeUnit.SECONDS)).isTrue();
+
+    final long expected = (long) threads * lookupsPerThread;
+    assertThat(cache.getHits()).isLessThanOrEqualTo(expected);
+    assertThat(cache.getMisses()).isLessThanOrEqualTo(expected);
+    assertThat(cache.getHits()).isGreaterThan(expected / 2);
+    assertThat(cache.getMisses()).isGreaterThan(expected / 2);
+  }
+
+  @Test
   void neverReturnsAVectorForTheWrongIdUnderConcurrency() throws Exception {
     final int capacity = 512;
     final int threads = 8;

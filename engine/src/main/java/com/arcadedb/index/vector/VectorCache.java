@@ -20,8 +20,9 @@ package com.arcadedb.index.vector;
 
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.concurrent.atomic.AtomicReferenceArray;
-import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Fixed-capacity, lock-free cache of vectors keyed by the monotonic vector id assigned by
@@ -45,6 +46,9 @@ import java.util.concurrent.atomic.LongAdder;
  * <p>
  * Thread-safe. Entries are immutable and published through an {@link AtomicReferenceArray}, so a
  * concurrent {@code put} can only ever cost a later miss, never a mismatched vector.
+ * <p>
+ * The hit/miss counters are striped per thread and updated without atomics; see {@link #count} for why, and for
+ * what that costs in accuracy.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -52,14 +56,24 @@ public class VectorCache {
   /** Entries per bucket. Two ways keep the probe cost at 2 reads while absorbing collisions. */
   private static final int WAYS = 2;
 
+  /** Longs per counter stripe. Eight of them fill a 64-byte cache line, so no two stripes share one. */
+  private static final int STRIPE_LONGS = 8;
+  /** Offsets of the two counters inside a stripe. Both are written by the same thread, so sharing a line is free. */
+  private static final int HITS         = 0;
+  private static final int MISSES       = 1;
+  /** One stripe per core, rounded up to a power of two, with a floor so a small box still spreads its threads. */
+  private static final int STRIPES      = tableSizeFor(Math.max(4, Runtime.getRuntime().availableProcessors()));
+  private static final int STRIPE_MASK  = STRIPES - 1;
+
+  private static final VarHandle COUNTERS = MethodHandles.arrayElementVarHandle(long[].class);
+
   private record Entry(int vectorId, VectorFloat<?> vector) {
   }
 
   private final AtomicReferenceArray<Entry> slots;
   private final int                         bucketMask;
   private final int                         capacity;
-  private final LongAdder                   hits   = new LongAdder();
-  private final LongAdder                   misses = new LongAdder();
+  private final long[]                      counters = new long[STRIPES * STRIPE_LONGS];
 
   /**
    * @param requestedCapacity minimum number of vectors to hold. Rounded up so the bucket count is a power of two.
@@ -76,7 +90,7 @@ public class VectorCache {
    */
   public VectorFloat<?> get(final int vectorId) {
     if (vectorId < 0) {
-      misses.increment();
+      count(MISSES);
       return null;
     }
 
@@ -84,17 +98,17 @@ public class VectorCache {
 
     final Entry e0 = slots.get(base);
     if (e0 != null && e0.vectorId == vectorId) {
-      hits.increment();
+      count(HITS);
       return e0.vector;
     }
 
     final Entry e1 = slots.get(base + 1);
     if (e1 != null && e1.vectorId == vectorId) {
-      hits.increment();
+      count(HITS);
       return e1.vector;
     }
 
-    misses.increment();
+    count(MISSES);
     return null;
   }
 
@@ -150,12 +164,69 @@ public class VectorCache {
     return capacity;
   }
 
+  /**
+   * @return the number of lookups served from the cache. Approximate under concurrency, see {@link #count}.
+   */
   public long getHits() {
-    return hits.sum();
+    return sum(HITS);
   }
 
+  /**
+   * @return the number of lookups that had to materialize the vector. Approximate under concurrency, see {@link #count}.
+   */
   public long getMisses() {
-    return misses.sum();
+    return sum(MISSES);
+  }
+
+  /**
+   * Zeroes both counters. For tests and for an operator who wants a hit ratio over a window rather than over the
+   * lifetime of the index.
+   */
+  public void resetStats() {
+    for (int i = 0; i < counters.length; i++)
+      COUNTERS.setOpaque(counters, i, 0L);
+  }
+
+  /**
+   * Adds one to the calling thread's stripe of the given counter, with plain reads and writes.
+   * <p>
+   * These counters used to be two {@link java.util.concurrent.atomic.LongAdder}s. {@code LongAdder} is the right
+   * structure for a contended counter, but this is the wrong place for <i>any</i> atomic counter: one lookup here
+   * backs one distance evaluation, so the locked compare-and-swap that {@code LongAdder} performs per increment
+   * costs the same order of magnitude as the SIMD distance the lookup exists to feed. A profile of a 10M-vector
+   * DEEP graph build attributed <b>26.4% of the entire build</b> to {@code LongAdder.add}, every sample of it
+   * reached through {@link #get} (issue #5577).
+   * <p>
+   * Striping one pair of counters per thread onto its own cache line turns each increment into a read and a write
+   * of a line this thread already holds exclusively: no bus lock, no cache-line ping-pong between build workers,
+   * and no growth in cost as the build pool widens. Opaque access keeps each 64-bit read and write indivisible -
+   * a reader can never observe a torn value - without asking for any ordering or fencing, so on x86 and AArch64 it
+   * compiles to the plain load and store.
+   * <p>
+   * <b>The totals are therefore approximate.</b> Two threads whose ids land on the same stripe can lose an
+   * increment between the read and the write, so a count can only ever come out low, never high. That is the right
+   * trade for a diagnostic counter whose only consumers are {@code getStats()} and operator dashboards, and it is
+   * not a new weakening: {@code LongAdder.sum()} was never an atomic snapshot either. A dashboard deriving a hit
+   * <i>ratio</i> is unaffected; one asserting an exact hit <i>count</i> was relying on something this class no
+   * longer promises.
+   * <p>
+   * One stripe per thread is best-effort everywhere, never guaranteed. Thread ids are JVM-global and monotonic
+   * over every thread the process has ever created, so even a build pool with fewer workers than {@code STRIPES}
+   * can have two of them collide modulo the mask - the ids are allocated together, which tends to spread them, but
+   * nothing aligns them to a stripe boundary. Off the build path it is looser still, since {@link #get} is then
+   * called from arbitrary request threads. All a collision costs is a few more lost increments on an
+   * already-approximate counter.
+   */
+  private void count(final int counter) {
+    final int i = (((int) Thread.currentThread().threadId()) & STRIPE_MASK) * STRIPE_LONGS + counter;
+    COUNTERS.setOpaque(counters, i, (long) COUNTERS.getOpaque(counters, i) + 1L);
+  }
+
+  private long sum(final int counter) {
+    long total = 0;
+    for (int i = counter; i < counters.length; i += STRIPE_LONGS)
+      total += (long) COUNTERS.getOpaque(counters, i);
+    return total;
   }
 
   /**

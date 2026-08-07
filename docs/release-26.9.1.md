@@ -60,6 +60,69 @@ rejecting a query past `arcadedb.sql.maxExpressionDepth` (default 200) in O(n) t
 previously burned minutes of CPU is now rejected in single-digit milliseconds. Counting on the token stream
 rather than raw characters means a `(` inside a string literal or comment is not miscounted.
 
+## Dense vector graph build: an unconditional counter on the distance path, a build pool half the box, and a progress meter that lied (#5577)
+
+Three findings from a rigorously measured external report on a DEEP-10M (9.99M vectors, 96 dimensions) dense
+build. Only one of them is what the issue was opened about.
+
+### The hit/miss counters cost about a quarter of the build
+
+`VectorCache.get()` incremented one of two process-wide `LongAdder`s on every lookup, and a lookup here backs a
+single distance evaluation - the class Javadoc says as much. A profile of the graph build attributed **26.4% of
+the entire build to `LongAdder.add`**, every sample of it reached through `VectorCache.get`, against 42.1% for
+the SIMD distance function the lookups exist to feed. That ratio is not surprising once stated plainly: a locked
+compare-and-swap and a 96-dimension SIMD distance are the same order of magnitude, and the CAS gets worse as the
+build pool widens while the distance does not.
+
+`LongAdder` is the right structure for a contended counter; the mistake was having any atomic counter on that
+path. The counters are now striped one pair per thread onto its own cache line and incremented with plain reads
+and writes (opaque access, so a 64-bit value can never be observed torn, but no ordering and no bus lock). An
+isolated benchmark of the lookup path - `VectorCacheCounterBenchmark`, `@Tag("benchmark")` - measures 2-5x less
+time per lookup depending on thread count. The totals are now approximate: two threads landing on the same
+stripe can lose an increment, so a count can come out low but never high. That is the right trade for a
+diagnostic counter, and `LongAdder.sum()` was never an atomic snapshot either.
+
+The two dead `AtomicLong` cache counters in `LSMVectorIndexMetrics`, which nothing incremented and whose values
+`getStats()` overwrote from the real cache, are gone.
+
+### The build pool was `availableProcessors() / 2`
+
+It was, and it was never a measured choice - it arrived in "fix: use own pool for vector index rebuild" (the
+pool exists so a build can be cancelled on close, since JVector's builder only observes an interrupt on its
+workers). The reporter's A/B priced the halving at **17.1% of the whole build with recall unchanged**
+(0.9502 against 0.9526).
+
+The automatic width is now the core count minus one, and the new setting
+`arcadedb.vectorIndex.graphBuildParallelism` overrides it. The core left free is deliberate and is the only
+reason not to take them all: a rebuild can fire on a live index at any time and must not be able to occupy
+every core the request, I/O and GC threads need. A bulk import with nothing else running should raise it to the
+full core count; a latency-sensitive index that must not feel an online rebuild should lower it. The effective
+width is reported as `graphBuildParallelism` in `getStats()`.
+
+### There was no silent second phase - the progress meter was saturating
+
+The report described a phase worth ~53% of the build that emitted no log line, ran at full CPU, and did not
+respond to threads (1407 s on 6 threads against 1442 s on 12, while the phase next to it scaled 1.92x). Three
+rounds of profiling went into explaining it.
+
+It does not exist. The progress monitor polled JVector's `getIdUpperBound()`, which is "highest node id touched
+so far + 1", and insertion runs as `IntStream.range(0, size).parallel()`, so a worker reaches the top of the
+range within seconds. The meter pinned at 100% with nearly the whole build ahead of it - the first progress line
+of a 10M build read 90.7%, and the last one claimed completion with 23 minutes of work left. The "phase
+boundary" was the meter saturating, and because it saturates after a fixed amount of *range traversal* rather
+than a fixed amount of *work*, it moves earlier in wall-clock time as threads are added. That is what produced
+the impossible-looking 1.92x/1.00x split: summing both halves, JVector's real scaling on that A/B is 1.23x.
+
+The build now drives JVector's insertion and its `cleanup()` pass itself (the same two steps `build()` performs,
+on the same pool) and counts insertions that have actually returned. Consequences:
+
+- `processedNodes` means what it says, and `processedNodes + insertsInProgress` can no longer exceed the corpus
+  size - the invariant the old meter broke, and what the new regression test asserts;
+- the boundary between the two phases is logged, with the elapsed time of each, so the post-insertion pass is
+  measurable instead of inferable from an absence of output;
+- `GraphBuildCallback` gains an `optimizing` phase for that pass. It is not a quick finalisation: on a large
+  corpus it can cost as much wall clock as the insertion it follows, and callers that render a progress bar
+  should show it rather than reporting the build as complete.
 ## Vector index: the location index is laid out in primitive arrays, ~3x less heap
 
 The `LSM_VECTOR` location index is the only mapping from a vector id to the record it belongs to and to the byte

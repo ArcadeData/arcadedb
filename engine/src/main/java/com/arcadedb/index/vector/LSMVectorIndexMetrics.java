@@ -25,7 +25,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * Holds all metrics and counters for LSMVectorIndex operations.
  * Provides thread-safe tracking of:
  * - Operation counts (search, insert, rebuild, compaction)
- * - Cache statistics (hits, misses)
  * - Vector fetch sources (quantized, documents, graph)
  * - Latency tracking (search, insert)
  *
@@ -47,10 +46,6 @@ class LSMVectorIndexMetrics {
   // many candidates the data puts between it and the query, which no fixed budget can guarantee (issue #5761), so
   // this is the signal to raise efSearch on the index or the query.
   private final AtomicLong groupedSearchesShortOfLimit = new AtomicLong(0);
-
-  // Cache statistics
-  private final AtomicLong vectorCacheHits = new AtomicLong(0);
-  private final AtomicLong vectorCacheMisses = new AtomicLong(0);
 
   // Vector fetch source tracking
   private final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
@@ -89,16 +84,6 @@ class LSMVectorIndexMetrics {
 
   void incrementGroupedSearchesShortOfLimit() {
     groupedSearchesShortOfLimit.incrementAndGet();
-  }
-
-  // Cache tracking methods
-
-  void incrementVectorCacheHits() {
-    vectorCacheHits.incrementAndGet();
-  }
-
-  void incrementVectorCacheMisses() {
-    vectorCacheMisses.incrementAndGet();
   }
 
   // Vector fetch source tracking methods
@@ -151,14 +136,6 @@ class LSMVectorIndexMetrics {
     return groupedSearchesShortOfLimit.get();
   }
 
-  long getVectorCacheHits() {
-    return vectorCacheHits.get();
-  }
-
-  long getVectorCacheMisses() {
-    return vectorCacheMisses.get();
-  }
-
   long getVectorFetchFromQuantized() {
     return vectorFetchFromQuantized.get();
   }
@@ -206,9 +183,6 @@ class LSMVectorIndexMetrics {
     stats.put("groupedSearchesShortOfLimit", groupedSearchesShortOfLimit.get());
     stats.put("compactionCount", compactionCount.get());
 
-    stats.put("vectorCacheHits", vectorCacheHits.get());
-    stats.put("vectorCacheMisses", vectorCacheMisses.get());
-
     stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
     stats.put("vectorFetchFromDocuments", vectorFetchFromDocuments.get());
     stats.put("vectorFetchFromGraph", vectorFetchFromGraph.get());
@@ -227,8 +201,6 @@ class LSMVectorIndexMetrics {
     bruteForceScans.set(0);
     groupedSearchesShortOfLimit.set(0);
     compactionCount.set(0);
-    vectorCacheHits.set(0);
-    vectorCacheMisses.set(0);
     vectorFetchFromQuantized.set(0);
     vectorFetchFromDocuments.set(0);
     vectorFetchFromGraph.set(0);
