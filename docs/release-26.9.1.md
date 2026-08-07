@@ -152,7 +152,11 @@ garbage collector no longer traces one object graph per indexed vector.
   have to re-check.
 - **The graph-build snapshot is the same structure now.** A rebuild used to copy the whole live set into a
   `Map<Integer, VectorLocation>` for the duration of the build, on top of the live index and at the same per-vector
-  cost. On a 10M-vector index that was a transient ~900MB spike; it is now ~200MB.
+  cost. On a 10M-vector index that was a transient ~900MB spike; it is now ~200MB. The snapshot preserves the
+  source ids, so it has the same density characteristic as the live index: a chunk costs the same whether 1 or 128
+  of its ids are live, which is cheaper than the map above roughly 23% density and dearer below it. Monotonic id
+  assignment keeps a real workload far above that threshold - see [#5870](https://github.com/ArcadeData/arcadedb/issues/5870)
+  for making it unconditional.
 - **No new search allocation.** Every reader was moved onto accessors that answer one field without materializing
   anything, so the liveness filter each search applies per traversed graph ordinal costs one presence bit as before.
 - **`countEntries()` on a dense `LSM_VECTOR` is a popcount** over the presence bits - one word per 128 ids -

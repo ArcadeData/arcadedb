@@ -65,8 +65,14 @@ import java.util.stream.StreamSupport;
  * are assigned monotonically and an update tombstones the id it supersedes, so the chunks behind the live region
  * drain wholesale and are handed back. The residual cost is the partially drained band trailing the live region:
  * a chunk holding a single live id retains {@value #CHUNK_RETAINED_BYTES} bytes, which is why {@value #CHUNK_SIZE}
- * and not a larger chunk. Making the id space dense by construction - renumbering during the data file rewrite -
- * is the structural fix and is tracked separately in issue #5870.
+ * and not a larger chunk.
+ * <p>
+ * <b>The layout is therefore cheaper than the map it replaces only above a density threshold</b>, and it is worth
+ * knowing where that is: a chunk costs {@value #CHUNK_RETAINED_BYTES} bytes however many of its
+ * {@value #CHUNK_SIZE} ids are live, against ~90 bytes per entry for the map, so the crossover is at about 30 live
+ * ids per chunk - <b>roughly 23% density</b>. Monotonic id assignment keeps a real workload far above that; a live
+ * set genuinely scattered across a large id space would fall below it. Making the id space dense by construction -
+ * renumbering during the data file rewrite - is the structural fix and is tracked separately in issue #5870.
  *
  * <h2>Concurrency</h2>
  * Writers serialize on a single monitor; every read is lock-free and weakly consistent, matching what the
@@ -120,10 +126,18 @@ public class VectorLocationIndex {
   private static final int CHUNK_MASK  = CHUNK_SIZE - 1;
   private static final int CHUNK_WORDS = CHUNK_SIZE >>> 6;
 
+  /** Object header plus length field of an array, on a 64-bit JVM with compressed oops. */
+  private static final int ARRAY_HEADER_BYTES = 16;
+  /** The {@code Chunk} object itself: 16 header + 4 references + 1 int, padded to 8. */
+  private static final int CHUNK_OBJECT_BYTES = 40;
+
   /**
-   * Retained heap of one allocated chunk on a 64-bit JVM with compressed oops: the {@code Chunk} object (16 header
-   * + 4 references + 1 int, padded to 40), {@code long[128]} twice at 1040, {@code int[128]} at 528 and
-   * {@code long[2]} at 32. {@value} / {@value #CHUNK_SIZE} = ~21 bytes per id.
+   * Retained heap of one allocated chunk on a 64-bit JVM with compressed oops. Derived from {@link #CHUNK_SIZE}
+   * and {@link #CHUNK_WORDS} rather than written out, so changing the chunk size cannot leave the figure - and
+   * {@code getStats().estimatedLocationIndexBytes} with it - quietly wrong. Adding a field to {@code Chunk} still
+   * has to be reflected in {@link #CHUNK_OBJECT_BYTES} by hand.
+   * <p>
+   * {@value} / {@value #CHUNK_SIZE} = ~21 bytes per id.
    * <p>
    * Compressed oops are off above a ~32GB heap, which is exactly the size of deployment that reads this figure, so
    * it is worth knowing what changes there: array headers go from 16 bytes to 24 and the {@code Chunk} object from
@@ -131,7 +145,11 @@ public class VectorLocationIndex {
    * does not depend on the oop width - so the estimate is off by less than the rounding in "~21 bytes per id" and
    * does not warrant reading the VM option back to correct it.
    */
-  static final int CHUNK_RETAINED_BYTES = 40 + 1040 + 528 + 1040 + 32;
+  static final int CHUNK_RETAINED_BYTES = CHUNK_OBJECT_BYTES
+      + ARRAY_HEADER_BYTES + CHUNK_SIZE * Long.BYTES        // offsetAndFlag
+      + ARRAY_HEADER_BYTES + CHUNK_SIZE * Integer.BYTES     // bucketId
+      + ARRAY_HEADER_BYTES + CHUNK_SIZE * Long.BYTES        // position
+      + ARRAY_HEADER_BYTES + CHUNK_WORDS * Long.BYTES;      // present
 
   /**
    * Approximate retained heap of one live location, and the single figure every caller and document should quote:
