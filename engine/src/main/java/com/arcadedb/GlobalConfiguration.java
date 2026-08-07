@@ -497,10 +497,6 @@ public enum GlobalConfiguration {
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
-  SQL_PARSER_IMPLEMENTATION("arcadedb.sql.parserImplementation", SCOPE.DATABASE,
-      "Deprecated, has no effect. The ANTLR4-based SQL parser is always used.",
-      String.class, "antlr"),
-
   SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
       """
       Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
@@ -727,8 +723,8 @@ public enum GlobalConfiguration {
       evicting one destroyed that mapping rather than spilling it to a slower tier: the index under-reported its \
       size, and any reader resolving an evicted id read it as deleted. The limit existed when the index held one \
       location per write; issue #5516 made a tombstoned id release \
-      its location, so residency is now proportional to the live vectors (~90 bytes each) instead of to the write \
-      history. Issue #5559 removed the bounded backend altogether, so nothing can evict a location any more, and \
+      its location, so residency is now proportional to the live vectors (~32 bytes each since issue #5588 laid \
+      them out in primitive arrays) instead of to the write history. Issue #5559 removed the bounded backend altogether, so nothing can evict a location any more, and \
       the per-index 'locationCacheSize' METADATA key is now REFUSED rather than ignored - this global setting stays \
       tolerated only so that an existing startup line does not stop a server booting.""",
       Integer.class, -1),

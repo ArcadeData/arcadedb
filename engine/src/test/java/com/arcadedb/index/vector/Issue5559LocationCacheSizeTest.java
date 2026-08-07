@@ -91,7 +91,8 @@ class Issue5559LocationCacheSizeTest extends TestHelper {
         .hasRootCauseInstanceOf(IndexException.class)
         .hasMessageContaining("locationCacheSize")
         .hasMessageContaining("no longer supported")
-        .hasMessageContaining("90 bytes per live vector");
+        .hasMessageContaining(
+            VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION + " bytes per live vector");
 
     assertThat(database.getSchema().existsIndex("Doc[embedding]"))
         .as("a refused statement must not leave a half-built index").isFalse();

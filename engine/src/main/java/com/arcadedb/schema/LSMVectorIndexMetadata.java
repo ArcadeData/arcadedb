@@ -271,8 +271,10 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       throw new IndexException("'locationCacheSize' is no longer supported (issues #5559 and #5568): a vector "
           + "location is the only mapping from a vector id to its record, so capping the location index drops "
           + "vectors from searches and from countEntries() instead of spilling them to disk. Remove the setting and "
+          // The same constant twice is not a copy-paste slip: one byte per vector is exactly one MB per million, so
+          // the two figures are the same number in different units and stay consistent if the constant moves.
           + "size the heap for ~" + VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION
-          + " bytes per live vector (~90MB per million)");
+          + " bytes per live vector (~" + VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION + "MB per million)");
 
     this.locationCacheSize = locationCacheSize;
   }

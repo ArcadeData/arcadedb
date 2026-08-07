@@ -37,9 +37,6 @@ import com.arcadedb.schema.Schema;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
-
 public class MatchStatement extends Statement {
 
   static final        String                 DEFAULT_ALIAS_PREFIX    = "$ARCADEDB_DEFAULT_ALIAS_";
@@ -529,11 +526,11 @@ public class MatchStatement extends Statement {
   private void setProfilingConstraints(final DatabaseInternal db) {
     final long profiledLimit = db.getResultSetLimit();
     if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
-      setLimit(new Limit(JJTLIMIT).setValue((int) profiledLimit));
+      setLimit(new Limit(-1).setValue((int) profiledLimit));
 
     final long profiledTimeout = db.getReadTimeout();
     if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
-      setTimeout(new Timeout(JJTTIMEOUT).setValue((int) profiledTimeout));
+      setTimeout(new Timeout(-1).setValue((int) profiledTimeout));
   }
 
   /**
