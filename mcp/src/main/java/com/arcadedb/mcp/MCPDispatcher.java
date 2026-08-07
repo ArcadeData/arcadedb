@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.mcp.tools.ExecuteCommandTool;
@@ -216,7 +217,7 @@ public class MCPDispatcher {
     try {
       method = stringMember(request, "method", "");
       params = request.getJSONObject("params", new JSONObject());
-    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException | JSONException e) {
       return error(id, -32600, "Invalid Request: 'method' must be a string and 'params' an object", 200);
     }
 
@@ -325,7 +326,7 @@ public class MCPDispatcher {
     } catch (final SecurityException e) {
       LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, e.getMessage());
       return error(id, -32600, e.getMessage(), 200);
-    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException | JSONException e) {
       return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
@@ -349,7 +350,7 @@ public class MCPDispatcher {
     try {
       toolName = stringMember(params, "name", "");
       args = params.getJSONObject("arguments", new JSONObject());
-    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException e) {
+    } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException | JSONException e) {
       return error(id, -32602, "Invalid params: 'name' must be a string and 'arguments' an object", 200);
     }
 
@@ -507,11 +508,15 @@ public class MCPDispatcher {
    * transport as a bodiless HTTP 500. The read deliberately keeps the coercion the tool itself applies, so a key the
    * tool will resolve is still recognised as secret; narrowing it to a plain string would leave the value unmasked
    * for a key shape the tool nevertheless writes.
+   * <p>
+   * The catch covers {@link JSONException} as well as the Gson types: since issue #5935 the accessor reports a
+   * malformed member with its own exception rather than letting Gson's escape, and this guard must keep catching
+   * every shape the read can refuse.
    */
   private static String settingKey(final JSONObject args) {
     try {
       return args.getString("key", null);
-    } catch (final IllegalStateException | UnsupportedOperationException e) {
+    } catch (final IllegalStateException | UnsupportedOperationException | JSONException e) {
       return null;
     }
   }

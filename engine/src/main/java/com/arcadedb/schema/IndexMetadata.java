@@ -260,8 +260,12 @@ public class IndexMetadata {
 
   /**
    * Reads a boolean-valued key of the {@code METADATA} clause. Only a real boolean, or the strings {@code "true"} /
-   * {@code "false"}, are accepted: {@code JSONObject.getBoolean()} answers {@code false} for any other string, so
-   * {@code {"addHierarchy": "yes"}} used to disable the setting the user was asking for (issue #5639).
+   * {@code "false"}, are accepted, so {@code {"addHierarchy": "yes"}} cannot quietly disable the setting the user was
+   * asking for (issue #5639).
+   * <p>
+   * {@link JSONObject#getBoolean(String)} enforces the same rule since issue #5935, but it reports a violation with a
+   * {@code JSONException}. This stays on {@link IllegalArgumentException}, which is what the DDL path expects and what
+   * the HTTP layer already maps to 400, and keeps the message naming the offending metadata key.
    */
   protected static boolean metadataBoolean(final JSONObject json, final String key) {
     final Object value = json.get(key);
