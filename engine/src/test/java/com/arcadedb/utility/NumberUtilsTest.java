@@ -20,6 +20,9 @@ package com.arcadedb.utility;
 
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -90,5 +93,49 @@ class NumberUtilsTest {
   void parsePositiveIntegerWithMaxValue() {
     assertThat(NumberUtils.parsePositiveInteger(String.valueOf(Integer.MAX_VALUE)))
         .isEqualTo(Integer.MAX_VALUE);
+  }
+
+  @Test
+  void saturateToIntWithValueInRangeIsUnchanged() {
+    assertThat(NumberUtils.saturateToInt(42)).isEqualTo(42);
+    assertThat(NumberUtils.saturateToInt(-42)).isEqualTo(-42);
+    assertThat(NumberUtils.saturateToInt(0)).isEqualTo(0);
+    assertThat(NumberUtils.saturateToInt(Integer.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(NumberUtils.saturateToInt(Integer.MIN_VALUE)).isEqualTo(Integer.MIN_VALUE);
+  }
+
+  @Test
+  void saturateToIntWithLongBeyondIntRangeSaturates() {
+    // Issue #5919 - Site A: a Long above Integer.MAX_VALUE (e.g. LIMIT 2147483648) must not wrap
+    // to a negative int via a plain narrowing cast.
+    assertThat(NumberUtils.saturateToInt(Integer.MAX_VALUE + 1L)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(NumberUtils.saturateToInt(Long.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(NumberUtils.saturateToInt(Integer.MIN_VALUE - 1L)).isEqualTo(Integer.MIN_VALUE);
+    assertThat(NumberUtils.saturateToInt(Long.MIN_VALUE)).isEqualTo(Integer.MIN_VALUE);
+  }
+
+  @Test
+  void saturateToIntWithBigIntegerBeyondLongRangeSaturates() {
+    // PR #5921 review: Number.longValue() on a BigInteger far outside the Long range is
+    // documented as lossy in an unspecified way (it can even flip sign), so a BigInteger bind
+    // param needs its own magnitude check instead of going through longValue() first.
+    final BigInteger huge = BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.TEN);
+    assertThat(NumberUtils.saturateToInt(huge)).isEqualTo(Integer.MAX_VALUE);
+
+    final BigInteger hugeNegative = BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.TEN);
+    assertThat(NumberUtils.saturateToInt(hugeNegative)).isEqualTo(Integer.MIN_VALUE);
+
+    assertThat(NumberUtils.saturateToInt(BigInteger.valueOf(7))).isEqualTo(7);
+  }
+
+  @Test
+  void saturateToIntWithBigDecimalBeyondLongRangeSaturates() {
+    final BigDecimal huge = BigDecimal.valueOf(Long.MAX_VALUE).multiply(BigDecimal.TEN);
+    assertThat(NumberUtils.saturateToInt(huge)).isEqualTo(Integer.MAX_VALUE);
+
+    final BigDecimal hugeNegative = BigDecimal.valueOf(Long.MIN_VALUE).multiply(BigDecimal.TEN);
+    assertThat(NumberUtils.saturateToInt(hugeNegative)).isEqualTo(Integer.MIN_VALUE);
+
+    assertThat(NumberUtils.saturateToInt(BigDecimal.valueOf(7))).isEqualTo(7);
   }
 }

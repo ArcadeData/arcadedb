@@ -106,6 +106,22 @@ class JSONSerializerTest extends TestHelper {
   }
 
   @Test
+  void map2jsonKeepsFiniteDoubleBeyondFloatRange() {
+    // Issue #5919 - Site B: the finiteness guard in map2json() narrowed to float before checking
+    // Float.isFinite(), so a finite double above Float.MAX_VALUE (~3.4e38) was misclassified as
+    // non-finite and silently dropped from the serialized map.
+    final Map<String, Object> map = new HashMap<>();
+    map.put("big", 1e300);
+    map.put("small", 1.5);
+
+    final JSONObject json = jsonSerializer.map2json(map, null, false);
+
+    assertThat(json.has("big")).isTrue();
+    assertThat(json.getDouble("big")).isEqualTo(1e300);
+    assertThat(json.getDouble("small")).isEqualTo(1.5);
+  }
+
+  @Test
   void json2map() {
     JSONObject json = new JSONObject();
     json.put("key1", "value1");

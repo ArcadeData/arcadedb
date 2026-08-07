@@ -227,6 +227,26 @@ class LimitSkipStepTest extends TestHelper {
   }
 
   @Test
+  void shouldSkipAboveIntRangeSkipsEverything() {
+    // Issue #5919 - Site A follow-up: SKIP shares the same intValue() narrowing as LIMIT. A SKIP
+    // above Integer.MAX_VALUE used to wrap to a negative int, which SkipExecutionStep's
+    // "while (skipped < skipValue)" then evaluates as false, silently returning ALL rows instead
+    // of skipping past a result set that can never reach 2^31 rows.
+    database.getSchema().createDocumentType("TestSkipOverflow");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++) {
+        database.newDocument("TestSkipOverflow").set("value", i).save();
+      }
+    });
+
+    final ResultSet result = database.query("sql", "SELECT FROM TestSkipOverflow SKIP 2147483648");
+
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
   void shouldHandleLimitOne() {
     database.getSchema().createDocumentType("TestLimitOne");
 

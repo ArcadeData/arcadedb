@@ -18,7 +18,15 @@
  */
 package com.arcadedb.utility;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+
 public class NumberUtils {
+
+  private static final BigInteger BIGINTEGER_MAX_INT = BigInteger.valueOf(Integer.MAX_VALUE);
+  private static final BigInteger BIGINTEGER_MIN_INT = BigInteger.valueOf(Integer.MIN_VALUE);
+  private static final BigDecimal BIGDECIMAL_MAX_INT = BigDecimal.valueOf(Integer.MAX_VALUE);
+  private static final BigDecimal BIGDECIMAL_MIN_INT = BigDecimal.valueOf(Integer.MIN_VALUE);
 
   public static Integer parsePositiveInteger(final String s) {
     for (int i = 0; i < s.length(); i++) {
@@ -35,5 +43,36 @@ public class NumberUtils {
         return false;
     }
     return true;
+  }
+
+  /**
+   * Narrows a numeric value to an int without wrapping: a value outside the int range saturates to
+   * the nearest int bound instead of overflowing into an unrelated value. `BigInteger`/`BigDecimal`
+   * are compared by magnitude directly, because `Number.longValue()` on one of those far outside the
+   * `Long` range is documented as lossy in an unspecified way (it can even flip sign).
+   */
+  public static int saturateToInt(final Number value) {
+    if (value instanceof BigInteger bigInteger) {
+      if (bigInteger.compareTo(BIGINTEGER_MAX_INT) > 0)
+        return Integer.MAX_VALUE;
+      if (bigInteger.compareTo(BIGINTEGER_MIN_INT) < 0)
+        return Integer.MIN_VALUE;
+      return bigInteger.intValue();
+    }
+
+    if (value instanceof BigDecimal bigDecimal) {
+      if (bigDecimal.compareTo(BIGDECIMAL_MAX_INT) > 0)
+        return Integer.MAX_VALUE;
+      if (bigDecimal.compareTo(BIGDECIMAL_MIN_INT) < 0)
+        return Integer.MIN_VALUE;
+      return bigDecimal.intValue();
+    }
+
+    final long longValue = value.longValue();
+    if (longValue > Integer.MAX_VALUE)
+      return Integer.MAX_VALUE;
+    if (longValue < Integer.MIN_VALUE)
+      return Integer.MIN_VALUE;
+    return (int) longValue;
   }
 }

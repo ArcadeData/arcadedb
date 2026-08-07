@@ -121,7 +121,7 @@ public class DocumentValidator {
     }
     case DOUBLE -> {
       final double maxAsDouble = Double.parseDouble(max);
-      if (((Number) fieldValue).floatValue() > maxAsDouble)
+      if (((Number) fieldValue).doubleValue() > maxAsDouble)
         throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
     }
     case DECIMAL -> {
@@ -200,7 +200,7 @@ public class DocumentValidator {
       }
       case DOUBLE -> {
         final double minAsDouble = Double.parseDouble(min);
-        if (((Number) fieldValue).floatValue() < minAsDouble)
+        if (((Number) fieldValue).doubleValue() < minAsDouble)
           yield new ValidationResult(true, "value " + fieldValue + " is less than " + min);
         yield new ValidationResult(false, null);
       }

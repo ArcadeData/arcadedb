@@ -205,6 +205,30 @@ class LimitExecutionStepTest extends TestHelper {
   }
 
   @Test
+  void shouldLimitAboveIntRangeReturnsAllRows() {
+    // Issue #5919 - Site A: a LIMIT value above Integer.MAX_VALUE used to narrow with
+    // intValue(), wrapping to a negative int and returning 0 rows instead of the whole result.
+    database.getSchema().createDocumentType("LimitOverflow");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++) {
+        database.newDocument("LimitOverflow").set("value", i).save();
+      }
+    });
+
+    final ResultSet result = database.query("sql", "SELECT FROM LimitOverflow LIMIT 2147483648");
+
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+
+    assertThat(count).isEqualTo(5);
+    result.close();
+  }
+
+  @Test
   void shouldLimitLargeDataset() {
     database.getSchema().createDocumentType("BigData");
 
