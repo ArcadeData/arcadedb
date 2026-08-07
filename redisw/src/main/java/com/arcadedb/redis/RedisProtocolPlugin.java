@@ -42,8 +42,8 @@ public class RedisProtocolPlugin implements ServerPlugin {
         new RedisSslServerSocketFactory(configuration) :
         new DefaultServerSocketFactory();
 
-    listener = new RedisNetworkListener(server, socketFactory, GlobalConfiguration.REDIS_HOST.getValueAsString(),
-        GlobalConfiguration.REDIS_PORT.getValueAsString());
+    listener = new RedisNetworkListener(server, socketFactory, configuration.getValueAsString(GlobalConfiguration.REDIS_HOST),
+        configuration.getValueAsString(GlobalConfiguration.REDIS_PORT));
   }
 
   @Override

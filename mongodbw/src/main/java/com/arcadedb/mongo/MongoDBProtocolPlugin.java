@@ -33,18 +33,22 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   private MongoServer                         mongoDBServer;
   private MongoDBBackend                      mongoDBBackend;
   private ArcadeDBServer                      server;
+  private String                              host;
+  private int                                 port;
   private Map<String, MongoDBDatabaseWrapper> databases = new ConcurrentHashMap<>();
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
+    this.host = configuration.getValueAsString(GlobalConfiguration.MONGO_HOST);
+    this.port = configuration.getValueAsInteger(GlobalConfiguration.MONGO_PORT);
   }
 
   @Override
   public void startService() {
     mongoDBBackend = new MongoDBBackend(server, this);
     mongoDBServer = new MongoServer(mongoDBBackend);
-    mongoDBServer.bind(GlobalConfiguration.MONGO_HOST.getValueAsString(), GlobalConfiguration.MONGO_PORT.getValueAsInteger());
+    mongoDBServer.bind(host, port);
   }
 
   @Override
