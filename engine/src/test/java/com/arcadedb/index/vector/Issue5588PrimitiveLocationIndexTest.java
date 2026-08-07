@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -36,6 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -271,7 +273,7 @@ class Issue5588PrimitiveLocationIndexTest {
       private int next = 5;
 
       @Override
-      public boolean tryAdvance(final java.util.function.IntConsumer action) {
+      public boolean tryAdvance(final IntConsumer action) {
         if (next <= 0)
           return false;
         action.accept(next--);
@@ -294,7 +296,7 @@ class Issue5588PrimitiveLocationIndexTest {
       }
 
       @Override
-      public java.util.Comparator<? super Integer> getComparator() {
+      public Comparator<? super Integer> getComparator() {
         return null;
       }
     };
