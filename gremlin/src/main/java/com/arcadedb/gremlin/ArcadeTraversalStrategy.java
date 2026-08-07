@@ -66,6 +66,15 @@ import java.util.Set;
  * category is a hard prerequisite for every strategy in a later one, so moving this strategy to the
  * {@code ProviderOptimizationStrategy} category (which sorts strictly after
  * {@code OptimizationStrategy}) fixes the ordering deterministically. See issue #5840.
+ * <p>
+ * The {@code applyPost()} default this relies on lives in TinkerPop 3.8.1's
+ * {@code org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy.OptimizationStrategy}
+ * (gremlin-core, {@code TraversalStrategy.java} around line 179): {@code default
+ * Set<Class<? extends OptimizationStrategy>> applyPost() { ... set.add(GValueReductionStrategy.class);
+ * ... }}, documented there as "The {@code GValueReductionStrategy} should be the last TinkerPop
+ * optimization strategy applied. Adding it here ensures will help to enforce that more globally." If a
+ * future TinkerPop release changes that default, re-verify this strategy's placement still runs after
+ * {@code GValueReductionStrategy}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
