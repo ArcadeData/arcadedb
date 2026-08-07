@@ -254,6 +254,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // long-running build operations that would otherwise block server shutdown.
   private volatile ForkJoinPool graphBuildPool;
 
+  /** {@link ForkJoinPool} rejects anything above this, so a configured graph-build width is clamped to it. */
+  private static final int MAX_GRAPH_BUILD_PARALLELISM = 0x7fff;
+
   // Live incremental graph builder: inserts vectors one at a time via addGraphNode()
   // instead of rebuilding the entire graph. The builder stays alive across put() calls.
   // Search uses builder.getGraph() which is immediately searchable after each insert.
@@ -1525,19 +1528,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (pool != null && !pool.isShutdown())
       pool.shutdown();
 
+    final int cores = Runtime.getRuntime().availableProcessors();
+    if (wanted > cores)
+      LogManager.instance().log(this, Level.WARNING,
+          "Vector index %s will build its graph with %d threads on %d available cores. Graph construction is "
+              + "CPU-bound, so oversubscribing it makes the build slower, not faster: lower %s unless the core count "
+              + "is deliberately understated for this process",
+          indexName, wanted, cores, GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_PARALLELISM.getKey());
+
     pool = new ForkJoinPool(wanted);
     graphBuildPool = pool;
     return pool;
   }
 
   /**
-   * @return the configured graph-build pool width, or the automatic one (all cores but one) when unset.
+   * @return the configured graph-build pool width, or the automatic one (all cores but one) when unset. A configured
+   * value is clamped to what {@link ForkJoinPool} accepts, so a typo in the setting cannot turn every rebuild into an
+   * {@code IllegalArgumentException} from the pool constructor.
    */
   private int computeGraphBuildParallelism() {
     final int configured = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_PARALLELISM);
     if (configured > 0)
-      return configured;
+      return Math.min(configured, MAX_GRAPH_BUILD_PARALLELISM);
     return Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
   }
 
@@ -2113,12 +2126,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           progressMonitor = new Thread(() -> {
             try {
               while (!buildComplete.get()) {
-                final int inserted = insertedNodes.get();
-                final int insertsInProgress = builder.insertsInProgress();
+                // Read the counters under the same lock that publishes them, not before taking it. Capturing
+                // outside would let a sample read just before the insertion join is pushed after the main thread's
+                // end-of-insertion sample, so a consumer would see progress go backwards from complete.
+                // The monitor holds the lock across the callback either way, so this only adds the two reads.
+                synchronized (progressLock) {
+                  final int inserted = insertedNodes.get();
+                  final int insertsInProgress = builder.insertsInProgress();
 
-                // Report progress
-                reportProgress.onGraphBuildProgress(currentPhase.get(), inserted, totalNodes,
-                    inserted + insertsInProgress);
+                  // Report progress
+                  reportProgress.onGraphBuildProgress(currentPhase.get(), inserted, totalNodes,
+                      inserted + insertsInProgress);
+                }
 
                 // Sleep briefly before next poll
                 Thread.sleep(100); // Poll every 100ms

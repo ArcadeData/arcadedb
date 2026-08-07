@@ -798,7 +798,9 @@ public enum GlobalConfiguration {
       0 (default) sizes the pool automatically as the available cores minus one, which leaves a core for request, \
       I/O and GC threads so a rebuild triggered on a live index cannot starve concurrent query traffic. \
       Raise it to the full core count when build time matters more than query headroom, for example during a bulk \
-      import; lower it to protect a latency-sensitive workload from an online rebuild.""",
+      import; lower it to protect a latency-sensitive workload from an online rebuild. A value above the core count \
+      only oversubscribes a CPU-bound phase and is logged as a warning; anything above what ForkJoinPool accepts is \
+      clamped rather than failing the build.""",
       Integer.class, 0),
 
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,

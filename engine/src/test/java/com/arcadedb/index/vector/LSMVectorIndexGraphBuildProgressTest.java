@@ -165,6 +165,16 @@ class LSMVectorIndexGraphBuildProgressTest {
 
         assertThat(index.getStats().get("graphBuildParallelism"))
             .isEqualTo((long) Math.max(1, Runtime.getRuntime().availableProcessors() - 1));
+
+        // A typo in the setting must not turn every rebuild into an IllegalArgumentException from the pool
+        // constructor: ForkJoinPool refuses a parallelism above 0x7fff, so the configured value is clamped.
+        GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_PARALLELISM.setValue(1_000_000);
+        try {
+          assertThat(index.getStats().get("graphBuildParallelism")).isEqualTo(0x7fffL);
+        } finally {
+          GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_PARALLELISM.setValue(
+              GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_PARALLELISM.getDefValue());
+        }
       }
     }
   }
