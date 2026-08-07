@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -2147,6 +2148,58 @@ class GraphAnalyticalViewTest extends TestHelper {
     }
 
     // Reopen database with the original factory for TestHelper cleanup
+    database = new DatabaseFactory(dbPath).open();
+  }
+
+  /**
+   * Regression for issue #5788: by default, {@code restoreAll()} triggers the async rebuild of a
+   * persisted GAV and returns immediately - the query that reopened the database races the
+   * background rebuild and always loses, so it never benefits from the view it paid to restore.
+   * <p>
+   * Setting {@link GlobalConfiguration#GAV_RESTORE_AWAIT_TIMEOUT} makes {@code open()} block,
+   * bounded by the configured budget, until every restored GAV reaches {@code READY} - so the
+   * session that pays for the rebuild is the session that benefits from it.
+   */
+  @Test
+  void gavRestoreAwaitTimeoutBlocksOpenUntilViewsAreReady() {
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+    database.begin();
+    final List<RID> ids = new ArrayList<>();
+    for (int i = 0; i < 300; i++)
+      ids.add(database.newVertex("City").set("name", "C" + i).save().getIdentity());
+    for (int i = 0; i < ids.size() - 1; i++)
+      ids.get(i).asVertex().modify().newEdge("ROAD", ids.get(i + 1).asVertex());
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW cityRoadsAwait VERTEX TYPES (City) EDGE TYPES (ROAD)");
+
+    final String dbPath = database.getDatabasePath();
+    database.close();
+
+    final Object defaultTimeout = GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT.getValue();
+    GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT.setValue(10_000L);
+    try {
+      final DatabaseFactory factory2 = new DatabaseFactory(dbPath);
+      final Database db2 = factory2.open();
+      try {
+        // No awaitReady() call here: open() must already have blocked until the restore finished.
+        final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "cityRoadsAwait");
+        assertThat(restored).isNotNull();
+        assertThat(restored.isReady())
+            .as("open() should block until the restored GAV is READY when GAV_RESTORE_AWAIT_TIMEOUT > 0")
+            .isTrue();
+        assertThat(restored.getNodeCount()).isEqualTo(300);
+        assertThat(restored.getEdgeCount()).isEqualTo(299);
+
+        db2.command("sql", "DROP GRAPH ANALYTICAL VIEW cityRoadsAwait");
+      } finally {
+        db2.close();
+      }
+    } finally {
+      GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT.setValue(defaultTimeout);
+    }
+
     database = new DatabaseFactory(dbPath).open();
   }
 
