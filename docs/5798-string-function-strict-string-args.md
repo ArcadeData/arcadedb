@@ -71,3 +71,32 @@ New test class
   `OpenCypherFunctionTest`, `OpenCypherExpressionTest`, `CypherFollowUpsIssue5602Test`): all pass.
 - Full `com.arcadedb.query.opencypher.**` package (337 test classes, 7652 tests, includes the OpenCypher
   TCK suite): 0 failures, 0 errors.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5901
+
+## Review cycles
+
+### Cycle 1 - head `019f4352`
+
+Claude's bot review (posted as a PR issue comment, not a formal review) found one correctness gap:
+`replace()`, `split()`, and the 2-argument forms of `lTrim()`/`rTrim()`/`trim()`/`btrim()` checked
+`args[0] == null || args[1] == null || ...` for `null` *before* calling `requireStringArgument()` on
+the primary argument, so an out-of-domain primary argument (e.g. `replace(5, null, 'b')`) silently
+returned `null` instead of raising the type error whenever a *secondary* argument happened to be
+`null` too. This contradicted the ordering convention already established in #5484
+(`MathBinaryFunction`/`RoundFunction` type-check every argument before null propagation decides the
+answer). The reviewer also confirmed `CypherTrimFunction`'s 3-argument SQL-style form did not have
+this problem, and that the parse-time static check, the alias-name mapping and the test structure
+were all correct.
+
+Fix applied: reordered the five affected call sites so `requireStringArgument()` on the primary
+argument runs first, and the null check on the remaining arguments runs after, mirroring the #5484
+convention. Added a new test
+(`thePrimaryArgumentIsCheckedEvenWhenASecondaryArgumentIsNull`) covering
+`replace(5, null, 'b')`, `split(5, null)`, `lTrim(5, null)`, `rTrim(5, null)` and `btrim(5, null)`.
+Confirmed red (via `git stash` of only the reordering) before the fix, green after. Full new test
+class (15/15) and the same targeted regression suites re-run clean after the fix.
+
+Outcome: actionable and clear, applied. No deferred items from this cycle.

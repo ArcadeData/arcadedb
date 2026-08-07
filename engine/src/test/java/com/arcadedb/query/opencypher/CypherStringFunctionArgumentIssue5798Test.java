@@ -113,6 +113,36 @@ class CypherStringFunctionArgumentIssue5798Test extends TestHelper {
         .hasMessageContaining("STRING");
   }
 
+  // ===================== the primary argument is checked independent of a null secondary one =====================
+
+  @Test
+  void thePrimaryArgumentIsCheckedEvenWhenASecondaryArgumentIsNull() {
+    // A null secondary argument (delimiter, search text, trim character) must not let an out-of-domain
+    // primary argument slip through as a silent null: the type check on the primary argument must run
+    // before null propagation decides the answer, mirroring the #5484 convention for MathBinaryFunction
+    // and RoundFunction.
+    assertThatThrownBy(() -> consume("RETURN replace(5, null, 'b') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("replace()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN split(5, null) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("split()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN lTrim(5, null) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("lTrim()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN rTrim(5, null) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("rTrim()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN btrim(5, null) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("trim()")
+        .hasMessageContaining("STRING");
+  }
+
   // ===================== explicit conversion still works =====================
 
   @Test

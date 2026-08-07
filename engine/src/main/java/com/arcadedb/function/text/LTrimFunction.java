@@ -52,9 +52,12 @@ public class LTrimFunction implements StatelessFunction {
       return source.stripLeading();
     }
     if (args.length == 2) {
-      if (args[0] == null || args[1] == null)
-        return null;
+      // The primary argument is type-checked before a null trim character decides the answer, so an
+      // out-of-domain primary argument is still reported even when args[1] happens to be null (issue
+      // #5798 review: lTrim(5, null) must still be a type error, not a silent null).
       final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+      if (source == null || args[1] == null)
+        return null;
       final String trimChar = args[1].toString();
       if (trimChar.isEmpty())
         return source.stripLeading();

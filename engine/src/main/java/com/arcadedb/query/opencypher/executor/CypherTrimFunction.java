@@ -59,10 +59,13 @@ public class CypherTrimFunction implements StatelessFunction {
     }
 
     if (args.length == 2) {
-      // 2-arg form: btrim(source, trimCharacter)
-      if (args[0] == null || args[1] == null)
-        return null;
+      // 2-arg form: btrim(source, trimCharacter). The primary argument is type-checked before a null
+      // trim character decides the answer, so an out-of-domain primary argument is still reported even
+      // when args[1] happens to be null (issue #5798 review: btrim(5, null) must still be a type error,
+      // not a silent null).
       final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+      if (source == null || args[1] == null)
+        return null;
       final String trimChar = args[1].toString();
       if (trimChar.isEmpty())
         return source.strip();
