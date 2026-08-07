@@ -91,12 +91,12 @@ public class ContainsAnyCondition extends BooleanExpression {
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable identifiable) {
-          if (!rightBlock.evaluate(identifiable, context))
+          if (!isTrue(rightBlock.evaluate(identifiable, context)))
             return false;
         } else if (item instanceof Result result) {
-          if (!rightBlock.evaluate(result, context))
+          if (!isTrue(rightBlock.evaluate(result, context)))
             return false;
-        } else if (!rightBlock.evaluate(new ResultInternal(item), context))
+        } else if (!isTrue(rightBlock.evaluate(new ResultInternal(item), context)))
           return false;
       }
       return true;
@@ -117,12 +117,12 @@ public class ContainsAnyCondition extends BooleanExpression {
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable identifiable) {
-          if (!rightBlock.evaluate(identifiable, context))
+          if (!isTrue(rightBlock.evaluate(identifiable, context)))
             return false;
         } else if (item instanceof Result result) {
-          if (!rightBlock.evaluate(result, context))
+          if (!isTrue(rightBlock.evaluate(result, context)))
             return false;
-        } else if (!rightBlock.evaluate(new ResultInternal(item), context))
+        } else if (!isTrue(rightBlock.evaluate(new ResultInternal(item), context)))
           return false;
       }
       return true;

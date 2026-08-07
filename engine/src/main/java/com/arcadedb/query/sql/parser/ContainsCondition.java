@@ -150,11 +150,11 @@ public class ContainsCondition extends BooleanExpression {
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable && isTrue(condition.evaluate((Identifiable) item, context)))
           return true;
-        else if (item instanceof Result && condition.evaluate((Result) item, context))
+        else if (item instanceof Result && isTrue(condition.evaluate((Result) item, context)))
           return true;
-        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), context))
+        else if (item instanceof Map && isTrue(condition.evaluate(new ResultInternal((Map) item), context)))
           return true;
       }
       return false;
@@ -174,13 +174,13 @@ public class ContainsCondition extends BooleanExpression {
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable && isTrue(condition.evaluate((Identifiable) item, context)))
           return true;
-        else if (item instanceof Result && condition.evaluate((Result) item, context))
+        else if (item instanceof Result && isTrue(condition.evaluate((Result) item, context)))
           return true;
-        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), context))
+        else if (item instanceof Map && isTrue(condition.evaluate(new ResultInternal((Map) item), context)))
           return true;
-        else if (condition.evaluate(new ResultInternal(item), context))
+        else if (isTrue(condition.evaluate(new ResultInternal(item), context)))
           return true;
       }
       return false;
