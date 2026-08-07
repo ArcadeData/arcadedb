@@ -51,14 +51,25 @@ public class BetweenCondition extends BooleanExpression {
       return false;
     }
 
-    secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
+    // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
+    // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
+    // failure (e.g. NumberFormatException) escape (#5900).
+    try {
+      secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
+    } catch (final Exception ignore) {
+      return false;
+    }
 
     Object thirdValue = third.execute(currentRecord, context);
     if (thirdValue == null) {
       return false;
     }
 
-    thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
+    try {
+      thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
+    } catch (final Exception ignore) {
+      return false;
+    }
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);
@@ -78,13 +89,21 @@ public class BetweenCondition extends BooleanExpression {
       return false;
     }
 
-    secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
+    try {
+      secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
+    } catch (final Exception ignore) {
+      return false;
+    }
 
     Object thirdValue = third.execute(currentRecord, context);
     if (thirdValue == null) {
       return false;
     }
-    thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
+    try {
+      thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
+    } catch (final Exception ignore) {
+      return false;
+    }
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);

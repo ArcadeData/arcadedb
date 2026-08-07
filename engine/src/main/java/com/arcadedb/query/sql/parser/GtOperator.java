@@ -40,8 +40,15 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
         final Number[] couple = Type.castComparableNumber(number, number1);
         left = couple[0];
         right = couple[1];
-      } else
-        right = Type.convert(database, right, left.getClass());
+      } else {
+        // Comparing across incompatible types has no defined ordering: report "not greater" rather than let the
+        // raw parse/conversion failure (e.g. NumberFormatException on a non-numeric String) escape (#5900).
+        try {
+          right = Type.convert(database, right, left.getClass());
+        } catch (final Exception ignore) {
+          return false;
+        }
+      }
     }
 
     if (right == null)
