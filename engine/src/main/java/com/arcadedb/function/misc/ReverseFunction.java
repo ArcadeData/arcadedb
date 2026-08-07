@@ -19,6 +19,7 @@
 package com.arcadedb.function.misc;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 
@@ -61,6 +62,9 @@ public class ReverseFunction implements StatelessFunction {
       Collections.reverse(reversed);
       return reversed;
     }
-    return null;
+    // An argument outside the input domain (e.g. reverse(5), reverse(true)) used to answer null, which is
+    // indistinguishable from legal reverse(null) propagation. That hides a type error as a plausible result, so it
+    // must be a CommandSemanticException (HTTP 400), not a silent null. See issue #5801, sibling of #5477/#5476.
+    throw CypherFunctionHelper.typeMismatch("reverse", "a STRING or a LIST<ANY>", args[0]);
   }
 }
