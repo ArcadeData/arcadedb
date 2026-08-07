@@ -943,9 +943,15 @@ public class LocalDocumentType implements DocumentType {
    * <p>
    * Outside a transaction - the auto-commit / single-statement path - there is no commit to defer to, so the
    * diagnosis runs immediately, which is also what kept the pre-#5646 {@code CREATE INDEX} behaviour for that case.
+   * <p>
+   * <b>Skipped entirely for a type that is itself being dropped.</b> {@link LocalSchema#dropType} drops every one of
+   * a type's indexes (via {@link LocalSchema#dropIndexInternal}) before removing the type from the schema, so without
+   * this check a {@code DROP TYPE} on a partitioned type would report a spurious "no unique automatic index" blocker
+   * for a type that no longer exists by the time the report is read - immediately if outside a transaction, or via
+   * the deferred callback otherwise, since {@code dropType} itself runs inside one transaction.
    */
   void reportPartitionSuitabilityAfterSchemaChange() {
-    if (!(bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy))
+    if (!(bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy) || !schema.existsType(name))
       return;
 
     final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
@@ -960,10 +966,12 @@ public class LocalDocumentType implements DocumentType {
    * The actual diagnosis, run either immediately or from the deferred callback {@link #reportPartitionSuitabilityAfterSchemaChange}
    * registers. Re-reads {@link #bucketSelectionStrategy} rather than capturing it at scheduling time, so a callback
    * that fires later sees whatever the transaction settled the strategy on, not a snapshot from when it was queued -
-   * a type that was reverted to round-robin (or dropped) before commit is correctly not diagnosed at all.
+   * a type that was reverted to round-robin, or dropped between scheduling and commit, is correctly not diagnosed at
+   * all: the round-robin case falls out of the {@code instanceof} check below, the dropped case out of re-checking
+   * {@link LocalSchema#existsType} here rather than trusting the schema membership seen when this was scheduled.
    */
   private void reportPartitionSuitabilityNow() {
-    if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
+    if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned && schema.existsType(name))
       reportPartitionSuitability(partitioned, PartitionReport.SCHEMA_CHANGE);
   }
 

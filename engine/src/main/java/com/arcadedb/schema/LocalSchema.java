@@ -123,6 +123,15 @@ public class LocalSchema implements Schema {
   private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;
   private             boolean                                multipleUpdate                = false;
+  /**
+   * Non-null while {@link #dropType} is dropping its own indexes as part of removing the type entirely (issue
+   * #5646 review follow-up on PR #5946). Checked by {@link #dropIndexInternal} to skip the partition-suitability
+   * report for a type that is going away in the same operation - at every nesting depth, including the bucket
+   * sub-index drops {@link com.arcadedb.index.TypeIndex#drop()} makes back into the public {@link #dropIndex}, which
+   * a parameter on {@code dropIndexInternal} alone cannot reach. A field rather than a parameter because the
+   * suppression has to cross that public-API boundary; save/restore around the cascade, matching {@link #multipleUpdate}.
+   */
+  private             String                                 typeBeingDropped              = null;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
@@ -807,7 +816,7 @@ public class LocalSchema implements Schema {
         // enclosing transaction's commit when one is active, so a DROP immediately followed by a re-CREATE
         // (recollating, or any other index-surface edit on the same type in one transaction) is diagnosed once
         // against the settled state rather than reporting the transient gap.
-        if (affectedType != null) {
+        if (affectedType != null && !affectedType.getName().equals(typeBeingDropped)) {
           try {
             affectedType.reportPartitionSuitabilityAfterSchemaChange();
           } catch (final RuntimeException e) {
@@ -1424,6 +1433,11 @@ public class LocalSchema implements Schema {
       if (!multipleUpdate)
         multipleUpdate = true;
 
+      final String previousTypeBeingDropped = typeBeingDropped;
+      // Covers the whole cascade below, not just the index-drop loop: dropBucket() a few lines down can also
+      // reach dropIndexInternal() for a leftover bucket-associated index, and the suppression must hold there too.
+      typeBeingDropped = typeName;
+
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
@@ -1438,7 +1452,11 @@ public class LocalSchema implements Schema {
             sub.addSuperType(parent, false);
         }
 
-        // DELETE ALL ASSOCIATED INDEXES
+        // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
+        // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
+        // calls TypeIndex.drop() makes back into dropIndex() for each bucket sub-index. Reporting here would
+        // describe a type that no longer exists by the time anyone reads it (issue #5646 review follow-up on
+        // PR #5946).
         for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
           dropIndexInternal(m.getName());
 
@@ -1459,6 +1477,7 @@ public class LocalSchema implements Schema {
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
       } finally {
+        typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)
           multipleUpdate = false;
         saveConfiguration();

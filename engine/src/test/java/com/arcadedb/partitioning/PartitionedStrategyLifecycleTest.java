@@ -277,6 +277,47 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
   }
 
   /**
+   * {@code DROP TYPE} drops every one of the type's indexes (via the same {@code dropIndexInternal} the two tests
+   * above exercise) before removing the type itself from the schema. Without suppressing the report for that
+   * cascade, dropping a partitioned type would trigger the exact "no unique automatic index" blocker this issue
+   * fixes for {@code DROP INDEX} - except about a type that no longer exists by the time anyone reads it. Found by
+   * review on PR #5946: reusing the type-survives assertion style of the two tests above, driven from
+   * {@code DROP TYPE} outside a transaction, which is the immediate-report path and the one the fix's first
+   * attempt (an existence check made only at commit time) still missed.
+   */
+  @Test
+  void dropTypeOfAPartitionedTypeReportsNothingAboutTheTypeItJustRemoved() {
+    createPartitionedType("Vanishing");
+
+    final List<String> warnings = captureWarnings(() -> database.command("sql", "DROP TYPE Vanishing"));
+
+    assertThat(warnings)
+        .as("the type is gone by the time this report would be read - it must not be diagnosed at all")
+        .noneMatch(m -> m.contains("Vanishing"));
+    assertThat(database.getSchema().existsType("Vanishing")).isFalse();
+  }
+
+  /**
+   * The cross-statement variant: a {@code DROP INDEX} inside a transaction schedules the after-commit callback
+   * (the deferred case above), and a {@code DROP TYPE} of the same type later in the same transaction removes the
+   * type before that callback fires. This is what the existence re-check inside the deferred diagnosis itself
+   * (rather than only at scheduling time) is for.
+   */
+  @Test
+  void dropTypeAfterDropIndexInTheSameTransactionReportsNothing() {
+    createPartitionedType("VanishingDeferred");
+
+    final List<String> warnings = captureWarnings(() -> database.transaction(() -> {
+      database.command("sql", "DROP INDEX `VanishingDeferred[k]`");
+      database.command("sql", "DROP TYPE VanishingDeferred");
+    }));
+
+    assertThat(warnings)
+        .as("the DROP INDEX callback must not fire once the same transaction went on to drop the type entirely")
+        .noneMatch(m -> m.contains("VanishingDeferred"));
+  }
+
+  /**
    * The same fault isolation, from the other direction: a strategy whose implementation class cannot be resolved at
    * all. Nothing about it is recoverable, but it must not take the rest of the schema down - the strategy block runs
    * near the end of the loader, so an exception escaping it drops everything the loader has not reached yet.
