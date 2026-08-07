@@ -259,7 +259,9 @@ public class JsonSerializer {
       else
         propertyType = null;
 
-      // Unlike serializeResult (which omits JSON-faithful types), this opt-in metadata path is exhaustive by design.
+      // Issue #5863: @props emission is now gated by includeTypeHints (off by default),
+      // decoupled from includeMetadata. Same opt-in as serializeResult (#5860), so toJSON(true)
+      // no longer leaks @props into WebSocket ChangeEvent fan-out or embedded-API callers.
       if (includeTypeHints && propertyType != null) {
         if (propertyTypes.length() > 0)
           propertyTypes.append(",");
