@@ -184,3 +184,10 @@ This was the fourth and final review cycle allowed by `--max-cycles=4`. No furth
 requested after this push; the review itself was a clean approval in substance ("Nice work - this
 closes the gap cleanly and consistently with the established pattern") with only optional polish
 items, none of which is a deferred/blocking item for the developer.
+
+## Final state
+
+`max-cycles-reached` (4/4 cycles run; each cycle's feedback was applied or explicitly and
+transparently skipped with rationale - no unresolved blocking feedback and no deferred-items file was
+produced in any cycle). PR #5901 is open, mergeable, and unmerged. Merge remains the developer's
+decision.
