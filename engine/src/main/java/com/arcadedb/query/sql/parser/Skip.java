@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.Map;
 
@@ -48,14 +49,19 @@ public class Skip extends SimpleNode {
       expression.toString(params, builder);
   }
 
+  /**
+   * A value outside the int range is narrowed with {@link NumberUtils#saturateToInt(Number)} rather than a
+   * plain narrowing cast, so it saturates instead of wrapping into an unrelated (and often negative, hence
+   * silently-skip-nothing) value.
+   */
   public int getValue(final CommandContext context) {
     if (num != null)
-      return saturateToInt(num.getValue());
+      return NumberUtils.saturateToInt(num.getValue());
 
     if (inputParam != null) {
       final Object paramValue = inputParam.getValue(context.getInputParameters());
       if (paramValue instanceof Number number)
-        return saturateToInt(number);
+        return NumberUtils.saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for SKIP: " + paramValue);
     }
@@ -63,26 +69,12 @@ public class Skip extends SimpleNode {
     if (expression != null) {
       final Object exprValue = expression.execute((Result) null, context);
       if (exprValue instanceof Number number)
-        return saturateToInt(number);
+        return NumberUtils.saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for SKIP: " + exprValue);
     }
 
     throw new CommandExecutionException("No value for SKIP");
-  }
-
-  /**
-   * Narrows a numeric SKIP to an int without wrapping: a value outside the int range saturates to the
-   * nearest int bound instead of overflowing into an unrelated (and often negative, hence
-   * silently-skip-nothing) value.
-   */
-  private static int saturateToInt(final Number value) {
-    final long longValue = value.longValue();
-    if (longValue > Integer.MAX_VALUE)
-      return Integer.MAX_VALUE;
-    if (longValue < Integer.MIN_VALUE)
-      return Integer.MIN_VALUE;
-    return (int) longValue;
   }
 
   public Skip copy() {
