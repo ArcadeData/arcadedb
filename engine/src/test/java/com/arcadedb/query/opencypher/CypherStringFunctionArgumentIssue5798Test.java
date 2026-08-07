@@ -113,6 +113,17 @@ class CypherStringFunctionArgumentIssue5798Test extends TestHelper {
         .hasMessageContaining("STRING");
   }
 
+  @Test
+  void theSqlStyleThreeArgumentTrimFormRejectsANonStringSource() {
+    // trim(BOTH/LEADING/TRAILING char FROM string) is a separate code path from the 1- and 2-argument
+    // forms above (CypherTrimFunction's args.length == 3 branch); exercise it directly since it is not
+    // reachable through the 1-argument parse-time static check.
+    assertThatThrownBy(() -> consume("RETURN trim(BOTH 'x' FROM 5) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("trim()")
+        .hasMessageContaining("STRING");
+  }
+
   // ===================== the alias spellings share the same check =====================
 
   @Test

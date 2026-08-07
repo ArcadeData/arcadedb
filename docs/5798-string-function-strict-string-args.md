@@ -122,3 +122,32 @@ regression test, and found no further bugs. It raised three non-blocking observa
 Outcome: one actionable-and-clear item applied (alias test coverage); two informational observations
 skipped with rationale above (both explicitly non-blocking and either pre-existing or already-covered
 behavior, not requests for a code change).
+
+### Cycle 3 - head `cbdc82da`
+
+Claude's bot review (again a PR issue comment) confirmed the cycle-1 null-ordering fix is correct
+across all five affected call sites and traced the 3-argument SQL-style `trim(BOTH/LEADING/TRAILING
+char FROM string)` path too, finding it correct but untested:
+
+- **Applied**: added `theSqlStyleThreeArgumentTrimFormRejectsANonStringSource()` covering
+  `trim(BOTH 'x' FROM 5)`, since this branch of `CypherTrimFunction` was directly modified in cycle 1
+  (the `source` computation moved after the `args[2] == null` check) but had no dedicated regression
+  test.
+- `left()`/`right()` have the same class of defect (no type check on their primary argument) but
+  were not named in #5798. **Skipped/deferred**: explicitly called out by the reviewer as "out of
+  scope here since #5798 didn't name them" - noted as a follow-up in the PR's Additional Notes
+  section rather than fixed in this PR.
+- A dedicated consistency test between `canonicalStringFunctionName()`'s alias mapping and
+  `CypherFunctionFactory`, mirroring the numeric family's `everyNumericFunctionNameResolvesToA...`
+  test. **Skipped**: reviewer explicitly says "not urgent given the alias tests added in cycle 3
+  exercise it end-to-end."
+- Two previously-raised informational points (btrim() message naming, CharSequence/String asymmetry)
+  reiterated as fine to leave as documented.
+- Suggested calling out the behavior change (`toUpper(5)` now throws instead of returning `"5"`)
+  explicitly as a breaking change in the PR description. **Applied**: added a "Breaking change" note
+  and a mention of the `left()`/`right()` follow-up to the PR body (not a tracking-doc-only change,
+  since it needed to be visible on the PR itself).
+
+Outcome: one actionable-and-clear code/test item applied (3-arg trim test); one out-of-scope
+follow-up noted in the PR description rather than fixed; one optional consistency-test suggestion
+skipped as explicitly non-urgent; PR description updated per the reviewer's process suggestion.
