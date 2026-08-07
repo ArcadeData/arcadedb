@@ -113,6 +113,30 @@ class CypherStringFunctionArgumentIssue5798Test extends TestHelper {
         .hasMessageContaining("STRING");
   }
 
+  // ===================== the alias spellings share the same check =====================
+
+  @Test
+  void theAliasSpellingsRejectANonStringArgumentToo() {
+    // canonicalStringFunctionName() maps the parser's lower-cased alias to the same spelling the runtime
+    // check uses; exercise the aliases directly rather than only through their canonical name.
+    assertThatThrownBy(() -> consume("RETURN upper(5) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("toUpper()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN lower(5) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("toLower()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN ltrim(5) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("lTrim()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN rtrim(5) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("rTrim()")
+        .hasMessageContaining("STRING");
+  }
+
   // ===================== the primary argument is checked independent of a null secondary one =====================
 
   @Test

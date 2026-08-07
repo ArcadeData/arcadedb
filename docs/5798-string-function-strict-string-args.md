@@ -100,3 +100,25 @@ Confirmed red (via `git stash` of only the reordering) before the fix, green aft
 class (15/15) and the same targeted regression suites re-run clean after the fix.
 
 Outcome: actionable and clear, applied. No deferred items from this cycle.
+
+### Cycle 2 - head `55fb0ca9`
+
+Claude's bot review (again a PR issue comment) confirmed the cycle-1 fix is correct and covered by a
+regression test, and found no further bugs. It raised three non-blocking observations:
+
+- `btrim(5, null)` reports a message naming `trim()` rather than `btrim()`, because
+  `CypherTrimFunction.getName()` returns `"trim"` unconditionally - pre-existing behavior, not
+  introduced by this PR, and internally consistent between the parse-time and runtime paths (the new
+  test already asserts this exact spelling). **Skipped**: out of scope for this PR, asked only to
+  "confirm this is intentional" rather than requesting a change.
+- The parse-time static check accepts any `CharSequence` literal while the runtime check requires
+  `instanceof String`; the reviewer notes this is not a real gap today since literals and STRING
+  properties are always plain `String`. **Skipped**: informational only, no requested change.
+- The new `docs/` tracking file follows the existing convention - no concern raised.
+- Optional: add test coverage for the alias spellings (`upper`, `lower`, `ltrim`, `rtrim`) directly,
+  since `canonicalStringFunctionName()`'s alias mapping was previously exercised only implicitly.
+  **Applied**: added `theAliasSpellingsRejectANonStringArgumentToo()` covering all four aliases.
+
+Outcome: one actionable-and-clear item applied (alias test coverage); two informational observations
+skipped with rationale above (both explicitly non-blocking and either pre-existing or already-covered
+behavior, not requests for a code change).
