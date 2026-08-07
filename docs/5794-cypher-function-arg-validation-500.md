@@ -94,3 +94,28 @@ removed a now-unused `CommandExecutionException` import in
   (`localdatetime()`, `localtime()`, `time()`) and the remaining
   `CypherPointFunction` structural-validation branches, which have the
   identical defect class but were not part of this issue's named repro.
+  Done: filed as #5910.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5909
+
+## Review cycles
+
+- **Cycle 1** - head `d40023d05a4fcc639965a6ef4cf4a832e7441c91` (the fix
+  commit). `claude[bot]` posted its review as a PR issue comment (not a
+  formal GitHub review) ~4 minutes after the push: "Didn't find any
+  bugs... LGTM pending the tracking-issue note above." The one suggestion
+  (link a tracking issue for the documented out-of-scope follow-up) was
+  actioned without a code change: filed #5910 and linked it from a PR
+  comment. Working tree stayed clean, so the loop exited on a
+  clean-approval after cycle 1 with no further push needed.
+
+## Deferred items
+
+None. The single review suggestion was actionable-and-clear and was
+resolved by filing #5910, not by deferring to the developer.
+
+## Final state
+
+`clean-approval` after 1 review cycle.
