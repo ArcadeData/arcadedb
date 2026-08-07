@@ -510,6 +510,12 @@ class JSONTest extends TestHelper {
     assertThatThrownBy(() -> json.getBoolean("map")).isInstanceOf(JSONException.class);
     assertThatThrownBy(() -> json.getBoolean("array")).isInstanceOf(JSONException.class);
 
+    // BOOLEANS-AS-INTEGERS ARE A REAL SHAPE FROM OTHER SYSTEMS, AND THEY ARE NOT ACCEPTED: 1 IS NOT true
+    final JSONObject numeric = new JSONObject("{\"one\": 1, \"zero\": 0}");
+    assertThatThrownBy(() -> numeric.getBoolean("one")).isInstanceOf(JSONException.class).hasMessageContaining("one");
+    assertThatThrownBy(() -> numeric.getBoolean("zero")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> numeric.getBoolean("one", false)).isInstanceOf(JSONException.class);
+
     // THE DEFAULTING VARIANT DOES NOT SWALLOW A TYPE MISMATCH EITHER: THE DEFAULT ONLY COVERS ABSENT/NULL
     assertThatThrownBy(() -> json.getBoolean("name", true)).isInstanceOf(JSONException.class);
     assertThat(json.getBoolean("absent", true)).isTrue();

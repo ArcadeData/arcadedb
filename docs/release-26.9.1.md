@@ -254,8 +254,21 @@ previously a bare `IndexOutOfBoundsException`).
 mismatch. It now accepts a JSON boolean and the strings `"true"` / `"false"` (case-insensitive, the form
 configuration files and query strings use) and raises `JSONException` for anything else.
 
-The null-tolerant accessors are deliberately untouched: the two-argument getters still answer their default,
-and `get(name)` / `opt(name)` / `toMap()` still return `null` for a JSON null - only the accessors documented to
-raise changed.
+The null-tolerant accessors keep answering `null`: `get(name)`, `opt(name)` and `toMap()` are unchanged for a JSON
+null, and `isNull(name)` / `has(name)` still report it.
+
+**Behaviour change worth calling out.** The two-argument getters still answer their default for an absent or null
+property, but they no longer swallow a *type mismatch*: `getBoolean("flag", false)` on `{"flag": "yes"}` used to
+return `false` and now raises. Anything reading loosely-typed external JSON through them is affected - MCP tool
+arguments, the MCP configuration flags, and the HTTP handlers that read their payload this way. The default was
+only ever meant to cover "not there", not "there but wrong", and a default silently standing in for a value the
+caller did supply is how `{"addHierarchy": "yes"}` disabled the setting it was asking to enable (issue #5639).
+Booleans-as-integers are not accepted either: `1` is not `true`.
+
+**A malformed payload now answers HTTP 400 instead of 500.** Because more of these paths raise where they
+previously returned a silent default, `AbstractServerHttpHandler` gained a `JSONException` arm - wrapped and
+un-wrapped, matching how `IllegalArgumentException` and `CommandParsingException` are already treated - reporting
+`Invalid JSON payload`. A request whose JSON is missing a property, carries a null where a value is required, or
+holds the wrong type for it is a client error, and it used to fall through to the generic `500 Internal error`.
 
 [#5935](https://github.com/ArcadeData/arcadedb/issues/5935)
