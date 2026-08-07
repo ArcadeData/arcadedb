@@ -223,6 +223,40 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
+  void misconfiguredDepthLimitFallsBackToDefault() throws IOException {
+    // Below sanitizedLimit's floor (2, since depth >= maxMultiBulkDepth would otherwise reject even a flat
+    // command's single argument): must fall back to the built-in default (32) rather than locking every
+    // connection out.
+    GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH.setValue(1);
+    try {
+      final StringBuilder payload = new StringBuilder();
+      for (int i = 0; i < 10; i++)
+        payload.append("*1\r\n");
+      payload.append("$1\r\nx\r\n");
+      // Followed, on the SAME connection, by a normal PING - which needs depth 1 to parse its single
+      // argument. If the broken value of 1 were used verbatim (no fallback), PING itself would be rejected
+      // with "maximum allowed depth (1)"; if the fallback to 32 took effect, it parses normally and gets
+      // as far as the pre-auth NOAUTH check.
+      payload.append("*1\r\n$4\r\nPING\r\n");
+
+      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+        socket.setSoTimeout(10_000);
+        socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+
+        final byte[] buffer = new byte[512];
+        final int    read   = socket.getInputStream().read(buffer);
+        assertThat(read).isGreaterThan(0);
+        final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+        assertThat(reply).doesNotContain("maximum allowed depth");
+        assertThat(reply).contains("NOAUTH");
+      }
+    } finally {
+      GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH.reset();
+    }
+  }
+
+  @Test
   void configuredMultiBulkLengthLimitIsHonored() throws IOException {
     // Confirms arcadedb.redis.maxMultiBulkLength is actually wired end to end, not just the built-in default.
     GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH.setValue(5);

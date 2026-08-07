@@ -82,7 +82,7 @@ public class RedisNetworkExecutor extends Thread {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
-    this.maxMultiBulkDepth = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 1);
+    this.maxMultiBulkDepth = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 2);
     this.maxMultiBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
     this.maxBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
 
@@ -100,9 +100,10 @@ public class RedisNetworkExecutor extends Thread {
 
   /**
    * Reads a protocol-limit setting, falling back to its built-in default (with a warning) if configured below
-   * {@code floor}. A value that low would reject every command outright - e.g. a max nesting depth of 0 rejects
-   * even a flat {@code PING}, whose single argument is already one level of RESP array nesting deep - so it is
-   * treated as a misconfiguration rather than an intentional (if impractical) lockdown. "Usable" here means
+   * {@code floor}. A value that low would reject every command outright - e.g. {@code parseNext}'s depth check
+   * is {@code depth >= maxMultiBulkDepth} (depth starts at 0 for the top-level array, so a flat command's single
+   * argument is already parsed at depth 1), so a configured depth below 2 rejects even a flat {@code PING} - so
+   * it is treated as a misconfiguration rather than an intentional (if impractical) lockdown. "Usable" here means
    * "a connection can still parse a command at all", not "usable for real traffic": the floor of 1 used for
    * {@code maxMultiBulkLength}/{@code maxBulkLength} still lets a configured value through that is far too low
    * for any real command (e.g. a 1-byte max bulk length rejects even the shortest command name) - that is an
@@ -799,7 +800,9 @@ public class RedisNetworkExecutor extends Thread {
    * loop (or a buffer growth) that runs for as long as the client is willing to trickle bytes.
    */
   private Object parseNext(final int depth) throws IOException {
-    if (depth > maxMultiBulkDepth)
+    // depth starts at 0 for the top-level call, so ">=" (not ">") admits exactly maxMultiBulkDepth nested
+    // levels (0 .. maxMultiBulkDepth-1) before rejecting - matching the setting's documented default.
+    if (depth >= maxMultiBulkDepth)
       throw new RedisProtocolLimitException("Protocol error: RESP array nesting exceeds the maximum allowed depth (" + maxMultiBulkDepth + ")");
 
     final byte b = readNext();
