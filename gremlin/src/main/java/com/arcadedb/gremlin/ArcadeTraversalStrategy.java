@@ -43,6 +43,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.CountStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.GValueReductionStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.InlineFilterStrategy;
 
 import java.util.ArrayList;
@@ -307,5 +309,28 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     return Stream.of(
         //Inline must happen first as it sometimes removes the need for a TraversalFilterStep
         InlineFilterStrategy.class).collect(Collectors.toSet());
+  }
+
+  /**
+   * Declares that TinkerPop's {@link CountStrategy} must run AFTER this strategy, so that
+   * {@code applyEdgeCountFilterOptimization}'s exact-3-substep {@code where(outE(X).count().is(predicate))}
+   * pattern match sees the traversal before {@code CountStrategy} inserts a {@code RangeGlobalStep} for
+   * bounded predicates (e.g. {@code is(gt(1))} triggers a {@code highRangeCandidate} rewrite), which would
+   * otherwise grow the pattern to 4 sub-steps and defeat the match.
+   * <p>
+   * Without this explicit edge, TinkerPop's {@code TraversalStrategies.sortStrategies()} has no declared
+   * ordering between the two strategies and falls back to iterating an unordered {@code HashSet<Class<?>>},
+   * whose order follows JVM identity hash codes - stable within one JVM process but not predictable or
+   * reproducible across JVM invocations (see issue #5841).
+   * <p>
+   * {@link GValueReductionStrategy} is preserved here because it is the default {@code applyPost()} for
+   * {@link OptimizationStrategy} (see {@link OptimizationStrategy#applyPost()}); overriding this method
+   * would otherwise silently drop that requirement.
+   */
+  @Override
+  public Set<Class<? extends OptimizationStrategy>> applyPost() {
+    return Stream.of(
+        GValueReductionStrategy.class,
+        CountStrategy.class).collect(Collectors.toSet());
   }
 }
