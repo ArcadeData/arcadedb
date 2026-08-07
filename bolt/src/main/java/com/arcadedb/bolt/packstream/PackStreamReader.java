@@ -68,6 +68,13 @@ public class PackStreamReader {
   private static final byte MAP_16 = (byte) 0xD9;
   private static final byte MAP_32 = (byte) 0xDA;
 
+  /**
+   * Sentinel returned by {@link #readValueWithMarker} when a container marker (list/map/struct) pushed a new
+   * {@link Frame} instead of producing a value: the caller loops back to read that frame's first element/
+   * entry/field rather than treating this as a completed value.
+   */
+  private static final Object OPEN_FRAME = new Object();
+
   private final DataInputStream in;
   private int                   bytesRead = 0;
 
@@ -120,13 +127,6 @@ public class PackStreamReader {
     this.maxElements = maxElements;
     this.maxDepth = maxDepth;
   }
-
-  /**
-   * Sentinel returned by {@link #readValueWithMarker} when a container marker (list/map/struct) pushed a new
-   * {@link Frame} instead of producing a value: the caller loops back to read that frame's first element/
-   * entry/field rather than treating this as a completed value.
-   */
-  private static final Object OPEN_FRAME = new Object();
 
   /**
    * Read the next value of any type.
