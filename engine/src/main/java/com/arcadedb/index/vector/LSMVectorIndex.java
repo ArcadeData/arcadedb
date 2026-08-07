@@ -2185,8 +2185,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           })).join();
           final long insertElapsed = System.currentTimeMillis() - insertStart;
 
-          currentPhase.set("optimizing");
-          reportProgress.onGraphBuildProgress("building", totalNodes, totalNodes, totalNodes);
+          // Close the insertion phase and open the next one atomically with respect to the monitor. Flipping the
+          // phase first and pushing the final sample after left a window in which the monitor could emit an
+          // "optimizing" sample and the explicit "building" one land behind it, so a live progress bar would see
+          // the phase go forwards and then back.
+          synchronized (progressLock) {
+            reportProgress.onGraphBuildProgress("building", totalNodes, totalNodes, totalNodes);
+            currentPhase.set("optimizing");
+          }
           LogManager.instance().log(this, Level.INFO,
               "Graph insertion completed for index %s: %d vectors inserted in %d ms with %d build threads. "
                   + "Starting the optimization phase (neighbor refinement and degree enforcement)",

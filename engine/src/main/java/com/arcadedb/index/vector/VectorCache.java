@@ -210,10 +210,12 @@ public class VectorCache {
    * <i>ratio</i> is unaffected; one asserting an exact hit <i>count</i> was relying on something this class no
    * longer promises.
    * <p>
-   * One stripe per thread is best-effort, not guaranteed. It is exact on the build path, where the fixed pool of
-   * ForkJoinPool workers has contiguous thread ids and {@code STRIPES} is sized to the core count. On the search
-   * path the same {@link #get} is called from arbitrary request threads whose ids can collide modulo
-   * {@code STRIPES}; that costs a few more lost increments on an already-approximate counter and nothing else.
+   * One stripe per thread is best-effort everywhere, never guaranteed. Thread ids are JVM-global and monotonic
+   * over every thread the process has ever created, so even a build pool with fewer workers than {@code STRIPES}
+   * can have two of them collide modulo the mask - the ids are allocated together, which tends to spread them, but
+   * nothing aligns them to a stripe boundary. Off the build path it is looser still, since {@link #get} is then
+   * called from arbitrary request threads. All a collision costs is a few more lost increments on an
+   * already-approximate counter.
    */
   private void count(final int counter) {
     final int i = (((int) Thread.currentThread().threadId()) & STRIPE_MASK) * STRIPE_LONGS + counter;

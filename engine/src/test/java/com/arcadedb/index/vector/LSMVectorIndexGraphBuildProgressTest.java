@@ -26,6 +26,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
 import java.util.List;
@@ -51,7 +52,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class LSMVectorIndexGraphBuildProgressTest {
-  private static final String DB_PATH     = "target/test-databases/LSMVectorIndexGraphBuildProgressTest";
+  private static final String DB_ROOT = "target/test-databases/LSMVectorIndexGraphBuildProgressTest";
+
+  /** One database per test. They build the same index concurrently enough that sharing a path makes them interfere. */
+  private String dbPath;
   private static final int    DIMENSIONS  = 128;
   private static final int    NUM_VECTORS = 4_000;
 
@@ -63,8 +67,9 @@ class LSMVectorIndexGraphBuildProgressTest {
   }
 
   @BeforeEach
-  void setUp() {
-    FileUtils.deleteRecursively(new File(DB_PATH));
+  void setUp(final TestInfo testInfo) {
+    dbPath = DB_ROOT + "-" + testInfo.getTestMethod().orElseThrow().getName();
+    FileUtils.deleteRecursively(new File(dbPath));
     // Ingest must not trigger its own rebuilds: every one of them is a full graph build, and on this corpus that
     // turns a two-second test into a half-hour one. The tests here drive the single build they measure explicitly.
     GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD.setValue(Integer.MAX_VALUE);
@@ -77,14 +82,14 @@ class LSMVectorIndexGraphBuildProgressTest {
         GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD.getDefValue());
     GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS.setValue(
         GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS.getDefValue());
-    FileUtils.deleteRecursively(new File(DB_PATH));
+    FileUtils.deleteRecursively(new File(dbPath));
   }
 
   @Test
   void progressNeverReportsMoreWorkDoneThanTheBuildHasActuallyDone() {
     final List<Sample> samples = new CopyOnWriteArrayList<>();
 
-    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       try (final Database db = factory.create()) {
         // A wide beam and a high degree make each insertion expensive, so the build spans several 100ms progress
         // polls even on a warm JVM. Without that the whole insertion finishes inside one poll and the only samples
@@ -143,7 +148,7 @@ class LSMVectorIndexGraphBuildProgressTest {
 
   @Test
   void buildPoolWidthFollowsTheConfiguredParallelism() {
-    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       try (final Database db = factory.create()) {
         // A small corpus and the default index shape are enough here: this test only checks the pool width, not
         // the progress stream, so it does not need a build long enough to span several progress polls.
