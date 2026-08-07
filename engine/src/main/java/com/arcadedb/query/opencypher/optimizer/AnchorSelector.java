@@ -30,9 +30,11 @@ import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Selects the optimal anchor node (starting point) for query execution.
@@ -66,6 +68,24 @@ public class AnchorSelector {
    * @return anchor selection with the best starting node
    */
   public AnchorSelection selectAnchor(final LogicalPlan plan) {
+    return selectAnchor(plan, Collections.emptySet());
+  }
+
+  /**
+   * Selects the optimal anchor node for the given logical plan, ignoring any node whose variable is
+   * in {@code excludedVariables}.
+   * <p>
+   * A node belonging to a MATCH clause that is disconnected from the relationship pattern (issue
+   * #5810, e.g. {@code MATCH (n)-[:E]->(m) MATCH (x)}) is joined onto the plan separately via a
+   * {@code CartesianProduct} and must never seed the relationship expansion chain itself - an
+   * isolated node has no incident relationship for {@code buildExpansionChain} to walk, so picking it
+   * as the anchor would strand the chain.
+   *
+   * @param plan               the logical plan to analyze
+   * @param excludedVariables  node variables to skip when choosing the anchor
+   * @return anchor selection with the best starting node
+   */
+  public AnchorSelection selectAnchor(final LogicalPlan plan, final Set<String> excludedVariables) {
     if (plan.getNodes().isEmpty()) {
       throw new IllegalArgumentException("Cannot select anchor from empty logical plan");
     }
@@ -85,6 +105,9 @@ public class AnchorSelector {
     // expansion chain already uses. The guard above still keys off the named nodes, so a pattern with
     // no named node at all keeps falling back the way count push-down expects.
     for (final LogicalNode node : plan.getPatternNodes().values()) {
+      if (excludedVariables.contains(node.getVariable()))
+        continue;
+
       final AnchorSelection candidate = evaluateNode(node, plan);
 
       if (candidate.useIndex()) {

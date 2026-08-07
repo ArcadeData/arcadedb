@@ -146,8 +146,25 @@ public class CypherOptimizer {
       return optimizeMultiMatchIndependent(logicalPlan);
     }
 
-    // 3. Select anchor node (best starting point)
-    AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan);
+    // A later MATCH clause can still be a single, disconnected node pattern even when an earlier
+    // clause has relationships, e.g. "MATCH (n)-[:E]->(m) MATCH (x)" (issue #5810).
+    // shouldUseOptimizer() already admits this shape - a disconnected pattern is only accepted when
+    // it is single-node, on the assumption it is "handled via CartesianProduct" - but until now
+    // nothing here ever built one for it: such a node is a named node absent from every relationship,
+    // so it must be excluded from anchor selection (it cannot seed an expansion chain) and joined back
+    // in explicitly, or it silently disappears from the plan and reads back as an unbound null.
+    final List<LogicalNode> isolatedNodes = new ArrayList<>();
+    if (!logicalPlan.getRelationships().isEmpty())
+      for (final LogicalNode node : logicalPlan.getNodes().values())
+        if (!logicalPlan.isNodeConnected(node.getVariable()))
+          isolatedNodes.add(node);
+
+    final Set<String> isolatedVariables = new HashSet<>();
+    for (final LogicalNode node : isolatedNodes)
+      isolatedVariables.add(node.getVariable());
+
+    // 3. Select anchor node (best starting point) among the relationship-connected nodes only
+    AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan, isolatedVariables);
 
     // 3a. Validate anchor against UNIDIRECTIONAL edge constraints.
     // UNIDIRECTIONAL edges only store outgoing links on the source vertex,
@@ -164,6 +181,13 @@ public class CypherOptimizer {
     if (!logicalPlan.getRelationships().isEmpty()) {
       rootOperator = buildExpansionChain(logicalPlan, anchor, anchorOperator);
     }
+
+    // 5a. Join in any disconnected single-node MATCH clause pattern via CartesianProduct (#5810).
+    // Must happen before filter pushdown: a disconnected node's own inline-property/WHERE predicate
+    // (lowered into logicalPlan.getWhereFilters()) reads its variable, which is only bound once this
+    // join has run.
+    if (!isolatedNodes.isEmpty())
+      rootOperator = joinIsolatedNodes(rootOperator, isolatedNodes, logicalPlan);
 
     // 6. Apply ExpandInto optimization
     // ExpandInto is detected during expansion chain building (step 5)
@@ -228,6 +252,30 @@ public class CypherOptimizer {
 
     return new PhysicalPlan(logicalPlan, firstAnchor, rootOperator,
         rootOperator.getEstimatedCost(), rootOperator.getEstimatedCardinality());
+  }
+
+  /**
+   * Joins each disconnected, single-node MATCH clause pattern onto {@code rootOperator} via
+   * {@link CartesianProduct}, mirroring the operator-per-node construction
+   * {@link #optimizeMultiMatchIndependent} already uses for the fully-disconnected case (issue #5810).
+   *
+   * @param rootOperator  the physical operator built for the relationship-connected pattern
+   * @param isolatedNodes named nodes not touched by any relationship in the logical plan
+   * @param logicalPlan   the logical plan (for anchor evaluation context)
+   *
+   * @return {@code rootOperator} with one CartesianProduct layer per isolated node
+   */
+  private PhysicalOperator joinIsolatedNodes(PhysicalOperator rootOperator,
+      final List<LogicalNode> isolatedNodes, final LogicalPlan logicalPlan) {
+    for (final LogicalNode node : isolatedNodes) {
+      final AnchorSelection nodeAnchor = anchorSelector.evaluateNodeDirect(node, logicalPlan);
+      final PhysicalOperator nodeOperator = createAnchorOperator(nodeAnchor);
+
+      final long cardinality = Math.max(1, rootOperator.getEstimatedCardinality()) * Math.max(1, nodeAnchor.getEstimatedCardinality());
+      final double cost = rootOperator.getEstimatedCost() + nodeAnchor.getEstimatedCost();
+      rootOperator = new CartesianProduct(rootOperator, nodeOperator, cost, cardinality);
+    }
+    return rootOperator;
   }
 
   /**
