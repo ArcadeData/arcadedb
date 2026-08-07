@@ -21,6 +21,7 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.time.*;
 import java.util.*;
 
@@ -361,6 +362,162 @@ class JSONTest extends TestHelper {
         .isInstanceOf(JSONException.class)
         .hasMessageContaining(invalid)
         .hasCauseInstanceOf(Exception.class);
+  }
+
+  /**
+   * Issue #5935: a property explicitly bound to JSON null is present in the object, so the "not found" guard in
+   * getElement() never fired and the typed getters propagated GSON's UnsupportedOperationException instead of the
+   * documented JSONException.
+   */
+  @Test
+  void typedGettersOnExplicitNullThrowJSONException() {
+    final JSONObject json = new JSONObject("{\"nullValue\": null}");
+
+    assertThat(json.has("nullValue")).isTrue();
+    assertThat(json.isNull("nullValue")).isTrue();
+
+    assertThatThrownBy(() -> json.getString("nullValue")).isInstanceOf(JSONException.class)
+        .hasMessageContaining("nullValue").hasMessageContaining("null");
+    assertThatThrownBy(() -> json.getInt("nullValue")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getLong("nullValue")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getFloat("nullValue")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getDouble("nullValue")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getBoolean("nullValue")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getBigDecimal("nullValue")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getJSONObject("nullValue")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getJSONArray("nullValue")).isInstanceOf(JSONException.class);
+  }
+
+  /**
+   * Issue #5935: the same must hold for a null stored through the put() API, not only for a parsed literal.
+   */
+  @Test
+  void typedGettersOnNullPutThrowJSONException() {
+    final JSONObject json = new JSONObject()
+        .put("byString", (String) null)
+        .put("byNumber", (Number) null)
+        .put("byObject", (Object) null);
+
+    for (String name : new String[] { "byString", "byNumber", "byObject" }) {
+      assertThat(json.isNull(name)).isTrue();
+      assertThatThrownBy(() -> json.getString(name)).isInstanceOf(JSONException.class).hasMessageContaining(name);
+      assertThatThrownBy(() -> json.getInt(name)).isInstanceOf(JSONException.class).hasMessageContaining(name);
+    }
+  }
+
+  /**
+   * Issue #5935: a missing property must keep throwing JSONException, and the message must distinguish it from a
+   * property that is present but null.
+   */
+  @Test
+  void typedGettersOnMissingPropertyThrowJSONException() {
+    final JSONObject json = new JSONObject("{\"nullValue\": null}");
+
+    assertThat(json.has("absent")).isFalse();
+    assertThatThrownBy(() -> json.getString("absent")).isInstanceOf(JSONException.class)
+        .hasMessageContaining("absent").hasMessageContaining("not found");
+    assertThatThrownBy(() -> json.getInt("absent")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getJSONObject("absent")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getString(null)).isInstanceOf(JSONException.class);
+  }
+
+  /**
+   * Issue #5935: the defaulting getters and the null-tolerant accessors must not change: only the getters documented
+   * to raise are affected by the fix.
+   */
+  @Test
+  void nullTolerantAccessorsAreUnaffected() {
+    final JSONObject json = new JSONObject("{\"nullValue\": null}");
+
+    assertThat(json.getString("nullValue", "default")).isEqualTo("default");
+    assertThat(json.getInt("nullValue", 7)).isEqualTo(7);
+    assertThat(json.getLong("nullValue", 7L)).isEqualTo(7L);
+    assertThat(json.getFloat("nullValue", 7f)).isEqualTo(7f);
+    assertThat(json.getDouble("nullValue", 7d)).isEqualTo(7d);
+    assertThat(json.getBoolean("nullValue", true)).isTrue();
+    assertThat(json.getBigDecimal("nullValue", BigDecimal.ONE)).isEqualTo(BigDecimal.ONE);
+    assertThat(json.getJSONObject("nullValue", null)).isNull();
+    assertThat(json.getJSONArray("nullValue", null)).isNull();
+
+    // get() AND opt() KEEP RETURNING null FOR A JSON NULL: THEY ARE NOT DOCUMENTED TO RAISE ON A NULL VALUE
+    assertThat(json.get("nullValue")).isNull();
+    assertThat(json.opt("nullValue")).isNull();
+    assertThat(json.get("nullValue", "default")).isEqualTo("default");
+    assertThat(json.toMap()).containsEntry("nullValue", null);
+
+    // ...BUT get() STILL RAISES ON AN ABSENT PROPERTY
+    assertThatThrownBy(() -> json.get("absent")).isInstanceOf(JSONException.class);
+    assertThat(json.opt("absent")).isNull();
+  }
+
+  /**
+   * Issue #5935 (related): a type mismatch must be reported as a JSONException too, instead of leaking GSON's
+   * UnsupportedOperationException / IllegalStateException or the raw NumberFormatException.
+   */
+  @Test
+  void typeMismatchThrowsJSONException() {
+    final JSONObject json = new JSONObject()
+        .put("string", "hello")
+        .put("int", 10)
+        .put("map", Map.of("a", 1))
+        .put("array", List.of(1, 2, 3));
+
+    assertThatThrownBy(() -> json.getInt("string")).isInstanceOf(JSONException.class).hasMessageContaining("string");
+    assertThatThrownBy(() -> json.getLong("string")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getDouble("string")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getBigDecimal("string")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getString("map")).isInstanceOf(JSONException.class).hasMessageContaining("map");
+    assertThatThrownBy(() -> json.getInt("map")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getJSONObject("array")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getJSONArray("map")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getJSONObject("int")).isInstanceOf(JSONException.class);
+  }
+
+  /**
+   * Issue #5935 (related): the offending value quoted in a type-mismatch message must stay bounded, so a large payload
+   * cannot be echoed back through the exception.
+   */
+  @Test
+  void typeMismatchMessageIsBounded() {
+    final String huge = "x".repeat(10_000);
+    final JSONObject json = new JSONObject().put("huge", huge);
+
+    assertThatThrownBy(() -> json.getInt("huge")).isInstanceOf(JSONException.class)
+        .matches(e -> e.getMessage().length() < 200, "message is truncated");
+  }
+
+  /**
+   * Issue #5935 (related): JSONArray shares the contract with JSONObject, so its accessors must raise JSONException
+   * for an out-of-range index, a null element and a type mismatch.
+   */
+  @Test
+  void jsonArrayAccessorsThrowJSONException() {
+    final JSONArray array = new JSONArray("[null, \"hello\", {\"a\": 1}]");
+
+    assertThat(array.isNull(0)).isTrue();
+    assertThat(array.get(0)).isNull();
+
+    assertThatThrownBy(() -> array.getString(0)).isInstanceOf(JSONException.class).hasMessageContaining("null");
+    assertThatThrownBy(() -> array.getInt(0)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getLong(0)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getNumber(0)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getFloat(0)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getDouble(0)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getJSONObject(0)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getJSONArray(0)).isInstanceOf(JSONException.class);
+
+    assertThatThrownBy(() -> array.getInt(1)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getString(2)).isInstanceOf(JSONException.class);
+
+    assertThatThrownBy(() -> array.getString(3)).isInstanceOf(JSONException.class).hasMessageContaining("3");
+    assertThatThrownBy(() -> array.get(-1)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.isNull(9)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.remove(9)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.put(9, "x")).isInstanceOf(JSONException.class);
+
+    // VALID ACCESSES STAY UNTOUCHED
+    assertThat(array.getString(1)).isEqualTo("hello");
+    assertThat(array.getJSONObject(2).getInt("a")).isEqualTo(1);
   }
 
 //

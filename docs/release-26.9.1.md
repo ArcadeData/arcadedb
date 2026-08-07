@@ -229,3 +229,33 @@ exists to prevent, on the one path it never covered. The hop is also pinned to H
 failure mode is re-sending a request whose body cannot be rewound.
 
 [#5618](https://github.com/ArcadeData/arcadedb/issues/5618)
+
+## JSON: a property explicitly set to `null` raised `UnsupportedOperationException` instead of `JSONException` (#5935)
+
+`JSONObject.getElement()` guarded only against an absent property (`object.get(name) == null`). GSON, however,
+models an explicit JSON `null` as a regular `JsonNull` entry in the backing map, so `{"a": null}` sailed straight
+through the guard and the conversion in `getString("a")` raised GSON's `UnsupportedOperationException: JsonNull`
+- not the `JSONException` the getters document and callers catch.
+
+All the raising getters of `JSONObject` (`getString`, `getInt`, `getLong`, `getFloat`, `getDouble`, `getBoolean`,
+`getBigDecimal`, `getJSONObject`, `getJSONArray`) now screen the JSON null and answer
+`JSONObject[a] is null`, keeping the distinct `JSONObject[a] not found` wording for a genuinely absent property.
+A type mismatch is reported the same way (`JSONObject[a] is not a int (...)`), with the original GSON
+`UnsupportedOperationException` / `IllegalStateException` / `NumberFormatException` preserved as the cause,
+instead of leaking out of the API.
+
+`JSONArray` shared both defects and gets the same treatment: its accessors raise `JSONException` for a null
+element, a type mismatch, and an out-of-range position (`JSONArray[3] not found: the array has 3 element(s)`,
+previously a bare `IndexOutOfBoundsException`).
+
+`getBoolean()` was a second, quieter hole found in review: GSON's `getAsBoolean()` falls back to
+`Boolean.parseBoolean()`, which never raises and answers `false` for anything that is not literally `"true"`. So
+`{"name": "Alice"}` read through `getBoolean("name")` returned a silently wrong `false` rather than reporting the
+mismatch. It now accepts a JSON boolean and the strings `"true"` / `"false"` (case-insensitive, the form
+configuration files and query strings use) and raises `JSONException` for anything else.
+
+The null-tolerant accessors are deliberately untouched: the two-argument getters still answer their default,
+and `get(name)` / `opt(name)` / `toMap()` still return `null` for a JSON null - only the accessors documented to
+raise changed.
+
+[#5935](https://github.com/ArcadeData/arcadedb/issues/5935)
