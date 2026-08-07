@@ -37,6 +37,11 @@ that was missing it, matching the check already used by property reads:
 - `SetStep.applyLabels()` - covers `SET t:Label`.
 - `RemoveStep.removeProperty()` - covers `REMOVE t.v`.
 - `RemoveStep.removeLabels()` - covers `REMOVE t:Label`.
+- `SetStep.applyPropertySet()` expression-target branch - covers
+  `SET (CASE WHEN ... THEN t END).prop = value` and non-variable bracket-syntax bases. This
+  branch resolves its target via a separate `evaluator.evaluate(item.getTargetExpression(), ...)`
+  call that never goes through `resolveLatestDoc()`, so it needed its own check. **Found in code
+  review** (PR #5913, cycle 1) - not part of the original fix.
 
 No behavior changed for live (non-deleted) targets: `checkNotDeleted` is a no-op unless the value
 is actually a `DeletedEntityMarker`.
@@ -49,20 +54,23 @@ is actually a `DeletedEntityMarker`.
 
 ## Tests
 
-New regression test `CypherDeletedNodeWriteTargetIssue5795Test` (9 cases): covers all six affected
+New regression test `CypherDeletedNodeWriteTargetIssue5795Test` (11 cases): covers all six affected
 forms from the issue (`SET t.v=99`, `SET t={...}`, `SET t+={...}`, `SET t:Label`, `REMOVE t.v`,
-`REMOVE t:Label`), the no-`WITH`-boundary variant (`DELETE t SET t.v=99`), plus two control cases
-that must remain unchanged: property-read-after-delete (already failed, must keep failing) and
-SET on a live node (must keep succeeding).
+`REMOVE t:Label`), the no-`WITH`-boundary variant (`DELETE t SET t.v=99`), the CASE-subclause
+expression-target form (`SET (CASE WHEN ... THEN t END).v = 99`, added during code review), a
+deleted-relationship SET target (added during code review), plus two control cases that must
+remain unchanged: property-read-after-delete (already failed, must keep failing) and SET on a
+live node (must keep succeeding).
 
-**TDD verification**: ran the new test with the fix stashed out (`git stash`) - 7 of 9 tests
+**TDD verification**: ran the original 9-case suite with the fix stashed out (`git stash`) - 7
 failed with `AssertionError: Expecting code to raise a throwable` (the 2 control cases still
-passed, as expected), proving the tests genuinely exercise the bug. Restored the fix and reran -
-all 9 pass.
+passed, as expected). Separately, ran the CASE-target test with just that one `checkNotDeleted`
+call removed - it failed the same way. Restored both fixes and reran the full 11-case suite - all
+pass.
 
 Regression scope run after the fix (all green, no failures):
 
-- `CypherDeletedNodeWriteTargetIssue5795Test` - 9/9
+- `CypherDeletedNodeWriteTargetIssue5795Test` - 11/11
 - `OpenCypherDeleteTest` - 9/9
 - `OpenCypherSetTest` - 22/22
 - `OpenCypherRemoveTest` - 9/9
@@ -71,6 +79,14 @@ Regression scope run after the fix (all green, no failures):
 - `CypherSetSnapshotIssue5190Test` - 3/3
 
 `engine` module compiles cleanly (`mvn -pl engine -am compile`).
+
+## Review cycles
+
+- **Cycle 1** (head `d0341a6d5`): Claude review found one gap (`SetStep.applyPropertySet()`
+  expression-target branch bypassed the check) and one coverage gap (no deleted-relationship SET
+  test); both applied. See `docs/review-deferred-d0341a6d5.md` for the full categorization,
+  including the one item deliberately left out of scope (`MergeStep`, already flagged in this
+  doc's Recommendations section below).
 
 ## Impact analysis
 

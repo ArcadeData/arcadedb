@@ -241,6 +241,11 @@ public class SetStep extends AbstractExecutionStep {
       // Expression target: SET (CASE WHEN ... THEN t END).prop = value
       // Evaluate the target expression to get the document
       obj = evaluator.evaluate(item.getTargetExpression(), result, context);
+      // #5795: the CASE branch (or bracket-syntax base) can itself resolve to a variable that
+      // was deleted earlier in the same query, e.g. SET (CASE WHEN true THEN t END).v = 99 after
+      // DELETE t. Unlike the plain-variable branch below, this path never goes through
+      // resolveLatestDoc(), so the DeletedEntityMarker check has to be applied here too.
+      DeletedEntityMarker.checkNotDeleted(obj);
       if (obj == null)
         return; // CASE returned null — no-op (conditional SET pattern)
       variableToUpdate = null;

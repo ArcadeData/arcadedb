@@ -51,6 +51,7 @@ public class CypherDeletedNodeWriteTargetIssue5795Test {
   void setUp() {
     database = new DatabaseFactory("./target/databases/testopencypher-deleted-node-write-target").create();
     database.getSchema().createVertexType("BugA");
+    database.getSchema().createEdgeType("BugRel");
   }
 
   @AfterEach
@@ -182,5 +183,41 @@ public class CypherDeletedNodeWriteTargetIssue5795Test {
         database.command("opencypher", "MATCH (t:BugA {_id:'zz'}) SET t.v = 99"));
 
     assertThat(propertyValue()).isEqualTo(99);
+  }
+
+  @Test
+  void setCaseExpressionTargetOnDeletedNodeRaisesErrorAndRollsBackTheDelete() {
+    // The CASE-subclause write target (SET (CASE WHEN ... THEN t END).prop = value, issue #3468)
+    // resolves its target via a separate evaluation path (ExpressionEvaluator) that does not go
+    // through resolveLatestDoc(), so it needs its own DeletedEntityMarker check.
+    createNode();
+
+    assertThatThrownBy(() -> database.transaction(() ->
+        database.command("opencypher",
+            "MATCH (t:BugA {_id:'zz'}) DELETE t WITH t SET (CASE WHEN true THEN t END).v = 99")))
+        .isInstanceOf(CommandExecutionException.class);
+
+    assertThat(nodeExists()).as("DELETE must be rolled back, not silently committed").isTrue();
+    assertThat(propertyValue()).isEqualTo(0);
+  }
+
+  @Test
+  void setPropertyOnDeletedRelationshipRaisesErrorAndRollsBackTheDelete() {
+    // The fix is type-generic (DeletedEntityMarker.checkNotDeleted doesn't distinguish vertex vs
+    // relationship deletes, and resolveLatestDoc/removeProperty operate on the shared Document
+    // supertype), but nothing above exercised a deleted relationship as a SET target.
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:BugA {_id:'a'})-[r:BugRel {v:0}]->(b:BugA {_id:'b'})"));
+
+    assertThatThrownBy(() -> database.transaction(() ->
+        database.command("opencypher",
+            "MATCH (:BugA {_id:'a'})-[r:BugRel]->(:BugA {_id:'b'}) DELETE r WITH r SET r.v = 99")))
+        .isInstanceOf(CommandExecutionException.class);
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (:BugA {_id:'a'})-[r:BugRel]->(:BugA {_id:'b'}) RETURN r.v AS v")) {
+      assertThat(rs.hasNext()).as("relationship DELETE must be rolled back").isTrue();
+      assertThat(((Number) rs.next().getProperty("v")).longValue()).isEqualTo(0);
+    }
   }
 }
