@@ -29,6 +29,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -220,8 +221,8 @@ class CreatePropertyStatementExecutionTest extends TestHelper {
 
   @Test
   void createHiddenProperty() {
-    // due to https://github.com/ArcadeData/arcadedb/issues/2378 hidden properties are supported in thhe schema, but not in the
-    // database
+    // Issue #2378: `hidden` is kept as a schema annotation but has no effect on any read path. The two assertions
+    // below - `SELECT *` and a bare `SELECT` - are the whole contract, and they must agree.
     database.command("sql", "create vertex type testHiddenProperty").close();
     database.command("sql", "CREATE property testHiddenProperty.name STRING (hidden)").close();
 
@@ -246,5 +247,57 @@ class CreatePropertyStatementExecutionTest extends TestHelper {
     assertThat(doc.getPropertyNames()).contains("name").contains("no_secret");
     assertThat(doc.isVertex()).isTrue();
 
+  }
+
+  /**
+   * Issue #2378, exposed by #5613. `SELECT *` runs through {@code Projection}, which used to skip any alias whose
+   * schema property was marked {@code hidden}; a bare {@code SELECT} returns the record's own names and never did.
+   * The disagreement went unseen for a year because {@code ResultInternal.getPropertyNames()} merged the element's
+   * names over the projection's, putting the filtered name back - until #5613 stopped merging them to fix a Cypher
+   * projection emitting null columns, and left the filter showing.
+   * <p>
+   * This pins the two spellings of "give me everything" to the same answer. It fails on the filter: `SELECT *`
+   * comes back without {@code secret}, while the bare form still has it.
+   */
+  @Test
+  void hiddenPropertyIsReturnedByEverySpellingOfSelectAll() {
+    database.command("sql", "CREATE vertex type HiddenAgreement").close();
+    database.command("sql", "CREATE property HiddenAgreement.secret STRING (hidden)").close();
+    database.command("sql", "CREATE property HiddenAgreement.plain STRING").close();
+    database.transaction(
+        () -> database.command("sql", "INSERT INTO HiddenAgreement SET secret = 's', plain = 'p'").close());
+
+    assertThat(database.getSchema().getType("HiddenAgreement").getProperty("secret").isHidden())
+        .as("the schema still records the annotation - #2378 removed its effect, not the flag").isTrue();
+
+    final List<String> star;
+    try (final ResultSet rs = database.query("sql", "SELECT * FROM HiddenAgreement")) {
+      star = new ArrayList<>(rs.next().getPropertyNames());
+    }
+    final List<String> bare;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM HiddenAgreement")) {
+      bare = new ArrayList<>(rs.next().getPropertyNames());
+    }
+
+    assertThat(star).as("SELECT * must not drop a property just because the schema calls it hidden, got %s", star)
+        .contains("secret", "plain");
+    assertThat(bare).as("and the bare form has always returned it, got %s", bare).contains("secret", "plain");
+    assertThat(star).as("so the two must agree on the record's own properties")
+        .containsAll(bare);
+  }
+
+  /** Removing the hidden filter must not disturb the exclusion syntax that shares the same loop. */
+  @Test
+  void selectStarStillHonoursExplicitExclusions() {
+    database.command("sql", "CREATE vertex type HiddenExclude").close();
+    database.command("sql", "CREATE property HiddenExclude.secret STRING (hidden)").close();
+    database.transaction(
+        () -> database.command("sql", "INSERT INTO HiddenExclude SET secret = 's', plain = 'p'").close());
+
+    try (final ResultSet rs = database.query("sql", "SELECT *, !secret FROM HiddenExclude")) {
+      final List<String> names = new ArrayList<>(rs.next().getPropertyNames());
+      assertThat(names).as("an explicit exclusion is the supported way to drop a column, got %s", names)
+          .doesNotContain("secret").contains("plain");
+    }
   }
 }

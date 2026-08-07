@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -117,17 +116,16 @@ public class Projection extends SimpleNode {
       if (item.isAll()) {
         result.setElement(record.toElement());
 
+        // `hidden` is a schema annotation only, and has been since #2378 removed database-level support for it:
+        // ALTER PROPERTY still records the flag and SHOW/schema introspection still report it, but no read path
+        // filters on it. This loop used to, which made `SELECT *` disagree with a bare `SELECT` on the same row -
+        // and the disagreement was invisible for a year because ResultInternal.getPropertyNames() unioned the
+        // element's names back over the top of it, until #5613 removed that union and left the filter exposed.
+        // Do not reinstate it here: hiding a property from a projection but not from the record that backs it is
+        // not a security boundary, it only makes the two spellings of "give me everything" return different rows.
         for (final String alias : record.getPropertyNames()) {
-          if (excludes.contains(alias)) {
+          if (excludes.contains(alias))
             continue;
-          } else if (record.getElement().isPresent()) {
-            final Document doc = record.getElement().get();
-            if (excludes.contains(alias) ||
-                (doc.getType().existsProperty(alias) &&
-                    doc.getType().getProperty(alias).isHidden())) {
-              continue;
-            }
-          }
           Object value = item.convert(record.getProperty(alias));
           if (item.nestedProjection != null) {
             value = item.nestedProjection.apply(item.expression, value, context);
