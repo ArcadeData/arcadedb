@@ -288,6 +288,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       customIterator = new MultiIterator<>();
       for (final Object item : MultiValue.getMultiValueIterable(rightValue)) {
         final IndexCursor localCursor = createCursor(equals, unwrapSubQueryResult(item), context);
+        if (localCursor == null)
+          // This IN-list item has no defined ordering against the index's declared key type (e.g. a non-numeric
+          // String item against a numeric column): it matches no indexed row, consistent with the other operators
+          // (#5900). Skip it rather than adding a cursor-less sub-iterator that NPEs on the first hasNext()/close().
+          continue;
         customCursors.add(localCursor);
 
         customIterator.addIterator(new Iterator<Map.Entry>() {

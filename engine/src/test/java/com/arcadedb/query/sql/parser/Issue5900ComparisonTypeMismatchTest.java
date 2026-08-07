@@ -190,6 +190,32 @@ class Issue5900ComparisonTypeMismatchTest {
     });
   }
 
+  /**
+   * Code review follow-up on PR #5922: {@code createCursor()} returning {@code null} for a failed conversion is
+   * only safe if every caller checks for it. The multi-value branch of {@code processInCondition()} stored the
+   * per-item cursor unconditionally and wrapped it in a sub-iterator that called {@code hasNext()}/{@code close()}
+   * on it without a null check, so a mixed-type IN list against an indexed column traded the original
+   * {@code NumberFormatException} for a {@code NullPointerException} instead of actually fixing the crash.
+   */
+  @Test
+  void inListWithNonNumericItemOnIndexedIntegerColumnDoesNotThrow() throws Exception {
+    TestHelper.executeInNewDatabase("testIssue5900InIndexed", db -> {
+      db.getSchema().createDocumentType("V").createProperty("n", Type.INTEGER);
+      db.command("sql", "CREATE INDEX ON V (n) NOTUNIQUE");
+      db.newDocument("V").set("n", 10).save();
+      db.newDocument("V").set("n", 20).save();
+
+      try (final ResultSet rs = db.query("sql", "select n from V where n in [10, 'abc']")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Integer>getProperty("n")).isEqualTo(10);
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select n from V where n in ['abc', 'def']")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
   @Test
   void betweenWithNonNumericBoundOnIndexedIntegerColumnDoesNotThrow() throws Exception {
     TestHelper.executeInNewDatabase("testIssue5900BetweenIndexed", db -> {
