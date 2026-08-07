@@ -36,6 +36,7 @@ import java.util.List;
 import static com.arcadedb.log.WarningCapture.captureSevere;
 import static com.arcadedb.log.WarningCapture.captureWarnings;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 
 /**
  * Issue #5637, the two loose ends of the partitioned-strategy series (#5589, #5595, #5603).
@@ -290,6 +291,56 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
 
     database.transaction(() -> database.newDocument("Derived").set("k", "acme").save());
     assertThat(database.query("sql", "SELECT FROM Derived WHERE k = 'acme'").stream().count()).isEqualTo(1);
+  }
+
+  /**
+   * Issue #5645. {@code bucketIndex} is only meaningful modulo the bucket count it was derived against - the
+   * parent's. A subtype declares its OWN bucket count, and when that count is SMALLER than the parent's,
+   * {@code TypeIndex.getIndexesByKeys} used to apply the parent-derived index straight into the subtype's own
+   * (shorter) bucket list and throw {@code IndexOutOfBoundsException} on the very first indexed insert - exactly
+   * the reproduction from the issue: a partitioned {@code Base BUCKETS 3} and a {@code Derived} that inherits the
+   * strategy but gets the schema's default single bucket.
+   */
+  @Test
+  void aSubtypeWithFewerBucketsThanItsParentDoesNotCrashOnIndexedInsert() {
+    createPartitionedType("Base");
+    // NO "BUCKETS" CLAUSE: DERIVED GETS THE DEFAULT (1), STRICTLY FEWER THAN THE PARENT'S 3
+    database.transaction(() -> database.command("sql", "CREATE DOCUMENT TYPE Derived EXTENDS Base"));
+
+    assertThat(database.getSchema().getType("Derived").getBuckets(false)).hasSize(1);
+
+    assertThatNoException().isThrownBy(
+        () -> database.transaction(() -> database.newDocument("Derived").set("k", "acme").save()));
+
+    assertThat(database.query("sql", "SELECT FROM Derived WHERE k = 'acme'").stream().count())
+        .as("the record must be both insertable and findable through the index despite the bucket-count mismatch")
+        .isEqualTo(1);
+  }
+
+  /**
+   * Issue #5645, the other direction. When the subtype's bucket count is LARGER than the parent's, the same reused
+   * {@code bucketIndex} never goes out of range - it silently prunes to a bucket the record was never placed in
+   * instead, which is the #5589 failure mode again: no exception, the record just never comes back through the
+   * index. The keys below are chosen so {@code hash(k) % 3 != hash(k) % 5}, which is exactly the condition under
+   * which the parent's 3-bucket-derived index and the subtype's own 5-bucket placement disagree.
+   */
+  @Test
+  void aSubtypeWithMoreBucketsThanItsParentIsNotSilentlyMissed() {
+    createPartitionedType("Base");
+    database.transaction(() -> database.command("sql", "CREATE DOCUMENT TYPE Wider EXTENDS Base BUCKETS 5"));
+
+    assertThat(database.getSchema().getType("Wider").getBuckets(false)).hasSize(5);
+
+    final List<String> keys = List.of("alpha", "bravo", "delta", "echo");
+    database.transaction(() -> {
+      for (final String k : keys)
+        database.newDocument("Wider").set("k", k).save();
+    });
+
+    for (final String k : keys)
+      assertThat(database.query("sql", "SELECT FROM Wider WHERE k = ?", k).stream().count())
+          .as("key '%s' must be found through the index, not silently pruned to a bucket it was never placed in", k)
+          .isEqualTo(1);
   }
 
   /**
