@@ -124,6 +124,12 @@ public class VectorLocationIndex {
    * Retained heap of one allocated chunk on a 64-bit JVM with compressed oops: the {@code Chunk} object (16 header
    * + 4 references + 1 int, padded to 40), {@code long[128]} twice at 1040, {@code int[128]} at 528 and
    * {@code long[2]} at 32. {@value} / {@value #CHUNK_SIZE} = ~21 bytes per id.
+   * <p>
+   * Compressed oops are off above a ~32GB heap, which is exactly the size of deployment that reads this figure, so
+   * it is worth knowing what changes there: array headers go from 16 bytes to 24 and the {@code Chunk} object from
+   * 40 to 56, i.e. 2728 instead of 2680, <b>+1.8%</b>. The layout is 97% payload - four primitive arrays whose size
+   * does not depend on the oop width - so the estimate is off by less than the rounding in "~21 bytes per id" and
+   * does not warrant reading the VM option back to correct it.
    */
   static final int CHUNK_RETAINED_BYTES = 40 + 1040 + 528 + 1040 + 32;
 
@@ -1066,6 +1072,10 @@ public class VectorLocationIndex {
    *
    * O(allocated chunks), like {@link #getActiveCount()}, so it belongs on the stats path it is called from and
    * nowhere hotter.
+   * <p>
+   * Assumes a 64-bit JVM with compressed oops, which is what everything below a ~32GB heap runs. Above that the
+   * figure under-reports by under 2% - see {@link #CHUNK_RETAINED_BYTES} for where it goes - because the object
+   * headers and the directory's references are all that widen and the layout is almost entirely primitive payload.
    *
    * @return retained bytes, on a 64-bit JVM with compressed oops
    */
