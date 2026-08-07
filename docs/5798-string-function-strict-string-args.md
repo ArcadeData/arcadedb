@@ -62,7 +62,9 @@ New test class
 
 ## Results
 
-- New test class `CypherStringFunctionArgumentIssue5798Test`: 14/14 pass.
+- New test class `CypherStringFunctionArgumentIssue5798Test`: 14/14 pass as of the original PR
+  (grew to 17/17 after the alias-spelling and 3-arg-trim tests added during review cycles 2-3; see
+  "Review cycles" below).
 - Confirmed TDD red-green: before the fix, 11 of the 14 tests failed (the reproducers, the runtime
   property-read check and the parse-time literal check); after the fix, all 14 pass.
 - Targeted regression classes (numeric family #5484, list family #5476, string-function comprehensive
@@ -151,3 +153,34 @@ char FROM string)` path too, finding it correct but untested:
 Outcome: one actionable-and-clear code/test item applied (3-arg trim test); one out-of-scope
 follow-up noted in the PR description rather than fixed; one optional consistency-test suggestion
 skipped as explicitly non-urgent; PR description updated per the reviewer's process suggestion.
+
+### Cycle 4 - head `4c4b6606` (final cycle, `--max-cycles=4`)
+
+Claude's bot review re-verified the cycle-1 ordering fix and the cycle-3 3-arg-trim path against the
+grammar/parser directly (confirmed `CypherExpressionBuilder`'s trim-function builder produces
+`[mode, trimChar, source]`), found no bugs ("no gaps found" in test coverage, "no concerns" on
+security/performance), and raised four minor/non-blocking observations:
+
+- `CypherTrimFunction`'s 3-arg branch could collapse the redundant `args[2] == null` check into
+  `requireStringArgument()`'s own null handling, matching the style of the 1-arg/2-arg branches
+  above it. **Applied**: simplified to `final String source = requireStringArgument(args[2], ...); if
+  (source == null || trimChar == null) return null;`.
+- The tracking doc's "Results" section still said "14/14 pass" after later commits grew the test
+  class to 17 tests. **Applied**: corrected the line to note the growth across cycles.
+- Scope boundary (secondary STRING-typed arguments, `left()`/`right()` follow-up) is clearly
+  documented - no action needed, reviewer confirms it reads as "a reasonable, well-communicated scope
+  boundary rather than an oversight."
+- Suggested confirming whether the project tracks a CHANGELOG/release-notes entry for breaking
+  changes. **Checked and skipped**: no `CHANGELOG` file exists at the repo root: the project has no
+  such convention to update.
+
+Outcome: two small, safe touch-ups applied (readability simplification, stale doc line); two
+informational items require no code change. Re-ran the new test class plus
+`CypherOptionalArgumentNullIssue5629Test`, `OpenCypherMissingFunctionsTest`,
+`OpenCypherStringFunctionsComprehensiveTest` and `CypherFunctionArityRegistryTest` after the
+simplification: all pass.
+
+This was the fourth and final review cycle allowed by `--max-cycles=4`. No further review round was
+requested after this push; the review itself was a clean approval in substance ("Nice work - this
+closes the gap cleanly and consistently with the established pattern") with only optional polish
+items, none of which is a deferred/blocking item for the developer.

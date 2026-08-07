@@ -77,10 +77,8 @@ public class CypherTrimFunction implements StatelessFunction {
       final String mode = args[0] != null ? args[0].toString() : null;
       final String trimChar = args[1] != null ? args[1].toString() : null;
 
-      if (args[2] == null)
-        return null;
       final String source = CypherFunctionHelper.requireStringArgument(args[2], getName());
-      if (trimChar == null)
+      if (source == null || trimChar == null)
         return null;
       if (trimChar.isEmpty()) {
         return switch (mode) {
