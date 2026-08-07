@@ -24,7 +24,9 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Flow;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -120,14 +122,14 @@ class PostBatchHandlerForwardRequestTest {
   /**
    * A subscriber that cancels at once: enough to make the publisher hand out its single stream without reading it.
    */
-  private static class DiscardingSubscriber implements java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer> {
+  private static class DiscardingSubscriber implements Flow.Subscriber<ByteBuffer> {
     @Override
-    public void onSubscribe(final java.util.concurrent.Flow.Subscription subscription) {
+    public void onSubscribe(final Flow.Subscription subscription) {
       subscription.cancel();
     }
 
     @Override
-    public void onNext(final java.nio.ByteBuffer item) {
+    public void onNext(final ByteBuffer item) {
     }
 
     @Override
