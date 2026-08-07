@@ -22,4 +22,14 @@ public class ConcurrentModificationException extends NeedRetryException {
   public ConcurrentModificationException(final String s) {
     super(s);
   }
+
+  /**
+   * #5764: a conflict raised FROM a caught exception keeps it as the cause. Most of these are absorbed by the
+   * transaction retry and never seen, so the single run that does surface one is the retry-exhausted run - i.e.
+   * exactly the run whose stack trace has to be diagnosable, and the one that used to arrive with the original
+   * failure discarded. {@link NeedRetryException} already declared the pair; only this subclass was missing it.
+   */
+  public ConcurrentModificationException(final String s, final Throwable cause) {
+    super(s, cause);
+  }
 }

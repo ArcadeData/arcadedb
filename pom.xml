@@ -25,7 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-    <version>26.8.1-SNAPSHOT</version>
+    <version>26.9.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -106,7 +106,7 @@
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.35.1</protobuf-java.version>
-        <com.google.api.grpc.version>2.73.0</com.google.api.grpc.version>
+        <com.google.api.grpc.version>2.74.0</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
@@ -137,6 +137,7 @@
         <module>network</module>
         <module>grpc</module>
         <module>server</module>
+        <module>mcp</module>
         <module>ha-raft</module>
         <module>metrics</module>
         <module>tracing</module>
@@ -675,7 +676,6 @@
                             <excludes>
                                 <exclude>com/arcadedb/graphql/parser/**/*</exclude>
                                 <exclude>com/arcadedb/query/sql/parser/*</exclude>
-                                <exclude>**/SqlParserTokenManager.*</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>
@@ -692,11 +692,6 @@
                                 <goals>
                                     <goal>prepare-agent</goal>
                                 </goals>
-                                <configuration>
-                                    <excludes>
-                                        <exclude>**/SqlParserTokenManager.class</exclude>
-                                    </excludes>
-                                </configuration>
                             </execution>
                             <!-- prepare agent before integration tests -->
                             <execution>
@@ -708,9 +703,6 @@
                                 <configuration>
                                     <destFile>${project.build.directory}/jacoco-it.exec</destFile>
                                     <propertyName>itCoverageAgent</propertyName>
-                                    <excludes>
-                                        <exclude>**/SqlParserTokenManager*</exclude>
-                                    </excludes>
                                 </configuration>
                             </execution>
                             <execution>

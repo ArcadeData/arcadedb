@@ -103,6 +103,12 @@ public final class AntiJoinChainOp implements CountOp {
     return types.toArray(new String[0]);
   }
 
+  /** Every path here is enumerated from chain position 0, so an unlabelled first node leaves nothing to start from. */
+  @Override
+  public boolean canEnumerateAnchors() {
+    return nodeLabels[0] != null;
+  }
+
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db) {
     final int nodeCount = provider.getNodeCount();

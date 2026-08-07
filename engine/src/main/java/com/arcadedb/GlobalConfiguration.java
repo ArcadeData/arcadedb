@@ -461,6 +461,10 @@ public enum GlobalConfiguration {
       "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
       Integer.class, 100),
 
+  DELETE_TOLERATE_BROKEN_CHAIN("arcadedb.deleteTolerateBrokenChain", SCOPE.DATABASE,
+      "When deleting a record whose own multi-page chunk chain is structurally broken, complete the deletion anyway instead of failing (for a vertex, this also disconnects its edges best-effort, which can leave dangling edges if some cannot be reached). Disabled by default: such a delete fails loudly instead, requiring an explicit CHECK DATABASE FIX to repair or remove the broken record deliberately - CHECK DATABASE FIX itself is unaffected by this setting either way, so the record is never permanently stuck (issues #4420/#4432). Enable only to restore the older behavior of a normal DELETE silently forcing through instead",
+      Boolean.class, false),
+
   GRAPH_EDGE_APPEND_MERGE("arcadedb.graph.edgeAppendMerge", SCOPE.DATABASE,
       "At commit, when the only conflict on an edge-list page is concurrent in-chunk edge appends (which commute), re-apply the appends on top of the newer page version instead of failing the whole transaction with a ConcurrentModificationException. Removes the retry storm on super-node (hot vertex) edge insertion",
       Boolean.class, true),
@@ -493,9 +497,19 @@ public enum GlobalConfiguration {
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
-  SQL_PARSER_IMPLEMENTATION("arcadedb.sql.parserImplementation", SCOPE.DATABASE,
-      "Deprecated, has no effect. The ANTLR4-based SQL parser is always used.",
-      String.class, "antlr"),
+  SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
+      """
+      Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
+      nested function/statement calls, ...). The ANTLR-generated SQL parser resolves ambiguity between several \
+      grammar rules that all start with '(' (a parenthesized expression, condition, or sub-statement) by first \
+      trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
+      nested parentheses that fallback's cost grows so steeply that a query of only a few KB can tie up a worker \
+      thread for minutes without ever crashing, which is worse than a fast failure since it is not distinguishable \
+      from a slow legitimate query. This is checked on the token stream before any parse is attempted, so a query \
+      past the limit is rejected in O(n) time with a normal parse error. Real-world queries rarely nest more than a \
+      handful of parentheses, so the default is deliberately generous. Raise it only if a legitimate, deeply-nested \
+      or generated query needs it.""",
+      Integer.class, 200),
 
   // OPENCYPHER
   OPENCYPHER_STATEMENT_CACHE("arcadedb.opencypher.statementCache", SCOPE.DATABASE,
@@ -513,7 +527,9 @@ public enum GlobalConfiguration {
   OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
       """
       Allow LOAD CSV to access local files via file:/// URLs and bare file paths. \
-      Disable for security in multi-tenant server deployments.""",
+      Disable for security in multi-tenant server deployments. This is only the outer switch: on a server the \
+      local-file branch also requires the administrative 'updateSecurity' permission (the same privilege IMPORT \
+      DATABASE requires), and 'production' server mode force-disables this setting at startup.""",
       Boolean.class, true),
 
   OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY("arcadedb.opencypher.loadCsv.importDirectory", SCOPE.DATABASE,
@@ -597,6 +613,25 @@ public enum GlobalConfiguration {
         return Math.max(500_000L, maxHeap / 2048);
       }),
 
+  QUERY_MAX_RANGE_SIZE("arcadedb.queryMaxRangeSize", SCOPE.DATABASE, """
+      Maximum number of elements a range() expression is allowed to produce. If exceeded, the query is rejected with a \
+      client error before any element is generated. Negative number means no limit (the hard limit of 2147483647 elements, \
+      the maximum size of a Java list, still applies). The range itself is lazy and takes no heap, but its elements are \
+      materialised as soon as the range is copied, sorted or serialised in a response, so this setting caps the memory a \
+      single query can request that way. When left at the default it auto-scales with the JVM max heap (never below \
+      1000000 elements), keeping the worst-case materialisation of a range to a fraction of the heap.""",
+      Long.class, 10_000_000L, null, value -> {
+        // Auto-scale the default with the JVM max heap. A materialised element costs ~24 bytes (boxed Long plus the
+        // reference that holds it) and rendering it in a JSON response costs about as much again, so heap/160 keeps
+        // the worst case around a quarter of the heap. Never below the 1000000 floor, so the common
+        // "UNWIND range(1, 1000000)" data-generation idiom keeps working on small footprints.
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        if (maxHeap == Long.MAX_VALUE)
+          // Heap is unbounded (no -Xmx): keep a conservative cap rather than an effectively unlimited one.
+          return 10_000_000L;
+        return Math.max(1_000_000L, Math.min(Integer.MAX_VALUE, maxHeap / 160));
+      }),
+
   QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
       """
       Enable parallel scanning of multiple buckets during full table scans. \
@@ -613,6 +648,18 @@ public enum GlobalConfiguration {
   CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache", SCOPE.DATABASE,
       "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries",
       Integer.class, 1000),
+
+  CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
+      """
+      Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
+      or function arguments nested inside one another, and the depth of a chain of AND/OR/string-concatenation \
+      terms in the resulting expression tree. The ANTLR-generated parser re-enters its expression grammar rule \
+      roughly ten Java stack frames per nesting level, so a few thousand levels is enough to exhaust the default \
+      JVM thread stack with a payload of only a few KB; a query past this limit is rejected as a normal parse \
+      error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
+      more than a handful of levels, so the default is deliberately generous while staying far below the point \
+      where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
+      Integer.class, 200),
 
   // INDEXES
   INDEX_BUILD_CHUNK_SIZE_MB("arcadedb.index.buildChunkSizeMB", SCOPE.DATABASE,
@@ -676,8 +723,10 @@ public enum GlobalConfiguration {
       evicting one destroyed that mapping rather than spilling it to a slower tier: the index under-reported its \
       size, and any reader resolving an evicted id read it as deleted. The limit existed when the index held one \
       location per write; issue #5516 made a tombstoned id release \
-      its location, so residency is now proportional to the live vectors (~90 bytes each) instead of to the write \
-      history.""",
+      its location, so residency is now proportional to the live vectors (~32 bytes each since issue #5588 laid \
+      them out in primitive arrays) instead of to the write history. Issue #5559 removed the bounded backend altogether, so nothing can evict a location any more, and \
+      the per-index 'locationCacheSize' METADATA key is now REFUSED rather than ignored - this global setting stays \
+      tolerated only so that an existing startup line does not stop a server booting.""",
       Integer.class, -1),
 
   VECTOR_INDEX_COMPACTION_BLOAT_FACTOR("arcadedb.vectorIndex.compactionBloatFactor", SCOPE.DATABASE,
@@ -735,6 +784,19 @@ public enum GlobalConfiguration {
       workload, and the resulting young-GC frequency dominated the query tail latency. \
       0 (default) sizes the pool automatically as 2x the available cores. -1 disables pooling and allocates a \
       searcher per query.""",
+      Integer.class, 0),
+
+  VECTOR_INDEX_GRAPH_BUILD_PARALLELISM("arcadedb.vectorIndex.graphBuildParallelism", SCOPE.DATABASE,
+      """
+      Number of threads in the dedicated pool that builds the HNSW graph of a vector index. Graph construction \
+      is by far the most expensive part of building a dense index - on a 10M-vector corpus it is over 90% of the \
+      total - and it parallelizes well, so this setting is the main lever on build time. \
+      0 (default) sizes the pool automatically as the available cores minus one, which leaves a core for request, \
+      I/O and GC threads so a rebuild triggered on a live index cannot starve concurrent query traffic. \
+      Raise it to the full core count when build time matters more than query headroom, for example during a bulk \
+      import; lower it to protect a latency-sensitive workload from an online rebuild. A value above the core count \
+      only oversubscribes a CPU-bound phase and is logged as a warning; anything above what ForkJoinPool accepts is \
+      clamped rather than failing the build.""",
       Integer.class, 0),
 
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
@@ -940,6 +1002,16 @@ public enum GlobalConfiguration {
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
       "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
+
+  SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
+      """
+      Default maximum number of rows the HTTP query/command endpoints serialize into a single response when \
+      the caller states no limit of its own. A request that carries a `limit` field, and a query that carries \
+      its own LIMIT clause, are both honored as written and are never capped by this value. When this default \
+      does cut a result short the response reports `"truncated": true` next to `returned` and `limit`, and the \
+      server logs a warning: the truncation is never silent (issue #5711). Set to -1 or 0 for unlimited \
+      (WARNING: removes the protection against materializing an unbounded result set in memory). Default is 20000""",
+      Integer.class, 20_000),
 
   SERVER_HTTP_STREAMING_READ_TIMEOUT("arcadedb.server.httpStreamingReadTimeout", SCOPE.SERVER,
       """
@@ -1570,6 +1642,10 @@ public enum GlobalConfiguration {
 
   REDIS_DEFAULT_DATABASE("arcadedb.redis.defaultDatabase", SCOPE.SERVER,
       "Default database name for Redis protocol connections. If set, RAM commands (SET, GET, etc.) will use this database's globalVariables. Empty means no default (requires SELECT command or key prefix)", String.class, ""),
+
+  REDIS_TLS("arcadedb.redis.tls", SCOPE.SERVER,
+      "When true, the Redis wire-protocol listener accepts only TLS connections, using the shared SSL key/trust store settings (arcadedb.ssl.*). The AUTH credentials are then encrypted in transit. Default is false",
+      Boolean.class, false),
 
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,

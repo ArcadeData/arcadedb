@@ -19,9 +19,11 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.SafeHttpFetcher;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -53,8 +55,35 @@ public class ImportSecurityValidator {
   }
 
   /**
+   * Opens a validated, connected {@link HttpURLConnection} for an HTTP(S) import URL.
+   * <p>
+   * This replaces the previous validate-then-fetch pattern, which was not sound: {@link #validateRemoteURL} resolved
+   * the hostname, checked the addresses and then discarded them, while the caller opened the connection from the raw
+   * URL string. That connection resolved the name a second time and, crucially, followed 3xx redirects with no further
+   * checking - so an attacker-controlled public host answering
+   * {@code 302 Location: http://169.254.169.254/latest/meta-data/...} walked straight past the block-list
+   * (GHSA-4w2m-77c8-83mw, incomplete fix of CVE-2026-54077). Redirects are now followed manually with the full check
+   * re-applied on every hop, and non-HTTP(S) schemes are refused anywhere in the chain so a redirect cannot turn a
+   * remote fetch into a local file read.
+   * <p>
+   * When {@link GlobalConfiguration#SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS} is disabled the address check is
+   * skipped - the deliberate opt-out for trusted internal environments - but the redirect and scheme handling still
+   * apply. See {@link SafeHttpFetcher} for the residual DNS-rebinding caveat.
+   *
+   * @throws SecurityException if a scheme or address is refused on any hop
+   */
+  public static HttpURLConnection openRemoteConnection(final String url) throws IOException {
+    final boolean blockLocalNetworks = GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean();
+    return SafeHttpFetcher.open(url, address -> blockLocalNetworks && isBlockedAddress(address), "IMPORT DATABASE");
+  }
+
+  /**
    * Validates an HTTP(S) import URL. Throws {@link SecurityException} if the host resolves to a blocked
    * private/local network address and the SSRF protection is enabled.
+   * <p>
+   * Prefer {@link #openRemoteConnection(String)} for anything that actually fetches the URL: a check performed here is
+   * only meaningful for the address this call resolved, and says nothing about where a subsequent, separately-resolved
+   * and redirect-following connection ends up.
    */
   public static void validateRemoteURL(final String url) {
     if (!GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean())

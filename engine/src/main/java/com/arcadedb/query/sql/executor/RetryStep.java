@@ -20,6 +20,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -44,7 +45,26 @@ public class RetryStep extends AbstractExecutionStep {
     this.retries = retries;
     this.elseBody = elseStatements;
     this.elseFail = !Boolean.FALSE.equals(elseFail);
-    this.retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+    this.retryDelay = readRetryDelay(ctx);
+  }
+
+  /**
+   * Resolves the backoff between retries from the database the script runs against. The setting is declared
+   * with database scope, so the database's own configuration is the authority and it already falls back to the
+   * global value when the database does not override it. The command context's configuration is deliberately
+   * not used: the script engine is handed either an empty configuration (embedded API) or the server's one
+   * (HTTP, Postgres and the replicated paths), and neither carries a per-database override.
+   */
+  private static int readRetryDelay(final CommandContext ctx) {
+    final DatabaseInternal database = ctx != null ? ctx.getDatabase() : null;
+    return database != null ?
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY) :
+        GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+  }
+
+  // @VisibleForTesting
+  int getRetryDelay() {
+    return retryDelay;
   }
 
   @Override

@@ -49,6 +49,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void ramCommands() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // PING
     assertThat(jedis.ping()).isEqualTo("PONG");
@@ -130,6 +131,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void persistentCommands() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     final Database database = getServerDatabase(0, getDatabaseName());
 
@@ -247,6 +249,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void transientCommands() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // HSET transient (JSON objects to globalVariables)
     long beginTime = System.currentTimeMillis();
@@ -311,6 +314,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void commandNotSupported() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
     try {
       jedis.aclList();
       fail("");
@@ -325,6 +329,7 @@ public class RedisWTest extends BaseGraphServerTest {
     // Test SELECT command to switch database context
     // Issue #3246: Redis commands should use database's globalVariables
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select the test database (using sendCommand because Jedis select() expects int)
     final Object selectResult = jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
@@ -347,6 +352,7 @@ public class RedisWTest extends BaseGraphServerTest {
   void keyPrefixOverridesSelectedDatabase() {
     // Test that key prefix (dbname.key) takes priority over SELECT
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Set value using key prefix (no SELECT needed)
     jedis.set(getDatabaseName() + ".prefixKey", "prefixValue");
@@ -363,6 +369,7 @@ public class RedisWTest extends BaseGraphServerTest {
   void selectThenIncrDecr() {
     // Test INCR/DECR with database context
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select database
     jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
@@ -384,6 +391,7 @@ public class RedisWTest extends BaseGraphServerTest {
   void globalVariablesSharedWithSQL() {
     // Test that Redis values are accessible via SQL $variable syntax
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select database and set a value
     jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
@@ -401,6 +409,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void existsAndGetDelWithDatabaseContext() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select database
     jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
@@ -428,6 +437,7 @@ public class RedisWTest extends BaseGraphServerTest {
   void transientHSetAndHGet() {
     // Test HSET in transient mode (type omitted, JSON as second argument)
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store JSON objects in globalVariables (transient mode)
     // For transient: HSET <database> <json> where json starts with '{'
@@ -459,6 +469,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void transientHExists() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store JSON object using sendCommand for transient mode
     jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(), "{\"id\":\"existsTest\",\"value\":\"test\"}");
@@ -471,6 +482,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void transientHDel() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store JSON objects using sendCommand
     jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(),
@@ -493,6 +505,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void transientHMGet() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store multiple JSON objects using sendCommand
     jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(),

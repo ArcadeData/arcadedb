@@ -169,11 +169,9 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
 
   /**
    * The ratio rests on {@code VectorLocationIndex.size()} being the live-vector count, which holds only while the map
-   * does not evict. Since #5568 nothing asks for the bounded backend - {@code locationCacheSize} is refused, because
-   * an evicted location cannot be recovered - so the guard asks the map whether it evicts rather than asking the
-   * setting, and this pins both halves of that: configuring a cap does not produce a map that evicts, and a map that
-   * does evict reports it. If bounded mode is ever wired back in, the second assertion is what keeps the ratio from
-   * silently becoming a rewrite-after-every-commit loop.
+   * does not evict. #5568 stopped honouring {@code locationCacheSize} and #5559 deleted the bounded backend outright,
+   * because an evicted location cannot be recovered - so a configured cap has nowhere to take effect. This pins that:
+   * with a cap set, the map still holds every live location and the index reclaims like any other.
    */
   @Test
   void theRatioOnlyTrustsALocationMapThatDoesNotEvict() {
@@ -183,9 +181,8 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
       insertVertices();
 
       final LSMVectorIndex index = vectorIndex();
-      assertThat(index.getVectorIndex().isBounded())
-          .as("#5568: a configured cap is refused, so the map still holds every live location").isFalse();
-      assertThat(index.getVectorIndex().size()).as("and the live count the estimate reads is the whole live set")
+      assertThat(index.getVectorIndex().size())
+          .as("#5559: a configured cap has no backend to reach, so the live count the estimate reads is whole")
           .isEqualTo(VERTICES);
 
       // The index is therefore an ordinary one and reclaims under churn, cap configured or not.
@@ -199,10 +196,6 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
     } finally {
       GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.reset();
     }
-
-    assertThat(new VectorLocationIndex(16).isBounded())
-        .as("a map that does evict says so, which is what the compaction guard turns back").isTrue();
-    assertThat(new VectorLocationIndex(-1).isBounded()).as("and an unlimited one does not").isFalse();
   }
 
   /**

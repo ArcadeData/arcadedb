@@ -338,6 +338,19 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     return underlyingIndex.getMetadata();
   }
 
+  /**
+   * The geohash resolution and the storage layout are held here as plain fields, not on the underlying LSM-Tree, so a
+   * site carrying this definition into a new index file has to read them from this instance: through
+   * {@link #getMetadata()} a copy would silently drop to the default precision (issue #5723).
+   */
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    // Unlike the full-text and sparse-vector wrappers, there is no stored GeoIndexMetadata to hand back: this class
+    // holds the two settings as plain fields. GeoIndexMetadata.from() reassembles the definition, keeping the
+    // base-field copy inside the metadata hierarchy where copyCommonTo() lives.
+    return GeoIndexMetadata.from(underlyingIndex.getMetadata(), precision, tokenization);
+  }
+
   @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();
@@ -556,6 +569,15 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   public String getUpgradeWarning() {
     // Built once in the constructor: this is called per index on every schema:indexes / schema:types listing, and the
     // contract on IndexInternal#getUpgradeWarning is that it stays cheap.
+    // The LSM index the cells are stored in is asked FIRST, and deliberately so. A geohash cell is ASCII, so the
+    // key-order mismatch of #5802 should never arise here - but "should never" is the invariant, not the mechanism.
+    // If it ever did arise it would be a correctness fault (lookups under-returning), while the layout advisory
+    // below is about cost, so returning the layout one first would mask the worse of the two - the very hiding this
+    // delegation exists to prevent.
+    final String underlyingWarning = underlyingIndex.getUpgradeWarning();
+    if (underlyingWarning != null)
+      return underlyingWarning;
+
     return upgradeWarning;
   }
 

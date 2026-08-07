@@ -32,6 +32,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
@@ -1534,9 +1535,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
+      final String txOwner = owner;
       Future<?> beginFuture = txCtx.executor.submit(() -> {
         // Initialize the DatabaseContext on this dedicated thread before any DB operation
         DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+
+        // Bind the principal that opened the transaction onto its dedicated thread. Every transaction-scoped RPC
+        // (executeCommand, executeQuery, createRecord, updateRecord, deleteRecord, ...) is later dispatched onto THIS
+        // thread, so without the binding they all ran with a null current user and the engine permission gates - which
+        // are deliberate no-ops when no user is bound - silently passed. That let a read-only caller run LANGUAGE js
+        // inside an external transaction and reach database.getSecurity().createUser(), escalating to server admin
+        // (GHSA-p29f-345w-4qwf; same defect class as GHSA-5j4x on the HTTP async worker and GHSA-6x73 on MCP).
+        // Binding once here is sufficient and permanent for the transaction's lifetime: the executor is single-threaded
+        // and dedicated to this transaction, resolveAuthorizedTransaction() rejects any caller other than the owner,
+        // and DatabaseContext.init() does not clear an already-bound user.
+        bindPrincipalToCurrentThread(database, txOwner);
+
         database.begin(isolationLevel);
       });
       beginFuture.get(); // Wait for begin to complete
@@ -2627,7 +2641,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             dbRef.set(db);
             final GraphBatch.Builder builder = db.batch();
             configureGraphBatchOptions(builder, chunk.hasOptions() ? chunk.getOptions() : null);
-            batch = builder.build();
+            try {
+              batch = builder.build();
+            } catch (final DatabaseOperationException e) {
+              // Another batch already owns the database: that is the caller's problem to retry, not an
+              // internal fault. Scoped to build() so genuine engine failures keep reporting as INTERNAL.
+              errorSent[0] = true;
+              out.onError(Status.FAILED_PRECONDITION.withDescription(
+                  "graphBatchLoad: " + e.getMessage()).asException());
+              return;
+            }
             batchRef.set(batch);
           }
 
@@ -2663,8 +2686,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (final Exception e) {
           errorSent[0] = true;
           // Null batchRef so onCompleted skips processing; skip closeQuietly to avoid blocking the
-          // gRPC thread via async.waitCompletion() (buffered edges have no open transaction).
-          batchRef.set(null);
+          // gRPC thread via async.waitCompletion() (buffered edges have no open transaction). The batch
+          // still has to hand its slot back, or one failed load would stop the database batching for good.
+          final GraphBatch abandoned = batchRef.getAndSet(null);
+          if (abandoned != null)
+            abandoned.abandon();
           out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
           return;
         } finally {
@@ -4002,25 +4028,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // transaction management). Other wire protocols (HTTP, Postgres) do this as well.
         // Always call init() to ensure the context references the correct database instance,
         // since gRPC reuses threads from its pool and a stale context may exist.
-        final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) db);
+        DatabaseContext.INSTANCE.init((DatabaseInternal) db);
 
-        // Propagate the authenticated user so HA-Raft can forward commands to the leader:
-        // forwardCommandToLeaderViaRaft reads proxied.getCurrentUserName() to set the
-        // X-ArcadeDB-Forwarded-User header. Without this, every command issued through a
-        // follower throws "Cannot forward command to leader: no authenticated user in the
-        // current security context". Mirrors PostgresNetworkExecutor.openDatabase().
-        final String authenticatedUser = resolvedUsername(credentials);
-        if (authenticatedUser != null && arcadeServer.getSecurity() != null) {
-          final ServerSecurityUser secUser = arcadeServer.getSecurity().getUser(authenticatedUser);
-          if (secUser != null)
-            ctx.setCurrentUser(secUser.getDatabaseUser(db));
-          else
-            // A race between credential validation and concurrent user mutation can land here.
-            // Leaving the user unset would silently break HA leader-forwarding, so surface it.
-            LogManager.instance().log(this, Level.WARNING,
-                "gRPC request authenticated as '%s' but server security has no matching user; HA leader-forwarding will fail for this request",
-                authenticatedUser);
-        }
+        bindPrincipalToCurrentThread(db, resolvedUsername(credentials));
 
         return db;
       }
@@ -4090,6 +4100,41 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return credUser;
     }
     return null;
+  }
+
+  /**
+   * Binds the authenticated principal onto the calling thread's {@link DatabaseContext}, which must already have been
+   * initialised for {@code db}.
+   * <p>
+   * This binding carries two responsibilities:
+   * <ul>
+   *   <li><b>Authorization.</b> The engine per-user gates
+   *   ({@code LocalDatabase.checkPermissionsOnDatabase}/{@code checkPermissionsOnFile}, and the polyglot scripting
+   *   gate) are deliberate no-ops when no user is bound - the mechanism embedded and HA-apply contexts rely on. A
+   *   command-executing thread that never binds therefore runs entirely ungated
+   *   (GHSA-p29f-345w-4qwf).</li>
+   *   <li><b>HA leader-forwarding.</b> {@code forwardCommandToLeaderViaRaft} reads {@code getCurrentUserName()} to set
+   *   the {@code X-ArcadeDB-Forwarded-User} header; without it every command issued through a follower fails.</li>
+   * </ul>
+   * Mirrors {@code DatabaseAbstractHandler} (HTTP) and {@code PostgresNetworkExecutor.openDatabase()}.
+   */
+  private void bindPrincipalToCurrentThread(final Database db, final String authenticatedUser) {
+    if (authenticatedUser == null || arcadeServer == null || arcadeServer.getSecurity() == null)
+      return;
+
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath());
+    if (ctx == null)
+      return;
+
+    final ServerSecurityUser secUser = arcadeServer.getSecurity().getUser(authenticatedUser);
+    if (secUser != null)
+      ctx.setCurrentUser(secUser.getDatabaseUser(db));
+    else
+      // A race between credential validation and concurrent user mutation can land here. Leaving the user unset would
+      // silently disable the permission gates (and break HA leader-forwarding), so surface it.
+      LogManager.instance().log(this, Level.WARNING,
+          "gRPC request authenticated as '%s' but server security has no matching user; permission checks and HA leader-forwarding will not work for this request",
+          authenticatedUser);
   }
 
   /**

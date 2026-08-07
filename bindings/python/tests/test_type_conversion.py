@@ -398,3 +398,42 @@ def test_array_conversion(temp_db_path):
         assert len(names) == 3
         assert "Alice" in names
         assert "Charlie" in names
+
+
+class TestPrimitiveArrayFormats:
+    """Regression tests for issue #4: int[]/long[] buffer formats ('=i'/'=q')
+    crashed memoryview.tolist() and poisoned the converter cache."""
+
+    def test_int_array(self):
+        import jpype
+        from arcadedb_embedded.type_conversion import convert_java_to_python
+
+        assert convert_java_to_python(jpype.JArray(jpype.JInt)([1, 2, 3])) == [1, 2, 3]
+        # second conversion exercises the cached converter
+        assert convert_java_to_python(jpype.JArray(jpype.JInt)([4, 5])) == [4, 5]
+
+    def test_long_array(self):
+        import jpype
+        from arcadedb_embedded.type_conversion import convert_java_to_python
+
+        big = 2**40
+        assert convert_java_to_python(jpype.JArray(jpype.JLong)([big, -big])) == [
+            big,
+            -big,
+        ]
+
+    def test_cache_not_poisoned_by_failure(self):
+        from arcadedb_embedded import type_conversion as tc
+
+        class Boom:
+            pass
+
+        def bad_converter(v):
+            raise RuntimeError("first call fails")
+
+        b = Boom()
+        try:
+            tc._register(b, bad_converter)
+        except RuntimeError:
+            pass
+        assert type(b) not in tc._CONVERTER_CACHE

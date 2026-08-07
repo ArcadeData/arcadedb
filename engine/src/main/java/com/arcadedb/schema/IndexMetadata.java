@@ -22,7 +22,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -47,6 +50,40 @@ public class IndexMetadata {
     this.typeName = typeName;
     this.propertyNames = propertyNames != null ? List.of(propertyNames) : List.of();
     this.associatedBucketId = bucketId;
+  }
+
+  /**
+   * Returns a fresh instance carrying every SETTING of this definition, retargeted to the given type, properties and
+   * bucket. This is what "carry the index configuration over into a new index file" means: a rebuild, a truncate, the
+   * propagation to a freshly added bucket or sub type, a {@code copyType()}.
+   * <p>
+   * Two things the copy deliberately leaves behind. Anything that is per-index RUNTIME state rather than a setting -
+   * the dense vector index's {@code buildState}, the full-text corpus counters - because the new file starts empty and
+   * would otherwise inherit statistics describing a different set of records. And the association to a bucket, which
+   * the caller re-establishes by passing the target {@code bucketId} (or -1 when the per-bucket builder will bind it
+   * during {@code create()}).
+   * <p>
+   * Every subclass overrides this so its own settings ride along; there is no second field list to keep in sync, which
+   * is the point. Missing overrides are how a page size (issue #5713), a null strategy, a collation and a whole
+   * type-specific configuration all ended up being replaced by defaults on {@code copyType()} (issue #5723).
+   *
+   * @param typeName      type the copy belongs to
+   * @param propertyNames indexed properties of the copy
+   * @param bucketId      associated bucket, or -1 when not bound yet
+   */
+  public IndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    return copyCommonTo(new IndexMetadata(typeName, propertyNames, bucketId));
+  }
+
+  /**
+   * Copies the settings held by this base class onto a copy an override has just instantiated, and hands it back so the
+   * override can keep chaining. {@code collations} is shared rather than cloned: it is assigned wholesale and never
+   * mutated in place.
+   */
+  protected final <T extends IndexMetadata> T copyCommonTo(final T copy) {
+    copy.collations = collations;
+    copy.typeIndexName = typeIndexName;
+    return copy;
   }
 
   public void fromJSON(final JSONObject metadata) {
@@ -123,6 +160,62 @@ public class IndexMetadata {
    */
   protected void applyUserMetadata(final JSONObject json) {
     // no user-facing setting on a plain index
+  }
+
+  /**
+   * Reads back the current value of one {@code METADATA} key, the inverse of the corresponding branch of
+   * {@link #applyUserMetadata}. Answers {@code null} for a key this index type does not have.
+   * <p>
+   * Every key {@link #getUserMetadataKeys()} declares must be readable here. {@code IndexMetadataUserSettingComparisonTest}
+   * enforces it, so a setting added to one of the two lists and not the other fails a test instead of silently
+   * becoming invisible to {@link #findUserSettingMismatches}.
+   */
+  protected Object getUserMetadataValue(final String key) {
+    return null;
+  }
+
+  /**
+   * Answers which of the settings {@code requested} NAMES this definition does not already carry, so an
+   * {@code IF NOT EXISTS} request can tell "the index that is there is the one I asked for" from "the index that is
+   * there happens to sit on the same properties".
+   * <p>
+   * Only the keys the clause actually wrote are compared. A setting the caller did not name is one they expressed no
+   * opinion about, so the existing index satisfies it by definition - which is what keeps a guarded statement with no
+   * {@code METADATA} the plain no-op it has always been. Everything named IS compared, including the tuning knobs a
+   * rebuild would not be needed to change ({@code efSearch}, {@code inactivityRebuildTimeoutMs}): writing a value into
+   * a statement and having it silently discarded is the surprise this exists to remove, and the caller who meant the
+   * no-op simply leaves the key out.
+   * <p>
+   * The comparison runs on the INTERNAL representation, not on the JSON: the request is first read through this index
+   * type's own {@link #applyUserMetadata} onto a copy, so {@code "384"} and {@code 384}, {@code "cosine"} and
+   * {@code COSINE} compare as the one value each denotes rather than as the two spellings they are. It also means an
+   * unreadable value is reported by the reader that owns it, with its own message, instead of surfacing here as a
+   * spurious mismatch.
+   *
+   * @param requested the {@code METADATA} clause of the request, or {@code null} when it carried none
+   * @param indexType the requested index type, named in the reader's error messages
+   *
+   * @return one human-readable line per differing setting, empty when the request is already satisfied
+   */
+  public final List<String> findUserSettingMismatches(final JSONObject requested, final Schema.INDEX_TYPE indexType) {
+    if (requested == null || requested.isEmpty())
+      return List.of();
+
+    final IndexMetadata asRequested = copy(typeName,
+        propertyNames == null ? null : propertyNames.toArray(new String[0]), associatedBucketId);
+    asRequested.fromUserMetadata(requested, indexType);
+
+    final List<String> mismatches = new ArrayList<>();
+    for (final String key : requested.keySet()) {
+      final Object current = getUserMetadataValue(key);
+      final Object wanted = asRequested.getUserMetadataValue(key);
+      if (!Objects.equals(current, wanted))
+        mismatches.add(key + "=" + current + " (requested " + wanted + ")");
+    }
+    // Stable order: a JSONObject key set is unordered, and an error message that reshuffles between two identical
+    // statements is one nobody can match on.
+    Collections.sort(mismatches);
+    return mismatches;
   }
 
   /**

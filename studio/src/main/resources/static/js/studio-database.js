@@ -3033,6 +3033,16 @@ function applyDefaultLabel(value) {
   if (globalCy != null) renderGraph();
 }
 
+/**
+ * Renders the number of returned rows, flagging a response the server cut short at its row limit so a partial
+ * result cannot be read as a complete one (issue #5711).
+ */
+function renderResultCount(data, count) {
+  if (data.truncated === true)
+    $("#result-num").html(count + ' <span class="text-warning" title="More rows matched: raise the limit to see them.">(truncated)</span>');
+  else $("#result-num").html(count);
+}
+
 function browseType(typeName) {
   let database = getCurrentDatabase();
   if (!database) return;
@@ -3071,7 +3081,7 @@ function browseType(typeName) {
     } else {
       globalResultset = data.result;
       globalCy = null;
-      $("#result-num").html(data.result.records.length);
+      renderResultCount(data, data.result.records.length);
       renderGraph();
     }
 
@@ -3142,7 +3152,9 @@ function executeCommand(language, query) {
 }
 
 // Live progress for long-running maintenance commands (issue #5372): while a matching command is in flight,
-// poll the server's progress endpoint and render a small progress bar next to the execute spinner.
+// poll the server's progress endpoint and render a small progress bar below the editor toolbar.
+// #commandProgress is a static placeholder in query.html, kept outside the circular run button so its
+// label/bar never overflow into it (it previously overlapped the button, see issue report).
 let globalCommandProgressTimer = null;
 
 function startCommandProgressMonitor(database, command) {
@@ -3150,6 +3162,8 @@ function startCommandProgressMonitor(database, command) {
   if (!/^\s*(check\s+database|rebuild\s+index|compact\s+index|backup\s+database|import\s+database)/i.test(command)) return;
 
   stopCommandProgressMonitor();
+
+  $("#commandProgress").show();
 
   globalCommandProgressTimer = setInterval(function () {
     jQuery
@@ -3168,17 +3182,6 @@ function startCommandProgressMonitor(database, command) {
         let pct = op.percentage >= 0 ? op.percentage : null;
         let label = escapeHtml(op.operation) + " [step " + op.stepIndex + "/" + op.totalSteps + "] " + escapeHtml(op.stepName) + (pct != null ? " - " + pct + "%" : "");
 
-        let container = $("#commandProgress");
-        if (container.length == 0) {
-          $("#executeSpinner").after(
-            "<div id='commandProgress' class='ms-2' style='display: inline-block; min-width: 320px; vertical-align: middle;'>" +
-              "<div id='commandProgressLabel' style='font-size: 12px;'></div>" +
-              "<div class='progress' style='height: 6px;'>" +
-                "<div id='commandProgressBar' class='progress-bar progress-bar-striped progress-bar-animated' role='progressbar' style='width: 0%'></div>" +
-              "</div>" +
-            "</div>",
-          );
-        }
         $("#commandProgressLabel").html(label);
         $("#commandProgressBar").css("width", (pct != null ? pct : 100) + "%");
       })
@@ -3195,7 +3198,9 @@ function stopCommandProgressMonitor() {
     clearInterval(globalCommandProgressTimer);
     globalCommandProgressTimer = null;
   }
-  $("#commandProgress").remove();
+  $("#commandProgress").hide();
+  $("#commandProgressLabel").html("");
+  $("#commandProgressBar").css("width", "0%");
 }
 
 function executeCommandTable() {
@@ -3232,7 +3237,7 @@ function executeCommandTable() {
       let elapsed = new Date() - beginTime;
       $("#result-elapsed").html(elapsed);
 
-      $("#result-num").html(data.result.records.length);
+      renderResultCount(data, data.result.records.length);
       $("#resultJson").val(JSON.stringify(data, null, 2));
       $("#resultExplain").val(data.explain != null ? data.explain : "No profiler data found");
 
@@ -3287,7 +3292,7 @@ function executeCommandGraph() {
       let elapsed = new Date() - beginTime;
       $("#result-elapsed").html(elapsed);
 
-      $("#result-num").html(data.result.records.length);
+      renderResultCount(data, data.result.records.length);
       $("#resultJson").val(JSON.stringify(data, null, 2));
       $("#resultExplain").val(data.explain != null ? data.explain : "No profiler data found");
 
@@ -6070,8 +6075,12 @@ function renderIndexUpgradeWarningBanner(needRebuild) {
     if (names.indexOf(name) < 0) names.push(name);
   }
 
-  var html = "<div><i class='fa fa-exclamation-triangle me-1'></i><strong>Some indexes should be rebuilt.</strong> " +
-    "They keep working as they are - rebuilding is optional and can be done at any time.</div>";
+  // The header states no remedy and no severity, because the groups below no longer share either. One index may only
+  // be missing what a newer layout buys, another may be returning fewer records than a scan (#5802), and a third may
+  // simply not have been verifiable at startup. Each message carries its own consequence and its own remedy - saying
+  // "should be rebuilt" up here would overstate the mildest case and understate the worst.
+  var html = "<div><i class='fa fa-exclamation-triangle me-1'></i><strong>Some indexes need attention.</strong> " +
+    "Each note below says what is wrong and what to do about it.</div>";
 
   for (var message in byMessage) {
     var names = byMessage[message].sort();

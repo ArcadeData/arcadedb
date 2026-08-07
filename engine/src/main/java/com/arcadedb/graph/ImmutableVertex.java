@@ -113,6 +113,16 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     super.reload();
   }
 
+  /**
+   * A reloaded vertex carries a buffer the parsed prefix never described, so the edge pointers have to be read again:
+   * without this the vertex went on answering with the edges it held before the reload (issue #5771), which is the
+   * opposite of what the caller asked for by reloading.
+   */
+  @Override
+  protected void parseRecordPrefix() {
+    parseEdgePointers();
+  }
+
   @Override
   public RID getOutEdgesHeadChunk() {
     checkForLazyLoading();

@@ -207,8 +207,11 @@ class LSMVectorIndexIncrementalIngestScalingTest extends TestHelper {
         database.command("sql", "INSERT INTO Paper SET embedding = ?", (Object) randomVector(random));
     });
 
+    // 2 minutes, not 1 (issue #5765): what is being waited for is a chained background rebuild, and the wait
+    // flaked with several engine suites running concurrently. Raising the ceiling costs nothing when the rebuild
+    // lands on time and removes the only reason this ever failed.
     Awaitility.await("the graph absorbs every pending vector without any further search")
-        .atMost(Duration.ofSeconds(60))
+        .atMost(Duration.ofSeconds(120))
         .pollInterval(Duration.ofMillis(200))
         .untilAsserted(() -> {
           final Map<String, Long> stats = idx.getStats();

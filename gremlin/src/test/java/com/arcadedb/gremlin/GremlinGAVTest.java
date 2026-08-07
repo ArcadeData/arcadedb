@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.gremlin.support.TraversalPlans;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.Result;
@@ -60,9 +61,14 @@ class GremlinGAVTest {
       alice.newEdge("LIKES", charlie);
     });
 
-    // Build GAV covering all edge types
-    gav = new GraphAnalyticalView((Database) graph.getDatabase());
-    gav.build(new String[] { "Person" }, new String[] { "KNOWS", "LIKES" });
+    // Build the GAV through the builder. The public GraphAnalyticalView(Database) constructor is a
+    // backward-compatibility shim that never calls registerAsTraversalProvider(), so a view built
+    // that way is invisible to GraphTraversalProviderRegistry.findProvider() and the traversal
+    // silently falls back to OLTP.
+    gav = GraphAnalyticalView.builder((Database) graph.getDatabase())
+        .withVertexTypes("Person")
+        .withEdgeTypes("KNOWS", "LIKES")
+        .build();
   }
 
   @AfterEach
@@ -71,6 +77,18 @@ class GremlinGAVTest {
       gav.drop();
     if (graph != null)
       graph.drop();
+  }
+
+  @Test
+  void theGAVStepIsActuallyInstalledInThePlan() {
+    // Guard against the failure mode this class shipped with: all 8 *WithGAV tests passed while the
+    // GAV path never executed, because the view was never registered as a traversal provider and the
+    // OLTP fallback returns identical results. Assert the plan, not just the rows.
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().has("name", "Alice").out("KNOWS"),
+        ArcadeGAVVertexStep.class))
+        .as("plan was: %s", TraversalPlans.describe(graph.traversal().V().has("name", "Alice").out("KNOWS")))
+        .isTrue();
   }
 
   @Test
@@ -125,7 +143,7 @@ class GremlinGAVTest {
 
   @Test
   void outWithNoEdgeLabelWithGAV() {
-    // g.V().has('name','Alice').out() — no label filter, should return Bob (KNOWS) and Charlie (LIKES)
+    // g.V().has('name','Alice').out() with no label filter, should return Bob (KNOWS) and Charlie (LIKES)
     final ResultSet rs = graph.gremlin("g.V().has('name','Alice').out().values('name')").execute();
     final List<String> names = new ArrayList<>();
     while (rs.hasNext())

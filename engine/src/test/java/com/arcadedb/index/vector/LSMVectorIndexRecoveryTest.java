@@ -36,10 +36,12 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -641,11 +643,11 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     final int totalCount = initialCount + additionalCount;
 
-    Thread.sleep(6_000);
-
-    assertThat(lsmIndex.getStats().get("deltaVectorsCount"))
-        .as("Delta buffer should be empty after inactivity rebuild")
-        .isEqualTo(0L);
+    // Poll instead of sleeping a fixed 6s (issue #5765): the inactivity timer fires 2s after the last mutation and
+    // the rebuild that follows it takes as long as the machine gives it. Under a loaded reactor - several engine
+    // suites at once - 6s was not enough and the assertion below saw a delta of 1, always passing in isolation. No
+    // fixed sleep can be made correct here, only long enough to be slow.
+    awaitEmptyDeltaBuffer(lsmIndex);
 
     final List<Result> afterRebuildResults = executeVectorSearch("Embedding", queryVector, k);
     assertThat(afterRebuildResults.size())
@@ -1011,14 +1013,11 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
         database.command("sql", "INSERT INTO ChunkEmbedding SET vector = ?", (Object) generateRandomVector(random));
     });
 
-    Thread.sleep(6_000);
-
     typeIndex = (TypeIndex) database.getSchema().getIndexByName("ChunkEmbedding[vector]");
     lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
 
-    assertThat(lsmIndex.getStats().get("deltaVectorsCount"))
-        .as("Delta buffer should be empty after inactivity rebuild")
-        .isEqualTo(0L);
+    // See awaitEmptyDeltaBuffer: the fixed sleep this replaces was the same 6s race (issue #5765).
+    awaitEmptyDeltaBuffer(lsmIndex);
 
     final int totalCount = initialCount + additionalCount;
     final float[] queryVector = generateRandomVector(new Random(99));
@@ -1653,7 +1652,12 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     // 5) Capture warnings/severe logs during the reopen.
     final List<String> captured = new CopyOnWriteArrayList<>();
-    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    // #5773: getLogger(), not reflection on the private field - the accessor exists for exactly this
+    // save-and-restore, and a field rename would break the reflective form with no compile error. NOTE that
+    // LogManager is a SINGLETON, so this swap is PROCESS-WIDE until the finally below restores it: safe only
+    // because surefire runs test classes sequentially within a fork. Under class-level parallelism a concurrent
+    // test's WARNING output would land in the list below. There is no per-invocation seam to capture through.
+    final Logger originalLogger = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new CapturingLogger(captured, originalLogger));
 
     try {
@@ -1682,6 +1686,20 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Waits for the inactivity-triggered rebuild to drain the delta buffer, replacing a fixed sleep that could only
+   * ever be long enough to be slow, never long enough to be correct (issue #5765). The ceiling is generous on
+   * purpose: what varies is how long a loaded machine takes to run the rebuild, not whether it runs.
+   */
+  private void awaitEmptyDeltaBuffer(final LSMVectorIndex index) {
+    Awaitility.await("the inactivity rebuild drains the delta buffer")
+        .atMost(Duration.ofSeconds(120))
+        .pollInterval(Duration.ofMillis(200))
+        .untilAsserted(() -> assertThat(index.getStats().get("deltaVectorsCount"))
+            .as("Delta buffer should be empty after inactivity rebuild")
+            .isEqualTo(0L));
+  }
 
   private List<Result> executeVectorSearch(final String typeName, final float[] queryVector, final int k) {
     final StringBuilder vectorStr = new StringBuilder("[");
@@ -1877,13 +1895,6 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
         return true;
     }
     return false;
-  }
-
-  @SuppressWarnings("unchecked")
-  private static <T> T readField(final Object target, final String name) throws Exception {
-    final Field f = target.getClass().getDeclaredField(name);
-    f.setAccessible(true);
-    return (T) f.get(target);
   }
 
   /**

@@ -500,7 +500,13 @@ public class CoreApiSpec implements OpenApiContributor {
         {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
         INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
     schema.addProperty("serializer", SpecBuilders.string("Response serializer").example("json"));
-    schema.addProperty("limit", SpecBuilders.integer("Maximum number of results").example(100));
+    schema.addProperty("limit", SpecBuilders.integer(
+        """
+        Maximum number of rows to serialize into the response. When omitted, a LIMIT stated by the query is \
+        honored as written and only a query stating none is capped by the server default \
+        ('arcadedb.server.httpQueryDefaultLimit'). Use -1 for no cap. The response always reports the cap \
+        that was applied ('limit'), how many rows it carries ('returned') and whether rows were left \
+        behind ('truncated').""").example(100));
     schema.setRequired(List.of("command"));
     return schema;
   }
@@ -521,8 +527,21 @@ public class CoreApiSpec implements OpenApiContributor {
   private Schema<?> createQueryResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Query response object");
     schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.object(null), "Query results"));
-    schema.addProperty("executionTime", SpecBuilders.integer("Execution time in milliseconds"));
-    schema.addProperty("recordCount", SpecBuilders.integer("Number of records returned"));
+    schema.addProperty("limit", SpecBuilders.integer(
+        """
+        Effective row cap applied while serializing, -1 when uncapped. This is the serializer's cap, not the \
+        query's own LIMIT: a query stating a LIMIT below the server default reports the default here, and \
+        'returned' with 'truncated' describe what the response actually carries."""));
+    // 'executionTime' and 'recordCount' used to be documented here but no handler has ever emitted them:
+    // 'returned' is the real row count, and timings are reported under 'profile' when profileExecution is set.
+    schema.addProperty("returned", SpecBuilders.integer(
+        """
+        Number of rows carried by this response. With the 'graph' serializer, whose cap counts graph elements \
+        rather than rows, it is the number of serialized vertices plus edges, and it can exceed 'limit': a \
+        single row can expand into several elements, and the expansion of the row that reaches the cap is not \
+        cut in half."""));
+    schema.addProperty("truncated", SpecBuilders.bool(
+        "True when the cap stopped the serialization with rows still pending, so the response is incomplete"));
     return schema;
   }
 

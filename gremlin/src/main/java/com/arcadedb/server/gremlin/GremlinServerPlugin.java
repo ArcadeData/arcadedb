@@ -34,8 +34,13 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class GremlinServerPlugin implements ServerPlugin {
@@ -52,6 +57,7 @@ public class GremlinServerPlugin implements ServerPlugin {
   private              ArcadeDBServer       server;
   private              ContextConfiguration configuration;
   private              GremlinServer        gremlinServer;
+  private              ExecutorService      gremlinExecutorService;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -84,11 +90,25 @@ public class GremlinServerPlugin implements ServerPlugin {
     // Use ArcadeDB's custom GraphManager for dynamic database registration
     settings.graphManager = ArcadeGraphManager.class.getName();
 
+    // Disable Gremlin sessions: SessionOpProcessor runs on a per-session executor that the principal
+    // binding does not cover, so the engine's per-database/per-type ACLs cannot be enforced for it
+    // (GHSA-c287-v325-j5jx). ArcadeDB does not use sessions and the processor is deprecated in TinkerPop.
+    if (settings.processors != null)
+      settings.processors.removeIf(p -> p.className != null && p.className.toLowerCase(Locale.ENGLISH).contains("session"));
+
     // OVERWRITE AUTHENTICATION USING THE SERVER SECURITY
     settings.authentication = new Settings.AuthenticationSettings();
     settings.authentication.authenticator = GremlinServerAuthenticator.class.getName();
     settings.authentication.config = new HashMap<>(1);
     settings.authentication.config.put("server", server);
+
+    // ENFORCE PER-DATABASE AUTHORIZATION (canAccessToDatabase). Authentication alone validates the
+    // credential; without this gate any valid credential could reach ANY database by naming it as the
+    // traversal-source alias (GHSA-c287-v325-j5jx).
+    settings.authorization = new Settings.AuthorizationSettings();
+    settings.authorization.authorizer = ArcadeGremlinAuthorizer.class.getName();
+    settings.authorization.config = new HashMap<>(1);
+    settings.authorization.config.put("server", server);
 
     for (final String key : configuration.getContextKeys()) {
       if (key.startsWith("gremlin.")) {
@@ -113,12 +133,28 @@ public class GremlinServerPlugin implements ServerPlugin {
     // ABSENT OR CUSTOM) gremlin-server.yaml, BY ENSURING ArcadeIoRegistry IS REGISTERED ON EVERY SERIALIZER (#5309).
     ensureArcadeIoRegistry(settings);
 
-    gremlinServer = new GremlinServer(settings);
+    // Supply the Gremlin execution pool ourselves so we can bind the authenticated principal into the
+    // engine on the worker thread that actually runs each traversal (both bytecode and script paths use
+    // this single pool). This is what makes ArcadeDB's per-user ACLs enforce for Gremlin (GHSA-c287).
+    final int poolSize = settings.gremlinPool > 0 ? settings.gremlinPool : Runtime.getRuntime().availableProcessors();
+    gremlinExecutorService = new GremlinPrincipalPropagatingExecutorService(
+        Executors.newFixedThreadPool(poolSize, newGremlinThreadFactory()), server);
+
+    gremlinServer = new GremlinServer(settings, gremlinExecutorService);
     try {
       gremlinServer.start();
     } catch (final Exception e) {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
+  }
+
+  private static ThreadFactory newGremlinThreadFactory() {
+    final AtomicInteger counter = new AtomicInteger();
+    return runnable -> {
+      final Thread thread = new Thread(runnable, "arcadedb-gremlin-exec-" + counter.incrementAndGet());
+      thread.setDaemon(true);
+      return thread;
+    };
   }
 
   /**
@@ -232,6 +268,10 @@ public class GremlinServerPlugin implements ServerPlugin {
         ((ArcadeGraphManager) graphManager).closeAll();
       }
       gremlinServer.stop().join();
+    }
+    if (gremlinExecutorService != null) {
+      gremlinExecutorService.shutdownNow();
+      gremlinExecutorService = null;
     }
   }
 }

@@ -122,7 +122,7 @@ jobs:
           for v in $versions; do
             echo "::group::Resolve floors for Python $v"
             uv pip compile pyproject.toml \
-              --extra test --extra vector --extra examples \
+              --extra test --extra vector --extra examples --extra arrow --extra pandas \
               --resolution lowest-direct \
               --python-version "$v" \
               -o "$RUNNER_TEMP/floors-$v.txt"
@@ -271,7 +271,7 @@ jobs:
 
       - name: Set up Java (for native builds on macOS/Windows)
         if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
-        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: 'corretto'
           java-version: '25'
@@ -327,7 +327,12 @@ jobs:
         shell: bash
         run: |
           cd bindings/python
-          uv pip install --system test-install/*.whl pytest pytest-cov requests numpy
+          # This list is hand-maintained and mirrors the `test` extra. It had
+          # already drifted: pyarrow and pandas were missing, so to_arrow() and
+          # to_dataframe() tests skipped themselves in this job while it
+          # reported green. The guard step below now fails the build if any
+          # test skips for a missing import, so the next drift is loud.
+          uv pip install --system test-install/*.whl pytest pytest-cov requests numpy "psycopg[binary]" redis neo4j pyarrow pandas
 
       - name: Run pytest on host
         id: pytest
@@ -364,6 +369,30 @@ jobs:
             echo "failed=$FAILED" >> $GITHUB_OUTPUT
 
             echo "✅ Test results: $PASSED passed, $SKIPPED skipped, $FAILED failed"
+
+            # A test that skips because a dependency is missing is not a
+            # passing test, and it does not look like a failure either: the
+            # suite goes green having exercised nothing.
+            #
+            # This has now happened three times. pyarrow was dropped by an
+            # install command and the to_arrow() tests skipped; pandas was
+            # never in the `test` extra at all, so to_dataframe() had no
+            # executed coverage in any CI run this package has ever had; and
+            # the hand-written dependency list in this very job was missing
+            # both. Each time the signal was a green build.
+            #
+            # So make it loud. importorskip failures name the module, and a
+            # missing dependency is a CI bug rather than an expected condition.
+            IMPORT_SKIPS=$(grep -oE 'could not import .[a-zA-Z0-9_.]+.' test-results.xml | sort -u || true)
+            if [ -n "$IMPORT_SKIPS" ]; then
+              echo "❌ Tests skipped because dependencies are missing:"
+              echo "$IMPORT_SKIPS" | sed 's/^/     /'
+              echo ""
+              echo "   These tests did not run. Add the module to the 'test' extra in"
+              echo "   bindings/python/pyproject.toml AND to the install step above,"
+              echo "   or delete the test if the integration is no longer supported."
+              exit 1
+            fi
 
             # Force failure if there are failures or errors
             if [ "$FAILED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; then

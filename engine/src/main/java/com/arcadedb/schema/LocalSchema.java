@@ -557,6 +557,26 @@ public class LocalSchema implements Schema {
     this.encoding = encoding;
   }
 
+  /**
+   * Creates {@code newTypeName} as a copy of {@code typeName}: its properties, its records, and the definitions of the
+   * indexes it declares itself.
+   * <p>
+   * <b>Not atomic, by construction.</b> The records commit first - in batches of {@code transactionBatchSize}, so a
+   * large type does not hold one transaction open - and only then are the indexes built, each in its own transaction.
+   * The index build has to run outside the record-copy transaction to see the records at all (see the comment at that
+   * call site), which is what puts a commit boundary in the middle of the operation. The safety net for a failure on
+   * either side of it is the {@code catch} below: it drops {@code newTypeName}, and with it the buckets and records
+   * already committed, so a failed copy leaves the schema as it found it rather than a half-built type. The SOURCE type
+   * is only ever read, so it is unaffected either way.
+   *
+   * @param typeName             type to copy from, left untouched
+   * @param newTypeName          type to create, which must not exist yet
+   * @param newTypeClass         {@link LocalDocumentType} or {@link LocalVertexType}; edge types are not supported
+   * @param buckets              number of buckets of the new type
+   * @param pageSize             page size of the new type's buckets, not of its indexes - those keep the page size of
+   *                             the index they are copied from
+   * @param transactionBatchSize records to copy per transaction, or 0 to copy them all in one
+   */
   @Override
   public DocumentType copyType(final String typeName, final String newTypeName, final Class<? extends DocumentType> newTypeClass,
       final int buckets, final int pageSize, final int transactionBatchSize) {
@@ -610,11 +630,6 @@ public class LocalSchema implements Schema {
           }
         }
 
-        // COPY INDEXES
-        for (final Index index : oldType.getAllIndexes(false))
-          newType.createTypeIndex(index.getType(), index.isUnique(),
-              index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
-
         database.commit();
 
       } finally {
@@ -622,8 +637,18 @@ public class LocalSchema implements Schema {
           database.rollback();
       }
 
+      // COPY INDEXES. Deliberately outside the record-copy transaction: each index build opens its own transaction
+      // (TypeIndexBuilder.create wraps every bucket's build in a database.transaction(..., joinCurrent=false, ...)) and
+      // has to both see the copied records and commit its own entries. Run from inside an enclosing transaction it did
+      // neither, so every index on the copy came out EMPTY - a copy whose indexed queries silently answer nothing.
+      for (final Index index : oldType.getAllIndexes(false))
+        copyIndexDefinition((IndexInternal) index, newTypeName);
+
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on renaming type '%s' into '%s'", e, typeName, newTypeName);
+      // "copying", not "renaming": nothing here renames anything, and the source type is still there afterwards. The
+      // old wording is why issue #5723 was filed against a renameType() that does not exist - a rename goes through
+      // LocalDocumentType.rename(), which renames buckets in place and never recreates an index.
+      LogManager.instance().log(this, Level.SEVERE, "Error on copying type '%s' into '%s'", e, typeName, newTypeName);
 
       if (newType != null)
         try {
@@ -638,6 +663,43 @@ public class LocalSchema implements Schema {
     }
 
     return newType;
+  }
+
+  /**
+   * Recreates one index of the source type on the copy, carrying the WHOLE definition over rather than only the index
+   * type, the uniqueness flag and the property list.
+   * <p>
+   * Everything else used to be silently replaced by a default (issue #5723): the page size deliberately tuned at
+   * creation, the null strategy, the collations that make an index case-insensitive, and the type-specific
+   * configuration - a full-text index's analyzers and BM25 parameters, a geospatial index's resolution, a vector
+   * index's dimensions and similarity, without which the copy is not merely differently tuned but unusable.
+   * <p>
+   * The one attribute deliberately NOT carried over is a user-supplied index name: it is unique across the schema, so
+   * reusing it would collide with the index still held by the source type. The copy takes the auto-derived
+   * {@code newTypeName[properties]} form instead.
+   */
+  private void copyIndexDefinition(final IndexInternal index, final String newTypeName) {
+    final List<String> propertyNames = index.getPropertyNames();
+    final String[] properties = propertyNames.toArray(new String[propertyNames.size()]);
+
+    // withType() may swap the builder for a type-specific subclass (TypeFullTextIndexBuilder, TypeLSMVectorIndexBuilder,
+    // ...), so call it first and keep the returned reference instead of chaining off the original.
+    final TypeIndexBuilder builder = buildTypeIndex(newTypeName, properties).withType(index.getType());
+    builder.withUnique(index.isUnique());
+    // getPageSizeForNewFile(), not getPageSize(): the definition goes back through the validating creation path, and a
+    // HASH index predating #5713 can hold a page size that path refuses - which must not make copyType() fail.
+    builder.withPageSize(index.getPageSizeForNewFile());
+    builder.withNullStrategy(index.getNullStrategy());
+
+    final IndexMetadata sourceMetadata = index.getMetadataForNewFile();
+    if (sourceMetadata != null) {
+      // bucketId -1: the per-bucket builder binds each sub-index during create().
+      final IndexMetadata metadata = sourceMetadata.copy(newTypeName, properties, -1);
+      metadata.typeIndexName = null;
+      builder.withMetadata(metadata);
+    }
+
+    builder.create();
   }
 
   @Override
@@ -1145,7 +1207,10 @@ public class LocalSchema implements Schema {
   @Deprecated
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes,
       final int pageSize, final NULL_STRATEGY nullStrategy) {
-    return buildManualIndex(indexName, keyTypes).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
+    // withType is NOT optional here: the index factory resolves the handler by index type, so dropping the argument
+    // this overload takes made every call through it fail with a NullPointerException (issue #5765).
+    return buildManualIndex(indexName, keyTypes).withType(indexType).withUnique(unique).withPageSize(pageSize)
+        .withNullStrategy(nullStrategy).create();
   }
 
   public void close() {
@@ -2487,10 +2552,12 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Logs, once per opened database and per LOGICAL index, the reason an index should be rebuilt. An index whose
-   * on-disk layout predates a change the engine cannot apply in place keeps working exactly as it did, so this is
-   * advice and never an error; it is the only moment an operator would otherwise have no way of learning that a
-   * `REBUILD INDEX` is worth running. The same text reaches Studio through {@code schema:indexes}.
+   * Logs, once per opened database and per LOGICAL index, the reason an index should be rebuilt. How much that
+   * matters is carried by the message itself: an index whose on-disk layout merely predates a change the engine
+   * cannot apply in place keeps working exactly as it did, while one whose physical key order predates #5321 answers
+   * lookups with fewer records than a scan (#5802). Either way this is the only moment an operator would otherwise
+   * have no way of learning that a `REBUILD INDEX` is worth running - and the reason it names the LOGICAL index, not
+   * the bucket sub-index that raised it. The same text reaches Studio through {@code schema:indexes}.
    *
    * @see IndexInternal#getUpgradeWarning()
    */

@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
@@ -27,6 +28,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.graph.MutableVertex;
@@ -1071,5 +1073,220 @@ class ExternalPropertyTest extends TestHelper {
     final ResultSet rs = database.query("sql", "SELECT blob FROM Doc");
     assertThat(rs.hasNext()).isTrue();
     assertThat((String) rs.next().getProperty("blob")).isEqualTo("v");
+  }
+
+  /**
+   * Issue #5770: a read must not write. When an {@code AfterRecordReadListener} hands back a DIFFERENT record - the
+   * shape of the documented encryption recipe - {@code ImmutableDocument.checkForLazyLoading()} has to render that
+   * record into a buffer. Going through {@code serialize()} there ran the EXTERNAL branch of
+   * {@code BinarySerializer.serializeProperties()}, which creates or UPDATES the blob in the paired external bucket
+   * (and lets orphan cleanup delete blobs), so merely reading the record overwrote the stored value with whatever the
+   * listener returned. {@code serializeForRead()} renders the value inline instead.
+   * <p>
+   * The discriminating assertion is the stored value: with the listener detached, the record must still read back the
+   * value it was saved with. Before the fix it reads back the listener's value, which the read had persisted.
+   */
+  @Test
+  void afterReadListenerReturningAModifiedRecordDoesNotWriteToTheExternalBucket() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("name", "original").set("blob", "encrypted_value");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(saved[0].getBucketId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    final long extCountBefore = externalBucket.count();
+
+    // MIMICS THE ENCRYPTION HOOK: HAND BACK A DIFFERENT, DIRTY RECORD ON EVERY READ
+    final AfterRecordReadListener rewriter = record -> ((Document) record).modify().set("blob", "decrypted_value");
+    type.getEvents().registerListener(rewriter);
+
+    final int[] modifiedPages = new int[1];
+    try {
+      database.transaction(() -> {
+        // loadContent=false LEAVES THE RECORD UNMATERIALISED, SO THE READ BELOW GOES THROUGH checkForLazyLoading()
+        final Document read = database.lookupByRID(saved[0], false).asDocument();
+        assertThat(read.get("blob")).isEqualTo("decrypted_value");
+        assertThat(read.get("name")).isEqualTo("original");
+        modifiedPages[0] = ((DatabaseInternal) database).getTransaction().getModifiedPages();
+      });
+    } finally {
+      type.getEvents().unregisterListener(rewriter);
+    }
+
+    database.transaction(() -> assertThat(database.lookupByRID(saved[0], true).asDocument().get("blob"))
+        .as("the stored external value must survive the read untouched")
+        .isEqualTo("encrypted_value"));
+
+    assertThat(externalBucket.count()).as("reading a record must not add or delete external records")
+        .isEqualTo(extCountBefore);
+    assertThat(modifiedPages[0]).as("reading a record must not modify any page").isZero();
+  }
+
+  /**
+   * The second read path of issue #5770. {@code BaseRecord.reload()} materialises a listener-modified record exactly
+   * like {@code ImmutableDocument.checkForLazyLoading()} does, so it needs the same read-only serialization: patching
+   * only one of the two leaves the external bucket writable from a {@code reload()}.
+   */
+  @Test
+  void reloadWithAnAfterReadListenerDoesNotWriteToTheExternalBucket() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("name", "original").set("blob", "encrypted_value");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(saved[0].getBucketId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    final long extCountBefore = externalBucket.count();
+
+    final AfterRecordReadListener rewriter = record -> ((Document) record).modify().set("blob", "decrypted_value");
+    type.getEvents().registerListener(rewriter);
+
+    try {
+      database.transaction(() -> {
+        final Document read = database.lookupByRID(saved[0], false).asDocument();
+        read.reload();
+        assertThat(read.get("blob")).isEqualTo("decrypted_value");
+      });
+    } finally {
+      type.getEvents().unregisterListener(rewriter);
+    }
+
+    assertThat(externalBucket.count()).isEqualTo(extCountBefore);
+
+    database.transaction(() -> assertThat(database.lookupByRID(saved[0], true).asDocument().get("blob"))
+        .as("the stored external value must survive the reload untouched")
+        .isEqualTo("encrypted_value"));
+  }
+
+  /**
+   * The listener of the encryption recipe rewrites a plain property, not the EXTERNAL one. The record still has to
+   * read back its EXTERNAL value: rendering it inline is what keeps the buffer complete. Skipping external properties
+   * on a read instead - the shortcut issue #5770 explicitly rejects - would answer null here.
+   */
+  @Test
+  void afterReadListenerRewritingAPlainPropertyStillResolvesTheExternalValue() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("name", "original").set("blob", "external_payload");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(saved[0].getBucketId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    final long extCountBefore = externalBucket.count();
+
+    final AfterRecordReadListener rewriter = record -> ((Document) record).modify().set("name", "rewritten");
+    type.getEvents().registerListener(rewriter);
+
+    try {
+      database.transaction(() -> {
+        final Document read = database.lookupByRID(saved[0], false).asDocument();
+        assertThat(read.get("name")).isEqualTo("rewritten");
+        assertThat(read.get("blob")).as("the EXTERNAL value must still resolve on the read path")
+            .isEqualTo("external_payload");
+        assertThat(read.getPropertyNames()).containsExactlyInAnyOrder("name", "blob");
+        assertThat(read.toMap(false)).containsEntry("name", "rewritten").containsEntry("blob", "external_payload");
+      });
+    } finally {
+      type.getEvents().unregisterListener(rewriter);
+    }
+
+    assertThat(externalBucket.count()).isEqualTo(extCountBefore);
+  }
+
+  /**
+   * The vertex shape of the same path: {@code serializeVertex()} has its own read-only overload, and the encryption
+   * recipe this listener mimics ({@code RecordEncryptionTest}) is written on vertices.
+   */
+  @Test
+  void afterReadListenerOnAVertexDoesNotWriteToTheExternalBucket() {
+    final VertexType type = database.getSchema().createVertexType("V");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("embedding", Type.ARRAY_OF_FLOATS).setExternal(true);
+
+    final float[] embedding = new float[] { 1.5f, -2.25f, 3.125f };
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("V").set("name", "original").set("embedding", embedding);
+      v.save();
+      saved[0] = v.getIdentity();
+    });
+
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(saved[0].getBucketId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    final long extCountBefore = externalBucket.count();
+
+    final float[] rewritten = new float[] { 9.5f, 8.25f, 7.125f };
+    final AfterRecordReadListener rewriter = record -> record.asVertex().modify().set("embedding", rewritten);
+    type.getEvents().registerListener(rewriter);
+
+    try {
+      database.transaction(() -> {
+        final var read = database.lookupByRID(saved[0], false).asVertex();
+        assertThat(read.get("name")).isEqualTo("original");
+        assertThat((float[]) read.get("embedding")).containsExactly(rewritten);
+      });
+    } finally {
+      type.getEvents().unregisterListener(rewriter);
+    }
+
+    assertThat(externalBucket.count()).isEqualTo(extCountBefore);
+
+    database.transaction(() -> assertThat((float[]) database.lookupByRID(saved[0], true).asVertex().get("embedding"))
+        .as("the stored external value must survive the read untouched")
+        .containsExactly(embedding));
+  }
+
+  /**
+   * The buffer {@code serializeForRead()} produces has to be usable on its own: the EXTERNAL value is written inline,
+   * so a reader resolves it without a second lookup in the paired bucket.
+   */
+  @Test
+  void serializeForReadRendersExternalValuesInline() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    database.transaction(() -> database.newDocument("Doc").set("name", "original").set("blob", "payload").save());
+
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(
+        type.getBuckets(false).getFirst().getFileId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    final long extCountBefore = externalBucket.count();
+
+    database.transaction(() -> {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final Document loaded = database.iterateType("Doc", true).next().asDocument();
+      final MutableDocument modified = loaded.modify().set("name", "modified");
+
+      final Binary buffer = db.getSerializer().serializeForRead(db, modified).getNotReusable();
+      buffer.position(1); // SKIP THE RECORD-TYPE BYTE
+
+      final Map<String, Object> properties = db.getSerializer()
+          .deserializeProperties(database, buffer, null, modified.getIdentity());
+      assertThat(properties).containsEntry("name", "modified").containsEntry("blob", "payload");
+    });
+
+    assertThat(externalBucket.count()).as("serializeForRead must not write to the external bucket")
+        .isEqualTo(extCountBefore);
   }
 }

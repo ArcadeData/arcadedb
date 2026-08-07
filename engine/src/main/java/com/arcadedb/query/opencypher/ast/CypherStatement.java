@@ -284,4 +284,21 @@ public interface CypherStatement {
   default boolean isServerControlStatement() {
     return false;
   }
+
+  /**
+   * The variable names this statement could read, for a caller that has to know whether it is correlated to
+   * something it is about to ignore.
+   * <p>
+   * Asked once per <b>statement</b>, not once per row: the AST is immutable and shared, while the plan that runs a
+   * subquery body is rebuilt for every outer row. {@link SimpleCypherStatement} memoizes it for that reason; the
+   * default here answers "unknown", which every caller must read as "every name is referenced" (issue #5686).
+   * <p>
+   * {@link SimpleCypherStatement} is the only implementation that overrides it, so a {@link UnionStatement} body
+   * permanently answers "unknown" and never recovers a push-down. That costs nothing today - both push-downs need a
+   * single {@code MATCH} and a single count item, which no {@code UNION} can be - and it is the safe direction, so
+   * it is left as the conservative gap it is rather than modelled for a case that cannot arise.
+   */
+  default CypherReferencedVariables getReferencedVariables() {
+    return CypherReferencedVariables.unknown();
+  }
 }

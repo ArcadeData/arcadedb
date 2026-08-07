@@ -1247,10 +1247,9 @@ class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    // Every count below is compared against the full live set, which assumes an UNBOUNDED location cache - the
-    // default of arcadedb.vectorIndex.locationCacheSize, and what this suite runs with. Under a bounded cache (the
-    // low-ram profile caps it at 10_000) the index FIFO-evicts down to the cap and countEntries() legitimately
-    // reports the cap instead of the live count, so the invariant would have to be expressed against that bound.
+    // Every count below is compared against the full live set. That holds unconditionally since issue #5559: the
+    // location map has no bounded backend left, so no setting can make countEntries() report a cap instead of the
+    // live count.
     assertThat(typeIndex.countEntries()).as("Baseline count before any compaction").isEqualTo(numVectors);
 
     final AtomicBoolean stop = new AtomicBoolean(false);

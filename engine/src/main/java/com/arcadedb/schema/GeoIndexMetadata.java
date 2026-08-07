@@ -102,6 +102,41 @@ public class GeoIndexMetadata extends IndexMetadata {
     this.tokenization = readTokenization(metadata);
   }
 
+  /**
+   * Reassembles a geospatial definition from the common index metadata plus the two settings a geospatial index keeps
+   * outside it. {@code LSMTreeGeoIndex} holds the resolution and the layout as plain fields and its underlying LSM-Tree
+   * carries a base {@link IndexMetadata}, so answering "the definition to create a new file with" means putting the two
+   * halves back together. It belongs here rather than on the index because copying the base fields is
+   * {@link #copyCommonTo}'s job, and that is only reachable from inside this hierarchy.
+   *
+   * @param base         common metadata of the underlying index, or {@code null} when there is none
+   * @param precision    geohash resolution of the index
+   * @param tokenization storage layout of the index
+   */
+  public static GeoIndexMetadata from(final IndexMetadata base, final int precision, final TOKENIZATION tokenization) {
+    final GeoIndexMetadata metadata = base != null ?
+        base.copyCommonTo(new GeoIndexMetadata(base.typeName, base.propertyNames.toArray(new String[0]),
+            base.associatedBucketId)) :
+        new GeoIndexMetadata(null, new String[0], -1);
+    metadata.setPrecision(precision);
+    metadata.setTokenization(tokenization);
+    return metadata;
+  }
+
+  /**
+   * Carries the geohash resolution AND the storage layout over. The layout is a property of what is written in the
+   * file, not a preference, so a copy that is going to be populated from the same definition keeps it; a caller that
+   * knows it is re-tokenizing every record from scratch - a rebuild - overrides it with
+   * {@link #DEFAULT_TOKENIZATION} afterwards.
+   */
+  @Override
+  public GeoIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    final GeoIndexMetadata copy = copyCommonTo(new GeoIndexMetadata(typeName, propertyNames, bucketId));
+    copy.precision = precision;
+    copy.tokenization = tokenization;
+    return copy;
+  }
+
   @Override
   public Set<String> getUserMetadataKeys() {
     return USER_METADATA_KEYS;
@@ -125,6 +160,15 @@ public class GeoIndexMetadata extends IndexMetadata {
             + Arrays.toString(TOKENIZATION.values()), e);
       }
     }
+  }
+
+  @Override
+  protected Object getUserMetadataValue(final String key) {
+    return switch (key) {
+      case "precision" -> precision;
+      case "tokenization" -> tokenization;
+      default -> null;
+    };
   }
 
   /**

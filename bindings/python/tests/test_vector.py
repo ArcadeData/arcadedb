@@ -19,7 +19,29 @@ def test_db(tmp_path):
     db.drop()
 
 
-def test_to_java_byte_array_accepts_bytes_like_fast_paths():
+@pytest.fixture
+def jvm(tmp_path):
+    """Guarantee a running JVM for tests that touch the array converters.
+
+    to_java_byte_array and to_java_float_array go straight to jpype.JArray,
+    which raises JVMNotRunning unless something has already started the JVM.
+    The two tests below have no database fixture, so running this FILE on its
+    own failed both of them while the full suite passed, because some earlier
+    module happened to boot the JVM first.
+
+    That is a test-isolation defect rather than a product one, and it matters
+    more than it looks: running one file in isolation is the first thing
+    anybody does when chasing a flake in it (see upstream #5615, which is
+    about this very file).
+    """
+    import jpype
+
+    if not jpype.isJVMStarted():
+        arcadedb.create_database(str(tmp_path / "_jvm_boot")).close()
+    yield
+
+
+def test_to_java_byte_array_accepts_bytes_like_fast_paths(jvm):
     """to_java_byte_array should preserve signed byte semantics for bytes-like
     inputs."""
     np = pytest.importorskip("numpy")
@@ -36,7 +58,7 @@ def test_to_java_byte_array_accepts_bytes_like_fast_paths():
     ) == [0, 127, -1]
 
 
-def test_to_java_float_array_accepts_numpy_directly():
+def test_to_java_float_array_accepts_numpy_directly(jvm):
     """to_java_float_array should accept NumPy arrays without Python-list copies."""
     np = pytest.importorskip("numpy")
 
@@ -294,7 +316,6 @@ class TestLSMVectorIndex:
             quantization="INT8",
             store_vectors_in_graph=True,
             add_hierarchy=True,
-            location_cache_size=123,
             graph_build_cache_size=456,
             mutations_before_rebuild=789,
         )
@@ -309,7 +330,10 @@ class TestLSMVectorIndex:
         assert metadata["similarity_function"] == "EUCLIDEAN"
         assert metadata["id_property"] == "slug"
         assert metadata["quantization"] == "INT8"
-        assert metadata["location_cache_size"] == 123
+        # The engine removed locationCacheSize in #5559/#5568, so the key must
+        # no longer be reported. Asserting its absence keeps a silent
+        # reintroduction (which would raise on every metadata read) visible.
+        assert "location_cache_size" not in metadata
         assert metadata["graph_build_cache_size"] == 456
         assert metadata["mutations_before_rebuild"] == 789
         assert metadata["store_vectors_in_graph"] is True
@@ -514,12 +538,21 @@ class TestLSMVectorIndex:
             index.build_graph_now()
 
         with arcadedb.open_database(db_path) as db:
-            rs = db.query(
-                "sql",
-                "SELECT vectorNeighbors('Doc[embedding]', [1.0, 0.0, 0.0], 1) as res",
-            ).to_list()
-            assert len(rs) == 1
-            neighbors = rs[0].get("res")
+            # The ANN graph loads asynchronously after reopen; poll briefly
+            # so slow CI runners (Windows especially) don't race it.
+            import time as _time
+
+            neighbors = []
+            for _ in range(50):
+                rs = db.query(
+                    "sql",
+                    "SELECT vectorNeighbors('Doc[embedding]', [1.0, 0.0, 0.0], 1) as res",
+                ).to_list()
+                assert len(rs) == 1
+                neighbors = rs[0].get("res")
+                if neighbors:
+                    break
+                _time.sleep(0.1)
             assert len(neighbors) == 1
             vertex = neighbors[0]
             assert vertex is not None
@@ -711,9 +744,6 @@ class TestLSMVectorIndex:
         assert rid_conversion_calls[: len(allowed_rids)] == allowed_rids
         assert len(rid_conversion_calls) >= len(allowed_rids)
 
-    @pytest.mark.skip(
-        reason="Known upstream bug: Vector deletions cause index corruption"
-    )
     def test_lsm_vector_delete_and_search_others(self, test_db):
         """Test deleting vertices in a larger dataset and ensuring others are still found."""
         import random  # nosec B311
@@ -733,7 +763,6 @@ class TestLSMVectorIndex:
         # Generate 100 random vectors
         num_vectors = 100
         vectors = []
-        rids = []
 
         # Use fixed seed for reproducibility
         random.seed(42)
@@ -750,7 +779,6 @@ class TestLSMVectorIndex:
                     arcadedb.to_java_float_array(vec),
                     i,
                 )
-                rids.append(str(i))
 
         # Create index now (Bulk load)
         # We disable store_vectors_in_graph to avoid "Invalid position" errors when checking mutable pages
@@ -767,39 +795,34 @@ class TestLSMVectorIndex:
             for idx in sorted(list(deleted_indices)):
                 test_db.command("sql", "DELETE FROM Doc WHERE id = ?", idx)
 
-        # Verify deletions and existence
+        # Verify deletions and existence.
+        #
+        # Compare the `id` PROPERTY, not the record identity. An earlier version
+        # of this test compared str(get_identity()), a RID like "#1:1", against
+        # the integer i. "#1:1" != 1 is always true, so the deleted-vector check
+        # could never fail, and "#1:1" == 1 is always false, so the surviving-
+        # vector check could never pass. That made the test fail unconditionally
+        # and it was skipped as "Known upstream bug: Vector deletions cause index
+        # corruption". The engine was never at fault: it reports
+        # "110 total entries, 10 deleted, 90 active" and validates 90/90, and the
+        # query for a surviving vector returns it ranked first.
         for i in range(num_vectors):
             vec = vectors[i]
-            rid = i
 
-            # Search for the vector
-            # Increase k to 10 to handle slight variations in ANN recall or score normalization
-            # especially on Windows/CI environments where the graph structure might be slightly different
+            # k=10 absorbs small variations in ANN recall across platforms.
             results = index.find_nearest(vec, k=10)
+            found_ids = [int(vertex.get("id")) for vertex, _ in results]
 
             if i in deleted_indices:
-                # If deleted, we should NOT find this specific RID
-                if len(results) > 0:
-                    for found_vertex, _ in results:
-                        found_rid = str(found_vertex.get_identity())
-                        assert (
-                            found_rid != rid
-                        ), f"Deleted vector at index {i} (RID {rid}) was found!"
+                assert i not in found_ids, (
+                    f"Deleted vector id={i} was still returned.\n"
+                    f"Found ids: {found_ids}"
+                )
             else:
-                # If not deleted, we SHOULD find this specific RID among top matches
-                found = False
-                found_rids = []
-                for found_vertex, _ in results:
-                    found_rid = str(found_vertex.get_identity())
-                    found_rids.append(found_rid)
-                    if found_rid == rid:
-                        found = True
-                        break
-
-                assert found, (
-                    f"Existing vector at index {i} (RID {rid}) not found in top 10 results.\n"
-                    f"Found RIDs: {found_rids}\n"
-                    f"Deleted indices: {sorted(list(deleted_indices))}"
+                assert i in found_ids, (
+                    f"Surviving vector id={i} not in the top 10.\n"
+                    f"Found ids: {found_ids}\n"
+                    f"Deleted ids: {sorted(deleted_indices)}"
                 )
 
     def test_lsm_vector_search_ef_search(self, test_db):
@@ -891,6 +914,36 @@ class TestLSMVectorIndex:
 
         # Size should be 2
         assert index.get_size() == 2
+
+    def test_lsm_index_stats(self, test_db):
+        """Live counters are readable and track index activity."""
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+
+        index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
+
+        stats = index.get_stats()
+        assert isinstance(stats, dict) and stats
+        # Counters the engine has reported since vector indexes existed;
+        # the key set may grow, so only these are asserted.
+        assert stats["totalVectors"] == 0
+        assert isinstance(stats["dimensions"], int)
+        assert stats["vectorFetchFromDocuments"] >= 0
+
+        with test_db.transaction():
+            for vec in ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]):
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
+
+        assert index.get_stats()["totalVectors"] == 2
+        # values are plain Python scalars, not Java objects
+        assert all(
+            v is None or isinstance(v, (int, float, bool, str))
+            for v in index.get_stats().values()
+        )
 
     def test_lsm_persistence(self, temp_db_path):
         """Test that LSM index persists across database restarts."""

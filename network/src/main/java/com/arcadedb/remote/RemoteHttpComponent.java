@@ -85,6 +85,9 @@ public class RemoteHttpComponent extends RWLockContext {
   protected        String                      currentServer;
   protected        int                         currentPort;
   private         Pair<String, Integer>       stickyTransactionServer;
+  // Volatile so a setMaxResultRows() from another thread is seen by the command-build path: this class is
+  // documented as not thread safe, but the cap is a connection-wide knob an application may flip at any time.
+  private volatile Integer                    maxResultRows;
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN, FIXED
@@ -155,6 +158,30 @@ public class RemoteHttpComponent extends RWLockContext {
         throw ie;
       throw new IOException("HTTP request failed: " + request.uri(), cause);
     }
+  }
+
+  /**
+   * Maximum number of rows the server is asked to serialize per command, or {@code null} (the default) to
+   * leave the decision to the server.
+   *
+   * @see #setMaxResultRows(Integer)
+   */
+  public Integer getMaxResultRows() {
+    return maxResultRows;
+  }
+
+  /**
+   * Sets the maximum number of rows the server serializes per command, sent as the {@code limit} field of the
+   * request. Use {@code -1} for no cap, so a query with no LIMIT of its own returns every row exactly like the
+   * embedded API does, and {@code null} to leave the decision to the server: a query stating its own LIMIT is
+   * always honored as written, while a query stating none is capped by the server default
+   * ({@code arcadedb.server.httpQueryDefaultLimit}) and the driver logs a warning when that cap drops rows
+   * (issue #5711).
+   * <p>
+   * Beware that removing the cap makes the server materialize the whole result set in memory before answering.
+   */
+  public void setMaxResultRows(final Integer maxResultRows) {
+    this.maxResultRows = maxResultRows;
   }
 
   public int getTimeout() {
@@ -293,7 +320,13 @@ public class RemoteHttpComponent extends RWLockContext {
             jsonRequest.put("language", language);
           jsonRequest.put("command", payloadCommand);
           jsonRequest.put("serializer", "record");
+          // Issue #5812: the @props per-column type hint is off by default on the HTTP surface - a generic
+          // client never asked for it - so this driver, which needs it to rebuild the exact Java type of a
+          // non-element (projection/aggregate) column, opts in explicitly.
+          jsonRequest.put("typeHints", true);
           jsonRequest.put("retries", txRetries);
+          if (maxResultRows != null)
+            jsonRequest.put("limit", maxResultRows);
 
           if (params != null)
             jsonRequest.put("params", new JSONObject(params));
@@ -316,15 +349,8 @@ public class RemoteHttpComponent extends RWLockContext {
         HttpResponse<String> response = sendWithWatchdog(request);
 
         // Capture commit-index from response for read-your-writes consistency.
-        if (this instanceof RemoteDatabase remoteDb) {
-          response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
-            try {
-              remoteDb.updateLastCommitIndex(Long.parseLong(val));
-            } catch (final NumberFormatException ignored) {
-              // server sent an invalid header; ignore
-            }
-          });
-        }
+        if (this instanceof RemoteDatabase remoteDb)
+          remoteDb.captureCommitIndexHeader(response);
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);

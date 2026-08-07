@@ -465,10 +465,20 @@ public class CypherOptimizer {
       final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
           rel.getClauseIndex(), Collections.emptySet());
 
+      // A relationship variable nobody reads is as good as anonymous: the hop can be walked
+      // through the CSR adjacency view, which never materializes an edge object. The step-based
+      // executor has always made that call; both branches below have to make the same one, or the
+      // same query treats an unread variable as anonymous on one branch and as edge-carrying on the
+      // other depending only on whether the hop happened to land on ExpandAll or ExpandInto (#5691).
+      final boolean edgeIsMaterialized = rel.getVariable() != null && !rel.getVariable().isEmpty()
+          && (needsEdgeTracking.contains(rel)
+              || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
+
       // Check if we should use ExpandInto (both endpoints bound)
       if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
-        currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding, needsEdgeTracking.contains(rel));
+        currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding, needsEdgeTracking.contains(rel),
+            edgeIsMaterialized);
 
         // An anonymous hop still binds a relationship, and a later same-clause hop must not reuse it.
         // Must run before anything wraps currentOp.
@@ -482,14 +492,6 @@ public class CypherOptimizer {
               .add(synVar);
         }
       } else {
-        // A relationship variable nobody reads is as good as anonymous: the hop can be walked
-        // through the CSR adjacency view, which never materializes an edge object. The step-based
-        // executor has always made that call; the operators have to make the same one, or the same
-        // query traverses edges here and adjacency ids there (10x on the expansion).
-        final boolean edgeIsMaterialized = rel.getVariable() != null && !rel.getVariable().isEmpty()
-            && (needsEdgeTracking.contains(rel)
-                || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
-
         // Use ExpandAll for unbounded patterns
         currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding, edgeIsMaterialized);
 
@@ -638,19 +640,31 @@ public class CypherOptimizer {
       final LogicalRelationship relationship,
       final PhysicalOperator input,
       final Set<String> sameClausePrecedingRelVars,
-      final boolean needsEdgeTracking) {
-    // Extract parameters from relationship
+      final boolean needsEdgeTracking,
+      final boolean edgeIsMaterialized) {
+    // Extract parameters from relationship. A variable nobody reads binds nothing worth carrying -
+    // same rule createExpandAllOperator applies, so a named-but-unread variable does not keep this
+    // hop off the CSR-backed GAVExpandInto path below.
     final String sourceVariable = relationship.getSourceVariable();
     final String targetVariable = relationship.getTargetVariable();
-    final String edgeVariable = relationship.getVariable();
+    final String edgeVariable = edgeIsMaterialized ? relationship.getVariable() : null;
     final Direction direction = relationship.getDirection();
     final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
 
     // Estimate cost and cardinality for ExpandInto
     // ExpandInto is much cheaper than ExpandAll because the edge list is filtered on the neighbour
-    // pointer, so only the edges reaching the pinned target are ever materialised
+    // pointer, so only the edges reaching the pinned target are ever materialised.
+    // DEFAULT_EXPAND_INTO_SELECTIVITY alone assumes the hop can only filter (at most one edge per
+    // pair), which is backwards on a multigraph: it emits one row per edge joining the pair. Scale
+    // it by the type's sampled mean-edges-per-connected-pair so a multi-edge type is not undercounted
+    // (#5690).
     final long inputCardinality = input.getEstimatedCardinality();
-    final long outputCardinality = (long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY);
+    final double meanEdgesPerConnectedPair = estimateMeanEdgesPerConnectedPair(edgeTypes);
+    final long outputCardinality = (long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY * meanEdgesPerConnectedPair);
+    // Cost intentionally stays keyed off inputCardinality alone, not the multiplicity-scaled
+    // outputCardinality: it models the per-input-row pointer-comparison work of walking to the pinned
+    // target, which does not grow with how many edges happen to join the pair once found. The corrected
+    // outputCardinality is what JoinOrderRule orders by, which is the actual defect this fixes.
     final double expandIntoCost = inputCardinality * 1.0; // pointer comparisons per input row, no record load
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
 
@@ -681,6 +695,30 @@ public class CypherOptimizer {
     );
     expandInto.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
     return expandInto;
+  }
+
+  /**
+   * Averages the sampled parallel-edge multiplicity across a bound-target hop's edge types. An
+   * untyped hop cannot be attributed to one edge type's statistic, so it keeps the plain selectivity
+   * behaviour (multiplicity 1.0, i.e. simple-graph assumption).
+   * <p>
+   * Averaging (rather than summing) is exact for the single-type hop this issue reports and stays a
+   * reasonable heuristic for a union hop ({@code [:A|:B]}): summing would assume the pair is joined by
+   * an edge of every listed type, which is not guaranteed either, so neither combination is exact for
+   * a union - averaging was chosen as the more conservative of the two.
+   *
+   * @param edgeTypes the hop's edge types
+   *
+   * @return the mean estimated edges per connected pair across the given types
+   */
+  private double estimateMeanEdgesPerConnectedPair(final String[] edgeTypes) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return 1.0;
+
+    double sum = 0.0;
+    for (final String edgeType : edgeTypes)
+      sum += statisticsProvider.getMeanEdgesPerConnectedPair(edgeType);
+    return sum / edgeTypes.length;
   }
 
   /**
@@ -874,18 +912,13 @@ public class CypherOptimizer {
     final String sourceVar = chain.get(chainLen - 1).getSourceVariable();
 
     // Determine which variables need materialization (referenced in WHERE/WITH/RETURN)
-    final Set<String> usedVariables = new HashSet<>();
-    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
-      usedVariables.addAll(WhereClause.collectVariables(statement.getWhereClause().getConditionExpression()));
-    for (final MatchClause mc : statement.getMatchClauses())
-      if (mc.hasWhereClause() && mc.getWhereClause().getConditionExpression() != null)
-        usedVariables.addAll(WhereClause.collectVariables(mc.getWhereClause().getConditionExpression()));
-    if (statement.getReturnClause() != null)
-      for (final var item : statement.getReturnClause().getReturnItems())
-        collectExpressionVariables(item.getExpression(), usedVariables);
-    for (final var wc : statement.getWithClauses())
-      for (final var item : wc.getItems())
-        collectExpressionVariables(item.getExpression(), usedVariables);
+    final Set<String> usedVariables = collectDownstreamVariables();
+
+    // A filter that is about to be pushed INTO the chain still has to be evaluated there, so every
+    // variable it reads must be materialized. Inline property maps (MATCH (p:Person {id: 0})) become
+    // such a filter and mention no variable that WHERE/WITH/RETURN necessarily names (#5746).
+    if (topFilter instanceof FilterOperator filter)
+      usedVariables.addAll(WhereClause.collectVariables(filter.getPredicate()));
 
     final boolean[] materialize = new boolean[chainLen + 1];
     materialize[0] = usedVariables.contains(sourceVar); // source
@@ -916,26 +949,47 @@ public class CypherOptimizer {
    * Skipping the OLTP vertex load for these variables can save ~2μs per row.
    */
   private void applyDeferredVertexLoading(final PhysicalOperator rootOperator) {
-    // Collect variables referenced in WHERE/WITH/RETURN expressions
+    final Set<String> usedVariables = collectDownstreamVariables();
+
+    // Any filter still standing in the plan is evaluated on the rows the expansions produce, so its
+    // variables must stay materialized even when nothing downstream projects them (#5746).
+    collectFilterVariables(rootOperator, usedVariables);
+
+    // Walk the operator tree and mark GAVExpandAll operators for deferred loading
+    // The root operator's target should NOT be deferred (it's the final output)
+    markDeferredRecursive(rootOperator, usedVariables, true);
+  }
+
+  /**
+   * Collects every variable a downstream clause reads: the statement WHERE, each MATCH's own WHERE,
+   * RETURN, and WITH. A variable absent from this set is only a stepping stone for traversal and
+   * never has to be loaded from OLTP.
+   */
+  private Set<String> collectDownstreamVariables() {
     final Set<String> usedVariables = new HashSet<>();
-    // From WHERE
     if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
       usedVariables.addAll(WhereClause.collectVariables(statement.getWhereClause().getConditionExpression()));
     for (final MatchClause mc : statement.getMatchClauses())
       if (mc.hasWhereClause() && mc.getWhereClause().getConditionExpression() != null)
         usedVariables.addAll(WhereClause.collectVariables(mc.getWhereClause().getConditionExpression()));
-    // From RETURN
     if (statement.getReturnClause() != null)
       for (final var item : statement.getReturnClause().getReturnItems())
         collectExpressionVariables(item.getExpression(), usedVariables);
-    // From WITH
     for (final var wc : statement.getWithClauses())
       for (final var item : wc.getItems())
         collectExpressionVariables(item.getExpression(), usedVariables);
+    return usedVariables;
+  }
 
-    // Walk the operator tree and mark GAVExpandAll operators for deferred loading
-    // The root operator's target should NOT be deferred (it's the final output)
-    markDeferredRecursive(rootOperator, usedVariables, true);
+  /** Adds the variables read by every FilterOperator in the operator tree. */
+  private static void collectFilterVariables(final PhysicalOperator op, final Set<String> vars) {
+    if (op == null)
+      return;
+    if (op instanceof FilterOperator filter) {
+      vars.addAll(WhereClause.collectVariables(filter.getPredicate()));
+      collectFilterVariables(filter.getChild(), vars);
+    } else if (op instanceof GAVExpandAll gav)
+      collectFilterVariables(gav.getChild(), vars);
   }
 
   private void markDeferredRecursive(final PhysicalOperator op, final Set<String> usedVariables, final boolean isRoot) {

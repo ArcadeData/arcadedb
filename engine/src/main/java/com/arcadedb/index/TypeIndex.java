@@ -325,8 +325,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public String getUpgradeWarning() {
-    // Every bucket sub-index of a type index shares one definition, so the first one answers for all of them.
-    return getFirstUnderlyingIndex().getUpgradeWarning();
+    // A definition-derived warning is the same on every bucket sub-index, but a PHYSICAL one - a key order that no
+    // longer matches the comparator (#5802) - is raised per bucket, and asking only the first one would report a type
+    // index healthy while another of its buckets needs a rebuild. The first answer found wins: they read alike, and
+    // the remedy is one REBUILD INDEX over the whole logical index either way.
+    for (final IndexInternal index : indexesOnBuckets) {
+      final String warning = index.getUpgradeWarning();
+      if (warning != null)
+        return warning;
+    }
+    return null;
   }
 
   @Override
@@ -412,6 +420,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public int getPageSize() {
     checkIsValid();
     return getFirstUnderlyingIndex().getPageSize();
+  }
+
+  @Override
+  public int getPageSizeForNewFile() {
+    checkIsValid();
+    // Same definition across every bucket sub-index, so the first one answers for all of them.
+    return getFirstUnderlyingIndex().getPageSizeForNewFile();
   }
 
   @Override
@@ -678,6 +693,18 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return metadata;
     if (!indexesOnBuckets.isEmpty())
       return getFirstUnderlyingIndex().getMetadata();
+    return null;
+  }
+
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    // Same precedence as getMetadata(), but the delegate answers with the type-specific configuration a wrapper index
+    // keeps outside the underlying LSM-Tree. Same definition across every bucket sub-index, so the first one answers
+    // for all of them.
+    if (metadata != null)
+      return metadata;
+    if (!indexesOnBuckets.isEmpty())
+      return getFirstUnderlyingIndex().getMetadataForNewFile();
     return null;
   }
 }

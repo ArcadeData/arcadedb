@@ -48,6 +48,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
@@ -99,6 +100,14 @@ import java.util.logging.Level;
 public class GraphBatch implements AutoCloseable {
 
   private final DatabaseInternal database;
+
+  /**
+   * Database instance holding the single-batch guard this batch reserved, or {@code null} when the batch was
+   * built outside {@link com.arcadedb.database.Database#batch()}. This is deliberately the concrete instance
+   * and not {@link #database}, which may be an HA wrapper that only delegates {@code batch()} (issue #5666).
+   */
+  private final LocalDatabase guardOwner;
+  private final AtomicBoolean guardReleased = new AtomicBoolean(false);
 
   // --- Configuration ---
   private final int     batchSize;
@@ -214,11 +223,13 @@ public class GraphBatch implements AutoCloseable {
   private final boolean savedUseWAL;
   private final WALFile.FlushType savedWALFlush;
 
-  private GraphBatch(final DatabaseInternal database, final int batchSize, final int edgeListInitialSize,
+  private GraphBatch(final DatabaseInternal database, final LocalDatabase guardOwner, final int batchSize,
+      final int edgeListInitialSize,
       final boolean lightEdges, final boolean bidirectional, final int commitEvery,
       final boolean useWAL, final WALFile.FlushType walFlush, final boolean preAllocateEdgeChunks,
       final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs) {
     this.database = database;
+    this.guardOwner = guardOwner;
     this.batchSize = batchSize;
     this.edgeListInitialSize = edgeListInitialSize;
     this.lightEdges = lightEdges;
@@ -913,42 +924,72 @@ public class GraphBatch implements AutoCloseable {
 
   @Override
   public void close() {
-    RuntimeException flushFailure = null;
-
-    // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
-    // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
-    // on the trailing buffer (issue #4113) would leave already-persisted edges with no
-    // back-pointer and trip the database integrity checker.
+    // The guard release sits in the outermost finally on purpose: every other exit of this method throws,
+    // and a guard left behind locks the database out of batching until the process restarts (issue #5666).
     try {
-      flush();
-    } catch (final RuntimeException e) {
-      flushFailure = e;
-    }
+      RuntimeException flushFailure = null;
 
-    try {
-      // Connect all deferred incoming edges in one sorted pass. On a large load this is minutes of work and it
-      // runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no back-pointer
-      // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
-      // (86 seconds of the timeline on issue #5470); connectDeferredIncomingEdges logs the pass and its duration
-      // itself, so the wait is already accounted for.
-      if (bidirectional && inEdgeCount > 0)
-        connectDeferredIncomingEdges();
+      // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
+      // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
+      // on the trailing buffer (issue #4113) would leave already-persisted edges with no
+      // back-pointer and trip the database integrity checker.
+      try {
+        flush();
+      } catch (final RuntimeException e) {
+        flushFailure = e;
+      }
 
-      // Batch-update all vertex head chunk pointers in one pass
-      if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
-        batchUpdateVertexHeadChunks();
+      try {
+        // Connect all deferred incoming edges in one sorted pass. On a large load this is minutes of work and it
+        // runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no back-pointer
+        // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
+        // (86 seconds of the timeline on issue #5470); connectDeferredIncomingEdges logs the pass and its duration
+        // itself, so the wait is already accounted for.
+        if (bidirectional && inEdgeCount > 0)
+          connectDeferredIncomingEdges();
+
+        // Batch-update all vertex head chunk pointers in one pass
+        if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
+          batchUpdateVertexHeadChunks();
+      } finally {
+        // Restore database settings, even on an exceptional exit (issue #5378)
+        restoreDatabaseSettings();
+      }
+
+      LogManager.instance().log(this, Level.INFO,
+          "GraphBatch closed: vertices=%d edges=%d flushes=%d avgFlushMs=%.1f",
+          null, totalVerticesCreated, totalEdgesCreated, totalFlushes,
+          totalFlushes > 0 ? (totalFlushTimeNs / totalFlushes) / 1_000_000.0 : 0.0);
+
+      if (flushFailure != null)
+        throw flushFailure;
     } finally {
-      // Restore database settings, even on an exceptional exit (issue #5378)
-      restoreDatabaseSettings();
+      releaseBatchGuard();
     }
+  }
 
-    LogManager.instance().log(this, Level.INFO,
-        "GraphBatch closed: vertices=%d edges=%d flushes=%d avgFlushMs=%.1f",
-        null, totalVerticesCreated, totalEdgesCreated, totalFlushes,
-        totalFlushes > 0 ? (totalFlushTimeNs / totalFlushes) / 1_000_000.0 : 0.0);
+  /**
+   * Gives up the single-batch slot of the database without flushing anything. For callers that abandon a
+   * failed batch on a thread that cannot afford the cost of a full {@link #close()}: whatever is still
+   * buffered is dropped. Calling {@link #close()} afterwards remains safe and releases nothing twice.
+   * <p>
+   * The read-your-writes policy is database wide and was relaxed for the load, so it is put back here: a
+   * batch that ends this way is never closed and would otherwise leave every later reader on that database
+   * unable to see its own writes. The WAL policy is not, because it lives on the {@code TransactionContext}
+   * of the thread that opened the batch and this method is expected to run on another one.
+   */
+  public void abandon() {
+    database.setReadYourWrites(savedReadYourWrites);
+    releaseBatchGuard();
+  }
 
-    if (flushFailure != null)
-      throw flushFailure;
+  /**
+   * Hands the single-batch slot back to the database that granted it. Idempotent: a batch releases at most
+   * once, so a double close cannot free a slot that a later batch has meanwhile taken.
+   */
+  private void releaseBatchGuard() {
+    if (guardOwner != null && guardReleased.compareAndSet(false, true))
+      guardOwner.batchFinished();
   }
 
   /**
@@ -2284,7 +2325,16 @@ public class GraphBatch implements AutoCloseable {
   // ---------------------------------------------------------------------------
 
   public static Builder builder(final Database database) {
-    return new Builder((DatabaseInternal) database);
+    return new Builder((DatabaseInternal) database, null);
+  }
+
+  /**
+   * Builds a batch that reserves the single-batch slot of {@code guardOwner} on {@link Builder#build()} and
+   * hands it back on {@link GraphBatch#close()}. {@code database} is the instance the batch writes through
+   * and may be an HA wrapper of {@code guardOwner}.
+   */
+  public static Builder builder(final Database database, final LocalDatabase guardOwner) {
+    return new Builder((DatabaseInternal) database, guardOwner);
   }
 
   public static class Builder {
@@ -2292,6 +2342,7 @@ public class GraphBatch implements AutoCloseable {
     private static final int MAX_BATCH_SIZE = 5_000_000;
 
     private final DatabaseInternal database;
+    private final LocalDatabase    guardOwner;
     private int                batchSize            = MIN_BATCH_SIZE;
     private boolean            batchSizeExplicit    = false;
     private int                expectedEdgeCount    = 0;
@@ -2307,8 +2358,9 @@ public class GraphBatch implements AutoCloseable {
     private int                commitRetries         = 10;
     private long               commitRetryDelayMs    = 1000;
 
-    Builder(final DatabaseInternal database) {
+    Builder(final DatabaseInternal database, final LocalDatabase guardOwner) {
       this.database = database;
+      this.guardOwner = guardOwner;
     }
 
     /**
@@ -2463,9 +2515,21 @@ public class GraphBatch implements AutoCloseable {
       // size the load then dies with ReplicatedEntryTooLargeException (issue #5470).
       final int effectiveCommitEvery = !commitEveryExplicit && !effectiveUseWAL ? 0 : commitEvery;
 
-      return new GraphBatch(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
-          bidirectional, effectiveCommitEvery, effectiveUseWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
-          commitRetries, commitRetryDelayMs);
+      // Reserve the slot here and not in Database.batch(): a builder that is configured with a bad value, or
+      // simply dropped, must not leave the database unable to batch ever again (issue #5666). Everything from
+      // here on either returns a batch that owns the slot or gives the slot straight back.
+      if (guardOwner != null)
+        guardOwner.batchStarted();
+
+      try {
+        return new GraphBatch(database, guardOwner, effectiveBatchSize, edgeListInitialSize, lightEdges,
+            bidirectional, effectiveCommitEvery, effectiveUseWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
+            commitRetries, commitRetryDelayMs);
+      } catch (final RuntimeException | Error e) {
+        if (guardOwner != null)
+          guardOwner.batchFinished();
+        throw e;
+      }
     }
   }
 }

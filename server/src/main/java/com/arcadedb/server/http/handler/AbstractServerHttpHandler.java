@@ -19,13 +19,16 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
@@ -112,6 +115,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // path is collapsed to a route template or the constant "unmatched", method and status are small
   // enumerations, and db is the finite set of database names.
   private static final ConcurrentHashMap<String, Timer> HTTP_REQUEST_TIMERS = new ConcurrentHashMap<>();
+  // Tracks the database whose DatabaseContext this request bound the authenticated principal onto in
+  // checkAuthorizationOnDatabase, so handleRequest's finally can clear the binding on THIS pooled worker
+  // thread (GHSA-c23x-pqcj-7hfm). Handler instances are shared across threads, so this per-thread marker
+  // - not an instance field - is what makes the cleanup thread-safe and precise (clears only what was bound).
+  private static final ThreadLocal<DatabaseInternal>    BOUND_PRINCIPAL_DB = new ThreadLocal<>();
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -120,6 +128,40 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
           throws Exception;
+
+  /**
+   * Maximum number of rows an endpoint serializes into a single response when the caller states no limit of its
+   * own. A non-positive value means unlimited. Shared by every row-returning endpoint so one setting governs
+   * them all (issue #5711).
+   */
+  protected int getDefaultRowLimit() {
+    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT);
+  }
+
+  /**
+   * Validates a row limit that arrived as a JSON value and narrows it to an {@code int}. Every endpoint reading
+   * a {@code limit} shares this so the same input gets the same answer: {@link Number#intValue()} truncates the
+   * high bits, so {@code 3000000000} would arrive as a negative value and be read as "unlimited", silently
+   * turning off the very cap the field governs (issue #5711). Out of range, NaN and a non-numeric value are all
+   * client errors, mapped to HTTP 400 by the {@link IllegalArgumentException} arm below.
+   */
+  protected static int requireIntLimit(final Object value, final String field) {
+    if (!(value instanceof Number n))
+      throw new IllegalArgumentException("Field '" + field + "' must be an integer");
+    final double magnitude = n.doubleValue();
+    if (Double.isNaN(magnitude) || magnitude > Integer.MAX_VALUE || magnitude < Integer.MIN_VALUE)
+      throw unusableLimit(field, null);
+    return n.intValue();
+  }
+
+  /**
+   * Rejection of a row limit that is not an integer this server can apply, worded identically wherever the limit
+   * arrives from so the surfaces report the same thing.
+   */
+  protected static IllegalArgumentException unusableLimit(final String field, final Throwable cause) {
+    return new IllegalArgumentException(
+        "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE, cause);
+  }
 
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
@@ -623,6 +665,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
+      // Drop any principal this request bound onto the thread's DatabaseContext in
+      // checkAuthorizationOnDatabase (GHSA-c23x-pqcj-7hfm). This runs on a pooled worker thread, so a
+      // leaked binding would be inherited by the next request served by the same thread. Only the current
+      // user is cleared (not the whole context) so a still-open session transaction is never disturbed;
+      // a no-op when nothing was bound. DatabaseAbstractHandler manages its own binding/cleanup and never
+      // sets this marker.
+      final DatabaseInternal boundDb = BOUND_PRINCIPAL_DB.get();
+      if (boundDb != null) {
+        BOUND_PRINCIPAL_DB.remove();
+        try {
+          final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(boundDb.getDatabasePath());
+          if (context != null)
+            context.setCurrentUser(null);
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.WARNING, "Error clearing bound principal from database context", t);
+        }
+      }
+
       // If execution threw after this request reserved the idempotency key, clear the PENDING marker so a
       // concurrent identical retry is released immediately instead of blocking until the marker's TTL.
       if (idempotencyReservation != null) {
@@ -885,12 +945,34 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * another (cross-database IDOR, GHSA-x8mg-6r4p-87pf). Mirrors the gate in
    * {@link DatabaseAbstractHandler#execute}. Throws {@link SecurityException} (mapped to HTTP 403) when the
    * authenticated user cannot access the database; fails closed on a missing database name.
+   * <p>
+   * The coarse {@code canAccessToDatabase} gate above is database-level only. It is NOT enough for a
+   * deployment that segments data with per-type/per-group ACLs: the engine's fine-grained per-type layer
+   * ({@code LocalDatabase.checkPermissionsOnFile}, {@code LocalBucket} CREATE_RECORD/READ_RECORD) is
+   * deliberately a no-op unless the authenticated principal is bound onto this thread's
+   * {@link DatabaseContext}. Because these handlers do not extend {@link DatabaseAbstractHandler} (which
+   * binds the principal in its own {@code execute}), the engine saw a null current user and silently skipped
+   * every per-type check, so a user with DB access but only per-type READ on some types could read/write
+   * types it was not entitled to (GHSA-c23x-pqcj-7hfm). Binding here - mirroring {@code DatabaseAbstractHandler}
+   * - makes the per-type layer enforce. The binding is dropped in {@link #handleRequest}'s finally so it
+   * cannot leak onto the pooled worker thread and be inherited by a later request.
    */
   protected void checkAuthorizationOnDatabase(final ServerSecurityUser user, final String databaseName) {
     if (databaseName == null || databaseName.isEmpty())
       throw new IllegalArgumentException("Database parameter is null");
     if (user != null && !user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not allowed to access database '" + databaseName + "'");
+
+    // Bind the authenticated principal so the engine's per-type ACL layer enforces on this handler.
+    // A null user (unauthenticated handler) leaves the engine in its no-user no-op mode, matching prior behavior.
+    if (user != null && httpServer.getServer().existsDatabase(databaseName)) {
+      final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
+      DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+      if (context == null)
+        context = DatabaseContext.INSTANCE.init(database);
+      context.setCurrentUser(user.getDatabaseUser(database));
+      BOUND_PRINCIPAL_DB.set(database);
+    }
   }
 
   /**
@@ -913,6 +995,37 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (user == null || user.canAccessToDatabase(databaseName))
         authorized.add(databaseName);
     return authorized;
+  }
+
+  /**
+   * Resolves the {@link HAReplicatedDatabase} backing {@code database}, either directly or through
+   * {@link DatabaseInternal#getWrappedDatabaseInstance()}, or {@code null} on a standalone (non-HA)
+   * database. Shared by {@link DatabaseAbstractHandler} and {@link PostBatchHandler} so the
+   * wrapper-unwrapping rule for HA read-your-writes support (bookmark header, read-consistency context)
+   * lives in one place.
+   */
+  protected static HAReplicatedDatabase resolveHAReplicatedDatabase(final DatabaseInternal database) {
+    if (database == null)
+      return null;
+    if (database instanceof HAReplicatedDatabase haDb)
+      return haDb;
+    return database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb ? haDb : null;
+  }
+
+  /**
+   * Emits the {@code X-ArcadeDB-Commit-Index} response header, the read-your-writes bookmark a
+   * {@code READ_YOUR_WRITES} client captures and carries into its next read. A no-op when {@code haDb} is
+   * {@code null} (standalone database) or has not applied anything yet. Shared by
+   * {@link DatabaseAbstractHandler} (issue #5845) and {@link PostBatchHandler} (issue #5862), the only two
+   * write paths whose commit happens outside, or beyond, the generic per-request wrapper in
+   * {@link #handleRequest}.
+   */
+  protected static void emitCommitIndexBookmark(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
+    if (haDb == null)
+      return;
+    final long lastApplied = haDb.getLastAppliedIndex();
+    if (lastApplied >= 0)
+      exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), String.valueOf(lastApplied));
   }
 
   /**

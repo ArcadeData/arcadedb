@@ -115,10 +115,25 @@ public class ImmutableDocument extends BaseDocument {
     return result;
   }
 
+  /**
+   * Lazy-loads before reading, like every other accessor on this class ({@link #get}, {@link #has},
+   * {@link #getPropertyNames}, {@link #toJSON}). Without it a record that had not been materialised yet - which is
+   * every record handed out by {@code iterateType()} / {@code scanBucket()} - answered an EMPTY map instead of its
+   * properties, silently. That is what made {@code copyType()} copy the right NUMBER of records and none of their
+   * content (issue #5723), and what left {@link DetachedDocument} empty when detaching a record straight off a scan.
+   * <p>
+   * The empty map remains the answer for a record that genuinely cannot be materialised: no database, no RID to load
+   * from, or an after-read event that filtered the record away.
+   */
   @Override
   public Map<String, Object> propertiesAsMap() {
-    if (database == null || buffer == null)
+    if (database == null || (buffer == null && rid == null))
       return Collections.emptyMap();
+    checkForLazyLoading();
+    if (buffer == null)
+      return Collections.emptyMap();
+    // BELT AND BRACES: checkForLazyLoading() already guarantees this position (see its Javadoc), but the failure mode
+    // of getting it wrong here is a SILENTLY empty map - which is how #5723 made copyType() copy empty records
     buffer.position(propertiesStartingPosition);
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
   }
@@ -132,10 +147,13 @@ public class ImmutableDocument extends BaseDocument {
    * @return map of property name to value for the requested fields only
    */
   public Map<String, Object> propertiesAsMap(final String... fieldNames) {
-    if (database == null || buffer == null)
+    if (database == null || (buffer == null && rid == null))
       return Collections.emptyMap();
     if (fieldNames == null || fieldNames.length == 0)
       return propertiesAsMap();
+    checkForLazyLoading();
+    if (buffer == null)
+      return Collections.emptyMap();
     buffer.position(propertiesStartingPosition);
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid, fieldNames);
   }
@@ -208,6 +226,32 @@ public class ImmutableDocument extends BaseDocument {
     return database.getSerializer().getPropertyNames(database, buffer, rid);
   }
 
+  /**
+   * Materialises the record if it has not been loaded yet.
+   * <p>
+   * <b>Postcondition:</b> on return, either {@code buffer} is {@code null} - the record was filtered away by an
+   * after-read event - or it is positioned at {@link #propertiesStartingPosition}, the first byte of the properties
+   * section. Every accessor of this class relies on that: {@link #toJSON}, {@link #getPropertyNames}, {@link #toMap},
+   * {@link #has} and {@link #get} all read straight from the current position without seeking first.
+   * <p>
+   * The path that made the postcondition conditional was the one where an after-read listener returns a
+   * <i>different</i> record (the encryption hook). The replacement buffer comes from
+   * {@code BinarySerializer.serializeDocument()}, which leaves it at position 1 when it could just copy the record's
+   * own buffer, but at 0 when it had to re-serialise the properties of a dirty {@link MutableDocument} - the closing
+   * {@code header.flip()}. In the second case the record-type byte was still ahead of the read cursor and the next
+   * reader consumed it as the first byte of the header size (issue #5755). It stayed invisible because the only
+   * in-tree listener of that shape decrypts <i>vertices</i>, and {@code ImmutableVertex.checkForLazyLoading()} re-reads
+   * the fixed edge-pointer prefix from position 1 afterwards, repositioning as a side effect. Plain documents have no
+   * such second pass.
+   * <p>
+   * That same branch also hands back {@code DatabaseContext.getTemporaryBuffer1()}, the per-thread scratch buffer the
+   * serializer {@code clear()}s and reuses on every call, so the buffer has to be copied out before this record can
+   * keep it - otherwise the next unrelated save on the same thread rewrites this record's content underneath it, and
+   * the record starts answering with another record's values.
+   *
+   * @return {@code true} if the record was materialised by this call, {@code false} if it was already loaded or was
+   * filtered away by an after-read event
+   */
   protected boolean checkForLazyLoading() {
     if (buffer == null) {
       if (rid == null)
@@ -221,8 +265,15 @@ public class ImmutableDocument extends BaseDocument {
         buffer = null;
         return false;
       } else if (loaded != this) {
-        // CREATE A BUFFER FROM THE MODIFIED RECORD. THIS IS NEEDED FOR ENCRYPTION THAT UPDATE THE RECORD WITH A MUTABLE
-        buffer = database.getSerializer().serialize(database, loaded);
+        // CREATE A BUFFER FROM THE MODIFIED RECORD. THIS IS NEEDED FOR ENCRYPTION THAT UPDATE THE RECORD WITH A MUTABLE.
+        // serializeForRead() INSTEAD OF serialize(): THIS IS A READ, SO AN EXTERNAL PROPERTY MUST BE RENDERED INLINE
+        // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
+        // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER, WHICH
+        // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS
+        buffer = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
+        // THE SERIALIZER HANDS THE BUFFER BACK AT 0 OR AT 1 DEPENDING ON THE BRANCH IT TOOK: NORMALISE IT SO THE
+        // POSTCONDITION OF THIS METHOD HOLDS ON EVERY PATH
+        buffer.position(propertiesStartingPosition);
       }
 
       return true;

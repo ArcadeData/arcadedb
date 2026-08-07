@@ -314,6 +314,39 @@ public class StripedEdgeList extends EdgeLinkedList {
     return iterator;
   }
 
+  /**
+   * #5680: unlike {@link #edgeIterator}, a stripe chain whose head cannot be read is NOT skipped here. The caller
+   * removes every edge this yields and then deletes the vertex record, so a skipped chain would leave a whole
+   * stripe's worth of edges pointing at a record that is gone - the same reasoning as {@code chainsForNeighbour}.
+   */
+  @Override
+  public Iterator<Edge> edgeIteratorForRemoval() {
+    final MultiIterator<Edge> iterator = new MultiIterator<>();
+    for (final EdgeLinkedList chain : allChains(true))
+      iterator.addIterator(chain.edgeIterator());
+    return iterator;
+  }
+
+  /**
+   * #5725: the striped counterpart of {@link EdgeLinkedList#anchorForFullRemoval()}. An append to a promoted
+   * super-node lands either IN a stripe head chunk or in a NEW chunk whose RID is written into a directory slot,
+   * so pinning the whole list means the directory plus every chain of every generation. All of them are deleted
+   * by {@link #deleteAll} moments later, so - as on the classic layout - this only moves their pages into the
+   * transaction early enough for the commit-time version check to catch an append that raced the walk.
+   */
+  @Override
+  public void anchorForFullRemoval() {
+    // The DIRECTORY first, through its own anchored page: a stripe head flip rewrites a slot here, and reading
+    // the slots from the pinned version is what makes "every chain" mean the chains this transaction commits with.
+    directory = loadDirectoryForWrite();
+    for (int g = directory.getGenerationCount() - 1; g >= 0; g--)
+      for (int s = 0; s < directory.getStripes(g); s++) {
+        final RID headRID = directory.getHead(g, s);
+        if (headRID != null)
+          anchorChain(headRID);
+      }
+  }
+
   @Override
   public Iterator<Edge> edgeIteratorConnectedTo(final RID neighbor, final String... edgeTypes) {
     final MultiIterator<Edge> iterator = new MultiIterator<>();
@@ -466,7 +499,8 @@ public class StripedEdgeList extends EdgeLinkedList {
         // (e.g. a removal leaving a stale back-reference). The miss is transient by construction (cross-file
         // commit publication) - surface it as a retryable conflict, symmetric with loadChunkForWrite.
         throw new ConcurrentModificationException(
-            "Stripe chain " + headRID + " of vertex " + vertex.getIdentity() + " not visible yet (concurrent commit in flight)");
+            "Stripe chain " + headRID + " of vertex " + vertex.getIdentity() + " not visible yet (concurrent commit in flight)",
+            e);
       final long now = System.currentTimeMillis();
       final long last = LAST_SKIPPED_CHAIN_WARN.get();
       if (now - last > 60_000 && LAST_SKIPPED_CHAIN_WARN.compareAndSet(last, now))

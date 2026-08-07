@@ -29,6 +29,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.ProgressCallback;
@@ -36,6 +37,7 @@ import com.arcadedb.utility.ProgressCallback;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -149,8 +151,8 @@ public class GraphDatabaseChecker {
    * the alternative if the always-on cost proves unwelcome; left always-on for now.
    */
   public Map<String, Object> reclaimOrphanedEdgeSegments(final int verboseLevel, final int maxWarnings) {
-    final List<String> warnings = new ArrayList<>();
-    final AtomicLong totalWarnings = new AtomicLong();
+    // Warnings only: this pass reports, it never flags a record corrupted, so the corrupted cap is irrelevant.
+    final CheckReport report = new CheckReport(maxWarnings, maxWarnings, verboseLevel);
     final Map<String, Object> stats = new HashMap<>();
 
     final Map<Integer, LongHashSet> reachable = new HashMap<>();
@@ -185,7 +187,7 @@ public class GraphDatabaseChecker {
             final boolean inComplete = markReachableSegments(vertex.getInEdgesHeadChunk(), reachable);
             if (!outComplete || !inComplete) {
               reachabilityComplete.set(false);
-              addWarning(warnings, totalWarnings, maxWarnings, "vertex " + record.getIdentity()
+              report.warn("vertex " + record.getIdentity()
                   + " edge chain could not be fully walked during the orphan reclaim (a segment read failed); "
                   + "the reclaim will be skipped to avoid deleting live data");
             }
@@ -194,8 +196,7 @@ public class GraphDatabaseChecker {
             // record construction, so a truncated/corrupt vertex normally fails to load inside the scan and
             // surfaces through that callback; this catches any residual failure of asVertex here. Same effect.
             reachabilityComplete.set(false);
-            addWarning(warnings, totalWarnings, maxWarnings,
-                "vertex " + record.getIdentity() + " could not be walked during the orphan reclaim (error: " + describe(e)
+            report.warn("vertex " + record.getIdentity() + " could not be walked during the orphan reclaim (error: " + describe(e)
                     + ")");
           }
           return true;
@@ -203,8 +204,7 @@ public class GraphDatabaseChecker {
           // A vertex record that cannot even be loaded during the scan is the same fail-closed case: its
           // segments were never marked, so the deletion phase must not run.
           reachabilityComplete.set(false);
-          addWarning(warnings, totalWarnings, maxWarnings,
-              "vertex " + rid + " could not be loaded during the orphan reclaim (error: " + describe(exception) + ")");
+          report.warn("vertex " + rid + " could not be loaded during the orphan reclaim (error: " + describe(exception) + ")");
           return true;
         });
 
@@ -232,18 +232,16 @@ public class GraphDatabaseChecker {
           } catch (final RecordNotFoundException e) {
             // ALREADY GONE
           } catch (final Exception e) {
-            addWarning(warnings, totalWarnings, maxWarnings,
-                "orphaned edge segment " + orphan + " could not be reclaimed (error: " + describe(e) + ")");
+            report.warn("orphaned edge segment " + orphan + " could not be reclaimed (error: " + describe(e) + ")");
           }
         }
       } else {
-        addWarning(warnings, totalWarnings, maxWarnings,
-            "orphaned edge segment reclaim skipped: the reachability walk did not complete (one or more vertices "
+        report.warn("orphaned edge segment reclaim skipped: the reachability walk did not complete (one or more vertices "
                 + "could not be walked); no segments were deleted to avoid destroying live data");
       }
 
       if (verboseLevel > 0)
-        for (final String warning : warnings)
+        for (final String warning : report.warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
       database.commit();
@@ -252,8 +250,8 @@ public class GraphDatabaseChecker {
     } finally {
       stats.put("orphanedEdgeSegments", orphans);
       stats.put("orphanedEdgeSegmentsReclaimed", reclaimed);
-      stats.put("warnings", warnings);
-      stats.put("totalWarnings", totalWarnings.get());
+      stats.put("warnings", report.warnings);
+      stats.put("totalWarnings", report.totalWarnings);
     }
     return stats;
   }
@@ -375,13 +373,52 @@ public class GraphDatabaseChecker {
 
   public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel,
       final int maxWarnings, final int maxCorrupted) {
+    return checkVertices(typeName, null, fix, verboseLevel, maxWarnings, maxCorrupted);
+  }
+
+  /**
+   * #5680: same check restricted to {@code scopedRecords} when it is non-null - the {@code CHECK DATABASE RECORD}
+   * scope. The per-vertex work and the fix (rebuilding the adjacency from the surviving edge records) are
+   * identical; only the enumeration changes, from two passes over every bucket of the type to a lookup per listed
+   * RID. That is what makes "one vertex's edge chain is broken, so the vertex cannot be deleted" repairable
+   * without paying a full type scan - the strict delete path in {@code GraphEngine.deleteVertex} names this
+   * command in its error message.
+   * <p>
+   * The edge-record scan inside {@link #reconnectEdges} is NOT scoped: rebuilding an adjacency means finding
+   * every surviving edge that points at the vertex, and no index maps endpoints back to edges. So the scoped run
+   * saves the vertex passes, not the edge pass.
+   * <p>
+   * #5764/#5773 - both arms materialise each record EXACTLY ONCE, which is not obvious from the shapes and is the
+   * reason the type-wide arm no longer opens with a raw bucket scan of its own. The scoped arm materialises through
+   * {@code LocalDatabase.lookupByRID}; the type-wide arm through {@code LocalDatabase.scanType}, whose callback does
+   * the same {@code newImmutableRecord(type, rid, view)} from the same raw page view that {@code lookupByRID} builds
+   * from {@code bucket.getRecord(rid).copyOfContent()}. Both then hand the record to the shared
+   * {@code checkConnectivity}, which opens with the same {@code asVertex(true)} whose {@code loadContent} flag forces
+   * the buffer decode. No corruption shape reaches one enumeration but not the other: {@code LocalBucket.getRecord}
+   * and {@code LocalBucket.scan} resolve placeholders and multi-page chains identically and skip the same slot
+   * markers. Pinned by {@code CheckDatabaseRecordScopeTest.theScopedAndTypeWideRunsAgreeOnAGenuinelyCorruptedRecord}.
+   * <p>
+   * #5773 - what the dropped type-wide first pass did, and why removing it detects strictly no less. It scanned the
+   * buckets, built each record with {@code newImmutableRecord} and called {@code asVertex(true)}, flagging a failure
+   * of either. The surviving {@code scanType} pass does the FIRST of those inside {@code LocalBucket.scan}'s per-slot
+   * {@code try}, so a construction failure is routed to the {@code errorRecordCallback} below (which warns and flags
+   * the record), and the SECOND inside {@code checkConnectivity}'s {@code catch (Throwable)}, which warns and flags
+   * it likewise. The dropped pass in fact saw LESS: it passed a {@code null} error callback, so a failure inside the
+   * bucket machinery itself (placeholder resolution, a multi-page chain read) was only logged, never reported.
+   * <p>
+   * What removing it is and is not worth, MEASURED rather than assumed - the record-materialisation count halves,
+   * but materialisation is not what the step spends its time on. On a warm 200k-vertex / 200k-edge graph with no
+   * super-node, the per-type steps went 173 ms -> 162 ms (vertices) and 155 ms -> 142 ms (edges), about 7% each; a
+   * full {@code CHECK DATABASE} went 509 ms -> 472 ms. The pass is cheap because {@code asVertex(true)} only parses
+   * the edge pointers, not the properties. The real reasons to drop it are that it was provably redundant and that
+   * it emitted a "vertex/edge <rid> cannot be loaded, REMOVING IT" warning on runs without {@code FIX}, which
+   * remove nothing - and a duplicate warning per corrupt record besides. Pinned by
+   * {@code CheckDatabaseSinglePassTest}.
+   */
+  public Map<String, Object> checkVertices(final String typeName, final Collection<RID> scopedRecords,
+      final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
-    final AtomicLong invalidLinks = new AtomicLong();
-    final AtomicLong duplicateLightEdges = new AtomicLong();
-    final AtomicLong totalWarnings = new AtomicLong();
-    final AtomicLong totalCorrupted = new AtomicLong();
-    final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
-    final List<String> warnings = new ArrayList<>();
+    final CheckReport report = new CheckReport(maxWarnings, maxCorrupted, verboseLevel);
     final Set<RID> reconnectOutEdges = new HashSet<>();
     final Set<RID> reconnectInEdges = new HashSet<>();
     final Map<RID, Long> missingReferences = new HashMap<>();
@@ -391,63 +428,74 @@ public class GraphDatabaseChecker {
 
     database.begin();
     try {
-      // TWO FULL PASSES OVER THE TYPE (record-type scan + connectivity walk): progress total is 2x the count.
-      // countType reads the maintained bucket counters (no scan), so sizing the total is negligible.
-      progressBegin(progressStepName, 2 * database.countType(typeName, false));
-
-      // CHECK RECORD IS OF THE RIGHT TYPE
-      final DocumentType type = database.getSchema().getType(typeName);
-      for (final Bucket b : type.getBuckets(false)) {
-        b.scan((rid, view) -> {
-          try {
-            final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
-            record.asVertex(true);
-          } catch (Exception e) {
-            addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " cannot be loaded, removing it");
-            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-          }
-          progressTick();
-          return true;
-        }, null);
-      }
-
-      database.scanType(typeName, false, record -> {
+      // The connectivity check of ONE vertex: shared by the type-wide scan and the RECORD-scoped enumeration.
+      final Consumer<Record> checkConnectivity = record -> {
         progressTick();
         try {
           Vertex vertex = record.asVertex(true);
 
           final RID vertexIdentity = vertex.getIdentity();
 
-          vertex = checkOutgoingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
-              corruptedRecords, totalCorrupted, maxCorrupted, reconnectOutEdges, reconnectInEdges, missingReferences,
-              missingReferenceErrors, duplicateLightEdges);
+          vertex = checkOutgoingEdges(fix, vertex, vertexIdentity, reconnectOutEdges, reconnectInEdges,
+              missingReferences, missingReferenceErrors, report);
 
-          checkIncomingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
-              corruptedRecords, totalCorrupted, maxCorrupted, reconnectInEdges, reconnectOutEdges, missingReferences,
-              missingReferenceErrors);
+          checkIncomingEdges(fix, vertex, vertexIdentity, reconnectInEdges, reconnectOutEdges, missingReferences,
+              missingReferenceErrors, report);
 
         } catch (final Throwable e) {
-          addWarning(warnings, totalWarnings, maxWarnings,
-              "vertex " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
-          addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, record.getIdentity());
+          report.warn("vertex " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
+          report.corrupt(record.getIdentity());
         }
+      };
 
-        return true;
-      }, (rid, exception) -> {
-        progressTick();
-        addWarning(warnings, totalWarnings, maxWarnings,
-            "vertex " + rid + " cannot be loaded (error: " + describe(exception) + ")");
-        addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-        return true;
-      });
+      if (scopedRecords != null) {
+        progressBegin(progressStepName, scopedRecords.size());
+
+        for (final RID rid : scopedRecords) {
+          try {
+            checkConnectivity.accept(database.lookupByRID(rid, true));
+          } catch (final RecordNotFoundException e) {
+            // A RID that simply is not there is NOT corruption, and the difference is expensive: a record flagged
+            // corrupted puts its BUCKET into affectedBuckets, and CHECK DATABASE ... FIX then drops and rebuilds
+            // every index on that bucket - a full bucket scan. Since the RECORD scope exists to be hand-typed
+            // after a failed delete, a typo'd or already-deleted RID would otherwise buy exactly the cost the
+            // scope was reached for. Reported, not repaired.
+            progressTick();
+            report.warn("vertex " + rid + " does not exist");
+          } catch (final Exception e) {
+            // Exception, not Throwable, so an Error raised by the LOOKUP (OOM, StackOverflow) is not recorded as
+            // "this record is corrupt" and does not have fix mode delete a healthy record. Scope of that, stated
+            // honestly: the shared consumer below still catches Throwable around the connectivity check itself,
+            // matching the type-wide path, so an Error raised in THERE is still flagged. Narrowing that one would
+            // change the type-wide behaviour too, which is not this change's business.
+            progressTick();
+            report.warn("vertex " + rid + " cannot be loaded (error: " + describe(e) + ")");
+            report.corrupt(rid);
+          }
+        }
+      } else {
+        // ONE FULL PASS OVER THE TYPE (#5773): progress total is the record count. countType reads the maintained
+        // bucket counters (no scan), so sizing the total is negligible.
+        progressBegin(progressStepName, database.countType(typeName, false));
+
+        database.scanType(typeName, false, record -> {
+          checkConnectivity.accept(record);
+          return true;
+        }, (rid, exception) -> {
+          progressTick();
+          report.warn("vertex " + rid + " cannot be loaded (error: " + describe(exception) + ")");
+          report.corrupt(rid);
+          return true;
+        });
+      }
 
       progressComplete();
 
       if (fix) {
         if (!reconnectOutEdges.isEmpty() || !reconnectInEdges.isEmpty())
-          reconnectEdges(reconnectOutEdges, reconnectInEdges, corruptedRecords, warnings, totalWarnings, maxWarnings, stats);
+          reconnectEdges(reconnectOutEdges, reconnectInEdges, report, stats);
 
-        for (final RID rid : corruptedRecords) {
+        for (final RID rid : report.corruptedRecords) {
           if (rid == null)
             continue;
 
@@ -457,26 +505,25 @@ public class GraphDatabaseChecker {
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
-            addWarning(warnings, totalWarnings, maxWarnings,
-                "Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
+            report.warn("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
         }
       }
 
       if (verboseLevel > 0)
-        for (final String warning : warnings)
+        for (final String warning : report.warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
       database.commit();
 
     } finally {
       stats.put("autoFix", autoFix.get());
-      stats.put("corruptedRecords", corruptedRecords);
-stats.put("duplicateLightEdges", duplicateLightEdges.get());
-            stats.put("invalidLinks", invalidLinks.get());
-      stats.put("warnings", warnings);
-      stats.put("totalWarnings", totalWarnings.get());
-      stats.put("totalCorruptedRecords", totalCorrupted.get());
+      stats.put("corruptedRecords", report.corruptedRecords);
+      stats.put("duplicateLightEdges", report.duplicateLightEdges);
+      stats.put("invalidLinks", report.invalidLinks);
+      stats.put("warnings", report.warnings);
+      stats.put("totalWarnings", report.totalWarnings);
+      stats.put("totalCorruptedRecords", report.totalCorrupted);
       stats.put("missingReferences", missingReferences);
       stats.put("missingReferenceErrors", missingReferenceErrors);
     }
@@ -491,8 +538,8 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
    * entry may still point to a far endpoint vertex that no longer exists (the edge record survives, its target
    * does not): that is the same behaviour as before and the {@code checkEdges} pass reports it.
    */
-  private void reconnectEdges(Set<RID> reconnectOutEdges, Set<RID> reconnectInEdges, Set<RID> corruptedRecords,
-      List<String> warnings, AtomicLong totalWarnings, int maxWarnings, Map<String, Object> stats) {
+  private void reconnectEdges(Set<RID> reconnectOutEdges, Set<RID> reconnectInEdges, CheckReport report,
+      Map<String, Object> stats) {
     // BROWSE ALL THE EDGES AND COLLECT THE ONES PART OF THE RECONNECTION
     final List<EdgeType> edgeTypes = new ArrayList<>();
     for (DocumentType schemaType : database.getSchema().getTypes()) {
@@ -513,7 +560,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
         progressTick();
         try {
           final Edge e = record.asEdge(true);
-          if (corruptedRecords.contains(e.getIdentity()))
+          if (report.corruptedRecords.contains(e.getIdentity()))
             // ABOUT TO BE DELETED BY THE FIX: re-adding it would rebuild a dangling entry
             return true;
           if (reconnectOutEdges.contains(e.getOut()))
@@ -523,11 +570,11 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
           if (bidirectional && reconnectInEdges.contains(e.getIn()))
             inEdgesToReconnect.add(e);
         } catch (final Exception e) {
-          warnUnreadableEdgeDuringRebuild(warnings, totalWarnings, maxWarnings, record.getIdentity(), e);
+          warnUnreadableEdgeDuringRebuild(report, record.getIdentity(), e);
         }
         return true;
       }, (rid, exception) -> {
-        warnUnreadableEdgeDuringRebuild(warnings, totalWarnings, maxWarnings, rid, exception);
+        warnUnreadableEdgeDuringRebuild(report, rid, exception);
         return true;
       });
     }
@@ -538,7 +585,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
         // getOrCreateEdgeList dispatches on the head record type, so promoted (striped) vertices work too
         graphEngine.getOrCreateEdgeList(vertex, Vertex.DIRECTION.OUT).add(e.getIdentity(), e.getIn());
       }
-      addWarning(warnings, totalWarnings, maxWarnings, "reconnected " + outEdgesToReconnect.size() + " outgoing edges");
+      report.warn("reconnected " + outEdgesToReconnect.size() + " outgoing edges");
       stats.put("outEdgesToReconnect", outEdgesToReconnect);
     }
 
@@ -547,21 +594,19 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
         final MutableVertex vertex = e.getInVertex().modify();
         graphEngine.getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
       }
-      addWarning(warnings, totalWarnings, maxWarnings, "reconnected " + inEdgesToReconnect.size() + " incoming edges");
+      report.warn("reconnected " + inEdgesToReconnect.size() + " incoming edges");
       stats.put("inEdgesToReconnect", inEdgesToReconnect);
     }
   }
 
-  private static void warnUnreadableEdgeDuringRebuild(final List<String> warnings, final AtomicLong totalWarnings,
-      final int maxWarnings, final Object rid, final Throwable error) {
-    addWarning(warnings, totalWarnings, maxWarnings,
-        "edge " + rid + " could not be read during the edge-list rebuild, skipping it (error: " + describe(error) + ")");
+  private static void warnUnreadableEdgeDuringRebuild(final CheckReport report, final Object rid,
+      final Throwable error) {
+    report.warn("edge " + rid + " could not be read during the edge-list rebuild, skipping it (error: " + describe(error) + ")");
   }
 
-  private void checkIncomingEdges(boolean fix, Vertex vertex, List<String> warnings, AtomicLong totalWarnings, int maxWarnings,
-      RID vertexIdentity, AtomicLong invalidLinks, LinkedHashSet<RID> corruptedRecords, AtomicLong totalCorrupted,
-      int maxCorrupted, Set<RID> reconnectInEdges, Set<RID> reconnectOutEdges, Map<RID, Long> missingReferences,
-      Map<RID, String> missingReferenceErrors) {
+  private void checkIncomingEdges(boolean fix, Vertex vertex, RID vertexIdentity, Set<RID> reconnectInEdges,
+      Set<RID> reconnectOutEdges, Map<RID, Long> missingReferences, Map<RID, String> missingReferenceErrors,
+      CheckReport report) {
     if (((VertexInternal) vertex).getInEdgesHeadChunk() != null) {
       EdgeLinkedList inEdges = null;
       try {
@@ -572,7 +617,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
 
       if (inEdges == null) {
         final RID headChunkRID = ((VertexInternal) vertex).getInEdgesHeadChunk();
-        addWarning(warnings, totalWarnings, maxWarnings, "vertex " + vertexIdentity + " in edges record " + headChunkRID
+        report.warn("vertex " + vertexIdentity + " in edges record " + headChunkRID
             + " is not valid" + (fix ? ", rebuilding the edge list from the surviving edge records" : ""));
         if (fix) {
           vertex = resetChain(vertex, Vertex.DIRECTION.IN);
@@ -609,14 +654,14 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
             boolean removeEntry = false;
 
             if (edgeRID == null) {
-              addWarning(warnings, totalWarnings, maxWarnings, "outgoing edge null from vertex " + vertexIdentity);
+              report.warn("outgoing edge null from vertex " + vertexIdentity);
               removeEntry = true;
-              invalidLinks.incrementAndGet();
+              ++report.invalidLinks;
             } else if (vertexRID == null) {
-              addWarning(warnings, totalWarnings, maxWarnings, "outgoing vertex null from vertex " + vertexIdentity);
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+              report.warn("outgoing vertex null from vertex " + vertexIdentity);
+              report.corrupt(edgeRID);
               removeEntry = true;
-              invalidLinks.incrementAndGet();
+              ++report.invalidLinks;
             } else {
               if (edgeRID.getPosition() < 0)
                 // LIGHTWEIGHT EDGE
@@ -628,37 +673,33 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                 VertexInternal inVertex = null;
 
                 if (edge.getOut() == null || !edge.getOut().isValid()) {
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "edge " + edgeRID + " has an invalid outgoing link " + edge.getIn());
-                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                  report.warn("edge " + edgeRID + " has an invalid outgoing link " + edge.getIn());
+                  report.corrupt(edgeRID);
                   removeEntry = true;
-                  invalidLinks.incrementAndGet();
+                  ++report.invalidLinks;
                 } else {
                   try {
                     inVertex = (VertexInternal) edge.getOutVertex().asVertex(true);
                   } catch (final RecordNotFoundException e) {
-                    addWarning(warnings, totalWarnings, maxWarnings,
-                        "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
-                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                    report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
+                    report.corrupt(edgeRID);
                     removeEntry = true;
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
-                    invalidLinks.incrementAndGet();
+                    report.corrupt(edge.getOut());
+                    ++report.invalidLinks;
                   } catch (final Exception e) {
                     // UNKNOWN ERROR ON LOADING
-                    addWarning(warnings, totalWarnings, maxWarnings,
-                        "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
+                    report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
                             + describe(e) + ")");
-                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
+                    report.corrupt(edgeRID);
                     removeEntry = true;
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
+                    report.corrupt(edge.getOut());
                   }
                 }
 
                 if (!edge.getIn().equals(vertexIdentity)) {
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexIdentity);
+                  report.warn("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexIdentity);
 
                   // CHECK ALL INCOMING EDGES
                   int totalEdges = 0;
@@ -679,8 +720,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                     else
                       ++totalEdgesError;
                   }
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "edge " + edgeRID + " has an incoming link " + edge.getOut() + " different from expected " + vertexIdentity
+                  report.warn("edge " + edgeRID + " has an incoming link " + edge.getOut() + " different from expected " + vertexIdentity
                           + ". Found " + totalEdges + " edges, of which " + totalEdgesOk + " are correct, "
                           + totalEdgesErrorFromSameVertex + " are from the same vertex and " + totalEdgesError + " are different");
 
@@ -698,22 +738,21 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                       // SKIP THE REST OF THE EDGES
                       break;
                     } else {
-                      addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                      report.corrupt(edgeRID);
                       removeEntry = true;
-                      invalidLinks.incrementAndGet();
+                      ++report.invalidLinks;
                     }
                   } else {
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                    report.corrupt(edgeRID);
                     removeEntry = true;
-                    invalidLinks.incrementAndGet();
+                    ++report.invalidLinks;
                   }
 
                 } else if (!edge.getOut().equals(vertexRID)) {
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID);
-                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                  report.warn("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID);
+                  report.corrupt(edgeRID);
                   removeEntry = true;
-                  invalidLinks.incrementAndGet();
+                  ++report.invalidLinks;
                 }
 
                 if (((EdgeType) edge.getType()).isBidirectional() && inVertex != null) {
@@ -725,16 +764,14 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                     // guard the probe failure flagged the edge as corrupted and fix mode deleted a VALID edge).
                     // Register the far vertex so its list is rebuilt from the surviving edge records instead.
                     if (reconnectOutEdges.add(inVertex.getIdentity())) {
-                      addWarning(warnings, totalWarnings, maxWarnings,
-                          "vertex " + inVertex.getIdentity() + " outgoing edge list is unreadable (error: "
+                      report.warn("vertex " + inVertex.getIdentity() + " outgoing edge list is unreadable (error: "
                               + describe(probeError) + ")" + (fix ? ", rebuilding it from the surviving edge records" : ""));
                       if (fix)
                         resetChain(inVertex, Vertex.DIRECTION.OUT);
                     }
                   }
                   if (connected != null && !connected && !reconnectOutEdges.contains(inVertex.getIdentity())) {
-                    addWarning(warnings, totalWarnings, maxWarnings,
-                        "edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex "
+                    report.warn("edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex "
                             + vertexIdentity);
                     if (fix) {
                       inVertex = inVertex.modify();
@@ -745,15 +782,14 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                 }
 
               } catch (final RecordNotFoundException e) {
-                addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " not found");
-                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                report.warn("edge " + edgeRID + " not found");
+                report.corrupt(edgeRID);
                 removeEntry = true;
-                invalidLinks.incrementAndGet();
+                ++report.invalidLinks;
               } catch (final Exception e) {
                 // UNKNOWN ERROR ON LOADING
-                addWarning(warnings, totalWarnings, maxWarnings,
-                    "edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
-                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
+                report.corrupt(edgeRID);
                 removeEntry = true;
               }
             }
@@ -769,8 +805,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
         }
 
         if (chainBroken) {
-          addWarning(warnings, totalWarnings, maxWarnings,
-              "error on loading incoming edges from vertex " + vertexIdentity + " (error: " + chainError + ")"
+          report.warn("error on loading incoming edges from vertex " + vertexIdentity + " (error: " + chainError + ")"
                   + (fix ? ", rebuilding the edge list from the surviving edge records" : ""));
           if (fix) {
             vertex = resetChain(vertex, Vertex.DIRECTION.IN);
@@ -781,11 +816,9 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     }
   }
 
-  private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final List<String> warnings,
-      final AtomicLong totalWarnings, final int maxWarnings, final RID vertexIdentity, final AtomicLong invalidLinks,
-      final LinkedHashSet<RID> corruptedRecords, final AtomicLong totalCorrupted, final int maxCorrupted,
+  private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final RID vertexIdentity,
       final Set<RID> reconnectOutEdges, final Set<RID> reconnectInEdges, final Map<RID, Long> missingReferences,
-      final Map<RID, String> missingReferenceErrors, final AtomicLong duplicateLightEdges) {
+      final Map<RID, String> missingReferenceErrors, final CheckReport report) {
     // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
     if (((VertexInternal) vertex).getOutEdgesHeadChunk() != null) {
       EdgeLinkedList outEdges = null;
@@ -797,7 +830,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
 
       if (outEdges == null) {
         final RID headChunkRID = ((VertexInternal) vertex).getOutEdgesHeadChunk();
-        addWarning(warnings, totalWarnings, maxWarnings, "vertex " + vertexIdentity + " out edges record " + headChunkRID
+        report.warn("vertex " + vertexIdentity + " out edges record " + headChunkRID
             + " is not valid" + (fix ? ", rebuilding the edge list from the surviving edge records" : ""));
         if (fix) {
           vertex = resetChain(vertex, Vertex.DIRECTION.OUT);
@@ -838,14 +871,14 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
             VertexInternal outVertex = null;
 
             if (edgeRID == null) {
-              addWarning(warnings, totalWarnings, maxWarnings, "outgoing edge null from vertex " + vertexIdentity);
+              report.warn("outgoing edge null from vertex " + vertexIdentity);
               removeEntry = true;
-              invalidLinks.incrementAndGet();
+              ++report.invalidLinks;
             } else if (vertexRID == null) {
-              addWarning(warnings, totalWarnings, maxWarnings, "outgoing vertex null from vertex " + vertexIdentity);
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+              report.warn("outgoing vertex null from vertex " + vertexIdentity);
+              report.corrupt(edgeRID);
               removeEntry = true;
-              invalidLinks.incrementAndGet();
+              ++report.invalidLinks;
             } else {
               try {
                 if (edgeRID.getPosition() < 0) {
@@ -868,38 +901,35 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                     // lightweight edge is a modelling advisory, not damage. It reads fine, it just yields the edge
                     // twice. Counted once per duplicated EDGE - only the OUT lists are scanned, and every edge
                     // appears in exactly one of them, so the IN side would only double the same finding.
-                    duplicateLightEdges.incrementAndGet();
+                    ++report.duplicateLightEdges;
                   continue;
                 }
 
                 final Edge edge = edgeRID.asEdge(true);
 
                 if (edge.getIn() == null || !edge.getIn().isValid()) {
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
-                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                  report.warn("edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
+                  report.corrupt(edgeRID);
                   removeEntry = true;
-                  invalidLinks.incrementAndGet();
+                  ++report.invalidLinks;
                 } else {
                   try {
                     outVertex = (VertexInternal) edge.getInVertex().asVertex(true);
                   } catch (final RecordNotFoundException e) {
-                    addWarning(warnings, totalWarnings, maxWarnings,
-                        "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
-                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                    report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
+                    report.corrupt(edgeRID);
                     removeEntry = true;
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
-                    invalidLinks.incrementAndGet();
+                    report.corrupt(edge.getIn());
+                    ++report.invalidLinks;
                   } catch (final Exception e) {
                     // UNKNOWN ERROR ON LOADING
-                    addWarning(warnings, totalWarnings, maxWarnings,
-                        "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+                    report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
                             + describe(e) + ")");
-                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
+                    report.corrupt(edgeRID);
                     removeEntry = true;
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
+                    report.corrupt(edge.getIn());
                   }
                 }
 
@@ -924,8 +954,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                     else
                       ++totalEdgesError;
                   }
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexIdentity
+                  report.warn("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexIdentity
                           + ". Found " + totalEdges + " edges, of which " + totalEdgesOk + " are correct, "
                           + totalEdgesErrorFromSameVertex + " are from the same vertex and " + totalEdgesError + " are different");
 
@@ -944,22 +973,21 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                       break;
 
                     } else {
-                      addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                      report.corrupt(edgeRID);
                       removeEntry = true;
-                      invalidLinks.incrementAndGet();
+                      ++report.invalidLinks;
                     }
                   } else {
-                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                    report.corrupt(edgeRID);
                     removeEntry = true;
-                    invalidLinks.incrementAndGet();
+                    ++report.invalidLinks;
                   }
 
                 } else if (!edge.getIn().equals(vertexRID)) {
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID);
-                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                  report.warn("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID);
+                  report.corrupt(edgeRID);
                   removeEntry = true;
-                  invalidLinks.incrementAndGet();
+                  ++report.invalidLinks;
                 }
 
                 if (((EdgeType) edge.getType()).isBidirectional() && outVertex != null) {
@@ -972,16 +1000,14 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                     // guard the probe failure flagged the edge as corrupted and fix mode deleted a VALID edge).
                     // Register the far vertex so its list is rebuilt from the surviving edge records instead.
                     if (reconnectInEdges.add(outVertex.getIdentity())) {
-                      addWarning(warnings, totalWarnings, maxWarnings,
-                          "vertex " + outVertex.getIdentity() + " incoming edge list is unreadable (error: "
+                      report.warn("vertex " + outVertex.getIdentity() + " incoming edge list is unreadable (error: "
                               + describe(probeError) + ")" + (fix ? ", rebuilding it from the surviving edge records" : ""));
                       if (fix)
                         resetChain(outVertex, Vertex.DIRECTION.IN);
                     }
                   }
                   if (connected != null && !connected && !reconnectInEdges.contains(outVertex.getIdentity())) {
-                    addWarning(warnings, totalWarnings, maxWarnings,
-                        "edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn() + " back to the vertex "
+                    report.warn("edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn() + " back to the vertex "
                             + vertexIdentity);
                     if (fix) {
                       outVertex = outVertex.modify();
@@ -992,15 +1018,14 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                 }
 
               } catch (final RecordNotFoundException e) {
-                addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " not found");
-                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                report.warn("edge " + edgeRID + " not found");
+                report.corrupt(edgeRID);
                 removeEntry = true;
-                invalidLinks.incrementAndGet();
+                ++report.invalidLinks;
               } catch (final Exception e) {
                 // UNKNOWN ERROR ON LOADING
-                addWarning(warnings, totalWarnings, maxWarnings,
-                    "edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
-                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
+                report.corrupt(edgeRID);
                 removeEntry = true;
               }
             }
@@ -1017,8 +1042,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
         }
 
         if (chainBroken) {
-          addWarning(warnings, totalWarnings, maxWarnings,
-              "error on loading outgoing edges from vertex " + vertexIdentity + " (error: " + chainError + ")"
+          report.warn("error on loading outgoing edges from vertex " + vertexIdentity + " (error: " + chainError + ")"
                   + (fix ? ", rebuilding the edge list from the surviving edge records" : ""));
           if (fix) {
             vertex = resetChain(vertex, Vertex.DIRECTION.OUT);
@@ -1052,15 +1076,22 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
 
   public Map<String, Object> checkEdges(final String typeName, final boolean fix, final int verboseLevel,
       final int maxWarnings, final int maxCorrupted) {
+    return checkEdges(typeName, null, fix, verboseLevel, maxWarnings, maxCorrupted);
+  }
+
+  /**
+   * #5680: same check restricted to {@code scopedRecords} when it is non-null - the {@code CHECK DATABASE RECORD}
+   * scope. Per-edge work is identical; only the enumeration changes, from two passes over every bucket of the
+   * type to a lookup per listed RID.
+   */
+  public Map<String, Object> checkEdges(final String typeName, final Collection<RID> scopedRecords,
+      final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
-    final AtomicLong invalidLinks = new AtomicLong();
     final AtomicLong missingReferenceBack = new AtomicLong();
-    final AtomicLong totalWarnings = new AtomicLong();
-    final AtomicLong totalCorrupted = new AtomicLong();
-    // Use a Set (matching checkVertices) so the same RID flagged on both sides of an edge is recorded once and
-    // totalCorrupted (which counts only genuinely new entries, see addCorrupted) stays aligned with its size.
-    final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
-    final List<String> warnings = new ArrayList<>();
+    // CheckReport keeps corruptedRecords as a Set (matching checkVertices) so the same RID flagged on both sides of
+    // an edge is recorded once, and totalCorrupted - which counts only genuinely new entries, see
+    // CollectionUtils.addBounded - stays aligned with its size.
+    final CheckReport report = new CheckReport(maxWarnings, maxCorrupted, verboseLevel);
     final Map<RID, Long> missingReferences = new HashMap<>();
     final Map<RID, String> missingReferenceErrors = new HashMap<>();
     // Vertices whose edge LIST failed to walk during the back-reference probe: warned once each (a broken
@@ -1072,26 +1103,8 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     database.begin();
 
     try {
-      // TWO FULL PASSES OVER THE TYPE (record-type scan + endpoint checks): progress total is 2x the count.
-      progressBegin(progressStepName, 2 * database.countType(typeName, false));
-
-      // CHECK RECORD IS OF THE RIGHT TYPE
-      final DocumentType type = database.getSchema().getType(typeName);
-      for (final Bucket b : type.getBuckets(false)) {
-        b.scan((rid, view) -> {
-          try {
-            final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
-            record.asEdge(true);
-          } catch (Exception e) {
-            addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " cannot be loaded, removing it");
-            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-          }
-          progressTick();
-          return true;
-        }, null);
-      }
-
-      database.scanType(typeName, false, record -> {
+      // The endpoint check of ONE edge: shared by the type-wide scan and the RECORD-scoped enumeration.
+      final Consumer<Record> checkEndpoints = record -> {
         progressTick();
         final RID edgeRID = record.getIdentity();
 
@@ -1099,38 +1112,36 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
           final Edge edge = record.asEdge(true);
 
           if (edge == null) {
-            addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " cannot be loaded");
-            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+            report.warn("edge " + edgeRID + " cannot be loaded");
+            report.corrupt(edgeRID);
 
           } else if (edge.getIn() == null || !edge.getIn().isValid()) {
-            addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
-            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
-            invalidLinks.incrementAndGet();
+            report.warn("edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
+            report.corrupt(edgeRID);
+            ++report.invalidLinks;
 
           } else if (edge.getOut() == null || !edge.getOut().isValid()) {
-            addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " has an invalid outgoing link " + edge.getOut());
-            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
-            invalidLinks.incrementAndGet();
+            report.warn("edge " + edgeRID + " has an invalid outgoing link " + edge.getOut());
+            report.corrupt(edgeRID);
+            ++report.invalidLinks;
 
           } else {
             Vertex inVertex = null;
             try {
               inVertex = edge.getInVertex().asVertex(true);
             } catch (final RecordNotFoundException e) {
-              addWarning(warnings, totalWarnings, maxWarnings,
-                  "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
-              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
-              invalidLinks.incrementAndGet();
+              report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
+              report.corrupt(edgeRID);
+              report.corrupt(edge.getIn());
+              ++report.invalidLinks;
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
-              addWarning(warnings, totalWarnings, maxWarnings,
-                  "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+              report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
                       + describe(e) + ")");
-              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
+              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
+              report.corrupt(edgeRID);
+              report.corrupt(edge.getIn());
             }
 
             if (inVertex != null)
@@ -1145,8 +1156,7 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
                 // fix mode over its broken chain). checkVertices runs after this phase and rebuilds the list
                 // from the surviving edge records.
                 if (unreadableListVertices.add(inVertex.getIdentity()))
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "vertex " + inVertex.getIdentity() + " incoming edge list is unreadable (error: " + describe(e)
+                  report.warn("vertex " + inVertex.getIdentity() + " incoming edge list is unreadable (error: " + describe(e)
                           + "), left to the vertex check to rebuild");
               }
 
@@ -1154,19 +1164,17 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
             try {
               outVertex = edge.getOutVertex().asVertex(true);
             } catch (final RecordNotFoundException e) {
-              addWarning(warnings, totalWarnings, maxWarnings,
-                  "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
-              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
-              invalidLinks.incrementAndGet();
+              report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
+              report.corrupt(edgeRID);
+              ++report.invalidLinks;
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
-              addWarning(warnings, totalWarnings, maxWarnings,
-                  "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
+              report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
                       + describe(e) + ")");
-              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
-              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
+              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
+              report.corrupt(edgeRID);
+              report.corrupt(edge.getOut());
             }
 
             if (outVertex != null)
@@ -1178,31 +1186,55 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
               } catch (final Exception e) {
                 // Same as the incoming side: an unreadable LIST is not a corrupted edge or vertex.
                 if (unreadableListVertices.add(outVertex.getIdentity()))
-                  addWarning(warnings, totalWarnings, maxWarnings,
-                      "vertex " + outVertex.getIdentity() + " outgoing edge list is unreadable (error: " + describe(e)
+                  report.warn("vertex " + outVertex.getIdentity() + " outgoing edge list is unreadable (error: " + describe(e)
                           + "), left to the vertex check to rebuild");
               }
           }
 
         } catch (final Throwable e) {
-          addWarning(warnings, totalWarnings, maxWarnings,
-              "edge " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
-          addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+          report.warn("edge " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
+          report.corrupt(edgeRID);
         }
+      };
 
-        return true;
-      }, (rid, exception) -> {
-        progressTick();
-        addWarning(warnings, totalWarnings, maxWarnings,
-            "edge " + rid + " cannot be loaded (error: " + describe(exception) + ")");
-        addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
-        return true;
-      });
+      if (scopedRecords != null) {
+        progressBegin(progressStepName, scopedRecords.size());
+
+        for (final RID rid : scopedRecords) {
+          try {
+            checkEndpoints.accept(database.lookupByRID(rid, true));
+          } catch (final RecordNotFoundException e) {
+            // See the vertex arm: a missing RID is reported, never flagged corrupted, so FIX does not rebuild
+            // this bucket's indexes over what is usually just a stale or mistyped RID.
+            progressTick();
+            report.warn("edge " + rid + " does not exist");
+          } catch (final Exception e) {
+            // See the vertex arm, including what that guard does and does not cover.
+            progressTick();
+            report.warn("edge " + rid + " cannot be loaded (error: " + describe(e) + ")");
+            report.corrupt(rid);
+          }
+        }
+      } else {
+        // ONE FULL PASS OVER THE TYPE (#5773): progress total is the record count. See checkVertices for why the
+        // record-type scan that used to precede this detected nothing the endpoint pass misses.
+        progressBegin(progressStepName, database.countType(typeName, false));
+
+        database.scanType(typeName, false, record -> {
+          checkEndpoints.accept(record);
+          return true;
+        }, (rid, exception) -> {
+          progressTick();
+          report.warn("edge " + rid + " cannot be loaded (error: " + describe(exception) + ")");
+          report.corrupt(rid);
+          return true;
+        });
+      }
 
       progressComplete();
 
       if (fix) {
-        for (final RID rid : corruptedRecords) {
+        for (final RID rid : report.corruptedRecords) {
           if (rid == null)
             continue;
 
@@ -1212,26 +1244,25 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
-            addWarning(warnings, totalWarnings, maxWarnings,
-                "Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
+            report.warn("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
         }
       }
 
       if (verboseLevel > 0)
-        for (final String warning : warnings)
+        for (final String warning : report.warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
       database.commit();
 
     } finally {
       stats.put("autoFix", autoFix.get());
-      stats.put("corruptedRecords", corruptedRecords);
-      stats.put("invalidLinks", invalidLinks.get());
+      stats.put("corruptedRecords", report.corruptedRecords);
+      stats.put("invalidLinks", report.invalidLinks);
       stats.put("missingReferenceBack", missingReferenceBack.get());
-      stats.put("warnings", warnings);
-      stats.put("totalWarnings", totalWarnings.get());
-      stats.put("totalCorruptedRecords", totalCorrupted.get());
+      stats.put("warnings", report.warnings);
+      stats.put("totalWarnings", report.totalWarnings);
+      stats.put("totalCorruptedRecords", report.totalCorrupted);
       stats.put("missingReferences", missingReferences);
       stats.put("missingReferenceErrors", missingReferenceErrors);
     }
@@ -1267,24 +1298,75 @@ stats.put("duplicateLightEdges", duplicateLightEdges.get());
     }
   }
 
-  private static void addWarning(final List<String> warnings, final AtomicLong totalWarnings, final int maxWarnings,
-      final String message) {
-    totalWarnings.incrementAndGet();
-    if (warnings.size() < maxWarnings)
-      warnings.add(message);
-    else
-      LogManager.instance().log(GraphDatabaseChecker.class, Level.WARNING, message);
-  }
+  /**
+   * What a check run reports: the retained warning messages and the retained corrupted RIDs, each with its own cap
+   * and its own running total.
+   * <p>
+   * #5773 bundled the two collections with their caps and totals because they are ONE policy - both go through
+   * {@link CollectionUtils#addBounded}, which is where the retain-and-de-duplicate rule is documented - and because
+   * threading them as loose parameters is what made {@link #checkIncomingEdges} and {@link #checkOutgoingEdges}
+   * take fourteen and fifteen arguments (now eight each). There is no behaviour here that was not previously in the
+   * two static helpers this replaces; the value is that a caller can no longer pair one run's warnings with
+   * another's cap.
+   * <p>
+   * The caps are separate parameters rather than one because the callers pass different REMAINING budgets for the
+   * two collections (see {@code DatabaseChecker.checkScopedRecords}), even though both derive from that class's
+   * single {@code maxWarnings} setting.
+   */
+  private static final class CheckReport {
+    final LinkedHashSet<String> warnings         = new LinkedHashSet<>();
+    final LinkedHashSet<RID>    corruptedRecords = new LinkedHashSet<>();
+    // PLAIN longs, not AtomicLong: a check run is single-threaded (scanType walks sequentially) and the sets beside
+    // them are not thread-safe either, so an atomic counter here would advertise a concurrency this class does not
+    // have and cannot support. They were atomics only because the previous shape passed them as parameters, which
+    // a mutable holder is the Java way to do; as fields of one object they no longer need to be.
+    long                        totalWarnings;
+    long                        totalCorrupted;
+    // Uncapped run counters, here for the same reason: they are per-run accumulators every helper needs and
+    // nothing else does. checkEdges leaves duplicateLightEdges at zero and does not publish it, as before.
+    long                        invalidLinks;
+    long                        duplicateLightEdges;
+    final int                   maxWarnings;
+    final int                   maxCorrupted;
+    /**
+     * Only used to decide whether a message the cap forced us to DROP is still logged. #5773: the two
+     * {@code addWarning} twins disagreed here - this one logged unconditionally while
+     * {@code DatabaseChecker.addWarning} gated on the same flag - so a caller asking for silence got it from one and
+     * not the other. Aligned on honouring it: a caller passing 0 asked for no logging, and the retained set plus
+     * {@code totalWarnings} still tell it how many were dropped.
+     */
+    final int                   verboseLevel;
 
-  private static <T> void addCorrupted(final Collection<T> corrupted, final AtomicLong totalCorrupted, final int maxCorrupted,
-      final T item) {
-    if (corrupted.size() < maxCorrupted) {
-      // Under the cap: count the record only the first time it is recorded so totalCorrupted stays aligned with the
-      // de-duplicated collection size. Collection.add() returns false for an item already present in a Set.
-      if (corrupted.add(item))
-        totalCorrupted.incrementAndGet();
-    } else
-      // At/over the cap the item is not stored, so de-duplication is no longer possible: count the occurrence.
-      totalCorrupted.incrementAndGet();
+    CheckReport(final int maxWarnings, final int maxCorrupted, final int verboseLevel) {
+      this.maxWarnings = maxWarnings;
+      this.maxCorrupted = maxCorrupted;
+      this.verboseLevel = verboseLevel;
+    }
+
+    /**
+     * Records a warning, and LOGS it when the cap meant it could not be retained - so a capped run does not lose
+     * the message silently, unless the caller asked for silence with {@code verboseLevel == 0}.
+     * <p>
+     * #5773: {@code totalWarnings} used to count OCCURRENCES while {@code DatabaseChecker} publishes the retained
+     * warnings as a {@code Set}, so two findings rendering to the same message (a vertex with two null entries in
+     * its edge list, say) collapsed to one line and counted two - the total exceeded the retained size on a run
+     * nowhere near its cap, which is exactly what makes a total useless. Both sides now answer "distinct messages",
+     * so an uncapped run has {@code totalWarnings == warnings.size()} and a capped one reports how many it could
+     * not keep.
+     */
+    void warn(final String message) {
+      final CollectionUtils.BoundedAdd outcome = CollectionUtils.addBounded(warnings, maxWarnings, message);
+      if (!outcome.isFirstSighting())
+        return;
+      if (outcome == CollectionUtils.BoundedAdd.DROPPED && verboseLevel > 0)
+        LogManager.instance().log(GraphDatabaseChecker.class, Level.WARNING, message);
+      ++totalWarnings;
+    }
+
+    /** Flags a record as corrupted under the same bounded, de-duplicating rule {@link #warn} uses. */
+    void corrupt(final RID rid) {
+      if (CollectionUtils.addBounded(corruptedRecords, maxCorrupted, rid).isFirstSighting())
+        ++totalCorrupted;
+    }
   }
 }

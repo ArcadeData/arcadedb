@@ -722,6 +722,35 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     });
   }
 
+  /**
+   * Reports the verdict of the bounded key-order check the compacted sub-index runs when it is loaded. That check
+   * already logged the offending pages, but only under the sub-index's physical name ({@code Paper_0_84306331895885}),
+   * which is neither what an operator would search for nor what they would rebuild. Answering here instead routes it
+   * through the standard advisory channel: the schema load logs it once per LOGICAL index with the exact
+   * {@code REBUILD INDEX} to run, and {@code schema:indexes} / {@code schema:index:<name>} expose it as
+   * {@code upgradeWarning}, so the affected set is queryable rather than something to grep out of a startup log
+   * (#5802).
+   * <p>
+   * <b>Scope.</b> Only the compacted sub-index is covered: verifying the mutable pages means walking all of them,
+   * which is what {@link #checkIntegrity()} does for CHECK DATABASE and what the open path must not do. So an index
+   * small enough never to have been compacted can be mis-ordered and still answer {@code null} here, and the set this
+   * feeds on {@code schema:indexes} is "the affected indexes we can name cheaply", not "every affected index".
+   * CHECK DATABASE remains the exhaustive answer.
+   * <p>
+   * <b>Deliberately lock-free</b>, unlike the neighbouring {@link #checkIntegrity()}, which takes the read lock
+   * because it walks pages a concurrent compaction could drop underneath it. Two reads happen here and only the
+   * second is synchronized: the sub-index REFERENCE is a plain field, so racing a compaction's swap is a benign data
+   * race that yields either instance or transiently null; the verdict it then reads is volatile. Every outcome is
+   * sound for an advisory - the old instance's verdict was true of the file it was computed from, the new one
+   * carries its own, and null merely withholds advice for an instant. Taking the lock would put a getter that every
+   * schema listing calls per index behind the compaction's write lock to buy none of that.
+   */
+  @Override
+  public String getUpgradeWarning() {
+    final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
+    return subIndex != null ? subIndex.getKeyOrderMismatch() : null;
+  }
+
   @Override
   public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
     return mutable.nullStrategy;

@@ -133,6 +133,31 @@ public class FullTextIndexMetadata extends IndexMetadata {
     return new FullTextIndexMetadata(typeName, propertyNames, bucketId);
   }
 
+  /**
+   * Carries the analyzers, the query-parser options and the BM25 configuration over, per-field entries included: those
+   * are keyed by property name, which a copy keeps.
+   * <p>
+   * The corpus counters are NOT copied. They describe the documents indexed so far, and the copy is about to index a
+   * different set - starting from none - so inheriting them would skew every BM25 score until something recomputed
+   * them. A fresh instance starts at {@code countersValid == false}, which is the state that makes the first query
+   * validate them against the live data.
+   */
+  @Override
+  public FullTextIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    final FullTextIndexMetadata copy = copyCommonTo(new FullTextIndexMetadata(typeName, propertyNames, bucketId));
+    copy.analyzerClass = analyzerClass;
+    copy.indexAnalyzerClass = indexAnalyzerClass;
+    copy.queryAnalyzerClass = queryAnalyzerClass;
+    copy.allowLeadingWildcard = allowLeadingWildcard;
+    copy.defaultOperator = defaultOperator;
+    copy.fieldAnalyzers.putAll(fieldAnalyzers);
+    copy.similarity = similarity;
+    copy.bm25K1 = bm25K1;
+    copy.bm25B = bm25B;
+    copy.fieldBoosts.putAll(fieldBoosts);
+    return copy;
+  }
+
   @Override
   public void fromJSON(final JSONObject metadata) {
     if (metadata.has("typeName"))
@@ -255,6 +280,32 @@ public class FullTextIndexMetadata extends IndexMetadata {
         setFieldAnalyzer(checkIndexedField(key, ANALYZER_SUFFIX), json.getString(key));
       else if (key.endsWith(BOOST_SUFFIX))
         setFieldBoost(checkIndexedField(key, BOOST_SUFFIX), metadataFloat(json, key));
+  }
+
+  /**
+   * The per-field entries answer from the map rather than from {@code getAnalyzerClass(field)} / the boost getter, which
+   * fall back to the index-wide default: a request naming {@code title_analyzer} asks for an analyzer configured FOR
+   * that field, and an index that merely inherits the default one does not provide it.
+   */
+  @Override
+  protected Object getUserMetadataValue(final String key) {
+    return switch (key) {
+      case "analyzer" -> analyzerClass;
+      case "index_analyzer" -> indexAnalyzerClass;
+      case "query_analyzer" -> queryAnalyzerClass;
+      case "allowLeadingWildcard" -> allowLeadingWildcard;
+      case "defaultOperator" -> defaultOperator;
+      case "similarity" -> similarity;
+      case "bm25_k1" -> bm25K1;
+      case "bm25_b" -> bm25B;
+      default -> {
+        if (key.endsWith(ANALYZER_SUFFIX))
+          yield fieldAnalyzers.get(key.substring(0, key.length() - ANALYZER_SUFFIX.length()));
+        if (key.endsWith(BOOST_SUFFIX))
+          yield fieldBoosts.get(key.substring(0, key.length() - BOOST_SUFFIX.length()));
+        yield null;
+      }
+    };
   }
 
   /**

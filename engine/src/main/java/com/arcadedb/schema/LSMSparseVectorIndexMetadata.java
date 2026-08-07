@@ -78,6 +78,16 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
   }
 
   @Override
+  public LSMSparseVectorIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    final LSMSparseVectorIndexMetadata copy = copyCommonTo(
+        new LSMSparseVectorIndexMetadata(typeName, propertyNames, bucketId));
+    copy.dimensions = dimensions;
+    copy.modifier = modifier;
+    copy.weightQuantization = weightQuantization;
+    return copy;
+  }
+
+  @Override
   public Set<String> getUserMetadataKeys() {
     return USER_METADATA_KEYS;
   }
@@ -95,6 +105,16 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
 
     if (json.has("weightQuantization"))
       this.weightQuantization = parseWeightQuantization(json.getString("weightQuantization"));
+  }
+
+  @Override
+  protected Object getUserMetadataValue(final String key) {
+    return switch (key) {
+      case "dimensions" -> dimensions;
+      case "modifier" -> modifier;
+      case "weightQuantization" -> weightQuantization;
+      default -> null;
+    };
   }
 
   /**

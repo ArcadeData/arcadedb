@@ -259,6 +259,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.restore-database").increment();
 
+    // Prevent path traversal via the caller-supplied database name (GHSA-qwgr-2c45-63xx).
+    server.checkDatabaseNameIsValid(databaseName);
+
     final String dbPath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
         + File.separator + databaseName;
 

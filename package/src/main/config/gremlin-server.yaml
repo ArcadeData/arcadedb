@@ -24,5 +24,3 @@ serializers:
     config:
       ioRegistries:
         - com.arcadedb.gremlin.io.ArcadeIoRegistry
-processors:
-  - { className: org.apache.tinkerpop.gremlin.server.op.session.SessionOpProcessor, config: { sessionTimeout: 28800000 } }

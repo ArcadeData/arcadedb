@@ -1110,9 +1110,28 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return underlyingIndex.getMetadata();
   }
 
+  /**
+   * The analyzers, query-parser options and BM25 configuration live here, not on the underlying LSM-Tree, so a site
+   * carrying this definition into a new index file has to read them from this instance (issue #5723).
+   */
+  @Override
+  public IndexMetadata getMetadataForNewFile() {
+    return ftMetadata != null ? ftMetadata : underlyingIndex.getMetadata();
+  }
+
   @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();
+  }
+
+  /**
+   * A full-text index stores its terms in an ordinary LSM string index, so it is exposed to the same physical
+   * key-order mismatch after an upgrade (#5802) - and its terms are user text, which is where non-ASCII characters
+   * actually live.
+   */
+  @Override
+  public String getUpgradeWarning() {
+    return underlyingIndex.getUpgradeWarning();
   }
 
   @Override

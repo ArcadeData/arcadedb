@@ -18,17 +18,23 @@
  */
 package com.arcadedb.function.coll;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import java.util.ArrayList;
-import java.util.List;
+import com.arcadedb.utility.LongRangeList;
 
 /**
  * range() function - creates a list of numbers from start to end (optionally with step).
+ * <p>
+ * The list is lazy ({@link LongRangeList}): it stores only start, step and size, so a range costs a constant
+ * amount of heap no matter how long it is and consumers that stream it (UNWIND, IN, size(), indexing) allocate
+ * nothing. Ranges bigger than {@link GlobalConfiguration#QUERY_MAX_RANGE_SIZE} are rejected up-front with a
+ * client error: they would exhaust the heap as soon as something materialises them (sorting, copying, rendering
+ * the result in a response). See advisory GHSA-xmjm-8q85-g778.
  */
 public class RangeFunction implements StatelessFunction {
   @Override
@@ -64,23 +70,30 @@ public class RangeFunction implements StatelessFunction {
     if (step == 0)
       throw new CommandExecutionException("range() step cannot be zero");
 
-    final List<Long> result = new ArrayList<>();
-    if (step > 0) {
-      for (long i = start; i <= end; ) {
-        result.add(i);
-        if (i > Long.MAX_VALUE - step)
-          break;
-        i += step;
-      }
-    } else {
-      for (long i = start; i >= end; ) {
-        result.add(i);
-        // Long.MIN_VALUE - step wraps to 0L when step = Long.MIN_VALUE (two's-complement), which is still a correct underflow boundary.
-        if (i < Long.MIN_VALUE - step)
-          break;
-        i += step;
-      }
-    }
-    return result;
+    final long cardinality = LongRangeList.cardinality(start, end, step);
+    final long maxAllowed = maxRangeSize(context);
+
+    // A java.util.List cannot hold more than Integer.MAX_VALUE elements, so that is the hard ceiling even when the
+    // configured limit is disabled. Both checks are a client error (HTTP 400): the query asks for something that
+    // cannot be served, it is not an internal failure.
+    if (cardinality > Integer.MAX_VALUE && (maxAllowed < 0 || Integer.MAX_VALUE < maxAllowed))
+      throw new CommandSemanticException(
+          "range(" + start + ", " + end + ", " + step + ") would produce " + cardinality + " elements, more than the "
+              + Integer.MAX_VALUE + " a list can hold: use a smaller range");
+
+    if (maxAllowed >= 0 && cardinality > maxAllowed)
+      throw new CommandSemanticException(
+          "range(" + start + ", " + end + ", " + step + ") would produce " + cardinality + " elements, exceeding the maximum of "
+              + maxAllowed + " allowed by the setting `" + GlobalConfiguration.QUERY_MAX_RANGE_SIZE.getKey()
+              + "`: use a smaller range or raise the limit (a negative value disables it)");
+
+    return new LongRangeList(start, step, (int) cardinality);
+  }
+
+  private static long maxRangeSize(final CommandContext context) {
+    final Database database = context == null ? null : context.getDatabase();
+    return database == null ?
+        GlobalConfiguration.QUERY_MAX_RANGE_SIZE.getValueAsLong() :
+        database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_RANGE_SIZE);
   }
 }

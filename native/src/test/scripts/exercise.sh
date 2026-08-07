@@ -173,6 +173,16 @@ echo "[exercise] Redis PING (port $REDIS_PORT)"
 if tcp_connect 3 "$HOST" "$REDIS_PORT"; then
   # ArcadeDB's Redis wrapper only accepts RESP-encoded commands (no inline-command support), so
   # PING must be sent as the RESP array *1\r\n$4\r\nPING\r\n rather than a bare "PING\r\n".
+  #
+  # AUTH first: since "Require authentication on the Redis wire protocol" (3e76b3b82, reaching
+  # main with the 26.8.1 security merge) every command except AUTH and HELLO-with-AUTH is
+  # answered "-NOAUTH Authentication required." until the connection presents ArcadeDB
+  # credentials, mirroring the Postgres wrapper. An unauthenticated PING therefore no longer
+  # returns PONG, which under WIRE_STRICT=1 fails the build for a reason that has nothing to do
+  # with the binary under test. Both replies land in the same capture, so the PONG grep below
+  # still decides the check - "+OK" from AUTH alone would not match it.
+  printf '*3\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n' \
+    "${#DB_USER}" "$DB_USER" "${#PASS}" "$PASS" >&3
   printf '*1\r\n$4\r\nPING\r\n' >&3
   RESP_FILE="$EX_WORK/redis.resp"
   read_fd_with_deadline 3 "$RESP_FILE"

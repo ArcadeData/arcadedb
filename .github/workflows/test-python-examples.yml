@@ -131,6 +131,12 @@ jobs:
     needs: download-jars
     env:
       BUILD_VERSION: ${{ inputs.build-version }}
+      # Pin the Hugging Face cache inside the workspace so it is cacheable with
+      # one path on every platform (the default differs per OS). The examples
+      # embed with sentence-transformers, and this matrix is 20 jobs, so
+      # uncached that is 20 independent model downloads per release and 20
+      # chances for a transient hub outage to fail a release. It has happened.
+      HF_HOME: ${{ github.workspace }}/.hf-cache
     strategy:
       fail-fast: false
       matrix:
@@ -170,7 +176,7 @@ jobs:
 
       - name: Set up Java (for native builds on macOS/Windows)
         if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
-        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: 'corretto'
           java-version: '25'
@@ -236,6 +242,38 @@ jobs:
             uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
             uv pip install --system numpy requests sentence-transformers
           fi
+
+      # Restored before the dataset step, which is what triggers the model
+      # download. Keyed on the model name so bumping the model invalidates it.
+      - name: Cache Hugging Face model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-all-MiniLM-L6-v2-${{ runner.os }}-${{ runner.arch }}
+          restore-keys: |
+            hf-all-MiniLM-L6-v2-${{ runner.os }}-
+
+      # Pre-warm with bounded retries, separately from the dataset step, so a
+      # transient hub failure is retried here rather than surfacing mid-example
+      # as an OSError that reads like a bindings bug. Retrying is appropriate
+      # for this step specifically: it exercises third-party I/O, not our code.
+      # Deliberately NOT fail-fast: if the hub is truly down the dataset step
+      # below still runs and fails with its own message, so this cannot turn a
+      # real breakage into a silent skip.
+      - name: Pre-warm embedding model
+        shell: bash
+        continue-on-error: true
+        run: |
+          uv pip install --system sentence-transformers >/dev/null 2>&1 || true
+          for attempt in 1 2 3; do
+            if python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('model ready')"; then
+              echo "✅ model cached on attempt $attempt"
+              exit 0
+            fi
+            echo "⚠️  model fetch failed (attempt $attempt/3)"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          echo "::warning::could not pre-warm the embedding model after 3 attempts; the dataset step will retry"
 
       - name: Download datasets
         shell: bash
@@ -315,13 +353,17 @@ jobs:
 
             # Set example-specific parameters and timeout
             case "$example" in
-              "21_server_mode_http_access.py")
-                # Example 21 is kept in the repo for local/manual use, but is
-                # excluded from GitHub Actions because it is CI-unstable.
-                echo "⏭️  SKIPPED: $example (excluded from GitHub Actions due to CI instability)" | tee -a $results_file
-                skipped=$((skipped + 1))
-                echo ""
-                continue
+              "21_graph_analytical_view_sql.py")
+                example_args="--base-cities 1200 --stale-growth-cities 300 --sync-growth-cities 200 --regions 12 --batch-size 300 --sample-limit 5"
+                example_name="$example (reduced scale for CI)"
+                timeout_duration=900  # 15 minutes
+                example_jvm_args=""
+                ;;
+              "22_numpy_bulk_io.py")
+                example_args="--rows 50000 --points 100000 --vectors 5000"
+                example_name="$example (reduced scale for CI)"
+                timeout_duration=600  # 10 minutes
+                example_jvm_args=""
                 ;;
               "04_csv_import_documents.py")
                 example_args="--dataset movielens-small --export"
@@ -501,6 +543,10 @@ jobs:
           echo "Detailed Results:"
           cat $results_file
 
+          # Save list of examples for summary (before the failure exit, so
+          # the summary is populated even when some examples fail)
+          echo "$examples" > examples-ran.txt
+
           # Exit with error if any failed
           if [ $failed -gt 0 ]; then
             echo "❌ Some examples failed!"
@@ -508,9 +554,6 @@ jobs:
           else
             echo "✅ All examples passed!"
           fi
-
-          # Save list of examples for summary
-          echo "$examples" > examples-ran.txt
 
       - name: Generate test summary
         if: always()
