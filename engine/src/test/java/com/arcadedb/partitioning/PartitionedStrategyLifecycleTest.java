@@ -214,6 +214,68 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
     assertThat(database.query("sql", "SELECT FROM Orphaned").stream().count()).isEqualTo(1);
   }
 
+  // ---------------------------------------------------------------------------------------------------------------
+  // 3b. Issue #5646: a DROP INDEX that leaves a partitioned type without its partition index is reported when it
+  //     happens, not only on the next open.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * The single-statement / auto-commit case: there is no enclosing transaction for the diagnosis to defer to, so it
+   * has to run immediately, exactly like the pre-#5646 {@code CREATE INDEX} side already does.
+   */
+  @Test
+  void dropIndexOnAnOrphanedPartitionIsReportedImmediatelyOutsideATransaction() {
+    createPartitionedType("Immediate");
+
+    final List<String> warnings = captureWarnings(() -> database.command("sql", "DROP INDEX `Immediate[k]`"));
+
+    assertThat(warnings)
+        .as("dropping the partition's only unique automatic index must say so right away, not wait for a restart")
+        .anyMatch(m -> m.contains("Immediate") && m.contains("unique automatic index"));
+  }
+
+  /**
+   * Inside an explicit transaction the diagnosis must wait for the commit: reporting mid-transaction would describe
+   * a state the transaction might still walk back from (recollating is exactly a DROP followed by a CREATE).
+   */
+  @Test
+  void dropIndexOnAnOrphanedPartitionInATransactionIsReportedOnCommit() {
+    createPartitionedType("Deferred");
+
+    // captureWarnings nests: the inner capture sees only what is logged while the DROP INDEX statement itself runs,
+    // the outer capture (which is still installed as the inner one's delegate) also sees everything logged
+    // afterwards, including at commit.
+    final List<String>[] midTransactionWarnings = new List[1];
+    final List<String> afterCommitWarnings = captureWarnings(() -> database.transaction(
+        () -> midTransactionWarnings[0] = captureWarnings(() -> database.command("sql", "DROP INDEX `Deferred[k]`"))));
+
+    assertThat(midTransactionWarnings[0])
+        .as("the diagnosis must not fire before the transaction that dropped the index commits")
+        .noneMatch(m -> m.contains("Deferred"));
+    assertThat(afterCommitWarnings)
+        .as("the blocker is reported once the transaction that dropped the index commits")
+        .anyMatch(m -> m.contains("Deferred") && m.contains("unique automatic index"));
+  }
+
+  /**
+   * The case the synchronous hook could not handle: DROP followed by a re-CREATE of the identical index in one
+   * transaction must settle quietly, the same way {@link #anIndexChangeThatChangesNothingStaysQuiet} already pins
+   * for the CREATE side. Driving it from the DROP side is what #5646 is about - this used to be silent only because
+   * DROP INDEX never reported anything at all, not because the settled state was correctly recognised as unchanged.
+   */
+  @Test
+  void dropThenRecreateInOneTransactionReportsOnlyTheSettledState() {
+    createPartitionedType("Recreated");
+
+    final List<String> warnings = captureWarnings(() -> database.transaction(() -> {
+      database.command("sql", "DROP INDEX `Recreated[k]`");
+      database.command("sql", "CREATE INDEX ON Recreated(k) UNIQUE");
+    }));
+
+    assertThat(warnings).as("re-creating the partition index unchanged is not worth a line, even driven from DROP")
+        .noneMatch(m -> m.contains("Recreated"));
+  }
+
   /**
    * The same fault isolation, from the other direction: a strategy whose implementation class cannot be resolved at
    * all. Nothing about it is recoverable, but it must not take the rest of the schema down - the strategy block runs

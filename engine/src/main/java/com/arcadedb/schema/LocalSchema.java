@@ -755,13 +755,15 @@ public class LocalSchema implements Schema {
         if (index == null)
           return null;
 
-        if (index.getTypeName() != null && existsType(index.getTypeName())) {
-          final DocumentType type = getType(index.getTypeName());
-          final BucketSelectionStrategy strategy = type.getBucketSelectionStrategy();
+        final LocalDocumentType affectedType =
+            index.getTypeName() != null && existsType(index.getTypeName()) ? getType(index.getTypeName()) : null;
+
+        if (affectedType != null) {
+          final BucketSelectionStrategy strategy = affectedType.getBucketSelectionStrategy();
           if (strategy instanceof PartitionedBucketSelectionStrategy selectionStrategy) {
             if (List.of(selectionStrategy.getProperties()).equals(index.getPropertyNames()))
               // CURRENT INDEX WAS USED FOR PARTITION, SETTING DEFAULT STRATEGY
-              type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
+              affectedType.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
           }
         }
 
@@ -796,6 +798,25 @@ public class LocalSchema implements Schema {
           throw e;
         } catch (final Exception e) {
           throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
+        }
+
+        // Symmetric with the CREATE INDEX side (TypeIndexBuilder, issue #5637): the index just dropped is half of
+        // what decided whether the partition is any use, so losing the automatic unique index on the partition
+        // properties can turn a suitable partition into one with none left to prune with. That used to go
+        // unreported until the next open (issue #5646); reportPartitionSuitabilityAfterSchemaChange() defers to the
+        // enclosing transaction's commit when one is active, so a DROP immediately followed by a re-CREATE
+        // (recollating, or any other index-surface edit on the same type in one transaction) is diagnosed once
+        // against the settled state rather than reporting the transient gap.
+        if (affectedType != null) {
+          try {
+            affectedType.reportPartitionSuitabilityAfterSchemaChange();
+          } catch (final RuntimeException e) {
+            // By this point the index is already dropped and the schema updated, so letting a diagnostic fault
+            // escape would fail a DROP INDEX that otherwise succeeded over nothing more than a reporting bug.
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot report the partition suitability of type '%s' after dropping index '%s'. The index itself "
+                    + "was dropped successfully", e, affectedType.getName(), indexName);
+          }
         }
 
         return null;

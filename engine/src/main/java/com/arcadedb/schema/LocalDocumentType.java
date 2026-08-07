@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordEventsRegistry;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
@@ -927,19 +928,41 @@ public class LocalDocumentType implements DocumentType {
    * Re-runs the partition diagnosis after a schema change that can have altered it, reporting everything and
    * refusing nothing (issue #5637). A no-op on a type that is not partitioned.
    * <p>
-   * Called from {@link TypeIndexBuilder}, which runs once per {@code CREATE INDEX}. The obvious hook,
-   * {@link #addIndexInternal}, runs once per BUCKET, so it would multiply every line by the bucket count and fire
-   * during schema reload as well.
+   * Called from {@link TypeIndexBuilder} once per {@code CREATE INDEX}, and from {@link LocalSchema#dropIndexInternal}
+   * once per {@code DROP INDEX} (issue #5646). The obvious hook, {@link #addIndexInternal}, runs once per BUCKET, so
+   * it would multiply every line by the bucket count and fire during schema reload as well.
    * <p>
-   * <b>{@code DROP INDEX} deliberately does not call this, which leaves one case reported only on the next open.</b>
-   * Recollating an index is a drop followed by a create, so a hook on the drop would announce "there is no unique
-   * automatic index on the partition properties" in the middle of a sequence that is about to put one back - a line
-   * that is true for the instant it is printed, misleading by the time it is read, and printed ahead of the accurate
-   * one the create emits. That leaves a drop with no create after it saying nothing until the database is reopened,
-   * where the blocker is reported and then repeats on every open. Closing that properly means deferring the
-   * diagnosis to the end of the enclosing transaction rather than moving the hook, which is tracked as issue #5646.
+   * <b>Deferred to the end of the enclosing transaction, when one is active.</b> Recollating an index is a
+   * {@code DROP INDEX} followed by a {@code CREATE INDEX}, usually in one transaction; reporting synchronously on the
+   * drop would announce "there is no unique automatic index on the partition properties" in the middle of a sequence
+   * that is about to put one back - a line that is true for the instant it is printed, misleading by the time it is
+   * read, and printed ahead of the accurate one the create emits. Deferring the diagnosis to commit, keyed per type
+   * name via {@link TransactionContext#addAfterCommitCallbackIfAbsent}, means a {@code DROP}-then-{@code CREATE} (or
+   * any other run of index-surface edits on the same type within one transaction) is diagnosed once against the
+   * state the transaction settled on, whichever statement caused it.
+   * <p>
+   * Outside a transaction - the auto-commit / single-statement path - there is no commit to defer to, so the
+   * diagnosis runs immediately, which is also what kept the pre-#5646 {@code CREATE INDEX} behaviour for that case.
    */
   void reportPartitionSuitabilityAfterSchemaChange() {
+    if (!(bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy))
+      return;
+
+    final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
+    if (database.isTransactionActive())
+      database.getTransaction().addAfterCommitCallbackIfAbsent("partition-suitability:" + name,
+          this::reportPartitionSuitabilityNow);
+    else
+      reportPartitionSuitabilityNow();
+  }
+
+  /**
+   * The actual diagnosis, run either immediately or from the deferred callback {@link #reportPartitionSuitabilityAfterSchemaChange}
+   * registers. Re-reads {@link #bucketSelectionStrategy} rather than capturing it at scheduling time, so a callback
+   * that fires later sees whatever the transaction settled the strategy on, not a snapshot from when it was queued -
+   * a type that was reverted to round-robin (or dropped) before commit is correctly not diagnosed at all.
+   */
+  private void reportPartitionSuitabilityNow() {
     if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
       reportPartitionSuitability(partitioned, PartitionReport.SCHEMA_CHANGE);
   }
