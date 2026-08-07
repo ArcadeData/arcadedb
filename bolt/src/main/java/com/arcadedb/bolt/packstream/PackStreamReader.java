@@ -445,7 +445,7 @@ public class PackStreamReader {
   private abstract static class Frame {
     static final Object NEEDS_MORE = new Object();
 
-    abstract Object attach(Object value);
+    abstract Object attach(Object value) throws IOException;
   }
 
   private static final class ListFrame extends Frame {
@@ -476,8 +476,14 @@ public class PackStreamReader {
     }
 
     @Override
-    Object attach(final Object value) {
+    Object attach(final Object value) throws IOException {
       if (expectingKey) {
+        // A PackStream map key must be a string; a hostile/malformed client can send any value type here
+        // (e.g. an integer), which previously fell through to an uncontrolled ClassCastException instead of a
+        // clear protocol error - the same class of gap issue #5918 fixed for declared lengths/sizes.
+        if (!(value instanceof String))
+          throw new IOException("PackStream map key must be a string, got: "
+              + (value != null ? value.getClass().getSimpleName() : "null"));
         pendingKey = (String) value;
         expectingKey = false;
         return NEEDS_MORE;
