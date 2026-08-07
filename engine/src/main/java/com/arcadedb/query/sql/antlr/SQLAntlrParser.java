@@ -43,7 +43,7 @@ import java.util.List;
  * This class wraps the ANTLR-generated lexer and parser, providing a clean API
  * for parsing SQL statements into ArcadeDB's internal AST representation.
  * <p>
- * It produces identical AST structures to the JavaCC-based SqlParser, ensuring
+ * It produces the same AST node types that the retired JavaCC-based parser used to, ensuring
  * 100% backward compatibility with existing code.
  * <p>
  * Usage:
