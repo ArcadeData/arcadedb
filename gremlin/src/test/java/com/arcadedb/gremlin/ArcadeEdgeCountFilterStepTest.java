@@ -78,32 +78,41 @@ class ArcadeEdgeCountFilterStepTest {
       graph.drop();
   }
 
+  /**
+   * Was {@code theDegreeFilterStepIsInstalled}, asserting {@code .isTrue()}. Inverted by the #5840 fix
+   * (PR #5899): {@link ArcadeTraversalStrategy} moved to {@code TraversalStrategy.ProviderOptimizationStrategy}
+   * so it deterministically runs after every {@code OptimizationStrategy}, including TinkerPop's
+   * {@code CountStrategy} - the opposite ordering #5841 had arranged via an explicit
+   * {@code applyPost(CountStrategy.class)}, which is gone (it does not type-check under the new category
+   * and would no longer help: category ordering is unconditional and now always places
+   * {@code CountStrategy} first). {@code CountStrategy} rewrites the bounded-predicate shape before this
+   * strategy's {@code applyEdgeCountFilterOptimization} gets a chance to pattern-match it, so the O(1)
+   * degree-check step never installs for {@code where(outE(X).count().is(boundedPredicate))} - reliably
+   * now, instead of on roughly half of JVM processes as before #5841. Results stay correct via the OLTP
+   * fallback either way, see the {@code *MatchesTheUnoptimizedPath} differential tests below. See
+   * docs/5840-gav-csr-labeled-gremlin-string-traversals.md ("Known trade-off") for the full analysis;
+   * extending {@code applyEdgeCountFilterOptimization} to recognize {@code CountStrategy}'s rewritten
+   * shapes is tracked there as follow-up work, not done here.
+   */
   @Test
-  void theDegreeFilterStepIsInstalled() {
+  void theDegreeFilterStepDoesNotInstallForBoundedPredicates() {
     assertThat(TraversalPlans.hasStepOfType(
         graph.traversal().V().where(outE("KNOWS").count().is(P.gt(1))), ArcadeEdgeCountFilterStep.class))
         .as("plan was: %s",
             TraversalPlans.describe(graph.traversal().V().where(outE("KNOWS").count().is(P.gt(1)))))
-        .isTrue();
+        .isFalse();
   }
 
   @Test
-  void whenTheRewriteDoesNotInstallTinkerPopsCountStrategyExplainsWhy() {
-    // Companion to the disabled theDegreeFilterStepIsInstalled above. Whether ArcadeTraversalStrategy or
-    // TinkerPop's CountStrategy applies first for this traversal is not pinned down by
-    // ArcadeTraversalStrategy.applyPrior() (it only orders itself after InlineFilterStrategy), so this
-    // assertion is written to hold either way instead of asserting a specific, order-dependent outcome:
-    // if the GAV step is missing, the where-child must show CountStrategy's RangeGlobalStep fingerprint,
-    // confirming that IS the reason it did not install (as opposed to some unrelated regression).
-    final Traversal<?, ?> probe = graph.traversal().V().where(outE("KNOWS").count().is(P.gt(1)));
-    final boolean installed = TraversalPlans.hasStepOfType(probe, ArcadeEdgeCountFilterStep.class);
-    if (!installed) {
-      final String plan = describeWithChildren(graph.traversal().V().where(outE("KNOWS").count().is(P.gt(1))));
-      assertThat(plan)
-          .as("rewrite did not install; expected TinkerPop's CountStrategy to have inserted a "
-              + "RangeGlobalStep ahead of it, plan: %s", plan)
-          .contains("RangeGlobalStep");
-    }
+  void countStrategyExplainsWhyTheDegreeFilterStepDoesNotInstall() {
+    // Confirms the mechanism, not just the outcome: the where-child must show CountStrategy's
+    // RangeGlobalStep fingerprint, proving CountStrategy's bounded-predicate rewrite is what pre-empts
+    // ArcadeEdgeCountFilterStep, as opposed to some unrelated regression producing the same absence.
+    final String plan = describeWithChildren(graph.traversal().V().where(outE("KNOWS").count().is(P.gt(1))));
+    assertThat(plan)
+        .as("expected TinkerPop's CountStrategy to have inserted a RangeGlobalStep ahead of the "
+            + "degree-check step, plan: %s", plan)
+        .contains("RangeGlobalStep");
   }
 
   /**
