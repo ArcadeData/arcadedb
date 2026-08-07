@@ -215,6 +215,21 @@ class PackStreamBoundsTest {
         .hasMessageContaining("negative size");
   }
 
+  /**
+   * A PackStream map key must be a string; previously a non-string key (e.g. an integer) fell through to a raw
+   * {@code (String) value} cast, yielding an uncontrolled {@link ClassCastException} instead of a clear protocol
+   * error - the same class of gap #5918 fixed for declared lengths/sizes, just for map keys.
+   */
+  @Test
+  void nonStringMapKeyRejectedWithClearProtocolErrorInsteadOfClassCastException() {
+    final byte[] data = { (byte) 0xA1, 0x01, (byte) 0xC0 }; // TINY_MAP(1): key = 1 (TINY_INT), value = NULL
+    final PackStreamReader reader = new PackStreamReader(data);
+
+    assertThatThrownBy(reader::readValue)
+        .isExactlyInstanceOf(IOException.class)
+        .hasMessageContaining("map key");
+  }
+
   // ============ Regression: legitimate, in-bounds values still parse correctly ============
 
   @Test
