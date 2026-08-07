@@ -271,4 +271,9 @@ un-wrapped, matching how `IllegalArgumentException` and `CommandParsingException
 `Invalid JSON payload`. A request whose JSON is missing a property, carries a null where a value is required, or
 holds the wrong type for it is a client error, and it used to fall through to the generic `500 Internal error`.
 
+**The MCP JSON-RPC contract is unaffected.** `MCPDispatcher` guards its `params` / `arguments` reads to turn a
+malformed member into a `-32600` / `-32602` envelope over HTTP 200, and the setting-key read to keep secret masking
+from raising while the request log line is built. Those guards named the Gson exception types the accessors used to
+let escape, so they now cover `JSONException` too and keep answering an envelope rather than the transport's 400.
+
 [#5935](https://github.com/ArcadeData/arcadedb/issues/5935)

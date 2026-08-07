@@ -56,14 +56,15 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class JSONObject implements Map<String, Object> {
-  public static final JsonNull          NULL               = JsonNull.INSTANCE;
+  public static final JsonNull          NULL                   = JsonNull.INSTANCE;
   /**
-   * Cap on how much of an offending value is echoed in a type-mismatch message (see {@link #describe(JsonElement)}).
+   * Cap on how much of an offending value or property name is echoed in an error message, so a large payload cannot
+   * be reflected back through an exception. See {@link #describe(JsonElement)} and {@link #truncate(String)}.
    */
   static final        int               MAX_ERROR_VALUE_LENGTH = 64;
   private final       JsonObject        object;
-  private             String            dateFormatAsString = null;
-  private             DateTimeFormatter dateFormat         = null;
+  private             String            dateFormatAsString     = null;
+  private             DateTimeFormatter dateFormat             = null;
   private             String            dateTimeFormatAsString;
   private             DateTimeFormatter dateTimeFormat;
 
