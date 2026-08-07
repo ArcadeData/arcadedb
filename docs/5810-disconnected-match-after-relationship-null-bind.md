@@ -125,3 +125,36 @@ developer decision.
   `NoClassDefFoundError` errors in test classes untouched by this change; re-running each of those
   classes in isolation passed cleanly, consistent with a local IDE background-compiler race against
   `target/classes` (IntelliJ IDEA was running concurrently) rather than a regression from this change.
+
+## PR and review history (PR #5888)
+
+- Duplicate discovered: while opening the PR, found PR #5876 (opened earlier the same day) already
+  fixes the identical root cause with a structurally similar approach. Left a cross-reference comment
+  on #5888; both PRs were left open since merge/close is a developer decision this workflow does not
+  make.
+- Cycle 1: head `05c7fe1b2` (initial fix - Cartesian-join disconnected nodes after `buildExpansionChain`,
+  before `AnchorSelector` was touched). `claude[bot]` posted a review as a GitHub **issue comment**
+  (not a PR review or inline comment) identifying one CONFIRMED correctness bug (anchor selection not
+  connectivity-aware - reproduced live), one performance finding (compound WHERE loses anchor pushdown
+  when mixed with a disconnected-node predicate), one minor performance nitpick (disconnected-only
+  filter not pushed into its own scan before the join - left as-is, out of scope), a test-coverage gap
+  list, and a style nit. Addressed the correctness bug and the compound-WHERE performance finding (both
+  verified against a live reproduction and new regression tests before/after); the minor nitpick was
+  intentionally deferred since it is "not incorrect, just more expensive" and outside this issue's
+  scope. Pushed as commit `0558aa581`.
+- Cycle 2: head `0558aa581`. The `claude-review` GitHub Actions check re-ran fresh for this exact
+  commit (a distinct job run, `92832148797`, tied to the new push) and completed successfully (27
+  turns, `is_error: false`) but posted zero comments - no new PR review, no inline comment, no issue
+  comment. Treated as a clean pass: the check is 1:1 with each pushed SHA, and passing with no findings
+  is the review system's way of saying nothing further is actionable. No code changes were needed for
+  this cycle. Final state: **clean-approval**.
+
+## Deferred items
+
+- The minor performance nitpick from cycle 1 (a filter referencing only the disconnected node's own
+  variable is applied as a `FilterOperator` on top of the full `CartesianProduct` rather than pushed
+  into that node's own scan before the join) was consciously left unaddressed - not incorrect, just
+  more expensive for a disconnected label with many rows. No separate follow-up issue was filed by this
+  run; left for the developer to decide whether it merits one.
+- PR #5876 duplicates this PR's fix for the same root cause with an independent, structurally similar
+  implementation. Deciding which PR to carry forward (and closing the other) is left to the developer.
