@@ -137,6 +137,50 @@ public class OpenCypherMatchEnhancementsTest {
     assertThat(results.get(3).<String>getProperty("person2")).isEqualTo("Bob");
   }
 
+  // Issue #5810: a disconnected MATCH clause following a relationship pattern must independently
+  // bind its new variable to every match and fan out via Cartesian product, exactly like it does
+  // when the disconnected clause appears first or when both clauses are single-node patterns
+  // (see multipleMatchClausesCartesianProduct above). It must not collapse to a single row with
+  // the new variable bound to null, which is OPTIONAL MATCH behaviour, not plain MATCH.
+  @Test
+  void disconnectedMatchAfterRelationshipPatternProducesCartesianProduct() {
+    // (a:Person)-[:WORKS_FOR]->(c:Company) matches exactly one row: Alice -> TechCorp.
+    // The disconnected MATCH (b:Person) must bind b to both Alice and Bob for that row.
+    final ResultSet result = database.query("opencypher",
+        """
+        MATCH (a:Person)-[:WORKS_FOR]->(c:Company)
+        MATCH (b:Person)
+        RETURN c.name AS company, b.name AS person
+        ORDER BY person""");
+
+    final List<Result> results = new ArrayList<>();
+    while (result.hasNext())
+      results.add(result.next());
+    result.close();
+
+    assertThat(results).as("Expected one row per Person crossed with the single WORKS_FOR match").hasSize(2);
+
+    assertThat(results.get(0).<String>getProperty("company")).isEqualTo("TechCorp");
+    assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
+
+    assertThat(results.get(1).<String>getProperty("company")).isEqualTo("TechCorp");
+    assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
+  }
+
+  @Test
+  void disconnectedMatchAfterRelationshipPatternCountMatchesRowCount() {
+    final ResultSet result = database.query("opencypher",
+        """
+        MATCH (a:Person)-[:WORKS_FOR]->(c:Company)
+        MATCH (b:Person)
+        RETURN count(*) AS c""");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<Long>getProperty("c")).isEqualTo(2L);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
   @Test
   void patternWithoutLabel() {
     // MATCH (n) without label should match ALL vertices (Person and Company)
