@@ -62,14 +62,16 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private Object evaluateAnd(final Result result, final CommandContext context) {
-    final Object leftVal = left.evaluate(result, context);
-    final Object rightVal = right.evaluate(result, context);
+    final Boolean leftBool = toBoolean(left.evaluate(result, context));
 
-    final Boolean leftBool = toBoolean(leftVal);
-    final Boolean rightBool = toBoolean(rightVal);
+    // false AND anything = false: the right operand is result-irrelevant, do not evaluate it.
+    if (Boolean.FALSE.equals(leftBool))
+      return false;
+
+    final Boolean rightBool = toBoolean(right.evaluate(result, context));
 
     // false AND anything = false
-    if (Boolean.FALSE.equals(leftBool) || Boolean.FALSE.equals(rightBool))
+    if (Boolean.FALSE.equals(rightBool))
       return false;
 
     // If either is null (unknown), result is null
@@ -81,14 +83,16 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private Object evaluateOr(final Result result, final CommandContext context) {
-    final Object leftVal = left.evaluate(result, context);
-    final Object rightVal = right.evaluate(result, context);
+    final Boolean leftBool = toBoolean(left.evaluate(result, context));
 
-    final Boolean leftBool = toBoolean(leftVal);
-    final Boolean rightBool = toBoolean(rightVal);
+    // true OR anything = true: the right operand is result-irrelevant, do not evaluate it.
+    if (Boolean.TRUE.equals(leftBool))
+      return true;
+
+    final Boolean rightBool = toBoolean(right.evaluate(result, context));
 
     // true OR anything = true
-    if (Boolean.TRUE.equals(leftBool) || Boolean.TRUE.equals(rightBool))
+    if (Boolean.TRUE.equals(rightBool))
       return true;
 
     // If either is null (unknown), result is null
