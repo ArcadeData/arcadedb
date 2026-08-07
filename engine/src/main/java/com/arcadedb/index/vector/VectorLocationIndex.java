@@ -809,8 +809,15 @@ public class VectorLocationIndex {
     return new RID((int) INTS.getAcquire(chunk.bucketId, slot), (long) LONGS.getAcquire(chunk.position, slot));
   }
 
-  /** The bucket id of a live vector's RID, or -1 if the id holds no location. */
-  public int getBucketId(final int vectorId) {
+  /**
+   * The bucket id of a live vector's RID, or -1 if the id holds no location.
+   * <p>
+   * Package-private: nothing in the engine needs half a RID - the readers either compare one
+   * ({@link #isLocationOf(int, RID)}) or need the object ({@link #getRid(int)}). This and
+   * {@link #getPosition(int)} exist so a test can read the two words straight out of the arrays and check
+   * {@link #getRid(int)} against them, rather than checking it against itself.
+   */
+  int getBucketId(final int vectorId) {
     final Chunk chunk = chunkOf(vectorId);
     if (chunk == null)
       return -1;
@@ -820,8 +827,8 @@ public class VectorLocationIndex {
     return (int) INTS.getAcquire(chunk.bucketId, slot);
   }
 
-  /** The position of a live vector's RID, or -1 if the id holds no location. */
-  public long getPosition(final int vectorId) {
+  /** The position of a live vector's RID, or -1 if the id holds no location. See {@link #getBucketId(int)}. */
+  long getPosition(final int vectorId) {
     final Chunk chunk = chunkOf(vectorId);
     if (chunk == null)
       return -1;
