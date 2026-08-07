@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.temporal;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
+import java.time.temporal.Temporal;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -381,7 +382,7 @@ public final class TemporalUtil {
    *
    * CypherDateTime is kept as its ISO-8601 string representation (not unwrapped to ZonedDateTime)
    * so that: (a) untyped properties store it as TYPE_STRING, preserving timezone info for
-   * later component access via PropertyAccessExpression.convertFromStorage(); and (b) for
+   * later component access via {@link #convertFromStorage(Object)}; and (b) for
    * schema-typed DATETIME properties, Type.convert() parses the string into the target Java type
    * (timezone is dropped on a LocalDateTime target, matching the SQL sysdate() semantics).
    *
@@ -461,6 +462,92 @@ public final class TemporalUtil {
     if (value instanceof Date date)
       return new CypherDateTime(date.toInstant().atZone(ZoneOffset.UTC));
 
+    return value;
+  }
+
+  /**
+   * Convert an ArcadeDB-stored raw property value back to its Cypher temporal type, when
+   * applicable. {@code Duration}, {@code LocalTime}, and {@code Time} are stored as Strings
+   * because ArcadeDB doesn't have native binary types for them; this restores the proper
+   * {@code CypherDuration}/{@code CypherLocalTime}/{@code CypherTime}/etc. wrapper so component
+   * access (e.g. {@code dur.seconds}, {@code t.hour}) keeps working after a property round-trips
+   * through storage. Non-temporal values (including plain, non-temporal-looking Strings) are
+   * returned unchanged.
+   * <p>
+   * Shared by every property-read path (variable-bound and chained) so a persisted temporal
+   * value dereferences identically regardless of which AST node reads it.
+   */
+  public static Object convertFromStorage(final Object value) {
+    // Fast path: common non-temporal types don't need conversion
+    if (value == null || value instanceof Number || value instanceof Boolean)
+      return value;
+
+    // Handle single values - check temporal types before collections. Native java.time / java.util.Date
+    // temporals (incl. java.util.Date, the default DATETIME storage type, and ZonedDateTime) are wrapped
+    // into Cypher temporal values so a stored native datetime reads back as a comparable temporal.
+    if (value instanceof Temporal || value instanceof Date) {
+      final Object coerced = fromCoreJavaType(value);
+      if (coerced instanceof CypherTemporalValue)
+        return coerced;
+    }
+
+    if (value instanceof String str) {
+      // Fast path: short strings and common patterns can't be temporal
+      if (str.length() < 5 || !Character.isDigit(str.charAt(0)) && str.charAt(0) != 'P')
+        return value;
+
+      // Duration strings start with P (ISO-8601)
+      if (str.length() > 1 && str.charAt(0) == 'P') {
+        try {
+          return CypherDuration.parse(str);
+        } catch (final Exception ignored) {
+          // Not a valid duration string
+        }
+      }
+
+      // DateTime strings: contain 'T' with date part before it and timezone/offset
+      // e.g., 1912-01-01T00:00Z, 1984-10-11T12:31:14+01:00[Europe/Stockholm]
+      final int tIdx = str.indexOf('T');
+      if (tIdx >= 4 && tIdx < str.length() - 1 && Character.isDigit(str.charAt(0))) {
+        try {
+          return CypherDateTime.parse(str);
+        } catch (final Exception ignored) {
+          // Not a valid datetime string
+        }
+      }
+
+      // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM[+/-offset] or HH:MM:SS[.nanos]Z
+      // Handles both full (10:35:00-08:00) and short (10:35-08:00) time formats
+      if (str.length() >= 5 && str.charAt(2) == ':' && Character.isDigit(str.charAt(0))
+          && Character.isDigit(str.charAt(3))) {
+        final boolean hasSeconds = str.length() >= 8 && str.charAt(5) == ':';
+        // Check if it has a timezone offset (+ or - after the time part, or trailing Z)
+        final int searchFrom = hasSeconds ? 8 : 5;
+        boolean hasOffset = str.endsWith("Z");
+        if (!hasOffset) {
+          for (int i = searchFrom; i < str.length(); i++) {
+            final char c = str.charAt(i);
+            if (c == '+' || c == '-') {
+              hasOffset = true;
+              break;
+            }
+          }
+        }
+        if (hasOffset) {
+          try {
+            return CypherTime.parse(str);
+          } catch (final Exception ignored) {
+            // Not a valid time string
+          }
+        } else {
+          try {
+            return CypherLocalTime.parse(str);
+          } catch (final Exception ignored) {
+            // Not a valid local time string
+          }
+        }
+      }
+    }
     return value;
   }
 
