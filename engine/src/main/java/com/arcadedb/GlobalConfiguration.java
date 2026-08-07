@@ -1642,6 +1642,12 @@ public enum GlobalConfiguration {
           + "since the length is read off the wire before authentication. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
+  // The three *_SIZE/*_LENGTH settings below are defense in depth at different layers of the same BOLT ingest
+  // path, not redundant: BOLT_MAX_MESSAGE_SIZE bounds the whole reassembled message before it is even handed to
+  // the PackStream decoder, while BOLT_PACKSTREAM_MAX_VALUE_LENGTH bounds one BYTES_32/STRING_32 value within an
+  // already-accepted message. They share the same 16MB default because a single field legitimately consuming
+  // the entire message budget is a real (if unusual) case, not because the two checks are meant to be identical.
+
   BOLT_MAX_MESSAGE_SIZE("arcadedb.bolt.maxMessageSize", SCOPE.SERVER, """
       Maximum total size in bytes accepted for a single BOLT protocol message after chunk reassembly. BOLT frames \
       a message as a sequence of chunks terminated by a zero-length chunk; without a bound on the reassembled \

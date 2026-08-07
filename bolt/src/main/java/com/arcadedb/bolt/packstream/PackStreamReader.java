@@ -375,8 +375,9 @@ public class PackStreamReader {
 
   /**
    * Validates a LIST_32/MAP_32 declared size before it is used to size a collection's backing array (issue
-   * #5918): each element/entry needs at least one wire byte to encode, so a declared count larger than the bytes
-   * remaining in this message is impossible and rejected without allocating.
+   * #5918): a LIST_32 element needs at least one wire byte to encode and a MAP_32 entry needs at least two (a key
+   * plus a value), so a declared count larger than the bytes remaining in this message is impossible - loosely
+   * for maps, since this check uses the same one-byte-per-count floor for both - and rejected without allocating.
    */
   private int checkElementCount(final int size, final String what) throws IOException {
     if (size < 0)
