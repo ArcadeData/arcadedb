@@ -241,7 +241,7 @@ public class JsonSerializer {
     else
       includePropertiesSet = null;
 
-    final StringBuilder propertyTypes = includeMetadata ? new StringBuilder() : null;
+    final StringBuilder propertyTypes = includeTypeHints ? new StringBuilder() : null;
 
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final String propertyName = entry.getKey();
@@ -260,7 +260,7 @@ public class JsonSerializer {
         propertyType = null;
 
       // Unlike serializeResult (which omits JSON-faithful types), this opt-in metadata path is exhaustive by design.
-      if (includeMetadata && propertyType != null) {
+      if (includeTypeHints && propertyType != null) {
         if (propertyTypes.length() > 0)
           propertyTypes.append(",");
         propertyTypes.append(propertyName).append(":").append(propertyType.getId());
