@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.parser.RebuildIndexStatement;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
@@ -135,6 +136,37 @@ class RebuildIndexPreservesNameTest extends TestHelper {
 
       assertThat(database.getSchema().existsIndex("geoPlaceLocation")).isTrue();
       assertThat(database.getSchema().existsIndex("Place[location]")).isFalse();
+    });
+  }
+
+  /**
+   * Round out the coverage on the other side of the single-bucket trap: on a multi-bucket type the {@link TypeIndex}
+   * wrapper always has a surviving sub-index while any one of the others is being rebuilt, so it is never dropped and
+   * {@code addIndexInternal} reattaches to it directly - the {@code withIndexName(...)} carried through by this fix
+   * is unused on this path. Asserted explicitly so a future change cannot silently break the "wrapper survives, name
+   * argument unused" branch without a test noticing.
+   */
+  @Test
+  void rebuildAllKeepsNameOnMultiBucketFullTextIndex() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(3).create();
+      type.createProperty("title", String.class);
+      database.command("sql", "INSERT INTO Doc SET title = 'java database tutorial'");
+      database.command("sql", "INSERT INTO Doc SET title = 'python guide'");
+      database.command("sql", "INSERT INTO Doc SET title = 'rust systems programming'");
+      database.command("sql", "CREATE INDEX ftDocTitle ON Doc (title) FULL_TEXT");
+    });
+
+    database.transaction(() -> database.command("sql", "REBUILD INDEX *"));
+
+    database.transaction(() -> {
+      assertThat(database.getSchema().existsIndex("ftDocTitle")).isTrue();
+      assertThat(database.getSchema().existsIndex("Doc[title]")).isFalse();
+      assertThat(database.getSchema().getIndexByName("ftDocTitle").getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
+
+      final var result = database.query("sql", "SELECT title FROM Doc WHERE SEARCH_INDEX('ftDocTitle', 'java') = true");
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().<String>getProperty("title")).isEqualTo("java database tutorial");
     });
   }
 }
