@@ -18,10 +18,16 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * Handles chunked message framing for BOLT protocol input.
@@ -29,9 +35,41 @@ import java.io.InputStream;
  */
 public class BoltChunkedInput {
   private final DataInputStream in;
+  private final int             maxMessageSize;
+
+  // See PackStreamReader.WARNED_MISCONFIGURED_LIMITS: bounds the misconfiguration WARNING to once per JVM
+  // rather than once per connection (issue #5918 review).
+  private static final Set<GlobalConfiguration> WARNED_MISCONFIGURED_LIMITS = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Reads {@link GlobalConfiguration#BOLT_MAX_MESSAGE_SIZE}, falling back to its built-in default (with a
+   * warning) if configured below 1: a limit that low would reject essentially every message outright, so it is
+   * treated as a misconfiguration rather than an intentional (if impractical) lockdown.
+   */
+  private static int sanitizedMaxMessageSize() {
+    final int configured = GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getValueAsInteger();
+    if (configured < 1) {
+      final int fallback = ((Number) GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getDefValue()).intValue();
+      if (WARNED_MISCONFIGURED_LIMITS.add(GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE))
+        LogManager.instance().log(BoltChunkedInput.class, Level.WARNING,
+            "BOLT: '%s' is set to %d, below the minimum usable value (1); falling back to the default (%d)",
+            GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getKey(), configured, fallback);
+      return fallback;
+    }
+    return configured;
+  }
 
   public BoltChunkedInput(final InputStream in) {
+    this(in, sanitizedMaxMessageSize());
+  }
+
+  /**
+   * As {@link #BoltChunkedInput(InputStream)}, with the reassembled-message size bound passed explicitly instead
+   * of read from {@link GlobalConfiguration}, so unit tests can exercise the bound without mutating global config.
+   */
+  public BoltChunkedInput(final InputStream in, final int maxMessageSize) {
     this.in = new DataInputStream(in);
+    this.maxMessageSize = maxMessageSize;
   }
 
   /**
@@ -40,6 +78,7 @@ public class BoltChunkedInput {
    */
   public byte[] readMessage() throws IOException {
     final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    int totalSize = 0;
 
     while (true) {
       // Read chunk size (2 bytes, big-endian)
@@ -49,6 +88,15 @@ public class BoltChunkedInput {
         // End of message
         break;
       }
+
+      // A client that never sends the terminating zero-length chunk would otherwise grow this buffer unbounded
+      // (issue #5918), before the BOLT handshake or authentication ever runs. Checked as "chunkSize > remaining"
+      // rather than "totalSize + chunkSize > maxMessageSize": the latter can wrap totalSize negative (permanently
+      // defeating the bound) once enough chunks accumulate against a maxMessageSize configured close to
+      // Integer.MAX_VALUE, since chunkSize is only bounded by the 16-bit chunk-size field, not by this check.
+      if (chunkSize > maxMessageSize - totalSize)
+        throw new IOException("BOLT message too large: exceeds " + maxMessageSize + " bytes after chunk reassembly");
+      totalSize += chunkSize;
 
       // Read chunk data
       final byte[] chunk = new byte[chunkSize];

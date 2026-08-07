@@ -1651,6 +1651,39 @@ public enum GlobalConfiguration {
           + "since the length is read off the wire before authentication. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
+  // The three *_SIZE/*_LENGTH settings below are defense in depth at different layers of the same BOLT ingest
+  // path, not redundant: BOLT_MAX_MESSAGE_SIZE bounds the whole reassembled message before it is even handed to
+  // the PackStream decoder, while BOLT_PACKSTREAM_MAX_VALUE_LENGTH bounds one BYTES_32/STRING_32 value within an
+  // already-accepted message. They share the same 16MB default because a single field legitimately consuming
+  // the entire message budget is a real (if unusual) case, not because the two checks are meant to be identical.
+
+  BOLT_MAX_MESSAGE_SIZE("arcadedb.bolt.maxMessageSize", SCOPE.SERVER, """
+      Maximum total size in bytes accepted for a single BOLT protocol message after chunk reassembly. BOLT frames \
+      a message as a sequence of chunks terminated by a zero-length chunk; without a bound on the reassembled \
+      total, a client that never sends the terminator grows the reassembly buffer unbounded, before the BOLT \
+      handshake or authentication. Default is 16MB""",
+      Integer.class, 16 * 1024 * 1024),
+
+  BOLT_PACKSTREAM_MAX_VALUE_LENGTH("arcadedb.bolt.packstream.maxValueLength", SCOPE.SERVER, """
+      Maximum length in bytes accepted for a single PackStream BYTES_32/STRING_32 value on the BOLT wire protocol. \
+      A declared length above this bound, or larger than the bytes actually remaining in the message, is rejected \
+      before allocation, since the length is read off the wire before authentication. Default is 16MB""",
+      Integer.class, 16 * 1024 * 1024),
+
+  BOLT_PACKSTREAM_MAX_ELEMENTS("arcadedb.bolt.packstream.maxElements", SCOPE.SERVER, """
+      Maximum element/entry count accepted for a single PackStream LIST_32/MAP_32 declared size on the BOLT wire \
+      protocol. Guards against a client-declared count (e.g. a handful of bytes claiming billions of items) \
+      sizing the backing collection before any element is actually read. Default is 1048576""",
+      Integer.class, 1_048_576),
+
+  BOLT_PACKSTREAM_MAX_DEPTH("arcadedb.bolt.packstream.maxDepth", SCOPE.SERVER, """
+      Maximum nesting depth accepted when decoding a PackStream value (list/map/structure) on the BOLT wire \
+      protocol. The decoder builds nested containers on an explicit heap-allocated stack rather than JVM \
+      recursion, so this bounds nesting complexity/memory rather than guarding against a stack overflow; \
+      without it, an unauthenticated client could grow that stack unboundedly with a stream of nesting markers. \
+      Default is 1000, generous for any real BOLT message.""",
+      Integer.class, 1000),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),
