@@ -656,7 +656,6 @@
                             <excludes>
                                 <exclude>com/arcadedb/graphql/parser/**/*</exclude>
                                 <exclude>com/arcadedb/query/sql/parser/*</exclude>
-                                <exclude>**/SqlParserTokenManager.*</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>
@@ -673,11 +672,6 @@
                                 <goals>
                                     <goal>prepare-agent</goal>
                                 </goals>
-                                <configuration>
-                                    <excludes>
-                                        <exclude>**/SqlParserTokenManager.class</exclude>
-                                    </excludes>
-                                </configuration>
                             </execution>
                             <!-- prepare agent before integration tests -->
                             <execution>
@@ -689,9 +683,6 @@
                                 <configuration>
                                     <destFile>${project.build.directory}/jacoco-it.exec</destFile>
                                     <propertyName>itCoverageAgent</propertyName>
-                                    <excludes>
-                                        <exclude>**/SqlParserTokenManager*</exclude>
-                                    </excludes>
                                 </configuration>
                             </execution>
                             <execution>

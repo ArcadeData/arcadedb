@@ -78,24 +78,6 @@ public abstract class SimpleNode implements Node {
     return value;
   }
 
-  public Token jjtGetFirstToken() {
-    //return firstToken;
-    return null;
-  }
-
-  public void jjtSetFirstToken(final Token token) {
-    //this.firstToken = token;
-  }
-
-  public Token jjtGetLastToken() {
-    //return lastToken;
-    return null;
-  }
-
-  public void jjtSetLastToken(final Token token) {
-    //this.lastToken = token;
-  }
-
   /*
    * You can override these two methods in subTypes of SimpleNode to customize the way the node appears when the tree is dumped.
    * If your output uses more than one line you should override toString(String), otherwise overriding toString() is probably all

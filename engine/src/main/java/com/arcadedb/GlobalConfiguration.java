@@ -497,10 +497,6 @@ public enum GlobalConfiguration {
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
-  SQL_PARSER_IMPLEMENTATION("arcadedb.sql.parserImplementation", SCOPE.DATABASE,
-      "Deprecated, has no effect. The ANTLR4-based SQL parser is always used.",
-      String.class, "antlr"),
-
   SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
       """
       Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
