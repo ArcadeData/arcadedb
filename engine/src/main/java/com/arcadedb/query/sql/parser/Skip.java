@@ -50,12 +50,12 @@ public class Skip extends SimpleNode {
 
   public int getValue(final CommandContext context) {
     if (num != null)
-      return num.getValue().intValue();
+      return saturateToInt(num.getValue());
 
     if (inputParam != null) {
       final Object paramValue = inputParam.getValue(context.getInputParameters());
       if (paramValue instanceof Number number)
-        return number.intValue();
+        return saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for SKIP: " + paramValue);
     }
@@ -63,12 +63,26 @@ public class Skip extends SimpleNode {
     if (expression != null) {
       final Object exprValue = expression.execute((Result) null, context);
       if (exprValue instanceof Number number)
-        return number.intValue();
+        return saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for SKIP: " + exprValue);
     }
 
     throw new CommandExecutionException("No value for SKIP");
+  }
+
+  /**
+   * Narrows a numeric SKIP to an int without wrapping: a value outside the int range saturates to the
+   * nearest int bound instead of overflowing into an unrelated (and often negative, hence
+   * silently-skip-nothing) value.
+   */
+  private static int saturateToInt(final Number value) {
+    final long longValue = value.longValue();
+    if (longValue > Integer.MAX_VALUE)
+      return Integer.MAX_VALUE;
+    if (longValue < Integer.MIN_VALUE)
+      return Integer.MIN_VALUE;
+    return (int) longValue;
   }
 
   public Skip copy() {

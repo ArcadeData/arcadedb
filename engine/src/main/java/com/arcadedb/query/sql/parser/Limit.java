@@ -52,12 +52,12 @@ public class Limit extends SimpleNode {
 
   public int getValue(final CommandContext context) {
     if (num != null)
-      return num.getValue().intValue();
+      return saturateToInt(num.getValue());
 
     if (inputParam != null) {
       final Object paramValue = inputParam.getValue(context.getInputParameters());
       if (paramValue instanceof Number number)
-        return number.intValue();
+        return saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for LIMIT: " + paramValue);
     }
@@ -65,12 +65,27 @@ public class Limit extends SimpleNode {
     if (expression != null) {
       final Object exprValue = expression.execute((Result) null, context);
       if (exprValue instanceof Number number)
-        return number.intValue();
+        return saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for LIMIT: " + exprValue);
     }
 
     throw new CommandExecutionException("No value for LIMIT");
+  }
+
+  /**
+   * Narrows a numeric LIMIT to an int without wrapping: a value outside the int range saturates to the
+   * nearest int bound instead of overflowing into an unrelated (and often negative, hence
+   * silently-zero-rows) value. `Integer.MIN_VALUE` is used as the negative saturation bound (rather than -1)
+   * because -1 is the sentinel `LimitExecutionStep` reads as "unlimited".
+   */
+  private static int saturateToInt(final Number value) {
+    final long longValue = value.longValue();
+    if (longValue > Integer.MAX_VALUE)
+      return Integer.MAX_VALUE;
+    if (longValue < Integer.MIN_VALUE)
+      return Integer.MIN_VALUE;
+    return (int) longValue;
   }
 
   public Limit setValue(final int value) {
