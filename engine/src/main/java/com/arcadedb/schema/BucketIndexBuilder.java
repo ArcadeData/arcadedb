@@ -116,6 +116,18 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
         keyTypes[i++] = isByItem ? Type.STRING : property.getType();
       }
 
+      // Carry a caller-supplied logical name onto the metadata (mirrors TypeIndexBuilder#create): a bucket sub-index
+      // rebuilt while it is the LAST sub-index of its TypeIndex drops the wrapper along with it (LocalSchema.dropIndex
+      // removes a TypeIndex once it has no sub-index left), so LocalDocumentType#addIndexInternal cannot find an
+      // existing TypeIndex to reattach to and mints a new one - which, without this, always takes the auto-derived
+      // "typeName[properties]" form even for an explicitly-named index (issue #5791). Single-bucket types hit this on
+      // every REBUILD, since their one sub-index is always the last one.
+      if (indexName != null && !indexName.isEmpty()) {
+        if (metadata == null)
+          metadata = new IndexMetadata(typeName, propertyNames, -1);
+        metadata.typeIndexName = indexName;
+      }
+
       return schema.recordFileChanges(() -> {
         final AtomicReference<Index> result1 = new AtomicReference<>();
         database.transaction(() -> {

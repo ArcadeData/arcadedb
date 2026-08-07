@@ -103,4 +103,38 @@ class RebuildIndexPreservesNameTest extends TestHelper {
       assertThat(database.getSchema().getIndexByName("geoPlaceLocation").getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
     });
   }
+
+  /**
+   * {@code REBUILD INDEX *} targets bucket sub-indexes, not the {@link TypeIndex} wrapper directly
+   * ({@code idx.isAutomatic() && !(idx instanceof TypeIndex)}) - but for a single-bucket type (the common default,
+   * used here) that sub-index is also the LAST one under its {@code TypeIndex}, and dropping the last sub-index drops
+   * the wrapper too ({@code LocalSchema.dropIndex}). The rebuilt replacement then finds no existing {@code TypeIndex}
+   * to reattach to and mints a new one, hitting the exact same auto-derived-name fallback as the direct
+   * {@code typeIndexRebuild} path - a second occurrence of #5791 this test caught after a code reviewer's (and this
+   * fix's first draft's) assumption that the sweep was unaffected turned out to be wrong.
+   */
+  @Test
+  void rebuildAllDoesNotRenameNamedFullTextOrGeospatialIndexes() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.title STRING");
+      database.command("sql", "INSERT INTO Doc SET title = 'java database tutorial'");
+      database.command("sql", "CREATE INDEX ftDocTitle ON Doc (title) FULL_TEXT");
+
+      database.command("sql", "CREATE DOCUMENT TYPE Place");
+      database.command("sql", "CREATE PROPERTY Place.location STRING");
+      database.command("sql", "INSERT INTO Place SET location = 'POINT (9.19 45.46)'");
+      database.command("sql", "CREATE INDEX geoPlaceLocation ON Place (location) GEOSPATIAL");
+    });
+
+    database.transaction(() -> database.command("sql", "REBUILD INDEX *"));
+
+    database.transaction(() -> {
+      assertThat(database.getSchema().existsIndex("ftDocTitle")).isTrue();
+      assertThat(database.getSchema().existsIndex("Doc[title]")).isFalse();
+
+      assertThat(database.getSchema().existsIndex("geoPlaceLocation")).isTrue();
+      assertThat(database.getSchema().existsIndex("Place[location]")).isFalse();
+    });
+  }
 }
