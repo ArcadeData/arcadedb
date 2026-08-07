@@ -48,6 +48,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -62,6 +63,21 @@ public class RedisNetworkExecutor extends Thread {
   private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
   private          String              selectedDatabaseName = null;
   private          ServerSecurityUser  authenticatedUser    = null;
+  private final    int                 maxMultiBulkDepth;
+  private final    int                 maxMultiBulkLength;
+  private final    int                 maxBulkLength;
+
+  // A misconfigured protocol-limit setting is re-read (and re-validated) on every new connection, since the
+  // value can change at runtime; this only bounds the WARNING about it to once per setting per JVM, so a busy
+  // server churning through connections against a static bad value does not flood the log.
+  private static final Set<GlobalConfiguration> WARNED_MISCONFIGURED_LIMITS = ConcurrentHashMap.newKeySet();
+
+  // parseValueUntilLF() reads every RESP length/integer token (*, $, :) and simple-string reply value; all of
+  // them are always short (a signed 64-bit decimal has at most 20 characters). Without a bound, a client that
+  // never sends a terminating CRLF - e.g. "$" followed by megabytes of digits - grows this buffer unboundedly
+  // and holds the thread before parseLength()/maxBulkLength/maxMultiBulkLength ever get a value to check,
+  // since those only fire once a token has actually been parsed (issue #5895 review, round 6).
+  private static final int MAX_TOKEN_LENGTH = 64;
 
   /**
    * Holds the resolved key and database from key resolution.
@@ -73,6 +89,9 @@ public class RedisNetworkExecutor extends Thread {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
+    this.maxMultiBulkDepth = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 2);
+    this.maxMultiBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
+    this.maxBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
 
     // Initialize default database from configuration if set. The database access is authorized lazily,
     // once the connection has authenticated (see getAuthorizedDatabase), so here we only record the name.
@@ -84,6 +103,30 @@ public class RedisNetworkExecutor extends Thread {
         LogManager.instance().log(this, Level.WARNING,
             "Redis wrapper: Default database '%s' not found, will use connection-local storage", defaultDbName);
     }
+  }
+
+  /**
+   * Reads a protocol-limit setting, falling back to its built-in default (with a warning) if configured below
+   * {@code floor}. A value that low would reject every command outright - e.g. {@code parseNext}'s depth check
+   * is {@code depth >= maxMultiBulkDepth} (depth starts at 0 for the top-level array, so a flat command's single
+   * argument is already parsed at depth 1), so a configured depth below 2 rejects even a flat {@code PING} - so
+   * it is treated as a misconfiguration rather than an intentional (if impractical) lockdown. "Usable" here means
+   * "a connection can still parse a command at all", not "usable for real traffic": the floor of 1 used for
+   * {@code maxMultiBulkLength}/{@code maxBulkLength} still lets a configured value through that is far too low
+   * for any real command (e.g. a 1-byte max bulk length rejects even the shortest command name) - that is an
+   * intentionally low, if impractical, configuration rather than the 0-or-negative case this guards against.
+   */
+  private int sanitizedLimit(final GlobalConfiguration setting, final int floor) {
+    final int configured = setting.getValueAsInteger();
+    if (configured < floor) {
+      final int fallback = ((Number) setting.getDefValue()).intValue();
+      if (WARNED_MISCONFIGURED_LIMITS.add(setting))
+        LogManager.instance().log(this, Level.WARNING,
+            "Redis wrapper: '%s' is set to %d, below the minimum usable value (%d); falling back to the default (%d)",
+            setting.getKey(), configured, floor, fallback);
+      return fallback;
+    }
+    return configured;
   }
 
   @Override
@@ -101,6 +144,22 @@ public class RedisNetworkExecutor extends Thread {
           close();
         } catch (final SocketTimeoutException e) {
           // IGNORE IT
+        } catch (final RedisProtocolLimitException e) {
+          // The message violates a configured protocol limit (issue #5895): the stream position can no
+          // longer be trusted, so report the error and close rather than trying to resync and continue.
+          LogManager.instance().log(this, Level.WARNING, "Redis wrapper: %s, closing connection", e.getMessage());
+          try {
+            value.setLength(0);
+            // respErrorMessage() strips embedded \r/\n: the malformed-length message embeds the raw
+            // client-supplied token verbatim, and a bare \n (no preceding \r) survives parseValueUntilLF()
+            // uncaught, so without this an adversarial token could break a RESP reply across two lines.
+            value.append("-ERR ").append(respErrorMessage(e));
+            appendCrLf();
+            replyToClient(value);
+          } catch (final IOException ignored) {
+            // the connection is already gone; nothing left to notify
+          }
+          close();
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
         }
@@ -736,6 +795,23 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private Object parseNext() throws IOException {
+    return parseNext(0);
+  }
+
+  /**
+   * Parses the next RESP value from the wire. {@code depth} counts RESP array nesting: a RESP array
+   * element can itself be an array, so without a bound a maliciously deep, unauthenticated client payload
+   * recurses once per nesting level and overflows the connection thread's JVM stack (issue #5895). The
+   * array element count and the bulk-string byte length are bounded the same way, so a single
+   * client-declared length like {@code *2000000000\r\n} or {@code $2000000000\r\n} cannot start a parse
+   * loop (or a buffer growth) that runs for as long as the client is willing to trickle bytes.
+   */
+  private Object parseNext(final int depth) throws IOException {
+    // depth starts at 0 for the top-level call, so ">=" (not ">") admits exactly maxMultiBulkDepth nested
+    // levels (0 .. maxMultiBulkDepth-1) before rejecting - matching the setting's documented default.
+    if (depth >= maxMultiBulkDepth)
+      throw new RedisProtocolLimitException("Protocol error: RESP array nesting exceeds the maximum allowed depth (" + maxMultiBulkDepth + ")");
+
     final byte b = readNext();
 
     if (b == '+')
@@ -743,22 +819,49 @@ public class RedisNetworkExecutor extends Thread {
       return parseValueUntilLF();
     else if (b == ':')
       // INTEGER
-      return Integer.parseInt(parseValueUntilLF());
+      return parseLength(parseValueUntilLF(), "integer");
     else if (b == '$') {
       // BATCH STRING
-      final String value = parseChars(Integer.parseInt(parseValueUntilLF()));
+      final int size = parseLength(parseValueUntilLF(), "bulk length");
+      if (size > maxBulkLength)
+        throw new RedisProtocolLimitException(
+            "Protocol error: invalid bulk length " + size + " (maximum allowed is " + maxBulkLength + ")");
+
+      final String value = parseChars(size);
       skipLF();
       return value;
     } else if (b == '*') {
       // ARRAY
+      final int arraySize = parseLength(parseValueUntilLF(), "multibulk length");
+      if (arraySize <= 0)
+        // RESP2 null array (*-1) or an explicit empty array (*0): nothing to read.
+        return new ArrayList<>();
+      if (arraySize > maxMultiBulkLength)
+        throw new RedisProtocolLimitException(
+            "Protocol error: invalid multibulk length " + arraySize + " (maximum allowed is " + maxMultiBulkLength + ")");
+
       final List<Object> array = new ArrayList<>();
-      final int arraySize = Integer.parseInt(parseValueUntilLF());
       for (int i = 0; i < arraySize; ++i)
-        array.add(parseNext());
+        array.add(parseNext(depth + 1));
       return array;
     } else {
       LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s'", (char) b);
       return null;
+    }
+  }
+
+  /**
+   * Parses a RESP length/integer token as a plain {@code int}, wrapping a malformed (non-numeric) value in
+   * {@link RedisProtocolLimitException} instead of letting {@link NumberFormatException} escape uncaught: a
+   * bare {@code NumberFormatException} is not an {@link IOException}, so it would kill the connection thread
+   * outright rather than getting the same clean {@code -ERR Protocol error} reply and close that {@link #run()}
+   * already gives every other malformed-input case.
+   */
+  private int parseLength(final String raw, final String what) throws RedisProtocolLimitException {
+    try {
+      return Integer.parseInt(raw);
+    } catch (final NumberFormatException e) {
+      throw new RedisProtocolLimitException("Protocol error: invalid " + what + " '" + raw + "'");
     }
   }
 
@@ -786,8 +889,11 @@ public class RedisNetworkExecutor extends Thread {
       if (!slashR) {
         if (b == '\r')
           slashR = true;
-        else
+        else {
+          if (value.length() >= MAX_TOKEN_LENGTH)
+            throw new RedisProtocolLimitException("Protocol error: token exceeds the maximum allowed length (" + MAX_TOKEN_LENGTH + ") without a terminating CRLF");
           value.append((char) b);
+        }
       } else {
         if (b == '\n')
           break;

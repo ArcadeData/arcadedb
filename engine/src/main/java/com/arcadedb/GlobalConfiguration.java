@@ -1656,6 +1656,26 @@ public enum GlobalConfiguration {
       "When true, the Redis wire-protocol listener accepts only TLS connections, using the shared SSL key/trust store settings (arcadedb.ssl.*). The AUTH credentials are then encrypted in transit. Default is false",
       Boolean.class, false),
 
+  REDIS_MAX_MULTIBULK_DEPTH("arcadedb.redis.maxMultiBulkDepth", SCOPE.SERVER, """
+      Maximum nesting depth of a RESP array accepted by the Redis wire-protocol listener. A RESP array element can \
+      itself be an array, and the parser recurses once per nesting level, so an unbounded value lets an \
+      unauthenticated client overflow the connection thread's JVM stack with a few tens of KB of input. Default is \
+      32, generous for any real command.""",
+      Integer.class, 32),
+
+  REDIS_MAX_MULTIBULK_LENGTH("arcadedb.redis.maxMultiBulkLength", SCOPE.SERVER, """
+      Maximum number of elements accepted in a single RESP array by the Redis wire-protocol listener, matching \
+      Redis' own hard limit on multibulk requests. Guards against a client-declared array length (e.g. \
+      *2000000000\\r\\n) starting a parse loop with billions of iterations. Default is 1048576.""",
+      Integer.class, 1_048_576),
+
+  REDIS_MAX_BULK_LENGTH("arcadedb.redis.maxBulkLength", SCOPE.SERVER, """
+      Maximum length in bytes accepted for a single RESP bulk string ($) by the Redis wire-protocol listener, \
+      matching Redis' own proto-max-bulk-len. Without a bound, a client-declared length (e.g. $2000000000\\r\\n) \
+      can tie up a connection thread indefinitely by trickling bytes, or grow the parse buffer unbounded if the \
+      declared bytes are actually sent. Default is 536870912 (512MB).""",
+      Integer.class, 536_870_912),
+
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Mongo plugin. Default is 27017", Integer.class, 27017),
