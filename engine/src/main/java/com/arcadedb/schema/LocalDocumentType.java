@@ -964,15 +964,21 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * The actual diagnosis, run either immediately or from the deferred callback {@link #reportPartitionSuitabilityAfterSchemaChange}
-   * registers. Re-reads {@link #bucketSelectionStrategy} rather than capturing it at scheduling time, so a callback
-   * that fires later sees whatever the transaction settled the strategy on, not a snapshot from when it was queued -
-   * a type that was reverted to round-robin, or dropped between scheduling and commit, is correctly not diagnosed at
-   * all: the round-robin case falls out of the {@code instanceof} check below, the dropped case out of re-checking
-   * {@link LocalSchema#existsType} here rather than trusting the schema membership seen when this was scheduled.
+   * registers. The callback is a method reference bound to {@code this} at scheduling time, so if a
+   * {@code DROP TYPE}-then-{@code CREATE TYPE} of the same name happened before it fires, {@code this} is a stale,
+   * no-longer-registered instance - {@code schema.existsType(name)} alone would come back {@code true} off the
+   * *new* type sharing the name, while every field read through {@code this} would still be the dropped instance's.
+   * Re-resolving the live type by name and reading/reporting through it instead of {@code this} sidesteps that: a
+   * type reverted to round-robin, dropped outright, or dropped-and-recreated between scheduling and commit is
+   * correctly diagnosed against whatever is actually registered under the name now, or not diagnosed at all if
+   * nothing is (issue #5646 review follow-up on PR #5946).
    */
   private void reportPartitionSuitabilityNow() {
-    if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned && schema.existsType(name))
-      reportPartitionSuitability(partitioned, PartitionReport.SCHEMA_CHANGE);
+    if (!schema.existsType(name))
+      return;
+    final LocalDocumentType live = schema.getType(name);
+    if (live.bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
+      live.reportPartitionSuitability(partitioned, PartitionReport.SCHEMA_CHANGE);
   }
 
   /**

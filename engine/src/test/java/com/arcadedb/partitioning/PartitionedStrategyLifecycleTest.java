@@ -318,6 +318,36 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
   }
 
   /**
+   * Found on review of this fix (PR #5946): {@code reportPartitionSuitabilityAfterSchemaChange()} schedules a
+   * callback bound to {@code this} - the {@code LocalDocumentType} instance live when the DROP INDEX ran.
+   * {@code CREATE TYPE} always builds a brand-new instance ({@code LocalSchema}, {@code case "d" ->}), so a
+   * DROP-then-CREATE of the same name in one transaction leaves the scheduled callback pointing at a stale,
+   * no-longer-registered object by the time it fires. A bare {@code schema.existsType(name)} re-check would have
+   * come back {@code true} anyway - off the *new* type sharing the name - and gone on to read the *old* instance's
+   * fields. Re-resolving the live type by name before reading anything is what closes that: the new type here is
+   * plain (round-robin, the default), so if the diagnosis were still reading the old, partitioned instance's
+   * fields, this would report; reading the live instance's, it must not.
+   */
+  @Test
+  void dropTypeThenRecreateWithTheSameNameInOneTransactionDiagnosesTheLiveInstance() {
+    createPartitionedType("VanishingRecreated");
+
+    final List<String> warnings = captureWarnings(() -> database.transaction(() -> {
+      database.command("sql", "DROP INDEX `VanishingRecreated[k]`");
+      database.command("sql", "DROP TYPE VanishingRecreated");
+      database.command("sql", "CREATE DOCUMENT TYPE VanishingRecreated");
+    }));
+
+    assertThat(warnings)
+        .as("the callback must diagnose the new, plain (round-robin) type actually registered under the name, "
+            + "not the dropped partitioned instance it was scheduled against")
+        .noneMatch(m -> m.contains("VanishingRecreated"));
+    assertThat(database.getSchema().getType("VanishingRecreated").getBucketSelectionStrategy().getName())
+        .as("sanity check that the recreated type really is the plain default, not still partitioned")
+        .isEqualTo("round-robin");
+  }
+
+  /**
    * The same fault isolation, from the other direction: a strategy whose implementation class cannot be resolved at
    * all. Nothing about it is recoverable, but it must not take the rest of the schema down - the strategy block runs
    * near the end of the loader, so an exception escaping it drops everything the loader has not reached yet.
