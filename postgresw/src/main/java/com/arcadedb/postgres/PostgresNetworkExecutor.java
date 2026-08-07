@@ -102,8 +102,10 @@ public class PostgresNetworkExecutor extends Thread {
 
   public static final String PG_SERVER_VERSION = "12.0";
 
-  private static final int                                            BUFFER_LENGTH   = 32 * 1024;
-  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS = new ConcurrentHashMap<>();
+  private static final int                                            BUFFER_LENGTH    = 32 * 1024;
+  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS  = new ConcurrentHashMap<>();
+  /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
+  private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -1289,6 +1291,16 @@ public class PostgresNetworkExecutor extends Thread {
           final long paramSize = channel.readUnsignedInt();
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
+
+          if (paramSize == NULL_PARAM_LENGTH) {
+            // Postgres protocol NULL sentinel: a declared length of -1 (0xFFFFFFFF unsigned), with no
+            // value bytes following. Must be checked before the max-size guard below, since the unsigned
+            // reading of -1 is far larger than any realistic configured limit.
+            portal.parameterValues.add(null);
+            paramsConsumed = i + 1;
+            continue;
+          }
+
           if (paramSize > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger())
             throw new IOException("Postgres bind parameter too large: " + paramSize + " bytes (max "
                 + GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger() + ")");
@@ -1361,8 +1373,11 @@ public class PostgresNetworkExecutor extends Thread {
       try {
         for (int i = paramsConsumed; i < totalParamValues; i++) {
           final long sz = channel.readUnsignedInt();
+          if (sz == NULL_PARAM_LENGTH)
+            continue;
           if (sz > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger())
-            throw new IOException("Postgres bind parameter too large: " + sz + " bytes");
+            throw new IOException("Postgres bind parameter too large: " + sz + " bytes (max "
+                + GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger() + ")");
           if (sz > 0)
             channel.readBytes(new byte[(int) sz]);
         }
