@@ -43,24 +43,43 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
-import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.CountStrategy;
-import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.GValueReductionStrategy;
-import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.InlineFilterStrategy;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Replaces default traversal steps to speedup execution. This is used only when the traversal has a GraphStep (vertices or edges) and HasStep (label eq(X)).
+ * <p>
+ * Declared as a {@link TraversalStrategy.ProviderOptimizationStrategy} (not an
+ * {@code OptimizationStrategy}) so that TinkerPop's category ordering guarantees it always runs AFTER
+ * {@code GValueReductionStrategy}. A Gremlin query submitted as a string (the entry point used by the
+ * HTTP endpoint, Studio, and the drivers) parses any hop naming an edge label into a
+ * {@code VertexStepPlaceholder}, not a concrete {@code VertexStep}; {@code GValueReductionStrategy}
+ * resolves those placeholders into concrete steps. Every {@code OptimizationStrategy} implementation
+ * inherits a default {@code applyPost()} that adds {@code GValueReductionStrategy}, guaranteeing it
+ * runs LAST within the {@code OptimizationStrategy} category - which meant, back when this class was
+ * also declared {@code OptimizationStrategy}, that it always ran BEFORE the placeholders it needed
+ * resolved were resolved. Category ordering, unlike {@code applyPrior()}/{@code applyPost()}, is
+ * enforced unconditionally by {@code TraversalStrategies.sortStrategies}: every strategy in an earlier
+ * category is a hard prerequisite for every strategy in a later one, so moving this strategy to the
+ * {@code ProviderOptimizationStrategy} category (which sorts strictly after
+ * {@code OptimizationStrategy}) fixes the ordering deterministically. See issue #5840.
+ * <p>
+ * The {@code applyPost()} default this relies on lives in TinkerPop 3.8.1's
+ * {@code org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy.OptimizationStrategy}
+ * (gremlin-core, {@code TraversalStrategy.java} around line 179): {@code default
+ * Set<Class<? extends OptimizationStrategy>> applyPost() { ... set.add(GValueReductionStrategy.class);
+ * ... }}, documented there as "The {@code GValueReductionStrategy} should be the last TinkerPop
+ * optimization strategy applied. Adding it here ensures will help to enforce that more globally." If a
+ * future TinkerPop release changes that default, re-verify this strategy's placement still runs after
+ * {@code GValueReductionStrategy}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<TraversalStrategy.OptimizationStrategy>
-    implements TraversalStrategy.OptimizationStrategy {
+public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<TraversalStrategy.ProviderOptimizationStrategy>
+    implements TraversalStrategy.ProviderOptimizationStrategy {
 
   private static final String LABEL_KEY = "~label";
 
@@ -304,33 +323,21 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     }
   }
 
-  @Override
-  public Set<Class<? extends OptimizationStrategy>> applyPrior() {
-    return Stream.of(
-        //Inline must happen first as it sometimes removes the need for a TraversalFilterStep
-        InlineFilterStrategy.class).collect(Collectors.toSet());
-  }
-
-  /**
-   * Declares that TinkerPop's {@link CountStrategy} must run AFTER this strategy, so that
-   * {@code applyEdgeCountFilterOptimization}'s exact-3-substep {@code where(outE(X).count().is(predicate))}
-   * pattern match sees the traversal before {@code CountStrategy} inserts a {@code RangeGlobalStep} for
-   * bounded predicates (e.g. {@code is(gt(1))} triggers a {@code highRangeCandidate} rewrite), which would
-   * otherwise grow the pattern to 4 sub-steps and defeat the match.
-   * <p>
-   * Without this explicit edge, TinkerPop's {@code TraversalStrategies.sortStrategies()} has no declared
-   * ordering between the two strategies and falls back to iterating an unordered {@code HashSet<Class<?>>},
-   * whose order follows JVM identity hash codes - stable within one JVM process but not predictable or
-   * reproducible across JVM invocations (see issue #5841).
-   * <p>
-   * {@link GValueReductionStrategy} is preserved here because it is the default {@code applyPost()} for
-   * {@link OptimizationStrategy} (see {@link OptimizationStrategy#applyPost()}); overriding this method
-   * would otherwise silently drop that requirement.
-   */
-  @Override
-  public Set<Class<? extends OptimizationStrategy>> applyPost() {
-    return Stream.of(
-        GValueReductionStrategy.class,
-        CountStrategy.class).collect(Collectors.toSet());
-  }
+  // No explicit applyPrior() override is needed: ProviderOptimizationStrategy category ordering
+  // already guarantees this strategy runs strictly after every OptimizationStrategy, including
+  // InlineFilterStrategy (which sometimes removes the need for a TraversalFilterStep) and
+  // GValueReductionStrategy (see class javadoc).
+  //
+  // #5841 previously fixed this strategy's ordering against TinkerPop's CountStrategy with an
+  // explicit applyPost(CountStrategy.class), forcing CountStrategy to run AFTER this strategy so
+  // applyEdgeCountFilterOptimization's pattern match saw where(outE(X).count().is(pred)) before
+  // CountStrategy could rewrite it. That override is gone: it does not type-check once this class
+  // moved to ProviderOptimizationStrategy (applyPost's declared type is
+  // Set<Class<? extends OptimizationStrategy>>, and CountStrategy is an OptimizationStrategy, not a
+  // ProviderOptimizationStrategy), and category ordering makes it moot anyway - category ordering is
+  // unconditional and now places CountStrategy (OptimizationStrategy) before this strategy on every
+  // JVM, the opposite of what #5841 arranged. The net effect is still deterministic, just reversed:
+  // CountStrategy always wins now, so applyEdgeCountFilterOptimization can no longer fire for the
+  // where(outE(X).count().is(boundedPredicate)) shape. See docs/5840-gav-csr-labeled-gremlin-string-traversals.md
+  // ("Known trade-off") for why this is accepted rather than fixed here.
 }
