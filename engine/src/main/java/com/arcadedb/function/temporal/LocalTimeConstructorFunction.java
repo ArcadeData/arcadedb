@@ -20,7 +20,7 @@ package com.arcadedb.function.temporal;
 
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -70,7 +70,9 @@ public class LocalTimeConstructorFunction implements StatelessFunction {
         try {
           return new CypherLocalTime(LocalTime.now(ZoneId.of(str)));
         } catch (final Exception e2) {
-          throw new CommandExecutionException("localtime() cannot parse '" + str + "' as a local time or timezone");
+          // Neither a valid local time nor a valid timezone: determined entirely by the supplied string, so it
+          // is a client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5910.
+          throw new CommandSemanticException("localtime() cannot parse '" + str + "' as a local time or timezone");
         }
       }
     }
@@ -86,6 +88,6 @@ public class LocalTimeConstructorFunction implements StatelessFunction {
       return new CypherLocalTime(((CypherDateTime) args[0]).getValue().toLocalTime());
     if (args[0] instanceof LocalDateTime)
       return new CypherLocalTime(((LocalDateTime) args[0]).toLocalTime());
-    throw new CommandExecutionException("localtime() expects a string, map, or temporal argument");
+    throw new CommandSemanticException("localtime() expects a string, map, or temporal argument");
   }
 }

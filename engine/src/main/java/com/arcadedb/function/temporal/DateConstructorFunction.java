@@ -21,6 +21,7 @@ package com.arcadedb.function.temporal;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -95,6 +96,8 @@ public class DateConstructorFunction implements StatelessFunction {
             ((Number) tv.getTemporalProperty("month")).intValue(),
             ((Number) tv.getTemporalProperty("day")).intValue()));
     }
-    throw new CommandExecutionException("date() expects a string, map, or temporal argument");
+    // Not a String, Map, or any recognized temporal type: determined entirely by the supplied argument, so it is
+    // a client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5910.
+    throw new CommandSemanticException("date() expects a string, map, or temporal argument");
   }
 }
