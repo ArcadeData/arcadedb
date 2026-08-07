@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -182,6 +183,10 @@ public class RemoveStep extends AbstractExecutionStep {
 
     // Get the object from the result
     final Object obj = result.getProperty(variable);
+    // #5795: reject a property removal targeting a node deleted earlier in the same query
+    // instead of silently no-op'ing (which let the preceding DELETE commit while the REMOVE
+    // vanished).
+    DeletedEntityMarker.checkNotDeleted(obj);
     if (obj == null) {
       // Variable not found in result - skip this REMOVE item
       return;
@@ -232,6 +237,9 @@ public class RemoveStep extends AbstractExecutionStep {
   private void removeLabels(final RemoveClause.RemoveItem item, final Result result) {
     final String variable = item.getVariable();
     final Object obj = result.getProperty(variable);
+    // #5795: reject a label removal targeting a node deleted earlier in the same query instead
+    // of silently no-op'ing.
+    DeletedEntityMarker.checkNotDeleted(obj);
     if (!(obj instanceof Vertex vertex))
       return;
 
