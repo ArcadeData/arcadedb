@@ -95,4 +95,41 @@ class BinaryComparatorNarrowingTest {
     assertThat(comparator.compare(1, BinaryTypes.TYPE_INT, true, BinaryTypes.TYPE_BOOLEAN)).isZero();
     assertThat(comparator.compare(0, BinaryTypes.TYPE_INT, true, BinaryTypes.TYPE_BOOLEAN)).isLessThan(0);
   }
+
+  /**
+   * The String branch of {@code compareNarrowIntegral} widens to {@code long} or {@code double} depending on
+   * whether the string looks fractional, rather than always narrowing to {@code value1}'s own width.
+   */
+  @Test
+  void intVersusNumericStringWidensRatherThanNarrows() {
+    // Outside int range: the old Integer.parseInt() would have thrown; must parse and compare as a long instead.
+    assertThat(comparator.compare(0, BinaryTypes.TYPE_INT, "5000000000", BinaryTypes.TYPE_STRING)).isLessThan(0);
+    assertThat(comparator.compare(0, BinaryTypes.TYPE_INT, "-5000000000", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
+
+    // Fractional string: must parse and compare as a double, not truncate to an integral comparison.
+    assertThat(comparator.compare(0, BinaryTypes.TYPE_INT, "0.5", BinaryTypes.TYPE_STRING)).isLessThan(0);
+    assertThat(comparator.compare(1, BinaryTypes.TYPE_INT, "0.5", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
+
+    // Ordinary in-range integral string: unaffected by the widening change.
+    assertThat(comparator.compare(10, BinaryTypes.TYPE_INT, "15", BinaryTypes.TYPE_STRING)).isLessThan(0);
+    assertThat(comparator.compare(10, BinaryTypes.TYPE_INT, "10", BinaryTypes.TYPE_STRING)).isZero();
+  }
+
+  /**
+   * The {@code TYPE_BOOLEAN} branch had the identical narrow-to-byte defect as the pre-fix INT/SHORT/BYTE
+   * branches, just unnoticed because it is even less likely to be exercised. Fixed by routing through the same
+   * {@code compareNarrowIntegral} helper.
+   */
+  @Test
+  void booleanVersusOutOfByteRangeNumberIsAntisymmetricAndNotTruncated() {
+    final boolean trueValue = true; // widens to 1
+    final int bigInt = 1000; // outside byte range; would truncate to a small/negative byte
+
+    final int forward = comparator.compare(trueValue, BinaryTypes.TYPE_BOOLEAN, bigInt, BinaryTypes.TYPE_INT);
+    final int backward = comparator.compare(bigInt, BinaryTypes.TYPE_INT, trueValue, BinaryTypes.TYPE_BOOLEAN);
+
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    assertThat(forward).isLessThan(0);
+    assertThat(backward).isGreaterThan(0);
+  }
 }

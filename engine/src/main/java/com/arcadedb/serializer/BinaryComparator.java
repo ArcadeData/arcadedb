@@ -164,34 +164,30 @@ public class BinaryComparator {
 
     case BinaryTypes.TYPE_BOOLEAN: {
       final int v1 = (Boolean) value1 ? 1 : 0;
-      final int v2;
 
       switch (type2) {
       case BinaryTypes.TYPE_INT:
       case BinaryTypes.TYPE_SHORT:
+      case BinaryTypes.TYPE_BYTE:
       case BinaryTypes.TYPE_LONG:
       case BinaryTypes.TYPE_DATETIME:
       case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
       case BinaryTypes.TYPE_DECIMAL:
       case BinaryTypes.TYPE_FLOAT:
       case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).byteValue();
-        break;
+        // Reuse the same widening comparator INT/SHORT/BYTE use as type1: narrowing a wide/floating operand to a
+        // `byte` here would be the identical truncation bug this class just eliminated for those three (#5900).
+        return compareNarrowIntegral(v1, type2, value2);
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (Boolean) value2 ? 1 : 0;
-        break;
+        return Integer.compare(v1, (Boolean) value2 ? 1 : 0);
 
       case BinaryTypes.TYPE_STRING:
-        v2 = Boolean.parseBoolean((String) value2) ? 1 : 0;
-        break;
+        return Integer.compare(v1, Boolean.parseBoolean((String) value2) ? 1 : 0);
 
       default:
         return -1;
       }
-
-      return Integer.compare(v1, v2);
     }
     case BinaryTypes.TYPE_DATE:
     case BinaryTypes.TYPE_DATETIME:
