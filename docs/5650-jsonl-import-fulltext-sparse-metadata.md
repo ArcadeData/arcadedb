@@ -80,6 +80,34 @@ passes and the log line shows every tuned setting preserved.
   `FullTextRebuildOverExistingTest` (3) - all PASS, no regression on the METADATA-clause / rebuild /
   BM25-scoring paths the new builder methods sit beside.
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5936
+
+## Review cycles
+
+**Cycle 1** - head SHA `6f3564b0471cb137865cc127faaa4b570754b0ef`
+
+`claude[bot]` reviewed via an issue comment (not a formal PR review object) on 2026-08-07T17:07:53Z.
+Outcome: approval, "No blocking issues found." Traced the field names end-to-end between the exporter's
+`toJSON()` and the metadata's `fromJSON()`, confirmed the `unique`/`nullStrategy` re-application order has
+no clobbering hazard, and called out the test's use of typed metadata assertions plus a live BM25 query as
+good defense against "restored but not wired in" regressions.
+
+One optional nitpick, explicitly flagged "Not a strong ask": `loadFullTextIndex`/`loadSparseVectorIndex`
+are near-identical and could share a small helper "if a fourth index type ever needs this treatment."
+**Declined (YAGNI):** there is no third occurrence of this pattern today - only these two plus the existing
+`loadVectorIndex`, which already differs in whether `unique`/`nullStrategy` apply - and each method already
+carries its own javadoc explaining why it diverges from the `LSM_VECTOR` baseline. Introducing a shared
+helper for two call sites, each already justified independently, would be speculative generality ahead of
+a genuine third caller.
+
+No code changes were needed in response to this cycle. Working tree stayed empty - clean approval.
+
+## Final state
+
+**clean-approval** (1 review cycle, 0 code changes required after the initial PR).
+
 ## Deferred / out of scope
 
 - `GEOSPATIAL` JSONL restore (issue calls it lower severity; not addressed here).
