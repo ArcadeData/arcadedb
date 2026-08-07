@@ -45,101 +45,20 @@ public class BinaryComparator {
       return 1;
 
     switch (type1) {
-    case BinaryTypes.TYPE_INT: {
-      final int v1 = ((Number) value1).intValue();
-      final int v2;
+    case BinaryTypes.TYPE_INT:
+    case BinaryTypes.TYPE_SHORT:
+    case BinaryTypes.TYPE_BYTE:
+      // Always widen the other operand to its own natural width instead of narrowing it to type1's width:
+      // narrowing a wider or floating operand (e.g. a `long` outside `int` range via intValue(), or a fractional
+      // `double` via intValue()) can silently truncate it onto the wrong side of value1, which breaks the
+      // antisymmetry every comparator must honour (issue #5900).
+      return compareNarrowIntegral((Number) value1, type2, value2);
 
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).intValue();
-        break;
-
-      case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (Boolean) value2 ? 1 : 0;
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Integer.parseInt((String) value2);
-        break;
-
-      default:
-        return -1;
-      }
-
-      return Integer.compare(v1, v2);
-    }
-
-    case BinaryTypes.TYPE_LONG: {
-      final long v1 = ((Number) value1).longValue();
-      final long v2;
-
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).longValue();
-        break;
-
-      case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (Boolean) value2 ? 1 : 0;
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Long.parseLong((String) value2);
-        break;
-
-      default:
-        return -1;
-      }
-
-      return Long.compare(v1, v2);
-    }
-
-    case BinaryTypes.TYPE_SHORT: {
-      final short v1 = ((Number) value1).shortValue();
-      final short v2;
-
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).shortValue();
-        break;
-
-      case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (short) ((Boolean) value2 ? 1 : 0);
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Short.parseShort((String) value2);
-        break;
-
-      default:
-        return -1;
-      }
-
-      return Short.compare(v1, v2);
-    }
+    case BinaryTypes.TYPE_LONG:
+      // Same rationale as the INT/SHORT/BYTE case above: a fractional DECIMAL/FLOAT/DOUBLE narrowed via
+      // longValue() drops its fraction and can land on the wrong side of value1, the same antisymmetry bug
+      // with LONG as type1 instead (#5900 review follow-up).
+      return compareWideningLong((Number) value1, type2, value2);
 
     case BinaryTypes.TYPE_STRING: {
       if (value1 instanceof byte[] bytes1) {
@@ -150,10 +69,32 @@ public class BinaryComparator {
               ((String) value2).getBytes(DatabaseFactory.getDefaultCharset()));
       }
 
-      return ((String) value1).compareTo(value2.toString());
+      switch (type2) {
+      case BinaryTypes.TYPE_INT:
+      case BinaryTypes.TYPE_SHORT:
+      case BinaryTypes.TYPE_BYTE:
+      case BinaryTypes.TYPE_LONG:
+      case BinaryTypes.TYPE_FLOAT:
+      case BinaryTypes.TYPE_DOUBLE:
+      case BinaryTypes.TYPE_DECIMAL:
+      case BinaryTypes.TYPE_BOOLEAN:
+        // A String value1 against a numeric/boolean value2 must agree with the reverse call - delegate to the
+        // numeric side's own widening comparator and negate, rather than falling through to a lexicographic
+        // compareTo() that silently ignores type2 and breaks antisymmetry the same way the narrowing branches
+        // did before this fix (e.g. compare("2", STRING, 10, INT) and its reverse both answered "greater").
+        return -compare(value2, type2, value1, type1);
+
+      default:
+        return ((String) value1).compareTo(value2.toString());
+      }
     }
 
-    case BinaryTypes.TYPE_DOUBLE: {
+    case BinaryTypes.TYPE_DOUBLE:
+    case BinaryTypes.TYPE_FLOAT: {
+      // FLOAT always widens losslessly into double (the reverse direction is what loses precision), so both
+      // share this branch instead of FLOAT narrowing the other operand down to float's 24-bit mantissa - the
+      // same narrow-instead-of-widen bug as INT/SHORT/BYTE/LONG, just for the floating types (#5900 review
+      // follow-up).
       final double v1 = ((Number) value1).doubleValue();
       final double v2;
 
@@ -185,100 +126,32 @@ public class BinaryComparator {
       return Double.compare(v1, v2);
     }
 
-    case BinaryTypes.TYPE_FLOAT: {
-      final float v1 = ((Number) value1).floatValue();
-      final float v2;
-
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).floatValue();
-        break;
-
-      case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (float) ((Boolean) value2 ? 1 : 0);
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Float.parseFloat((String) value2);
-        break;
-
-      default:
-        return -1;
-      }
-
-      return Float.compare(v1, v2);
-    }
-
-    case BinaryTypes.TYPE_BYTE: {
-      final byte v1 = ((Number) value1).byteValue();
-      final byte v2;
-
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).byteValue();
-        break;
-
-      case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (byte) ((Boolean) value2 ? 1 : 0);
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Byte.parseByte((String) value2);
-        break;
-
-      default:
-        return -1;
-      }
-
-      return Byte.compare(v1, v2);
-    }
-
     case BinaryTypes.TYPE_BOOLEAN: {
       final int v1 = (Boolean) value1 ? 1 : 0;
-      final int v2;
 
       switch (type2) {
       case BinaryTypes.TYPE_INT:
       case BinaryTypes.TYPE_SHORT:
+      case BinaryTypes.TYPE_BYTE:
       case BinaryTypes.TYPE_LONG:
       case BinaryTypes.TYPE_DATETIME:
       case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
       case BinaryTypes.TYPE_DECIMAL:
       case BinaryTypes.TYPE_FLOAT:
       case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).byteValue();
-        break;
+        // Reuse the same widening comparator INT/SHORT/BYTE use as type1: narrowing a wide/floating operand to a
+        // `byte` here would be the identical truncation bug this class just eliminated for those three (#5900).
+        return compareNarrowIntegral(v1, type2, value2);
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (Boolean) value2 ? 1 : 0;
-        break;
+        return Integer.compare(v1, (Boolean) value2 ? 1 : 0);
 
       case BinaryTypes.TYPE_STRING:
-        v2 = Boolean.parseBoolean((String) value2) ? 1 : 0;
-        break;
+        return Integer.compare(v1, Boolean.parseBoolean((String) value2) ? 1 : 0);
 
       default:
         return -1;
       }
-
-      return Integer.compare(v1, v2);
     }
     case BinaryTypes.TYPE_DATE:
     case BinaryTypes.TYPE_DATETIME:
@@ -370,6 +243,87 @@ public class BinaryComparator {
     }
 
     throw new IllegalArgumentException("Comparison between type " + type1 + " and " + type2 + " not supported");
+  }
+
+  /**
+   * Shared comparison for a {@code value1} declared as {@code INT}, {@code SHORT} or {@code BYTE} - all of which
+   * fit losslessly in a Java {@code int} - against any {@code type2}. The other operand is promoted to whichever
+   * width it actually needs (int/long/double) rather than narrowed to {@code value1}'s declared width, so no
+   * operand is ever truncated.
+   */
+  private static int compareNarrowIntegral(final Number value1, final byte type2, final Object value2) {
+    switch (type2) {
+    case BinaryTypes.TYPE_INT:
+    case BinaryTypes.TYPE_SHORT:
+    case BinaryTypes.TYPE_BYTE:
+      return Integer.compare(value1.intValue(), ((Number) value2).intValue());
+
+    case BinaryTypes.TYPE_BOOLEAN:
+      return Integer.compare(value1.intValue(), (Boolean) value2 ? 1 : 0);
+
+    case BinaryTypes.TYPE_LONG:
+    case BinaryTypes.TYPE_DATETIME:
+    case BinaryTypes.TYPE_DATE:
+      return Long.compare(value1.longValue(), ((Number) value2).longValue());
+
+    case BinaryTypes.TYPE_DECIMAL:
+    case BinaryTypes.TYPE_FLOAT:
+    case BinaryTypes.TYPE_DOUBLE:
+      return Double.compare(value1.doubleValue(), ((Number) value2).doubleValue());
+
+    case BinaryTypes.TYPE_STRING:
+      return compareAgainstNumericString(value1, (String) value2);
+
+    default:
+      return -1;
+    }
+  }
+
+  /**
+   * Shared comparison for a {@code value1} declared as {@code LONG} (or a timestamp type using the same
+   * {@code long} representation) against any {@code type2}. {@code INT}/{@code SHORT}/{@code BYTE} widen
+   * losslessly into {@code long} so they join the same-width bucket here, unlike in
+   * {@link #compareNarrowIntegral}; a {@code DECIMAL}/{@code FLOAT}/{@code DOUBLE} operand is promoted to
+   * {@code double} rather than narrowed via {@code longValue()}, which would silently drop its fraction.
+   */
+  private static int compareWideningLong(final Number value1, final byte type2, final Object value2) {
+    switch (type2) {
+    case BinaryTypes.TYPE_INT:
+    case BinaryTypes.TYPE_SHORT:
+    case BinaryTypes.TYPE_BYTE:
+    case BinaryTypes.TYPE_LONG:
+    case BinaryTypes.TYPE_DATETIME:
+    case BinaryTypes.TYPE_DATE:
+      return Long.compare(value1.longValue(), ((Number) value2).longValue());
+
+    case BinaryTypes.TYPE_BOOLEAN:
+      return Long.compare(value1.longValue(), (Boolean) value2 ? 1L : 0L);
+
+    case BinaryTypes.TYPE_DECIMAL:
+    case BinaryTypes.TYPE_FLOAT:
+    case BinaryTypes.TYPE_DOUBLE:
+      return Double.compare(value1.doubleValue(), ((Number) value2).doubleValue());
+
+    case BinaryTypes.TYPE_STRING:
+      return compareAgainstNumericString(value1, (String) value2);
+
+    default:
+      return -1;
+    }
+  }
+
+  /**
+   * Widens to whichever precision the string's own format needs - {@code double} for a fractional/exponent
+   * literal, {@code long} otherwise - so an integral string is compared without the precision loss a double
+   * round-trip would introduce for large longs, and a fractional string doesn't hard-fail a {@code long} parse.
+   * <p>
+   * A numeric string outside both {@code long} and {@code double} range (e.g. 20+ integral digits) still throws
+   * an uncaught {@code NumberFormatException} rather than degrading gracefully; tracked as #5945.
+   */
+  private static int compareAgainstNumericString(final Number value1, final String string) {
+    if (string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0)
+      return Double.compare(value1.doubleValue(), Double.parseDouble(string));
+    return Long.compare(value1.longValue(), Long.parseLong(string));
   }
 
   public int compareBytes(final byte[] buffer1, final Binary buffer2) {

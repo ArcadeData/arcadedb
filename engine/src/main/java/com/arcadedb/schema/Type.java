@@ -305,6 +305,21 @@ public enum Type {
   }
 
   /**
+   * Same as {@link #convert(Database, Object, Class)}, but a failed conversion returns {@code null} instead of
+   * throwing: {@code convert()} only ever lets {@link IllegalArgumentException} escape (every other exception is
+   * already caught internally and treated as {@code null}), so this unifies both failure shapes into one contract
+   * for callers - typically a comparison across incompatible types - that need "no defined ordering" rather than a
+   * raw parse exception (#5900).
+   */
+  public static Object convertOrNull(final Database database, final Object value, final Class<?> targetClass) {
+    try {
+      return convert(database, value, targetClass);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  /**
    * When a property is declared as a collection ({@code LIST}/{@code MAP}) with a scalar {@code ofType} (e.g. {@code LIST OF LONG}),
    * returns a copy of the collection with every plain scalar entry converted to the declared {@code ofType}. Returns {@code null}
    * when no coercion applies, so the caller falls through to the normal conversion path. Nested documents, collections and links are
