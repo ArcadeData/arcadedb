@@ -268,7 +268,7 @@ public class JsonSerializer {
 
       value = convertToJSONType(value, propertyType);
 
-      if (value instanceof Number number && !Float.isFinite(number.floatValue())) {
+      if (value instanceof Number number && !Double.isFinite(number.doubleValue())) {
         LogManager.instance()
             .log(this, Level.SEVERE, """
                     Found non finite number in map with key '%s', ignore this entry in the \

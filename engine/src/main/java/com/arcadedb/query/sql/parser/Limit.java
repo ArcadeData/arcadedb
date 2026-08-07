@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.Map;
 import java.util.Objects;
@@ -50,14 +51,20 @@ public class Limit extends SimpleNode {
 
   }
 
+  /**
+   * A value outside the int range is narrowed with {@link NumberUtils#saturateToInt(Number)} rather than a
+   * plain narrowing cast, so it saturates instead of wrapping into an unrelated (and often negative, hence
+   * silently-zero-rows) value. Saturating negative lands on `Integer.MIN_VALUE`, not `-1`, because `-1` is
+   * the sentinel `LimitExecutionStep` reads as "unlimited".
+   */
   public int getValue(final CommandContext context) {
     if (num != null)
-      return num.getValue().intValue();
+      return NumberUtils.saturateToInt(num.getValue());
 
     if (inputParam != null) {
       final Object paramValue = inputParam.getValue(context.getInputParameters());
       if (paramValue instanceof Number number)
-        return number.intValue();
+        return NumberUtils.saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for LIMIT: " + paramValue);
     }
@@ -65,7 +72,7 @@ public class Limit extends SimpleNode {
     if (expression != null) {
       final Object exprValue = expression.execute((Result) null, context);
       if (exprValue instanceof Number number)
-        return number.intValue();
+        return NumberUtils.saturateToInt(number);
       else
         throw new CommandExecutionException("Invalid value for LIMIT: " + exprValue);
     }

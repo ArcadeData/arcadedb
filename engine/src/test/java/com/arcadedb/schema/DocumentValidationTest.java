@@ -536,6 +536,40 @@ class DocumentValidationTest extends TestHelper {
   }
 
   @Test
+  void maxValidationDoubleBeyondFloatRange() {
+    // Issue #5919 - Site C: the DOUBLE arm of validateMaxValue() compared fieldValue.floatValue()
+    // against the double bound. A value beyond Float.MAX_VALUE (~3.4e38) narrows to
+    // Float.POSITIVE_INFINITY, which is always > any finite bound, so a value that is actually
+    // well within range was falsely rejected.
+    final DocumentType clazz = database.getSchema().createDocumentType("MaxDoubleBeyondFloat");
+    clazz.createProperty("value", Type.DOUBLE).setMax("1e300");
+
+    final MutableDocument d = database.newDocument(clazz.getName());
+    d.set("value", 5e250d); // finite, way beyond Float.MAX_VALUE, but well below the 1e300 max
+    d.validate();
+
+    d.set("value", 2e300d); // genuinely above the max
+    assertThatThrownBy(d::validate).isInstanceOf(ValidationException.class);
+  }
+
+  @Test
+  void minValidationDoubleBeyondFloatRange() {
+    // Issue #5919 - Site C: the DOUBLE arm of validateMinValue() compared fieldValue.floatValue()
+    // against the double bound. A value beyond -Float.MAX_VALUE narrows to
+    // Float.NEGATIVE_INFINITY, which is always < any finite bound, so a value that is actually
+    // well within range was falsely rejected.
+    final DocumentType clazz = database.getSchema().createDocumentType("MinDoubleBeyondFloat");
+    clazz.createProperty("value", Type.DOUBLE).setMin("-1e300");
+
+    final MutableDocument d = database.newDocument(clazz.getName());
+    d.set("value", -5e250d); // finite, way beyond -Float.MAX_VALUE, but well above the -1e300 min
+    d.validate();
+
+    d.set("value", -2e300d); // genuinely below the min
+    assertThatThrownBy(d::validate).isInstanceOf(ValidationException.class);
+  }
+
+  @Test
   void notNullValidation() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
