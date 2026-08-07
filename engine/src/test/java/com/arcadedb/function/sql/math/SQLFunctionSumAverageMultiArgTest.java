@@ -24,8 +24,10 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -52,6 +54,34 @@ class SQLFunctionSumAverageMultiArgTest {
 
     // ...WITHOUT DESTROYING THE PREVIOUSLY ACCUMULATED TOTAL
     assertThat(((Number) f.getResult()).intValue()).isEqualTo(30);
+  }
+
+  /**
+   * Issue #5799: a non-numeric, non-null value must be a client-facing type error rather than being
+   * silently skipped, whichever of {@code sum()}'s three argument shapes it reaches through.
+   */
+  @Test
+  void sumRejectsNonNumericSingleArg() {
+    final SQLFunctionSum f = new SQLFunctionSum();
+    assertThatThrownBy(() -> f.execute(null, null, null, new Object[] { "not-a-number" }, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sum()");
+  }
+
+  @Test
+  void sumRejectsNonNumericElementInsideAList() {
+    final SQLFunctionSum f = new SQLFunctionSum();
+    assertThatThrownBy(() -> f.execute(null, null, null, new Object[] { List.of(1, "not-a-number", 2) }, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sum()");
+  }
+
+  @Test
+  void sumRejectsNonNumericMultiArg() {
+    final SQLFunctionSum f = new SQLFunctionSum();
+    assertThatThrownBy(() -> f.execute(null, null, null, new Object[] { 1, "not-a-number", 2 }, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sum()");
   }
 
   @Test

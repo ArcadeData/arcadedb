@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -48,9 +49,12 @@ public class CypherSplitFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null || args[1] == null)
+    // The primary argument is type-checked before a null delimiter decides the answer, so an out-of-domain
+    // primary argument is still reported even when args[1] happens to be null (issue #5798 review:
+    // split(5, null) must still be a type error, not a silent null).
+    final String str = CypherFunctionHelper.requireStringArgument(args[0], getName());
+    if (str == null || args[1] == null)
       return null;
-    final String str = args[0].toString();
     final String delimiter = args[1].toString();
 
     // An empty delimiter splits the string into its individual characters (Neo4j/Memgraph semantics).

@@ -166,3 +166,66 @@ garbage collector no longer traces one object graph per indexed vector.
   short-circuit to the vectors persisted inline in the graph file.
 
 [#5588](https://github.com/ArcadeData/arcadedb/issues/5588)
+
+## Redis wire protocol: an unauthenticated RESP array could overflow the connection thread's stack (#5895)
+
+`RedisNetworkExecutor.parseNext()` decoded RESP arrays recursively, once per nesting level, with no bound
+on either the nesting depth or the client-declared element count - and it runs before the `NOAUTH` check,
+since the whole message has to be parsed before a command exists to reject. On the default JVM stack, about
+47KB of `*1\r\n` repeated ~11,860 times was enough to overflow the connection thread with an uncaught
+`StackOverflowError`, reachable by anyone who can open the Redis port, no credentials required. Separately,
+an unbounded array-length header such as `*2000000000\r\n` started a parse loop the client could keep alive
+indefinitely just by trickling bytes, tying up a connection thread for as long as it liked.
+
+Both are now bounded by two new settings mirroring Redis' own protocol limits: `arcadedb.redis.maxMultiBulkDepth`
+(default 32 - no real command nests anywhere close to that) and `arcadedb.redis.maxMultiBulkLength` (default
+1,048,576, the same hard cap Redis itself enforces on multibulk requests). Either violation now fails fast with
+a RESP `-ERR Protocol error: ...` reply and the connection is closed, since the stream position past a rejected
+message can no longer be trusted to resynchronize on.
+
+Code review on the fix caught the same bug class one level down: the RESP bulk-string (`$`) length was equally
+unbounded, and unlike the array case it sits on the hot path of essentially every command (the command name and
+every argument, including `GET`/`SET`'s own payloads, are bulk strings), so it was arguably the bigger exposure
+of the two. A `$2000000000\r\n` header could tie up a connection thread the same way, or grow the parse buffer
+without bound if the client actually sent the declared bytes. It is now capped by a third setting,
+`arcadedb.redis.maxBulkLength` (default 512MB, matching Redis' own `proto-max-bulk-len`). Malformed, non-numeric
+lengths (e.g. `$abc\r\n`) also used to throw an uncaught `NumberFormatException` that killed the connection
+thread outright; they now get the same clean error-reply-and-close treatment as an oversized length.
+
+## Bulk load: a batch now accounts for the payload line by line, and says what it does not know (#5618)
+
+A 17-million-vertex load stopped on `Unknown temporary ID 'co/32945720' at line 17234792`, for a vertex sitting in
+the payload thousands of lines above that edge - and the vertex was not in the database either. Nothing in the
+response and nothing in the log could tell whether the server had lost records or the payload had never carried
+them: the endpoint reported counts of what it *created*, with nothing to compare them against. Establishing that
+two million vertices were missing took a `grep -c` over the user's own file, and even that did not say which side
+had dropped them.
+
+**Every answer now carries `linesRead` and `linesSkipped`** - blank lines, plus CSV headers and `---` separators -
+on the 200, on the 400 that rejects a record, and on the 408 that reports a truncated upload. `linesRead -
+linesSkipped` is the number of records the parser produced, so a client can check it against `verticesCreated +
+edgesCreated` and against the line count of the file it sent, without waiting for a support round-trip.
+
+**The server checks the same equality before answering 200.** A line that was read and turned into nothing is a
+defect on our side, so the load is now reported as failed (HTTP 500, with the partial-commit counters, and a
+warning naming the numbers) instead of returning a success carrying a count that silently misses records.
+
+**`verticesWithoutId`** is reported when a payload creates vertices that declare no `@id` under the default
+`refMode=id`. Those vertices are loaded and durable, but nothing in the payload can ever reference them - until
+now the only symptom was an unresolvable reference much further down.
+
+**The unresolved-reference message reports what the load knows** instead of asserting a single cause. "Vertices
+must appear before edges that reference them" was the whole explanation, and on this report it was the wrong one;
+it now states how many ids the payload actually declared, how many of its vertices declared none, and that each
+request resolves only the ids of its *own* payload - the trap a client hits when it splits one file across several
+requests and expects `@id`s from an earlier one to still resolve.
+
+Finally, **a batch that lands on a follower is relayed to the leader with the length the client announced**, over
+a body that refuses to be handed over twice. The relay previously declared no length, which sent it chunked - and
+a chunked body announces nothing, which switches off the leader's own truncation check
+(`PostBatchHandler.bodyEndedEarly` gives up as soon as there is no announced length). A relayed upload that ended
+early therefore came back as a 200 with a partial count: the exact outcome [#5470](https://github.com/ArcadeData/arcadedb/issues/5470)
+exists to prevent, on the one path it never covered. The hop is also pinned to HTTP/1.1, since an `h2c` upgrade's
+failure mode is re-sending a request whose body cannot be rewound.
+
+[#5618](https://github.com/ArcadeData/arcadedb/issues/5618)

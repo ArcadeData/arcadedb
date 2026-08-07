@@ -52,6 +52,8 @@ import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -80,6 +82,15 @@ import java.util.logging.Level;
  * Response: {@code verticesCreated}, {@code edgesCreated}, {@code elapsedMs}, {@code bytesRead} and, when temporary
  * ids were used, {@code idMapping} - replaced by {@code idMappingOmitted} / {@code idMappingSize} past
  * {@link #MAX_ID_MAPPING_IN_RESPONSE} entries, unless {@code idMapping=true} demands it.
+ * <p>
+ * Line accounting: every answer, successful or not, also carries {@code linesRead} and {@code linesSkipped} (blank
+ * lines, plus CSV headers and {@code ---} separators), so {@code linesRead - linesSkipped} is the number of records
+ * the parser produced and can be checked against {@code verticesCreated + edgesCreated} - and against the line count
+ * of the file the client sent. The server checks it too: a load that read a line and turned it into nothing is
+ * answered as failed rather than successful, because "the vertices are in my file and not in the database" must not
+ * be something a user has to establish with grep after the fact (issue #5618). {@code verticesWithoutId} appears when
+ * the payload created vertices that declared no {@code @id} under {@code refMode=id}: they are loaded and durable,
+ * but no edge can ever reference them.
  * <p>
  * Giving up early: a load that fails on the payload is answered as soon as the verdict is reached, without reading
  * the rest of the upload. That is not an optimisation - closing Undertow's request stream reads the body to the end
@@ -272,10 +283,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     long verticesCreated = 0;
     long edgesCreated = 0;
 
-    try (final BatchRecordStream stream = isCsv
+    // Held outside the try-with-resources so the line accounting survives into the catch blocks: a load that
+    // failed has to report how much of the payload it had read just as precisely as one that succeeded, which is
+    // the whole point of counting the lines (issue #5618).
+    final BatchRecordStream stream = isCsv
         ? new CsvBatchRecordStream(inputStream)
         : new JsonlBatchRecordStream(inputStream);
-         final GraphBatch batch = builder.build()) {
+
+    try (stream; final GraphBatch batch = builder.build()) {
 
       // Phase 1: Vertices — accumulate by type for batch creation
       String currentTypeName = null;
@@ -375,14 +390,15 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // distinction is the difference between naming the offending line and reporting the load as truncated with
       // "the last record read is not part of the payload", which was untrue and unfixable: the line WAS in the file.
       if (e instanceof MalformedBatchRecordException && bodyEndedEarly(exchange, inputStream))
-        return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated,
+        return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs,
             "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
                 + " announced bytes were received, the last record read (" + message + ") is not part of the payload",
             null);
 
       LogManager.instance().log(this, Level.WARNING,
-          "Batch load on database '%s' failed after %d vertices and %d edges: %s",
-          null, databaseName, verticesCreated, edgesCreated, message);
+          "Batch load on database '%s' failed on line %d after %d vertices and %d edges (%d lines read, %d skipped): %s",
+          null, databaseName, stream.getLineNumber(), verticesCreated, edgesCreated, stream.getLinesRead(),
+          stream.getLinesSkipped(), message);
 
       // Bespoke body (not the shared sendErrorResponse envelope) because the partial-commit counts must
       // be machine-parsable by the client. The message is emitted in `error` even in production on
@@ -399,6 +415,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       error.put("verticesCreated", verticesCreated);
       error.put("edgesCreated", edgesCreated);
       error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
+      addLineAccounting(error, stream, vertexRefs);
       return new ExecutionResponse(400, error.toString());
     } catch (final IOException e) {
       // The request body could not be read to the end: the client went away, a proxy cut the upload, or the
@@ -406,7 +423,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // reading (issue #5470). Never let this look like a completed load: reaching the end of the loop with a
       // truncated body would answer 200 with a partial count and the client would happily move on.
       final String message = e.getMessage() != null ? e.getMessage() : e.toString();
-      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, message, e.getClass().getName());
+      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs, message,
+          e.getClass().getName());
     }
 
     // The stream ended without an error, but the client announced more than what arrived: a connection dropped
@@ -414,9 +432,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // reporting 200 with a truncated count is the worst possible outcome - the client moves on believing the load
     // completed.
     if (bodyEndedEarly(exchange, inputStream))
-      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated,
+      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs,
           "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
               + " announced bytes were received", null);
+
+    // Every line the parser consumed has to have become a record or be one it declared skipped. Nothing in this
+    // handler is allowed to read a line and quietly do nothing with it, so a mismatch is a server-side defect,
+    // not a client one - and answering 200 with a count that silently misses records is exactly the failure
+    // issue #5618 was opened about. The check costs two field reads per load and turns "vertices disappeared" from
+    // something the user has to prove with grep into something the server states with numbers.
+    final long accounted = verticesCreated + edgesCreated + stream.getLinesSkipped();
+    if (accounted != stream.getLinesRead())
+      return recordsDropped(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs);
 
     // A chunked upload announces no length, so the only thing that can prove it arrived whole is the client saying
     // how much it was going to send. Without it a body that ends early - because the producer feeding the stream
@@ -424,7 +451,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // a partial count, which is how a load can silently import a fraction of a file (issue #5470).
     final long records = verticesCreated + edgesCreated;
     if (expectedRecords >= 0 && records != expectedRecords)
-      return recordCountMismatch(exchange, databaseName, verticesCreated, edgesCreated, expectedRecords, records);
+      return recordCountMismatch(exchange, databaseName, verticesCreated, edgesCreated, expectedRecords, records,
+          stream, vertexRefs);
 
     final long elapsed = System.currentTimeMillis() - startTime;
 
@@ -435,6 +463,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // How much of the upload the server actually consumed: on a chunked body there is nothing to compare it with
     // server-side, so this is what lets a client verify that its whole file arrived (issue #5470).
     result.put("bytesRead", inputStream.getBytesRead());
+    addLineAccounting(result, stream, vertexRefs);
 
     // Include temp ID mapping if any temp IDs were used, unless the load was too big for the mapping to be worth
     // (or even possible to) send back - see MAX_ID_MAPPING_IN_RESPONSE and the 'idMapping' parameter.
@@ -535,7 +564,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    *                       ended before the announced length
    */
   private ExecutionResponse truncatedBody(final HttpServerExchange exchange, final String databaseName,
-      final long verticesCreated, final long edgesCreated, final String message, final String exceptionClass) {
+      final long verticesCreated, final long edgesCreated, final BatchRecordStream stream,
+      final VertexRefResolver vertexRefs, final String message, final String exceptionClass) {
 
     LogManager.instance().log(this, Level.WARNING,
         "Batch load on database '%s' was interrupted after %d vertices and %d edges because the request body "
@@ -550,7 +580,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // already gone, but when it does it carries the counts needed to resume instead of restarting.
     return partialPayloadResponse(exchange, 408,
         "Request body was truncated after " + verticesCreated + " vertices and " + edgesCreated + " edges: " + message,
-        exceptionClass, verticesCreated, edgesCreated);
+        exceptionClass, verticesCreated, edgesCreated, stream, vertexRefs);
   }
 
   /**
@@ -560,19 +590,50 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * make things worse, hence a 400 (issue #5470).
    */
   private ExecutionResponse recordCountMismatch(final HttpServerExchange exchange, final String databaseName,
-      final long verticesCreated, final long edgesCreated, final long expectedRecords, final long records) {
+      final long verticesCreated, final long edgesCreated, final long expectedRecords, final long records,
+      final BatchRecordStream stream, final VertexRefResolver vertexRefs) {
 
     final boolean truncated = records < expectedRecords;
 
     LogManager.instance().log(this, Level.WARNING,
-        "Batch load on database '%s' declared %d records but %s: %d loaded (%d vertices and %d edges). The payload "
-            + "was not what the client announced, so it is reported as incomplete instead of successful",
+        "Batch load on database '%s' declared %d records but %s: %d loaded (%d vertices and %d edges) out of %d lines "
+            + "read. The payload was not what the client announced, so it is reported as incomplete instead of "
+            + "successful",
         null, databaseName, expectedRecords, truncated ? "fewer arrived" : "more arrived", records, verticesCreated,
-        edgesCreated);
+        edgesCreated, stream.getLinesRead());
 
     return partialPayloadResponse(exchange, truncated ? 408 : 400,
         "Expected " + expectedRecords + " records but " + records + " were received (" + verticesCreated
-            + " vertices and " + edgesCreated + " edges)", null, verticesCreated, edgesCreated);
+            + " vertices and " + edgesCreated + " edges)", null, verticesCreated, edgesCreated, stream, vertexRefs);
+  }
+
+  /**
+   * Answers a load that read more lines than it turned into records. Nothing in this handler may consume a line and
+   * do nothing with it, so this is a defect on OUR side: the whole point of counting the lines is that the failure
+   * issue #5618 reports - vertices present in the file and absent from the database, with a successful-looking
+   * response - stops being something the user has to discover by grepping their own payload.
+   * <p>
+   * 500 rather than 400: the payload is not what is wrong. The counters travel with it so the client can still
+   * reconcile whatever was committed before giving up.
+   */
+  private ExecutionResponse recordsDropped(final HttpServerExchange exchange, final String databaseName,
+      final long verticesCreated, final long edgesCreated, final BatchRecordStream stream,
+      final VertexRefResolver vertexRefs) {
+
+    final long missing = stream.getLinesRead() - stream.getLinesSkipped() - verticesCreated - edgesCreated;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "Batch load on database '%s' read %d lines (%d skipped) but only created %d vertices and %d edges: %d records "
+            + "were dropped without an error. This is a server-side defect, please report it with the payload shape",
+        null, databaseName, stream.getLinesRead(), stream.getLinesSkipped(), verticesCreated, edgesCreated, missing);
+
+    return partialPayloadResponse(exchange, 500,
+        "The load read " + stream.getLinesRead() + " lines (" + stream.getLinesSkipped() + " skipped) but created "
+            + verticesCreated + " vertices and " + edgesCreated + " edges, so " + missing
+            + " records were dropped without an error. The load is reported as failed rather than successful; the "
+            + "records already committed are counted above, so do not simply re-POST the payload - that would "
+            + "duplicate them",
+        null, verticesCreated, edgesCreated, stream, vertexRefs);
   }
 
   /**
@@ -580,7 +641,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * machine-parsable, because the load is not atomic and the client needs them to reconcile.
    */
   private ExecutionResponse partialPayloadResponse(final HttpServerExchange exchange, final int status,
-      final String message, final String exceptionClass, final long verticesCreated, final long edgesCreated) {
+      final String message, final String exceptionClass, final long verticesCreated, final long edgesCreated,
+      final BatchRecordStream stream, final VertexRefResolver vertexRefs) {
 
     final JSONObject error = new JSONObject();
     error.put("error", message);
@@ -592,7 +654,28 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     error.put("verticesCreated", verticesCreated);
     error.put("edgesCreated", edgesCreated);
     error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
+    addLineAccounting(error, stream, vertexRefs);
     return new ExecutionResponse(status, error.toString());
+  }
+
+  /**
+   * Adds what the load did with the payload, line by line, to every answer it can give - success, partial commit and
+   * truncation alike. {@code linesRead} minus {@code linesSkipped} is the number of records the parser handed over,
+   * so a client can check it against {@code verticesCreated + edgesCreated} without trusting the server to have
+   * checked it (the server does, see {@link #recordsDropped}), and can compare it with the line count of its own
+   * file - which is what issue #5618 had to be diagnosed with, by hand, after the fact.
+   * <p>
+   * {@code verticesWithoutId} is reported only when it is not zero: those vertices are loaded and durable, but no
+   * edge of the payload can ever point at them, and today the only symptom is an "unknown temporary ID" much later.
+   */
+  private void addLineAccounting(final JSONObject json, final BatchRecordStream stream,
+      final VertexRefResolver vertexRefs) {
+    json.put("linesRead", stream.getLinesRead());
+    json.put("linesSkipped", stream.getLinesSkipped());
+
+    final int withoutId = vertexRefs.unreferenceableVertices();
+    if (withoutId > 0)
+      json.put("verticesWithoutId", withoutId);
   }
 
   /**
@@ -967,16 +1050,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (queryString != null && !queryString.isEmpty())
       url += "?" + queryString;
 
-    final InputStream body = exchange.getInputStream();
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(url))
-        .header("Content-Type", contentType)
-        .header("X-ArcadeDB-Cluster-Token", clusterToken)
-        .header("X-ArcadeDB-Forwarded-User", user.getName())
-        .POST(HttpRequest.BodyPublishers.ofInputStream(() -> body));
+    final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
+        exchange.getRequestContentLength(), exchange.getInputStream());
 
     try {
-      final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
 
       // ExecutionResponse carries only status + body, so the leader's X-ArcadeDB-Commit-Index bookmark
       // (issue #5862) has to be copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
@@ -995,5 +1073,53 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(503,
           "{ \"error\" : \"Error forwarding batch to leader: " + e.getMessage().replace("\"", "'") + "\"}");
     }
+  }
+
+  /**
+   * Builds the request that relays a batch payload from a follower to the leader. Three things about it are not
+   * defaults, and each of them is a way a forwarded load could otherwise lose part of its payload in silence
+   * (issue #5618):
+   * <ul>
+   *   <li><b>the content length travels with the body.</b> {@code BodyPublishers.ofInputStream} declares an unknown
+   *   length, so the forwarded request goes out chunked - and a chunked body announces nothing, which switches OFF
+   *   the leader's own truncation check ({@link #bodyEndedEarly} returns false as soon as there is no announced
+   *   length). A relayed upload that ended early was then answered 200 with a partial count, which is precisely
+   *   the safety net issue #5470 added and the forwarding path never had. With the length declared, the JDK client
+   *   also fails the request outright if it cannot feed the leader exactly that many bytes;</li>
+   *   <li><b>HTTP/1.1 is pinned.</b> The default client negotiates HTTP/2, and on a plaintext connection that means
+   *   an {@code h2c} upgrade whose failure mode is re-sending the request - with a body that cannot be rewound;</li>
+   *   <li><b>the body is one-shot and says so.</b> {@code ofInputStream} takes a SUPPLIER because the JDK may
+   *   subscribe more than once and expects a fresh stream each time. There is only one request body here, so a
+   *   second subscription would have handed back a stream already positioned in the middle of the payload and the
+   *   leader would have loaded a file missing its beginning, with nothing anywhere saying so. It now fails loudly
+   *   instead, and the caller answers 503.</li>
+   * </ul>
+   *
+   * @param contentLength the client's announced body length, or a negative value when it uploaded chunked
+   */
+  static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
+      final String userName, final long contentLength, final InputStream body) {
+
+    final AtomicBoolean bodyTaken = new AtomicBoolean(false);
+    final Supplier<InputStream> oneShotBody = () -> {
+      if (!bodyTaken.compareAndSet(false, true))
+        throw new IllegalStateException(
+            "The batch payload being forwarded to the leader was requested twice, but a request body can only be "
+                + "read once: sending it again would relay a payload missing everything already consumed");
+      return body;
+    };
+
+    HttpRequest.BodyPublisher publisher = HttpRequest.BodyPublishers.ofInputStream(oneShotBody);
+    if (contentLength >= 0)
+      publisher = HttpRequest.BodyPublishers.fromPublisher(publisher, contentLength);
+
+    return HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .version(HttpClient.Version.HTTP_1_1)
+        .header("Content-Type", contentType)
+        .header("X-ArcadeDB-Cluster-Token", clusterToken)
+        .header("X-ArcadeDB-Forwarded-User", userName)
+        .POST(publisher)
+        .build();
   }
 }

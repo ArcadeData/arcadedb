@@ -61,7 +61,12 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
         sum(number);
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0]))
-          sum((Number) n);
+          sum(requireNumericOrNull(n));
+      else
+        // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
+        // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
+        // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
+        sum(requireNumericOrNull(params[0]));
       return sum;
     }
 
@@ -69,7 +74,7 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
     // CROSS-ROW ACCUMULATOR, OTHERWISE A SUBSEQUENT getResult() WOULD ONLY RETURN THIS ROW'S CONTRIBUTION.
     Number rowSum = null;
     for (int i = 0; i < params.length; ++i) {
-      final Number value = (Number) params[i];
+      final Number value = requireNumericOrNull(params[i]);
       if (value != null)
         rowSum = rowSum == null ? value : Type.increment(rowSum, value);
     }
@@ -84,6 +89,18 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
       else
         sum = Type.increment(sum, value);
     }
+  }
+
+  /**
+   * Validates a single aggregated value: {@code null} passes through (nulls are skipped, matching the documented
+   * behavior), a {@link Number} passes through unchanged, and anything else (STRING, BOOLEAN, ...) is a client-facing
+   * type error rather than being silently ignored - see issue #5799.
+   */
+  private static Number requireNumericOrNull(final Object value) {
+    if (value == null || value instanceof Number)
+      return (Number) value;
+    throw new IllegalArgumentException(
+        NAME + "() requires numeric input, but received a value of type " + value.getClass().getSimpleName());
   }
 
   public String getSyntax() {

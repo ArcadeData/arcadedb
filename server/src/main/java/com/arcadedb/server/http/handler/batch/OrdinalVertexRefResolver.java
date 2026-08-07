@@ -117,6 +117,15 @@ public class OrdinalVertexRefResolver implements VertexRefResolver {
     return size == 0;
   }
 
+  /**
+   * Always none: the position in the payload IS the key, so every vertex this resolver stores can be referenced
+   * whether or not it declared an {@code @id}.
+   */
+  @Override
+  public int unreferenceableVertices() {
+    return 0;
+  }
+
   @Override
   public long retainedBytes() {
     return (long) bucketIds.length * Integer.BYTES + (long) positions.length * Long.BYTES;

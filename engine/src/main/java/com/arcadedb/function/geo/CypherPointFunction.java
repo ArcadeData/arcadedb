@@ -19,6 +19,7 @@
 package com.arcadedb.function.geo;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -43,8 +44,9 @@ import java.util.Map;
  * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
  * when the string parses cleanly as a decimal (e.g. a node whose {@code lat} property was
  * declared as {@link com.arcadedb.schema.Type#STRING}). When coercion is impossible the
- * function raises a {@link CommandExecutionException} naming the offending key and value
- * rather than leaking a raw {@link ClassCastException} (issue #4305).</p>
+ * function raises a {@link CommandSemanticException} naming the offending key and value
+ * rather than leaking a raw {@link ClassCastException} (issue #4305) or reporting a client
+ * argument error as an internal server fault (issue #5794).</p>
  */
 public class CypherPointFunction implements StatelessFunction {
   @Override
@@ -86,8 +88,10 @@ public class CypherPointFunction implements StatelessFunction {
 
     if (args[0] == null)
       return null;
+    // A non-map argument is determined entirely by the supplied argument, so it is a client error (HTTP 400)
+    // rather than a CommandExecutionException (HTTP 500). See issue #5910.
     if (!(args[0] instanceof Map))
-      throw new CommandExecutionException("point() argument must be a map with coordinate properties");
+      throw new CommandSemanticException("point() argument must be a map with coordinate properties");
     final Map<?, ?> map = (Map<?, ?>) args[0];
 
     final Map<String, Object> result = new LinkedHashMap<>();
@@ -127,13 +131,15 @@ public class CypherPointFunction implements StatelessFunction {
         result.put("crs", result.containsKey("z") ? "cartesian-3D" : "cartesian");
       if (map.containsKey("srid")) {
         final Object sridObj = map.get("srid");
+        // Same rationale as the non-map argument above: a non-numeric srid is a client error (issue #5910).
         if (!(sridObj instanceof Number))
-          throw new CommandExecutionException(
+          throw new CommandSemanticException(
               "point() 'srid' must be numeric, found " + describe(sridObj));
         result.put("srid", ((Number) sridObj).intValue());
       }
     } else {
-      throw new CommandExecutionException("point() map must contain x/y or longitude/latitude properties");
+      // Missing recognized coordinate keys is a client error (issue #5910), same rationale as above.
+      throw new CommandSemanticException("point() map must contain x/y or longitude/latitude properties");
     }
 
     return result;
@@ -154,9 +160,11 @@ public class CypherPointFunction implements StatelessFunction {
   /**
    * Returns the numeric value of {@code value}, coercing a numeric {@link String} when the
    * underlying property is typed as STRING but the contents are a clean decimal literal.
-   * Throws a {@link CommandExecutionException} that names {@code key} and {@code value}
-   * when coercion is impossible, so the user sees a clear error instead of a raw
-   * {@link ClassCastException} (issue #4305).
+   * Throws a {@link CommandSemanticException} that names {@code key} and {@code value}
+   * when coercion is impossible, so the user sees a clear client-facing error (HTTP 400)
+   * instead of a raw {@link ClassCastException} (issue #4305) or an internal-fault-looking
+   * {@link CommandExecutionException} (HTTP 500, issue #5794): a non-numeric coordinate is
+   * determined entirely by the supplied argument, so it is a client error either way.
    */
   private static double coerceCoordinate(final String key, final Object value) {
     if (value instanceof Number n)
@@ -165,11 +173,11 @@ public class CypherPointFunction implements StatelessFunction {
       try {
         return Double.parseDouble(s.trim());
       } catch (final NumberFormatException ignored) {
-        throw new CommandExecutionException(
+        throw new CommandSemanticException(
             "point() '" + key + "' must be numeric, found String value '" + s + "'");
       }
     }
-    throw new CommandExecutionException(
+    throw new CommandSemanticException(
         "point() '" + key + "' must be numeric, found " + describe(value));
   }
 

@@ -21,6 +21,7 @@ package com.arcadedb.function.temporal;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -71,7 +72,9 @@ public class DateTimeConstructorFunction implements StatelessFunction {
         try {
           return new CypherDateTime(ZonedDateTime.now(ZoneId.of(str)));
         } catch (final Exception e2) {
-          throw new CommandExecutionException("datetime() cannot parse '" + str + "' as a datetime or timezone");
+          // Neither a valid datetime nor a valid timezone: determined entirely by the supplied string, so it is a
+          // client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5794.
+          throw new CommandSemanticException("datetime() cannot parse '" + str + "' as a datetime or timezone");
         }
       }
     }
@@ -87,6 +90,8 @@ public class DateTimeConstructorFunction implements StatelessFunction {
       return new CypherDateTime(((LocalDateTime) args[0]).atZone(ZoneOffset.UTC));
     if (args[0] instanceof LocalDate)
       return new CypherDateTime(((LocalDate) args[0]).atStartOfDay(ZoneOffset.UTC));
-    throw new CommandExecutionException("datetime() expects a string, map, or temporal argument");
+    // Not a String, Map, or any recognized temporal type: determined entirely by the supplied argument, so it is
+    // a client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5910.
+    throw new CommandSemanticException("datetime() expects a string, map, or temporal argument");
   }
 }

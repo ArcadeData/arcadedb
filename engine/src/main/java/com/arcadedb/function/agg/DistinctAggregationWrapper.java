@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.agg;
 
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -58,7 +59,13 @@ public class DistinctAggregationWrapper implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (!seenValues.add(Arrays.asList(args)))
+    // Canonicalize cross-type numeric equality (e.g. INTEGER 1 vs FLOAT 1.0) so DISTINCT stays
+    // consistent with Cypher's `=` operator (issue #5789). The delegate still executes on the
+    // original, uncanonicalized arguments.
+    final Object[] key = new Object[args.length];
+    for (int i = 0; i < args.length; i++)
+      key[i] = DistinctNumericKey.canonicalize(args[i]);
+    if (!seenValues.add(Arrays.asList(key)))
       return null;
     return delegate.execute(args, context);
   }

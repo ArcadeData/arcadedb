@@ -54,6 +54,7 @@ public class CsvBatchRecordStream implements BatchRecordStream {
   private       int            fromCol   = -1;
   private       int            toCol     = -1;
   private       int            lineNumber;
+  private       long           linesSkipped;
   private       boolean        ready;
   private       boolean        headerParsed;
 
@@ -74,18 +75,22 @@ public class CsvBatchRecordStream implements BatchRecordStream {
 
       lineNumber++;
 
-      if (line.isBlank())
+      if (line.isBlank()) {
+        linesSkipped++;
         continue;
+      }
 
       // Check for section separator
       if (line.startsWith("---")) {
         headerParsed = false;
+        linesSkipped++;
         continue;
       }
 
       // Parse header if needed
       if (!headerParsed) {
         parseHeader(line);
+        linesSkipped++;
         continue;
       }
 
@@ -104,6 +109,16 @@ public class CsvBatchRecordStream implements BatchRecordStream {
   @Override
   public int getLineNumber() {
     return lineNumber;
+  }
+
+  @Override
+  public long getLinesRead() {
+    return lineNumber;
+  }
+
+  @Override
+  public long getLinesSkipped() {
+    return linesSkipped;
   }
 
   @Override
