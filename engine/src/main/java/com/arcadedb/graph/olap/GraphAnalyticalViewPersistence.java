@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -26,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -41,7 +43,10 @@ import java.util.logging.Level;
  *   // After opening a database, restore all previously saved GAVs:
  *   GraphAnalyticalViewPersistence.restoreAll(database);
  *
- *   // This rebuilds all GAVs asynchronously from their saved definitions.
+ *   // This rebuilds all GAVs asynchronously from their saved definitions. By default the call
+ *   // returns as soon as the rebuilds are triggered, before any of them reach READY - see
+ *   // {@link com.arcadedb.GlobalConfiguration#GAV_RESTORE_AWAIT_TIMEOUT} to instead block the
+ *   // caller (bounded by a configurable timeout) until the restored views are ready.
  * </pre>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -82,6 +87,10 @@ public class GraphAnalyticalViewPersistence {
   /**
    * Restores all GAV definitions from the schema and rebuilds them asynchronously.
    * Call this after opening a database to restore previously saved GAVs.
+   * <p>
+   * By default this returns as soon as every rebuild is triggered, without waiting for any of
+   * them to reach READY (see {@link com.arcadedb.GlobalConfiguration#GAV_RESTORE_AWAIT_TIMEOUT}
+   * to instead block, bounded by a configurable timeout, until the restored views are ready).
    *
    * @return the number of GAVs being restored
    */
@@ -95,6 +104,7 @@ public class GraphAnalyticalViewPersistence {
 
     int count = 0;
     List<String> failedKeys = null;
+    final List<GraphAnalyticalView> restoredViews = new ArrayList<>();
     for (final String gavName : allGavs.keySet()) {
       try {
         final JSONObject gavDef = allGavs.getJSONObject(gavName);
@@ -137,7 +147,7 @@ public class GraphAnalyticalViewPersistence {
         final int ct = gavDef.getInt("compactionThreshold", -1);
         if (ct >= 0)
           builder.withCompactionThreshold(ct);
-        builder.skipPersistence().buildAsync();
+        restoredViews.add(builder.skipPersistence().buildAsync());
         count++;
 
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.INFO,
@@ -170,6 +180,22 @@ public class GraphAnalyticalViewPersistence {
     if (count > 0)
       LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.INFO,
           "Restoring %d Graph Analytical View(s) asynchronously on database open", count);
+
+    // #5788: by default restoreAll() returns as soon as every rebuild is triggered, so the query
+    // that reopened the database always races the background rebuild and loses. When opted in via
+    // GAV_RESTORE_AWAIT_TIMEOUT, block here (bounded by the configured budget, shared across every
+    // restored view) until each triggered build reaches READY, so the session that pays for the
+    // rebuild is the session that benefits from it.
+    final long awaitTimeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT);
+    if (awaitTimeoutMs > 0 && !restoredViews.isEmpty()) {
+      final long deadline = System.currentTimeMillis() + awaitTimeoutMs;
+      for (final GraphAnalyticalView view : restoredViews) {
+        final long remainingMs = deadline - System.currentTimeMillis();
+        if (remainingMs <= 0)
+          break;
+        view.awaitReady(remainingMs, TimeUnit.MILLISECONDS);
+      }
+    }
 
     return count;
   }

@@ -1667,6 +1667,14 @@ public enum GlobalConfiguration {
       """
       When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. \
       Stale data is faster but may not reflect the latest committed changes""", Boolean.class, false),
+
+  GAV_RESTORE_AWAIT_TIMEOUT("arcadedb.gavRestoreAwaitTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds database open() blocks waiting for Graph Analytical Views (GAV/CSR) restored from persisted \
+      definitions to reach READY before returning. 0 (default) does not wait: the async rebuild is still triggered, \
+      but open() returns immediately and queries issued right after it run unaccelerated until the rebuild completes. \
+      A positive value trades a slower open() for the restored view being usable by the query that triggered the reopen""",
+      Long.class, 0L),
   ;
 
   /**
