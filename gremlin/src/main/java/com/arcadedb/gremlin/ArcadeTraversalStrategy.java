@@ -327,4 +327,17 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
   // already guarantees this strategy runs strictly after every OptimizationStrategy, including
   // InlineFilterStrategy (which sometimes removes the need for a TraversalFilterStep) and
   // GValueReductionStrategy (see class javadoc).
+  //
+  // #5841 previously fixed this strategy's ordering against TinkerPop's CountStrategy with an
+  // explicit applyPost(CountStrategy.class), forcing CountStrategy to run AFTER this strategy so
+  // applyEdgeCountFilterOptimization's pattern match saw where(outE(X).count().is(pred)) before
+  // CountStrategy could rewrite it. That override is gone: it does not type-check once this class
+  // moved to ProviderOptimizationStrategy (applyPost's declared type is
+  // Set<Class<? extends OptimizationStrategy>>, and CountStrategy is an OptimizationStrategy, not a
+  // ProviderOptimizationStrategy), and category ordering makes it moot anyway - category ordering is
+  // unconditional and now places CountStrategy (OptimizationStrategy) before this strategy on every
+  // JVM, the opposite of what #5841 arranged. The net effect is still deterministic, just reversed:
+  // CountStrategy always wins now, so applyEdgeCountFilterOptimization can no longer fire for the
+  // where(outE(X).count().is(boundedPredicate)) shape. See docs/5840-gav-csr-labeled-gremlin-string-traversals.md
+  // ("Known trade-off") for why this is accepted rather than fixed here.
 }

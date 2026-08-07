@@ -73,7 +73,7 @@ asserts the compiled plan the same way the existing fluent-path tests do (`Trave
 All were confirmed to fail against the pre-fix code (labeled-hop cases) before the fix was applied, per
 TDD.
 
-## Known trade-off (flagged in review, deferred)
+## Known trade-off (flagged in review, later resolved during merge conflict with #5841)
 
 Reclassifying `ArcadeTraversalStrategy` also changes its ordering relative to TinkerPop's own
 `CountStrategy` (still `OptimizationStrategy`), not only against `GValueReductionStrategy`. Before this
@@ -115,6 +115,44 @@ modified, only added to. Both docstrings should be corrected together with whate
 `CountStrategy`-shape fix described above, since that is the change whose outcome they're describing.
 
 Recommended as separate follow-up work against #5841.
+
+### Resolution (2026-08-07, merge conflict with #5841)
+
+#5841 (PR #5897, "ArcadeTraversalStrategy declares CountStrategy ordering to stop non-deterministic
+install") merged into `main` before this PR. Its fix took the opposite approach analyzed above - an
+explicit `applyPost(CountStrategy.class)` forcing `ArcadeTraversalStrategy` to run BEFORE
+`CountStrategy` - and, as part of that fix, un-`@Disabled`ed `theDegreeFilterStepIsInstalled`, asserting
+the degree-check step DOES install.
+
+Merging `main` into this branch produced a real conflict in `ArcadeTraversalStrategy.java`, not just a
+textual one: the two fixes are mutually exclusive, since `CountStrategy` is guaranteed to run before
+`GValueReductionStrategy` (built into TinkerPop's `OptimizationStrategy` default `applyPost()`), so
+`ArcadeTraversalStrategy` cannot simultaneously run after `GValueReductionStrategy` (required by this
+issue) and before `CountStrategy` (what #5841's `applyPost()` arranged). The conflict was resolved by
+keeping this PR's `ProviderOptimizationStrategy` reclassification - it fixes a correctness/completeness
+gap (GAV/CSR not engaging at all for labeled string traversals), which outweighs #5841's determinism-only
+performance fix for one query shape - and dropping #5841's `applyPost()` override (it no longer
+type-checks against the `ProviderOptimizationStrategy` category anyway, and is moot: category ordering
+still makes the outcome deterministic, just in the opposite direction).
+
+That reversal meant `theDegreeFilterStepIsInstalled`, enabled by #5841's merge, would now deterministically
+fail rather than being a merely-stale-docstring problem. Confirmed empirically before touching it (ran red
+against the merged-but-unedited test: `plan was: GraphStep -> TraversalFilterStep`, i.e. the degree-check
+step never installs). Renamed to `theDegreeFilterStepDoesNotInstallForBoundedPredicates` and inverted to
+`.isFalse()`, with a javadoc explaining the ordering history and pointing back to this section. The
+companion `whenTheRewriteDoesNotInstallTinkerPopsCountStrategyExplainsWhy` (previously written to hold
+"either way" under the old nondeterministic ordering) was kept and renamed to
+`countStrategyExplainsWhyTheDegreeFilterStepDoesNotInstall`, simplified to a direct assertion now that the
+outcome is unconditionally deterministic. `characterizesTheRewriteNotEngagingViaTheStringEntryPoint` was
+left as-is per the analysis above - inverting it would fail for the unrelated `CountStrategy` reason, not
+because the placeholder gap this issue reports is unfixed.
+
+Verified: `ArcadeEdgeCountFilterStepTest` (9/9), plus `GremlinStringPathGAVTest`, `ArcadeGAVStepsTest`,
+`GremlinGAVTest`, `ArcadeFilterByTypeStepTest` (targeted, all green), plus a full
+`com.arcadedb.gremlin.*` unit-test sweep (159 tests, 0 failures, 0 errors).
+
+The `applyEdgeCountFilterOptimization`-extension follow-up recommended above remains open and unfiled -
+this resolution corrects the test to match the accepted trade-off, it does not implement that extension.
 
 More generally (flagged in review cycle 4, non-actionable): the category move doesn't only change
 ordering relative to `GValueReductionStrategy` and `CountStrategy`, it now runs
