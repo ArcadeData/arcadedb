@@ -111,6 +111,12 @@ class LSMVectorIndexGraphBuildProgressTest {
               .isBetween(0, s.totalNodes());
           // The old meter failed exactly here: it reported the whole corpus as done while inserts were still in
           // flight, so accesses ran past the corpus size.
+          //
+          // MAINTENANCE: this strict bound also encodes a JVector timing guarantee. It holds because
+          // GraphIndexBuilder.addGraphNode does insertionsInProgress.remove(nodeLevel) in a finally block, so a node
+          // has left insertsInProgress() by the time the engine counts it - never both at once. Verified against
+          // 4.0.0-rc.9; re-read it along with build() when bumping jvector.version, since a version that dropped the
+          // in-flight marker after returning would make a single sample read totalNodes + 1 and flake this.
           assertThat(s.vectorAccesses()).as("vector accesses %d of %d nodes", s.vectorAccesses(), s.totalNodes())
               .isLessThanOrEqualTo(s.totalNodes());
         }

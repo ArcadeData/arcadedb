@@ -206,7 +206,14 @@ public class VectorCache {
    * <b>The totals are therefore approximate.</b> Two threads whose ids land on the same stripe can lose an
    * increment between the read and the write, so a count can only ever come out low, never high. That is the right
    * trade for a diagnostic counter whose only consumers are {@code getStats()} and operator dashboards, and it is
-   * not a new weakening: {@code LongAdder.sum()} was never an atomic snapshot either.
+   * not a new weakening: {@code LongAdder.sum()} was never an atomic snapshot either. A dashboard deriving a hit
+   * <i>ratio</i> is unaffected; one asserting an exact hit <i>count</i> was relying on something this class no
+   * longer promises.
+   * <p>
+   * One stripe per thread is best-effort, not guaranteed. It is exact on the build path, where the fixed pool of
+   * ForkJoinPool workers has contiguous thread ids and {@code STRIPES} is sized to the core count. On the search
+   * path the same {@link #get} is called from arbitrary request threads whose ids can collide modulo
+   * {@code STRIPES}; that costs a few more lost increments on an already-approximate counter and nothing else.
    */
   private void count(final int counter) {
     final int i = (((int) Thread.currentThread().threadId()) & STRIPE_MASK) * STRIPE_LONGS + counter;
