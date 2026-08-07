@@ -474,6 +474,63 @@ class JSONTest extends TestHelper {
   }
 
   /**
+   * Issue #5935 (code review): a JSON boolean read through a numeric getter must raise JSONException. GSON's
+   * {@code getAsNumber()} answers {@code UnsupportedOperationException} for it today, but older releases cast
+   * straight to Number and raised {@code ClassCastException}, so both are screened.
+   */
+  @Test
+  void numericGettersOnBooleanThrowJSONException() {
+    final JSONObject json = new JSONObject().put("flag", true).put("array", List.of(true));
+
+    assertThatThrownBy(() -> json.getInt("flag")).isInstanceOf(JSONException.class).hasMessageContaining("flag");
+    assertThatThrownBy(() -> json.getLong("flag")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getFloat("flag")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getDouble("flag")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getBigDecimal("flag")).isInstanceOf(JSONException.class);
+
+    assertThatThrownBy(() -> json.getJSONArray("array").getNumber(0)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getJSONArray("array").getInt(0)).isInstanceOf(JSONException.class);
+  }
+
+  /**
+   * Issue #5935 (code review): GSON's {@code getAsBoolean()} falls back to {@code Boolean.parseBoolean()}, which never
+   * raises and answers {@code false} for anything that is not literally "true". A value that is not a boolean must be
+   * reported instead of silently degrading to {@code false}.
+   */
+  @Test
+  void getBooleanRejectsNonBooleanValues() {
+    final JSONObject json = new JSONObject()
+        .put("name", "Alice")
+        .put("count", 5)
+        .put("map", Map.of("a", 1))
+        .put("array", List.of(1, 2));
+
+    assertThatThrownBy(() -> json.getBoolean("name")).isInstanceOf(JSONException.class).hasMessageContaining("name");
+    assertThatThrownBy(() -> json.getBoolean("count")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getBoolean("map")).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> json.getBoolean("array")).isInstanceOf(JSONException.class);
+
+    // THE DEFAULTING VARIANT DOES NOT SWALLOW A TYPE MISMATCH EITHER: THE DEFAULT ONLY COVERS ABSENT/NULL
+    assertThatThrownBy(() -> json.getBoolean("name", true)).isInstanceOf(JSONException.class);
+    assertThat(json.getBoolean("absent", true)).isTrue();
+  }
+
+  /**
+   * Issue #5935 (code review): the textual form of a boolean stays accepted - configuration files and HTTP query
+   * strings routinely carry {@code "true"}/{@code "false"} as strings, and rejecting them would be a regression.
+   */
+  @Test
+  void getBooleanAcceptsTheTextualForm() {
+    final JSONObject json = new JSONObject("{\"a\": \"true\", \"b\": \"FALSE\", \"c\": true, \"d\": false}");
+
+    assertThat(json.getBoolean("a")).isTrue();
+    assertThat(json.getBoolean("b")).isFalse();
+    assertThat(json.getBoolean("c")).isTrue();
+    assertThat(json.getBoolean("d")).isFalse();
+    assertThat(json.getBoolean("a", false)).isTrue();
+  }
+
+  /**
    * Issue #5935 (related): the offending value quoted in a type-mismatch message must stay bounded, so a large payload
    * cannot be echoed back through the exception.
    */
@@ -483,6 +540,21 @@ class JSONTest extends TestHelper {
     final JSONObject json = new JSONObject().put("huge", huge);
 
     assertThatThrownBy(() -> json.getInt("huge")).isInstanceOf(JSONException.class)
+        .matches(e -> e.getMessage().length() < 200, "message is truncated");
+  }
+
+  /**
+   * Issue #5935 (code review): a property name travels in the request payload just like a value does, so it must be
+   * bounded in an error message on the same terms.
+   */
+  @Test
+  void errorMessageBoundsThePropertyName() {
+    final String hugeName = "k".repeat(10_000);
+    final JSONObject json = new JSONObject().put(hugeName, "text");
+
+    assertThatThrownBy(() -> json.getInt(hugeName)).isInstanceOf(JSONException.class)
+        .matches(e -> e.getMessage().length() < 200, "message is truncated");
+    assertThatThrownBy(() -> json.getString(hugeName + "-absent")).isInstanceOf(JSONException.class)
         .matches(e -> e.getMessage().length() < 200, "message is truncated");
   }
 

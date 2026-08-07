@@ -257,7 +257,7 @@ public class JSONObject implements Map<String, Object> {
     final JsonElement value = getNotNullElement(name);
     try {
       return value.getAsNumber().intValue();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(name, "int", value, e);
     }
   }
@@ -280,7 +280,7 @@ public class JSONObject implements Map<String, Object> {
     final JsonElement value = getNotNullElement(name);
     try {
       return value.getAsNumber().longValue();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(name, "long", value, e);
     }
   }
@@ -303,7 +303,7 @@ public class JSONObject implements Map<String, Object> {
     final JsonElement value = getNotNullElement(name);
     try {
       return value.getAsNumber().floatValue();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(name, "float", value, e);
     }
   }
@@ -326,7 +326,7 @@ public class JSONObject implements Map<String, Object> {
     final JsonElement value = getNotNullElement(name);
     try {
       return value.getAsNumber().doubleValue();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(name, "double", value, e);
     }
   }
@@ -341,17 +341,31 @@ public class JSONObject implements Map<String, Object> {
   }
 
   /**
-   * Returns the boolean value of the property with the given name.
+   * Returns the boolean value of the property with the given name. A JSON boolean and the strings {@code "true"} /
+   * {@code "false"} (case-insensitive) are accepted; any other value is a type mismatch.
    *
-   * @throws JSONException if the property is not found or is null.
+   * @throws JSONException if the property is not found, is null or is not a boolean.
    */
   public boolean getBoolean(final String name) {
     final JsonElement value = getNotNullElement(name);
-    try {
-      return value.getAsBoolean();
-    } catch (UnsupportedOperationException | IllegalStateException e) {
-      throw typeError(name, "boolean", value, e);
+    if (value.isJsonPrimitive()) {
+      final JsonPrimitive primitive = value.getAsJsonPrimitive();
+      if (primitive.isBoolean())
+        return primitive.getAsBoolean();
+
+      if (primitive.isString()) {
+        // TOLERATE THE TEXTUAL FORM: CONFIGURATION FILES AND QUERY STRINGS CARRY "true"/"false" AS STRINGS
+        final String text = primitive.getAsString();
+        if ("true".equalsIgnoreCase(text))
+          return true;
+        if ("false".equalsIgnoreCase(text))
+          return false;
+      }
     }
+
+    // GSON'S getAsBoolean() FALLS BACK TO Boolean.parseBoolean(), WHICH NEVER RAISES AND ANSWERS false FOR ANYTHING
+    // THAT IS NOT "true": WITHOUT THIS EXPLICIT CHECK A TYPE MISMATCH WOULD SILENTLY DEGRADE TO false (issue #5935)
+    throw typeError(name, "boolean", value, null);
   }
 
   /**
@@ -372,7 +386,7 @@ public class JSONObject implements Map<String, Object> {
     final JsonElement value = getNotNullElement(name);
     try {
       return value.getAsBigDecimal();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(name, "BigDecimal", value, e);
     }
   }
@@ -683,7 +697,7 @@ public class JSONObject implements Map<String, Object> {
 
     final JsonElement value = object.get(name);
     if (value == null)
-      throw new JSONException("JSONObject[" + name + "] not found");
+      throw new JSONException("JSONObject[" + truncate(name) + "] not found");
 
     return value;
   }
@@ -699,7 +713,7 @@ public class JSONObject implements Map<String, Object> {
   private JsonElement getNotNullElement(final String name) {
     final JsonElement value = getElement(name);
     if (value.isJsonNull())
-      throw new JSONException("JSONObject[" + name + "] is null");
+      throw new JSONException("JSONObject[" + truncate(name) + "] is null");
 
     return value;
   }
@@ -711,7 +725,7 @@ public class JSONObject implements Map<String, Object> {
    */
   private static JSONException typeError(final String name, final String expectedType, final JsonElement value,
       final RuntimeException cause) {
-    return new JSONException("JSONObject[" + name + "] is not a " + expectedType + " (" + describe(value) + ")", cause);
+    return new JSONException("JSONObject[" + truncate(name) + "] is not a " + expectedType + " (" + describe(value) + ")", cause);
   }
 
   /**
@@ -724,8 +738,17 @@ public class JSONObject implements Map<String, Object> {
     if (value.isJsonArray())
       return "JSON array";
 
-    final String text = value.toString();
-    return text.length() <= MAX_ERROR_VALUE_LENGTH ? text : text.substring(0, MAX_ERROR_VALUE_LENGTH) + "...";
+    return truncate(value.toString());
+  }
+
+  /**
+   * Caps a client-supplied fragment quoted in an error message. Property names travel in the request payload just like
+   * values do, so they are bounded on the same terms.
+   */
+  static String truncate(final String text) {
+    if (text == null || text.length() <= MAX_ERROR_VALUE_LENGTH)
+      return text;
+    return text.substring(0, MAX_ERROR_VALUE_LENGTH) + "...";
   }
 
   /**

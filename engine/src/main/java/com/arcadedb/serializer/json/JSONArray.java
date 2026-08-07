@@ -224,7 +224,7 @@ public class JSONArray implements Iterable<Object> {
     final JsonElement value = getNotNullElement(i);
     try {
       return value.getAsInt();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(i, "int", value, e);
     }
   }
@@ -238,7 +238,7 @@ public class JSONArray implements Iterable<Object> {
     final JsonElement value = getNotNullElement(i);
     try {
       return value.getAsLong();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(i, "long", value, e);
     }
   }
@@ -252,7 +252,7 @@ public class JSONArray implements Iterable<Object> {
     final JsonElement value = getNotNullElement(i);
     try {
       return value.getAsNumber();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(i, "number", value, e);
     }
   }
@@ -266,7 +266,7 @@ public class JSONArray implements Iterable<Object> {
     final JsonElement value = getNotNullElement(i);
     try {
       return value.getAsFloat();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(i, "float", value, e);
     }
   }
@@ -280,7 +280,7 @@ public class JSONArray implements Iterable<Object> {
     final JsonElement value = getNotNullElement(i);
     try {
       return value.getAsDouble();
-    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException e) {
+    } catch (UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(i, "double", value, e);
     }
   }
