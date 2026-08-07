@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -51,16 +52,20 @@ public class CypherTrimFunction implements StatelessFunction {
     checkArity(args);
     if (args.length == 1) {
       // Simple form: trim(source) or btrim(source)
-      if (args[0] == null)
+      final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+      if (source == null)
         return null;
-      return args[0].toString().strip();
+      return source.strip();
     }
 
     if (args.length == 2) {
-      // 2-arg form: btrim(source, trimCharacter)
-      if (args[0] == null || args[1] == null)
+      // 2-arg form: btrim(source, trimCharacter). The primary argument is type-checked before a null
+      // trim character decides the answer, so an out-of-domain primary argument is still reported even
+      // when args[1] happens to be null (issue #5798 review: btrim(5, null) must still be a type error,
+      // not a silent null).
+      final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+      if (source == null || args[1] == null)
         return null;
-      final String source = args[0].toString();
       final String trimChar = args[1].toString();
       if (trimChar.isEmpty())
         return source.strip();
@@ -71,11 +76,9 @@ public class CypherTrimFunction implements StatelessFunction {
       // SQL-style: trim(BOTH/LEADING/TRAILING char FROM string)
       final String mode = args[0] != null ? args[0].toString() : null;
       final String trimChar = args[1] != null ? args[1].toString() : null;
-      final String source = args[2] != null ? args[2].toString() : null;
 
-      if (source == null)
-        return null;
-      if (trimChar == null)
+      final String source = CypherFunctionHelper.requireStringArgument(args[2], getName());
+      if (source == null || trimChar == null)
         return null;
       if (trimChar.isEmpty()) {
         return switch (mode) {

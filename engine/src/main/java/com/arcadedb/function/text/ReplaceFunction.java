@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -46,8 +47,12 @@ public class ReplaceFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null || args[1] == null || args[2] == null)
+    // The primary argument is type-checked before a null secondary argument decides the answer, so an
+    // out-of-domain primary argument is still reported even when args[1] or args[2] happens to be null
+    // (issue #5798 review: replace(5, null, 'b') must still be a type error, not a silent null).
+    final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+    if (source == null || args[1] == null || args[2] == null)
       return null;
-    return args[0].toString().replace(args[1].toString(), args[2].toString());
+    return source.replace(args[1].toString(), args[2].toString());
   }
 }

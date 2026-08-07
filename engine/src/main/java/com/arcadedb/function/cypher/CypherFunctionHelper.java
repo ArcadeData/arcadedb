@@ -58,6 +58,11 @@ public final class CypherFunctionHelper {
   public static final String NUMERIC_DOMAIN = "an INTEGER or a FLOAT";
 
   /**
+   * Input domain shared by every function declared as {@code f(input :: STRING)}, phrased for error messages.
+   */
+  public static final String STRING_DOMAIN = "a STRING";
+
+  /**
    * Value of {@link NumericSignature#numericArgs()} meaning "every argument this function takes is numeric", which is the
    * case for the whole family except {@code round()}.
    */
@@ -198,6 +203,28 @@ public final class CypherFunctionHelper {
       return number;
 
     throw typeMismatch(functionName, NUMERIC_DOMAIN, value);
+  }
+
+  /**
+   * Resolves the primary text argument of a STRING-only Cypher function - {@code toUpper()}, {@code toLower()},
+   * {@code trim()}/{@code btrim()}, {@code lTrim()}, {@code rTrim()}, {@code split()}, {@code replace()} - to a String.
+   * <p>
+   * Cypher declares those functions as {@code f(input :: STRING)}, so silently converting any other value via
+   * {@code Object.toString()} made {@code toUpper(5)} and the explicit conversion {@code toUpper(toString(5))}
+   * observationally identical, hiding an invalid type usage as a "successful" result (issue #5798). {@code null} is
+   * the one exception, because Cypher null semantics propagate it through every function.
+   *
+   * @return the argument as a String, or {@code null} when the argument itself is {@code null}
+   *
+   * @throws CommandSemanticException when the argument is neither {@code null} nor a String
+   */
+  public static String requireStringArgument(final Object value, final String functionName) {
+    if (value == null)
+      return null;
+    if (value instanceof String s)
+      return s;
+
+    throw typeMismatch(functionName, STRING_DOMAIN, value);
   }
 
   /**

@@ -2141,7 +2141,9 @@ public class CypherSemanticValidator {
    * outside the function's input domain. The functions repeat the check at runtime for values known only then; doing it here
    * as well matches Neo4j, which fails {@code MATCH (n:Nothing) RETURN size(42)} even though the query matches no row and the
    * function would never run. Same message and same exception as the runtime check, so the client sees one behaviour.
-   * See issues #5477 (size) and #5476 (head, last, tail). The numeric family is handled by
+   * See issues #5477 (size), #5476 (head, last, tail) and #5798 (toUpper, toLower, trim, lTrim, rTrim - their
+   * single-argument spelling; split() and replace() are never called with one argument, so they rely on the runtime
+   * check in {@link CypherFunctionHelper#requireStringArgument} alone). The numeric family is handled by
    * {@link #checkStaticallyKnownNumericArgs}, which covers every argument rather than only a single one.
    */
   private void checkStaticallyKnownArgType(final String functionName, final Expression arg) {
@@ -2166,9 +2168,41 @@ public class CypherSemanticValidator {
       case "tail":
         // LIST-only: even a string literal is a type error.
         throw CypherFunctionHelper.typeMismatch(functionName, "a LIST<ANY>", isMap ? Map.of() : literal);
+      case "toupper":
+      case "upper":
+      case "tolower":
+      case "lower":
+      case "trim":
+      case "btrim":
+      case "ltrim":
+      case "rtrim":
+        // STRING-only primary argument (issue #5798): neither a MAP nor any other non-STRING literal is in domain.
+        // Named after the executor's own getName() (e.g. "toUpper", not the parsed-and-lower-cased "toupper"), the
+        // same spelling the runtime check in CypherFunctionHelper#requireStringArgument uses, so the client sees one
+        // message whichever path caught the mistake.
+        if (isMap || !(literal instanceof CharSequence))
+          throw CypherFunctionHelper.typeMismatch(canonicalStringFunctionName(functionName), CypherFunctionHelper.STRING_DOMAIN,
+              isMap ? Map.of() : literal);
+        break;
       default:
         break;
     }
+  }
+
+  /**
+   * Maps the parsed-and-lower-cased name of a STRING-only function (and its aliases) to the spelling its executor's
+   * {@code getName()} reports, so {@link #checkStaticallyKnownArgType}'s message matches the runtime check in
+   * {@link CypherFunctionHelper#requireStringArgument} regardless of which one caught the mistake (issue #5798).
+   */
+  private static String canonicalStringFunctionName(final String functionName) {
+    return switch (functionName) {
+      case "toupper", "upper" -> "toUpper";
+      case "tolower", "lower" -> "toLower";
+      case "ltrim" -> "lTrim";
+      case "rtrim" -> "rTrim";
+      case "btrim" -> "trim";
+      default -> functionName;
+    };
   }
 
   /**
