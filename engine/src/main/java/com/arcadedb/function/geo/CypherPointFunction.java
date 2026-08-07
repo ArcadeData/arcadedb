@@ -44,8 +44,9 @@ import java.util.Map;
  * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
  * when the string parses cleanly as a decimal (e.g. a node whose {@code lat} property was
  * declared as {@link com.arcadedb.schema.Type#STRING}). When coercion is impossible the
- * function raises a {@link CommandExecutionException} naming the offending key and value
- * rather than leaking a raw {@link ClassCastException} (issue #4305).</p>
+ * function raises a {@link CommandSemanticException} naming the offending key and value
+ * rather than leaking a raw {@link ClassCastException} (issue #4305) or reporting a client
+ * argument error as an internal server fault (issue #5794).</p>
  */
 public class CypherPointFunction implements StatelessFunction {
   @Override
@@ -159,9 +160,11 @@ public class CypherPointFunction implements StatelessFunction {
   /**
    * Returns the numeric value of {@code value}, coercing a numeric {@link String} when the
    * underlying property is typed as STRING but the contents are a clean decimal literal.
-   * Throws a {@link CommandExecutionException} that names {@code key} and {@code value}
-   * when coercion is impossible, so the user sees a clear error instead of a raw
-   * {@link ClassCastException} (issue #4305).
+   * Throws a {@link CommandSemanticException} that names {@code key} and {@code value}
+   * when coercion is impossible, so the user sees a clear client-facing error (HTTP 400)
+   * instead of a raw {@link ClassCastException} (issue #4305) or an internal-fault-looking
+   * {@link CommandExecutionException} (HTTP 500, issue #5794): a non-numeric coordinate is
+   * determined entirely by the supplied argument, so it is a client error either way.
    */
   private static double coerceCoordinate(final String key, final Object value) {
     if (value instanceof Number n)
@@ -170,11 +173,11 @@ public class CypherPointFunction implements StatelessFunction {
       try {
         return Double.parseDouble(s.trim());
       } catch (final NumberFormatException ignored) {
-        throw new CommandExecutionException(
+        throw new CommandSemanticException(
             "point() '" + key + "' must be numeric, found String value '" + s + "'");
       }
     }
-    throw new CommandExecutionException(
+    throw new CommandSemanticException(
         "point() '" + key + "' must be numeric, found " + describe(value));
   }
 
