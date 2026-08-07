@@ -31,12 +31,15 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
  * Regression test for issue #5867: the legacy JavaCC/JJTree-generated SQL parser and lexer
- * ({@code SqlParser}, {@code SqlParserTokenManager}, {@code JJTSqlParserState}), plus the token/lexer support
- * classes only they and each other depended on ({@code Token}, {@code ParseException}, {@code TokenMgrError},
- * {@code TokenMgrException}, {@code CharStream}, {@code JavaCharStream}, {@code SimpleCharStream}), were
- * unreachable at runtime - {@link StatementCache} has always parsed through {@link SQLAntlrParser} - and were
- * removed, along with the {@code SQL_PARSER_IMPLEMENTATION} config it never actually honored. This test guards
- * against reintroducing any of that, and against {@link StatementCache} silently gaining a second parser field.
+ * ({@code SqlParser}, {@code SqlParserTokenManager}, {@code JJTSqlParserState}), the token/lexer support classes
+ * only they and each other depended on ({@code Token}, {@code ParseException}, {@code TokenMgrError},
+ * {@code TokenMgrException}, {@code CharStream}, {@code JavaCharStream}, {@code SimpleCharStream}), and finally
+ * {@code SqlParserTreeConstants} itself (its two node-id markers, {@code JJTLIMIT}/{@code JJTTIMEOUT}, were passed
+ * only to {@link SimpleNode}'s empty constructor, so every call site now uses the {@code -1} convention already
+ * used everywhere else in this package) were all unreachable at runtime - {@link StatementCache} has always parsed
+ * through {@link SQLAntlrParser} - and were removed, along with the {@code SQL_PARSER_IMPLEMENTATION} config it
+ * never actually honored. This test guards against reintroducing any of that, and against {@link StatementCache}
+ * silently gaining a second parser field.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -48,6 +51,7 @@ class LegacyJavaCcParserRemovalTest {
         "com.arcadedb.query.sql.parser.SqlParser",
         "com.arcadedb.query.sql.parser.SqlParserTokenManager",
         "com.arcadedb.query.sql.parser.JJTSqlParserState",
+        "com.arcadedb.query.sql.parser.SqlParserTreeConstants",
         "com.arcadedb.query.sql.parser.Token",
         "com.arcadedb.query.sql.parser.ParseException",
         "com.arcadedb.query.sql.parser.TokenMgrError",
@@ -92,6 +96,9 @@ class LegacyJavaCcParserRemovalTest {
 
   @Test
   void statementCacheStillParsesThroughAntlr() {
+    // a null Database is safe here only because SQLAntlrParser never dereferences it for a plain
+    // "select ... limit ... timeout" - it is used to resolve schema-dependent constructs (e.g. type names),
+    // none of which this statement touches.
     final StatementCache cache = new StatementCache(null, 2);
     final Statement statement = cache.get("select from foo limit 10 timeout 5000");
 
@@ -102,9 +109,7 @@ class LegacyJavaCcParserRemovalTest {
   }
 
   @Test
-  void survivingConstantHoldersStillExposeTheirLiveConsumersNeeds() {
-    assertThat(SqlParserTreeConstants.JJTLIMIT).isNotEqualTo(SqlParserTreeConstants.JJTTIMEOUT);
-
+  void survivingConstantHolderStillExposesItsLiveConsumerNeeds() {
     final boolean hasSelectKeyword = Arrays.stream(SqlParserConstants.tokenImage)
         .anyMatch(image -> image.equals("\"select\""));
     assertThat(hasSelectKeyword).as("tokenImage must still expose the SELECT keyword used by FunctionReferenceGenerator")
