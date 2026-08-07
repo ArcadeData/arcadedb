@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 
@@ -267,5 +268,60 @@ class PackStreamBoundsTest {
         .isExactlyInstanceOf(IOException.class)
         .hasMessageContaining("STRING_32")
         .hasMessageContaining("maximum allowed");
+  }
+
+  // ============ Misconfigured-limit fallback (GlobalConfiguration below the usable floor) ============
+
+  /**
+   * A {@code maxDepth} of 0 (or negative) would reject essentially every real BOLT message outright, since even
+   * a bare HELLO's extra map is one level deeper than the top-level struct itself. The config-reading
+   * constructor must fall back to the built-in default rather than enforcing the misconfigured value literally.
+   */
+  @Test
+  void depthBelowUsableFloorFallsBackToDefaultInsteadOfRejectingEveryMessage() throws IOException {
+    final int original = GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.getValueAsInteger();
+    GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.setValue(0);
+    try {
+      final PackStreamWriter writer = new PackStreamWriter();
+      writer.writeList(List.of(1L, 2L, 3L)); // one level of nesting: would be rejected outright by a literal maxDepth=0
+
+      final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+      assertThat(reader.readValue()).isEqualTo(List.of(1L, 2L, 3L));
+    } finally {
+      GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.setValue(original);
+    }
+  }
+
+  @Test
+  void maxValueLengthBelowUsableFloorFallsBackToDefault() throws IOException {
+    final int original = GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.getValueAsInteger();
+    GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.setValue(0);
+    try {
+      final PackStreamWriter writer = new PackStreamWriter();
+      writer.writeString("a".repeat(70_000)); // forces STRING_32; would be rejected outright by a literal maxValueLength=0
+
+      final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+      assertThat(reader.readValue()).isEqualTo("a".repeat(70_000));
+    } finally {
+      GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.setValue(original);
+    }
+  }
+
+  @Test
+  void maxElementsBelowUsableFloorFallsBackToDefault() throws IOException {
+    final int original = GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.getValueAsInteger();
+    GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.setValue(0);
+    try {
+      final PackStreamWriter writer = new PackStreamWriter();
+      final List<Object> list = new ArrayList<>();
+      for (int i = 0; i < 70_000; i++)
+        list.add((long) i); // forces LIST_32; would be rejected outright by a literal maxElements=0
+      writer.writeList(list);
+
+      final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+      assertThat(reader.readValue()).isEqualTo(list);
+    } finally {
+      GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.setValue(original);
+    }
   }
 }

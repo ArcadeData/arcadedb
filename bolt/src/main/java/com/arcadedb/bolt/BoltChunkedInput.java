@@ -19,11 +19,15 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * Handles chunked message framing for BOLT protocol input.
@@ -33,8 +37,30 @@ public class BoltChunkedInput {
   private final DataInputStream in;
   private final int             maxMessageSize;
 
+  // See PackStreamReader.WARNED_MISCONFIGURED_LIMITS: bounds the misconfiguration WARNING to once per JVM
+  // rather than once per connection (issue #5918 review).
+  private static final Set<GlobalConfiguration> WARNED_MISCONFIGURED_LIMITS = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Reads {@link GlobalConfiguration#BOLT_MAX_MESSAGE_SIZE}, falling back to its built-in default (with a
+   * warning) if configured below 1: a limit that low would reject essentially every message outright, so it is
+   * treated as a misconfiguration rather than an intentional (if impractical) lockdown.
+   */
+  private static int sanitizedMaxMessageSize() {
+    final int configured = GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getValueAsInteger();
+    if (configured < 1) {
+      final int fallback = ((Number) GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getDefValue()).intValue();
+      if (WARNED_MISCONFIGURED_LIMITS.add(GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE))
+        LogManager.instance().log(BoltChunkedInput.class, Level.WARNING,
+            "BOLT: '%s' is set to %d, below the minimum usable value (1); falling back to the default (%d)",
+            GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getKey(), configured, fallback);
+      return fallback;
+    }
+    return configured;
+  }
+
   public BoltChunkedInput(final InputStream in) {
-    this(in, GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getValueAsInteger());
+    this(in, sanitizedMaxMessageSize());
   }
 
   /**

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -275,6 +277,29 @@ class BoltChunkedIOTest {
     final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input), 10);
 
     assertThat(chunkedInput.readMessage()).containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+  }
+
+  /**
+   * A {@code maxMessageSize} of 0 (or negative) would reject essentially every real BOLT message outright. The
+   * config-reading constructor must fall back to the built-in default rather than enforcing the misconfigured
+   * value literally.
+   */
+  @Test
+  void maxMessageSizeBelowUsableFloorFallsBackToDefault() throws Exception {
+    final int original = GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getValueAsInteger();
+    GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.setValue(0);
+    try {
+      final byte[] input = {
+          0x00, 0x0A, // chunk size = 10; would be rejected outright by a literal maxMessageSize=0
+          1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+          0x00, 0x00  // terminator
+      };
+      final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
+
+      assertThat(chunkedInput.readMessage()).containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+    } finally {
+      GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.setValue(original);
+    }
   }
 
   // ============ Round-trip tests ============

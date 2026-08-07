@@ -19,6 +19,7 @@
 package com.arcadedb.bolt.packstream;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -30,6 +31,9 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * PackStream reader for Neo4j BOLT protocol binary deserialization.
@@ -87,10 +91,35 @@ public class PackStreamReader {
   private final int maxElements;
   private final int maxDepth;
 
+  // A misconfigured protocol-limit setting is re-read (and re-validated) on every new PackStreamReader, since
+  // every BOLT message constructs a fresh one and the value can change at runtime; this only bounds the WARNING
+  // about it to once per setting per JVM, so a busy server churning through messages against a static bad value
+  // does not flood the log (mirrors RedisNetworkExecutor.sanitizedLimit, issue #5918 review).
+  private static final Set<GlobalConfiguration> WARNED_MISCONFIGURED_LIMITS = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Reads a protocol-limit setting, falling back to its built-in default (with a warning) if configured below 1.
+   * A limit of 0 or negative would reject essentially every message outright - e.g. {@code maxDepth=0} rejects
+   * even a bare HELLO struct, since its extra map is already one level deeper than the top-level struct itself -
+   * so it is treated as a misconfiguration rather than an intentional (if impractical) lockdown.
+   */
+  private static int sanitizedLimit(final GlobalConfiguration setting) {
+    final int configured = setting.getValueAsInteger();
+    if (configured < 1) {
+      final int fallback = ((Number) setting.getDefValue()).intValue();
+      if (WARNED_MISCONFIGURED_LIMITS.add(setting))
+        LogManager.instance().log(PackStreamReader.class, Level.WARNING,
+            "BOLT PackStream: '%s' is set to %d, below the minimum usable value (1); falling back to the default (%d)",
+            setting.getKey(), configured, fallback);
+      return fallback;
+    }
+    return configured;
+  }
+
   public PackStreamReader(final byte[] data) {
-    this(data, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.getValueAsInteger(),
-        GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.getValueAsInteger(),
-        GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.getValueAsInteger());
+    this(data, sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH),
+        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS),
+        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH));
   }
 
   /**
@@ -113,9 +142,9 @@ public class PackStreamReader {
    * that bound to a false sense of safety rather than the exact one it provides today.
    */
   public PackStreamReader(final DataInputStream in) {
-    this(in, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.getValueAsInteger(),
-        GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.getValueAsInteger(),
-        GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.getValueAsInteger());
+    this(in, sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH),
+        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS),
+        sanitizedLimit(GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH));
   }
 
   /**
