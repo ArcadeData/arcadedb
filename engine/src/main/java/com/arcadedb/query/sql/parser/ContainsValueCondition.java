@@ -45,7 +45,7 @@ public class ContainsValueCondition extends BooleanExpression {
     if (leftValue instanceof Map map) {
       if (condition != null) {
         for (final Object o : map.values()) {
-          if (condition.evaluate(o, context)) {
+          if (isTrue(condition.evaluate(o, context))) {
             return true;
           }
         }
@@ -65,7 +65,7 @@ public class ContainsValueCondition extends BooleanExpression {
     if (leftValue instanceof Map map) {
       if (condition != null) {
         for (final Object o : map.values()) {
-          if (condition.evaluate(o, context)) {
+          if (isTrue(condition.evaluate(o, context))) {
             return true;
           }
         }
