@@ -50,6 +50,7 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
   private final BufferedReader reader;
   private final BatchRecord    record;
   private       int            lineNumber;
+  private       long           linesSkipped;
   private       boolean        ready;
 
   public JsonlBatchRecordStream(final InputStream input) {
@@ -70,8 +71,10 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
       lineNumber++;
 
       // Skip blank lines
-      if (line.isBlank())
+      if (line.isBlank()) {
+        linesSkipped++;
         continue;
+      }
 
       parseLine(line);
       ready = true;
@@ -88,6 +91,16 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
   @Override
   public int getLineNumber() {
     return lineNumber;
+  }
+
+  @Override
+  public long getLinesRead() {
+    return lineNumber;
+  }
+
+  @Override
+  public long getLinesSkipped() {
+    return linesSkipped;
   }
 
   @Override

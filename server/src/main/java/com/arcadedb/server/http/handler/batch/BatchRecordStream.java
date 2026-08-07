@@ -42,6 +42,19 @@ public interface BatchRecordStream extends AutoCloseable {
    */
   int getLineNumber();
 
+  /**
+   * Physical lines consumed from the input so far, including the ones that carried no record. Together with
+   * {@link #getLinesSkipped()} it lets the caller prove that every line it read became a record: a load that
+   * quietly loses one is otherwise indistinguishable from a payload that never had it (issue #5618).
+   */
+  long getLinesRead();
+
+  /**
+   * Lines consumed that carried no record: blank lines, and for CSV the header and {@code ---} separator rows.
+   * A well-formed load satisfies {@code getLinesRead() == vertices + edges + getLinesSkipped()}.
+   */
+  long getLinesSkipped();
+
   @Override
   void close() throws IOException;
 }

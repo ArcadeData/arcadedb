@@ -210,6 +210,53 @@ class RaftBatchEndpointIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * Issue #5618: a batch that lands on a FOLLOWER is relayed to the leader over a second HTTP request, and the
+   * relay used to declare no length for the body it was passing on. A chunked body announces nothing, which turns
+   * off the leader's own truncation check ({@code PostBatchHandler.bodyEndedEarly} gives up as soon as there is no
+   * announced length), so a relayed upload that ended early came back as a 200 with a partial count - the one
+   * outcome issue #5470 exists to prevent, on the one path it never covered.
+   * <p>
+   * What that costs is only visible from the outside as a load that is quietly short, so this pins the property
+   * that matters: a payload sent through a follower arrives at the leader whole, and the leader accounts for every
+   * line of it. The mechanics of the relayed request - the declared length, the pinned HTTP/1.1, the body that
+   * refuses to be sent twice - are pinned by {@code PostBatchHandlerForwardRequestTest}.
+   */
+  @Test
+  void aBatchRelayedByAFollowerArrivesWhole() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+
+    createSchema(leaderIndex);
+    waitForReplicationIsCompleted(followerIndex);
+
+    final int vertices = 500;
+    final int edges = 250;
+    final StringBuilder body = new StringBuilder();
+    for (int i = 0; i < vertices; i++)
+      body.append("{\"@type\":\"vertex\",\"@class\":\"").append(VERTEX_TYPE).append("\",\"@id\":\"relay")
+          .append(i).append("\",\"node_id\":\"relay").append(i).append("\"}\n");
+    for (int i = 0; i < edges; i++)
+      body.append("{\"@type\":\"edge\",\"@class\":\"").append(EDGE_TYPE).append("\",\"@from\":\"relay")
+          .append(i).append("\",\"@to\":\"relay").append(vertices - 1 - i).append("\"}\n");
+
+    final HttpResult result = postBatch(followerIndex, body.toString(), "vertexBatchSize=100");
+    assertThat(result.statusCode()).as("relayed batch must succeed\nbody=%s", result.body()).isEqualTo(200);
+
+    final JSONObject json = new JSONObject(result.body());
+    assertThat(json.getLong("verticesCreated")).isEqualTo(vertices);
+    assertThat(json.getLong("edgesCreated")).isEqualTo(edges);
+    assertThat(json.getLong("linesRead")).isEqualTo(vertices + edges);
+    assertThat(json.getLong("linesSkipped")).isZero();
+
+    assertClusterConsistency();
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getServerDatabase(i, getDatabaseName()).countType(VERTEX_TYPE, true))
+          .as("Server %d must hold every relayed vertex", i)
+          .isEqualTo(vertices);
+  }
+
   private void createSchema(final int serverIndex) throws Exception {
     httpCommand(serverIndex, "CREATE VERTEX TYPE " + VERTEX_TYPE + " IF NOT EXISTS");
     httpCommand(serverIndex, "CREATE PROPERTY " + VERTEX_TYPE + ".node_id IF NOT EXISTS STRING");
