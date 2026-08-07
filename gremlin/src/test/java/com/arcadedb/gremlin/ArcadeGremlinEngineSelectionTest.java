@@ -26,7 +26,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,12 +33,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Covers engine selection and the parse-versus-runtime error classification, which decides HTTP 400
- * against HTTP 500 (issues #5201 and #5219), plus the process-wide timeout field.
+ * against HTTP 500 (issues #5201 and #5219), plus the removal of the dead, process-wide timeout API
+ * (issue #5842).
  */
 class ArcadeGremlinEngineSelectionTest {
 
   private ArcadeGraph graph;
-  private Long        originalTimeout;
 
   // NOTE: no save/restore of GlobalConfiguration.GREMLIN_ENGINE here. Every test in this class writes
   // the PER-DATABASE ContextConfiguration (((Database) graph.getDatabase()).getConfiguration().setValue(...)),
@@ -47,51 +46,18 @@ class ArcadeGremlinEngineSelectionTest {
   // something these tests never mutate. It is also unnecessary: setup()/teardown() open a fresh
   // ArcadeGraph backed by a freshly created database on every test and graph.drop() deletes that
   // database's files afterwards, so the per-database config from one test can never carry over to the
-  // next. What genuinely IS process-wide and must be restored is ArcadeGremlin.timeout (see
-  // originalTimeout below and characterizesTheProcessWideTimeoutLeak).
+  // next.
   @BeforeEach
   void setup() {
     graph = ArcadeGraph.open("./target/test-gremlin-engine");
     graph.getDatabase().getSchema().createVertexType("Person");
     graph.getDatabase().transaction(() -> graph.addVertex("Person").property("name", "Alice"));
-    originalTimeout = graph.gremlin("g.V().count()").getTimeout();
   }
 
   @AfterEach
   void teardown() {
-    // The drop must happen even if the restore throws. Otherwise a failing restore leaves
-    // ./target/test-gremlin-engine on disk and the NEXT run fails in setup() against a database that
-    // already has the Person type, masking the real cause behind a confusing cascade.
-    try {
-      restoreProcessWideTimeout();
-    } finally {
-      if (graph != null)
-        graph.drop();
-    }
-  }
-
-  /**
-   * Restores {@code ArcadeGremlin.timeout} to whatever it held before this test, INCLUDING when that
-   * value was {@code null}, which is its default.
-   * <p>
-   * Reflection is required rather than the public setter: {@code setTimeout(long, TimeUnit)} takes a
-   * primitive and therefore cannot express null. Restoring only when the previous value was non-null
-   * would leave {@code characterizesTheProcessWideTimeoutLeak}'s 1234 in place for the remainder of
-   * the Surefire fork (forkCount=1, reuseForks=true), leaking into every later test class. That is
-   * harmless only for as long as nothing reads the field - so the isolation guarantee here must not
-   * depend on the very defect this class characterizes staying unfixed.
-   * <p>
-   * If the field is ever made non-static (the fix this class asks for), this call throws and the
-   * test class must be updated alongside it. Failing loudly is the intent.
-   */
-  private void restoreProcessWideTimeout() {
-    try {
-      final Field field = ArcadeGremlin.class.getDeclaredField("timeout");
-      field.setAccessible(true);
-      field.set(null, originalTimeout);
-    } catch (final ReflectiveOperationException e) {
-      throw new IllegalStateException("Unable to restore the process-wide ArcadeGremlin.timeout", e);
-    }
+    if (graph != null)
+      graph.drop();
   }
 
   @Test
@@ -147,26 +113,28 @@ class ArcadeGremlinEngineSelectionTest {
   }
 
   /**
-   * CHARACTERIZATION TEST OF A KNOWN DEFECT. This asserts the WRONG behavior on purpose, to pin it
-   * and to detect if it silently changes. It is not a statement of the intended contract.
+   * Regression test for issue #5842: {@code ArcadeGremlin.setTimeout(long, TimeUnit)} /
+   * {@code getTimeout()} were a complete no-op (nothing ever read the backing field) and, worse, the
+   * backing field was {@code private static Long} assigned by an instance method, so a timeout set on
+   * one graph leaked to every {@code ArcadeGremlin} in the process.
    * <p>
-   * {@code ArcadeGremlin.timeout} is declared {@code private static Long} but assigned by the
-   * INSTANCE method {@code setTimeout(long, TimeUnit)}, so a timeout set on one graph applies to
-   * every ArcadeGremlin in the process.
-   * <p>
-   * Tracked as issue #5842, which also records that nothing reads the field, so {@code setTimeout}
-   * is currently a no-op regardless of the static-versus-instance question.
-   * <p>
-   * WHEN THE FIELD IS MADE NON-STATIC, INVERT THIS TEST: the expectation becomes that {@code second}
-   * does NOT observe {@code first}'s timeout, and the method should be renamed accordingly.
+   * No caller anywhere in the codebase used this API (verified by a repo-wide search), and there is no
+   * existing hook in {@code executeStatement()} to actually enforce a per-query Gremlin timeout, so the
+   * dead API was removed outright (YAGNI) rather than wired up speculatively. This test guards against
+   * it silently reappearing.
    */
   @Test
-  void characterizesTheProcessWideTimeoutLeak() {
-    final ArcadeGremlin first = graph.gremlin("g.V().count()");
-    final ArcadeGremlin second = graph.gremlin("g.V().count()");
-    first.setTimeout(1234, TimeUnit.MILLISECONDS);
-    assertThat(second.getTimeout())
-        .as("timeout leaked across ArcadeGremlin instances via the static field")
-        .isEqualTo(1234L);
+  void setTimeoutAndGetTimeoutAreNoLongerPartOfThePublicApi() {
+    assertThatThrownBy(() -> ArcadeGremlin.class.getDeclaredMethod("setTimeout", long.class, TimeUnit.class))
+        .as("setTimeout(long, TimeUnit) must not exist: it was a no-op that also leaked across instances")
+        .isInstanceOf(NoSuchMethodException.class);
+
+    assertThatThrownBy(() -> ArcadeGremlin.class.getDeclaredMethod("getTimeout"))
+        .as("getTimeout() must not exist alongside a removed setTimeout()")
+        .isInstanceOf(NoSuchMethodException.class);
+
+    assertThatThrownBy(() -> ArcadeGremlin.class.getDeclaredField("timeout"))
+        .as("the process-wide static 'timeout' field must be gone")
+        .isInstanceOf(NoSuchFieldException.class);
   }
 }

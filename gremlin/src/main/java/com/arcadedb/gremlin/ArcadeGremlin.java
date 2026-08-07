@@ -50,7 +50,6 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropert
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -60,7 +59,6 @@ import java.util.logging.Level;
  */
 
 public class ArcadeGremlin extends ArcadeQuery {
-  private static Long timeout;
 
   protected ArcadeGremlin(final ArcadeGraph graph, final String query) {
     super(graph, query);
@@ -245,15 +243,6 @@ public class ArcadeGremlin extends ArcadeQuery {
     } catch (Exception e) {
       throw new CommandParsingException("Error on parsing command", e);
     }
-  }
-
-  public Long getTimeout() {
-    return timeout;
-  }
-
-  public ArcadeQuery setTimeout(final long timeout, final TimeUnit unit) {
-    ArcadeGremlin.timeout = unit.toMillis(timeout);
-    return this;
   }
 
   protected String getEffectiveEngine() {
