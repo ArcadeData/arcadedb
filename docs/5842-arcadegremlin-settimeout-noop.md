@@ -117,3 +117,29 @@ classpath):
   `GremlinLangScriptEngine`/`GremlinGroovyScriptEngine` evaluation or the
   resulting `GraphTraversal` iteration) as a new, tested feature, not
   resurrected as an inert setter.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5896
+
+## Review cycles
+
+- **Cycle 1** - head SHA `197cd1b3638dc2a7cdaf18917699df71e1200935` (initial
+  push). `claude[bot]` posted a review comment: "Clean, well-scoped removal
+  ... Overall: safe, well-tested removal of genuinely dead and misleading
+  API. LGTM." One cosmetic nit was raised (a blank line left between the
+  class declaration and the constructor after the field removal) and
+  explicitly called "not worth blocking on" by the reviewer itself - no
+  actionable items, working tree left unchanged. Codacy's automated check
+  also reported "Up to standards". Loop exited on cycle 1 with a clean
+  approval; no further commits were needed.
+
+## Deferred items
+
+None. The only reviewer note (the cosmetic blank-line nit) was explicitly
+marked non-blocking by the reviewer, so nothing was deferred for developer
+follow-up.
+
+## Final state
+
+`clean-approval` (1 review cycle).
