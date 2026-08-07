@@ -178,6 +178,43 @@ class PackStreamBoundsTest {
         .hasMessageContaining("remaining message bytes");
   }
 
+  /**
+   * As {@link #declaredListSizeExceedingActualRemainingBytesRejected}, for MAP_32 - checkElementCount is shared
+   * code between LIST_32/MAP_32, but each marker's decoding branch is a separate call site worth covering.
+   */
+  @Test
+  void declaredMapSizeExceedingActualRemainingBytesRejected() {
+    final byte[] data = { (byte) 0xDA, 0x00, 0x00, 0x03, (byte) 0xE8 }; // MAP_32, size = 1000
+    final PackStreamReader reader = new PackStreamReader(data);
+
+    assertThatThrownBy(reader::readValue)
+        .isExactlyInstanceOf(IOException.class)
+        .hasMessageContaining("remaining message bytes");
+  }
+
+  /**
+   * As {@link #negativeBytes32LengthRejectedWithClearProtocolError}, for a negative LIST_32/MAP_32 declared size.
+   */
+  @Test
+  void negativeListSizeRejectedWithClearProtocolError() {
+    final byte[] data = { (byte) 0xD6, (byte) 0x80, 0x00, 0x00, 0x00 }; // LIST_32, size = Integer.MIN_VALUE
+    final PackStreamReader reader = new PackStreamReader(data);
+
+    assertThatThrownBy(reader::readValue)
+        .isExactlyInstanceOf(IOException.class)
+        .hasMessageContaining("negative size");
+  }
+
+  @Test
+  void negativeMapSizeRejectedWithClearProtocolError() {
+    final byte[] data = { (byte) 0xDA, (byte) 0x80, 0x00, 0x00, 0x00 }; // MAP_32, size = Integer.MIN_VALUE
+    final PackStreamReader reader = new PackStreamReader(data);
+
+    assertThatThrownBy(reader::readValue)
+        .isExactlyInstanceOf(IOException.class)
+        .hasMessageContaining("negative size");
+  }
+
   // ============ Regression: legitimate, in-bounds values still parse correctly ============
 
   @Test
