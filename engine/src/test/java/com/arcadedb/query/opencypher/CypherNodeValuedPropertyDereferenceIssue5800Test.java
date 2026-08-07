@@ -81,6 +81,27 @@ class CypherNodeValuedPropertyDereferenceIssue5800Test {
   }
 
   @Test
+  void chainedPropertyAccessOnPersistedLinkRestoresTemporalType() {
+    // A temporal (Duration) property on the dereferenced target is stored as an ISO-8601
+    // String (ArcadeDB has no native binary Duration type). The chained-access path must
+    // restore it to a CypherDuration - exactly like the single-level path already does via
+    // PropertyAccessExpression.convertFromStorage() - so a further component access
+    // (.seconds) resolves instead of failing on a plain String.
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (holder:T {role: 'holder'}), (target:T {role: 'target', dur: duration('PT2H30M')}) " +
+            "SET holder.ref = target RETURN holder").close());
+
+    database.transaction(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (holder:T {role: 'holder'}) RETURN holder.ref.dur.seconds AS totalSeconds");
+      assertThat(rs.hasNext()).isTrue();
+      final Object totalSeconds = rs.next().getProperty("totalSeconds");
+      assertThat(totalSeconds).as("Duration property must be restored, not left as a raw String").isNotNull();
+      assertThat(((Number) totalSeconds).longValue()).isEqualTo(2 * 3600 + 30 * 60);
+    });
+  }
+
+  @Test
   void directPropertyAccessOnPersistedLinkStillDereferences() {
     // Control: the single-level (variable-bound) property access path already handled RIDs
     // before this fix. Kept here so a future regression on that path is also caught.
