@@ -34,6 +34,7 @@ import com.arcadedb.utility.StringRidHashMap;
 public class TempIdVertexRefResolver implements VertexRefResolver {
 
   private final StringRidHashMap map;
+  private       int              verticesWithoutId;
 
   public TempIdVertexRefResolver(final int expectedVertices) {
     // The map doubles from its initial capacity, so a hint only saves the copies, never bounds anything.
@@ -46,18 +47,42 @@ public class TempIdVertexRefResolver implements VertexRefResolver {
       map.put(tempId, rid);
   }
 
+  /**
+   * The message reports what the load actually knows instead of asserting one cause. "Vertices must appear before
+   * edges that reference them" used to be the whole explanation, and on the 17M-vertex load of issue #5618 it sent
+   * the user looking for a vertex that was in the file, thousands of lines above the edge - the ordering was never
+   * the problem. The two numbers below separate the cases that message conflated: how many ids this payload
+   * actually declared, and how many of its vertices declared none and therefore cannot be referenced at all.
+   */
   @Override
   public RID get(final String ref, final int lineNumber) {
     final RID rid = map.get(ref);
-    if (rid == null)
-      throw new IllegalArgumentException("Unknown temporary ID '" + ref + "' at line " + lineNumber
-          + ". Vertices must appear before edges that reference them");
+    if (rid == null) {
+      final StringBuilder message = new StringBuilder("Unknown temporary ID '").append(ref).append("' at line ")
+          .append(lineNumber).append(": no vertex earlier in this payload declared it as its @id (")
+          .append(map.size()).append(" ids mapped so far");
+      if (verticesWithoutId > 0)
+        message.append(", and ").append(verticesWithoutId)
+            .append(" vertices carried no @id at all, so nothing can reference them");
+      message.append("). Vertices must appear before the edges that reference them, and each request resolves only "
+          + "the ids of its OWN payload: a vertex loaded by an earlier request has to be referenced by RID "
+          + "(#bucket:position)");
+      throw new IllegalArgumentException(message.toString());
+    }
     return rid;
   }
 
   @Override
   public void checkVertexId(final String tempId, final int ordinal, final int lineNumber) {
-    // Any id is acceptable here, including none: a vertex nothing points at does not need one.
+    // Any id is acceptable here, including none: a vertex nothing points at does not need one. It is counted
+    // though, because a payload that meant to reference it has no other way to find out (issue #5618).
+    if (tempId == null)
+      verticesWithoutId++;
+  }
+
+  @Override
+  public int unreferenceableVertices() {
+    return verticesWithoutId;
   }
 
   @Override

@@ -68,6 +68,14 @@ public interface VertexRefResolver {
   boolean isEmpty();
 
   /**
+   * Vertices this payload created that no edge can ever reference, because they declared nothing this resolver
+   * can key them by. Creating them is legal - a vertex nothing points at needs no id - but it is also the one way
+   * a payload can hold a vertex that is loaded and yet unreachable, so the count is reported rather than left for
+   * the user to deduce from a reference that does not resolve (issue #5618).
+   */
+  int unreferenceableVertices();
+
+  /**
    * Bytes this resolver holds, for the heap warning of a long load.
    */
   long retainedBytes();
