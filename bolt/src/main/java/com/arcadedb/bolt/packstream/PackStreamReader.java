@@ -24,7 +24,9 @@ import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,9 +72,10 @@ public class PackStreamReader {
   private int                   bytesRead = 0;
 
   // Bounds on client-supplied, unauthenticated size fields (issue #5918): every *_32 length/size is read off the
-  // wire and used directly to size an allocation, and readValue() recurses once per nesting level, before the
-  // BOLT handshake or authentication ever runs. Read once per message rather than cached statically so a runtime
-  // change to the setting takes effect on the next message.
+  // wire and used directly to size an allocation, before the BOLT handshake or authentication ever runs.
+  // maxDepth bounds nesting complexity/memory (readValue() decodes containers iteratively via an explicit Frame
+  // stack, not JVM recursion, so it is not a stack-overflow guard). Read once per message rather than cached
+  // statically so a runtime change to the setting takes effect on the next message.
   private final int maxValueLength;
   private final int maxElements;
   private final int maxDepth;
@@ -119,27 +122,59 @@ public class PackStreamReader {
   }
 
   /**
+   * Sentinel returned by {@link #readValueWithMarker} when a container marker (list/map/struct) pushed a new
+   * {@link Frame} instead of producing a value: the caller loops back to read that frame's first element/
+   * entry/field rather than treating this as a completed value.
+   */
+  private static final Object OPEN_FRAME = new Object();
+
+  /**
    * Read the next value of any type.
+   * <p>
+   * Implemented iteratively with an explicit heap-allocated {@link Frame} stack rather than JVM recursion.
+   * PackStream nests lists/maps/structures arbitrarily deep, and a naive recursive-descent decoder recurses once
+   * per nesting level - CI observed a real {@link StackOverflowError} at a nesting depth (1000) that a local run
+   * with a larger default thread stack did not: native JVM stack budget per recursion level is platform/JIT
+   * dependent, not something this class can rely on as a safety bound (issue #5918). A heap-allocated frame has
+   * no such risk, so {@link #maxDepth} below now bounds nesting complexity/memory rather than guarding against a
+   * stack overflow, and stays safe at any configured value on any platform.
    */
   public Object readValue() throws IOException {
-    return readValue(0);
+    final Deque<Frame> stack = new ArrayDeque<>();
+
+    while (true) {
+      if (stack.size() > maxDepth)
+        throw new IOException("PackStream value nesting exceeds the maximum allowed depth (" + maxDepth + ")");
+
+      final int marker = readMarker();
+      Object value = readValueWithMarker(marker, stack);
+      if (value == OPEN_FRAME)
+        continue; // a new container frame was pushed; read its first element/entry/field next
+
+      // Attach the completed value to the frame on top of the stack, popping and re-attaching any frame that
+      // becomes complete as a result, until either the stack is empty (this value is the final result) or a
+      // frame still needs more input (go back around to read it off the wire).
+      while (true) {
+        final Frame top = stack.peek();
+        if (top == null)
+          return value;
+
+        final Object result = top.attach(value);
+        if (result == Frame.NEEDS_MORE)
+          break;
+
+        stack.pop();
+        value = result;
+      }
+    }
   }
 
   /**
-   * Read the next value of any type, tracking nesting depth so a stream of nesting markers cannot recurse the
-   * connection thread's JVM stack into a {@link StackOverflowError} (issue #5918).
+   * Read a value given its marker byte. For a container marker (list/map/struct) with at least one
+   * element/entry/field, pushes a new {@link Frame} onto {@code stack} and returns {@link #OPEN_FRAME} instead
+   * of a value; an empty container is returned directly, matching a zero-element loop never recursing.
    */
-  private Object readValue(final int depth) throws IOException {
-    if (depth > maxDepth)
-      throw new IOException("PackStream value nesting exceeds the maximum allowed depth (" + maxDepth + ")");
-    final int marker = readMarker();
-    return readValueWithMarker(marker, depth);
-  }
-
-  /**
-   * Read a value given its marker byte.
-   */
-  private Object readValueWithMarker(final int marker, final int depth) throws IOException {
+  private Object readValueWithMarker(final int marker, final Deque<Frame> stack) throws IOException {
     // NULL
     if (marker == (NULL & 0xFF)) {
       return null;
@@ -233,59 +268,76 @@ public class PackStreamReader {
     // TINY_LIST: 0x90 - 0x9F
     if (marker >= 0x90 && marker <= 0x9F) {
       final int size = marker & 0x0F;
-      return readListItems(size, depth);
+      return openList(size, stack);
     }
 
     // LIST_8
     if (marker == (LIST_8 & 0xFF)) {
       final int size = in.readUnsignedByte();
-      return readListItems(size, depth);
+      return openList(size, stack);
     }
 
     // LIST_16
     if (marker == (LIST_16 & 0xFF)) {
       final int size = in.readUnsignedShort();
-      return readListItems(size, depth);
+      return openList(size, stack);
     }
 
     // LIST_32
     if (marker == (LIST_32 & 0xFF)) {
       final int size = in.readInt();
-      return readListItems(checkElementCount(size, "LIST_32"), depth);
+      return openList(checkElementCount(size, "LIST_32"), stack);
     }
 
     // TINY_MAP: 0xA0 - 0xAF
     if (marker >= 0xA0 && marker <= 0xAF) {
       final int size = marker & 0x0F;
-      return readMapEntries(size, depth);
+      return openMap(size, stack);
     }
 
     // MAP_8
     if (marker == (MAP_8 & 0xFF)) {
       final int size = in.readUnsignedByte();
-      return readMapEntries(size, depth);
+      return openMap(size, stack);
     }
 
     // MAP_16
     if (marker == (MAP_16 & 0xFF)) {
       final int size = in.readUnsignedShort();
-      return readMapEntries(size, depth);
+      return openMap(size, stack);
     }
 
     // MAP_32
     if (marker == (MAP_32 & 0xFF)) {
       final int size = in.readInt();
-      return readMapEntries(checkElementCount(size, "MAP_32"), depth);
+      return openMap(checkElementCount(size, "MAP_32"), stack);
     }
 
     // TINY_STRUCT: 0xB0 - 0xBF
     if (marker >= 0xB0 && marker <= 0xBF) {
       final int fieldCount = marker & 0x0F;
       final byte signature = in.readByte();
-      return readStructure(signature, fieldCount, depth);
+      if (fieldCount == 0)
+        return new StructureValue(signature, new ArrayList<>(0));
+      stack.push(new StructFrame(signature, fieldCount));
+      return OPEN_FRAME;
     }
 
     throw new IOException("Unknown PackStream marker: 0x" + Integer.toHexString(marker));
+  }
+
+  private static Object openList(final int size, final Deque<Frame> stack) {
+    if (size == 0)
+      return new ArrayList<>(0);
+    stack.push(new ListFrame(size));
+    return OPEN_FRAME;
+  }
+
+  private static Object openMap(final int size, final Deque<Frame> stack) {
+    if (size == 0)
+      return new LinkedHashMap<>(0);
+    stack.push(new MapFrame(size));
+    return OPEN_FRAME;
   }
 
   /**
@@ -356,39 +408,72 @@ public class PackStreamReader {
   }
 
   /**
-   * Read list items.
+   * A container (list/map/struct) whose element/entry/field count is not yet fully read. Pushed onto the work
+   * stack in {@link #readValue()} in place of a recursive call; {@link #attach} feeds it one completed child
+   * value at a time until it reports completion by returning something other than {@link #NEEDS_MORE}.
    */
-  private List<Object> readListItems(final int size, final int depth) throws IOException {
-    final List<Object> list = new ArrayList<>(size);
-    for (int i = 0; i < size; i++) {
-      list.add(readValue(depth + 1));
-    }
-    return list;
+  private abstract static class Frame {
+    static final Object NEEDS_MORE = new Object();
+
+    abstract Object attach(Object value);
   }
 
-  /**
-   * Read map entries.
-   */
-  private Map<String, Object> readMapEntries(final int size, final int depth) throws IOException {
-    final Map<String, Object> map = new LinkedHashMap<>(size);
-    for (int i = 0; i < size; i++) {
-      final String key = (String) readValue(depth + 1);
-      final Object value = readValue(depth + 1);
-      map.put(key, value);
+  private static final class ListFrame extends Frame {
+    private final List<Object> list;
+    private int                remaining;
+
+    ListFrame(final int size) {
+      this.list = new ArrayList<>(size);
+      this.remaining = size;
     }
-    return map;
+
+    @Override
+    Object attach(final Object value) {
+      list.add(value);
+      return --remaining == 0 ? list : NEEDS_MORE;
+    }
   }
 
-  /**
-   * Read a structure with given signature and field count.
-   * Returns a StructureValue containing the signature and fields.
-   */
-  private StructureValue readStructure(final byte signature, final int fieldCount, final int depth) throws IOException {
-    final List<Object> fields = new ArrayList<>(fieldCount);
-    for (int i = 0; i < fieldCount; i++) {
-      fields.add(readValue(depth + 1));
+  private static final class MapFrame extends Frame {
+    private final Map<String, Object> map;
+    private       int                 remainingEntries;
+    private       boolean             expectingKey = true;
+    private       String              pendingKey;
+
+    MapFrame(final int size) {
+      this.map = new LinkedHashMap<>(size);
+      this.remainingEntries = size;
     }
-    return new StructureValue(signature, fields);
+
+    @Override
+    Object attach(final Object value) {
+      if (expectingKey) {
+        pendingKey = (String) value;
+        expectingKey = false;
+        return NEEDS_MORE;
+      }
+      map.put(pendingKey, value);
+      expectingKey = true;
+      return --remainingEntries == 0 ? map : NEEDS_MORE;
+    }
+  }
+
+  private static final class StructFrame extends Frame {
+    private final byte         signature;
+    private final List<Object> fields;
+    private       int          remaining;
+
+    StructFrame(final byte signature, final int fieldCount) {
+      this.signature = signature;
+      this.fields = new ArrayList<>(fieldCount);
+      this.remaining = fieldCount;
+    }
+
+    @Override
+    Object attach(final Object value) {
+      fields.add(value);
+      return --remaining == 0 ? new StructureValue(signature, fields) : NEEDS_MORE;
+    }
   }
 
   /**

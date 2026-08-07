@@ -1663,9 +1663,10 @@ public enum GlobalConfiguration {
 
   BOLT_PACKSTREAM_MAX_DEPTH("arcadedb.bolt.packstream.maxDepth", SCOPE.SERVER, """
       Maximum nesting depth accepted when decoding a PackStream value (list/map/structure) on the BOLT wire \
-      protocol. The decoder recurses once per nesting level, so an unbounded value lets an unauthenticated \
-      client overflow the connection thread's JVM stack with a stream of nesting markers. Default is 1000, \
-      generous for any real BOLT message.""",
+      protocol. The decoder builds nested containers on an explicit heap-allocated stack rather than JVM \
+      recursion, so this bounds nesting complexity/memory rather than guarding against a stack overflow; \
+      without it, an unauthenticated client could grow that stack unboundedly with a stream of nesting markers. \
+      Default is 1000, generous for any real BOLT message.""",
       Integer.class, 1000),
 
   // REDIS
