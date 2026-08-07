@@ -72,7 +72,9 @@ public class DateTimeConstructorFunction implements StatelessFunction {
         try {
           return new CypherDateTime(ZonedDateTime.now(ZoneId.of(str)));
         } catch (final Exception e2) {
-          throw new CommandExecutionException("datetime() cannot parse '" + str + "' as a datetime or timezone");
+          // Neither a valid datetime nor a valid timezone: determined entirely by the supplied string, so it is a
+          // client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5794.
+          throw new CommandSemanticException("datetime() cannot parse '" + str + "' as a datetime or timezone");
         }
       }
     }

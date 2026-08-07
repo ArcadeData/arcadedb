@@ -20,7 +20,6 @@ package com.arcadedb.function.coll;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
@@ -67,8 +66,10 @@ public class RangeFunction implements StatelessFunction {
     final long end = ((Number) args[1]).longValue();
     final long step = args.length == 3 ? ((Number) args[2]).longValue() : 1L;
 
+    // A zero step is determined entirely by the supplied argument, so it is a client error (HTTP 400) rather
+    // than a CommandExecutionException (HTTP 500). See issue #5794.
     if (step == 0)
-      throw new CommandExecutionException("range() step cannot be zero");
+      throw new CommandSemanticException("range() step cannot be zero");
 
     final long cardinality = LongRangeList.cardinality(start, end, step);
     final long maxAllowed = maxRangeSize(context);
