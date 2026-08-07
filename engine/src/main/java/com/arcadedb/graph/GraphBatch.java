@@ -1620,14 +1620,17 @@ public class GraphBatch implements AutoCloseable {
       EdgeSegment inChunk;
       boolean isNew;
       final RID cachedChunkRID = inChunkRIDCache.get(vertexKey);
-      final RID deferredChunkRID = cachedChunkRID == null && knownNewVertexKeys.contains(vertexKey) ? deferredInHead.get(vertexKey) : null;
+      // Checked unconditionally (not just for known-new vertices): a pre-existing vertex touched
+      // earlier in this batch is equally vulnerable to inChunkRIDCache eviction, and its on-disk head
+      // is stale mid-batch too (issue #5950 review, second sub-case).
+      final RID deferredChunkRID = cachedChunkRID == null ? deferredInHead.get(vertexKey) : null;
       if (cachedChunkRID != null) {
         inChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
         isNew = false;
       } else if (deferredChunkRID != null) {
-        // Known-new vertex whose inChunkRIDCache entry was LRU-evicted: deferredInHead is unbounded
-        // and always authoritative for the current head, so reuse it instead of creating an
-        // unlinked duplicate segment (issue #5950 review: silent edge loss otherwise).
+        // inChunkRIDCache entry was LRU-evicted: deferredInHead is unbounded and always authoritative
+        // for the current head, so reuse it instead of creating an unlinked duplicate segment (issue
+        // #5950 review: silent edge loss otherwise).
         inChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (knownNewVertexKeys.contains(vertexKey)) {
@@ -1816,7 +1819,22 @@ public class GraphBatch implements AutoCloseable {
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
     }
 
-    // For known-new vertices, skip loading — we know there's no existing segment
+    // outChunkRIDCache is LRU-bounded and may have already evicted this vertex's entry even though
+    // the vertex was already given a segment earlier in this batch (large batch, many other vertices
+    // touched in between) - both for a known-new vertex (whose on-disk head stays null until close())
+    // and for a pre-existing vertex (whose on-disk head, if any, predates this batch and is stale once
+    // this batch has overflowed it). deferredOutHead is unbounded for the whole batch and always
+    // reflects the vertex's true current head once touched, so it must be checked BEFORE falling back
+    // to knownNewVertexKeys / an on-disk read for either case (issue #5950 review, both sub-cases:
+    // a second, unlinked segment would otherwise silently orphan the earlier one's committed edges).
+    final RID deferredRID = deferredOutHead.get(vertexKey);
+    if (deferredRID != null) {
+      outChunkRIDCache.put(vertexKey, deferredRID);
+      lastSegmentIsNew = false;
+      return (EdgeSegment) database.lookupByRID(deferredRID, true);
+    }
+
+    // For known-new vertices with no deferred head yet, skip loading — we know there's no existing segment
     if (!knownNewVertexKeys.contains(vertexKey)) {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getOutEdgesHeadChunk();
@@ -1834,18 +1852,6 @@ public class GraphBatch implements AutoCloseable {
         outChunkRIDCache.put(vertexKey, headChunk);
         lastSegmentIsNew = false;
         return (EdgeSegment) head;
-      }
-    } else {
-      // Known-new, but outChunkRIDCache is LRU-bounded and may have already evicted this vertex's
-      // entry (large batch, many other vertices touched in between). deferredOutHead is unbounded
-      // for the whole batch and always reflects the vertex's true current head, so it is the
-      // authoritative fallback before assuming "no segment exists yet" (issue #5950 review: silent
-      // edge loss when a second, unlinked segment was created and overwrote the pointer to the first).
-      final RID deferredRID = deferredOutHead.get(vertexKey);
-      if (deferredRID != null) {
-        outChunkRIDCache.put(vertexKey, deferredRID);
-        lastSegmentIsNew = false;
-        return (EdgeSegment) database.lookupByRID(deferredRID, true);
       }
     }
 
@@ -1870,6 +1876,15 @@ public class GraphBatch implements AutoCloseable {
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
     }
 
+    // See getOrCreateOutSegmentDeferred: deferredInHead must be checked unconditionally, before
+    // knownNewVertexKeys / an on-disk read, for both the known-new and pre-existing vertex cases.
+    final RID deferredRID = deferredInHead.get(vertexKey);
+    if (deferredRID != null) {
+      inChunkRIDCache.put(vertexKey, deferredRID);
+      lastSegmentIsNew = false;
+      return (EdgeSegment) database.lookupByRID(deferredRID, true);
+    }
+
     if (!knownNewVertexKeys.contains(vertexKey)) {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getInEdgesHeadChunk();
@@ -1885,15 +1900,6 @@ public class GraphBatch implements AutoCloseable {
         inChunkRIDCache.put(vertexKey, headChunk);
         lastSegmentIsNew = false;
         return (EdgeSegment) head;
-      }
-    } else {
-      // See getOrCreateOutSegmentDeferred: deferredInHead is the unbounded, authoritative fallback
-      // for a known-new vertex whose inChunkRIDCache entry may have been LRU-evicted.
-      final RID deferredRID = deferredInHead.get(vertexKey);
-      if (deferredRID != null) {
-        inChunkRIDCache.put(vertexKey, deferredRID);
-        lastSegmentIsNew = false;
-        return (EdgeSegment) database.lookupByRID(deferredRID, true);
       }
     }
 
@@ -2431,14 +2437,17 @@ public class GraphBatch implements AutoCloseable {
       EdgeSegment outChunk;
       boolean isNew;
       final RID cachedChunkRID = outChunkRIDCache.get(vertexKey);
-      final RID deferredChunkRID = cachedChunkRID == null && knownNewVertexKeys.contains(vertexKey) ? deferredOutHead.get(vertexKey) : null;
+      // Checked unconditionally (not just for known-new vertices): a pre-existing vertex touched
+      // earlier in this batch is equally vulnerable to outChunkRIDCache eviction, and its on-disk head
+      // is stale mid-batch too (issue #5950 review, second sub-case).
+      final RID deferredChunkRID = cachedChunkRID == null ? deferredOutHead.get(vertexKey) : null;
       if (cachedChunkRID != null) {
         outChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
         isNew = false;
       } else if (deferredChunkRID != null) {
-        // Known-new vertex whose outChunkRIDCache entry was LRU-evicted: deferredOutHead is unbounded
-        // and always authoritative for the current head, so reuse it instead of creating an
-        // unlinked duplicate segment (issue #5950 review: silent edge loss otherwise).
+        // outChunkRIDCache entry was LRU-evicted: deferredOutHead is unbounded and always authoritative
+        // for the current head, so reuse it instead of creating an unlinked duplicate segment (issue
+        // #5950 review: silent edge loss otherwise).
         outChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (knownNewVertexKeys.contains(vertexKey)) {

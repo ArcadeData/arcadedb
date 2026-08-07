@@ -292,4 +292,109 @@ class GraphBatchBoundedStateTest extends TestHelper {
           .isEqualTo(2);
     });
   }
+
+  /**
+   * Regression test for the second, broader shape of the same PR #5950 review finding: a vertex that
+   * was NOT created via {@link GraphBatch#createVertices} (so it is never in {@code knownNewVertexKeys})
+   * is equally vulnerable. Its first segment, created mid-batch, is only tracked in the bounded RID
+   * cache and in {@code deferredOutHead}/{@code deferredInHead} - the on-disk {@code getOutEdgesHeadChunk()}
+   * stays {@code null} until {@link GraphBatch#close()} persists it. If the RID cache entry is evicted
+   * before the vertex's second edge, the {@code !knownNewVertexKeys.contains(vertexKey)} branch reads the
+   * still-null on-disk head, falls through, and creates a second, unlinked segment - the same silent
+   * orphaning as the known-new case, just reached through the other branch.
+   */
+  @Test
+  void preExistingVertexSurvivesCacheEvictionBetweenItsOwnEdgesSequential() {
+    assertPreExistingVertexSurvivesCacheEviction(false);
+  }
+
+  /** Same scenario on the parallel flush path. */
+  @Test
+  void preExistingVertexSurvivesCacheEvictionBetweenItsOwnEdgesParallel() {
+    assertPreExistingVertexSurvivesCacheEviction(true);
+  }
+
+  private void assertPreExistingVertexSurvivesCacheEviction(final boolean parallelFlush) {
+    final int chunkCacheCapacity = 20;
+    final int evictionPairs      = 200; // far more than chunkCacheCapacity distinct OTHER vertices
+
+    // v0/d0 exist BEFORE the batch starts (plain database.newVertex()/save()), so GraphBatch never adds
+    // them to knownNewVertexKeys - this is the branch the known-new eviction test above does NOT cover.
+    final RID[] named = new RID[6];
+    database.transaction(() -> {
+      for (int i = 0; i < named.length; i++) {
+        final MutableVertex v = database.newVertex(VERTEX_TYPE);
+        v.save();
+        named[i] = v.getIdentity();
+      }
+    });
+    final RID v0     = named[0]; // OUT-direction: source whose head-chunk cache entry gets evicted
+    final RID d0     = named[1]; // IN-direction: destination whose head-chunk cache entry gets evicted
+    final RID targetA = named[2];
+    final RID targetB = named[3];
+    final RID srcA     = named[4];
+    final RID srcB     = named[5];
+
+    final RID[] evictionVertices = new RID[2 * evictionPairs];
+    database.transaction(() -> {
+      for (int i = 0; i < evictionVertices.length; i++) {
+        final MutableVertex v = database.newVertex(VERTEX_TYPE);
+        v.save();
+        evictionVertices[i] = v.getIdentity();
+      }
+    });
+
+    final GraphBatch importer = GraphBatch.builder(database)
+        .withBatchSize(1_000)
+        .withEdgeListInitialSize(256)
+        .withChunkCacheCapacity(chunkCacheCapacity)
+        .withMaxDeferredIncomingEdges(1) // drain IN edges on every flush(), for precise eviction control
+        .withParallelFlush(parallelFlush)
+        .build();
+
+    try {
+      // Step 1: v0's and d0's FIRST edge via the batch - each gets a brand-new segment, cached in both
+      // the bounded RID cache and the unbounded deferred head map. On-disk head chunk stays null until
+      // close().
+      importer.newEdge(v0, EDGE_TYPE, targetA);
+      importer.newEdge(srcA, EDGE_TYPE, d0);
+      importer.flush();
+
+      // Step 2: touch evictionPairs*2 other distinct pre-existing vertices, far more than
+      // chunkCacheCapacity=20, guaranteeing v0's OUT cache entry and d0's IN cache entry are evicted.
+      for (int i = 0; i < evictionPairs; i++)
+        importer.newEdge(evictionVertices[i], EDGE_TYPE, evictionVertices[evictionPairs + i]);
+      importer.flush();
+
+      // Step 3: v0's and d0's SECOND edge. The RID cache misses (evicted in step 2); v0/d0 are not in
+      // knownNewVertexKeys, so the buggy code read the still-null on-disk head and assumed "no segment
+      // yet" again, creating a second, unlinked segment. The fix consults deferredOutHead/deferredInHead
+      // unconditionally before falling back to the on-disk read.
+      importer.newEdge(v0, EDGE_TYPE, targetB);
+      importer.newEdge(srcB, EDGE_TYPE, d0);
+      importer.flush();
+    } finally {
+      importer.close();
+    }
+
+    database.transaction(() -> {
+      final Vertex v0Vertex = v0.asVertex();
+      int outCount = 0;
+      for (final Edge ignored : v0Vertex.getEdges(Vertex.DIRECTION.OUT, EDGE_TYPE))
+        outCount++;
+      assertThat(outCount)
+          .as("pre-existing v0's first outgoing edge must survive its OUT head-chunk cache entry being "
+              + "evicted between its own two edges (parallelFlush=%s)", parallelFlush)
+          .isEqualTo(2);
+
+      final Vertex d0Vertex = d0.asVertex();
+      int inCount = 0;
+      for (final Edge ignored : d0Vertex.getEdges(Vertex.DIRECTION.IN, EDGE_TYPE))
+        inCount++;
+      assertThat(inCount)
+          .as("pre-existing d0's first incoming edge must survive its IN head-chunk cache entry being "
+              + "evicted between its own two edges (parallelFlush=%s)", parallelFlush)
+          .isEqualTo(2);
+    });
+  }
 }
