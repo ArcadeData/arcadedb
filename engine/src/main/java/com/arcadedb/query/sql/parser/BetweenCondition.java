@@ -56,7 +56,7 @@ public class BetweenCondition extends BooleanExpression {
     // failure (e.g. NumberFormatException) escape (#5900).
     try {
       secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
-    } catch (final Exception ignore) {
+    } catch (final IllegalArgumentException ignore) {
       return false;
     }
 
@@ -67,7 +67,7 @@ public class BetweenCondition extends BooleanExpression {
 
     try {
       thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
-    } catch (final Exception ignore) {
+    } catch (final IllegalArgumentException ignore) {
       return false;
     }
 
@@ -91,7 +91,7 @@ public class BetweenCondition extends BooleanExpression {
 
     try {
       secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
-    } catch (final Exception ignore) {
+    } catch (final IllegalArgumentException ignore) {
       return false;
     }
 
@@ -101,7 +101,7 @@ public class BetweenCondition extends BooleanExpression {
     }
     try {
       thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
-    } catch (final Exception ignore) {
+    } catch (final IllegalArgumentException ignore) {
       return false;
     }
 

@@ -45,7 +45,7 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
         // raw parse/conversion failure (e.g. NumberFormatException on a non-numeric String) escape (#5900).
         try {
           right = Type.convert(database, right, left.getClass());
-        } catch (final Exception ignore) {
+        } catch (final IllegalArgumentException ignore) {
           return false;
         }
       }
