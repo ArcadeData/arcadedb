@@ -258,6 +258,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * {@link #loadVectorIndex}. Unlike LSM_VECTOR, the persisted definition of a FULL_TEXT index does carry
    * {@code unique}/{@code nullStrategy} (see {@code LSMTreeFullTextIndex.toJSON()}), so those are still applied
    * explicitly; everything else (analyzers, BM25 tuning, per-field boosts) comes back through the dedicated builder.
+   * <p>
+   * {@code withFreshCorpusCounters()} is required here and only here: this index is created empty and then
+   * repopulated by replaying every document afterwards ({@link #loadDocument}/{@link #loadVertex}), so the BM25
+   * corpus counters {@code withPersistedMetadata} just restored - describing the SOURCE database's already-indexed
+   * corpus - must NOT carry through, or every replayed document would double-count on top of them.
    */
   private void loadFullTextIndex(final Schema databaseSchema, final String typeName, final String[] fields, final JSONObject idx) {
     final TypeFullTextIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
@@ -266,6 +271,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     builder.withUnique(idx.getBoolean("unique"));
     builder.withNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
     builder.withPersistedMetadata(idx);
+    builder.withFreshCorpusCounters();
     builder.withIgnoreIfExists(true);
     builder.create();
   }

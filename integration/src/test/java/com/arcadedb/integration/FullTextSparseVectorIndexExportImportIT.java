@@ -110,6 +110,16 @@ class FullTextSparseVectorIndexExportImportIT {
 
       assertThat(db.countType("Article", true)).isEqualTo(6);
       assertThat(db.countType("Sparse", true)).isEqualTo(5);
+
+      // Validate and PERSIST the BM25 corpus counters before export: an ordinary insert updates the live counters
+      // but never saves schema.json (persistence is deferred - see LSMTreeFullTextIndex.ensureCounters()), so
+      // without this step the exported counters would still be the index's creation-time (0, valid) snapshot and
+      // could never exercise the doubling this test targets. REBUILD INDEX ... WITH statsOnly = true is the
+      // documented way an operator gets a source database into this (realistic, e.g. post-bulk-load) state.
+      db.command("sql", "REBUILD INDEX `Article[title,text]` WITH statsOnly = true");
+      final FullTextIndexMetadata srcFtMetadata = ((LSMTreeFullTextIndex) ((TypeIndex) db.getSchema()
+          .getIndexByName("Article[title,text]")).getIndexesOnBuckets()[0]).getFullTextMetadata();
+      assertThat(srcFtMetadata.getTotalDocs()).as("source corpus counters must be validated before export").isEqualTo(6L);
     }
 
     // 2. Export it to JSONL
@@ -143,6 +153,13 @@ class FullTextSparseVectorIndexExportImportIT {
       assertThat(ftMetadata.getDefaultOperator()).isEqualTo("AND");
       assertThat(ftMetadata.getFieldBoost("title")).isEqualTo(3.5f);
       assertThat(ftMetadata.isAllowLeadingWildcard()).isTrue();
+
+      // The BM25 corpus counters must describe the TARGET's own replayed documents, not the source database's
+      // validated count carried through restore and then doubled by replay (review finding on PR #5936):
+      // withPersistedMetadata restores the source's counters onto an index that is then repopulated by replaying
+      // every document, so without an explicit reset the counters end up at 2x the actual imported count.
+      assertThat(ftMetadata.getTotalDocs()).as("BM25 totalDocs must match the imported document count, not be doubled")
+          .isEqualTo(db2.countType("Article", true));
 
       // The restored index must be searchable with the restored AND operator and per-field boost still ranking
       final ResultSet rs = db2.query("sql",
