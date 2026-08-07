@@ -102,3 +102,29 @@ the two PRs touch disjoint line ranges in the three files they share.
   affected beyond the (already-desired) HTTP status code and exception class.
 - No new dependency, no schema change, no performance impact (exception construction is
   off the hot path - argument validation only fires on invalid input).
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5915
+
+## Review cycles
+
+- **Cycle 1** - head SHA `4aaea42d1`. Pushed the commit described above. `claude[bot]`
+  posted a review as a PR issue comment (`AbstractServerHttpHandler` exception-mapping
+  trace, throw-site inventory cross-check, scope-boundary verification against #5909,
+  import-hygiene check, test-coverage check): "No blocking issues found." Two
+  non-blocking observations, neither actionable: (1) confirms `CypherPointFunction`'s
+  class-level Javadoc is still accurate today since it only describes the untouched
+  `coerceCoordinate()` method; (2) a style note that the six per-throw-site inline
+  comments are repetitive, offered as a suggestion for a hypothetical future follow-up,
+  not a request to change this PR. Working tree stayed empty this cycle - clean approval,
+  loop exited after 1/4 cycles.
+
+## Deferred items
+
+None. Both non-blocking review notes above were skipped as non-actionable (see Review
+cycles) rather than deferred - neither asked for a change to this PR.
+
+## Final state
+
+`clean-approval`
