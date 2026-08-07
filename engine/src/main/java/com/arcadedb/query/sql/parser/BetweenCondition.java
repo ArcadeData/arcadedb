@@ -54,9 +54,8 @@ public class BetweenCondition extends BooleanExpression {
     // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
     // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
     // failure (e.g. NumberFormatException) escape (#5900).
-    try {
-      secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
-    } catch (final IllegalArgumentException ignore) {
+    secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
+    if (secondValue == null) {
       return false;
     }
 
@@ -65,9 +64,8 @@ public class BetweenCondition extends BooleanExpression {
       return false;
     }
 
-    try {
-      thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
-    } catch (final IllegalArgumentException ignore) {
+    thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
+    if (thirdValue == null) {
       return false;
     }
 
@@ -89,9 +87,8 @@ public class BetweenCondition extends BooleanExpression {
       return false;
     }
 
-    try {
-      secondValue = Type.convert(context.getDatabase(), secondValue, firstValue.getClass());
-    } catch (final IllegalArgumentException ignore) {
+    secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
+    if (secondValue == null) {
       return false;
     }
 
@@ -99,9 +96,8 @@ public class BetweenCondition extends BooleanExpression {
     if (thirdValue == null) {
       return false;
     }
-    try {
-      thirdValue = Type.convert(context.getDatabase(), thirdValue, firstValue.getClass());
-    } catch (final IllegalArgumentException ignore) {
+    thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
+    if (thirdValue == null) {
       return false;
     }
 
