@@ -70,3 +70,29 @@ Applied: replaced the hand-rolled check with `CypherFunctionHelper.isExplicitNul
 added the import. Re-ran the same 136-test suite; all pass with 0 failures.
 
 No deferred items from this cycle.
+
+### Cycle 2 - `42aab29a1`
+
+`claude[bot]` re-reviewed after the cycle 1 push (issue comment, not a formal PR review).
+Confirmed the fix and the `isExplicitNull` refactor are correct by tracing all four cases by
+hand and cross-checking against the sibling `com.arcadedb.function.text.SubstringFunction`
+implementation. Raised one non-blocking observation, explicitly marked pre-existing and out of
+scope: `CypherSubstringFunction`'s `length < 0` check only runs inside the `args.length == 3`
+branch, which is unreachable once `start >= str.length()` has already returned `""`, so
+`substring('ab', 5, -1)` returns `""` instead of throwing. This predates this PR (the old code
+had the same gap before either fix) and was suggested only as a possible follow-up issue, not a
+change to make here.
+
+No actionable items, no code changes required, working tree clean. Treated as a clean approval -
+loop exited after 2 cycles.
+
+### Deferred items
+
+None. The one non-blocking observation from cycle 2 (pre-existing negative-length validation
+gap in `CypherSubstringFunction`, unrelated to this PR's fix) was intentionally left for a
+possible separate follow-up issue rather than filed here, since it predates this change and
+touches a different code path (`length < 0` validation, not null propagation).
+
+### Final state
+
+`clean-approval`
