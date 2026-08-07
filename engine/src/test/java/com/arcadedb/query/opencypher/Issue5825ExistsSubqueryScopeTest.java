@@ -108,6 +108,29 @@ class Issue5825ExistsSubqueryScopeTest extends TestHelper {
         .hasMessageContaining("v");
   }
 
+  /** Same shape, but the out-of-scope reference is inside a UNION branch of an EXISTS subquery body. */
+  @Test
+  void existsSubqueryUnionBranchReferencingDroppedVariableThrows() {
+    assertThatThrownBy(() -> database.query("opencypher",
+        """
+        UNWIND [0] AS v \
+        WITH v \
+        WITH 0 AS y \
+        MATCH (n) \
+        WHERE EXISTS { \
+          MATCH (x) \
+          WHERE x.p = v \
+          RETURN x \
+          UNION \
+          MATCH (z) \
+          WHERE z.p = 1 \
+          RETURN z \
+        } \
+        RETURN n._id AS n, y""").close())
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("v");
+  }
+
   /** Control: keeping `v` in scope makes the EXISTS query valid and produces the expected rows. */
   @Test
   void existsSubqueryReferencingPreservedVariableIsValid() {
