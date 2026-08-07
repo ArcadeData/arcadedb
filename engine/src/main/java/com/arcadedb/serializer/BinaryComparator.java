@@ -54,37 +54,11 @@ public class BinaryComparator {
       // antisymmetry every comparator must honour (issue #5900).
       return compareNarrowIntegral((Number) value1, type2, value2);
 
-    case BinaryTypes.TYPE_LONG: {
-      final long v1 = ((Number) value1).longValue();
-      final long v2;
-
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).longValue();
-        break;
-
-      case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (Boolean) value2 ? 1 : 0;
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Long.parseLong((String) value2);
-        break;
-
-      default:
-        return -1;
-      }
-
-      return Long.compare(v1, v2);
-    }
+    case BinaryTypes.TYPE_LONG:
+      // Same rationale as the INT/SHORT/BYTE case above: a fractional DECIMAL/FLOAT/DOUBLE narrowed via
+      // longValue() drops its fraction and can land on the wrong side of value1, the same antisymmetry bug
+      // with LONG as type1 instead (#5900 review follow-up).
+      return compareWideningLong((Number) value1, type2, value2);
 
     case BinaryTypes.TYPE_STRING: {
       if (value1 instanceof byte[] bytes1) {
@@ -98,7 +72,12 @@ public class BinaryComparator {
       return ((String) value1).compareTo(value2.toString());
     }
 
-    case BinaryTypes.TYPE_DOUBLE: {
+    case BinaryTypes.TYPE_DOUBLE:
+    case BinaryTypes.TYPE_FLOAT: {
+      // FLOAT always widens losslessly into double (the reverse direction is what loses precision), so both
+      // share this branch instead of FLOAT narrowing the other operand down to float's 24-bit mantissa - the
+      // same narrow-instead-of-widen bug as INT/SHORT/BYTE/LONG, just for the floating types (#5900 review
+      // follow-up).
       final double v1 = ((Number) value1).doubleValue();
       final double v2;
 
@@ -128,38 +107,6 @@ public class BinaryComparator {
       }
 
       return Double.compare(v1, v2);
-    }
-
-    case BinaryTypes.TYPE_FLOAT: {
-      final float v1 = ((Number) value1).floatValue();
-      final float v2;
-
-      switch (type2) {
-      case BinaryTypes.TYPE_INT:
-      case BinaryTypes.TYPE_SHORT:
-      case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
-      case BinaryTypes.TYPE_BYTE:
-      case BinaryTypes.TYPE_DECIMAL:
-      case BinaryTypes.TYPE_FLOAT:
-      case BinaryTypes.TYPE_DOUBLE:
-        v2 = ((Number) value2).floatValue();
-        break;
-
-      case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (float) ((Boolean) value2 ? 1 : 0);
-        break;
-
-      case BinaryTypes.TYPE_STRING:
-        v2 = Float.parseFloat((String) value2);
-        break;
-
-      default:
-        return -1;
-      }
-
-      return Float.compare(v1, v2);
     }
 
     case BinaryTypes.TYPE_BOOLEAN: {
@@ -307,18 +254,56 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DOUBLE:
       return Double.compare(value1.doubleValue(), ((Number) value2).doubleValue());
 
-    case BinaryTypes.TYPE_STRING: {
-      final String string = (String) value2;
-      // Widen to the precision the string's own format needs, so an integral string is compared without the
-      // precision loss a double round-trip would introduce for large longs.
-      if (string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0)
-        return Double.compare(value1.doubleValue(), Double.parseDouble(string));
-      return Long.compare(value1.longValue(), Long.parseLong(string));
-    }
+    case BinaryTypes.TYPE_STRING:
+      return compareAgainstNumericString(value1, (String) value2);
 
     default:
       return -1;
     }
+  }
+
+  /**
+   * Shared comparison for a {@code value1} declared as {@code LONG} (or a timestamp type using the same
+   * {@code long} representation) against any {@code type2}. {@code INT}/{@code SHORT}/{@code BYTE} widen
+   * losslessly into {@code long} so they join the same-width bucket here, unlike in
+   * {@link #compareNarrowIntegral}; a {@code DECIMAL}/{@code FLOAT}/{@code DOUBLE} operand is promoted to
+   * {@code double} rather than narrowed via {@code longValue()}, which would silently drop its fraction.
+   */
+  private static int compareWideningLong(final Number value1, final byte type2, final Object value2) {
+    switch (type2) {
+    case BinaryTypes.TYPE_INT:
+    case BinaryTypes.TYPE_SHORT:
+    case BinaryTypes.TYPE_BYTE:
+    case BinaryTypes.TYPE_LONG:
+    case BinaryTypes.TYPE_DATETIME:
+    case BinaryTypes.TYPE_DATE:
+      return Long.compare(value1.longValue(), ((Number) value2).longValue());
+
+    case BinaryTypes.TYPE_BOOLEAN:
+      return Long.compare(value1.longValue(), (Boolean) value2 ? 1L : 0L);
+
+    case BinaryTypes.TYPE_DECIMAL:
+    case BinaryTypes.TYPE_FLOAT:
+    case BinaryTypes.TYPE_DOUBLE:
+      return Double.compare(value1.doubleValue(), ((Number) value2).doubleValue());
+
+    case BinaryTypes.TYPE_STRING:
+      return compareAgainstNumericString(value1, (String) value2);
+
+    default:
+      return -1;
+    }
+  }
+
+  /**
+   * Widens to whichever precision the string's own format needs - {@code double} for a fractional/exponent
+   * literal, {@code long} otherwise - so an integral string is compared without the precision loss a double
+   * round-trip would introduce for large longs, and a fractional string doesn't hard-fail a {@code long} parse.
+   */
+  private static int compareAgainstNumericString(final Number value1, final String string) {
+    if (string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0)
+      return Double.compare(value1.doubleValue(), Double.parseDouble(string));
+    return Long.compare(value1.longValue(), Long.parseLong(string));
   }
 
   public int compareBytes(final byte[] buffer1, final Binary buffer2) {

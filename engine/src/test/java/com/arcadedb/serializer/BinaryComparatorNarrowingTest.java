@@ -132,4 +132,47 @@ class BinaryComparatorNarrowingTest {
     assertThat(forward).isLessThan(0);
     assertThat(backward).isGreaterThan(0);
   }
+
+  /**
+   * {@code TYPE_LONG} had the identical narrow-instead-of-widen defect as the pre-fix INT/SHORT/BYTE branches:
+   * a fractional {@code Double} narrowed via {@code longValue()} silently drops its fraction, which can make an
+   * unequal pair compare equal, or land on the wrong side (review follow-up on PR #5922).
+   */
+  @Test
+  void longVersusFractionalDoubleIsAntisymmetricAndNotTruncated() {
+    final long five = 5L;
+    final double fiveAndAHalf = 5.5;
+
+    // Before the fix: both directions truncated 5.5 to 5L and answered "equal".
+    assertThat(comparator.compare(five, BinaryTypes.TYPE_LONG, fiveAndAHalf, BinaryTypes.TYPE_DOUBLE)).isLessThan(0);
+    assertThat(comparator.compare(fiveAndAHalf, BinaryTypes.TYPE_DOUBLE, five, BinaryTypes.TYPE_LONG)).isGreaterThan(0);
+  }
+
+  /**
+   * {@code LONG} vs a fractional numeric {@code String} must widen to {@code double} rather than hard-fail
+   * {@code Long.parseLong} on the decimal point.
+   */
+  @Test
+  void longVersusFractionalStringWidensRatherThanThrows() {
+    assertThat(comparator.compare(5L, BinaryTypes.TYPE_LONG, "5.5", BinaryTypes.TYPE_STRING)).isLessThan(0);
+    assertThat(comparator.compare(6L, BinaryTypes.TYPE_LONG, "5.5", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
+    // Out-of-int-range integral string must still compare as a long, not double-round-trip.
+    assertThat(comparator.compare(5_000_000_001L, BinaryTypes.TYPE_LONG, "5000000000", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
+  }
+
+  /**
+   * {@code TYPE_FLOAT} narrowed a wider/more precise operand (a {@code Long} outside float's 24-bit mantissa, or
+   * a {@code Double}) down to {@code float} instead of widening itself to {@code double} - the same bug shape,
+   * lower severity (review follow-up on PR #5922). Fixed by merging FLOAT into DOUBLE's branch.
+   */
+  @Test
+  void floatVersusPreciseDoubleAndLongIsNotTruncated() {
+    // A double that differs from its nearest float only in the low mantissa bits: narrowing to float would
+    // collapse the two values to the same float and answer "equal".
+    final float asFloat = 16_777_217f; // rounds to 16777216f as a float (2^24 + 1 is not exactly representable)
+    final double precise = 16_777_217.0; // exactly representable as a double
+
+    assertThat(comparator.compare(asFloat, BinaryTypes.TYPE_FLOAT, precise, BinaryTypes.TYPE_DOUBLE)).isLessThan(0);
+    assertThat(comparator.compare(precise, BinaryTypes.TYPE_DOUBLE, asFloat, BinaryTypes.TYPE_FLOAT)).isGreaterThan(0);
+  }
 }
