@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
@@ -27,6 +28,7 @@ import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -1682,6 +1684,17 @@ class CypherExpressionBuilder {
       final Object baseValue = baseExpression.evaluate(result, context);
       if (baseValue == null) {
         return null;
+      }
+
+      // Handle a persisted node-valued property: ArcadeDB stores a NODE property as a LINK/RID,
+      // so once the writing transaction commits, a chained property access (e.g. holder.ref.id)
+      // sees the stored RID rather than the live Vertex it saw during the write. Dereference it
+      // transparently, applying the same temporal-type restoration as the single-level
+      // PropertyAccessExpression, so the same expression keeps working across the transaction
+      // boundary (#5800) and stays consistent with the variable-bound access path.
+      if (baseValue instanceof RID rid) {
+        final Object rawValue = rid.asVertex().get(propertyName);
+        return TemporalUtil.convertFromStorage(rawValue);
       }
 
       // Handle Document types
