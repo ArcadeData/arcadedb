@@ -148,4 +148,95 @@ class Issue5900ComparisonTypeMismatchTest {
       }
     });
   }
+
+  /**
+   * Code review follow-up on PR #5922: an indexed column bypasses the row-scan operators entirely and pushes the
+   * bound straight into {@code FetchFromIndexStep}, which reached the index's own unguarded
+   * {@code convertKeys()}/{@code Type.convert()} - the identical crash through a very common trigger (any indexed
+   * comparison column), untouched by the row-scan fix above.
+   */
+  @Test
+  void lessThanNonNumericStringOnIndexedIntegerColumnDoesNotThrow() throws Exception {
+    TestHelper.executeInNewDatabase("testIssue5900LtIndexed", db -> {
+      db.getSchema().createDocumentType("V").createProperty("n", Type.INTEGER);
+      db.command("sql", "CREATE INDEX ON V (n) NOTUNIQUE");
+      db.newDocument("V").set("n", 10).save();
+
+      try (final ResultSet rs = db.query("sql", "select n from V where n < 'abc'")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select n from V where n > 'abc'")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select n from V where n <= 'abc'")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select n from V where n >= 'abc'")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  @Test
+  void equalsNonNumericStringOnIndexedIntegerColumnDoesNotThrow() throws Exception {
+    TestHelper.executeInNewDatabase("testIssue5900EqIndexed", db -> {
+      db.getSchema().createDocumentType("V").createProperty("n", Type.INTEGER);
+      db.command("sql", "CREATE INDEX ON V (n) NOTUNIQUE");
+      db.newDocument("V").set("n", 10).save();
+
+      try (final ResultSet rs = db.query("sql", "select n from V where n = 'abc'")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  @Test
+  void betweenWithNonNumericBoundOnIndexedIntegerColumnDoesNotThrow() throws Exception {
+    TestHelper.executeInNewDatabase("testIssue5900BetweenIndexed", db -> {
+      db.getSchema().createDocumentType("V").createProperty("n", Type.INTEGER);
+      db.command("sql", "CREATE INDEX ON V (n) NOTUNIQUE");
+      db.newDocument("V").set("n", 10).save();
+
+      try (final ResultSet rs = db.query("sql", "select n from V where n between 1 and 'abc'")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select n from V where n between 'abc' and 100")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  /**
+   * Guard against over-fixing on the indexed path: valid, correctly-typed comparisons must still use the index
+   * and return the correct rows. Uses a typed {@code 15} rather than the numeric string {@code '15'} used by the
+   * non-indexed equivalent above: a numeric-string bound against an indexed column hits a separate, pre-existing
+   * bug where {@code LSMTreeIndexCursor}'s constructor compares the raw (unconverted) bound against an
+   * already-typed stored key and throws {@code ClassCastException} - reproduces identically on unmodified
+   * {@code main}, independent of this fix, and out of scope here (filed separately).
+   */
+  @Test
+  void validComparisonsOnIndexedIntegerColumnStillWork() throws Exception {
+    TestHelper.executeInNewDatabase("testIssue5900ValidIndexed", db -> {
+      db.getSchema().createDocumentType("V").createProperty("n", Type.INTEGER);
+      db.command("sql", "CREATE INDEX ON V (n) NOTUNIQUE");
+      db.newDocument("V").set("n", 10).save();
+      db.newDocument("V").set("n", 20).save();
+
+      try (final ResultSet rs = db.query("sql", "select n from V where n < 15")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Integer>getProperty("n")).isEqualTo(10);
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select n from V where n = 10")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Integer>getProperty("n")).isEqualTo(10);
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select n from V where n between 5 and 15")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Integer>getProperty("n")).isEqualTo(10);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
 }

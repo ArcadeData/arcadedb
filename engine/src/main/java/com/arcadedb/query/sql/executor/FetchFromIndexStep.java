@@ -384,18 +384,24 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (convertedTo.length == 0)
         convertedTo = null;
 
-      if (Arrays.equals(convertedFrom, convertedTo) && fromKeyIncluded && toKeyIncluded
-          && convertedFrom != null && index.getPropertyNames().size() == convertedFrom.length)
-        cursor = index.get(convertedFrom);
-      else if (index.supportsOrderedIterations()) {
-        if (orderAsc)
-          cursor = index.range(true, convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
-        else
-          cursor = index.range(false, convertedTo, toKeyIncluded, convertedFrom, fromKeyIncluded);
-      } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
-        cursor = index.iterator(isOrderAsc(), convertedFrom, true);
-      } else {
-        throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
+      try {
+        if (Arrays.equals(convertedFrom, convertedTo) && fromKeyIncluded && toKeyIncluded
+            && convertedFrom != null && index.getPropertyNames().size() == convertedFrom.length)
+          cursor = index.get(convertedFrom);
+        else if (index.supportsOrderedIterations()) {
+          if (orderAsc)
+            cursor = index.range(true, convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
+          else
+            cursor = index.range(false, convertedTo, toKeyIncluded, convertedFrom, fromKeyIncluded);
+        } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
+          cursor = index.iterator(isOrderAsc(), convertedFrom, true);
+        } else {
+          throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
+        }
+      } catch (final IllegalArgumentException e) {
+        // This combination's bound has no defined ordering against the index's declared key type: it matches no
+        // indexed row, consistent with the row-scan operators (#5900). Skip it rather than aborting the whole scan.
+        continue;
       }
       nextCursors.add(cursor);
 
@@ -521,10 +527,15 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     final Object secondValue = second.execute((Result) null, context);
     final Object thirdValue = third.execute((Result) null, context);
-    if (isOrderAsc())
-      cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
-    else
-      cursor = index.range(false, new Object[] { thirdValue }, true, new Object[] { secondValue }, true);
+    try {
+      if (isOrderAsc())
+        cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
+      else
+        cursor = index.range(false, new Object[] { thirdValue }, true, new Object[] { secondValue }, true);
+    } catch (final IllegalArgumentException e) {
+      // A bound with no defined ordering against the index's declared key type: no indexed row can match (#5900).
+      cursor = null;
+    }
 
     if (cursor != null)
       fetchNextEntry();
@@ -584,18 +595,25 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     else
       values = (Object[]) value;
 
-    if (operator instanceof EqualsCompareOperator) {
-      return index.get(values);
-    } else if (operator instanceof GeOperator) {
-      return index.iterator(true, values, true);
-    } else if (operator instanceof GtOperator) {
-      return index.iterator(true, values, false);
-    } else if (operator instanceof LeOperator) {
-      return index.iterator(false, values, true);
-    } else if (operator instanceof LtOperator) {
-      return index.iterator(false, values, false);
-    } else {
-      throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
+    try {
+      if (operator instanceof EqualsCompareOperator) {
+        return index.get(values);
+      } else if (operator instanceof GeOperator) {
+        return index.iterator(true, values, true);
+      } else if (operator instanceof GtOperator) {
+        return index.iterator(true, values, false);
+      } else if (operator instanceof LeOperator) {
+        return index.iterator(false, values, true);
+      } else if (operator instanceof LtOperator) {
+        return index.iterator(false, values, false);
+      } else {
+        throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
+      }
+    } catch (final IllegalArgumentException e) {
+      // The bound has no defined ordering against the index's declared key type (e.g. a non-numeric String bound
+      // on a numeric column): no indexed row can match, consistent with the row-scan operators (#5900). Type.convert()
+      // always surfaces a failed conversion as an IllegalArgumentException (NumberFormatException is a subtype).
+      return null;
     }
   }
 
