@@ -316,12 +316,33 @@ public class GraphBatch implements AutoCloseable {
     // setters below are not - each unconditionally tears down and respawns the worker pool.
     if (parallelFlush) {
       final DatabaseAsyncExecutor asyncExecutor = database.async();
-      savedAsyncUseWAL = asyncExecutor.isTransactionUseWAL();
-      savedAsyncWALFlush = asyncExecutor.getTransactionSync();
-      if (savedAsyncUseWAL != this.useWAL)
+      final boolean           priorAsyncUseWAL   = asyncExecutor.isTransactionUseWAL();
+      final WALFile.FlushType priorAsyncWALFlush = asyncExecutor.getTransactionSync();
+      savedAsyncUseWAL = priorAsyncUseWAL;
+      savedAsyncWALFlush = priorAsyncWALFlush;
+
+      final boolean asyncWALChanged   = priorAsyncUseWAL != this.useWAL;
+      final boolean asyncFlushChanged = priorAsyncWALFlush != this.walFlush;
+
+      if (asyncWALChanged)
         asyncExecutor.setTransactionUseWAL(this.useWAL);
-      if (savedAsyncWALFlush != this.walFlush)
-        asyncExecutor.setTransactionSync(this.walFlush);
+      try {
+        if (asyncFlushChanged)
+          asyncExecutor.setTransactionSync(this.walFlush);
+      } catch (final RuntimeException e) {
+        // The constructor never completes on this path, so no instance exists afterwards to call
+        // restoreAsyncSettings() - undo the first setter here or the async executor's WAL policy
+        // stays relaxed forever for every other caller on this database.
+        if (asyncWALChanged)
+          asyncExecutor.setTransactionUseWAL(priorAsyncUseWAL);
+        throw e;
+      }
+
+      if (asyncWALChanged || asyncFlushChanged)
+        LogManager.instance().log(this, Level.INFO,
+            "GraphBatch: relaxing async executor durability for the bulk load (useWAL %s->%s, walFlush %s->%s); the "
+                + "previous settings are restored on close()/abandon()", priorAsyncUseWAL, this.useWAL, priorAsyncWALFlush,
+            this.walFlush);
     } else {
       savedAsyncUseWAL = false;
       savedAsyncWALFlush = null;
@@ -1054,10 +1075,21 @@ public class GraphBatch implements AutoCloseable {
       return;
 
     final DatabaseAsyncExecutor asyncExecutor = database.async();
-    if (asyncExecutor.isTransactionUseWAL() != savedAsyncUseWAL)
+    final boolean           currentAsyncUseWAL   = asyncExecutor.isTransactionUseWAL();
+    final WALFile.FlushType currentAsyncWALFlush = asyncExecutor.getTransactionSync();
+
+    final boolean walChanged = currentAsyncUseWAL != savedAsyncUseWAL;
+    final boolean flushChanged = currentAsyncWALFlush != savedAsyncWALFlush;
+
+    if (walChanged)
       asyncExecutor.setTransactionUseWAL(savedAsyncUseWAL);
-    if (asyncExecutor.getTransactionSync() != savedAsyncWALFlush)
+    if (flushChanged)
       asyncExecutor.setTransactionSync(savedAsyncWALFlush);
+
+    if (walChanged || flushChanged)
+      LogManager.instance().log(this, Level.INFO,
+          "GraphBatch: restored async executor durability (useWAL %s->%s, walFlush %s->%s)", currentAsyncUseWAL,
+          savedAsyncUseWAL, currentAsyncWALFlush, savedAsyncWALFlush);
   }
 
   /**
