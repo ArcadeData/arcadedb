@@ -43,22 +43,34 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
-import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.InlineFilterStrategy;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Replaces default traversal steps to speedup execution. This is used only when the traversal has a GraphStep (vertices or edges) and HasStep (label eq(X)).
+ * <p>
+ * Declared as a {@link TraversalStrategy.ProviderOptimizationStrategy} (not an
+ * {@code OptimizationStrategy}) so that TinkerPop's category ordering guarantees it always runs AFTER
+ * {@code GValueReductionStrategy}. A Gremlin query submitted as a string (the entry point used by the
+ * HTTP endpoint, Studio, and the drivers) parses any hop naming an edge label into a
+ * {@code VertexStepPlaceholder}, not a concrete {@code VertexStep}; {@code GValueReductionStrategy}
+ * resolves those placeholders into concrete steps. Every {@code OptimizationStrategy} implementation
+ * inherits a default {@code applyPost()} that adds {@code GValueReductionStrategy}, guaranteeing it
+ * runs LAST within the {@code OptimizationStrategy} category - which meant, back when this class was
+ * also declared {@code OptimizationStrategy}, that it always ran BEFORE the placeholders it needed
+ * resolved were resolved. Category ordering, unlike {@code applyPrior()}/{@code applyPost()}, is
+ * enforced unconditionally by {@code TraversalStrategies.sortStrategies}: every strategy in an earlier
+ * category is a hard prerequisite for every strategy in a later one, so moving this strategy to the
+ * {@code ProviderOptimizationStrategy} category (which sorts strictly after
+ * {@code OptimizationStrategy}) fixes the ordering deterministically. See issue #5840.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<TraversalStrategy.OptimizationStrategy>
-    implements TraversalStrategy.OptimizationStrategy {
+public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<TraversalStrategy.ProviderOptimizationStrategy>
+    implements TraversalStrategy.ProviderOptimizationStrategy {
 
   private static final String LABEL_KEY = "~label";
 
@@ -302,10 +314,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     }
   }
 
-  @Override
-  public Set<Class<? extends OptimizationStrategy>> applyPrior() {
-    return Stream.of(
-        //Inline must happen first as it sometimes removes the need for a TraversalFilterStep
-        InlineFilterStrategy.class).collect(Collectors.toSet());
-  }
+  // No explicit applyPrior() override is needed: ProviderOptimizationStrategy category ordering
+  // already guarantees this strategy runs strictly after every OptimizationStrategy, including
+  // InlineFilterStrategy (which sometimes removes the need for a TraversalFilterStep) and
+  // GValueReductionStrategy (see class javadoc).
 }
