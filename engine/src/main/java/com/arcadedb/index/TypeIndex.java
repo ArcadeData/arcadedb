@@ -658,7 +658,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         // MODIFIABLE COPY
         polymorphicIndexesOnKeys = new ArrayList<>(polymorphicIndexesOnKeys);
 
-        for (DocumentType s : subTypes) {
+        for (final DocumentType s : subTypes) {
           // `bucketIndex` is only meaningful modulo the bucket count it was computed against (the
           // parent's). A subtype is free to declare a different bucket count, so reusing it here can
           // index past the end of the subtype's own bucket list (issue #5645). Each subtype has to
