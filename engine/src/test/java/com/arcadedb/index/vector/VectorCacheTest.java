@@ -135,6 +135,67 @@ class VectorCacheTest {
   }
 
   @Test
+  void resetStatsZeroesBothCounters() {
+    final VectorCache cache = new VectorCache(64);
+    cache.put(1, vector(1));
+    cache.get(1);
+    cache.get(99);
+    assertThat(cache.getHits() + cache.getMisses()).isEqualTo(2);
+
+    cache.resetStats();
+
+    assertThat(cache.getHits()).isZero();
+    assertThat(cache.getMisses()).isZero();
+
+    // The reset must not have cost the cache its contents.
+    cache.get(1);
+    assertThat(cache.getHits()).isEqualTo(1);
+  }
+
+  @Test
+  void countersAreStripedPerThreadAndNeverOverCount() throws Exception {
+    // The counters are incremented without atomics (issue #5577): a locked read-modify-write per lookup cost 26.4%
+    // of a 10M-vector graph build, because one lookup here backs one distance evaluation. Two threads landing on
+    // the same stripe can therefore lose an increment, which is accepted - but only in that direction. A counter
+    // that came out HIGH would mean the striping is reading somebody else's slot, and a counter that came out far
+    // low would mean the stripes are not spreading the threads at all.
+    final int threads = 8;
+    final int lookupsPerThread = 50_000;
+    final VectorCache cache = new VectorCache(64);
+    cache.put(1, vector(1));
+
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(threads);
+
+    for (int t = 0; t < threads; t++) {
+      new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < lookupsPerThread; i++) {
+            cache.get(1);   // hit
+            cache.get(99);  // miss
+          }
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          done.countDown();
+        }
+      }).start();
+    }
+
+    start.countDown();
+    assertThat(done.await(60, TimeUnit.SECONDS)).isTrue();
+
+    final long expected = (long) threads * lookupsPerThread;
+    assertThat(cache.getHits()).isLessThanOrEqualTo(expected);
+    assertThat(cache.getMisses()).isLessThanOrEqualTo(expected);
+    // Lost updates need two threads on one stripe to interleave exactly between the read and the write, which is
+    // rare enough that anything below 99% means the stripe index is degenerate.
+    assertThat(cache.getHits()).isGreaterThan(expected * 99 / 100);
+    assertThat(cache.getMisses()).isGreaterThan(expected * 99 / 100);
+  }
+
+  @Test
   void neverReturnsAVectorForTheWrongIdUnderConcurrency() throws Exception {
     final int capacity = 512;
     final int threads = 8;
