@@ -90,6 +90,18 @@
             <version>${project.parent.version}</version>
             <scope>compile</scope>
         </dependency>
+        <!-- ArcadeGraph, ArcadeGraphFactory and ArcadeGremlin reference com.arcadedb.remote.RemoteDatabase
+             on the ordinary embedded query path (an instanceof check that fails to link if the class is
+             missing), not only for remote usage. arcadedb-server is provided-scope above (not transitive
+             to consumers), so this must be declared explicitly at compile scope or every embedded-only
+             consumer of the published arcadedb-gremlin artifact fails with NoClassDefFoundError on the
+             first query (issue #5879). arcadedb-network itself only depends on arcadedb-engine. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-network</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>compile</scope>
+        </dependency>
 
         <!-- Explicit ANTLR runtime to ensure consistent version across legacy and native Cypher.
              optional=true: keeps antlr 4.9.1 on gremlin's own classpath and bundled+relocated in
@@ -272,6 +284,12 @@
                                  the arcadedb-gremlin-it module both provide it), so the relocation must touch only
                                  TinkerPop's own 4.9.1 parser. -->
                             <exclude>com.arcadedb:arcadedb-engine</exclude>
+                            <!-- Do NOT bundle network either: it is now a real compile-scope dependency (#5879),
+                                 so Maven resolves it transitively for every consumer of either the plain or the
+                                 shaded jar. Bundling it here as well would duplicate its classes on the classpath
+                                 of any consumer who, like arcadedb-server or arcadedb-gremlin-it, also pulls the
+                                 plain arcadedb-network jar directly. -->
+                            <exclude>com.arcadedb:arcadedb-network</exclude>
                         </excludes>
                     </artifactSet>
                 </configuration>
