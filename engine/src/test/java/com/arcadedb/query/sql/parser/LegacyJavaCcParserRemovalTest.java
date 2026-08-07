@@ -31,10 +31,12 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
  * Regression test for issue #5867: the legacy JavaCC/JJTree-generated SQL parser and lexer
- * ({@code SqlParser}, {@code SqlParserTokenManager}, {@code JJTSqlParserState}) were unreachable at runtime
- * - {@link StatementCache} has always parsed through {@link SQLAntlrParser} - and were removed, along with the
- * {@code SQL_PARSER_IMPLEMENTATION} config it never actually honored. This test guards against reintroducing
- * any of that, and against {@link StatementCache} silently gaining a second parser field.
+ * ({@code SqlParser}, {@code SqlParserTokenManager}, {@code JJTSqlParserState}), plus the token/lexer support
+ * classes only they and each other depended on ({@code Token}, {@code ParseException}, {@code TokenMgrError},
+ * {@code TokenMgrException}, {@code CharStream}, {@code JavaCharStream}, {@code SimpleCharStream}), were
+ * unreachable at runtime - {@link StatementCache} has always parsed through {@link SQLAntlrParser} - and were
+ * removed, along with the {@code SQL_PARSER_IMPLEMENTATION} config it never actually honored. This test guards
+ * against reintroducing any of that, and against {@link StatementCache} silently gaining a second parser field.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -45,10 +47,25 @@ class LegacyJavaCcParserRemovalTest {
     for (final String className : new String[] {
         "com.arcadedb.query.sql.parser.SqlParser",
         "com.arcadedb.query.sql.parser.SqlParserTokenManager",
-        "com.arcadedb.query.sql.parser.JJTSqlParserState" })
+        "com.arcadedb.query.sql.parser.JJTSqlParserState",
+        "com.arcadedb.query.sql.parser.Token",
+        "com.arcadedb.query.sql.parser.ParseException",
+        "com.arcadedb.query.sql.parser.TokenMgrError",
+        "com.arcadedb.query.sql.parser.TokenMgrException",
+        "com.arcadedb.query.sql.parser.CharStream",
+        "com.arcadedb.query.sql.parser.JavaCharStream",
+        "com.arcadedb.query.sql.parser.SimpleCharStream" })
       assertThatExceptionOfType(ClassNotFoundException.class)
           .as("legacy JavaCC class %s must not be reintroduced", className)
           .isThrownBy(() -> Class.forName(className));
+  }
+
+  @Test
+  void simpleNodeHasNoDeadTokenAccessors() {
+    for (final String methodName : new String[] { "jjtGetFirstToken", "jjtSetFirstToken", "jjtGetLastToken", "jjtSetLastToken" })
+      assertThat(Arrays.stream(SimpleNode.class.getDeclaredMethods()).map(java.lang.reflect.Method::getName))
+          .as("%s was a no-op JJTree leftover (always returned null / never stored anything) with no callers", methodName)
+          .doesNotContain(methodName);
   }
 
   @Test
