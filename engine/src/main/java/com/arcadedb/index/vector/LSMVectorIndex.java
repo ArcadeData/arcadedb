@@ -3955,9 +3955,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final int effectiveEfSearch = Math.max(k, metadata.efSearch);
             searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
           } else {
-            // Adaptive efSearch with resume for insufficient results (issue #3722).
-            // Both small and large graphs use the same two-pass strategy: search first,
-            // resume with wider beam if too few results are returned.
+            // Adaptive efSearch (issue #3722): size the beam to the graph and keep whatever it finds.
+            //
+            // There used to be a second pass here - `if (firstPass.getNodes().length < k) searchResult =
+            // searcher.resume(...)` - meant to widen the beam when the search came up short. It could only ever
+            // make things worse, and issue #5873 is what it cost. A short first pass means the result queue never
+            // reached rerankK, and JVector's searchOneLayer breaks early *only* once the queue is that full, so the
+            // loop must instead have run its candidate queue dry - having expanded every node reachable from the
+            // entry point. resume() pushes the (empty) evicted pile back onto that same empty queue and returns
+            // zero nodes, so the assignment threw the first pass away and handed the caller nothing. Width was
+            // never what ran out either, so a wider fresh search would have visited exactly the same nodes.
+            //
+            // What is actually left unreached at that point is whatever the graph cannot walk to, and the only
+            // thing that finds it is the brute-force scan below - which is already there, already gated on the
+            // shortfall, and now starts from the rows the graph did find instead of from nothing.
             final int graphSize = graphIndex.size();
             final int initialEfSearch;
             if (graphSize < 10_000)
@@ -3965,13 +3976,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             else
               initialEfSearch = Math.max(k * 2, 20);
 
-            final SearchResult firstPass = searcher.search(ssp, k, initialEfSearch, 0.0f, 0.0f, bitsFilter);
-            if (firstPass.getNodes().length < k && graphSize >= k) {
-              // Graph has enough nodes but beam search found too few - widen the beam
-              searchResult = searcher.resume(k, Math.max(k * 10, 100));
-            } else {
-              searchResult = firstPass;
-            }
+            searchResult = searcher.search(ssp, k, initialEfSearch, 0.0f, 0.0f, bitsFilter);
           }
         } finally {
           pool.release(searcher, pooledGraph, poolEpoch);

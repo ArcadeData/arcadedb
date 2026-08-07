@@ -127,7 +127,8 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
     for (int i = total - kept; i < total; i++)
       keptRids.add(ridByIndex[i]);
 
-    // Capture WARNING logs to confirm the brute-force fallback actually fires.
+    // Capture WARNING logs to see whether the brute-force fallback fires. Since #5873 it must NOT: the graph
+    // search answers this fixture in full on its own, and the assertion at the bottom pins that.
     final List<String> captured = new CopyOnWriteArrayList<>();
     // #5773: getLogger(), not reflection on the private field - the accessor exists for exactly this
     // save-and-restore, and a field rename would break the reflective form with no compile error. NOTE that
@@ -142,9 +143,9 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
       // match would neither rank first nor have a near-zero distance.
       for (int probe = total - kept; probe < total; probe++) {
         final RID expected = ridByIndex[probe];
-        // Request k = total: the stale graph still exposes all `total` ordinals (the deleted ones were
-        // not rebuilt away), so `expectedResults` is `total` while graph search can only surface the
-        // `kept` survivors. That gap (results < 80% of available) is what triggers the brute-force scan.
+        // Request k = total. The stale graph still exposes all `total` ordinals, but only the `kept` survivors
+        // are admissible, so the search walks a graph mostly made of tombstones to find them - which is the
+        // degraded shape this test is about, whether or not anything falls back afterwards.
         final List<Result> results = executeVectorSearch(vectorByIndex[probe], total);
 
         assertThat(results)
@@ -171,9 +172,85 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
             .isLessThan(1e-3f);
       }
 
+      // Issue #5873. This assertion used to read the other way round, and it passed for the wrong reason: the
+      // adaptive branch replaced its short first pass with `searcher.resume(...)`, which on a dry candidate queue
+      // returns nothing, so the answer above arrived empty at the fallback and the scan rebuilt it from all 1200
+      // ordinals - 50 times over, once per probe. The graph search had already found all 50 survivors. Now that
+      // the first pass is kept, `expectedResults` is the live count, the answer already meets it, and no scan
+      // runs. Everything asserted above still holds, which is the point: the scan was never adding anything.
       assertThat(captured)
-          .as("The brute-force fallback WARNING must fire, proving the scan path is exercised")
+          .as("the graph search found every survivor, so nothing may walk 1200 ordinals to find them again")
+          .noneMatch(m -> m != null && m.contains("falling back to brute-force scan"));
+    } finally {
+      LogManager.instance().setLogger(originalLogger);
+    }
+  }
+
+  /**
+   * The end-to-end route into the brute-force fallback that survives #5873, so the "a real query reaches the scan
+   * and the scan pairs each RID with its own score" claim keeps a test.
+   * <p>
+   * An allow-list narrower than {@code k} is the case: the graph can only ever answer with the allowed rows, which
+   * is fewer than the {@code k} the caller asked for, so {@code expectedResults} stays above what the search returns
+   * and the fallback fires every time (issue #5748). Unlike the stale-graph fixture above, that shortfall is real -
+   * the answer genuinely cannot be filled from the graph - so the scan has something to do.
+   */
+  @Test
+  void aNarrowAllowListStillReachesTheFallbackEndToEnd() {
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 100_000);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, -1);
+
+    final int total = 1200;
+    final int allowed = 3;
+
+    final RID[] ridByIndex = new RID[total];
+    final float[][] vectorByIndex = new float[total][];
+    database.transaction(() -> {
+      final VertexType type = database.getSchema().createVertexType("BFVec");
+      type.createProperty("name", Type.STRING);
+      type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+      database.getSchema().buildTypeIndex("BFVec", new String[] { "vector" }).withLSMVectorType()
+          .withDimensions(DIMENSIONS).withSimilarity("EUCLIDEAN").withMaxConnections(16).withBeamWidth(100).create();
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < total; i++) {
+        final float[] vec = createDeterministicVector(i, DIMENSIONS);
+        final MutableVertex v = database.newVertex("BFVec").set("name", "v" + i).set("vector", vec);
+        v.save();
+        ridByIndex[i] = v.getIdentity();
+        vectorByIndex[i] = vec;
+      }
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("BFVec[vector]");
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+    index.buildVectorGraphNow();
+
+    // Three RIDs scattered across the index, none of them adjacent to the others in the graph.
+    final Set<RID> whitelist = new HashSet<>();
+    for (int i = 0; i < allowed; i++)
+      whitelist.add(ridByIndex[i * (total / allowed)]);
+
+    final List<String> captured = new CopyOnWriteArrayList<>();
+    final Logger originalLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(new CapturingLogger(captured, originalLogger));
+    try {
+      // Probe with one whitelisted vertex's own vector: it has to rank first at ~0 distance, which is exactly the
+      // RID-to-score pairing issue #4581 was about, now observed through a real query rather than by reflection.
+      final int probe = total / allowed;
+      final List<Pair<RID, Float>> results = index.findNeighborsFromVector(vectorByIndex[probe], 10, whitelist);
+
+      assertThat(captured).as("an allow-list narrower than k cannot be filled from the graph, so the scan must run")
           .anyMatch(m -> m != null && m.contains("falling back to brute-force scan"));
+      assertThat(results).as("and it answers with the whitelisted rows, and only those").hasSize(allowed);
+      for (final Pair<RID, Float> r : results)
+        assertThat(whitelist).as("a row outside the allow-list must not survive the scan").contains(
+            r.getFirst().getIdentity());
+      assertThat(results.getFirst().getFirst().getIdentity())
+          .as("a self-query must rank its own vertex first, or a RID was paired with another vector's score")
+          .isEqualTo(ridByIndex[probe]);
+      assertThat(results.getFirst().getSecond())
+          .as("at ~0 distance, for the same reason").isLessThan(1e-3f);
     } finally {
       LogManager.instance().setLogger(originalLogger);
     }
