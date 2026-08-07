@@ -19,13 +19,16 @@
 package com.arcadedb.function.agg;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * Cypher avg() aggregation function.
  * Always returns a Double result matching Neo4j/OpenCypher semantics,
  * unlike the SQL avg() which preserves the input numeric type.
- * Skips nulls.
+ * Skips nulls. A non-numeric, non-null input is a client-facing type error rather than being
+ * silently ignored - see issue #5799, the same class of defect as the numeric math family fixed
+ * in issue #5484.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -51,10 +54,9 @@ public class CypherAvgFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null)
-      return null;
-    if (args[0] instanceof Number number) {
-      sum += number.doubleValue();
+    final Number value = CypherFunctionHelper.requireNumberArgument(args[0], "avg");
+    if (value != null) {
+      sum += value.doubleValue();
       count++;
     }
     return null;
