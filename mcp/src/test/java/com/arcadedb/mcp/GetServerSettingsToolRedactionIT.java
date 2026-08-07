@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.mcp.tools.GetServerSettingsTool;
 import com.arcadedb.mcp.tools.SetServerSettingTool;
 import org.junit.jupiter.api.Test;
@@ -79,13 +80,18 @@ class GetServerSettingsToolRedactionIT extends BaseGraphServerTest {
       final MCPConfiguration config = new MCPConfiguration("./target/test");
       config.setAllowAdmin(true);
 
+      // set_server_setting is root-only (GHSA-pff6-hp53-pj54), so the redaction of the echoed previous value can
+      // only be exercised through a root principal. MCPServerAdminAuthorizationIT covers the denial side.
+      final ServerSecurityUser root = getServer(serverIndex).getSecurity()
+          .authenticate("root", DEFAULT_PASSWORD_FOR_TESTS, null);
+
       final JSONObject args = new JSONObject()
           .put("key", "arcadedb.ha.clusterToken")
           .put("value", "replacement-token");
 
       final JSONObject result;
       try {
-        result = SetServerSettingTool.execute(getServer(serverIndex), null, args, config);
+        result = SetServerSettingTool.execute(getServer(serverIndex), root, args, config);
       } finally {
         // This exercises the real setter, so it genuinely replaces the running server's cluster token.
         // Restore it before leaving: the token authenticates cluster-forwarded requests, and a later
