@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
@@ -1682,6 +1683,14 @@ class CypherExpressionBuilder {
       final Object baseValue = baseExpression.evaluate(result, context);
       if (baseValue == null) {
         return null;
+      }
+
+      // Handle a persisted node-valued property: ArcadeDB stores a NODE property as a LINK/RID,
+      // so once the writing transaction commits, a chained property access (e.g. holder.ref.id)
+      // sees the stored RID rather than the live Vertex it saw during the write. Dereference it
+      // transparently so the same expression keeps working across the transaction boundary (#5800).
+      if (baseValue instanceof RID rid) {
+        return rid.asVertex().get(propertyName);
       }
 
       // Handle Document types
