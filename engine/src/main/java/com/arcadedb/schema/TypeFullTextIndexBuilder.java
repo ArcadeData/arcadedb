@@ -154,6 +154,46 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Restores the builder from a PERSISTED index definition - the JSON {@code LSMTreeFullTextIndex.toJSON()} writes
+   * into {@code schema.json} and the exporters copy verbatim. Unlike {@link #withMetadata(JSONObject)} this tolerates
+   * (and ignores) the structural keys of such a definition: {@code type}, {@code bucket}, {@code properties},
+   * {@code nullStrategy}, {@code unique} and the persisted corpus counters ({@code ft_*}).
+   *
+   * @param json the persisted index definition
+   *
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withPersistedMetadata(final JSONObject json) {
+    if (json != null)
+      ftMetadata().fromJSON(json);
+    return this;
+  }
+
+  /**
+   * Invalidates the BM25 corpus counters this builder currently carries - typically just restored by
+   * {@link #withPersistedMetadata(JSONObject)} - so {@code create()} rebuilds the index the same way a brand-new one
+   * would: {@code LSMTreeFullTextIndex}'s creation constructor resets an invalid counter pair to {@code (0, 0)} and
+   * marks it valid again, and the counters then grow correctly as documents are indexed afterwards.
+   * <p>
+   * For a restore whose index is created empty and then repopulated by replaying every document afterwards - e.g.
+   * the JSONL importer - carrying the persisted counters straight through is wrong: they describe the SOURCE
+   * database's already-indexed corpus, and every replayed document increments them again on top of that count, so N
+   * source documents end up doubled to {@code 2N} in the target. That is self-healing (the first BM25 query's
+   * once-per-session staleness check rescans and corrects it - see {@code LSMTreeFullTextIndex.ensureCounters()}),
+   * but only after an unconditional full type scan and a spurious {@code WARNING} log line, on every such restore.
+   * <p>
+   * Call this only from a path that re-populates the index after creating it. A plain {@code schema.json} reload on
+   * server restart must NOT call this: there the index already holds its data on disk, and the persisted counters
+   * correctly describe it.
+   *
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withFreshCorpusCounters() {
+    ftMetadata().setCountersValid(false);
+    return this;
+  }
+
+  /**
    * Returns the builder's metadata as {@link FullTextIndexMetadata}. The full-text builder constructors always create one, but
    * guard the cast so that, if the metadata were ever replaced with a non-full-text instance, callers get an actionable error
    * instead of a bare {@link ClassCastException} at configuration time.
