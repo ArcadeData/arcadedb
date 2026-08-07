@@ -317,6 +317,41 @@ class PostgresProtocolIT extends BaseGraphServerTest {
     }
   }
 
+  // Issue #5894 follow-up: the Postgres Bind message encodes a NULL parameter value as a 32-bit
+  // length of -1 with no bytes following, not as a small/zero declared length. Binding an actual
+  // NULL value (java.sql.Types.VARCHAR / setObject(null)) must not be mistaken for an oversized
+  // declared length.
+  @Test
+  void preparedStatementBindsActualNullValue() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE NullBindTest IF NOT EXISTS");
+      }
+
+      try (var pst = conn.prepareStatement("INSERT INTO NullBindTest SET id = ?, name = ?")) {
+        pst.setInt(1, 1);
+        pst.setNull(2, java.sql.Types.VARCHAR);
+        pst.execute();
+      }
+
+      try (var pst = conn.prepareStatement("INSERT INTO NullBindTest SET id = ?, name = ?")) {
+        pst.setInt(1, 2);
+        pst.setObject(2, null);
+        pst.execute();
+      }
+
+      try (var st = conn.createStatement()) {
+        ResultSet rs = st.executeQuery("SELECT FROM NullBindTest ORDER BY id");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isNull();
+        assertThat(rs.wasNull()).isTrue();
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isNull();
+        assertThat(rs.wasNull()).isTrue();
+      }
+    }
+  }
+
   // ==================== Error Handling Tests ====================
 
   @Test

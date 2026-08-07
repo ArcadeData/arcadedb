@@ -30,13 +30,15 @@ import java.io.InputStream;
  */
 class BoltWebSocketInputStream extends InputStream {
   private final DataInputStream in;
+  private final long    maxFrameSize;
   private byte[]  buffer;
   private int     bufferPos;
   private int     bufferLen;
   private boolean closed;
 
-  BoltWebSocketInputStream(final InputStream in) {
+  BoltWebSocketInputStream(final InputStream in, final long maxFrameSize) {
     this.in = new DataInputStream(in);
+    this.maxFrameSize = maxFrameSize;
   }
 
   @Override
@@ -82,6 +84,9 @@ class BoltWebSocketInputStream extends InputStream {
         payloadLen = in.readUnsignedShort();
       else if (payloadLen == 127)
         payloadLen = in.readLong();
+
+      if (payloadLen < 0 || payloadLen > maxFrameSize)
+        throw new IOException("BOLT WebSocket frame too large: " + payloadLen + " bytes (max " + maxFrameSize + ")");
 
       byte[] maskKey = null;
       if (masked) {

@@ -102,8 +102,10 @@ public class PostgresNetworkExecutor extends Thread {
 
   public static final String PG_SERVER_VERSION = "12.0";
 
-  private static final int                                            BUFFER_LENGTH   = 32 * 1024;
-  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS = new ConcurrentHashMap<>();
+  private static final int                                            BUFFER_LENGTH    = 32 * 1024;
+  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS  = new ConcurrentHashMap<>();
+  /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
+  private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -1288,7 +1290,29 @@ public class PostgresNetworkExecutor extends Thread {
             LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().getId());
           final long paramSize = channel.readUnsignedInt();
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().getId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
+
+          if (paramSize == NULL_PARAM_LENGTH) {
+            // Postgres protocol NULL sentinel: a declared length of -1 (0xFFFFFFFF unsigned), with no
+            // value bytes following. Must be checked before the max-size guard below, since the unsigned
+            // reading of -1 is far larger than any realistic configured limit.
+            portal.parameterValues.add(null);
+            paramsConsumed = i + 1;
+            continue;
+          }
+
+          if (paramSize > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger()) {
+            // The value bytes for this parameter were never read, so the channel cannot be safely
+            // resynchronized without draining a client(attacker)-controlled amount of data - that would
+            // either reintroduce an unbounded read or block the connection thread indefinitely if the
+            // declared bytes never arrive. Tell the client why, then close the connection outright
+            // rather than gamble on realigning the stream.
+            setErrorInTx();
+            writeError(ERROR_SEVERITY.FATAL, "Postgres bind parameter too large: " + paramSize + " bytes (max "
+                + GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger() + ")", "08P01");
+            shutdown = true;
+            return;
+          }
           final byte[] paramValue = new byte[(int) paramSize];
           channel.readBytes(paramValue);
           if (DEBUG)
@@ -1355,13 +1379,22 @@ public class PostgresNetworkExecutor extends Thread {
     } catch (final Exception e) {
       // Best-effort drain of the remaining Bind message so the channel stays aligned
       // for the next message in the pipelined client request (Describe, Execute, Sync).
+      boolean drainedCleanly = true;
       try {
         for (int i = paramsConsumed; i < totalParamValues; i++) {
           final long sz = channel.readUnsignedInt();
+          if (sz == NULL_PARAM_LENGTH)
+            continue;
+          if (sz > GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE.getValueAsInteger()) {
+            // Same reasoning as the main loop's guard: draining a declared-but-undelivered amount of
+            // data risks an unbounded/blocking read, so give up on resyncing rather than attempt it.
+            drainedCleanly = false;
+            break;
+          }
           if (sz > 0)
             channel.readBytes(new byte[(int) sz]);
         }
-        if (!resultFormatSectionRead) {
+        if (drainedCleanly && !resultFormatSectionRead) {
           final int resultFormatCount = channel.readShort();
           for (int i = 0; i < resultFormatCount; i++)
             channel.readUnsignedShort();
@@ -1369,9 +1402,12 @@ public class PostgresNetworkExecutor extends Thread {
       } catch (final Exception ignored) {
         // If even the drain fails the channel is unrecoverable; the error response below
         // still goes out and the client will see the failure.
+        drainedCleanly = false;
       }
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), sqlStateFor(e));
+      if (!drainedCleanly)
+        shutdown = true;
     }
   }
 

@@ -334,7 +334,8 @@ public class BoltNetworkExecutor extends Thread {
         completeWebSocketUpgrade(headers);
 
         // Reinitialize I/O with WebSocket framing and read Bolt magic from WebSocket stream
-        input = new BoltChunkedInput(new BoltWebSocketInputStream(socket.getInputStream()));
+        input = new BoltChunkedInput(
+            new BoltWebSocketInputStream(socket.getInputStream(), GlobalConfiguration.BOLT_WEBSOCKET_MAX_FRAME_SIZE.getValueAsInteger()));
         output = new BoltChunkedOutput(new BoltWebSocketOutputStream(socket.getOutputStream()));
         try {
           magic = input.readRaw(4);

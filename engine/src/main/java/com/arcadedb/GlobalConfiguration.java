@@ -1619,6 +1619,10 @@ public enum GlobalConfiguration {
       PostgreSQL and the SQL standard mandate, instead of as string literals. Set to false to restore the legacy \
       behaviour where a double-quoted token is a string literal. Default is true""", Boolean.class, true),
 
+  POSTGRES_MAX_PARAM_SIZE("arcadedb.postgres.maxParamSize", SCOPE.SERVER,
+      "Maximum size in bytes accepted for a single bind-message parameter value on the Postgres wire protocol. Values declaring a larger size are rejected before allocation. Default is 16MB",
+      Integer.class, 16 * 1024 * 1024),
+
   // BOLT (Neo4j)
   BOLT_PORT("arcadedb.bolt.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for BOLT plugin. Default is 7687", Integer.class, 7687),
@@ -1641,6 +1645,11 @@ public enum GlobalConfiguration {
   BOLT_SSL("arcadedb.bolt.ssl", SCOPE.SERVER,
       "TLS mode for BOLT connections: DISABLED (no TLS, default), OPTIONAL (auto-detect TLS or plaintext), REQUIRED (TLS only)",
       String.class, "DISABLED"),
+
+  BOLT_WEBSOCKET_MAX_FRAME_SIZE("arcadedb.bolt.websocket.maxFrameSize", SCOPE.SERVER,
+      "Maximum payload size in bytes accepted for a single BOLT WebSocket frame. Frames declaring a larger size are rejected before allocation, "
+          + "since the length is read off the wire before authentication. Default is 16MB",
+      Integer.class, 16 * 1024 * 1024),
 
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
