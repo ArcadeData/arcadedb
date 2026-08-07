@@ -40,10 +40,12 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.LRUCache;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.LongObjectHashMap;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,8 +73,13 @@ import java.util.logging.Level;
  *   <li>Edge type bucket ID is cached to avoid repeated schema lookups</li>
  *   <li>O(n) counting sort partitions edges by bucket before per-bucket position sort</li>
  *   <li>Optional parallel flush: edge connection dispatched to async threads by bucket</li>
- *   <li>Head chunk RID cache: skips vertex record loads when segment RID is already known</li>
+ *   <li>Head chunk RID cache: skips vertex record loads when segment RID is already known, bounded by a
+ *       configurable LRU cap so a long-lived stream's cache memory does not grow with distinct vertex count
+ *       (issue #5664)</li>
  *   <li>Lazy vertex loading: vertex only loaded from disk on segment overflow</li>
+ *   <li>Deferred incoming edges drain early once buffered past a configurable cap, instead of only at
+ *       {@link #close()}, so the buffer and the close-time connection pass stay bounded on a long stream
+ *       (issue #5664)</li>
  * </ul>
  * <p>
  * <b>Super-node promotion (#5667):</b> unlike the standard {@code Vertex.newEdge()} path, a bulk load through
@@ -133,9 +140,27 @@ public class GraphBatch implements AutoCloseable {
   private final boolean parallelFlush;
   private final int     commitRetries;
   private final long    commitRetryDelayMs;
+  private final int     chunkCacheCapacity;
+  private final int     maxDeferredIncomingEdges;
 
   /** Upper bound for the exponential back-off between vertex-commit retries. */
   private static final long MAX_COMMIT_RETRY_DELAY_MS = 10_000L;
+
+  /**
+   * Default cap on the {@link #outChunkRIDCache} / {@link #inChunkRIDCache} entries (issue #5664). Both caches
+   * are pure lookup accelerators - every call site falls back to reading the vertex's head chunk from disk on a
+   * miss - so bounding each with an LRU keeps its memory flat on a long-lived stream instead of growing with the
+   * number of distinct vertices touched. ~1M entries is roughly 100-150 MB per cache.
+   */
+  private static final int DEFAULT_CHUNK_CACHE_CAPACITY = 1_000_000;
+
+  /**
+   * Default cap on the deferred incoming-edge buffer (issue #5664). Once {@link #inEdgeCount} reaches this many
+   * buffered entries, {@link #connectDeferredIncomingEdges()} runs early from {@link #flush()} instead of
+   * waiting for {@link #close()}, amortizing the connection pass over the load and keeping the buffer's
+   * primitive arrays (and the transient doubling copy when they grow) from scaling with the full stream length.
+   */
+  private static final int DEFAULT_MAX_DEFERRED_INCOMING_EDGES = 5_000_000;
 
   /**
    * Test-only fault-injection hook. Invoked just before each {@link #createVertices} commit with
@@ -190,9 +215,12 @@ public class GraphBatch implements AutoCloseable {
   private final Map<String, Boolean> lightweightTypeCache     = new ConcurrentHashMap<>();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
-  // Must be ConcurrentHashMap because getOrCreate*EdgeChunk() is called from parallel async slots
-  private final Map<Long, RID> outChunkRIDCache = new ConcurrentHashMap<>();
-  private final Map<Long, RID> inChunkRIDCache = new ConcurrentHashMap<>();
+  // Bounded LRU wrapped in synchronizedMap (issue #5664): getOrCreate*EdgeChunk() is called from parallel async
+  // slots, so the map must stay thread-safe, and an unbounded cache grows with the number of distinct vertices
+  // touched over the WHOLE lifetime of the batch rather than with batchSize. Every call site falls back to
+  // reading the vertex's head chunk from disk on a miss, so eviction is always safe, just slower on a miss.
+  private final Map<Long, RID> outChunkRIDCache;
+  private final Map<Long, RID> inChunkRIDCache;
 
   // --- Deferred vertex head chunk updates: persisted in one batch pass at close() ---
   // vertexKey → latest segment RID that needs to be set on the vertex record.
@@ -248,7 +276,8 @@ public class GraphBatch implements AutoCloseable {
       final int edgeListInitialSize,
       final boolean lightEdges, final boolean bidirectional, final int commitEvery,
       final boolean useWAL, final WALFile.FlushType walFlush, final boolean preAllocateEdgeChunks,
-      final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs) {
+      final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs,
+      final int chunkCacheCapacity, final int maxDeferredIncomingEdges) {
     this.database = database;
     this.guardOwner = guardOwner;
     this.batchSize = batchSize;
@@ -258,6 +287,10 @@ public class GraphBatch implements AutoCloseable {
     this.commitEvery = commitEvery;
     this.commitRetries = commitRetries;
     this.commitRetryDelayMs = commitRetryDelayMs;
+    this.chunkCacheCapacity = chunkCacheCapacity;
+    this.maxDeferredIncomingEdges = maxDeferredIncomingEdges;
+    this.outChunkRIDCache = Collections.synchronizedMap(new LRUCache<>(chunkCacheCapacity));
+    this.inChunkRIDCache = Collections.synchronizedMap(new LRUCache<>(chunkCacheCapacity));
     // Already the effective value: Builder.build() forces the WAL on for replicated databases (issue #4076)
     // before it derives commitEvery from it (issue #5470).
     this.useWAL = useWAL;
@@ -630,8 +663,17 @@ public class GraphBatch implements AutoCloseable {
       }
 
       // --- PHASE 4: Accumulate incoming edges in deferred buffer (array-only, no DB) ---
-      if (bidirectional)
+      if (bidirectional) {
         accumulateIncomingEdges(edgeRIDs);
+
+        // Drain early once the buffer crosses the configured cap (issue #5664): left alone, the deferred
+        // incoming-edge arrays (and the in-chunk RID cache they populate) grow with the FULL stream length,
+        // not with batchSize, and connectDeferredIncomingEdges() would land as one unbounded pass at close().
+        // Draining here amortizes that pass over the load instead. maxDeferredIncomingEdges=0 opts back into
+        // the pre-#5664 behavior of deferring everything to close().
+        if (maxDeferredIncomingEdges > 0 && inEdgeCount >= maxDeferredIncomingEdges)
+          connectDeferredIncomingEdges();
+      }
 
       totalEdgesCreated += edgeCount;
       totalFlushes++;
@@ -1126,6 +1168,22 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
+   * Test-only accessor: current size of the OUT head-chunk RID cache. Used to verify the bound from issue #5664
+   * holds regardless of how many distinct vertices the stream has touched.
+   */
+  int getOutChunkRIDCacheSize() {
+    return outChunkRIDCache.size();
+  }
+
+  /**
+   * Test-only accessor: current size of the IN head-chunk RID cache. Used to verify the bound from issue #5664
+   * holds regardless of how many distinct vertices the stream has touched.
+   */
+  int getInChunkRIDCacheSize() {
+    return inChunkRIDCache.size();
+  }
+
+  /**
    * Number of records written inside one transaction during an edge flush, or 0 when the whole flush is
    * committed at once. On a replicated database this is also the size of a single Raft entry, so it bounds
    * how large a replicated entry can get (issue #5470).
@@ -1320,6 +1378,18 @@ public class GraphBatch implements AutoCloseable {
    * Accumulates incoming edge info from the current flush buffer into the deferred arrays.
    */
   private void accumulateIncomingEdges(final RID[] edgeRIDs) {
+    // An earlier in-flush drain (issue #5664) frees these arrays at the end of connectDeferredIncomingEdges();
+    // re-allocate at the same initial size the constructor would have used.
+    if (inEdgeBucketIds == null) {
+      final int initialInCapacity = batchSize;
+      inEdgeBucketIds = new int[initialInCapacity];
+      inEdgePositions = new long[initialInCapacity];
+      inVertexBucketIds = new int[initialInCapacity];
+      inVertexPositions = new long[initialInCapacity];
+      inDstBucketIds = new int[initialInCapacity];
+      inDstPositions = new long[initialInCapacity];
+    }
+
     final int needed = inEdgeCount + edgeCount;
     if (needed > inEdgeBucketIds.length)
       growIncomingBuffers(needed);
@@ -2522,6 +2592,8 @@ public class GraphBatch implements AutoCloseable {
     private boolean            parallelFlush         = true;
     private int                commitRetries         = 10;
     private long               commitRetryDelayMs    = 1000;
+    private int                chunkCacheCapacity       = DEFAULT_CHUNK_CACHE_CAPACITY;
+    private int                maxDeferredIncomingEdges = DEFAULT_MAX_DEFERRED_INCOMING_EDGES;
 
     Builder(final DatabaseInternal database, final LocalDatabase guardOwner) {
       this.database = database;
@@ -2659,6 +2731,32 @@ public class GraphBatch implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Maximum number of entries retained in each of the OUT/IN head-chunk RID lookup caches (issue #5664).
+     * Both caches are pure accelerators - a miss falls back to loading the vertex's head chunk from disk - so
+     * bounding them with an LRU keeps memory flat on a long-lived stream instead of growing with the number of
+     * distinct vertices touched. Default: 1,000,000 (roughly 100-150 MB per cache).
+     */
+    public Builder withChunkCacheCapacity(final int chunkCacheCapacity) {
+      if (chunkCacheCapacity <= 0)
+        throw new IllegalArgumentException("Chunk cache capacity must be > 0");
+      this.chunkCacheCapacity = chunkCacheCapacity;
+      return this;
+    }
+
+    /**
+     * Maximum number of buffered deferred incoming edges before the incoming-edge connection pass that
+     * {@link #close()} would otherwise run alone runs early, from {@link #flush()} (issue #5664). This
+     * amortizes the cost over the load instead of paying it in one unbounded pass at close time. Default:
+     * 5,000,000. Set to 0 to defer everything to close(), matching pre-#5664 behavior (unbounded buffer growth).
+     */
+    public Builder withMaxDeferredIncomingEdges(final int maxDeferredIncomingEdges) {
+      if (maxDeferredIncomingEdges < 0)
+        throw new IllegalArgumentException("Max deferred incoming edges must be >= 0");
+      this.maxDeferredIncomingEdges = maxDeferredIncomingEdges;
+      return this;
+    }
+
     public GraphBatch build() {
       int effectiveBatchSize = batchSize;
       if (!batchSizeExplicit && expectedEdgeCount > 0)
@@ -2689,7 +2787,7 @@ public class GraphBatch implements AutoCloseable {
       try {
         return new GraphBatch(database, guardOwner, effectiveBatchSize, edgeListInitialSize, lightEdges,
             bidirectional, effectiveCommitEvery, effectiveUseWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
-            commitRetries, commitRetryDelayMs);
+            commitRetries, commitRetryDelayMs, chunkCacheCapacity, maxDeferredIncomingEdges);
       } catch (final RuntimeException | Error e) {
         if (guardOwner != null)
           guardOwner.batchFinished();
