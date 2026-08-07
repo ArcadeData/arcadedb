@@ -104,6 +104,94 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void oversizedBulkStringLengthIsRejectedImmediately() throws IOException {
+    // Same DoS class as the array-length case above, but on the $ path every command actually uses (the
+    // command name and every argument, including GET/SET's own payloads, are RESP bulk strings). A header
+    // this large would previously tie up the connection thread indefinitely and, if the client actually sent
+    // the declared bytes, grow the parse buffer without bound.
+    final String payload = "$2000000000\r\n";
+
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+      socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+
+      final byte[] buffer = new byte[512];
+      final int    read   = socket.getInputStream().read(buffer);
+      assertThat(read).isGreaterThan(0);
+      final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("bulk length");
+    }
+
+    // The listener/thread pool must still be healthy: a fresh connection behaves normally.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    }
+  }
+
+  @Test
+  void malformedLengthClosesCleanlyInsteadOfCrashingTheThread() throws IOException {
+    // A non-numeric length used to throw an uncaught NumberFormatException, killing the connection thread
+    // outright instead of getting the same -ERR Protocol error + close treatment as the size-related cases.
+    final String payload = "$abc\r\n";
+
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+      socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+
+      final byte[] buffer = new byte[512];
+      final int    read   = socket.getInputStream().read(buffer);
+      assertThat(read).isGreaterThan(0);
+      final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("bulk length");
+    }
+
+    // The listener/thread pool must still be healthy: a fresh connection behaves normally.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    }
+  }
+
+  @Test
+  void configuredDepthLimitIsHonored() throws IOException {
+    // Confirms arcadedb.redis.maxMultiBulkDepth is actually wired end to end, rather than the tests above
+    // only ever exercising the (also never-directly-asserted) built-in default.
+    GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH.setValue(3);
+    try {
+      final StringBuilder payload = new StringBuilder();
+      for (int i = 0; i < 5; i++)
+        payload.append("*1\r\n");
+      payload.append("$1\r\nx\r\n");
+
+      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+        socket.setSoTimeout(10_000);
+        socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+
+        final byte[] buffer = new byte[512];
+        final int    read   = socket.getInputStream().read(buffer);
+        assertThat(read).isGreaterThan(0);
+        final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+        assertThat(reply).startsWith("-ERR");
+        assertThat(reply).contains("maximum allowed depth (3)");
+      }
+
+      // A flat command (depth 1) must still be accepted at the lowered limit.
+      try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+        assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+        assertThat(jedis.ping()).isEqualTo("PONG");
+      }
+    } finally {
+      GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH.reset();
+    }
+  }
+
   @Override
   protected void populateDatabase() {
   }

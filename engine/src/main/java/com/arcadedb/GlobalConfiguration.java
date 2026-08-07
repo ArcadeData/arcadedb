@@ -1660,6 +1660,13 @@ public enum GlobalConfiguration {
       *2000000000\\r\\n) starting a parse loop with billions of iterations. Default is 1048576.""",
       Integer.class, 1_048_576),
 
+  REDIS_MAX_BULK_LENGTH("arcadedb.redis.maxBulkLength", SCOPE.SERVER, """
+      Maximum length in bytes accepted for a single RESP bulk string ($) by the Redis wire-protocol listener, \
+      matching Redis' own proto-max-bulk-len. Without a bound, a client-declared length (e.g. $2000000000\\r\\n) \
+      can tie up a connection thread indefinitely by trickling bytes, or grow the parse buffer unbounded if the \
+      declared bytes are actually sent. Default is 536870912 (512MB).""",
+      Integer.class, 536_870_912),
+
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Mongo plugin. Default is 27017", Integer.class, 27017),

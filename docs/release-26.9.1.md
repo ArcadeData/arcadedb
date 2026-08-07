@@ -181,4 +181,13 @@ Both are now bounded by two new settings mirroring Redis' own protocol limits: `
 a RESP `-ERR Protocol error: ...` reply and the connection is closed, since the stream position past a rejected
 message can no longer be trusted to resynchronize on.
 
+Code review on the fix caught the same bug class one level down: the RESP bulk-string (`$`) length was equally
+unbounded, and unlike the array case it sits on the hot path of essentially every command (the command name and
+every argument, including `GET`/`SET`'s own payloads, are bulk strings), so it was arguably the bigger exposure
+of the two. A `$2000000000\r\n` header could tie up a connection thread the same way, or grow the parse buffer
+without bound if the client actually sent the declared bytes. It is now capped by a third setting,
+`arcadedb.redis.maxBulkLength` (default 512MB, matching Redis' own `proto-max-bulk-len`). Malformed, non-numeric
+lengths (e.g. `$abc\r\n`) also used to throw an uncaught `NumberFormatException` that killed the connection
+thread outright; they now get the same clean error-reply-and-close treatment as an oversized length.
+
 [#5588](https://github.com/ArcadeData/arcadedb/issues/5588)

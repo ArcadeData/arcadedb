@@ -21,12 +21,13 @@ package com.arcadedb.redis;
 import java.io.IOException;
 
 /**
- * Thrown by {@link RedisNetworkExecutor#parseNext(int)} when an incoming RESP message violates a
- * configured protocol limit (array nesting depth or array element count). It extends {@link IOException},
- * not {@link RedisException}, because the violation is detected while decoding the message itself, before
- * {@code executeCommand} has a command to run: the parser has no reliable way to know where the malformed
- * structure ends, so the only safe response is to report the error and close the connection, exactly as
- * {@link RedisNetworkExecutor#run()} already does for other transport-level {@link IOException}s.
+ * Thrown by {@code RedisNetworkExecutor.parseNext(int)} when an incoming RESP message violates a configured
+ * protocol limit (array/bulk-string length, array nesting depth, or a malformed non-numeric length). It
+ * extends {@link IOException}, not {@link RedisException}, because the violation is detected while decoding
+ * the message itself, before {@code executeCommand} has a command to run: the parser has no reliable way to
+ * know where the malformed structure ends, so the only safe response is to report the error and close the
+ * connection, exactly as {@code RedisNetworkExecutor.run()} already does for other transport-level
+ * {@link IOException}s.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
