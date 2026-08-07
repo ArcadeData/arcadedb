@@ -175,4 +175,48 @@ class BinaryComparatorNarrowingTest {
     assertThat(comparator.compare(asFloat, BinaryTypes.TYPE_FLOAT, precise, BinaryTypes.TYPE_DOUBLE)).isLessThan(0);
     assertThat(comparator.compare(precise, BinaryTypes.TYPE_DOUBLE, asFloat, BinaryTypes.TYPE_FLOAT)).isGreaterThan(0);
   }
+
+  /**
+   * {@code TYPE_STRING} as {@code type1} did an unconditional lexicographic {@code compareTo()} regardless of
+   * {@code type2}, ignoring the numeric comparator every other branch in this class now uses - the same
+   * antisymmetry bug this class was fixed for, just with the String on the other side (review follow-up on
+   * PR #5922). {@code "2".compareTo("10")} is positive (lexicographic), while the numeric {@code 10 vs 2} is also
+   * positive, so both directions of the same comparison used to agree "greater".
+   */
+  @Test
+  void stringVersusNumericIsAntisymmetric() {
+    final int forward = comparator.compare("2", BinaryTypes.TYPE_STRING, 10, BinaryTypes.TYPE_INT);
+    final int backward = comparator.compare(10, BinaryTypes.TYPE_INT, "2", BinaryTypes.TYPE_STRING);
+
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    // 2 is numerically less than 10, even though "2" > "10" lexicographically.
+    assertThat(forward).isLessThan(0);
+    assertThat(backward).isGreaterThan(0);
+  }
+
+  /**
+   * Guard against over-fixing: a String compared against another String must still use lexicographic ordering,
+   * not fall into the new numeric-delegation branch.
+   */
+  @Test
+  void stringVersusStringStillLexicographic() {
+    assertThat(comparator.compare("2", BinaryTypes.TYPE_STRING, "10", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
+    assertThat(comparator.compare("abc", BinaryTypes.TYPE_STRING, "abd", BinaryTypes.TYPE_STRING)).isLessThan(0);
+  }
+
+  /**
+   * Guard against over-fixing: a numeric-valued String compared against a number must still resolve correctly in
+   * both directions, and a non-numeric String against a number/boolean routes through the numeric side's
+   * unguarded parse (consistent with every other branch in this class - #5900's SQL-level fix is what guards the
+   * query engine against that, not this low-level comparator).
+   */
+  @Test
+  void stringVersusBooleanIsAntisymmetric() {
+    final int forward = comparator.compare("false", BinaryTypes.TYPE_STRING, true, BinaryTypes.TYPE_BOOLEAN);
+    final int backward = comparator.compare(true, BinaryTypes.TYPE_BOOLEAN, "false", BinaryTypes.TYPE_STRING);
+
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    assertThat(forward).isLessThan(0);
+    assertThat(backward).isGreaterThan(0);
+  }
 }

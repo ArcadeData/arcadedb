@@ -69,7 +69,24 @@ public class BinaryComparator {
               ((String) value2).getBytes(DatabaseFactory.getDefaultCharset()));
       }
 
-      return ((String) value1).compareTo(value2.toString());
+      switch (type2) {
+      case BinaryTypes.TYPE_INT:
+      case BinaryTypes.TYPE_SHORT:
+      case BinaryTypes.TYPE_BYTE:
+      case BinaryTypes.TYPE_LONG:
+      case BinaryTypes.TYPE_FLOAT:
+      case BinaryTypes.TYPE_DOUBLE:
+      case BinaryTypes.TYPE_DECIMAL:
+      case BinaryTypes.TYPE_BOOLEAN:
+        // A String value1 against a numeric/boolean value2 must agree with the reverse call - delegate to the
+        // numeric side's own widening comparator and negate, rather than falling through to a lexicographic
+        // compareTo() that silently ignores type2 and breaks antisymmetry the same way the narrowing branches
+        // did before this fix (e.g. compare("2", STRING, 10, INT) and its reverse both answered "greater").
+        return -compare(value2, type2, value1, type1);
+
+      default:
+        return ((String) value1).compareTo(value2.toString());
+      }
     }
 
     case BinaryTypes.TYPE_DOUBLE:
