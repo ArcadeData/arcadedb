@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.IndexCursorCollection;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.fulltext.FullTextSearch;
@@ -642,8 +643,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // which falls through to the full fan-out below.
     final List<String> propNames = getPropertyNames();
 
-    final int bucketIndex = type.getBucketIndexByKeys(propNames, keys,
-        DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).asyncMode);
+    final boolean async =
+        DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).asyncMode;
+
+    final int bucketIndex = type.getBucketIndexByKeys(propNames, keys, async);
 
     if (bucketIndex > -1) {
       // USE THE SHARDED INDEX
@@ -655,11 +658,22 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         // MODIFIABLE COPY
         polymorphicIndexesOnKeys = new ArrayList<>(polymorphicIndexesOnKeys);
 
-        for (DocumentType s : subTypes) {
-          final List<IndexInternal> subIndexes = s.getPolymorphicBucketIndexByBucketId(
-              s.getBuckets(false).get(bucketIndex).getFileId(), propNames);
-          polymorphicIndexesOnKeys.addAll(subIndexes);
-
+        for (final DocumentType s : subTypes) {
+          // `bucketIndex` is only meaningful modulo the bucket count it was computed against (the
+          // parent's). A subtype is free to declare a different bucket count, so reusing it here can
+          // index past the end of the subtype's own bucket list (issue #5645). Each subtype has to
+          // re-derive its own placement through its own strategy and its own modulus instead.
+          final int subBucketIndex = s.getBucketIndexByKeys(propNames, keys, async);
+          if (subBucketIndex > -1) {
+            final List<IndexInternal> subIndexes = s.getPolymorphicBucketIndexByBucketId(
+                s.getBuckets(false).get(subBucketIndex).getFileId(), propNames);
+            polymorphicIndexesOnKeys.addAll(subIndexes);
+          } else {
+            // This subtype cannot prune (not partitioned, or its strategy declines): fall back to
+            // its own full bucket list rather than skip it or guess with the parent's bucket index.
+            for (final Bucket subBucket : s.getBuckets(false))
+              polymorphicIndexesOnKeys.addAll(s.getPolymorphicBucketIndexByBucketId(subBucket.getFileId(), propNames));
+          }
         }
       }
 
