@@ -93,7 +93,38 @@ New file: `engine/src/test/java/com/arcadedb/query/opencypher/Issue5790OptionalM
    - all pass.
 5. Ran the full `com.arcadedb.query.opencypher.**` test package: 4540 tests, 0 failures, 0 errors.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5914
+
+## Review cycles
+
+Zero review cycles completed. The `claude` bot's review job (`claude-review`,
+https://github.com/ArcadeData/arcadedb/actions/runs/31181968311) ran to completion
+against head SHA `aea666bd26097c3c451f677c2a0609350a831119` (41 turns, reported
+`permission_denials_count: 14`, "No buffered inline comments") but posted **no**
+review, review comment, or issue comment anywhere on the PR - verified across all
+three surfaces (`gh api .../pulls/5914/reviews`, `.../pulls/5914/comments`,
+`.../issues/5914/comments`) after the job's CI check itself showed `pass` (5m1s).
+All other CI checks passed (CodeQL, Codacy, Meterian, language analyzers,
+`build-and-package`).
+
+This looks like the known MCP-tool-over-denial infrastructure issue tracked
+separately (not part of this issue's scope) rather than anything about this PR's
+diff - the job's own permission-denial counter is consistent with it being unable
+to call whatever tool it needed to post a review/comment.
+
+## Deferred items
+
+None from code review (none was received). The PR is left open for the developer
+to either re-trigger `claude-review` (e.g. by pushing a no-op commit) or review and
+merge manually.
+
 ## Status
 
-Fix implemented and verified. Proceeding to PR + automated review loop via
-`resolve-issue-with-review`.
+**timeout** - the review loop's 15-minute wait window closed with the `claude`
+bot's workflow having already run to completion and posted nothing. Per this
+skill's constraints, the loop stops here; merge remains the developer's
+responsibility. Fix and regression test are implemented, verified locally
+(target-package test run: 4540 tests, 0 failures, 0 errors), and pushed to the PR
+branch.
