@@ -48,6 +48,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -65,6 +66,11 @@ public class RedisNetworkExecutor extends Thread {
   private final    int                 maxMultiBulkDepth;
   private final    int                 maxMultiBulkLength;
   private final    int                 maxBulkLength;
+
+  // A misconfigured protocol-limit setting is re-read (and re-validated) on every new connection, since the
+  // value can change at runtime; this only bounds the WARNING about it to once per setting per JVM, so a busy
+  // server churning through connections against a static bad value does not flood the log.
+  private static final Set<GlobalConfiguration> WARNED_MISCONFIGURED_LIMITS = ConcurrentHashMap.newKeySet();
 
   /**
    * Holds the resolved key and database from key resolution.
@@ -102,9 +108,10 @@ public class RedisNetworkExecutor extends Thread {
     final int configured = setting.getValueAsInteger();
     if (configured < floor) {
       final int fallback = ((Number) setting.getDefValue()).intValue();
-      LogManager.instance().log(this, Level.WARNING,
-          "Redis wrapper: '%s' is set to %d, below the minimum usable value (%d); falling back to the default (%d)",
-          setting.getKey(), configured, floor, fallback);
+      if (WARNED_MISCONFIGURED_LIMITS.add(setting))
+        LogManager.instance().log(this, Level.WARNING,
+            "Redis wrapper: '%s' is set to %d, below the minimum usable value (%d); falling back to the default (%d)",
+            setting.getKey(), configured, floor, fallback);
       return fallback;
     }
     return configured;
