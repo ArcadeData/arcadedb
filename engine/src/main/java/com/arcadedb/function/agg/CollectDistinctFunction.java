@@ -19,6 +19,7 @@
 package com.arcadedb.function.agg;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.DistinctNumberWrapper;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -59,6 +60,10 @@ public class CollectDistinctFunction implements StatelessFunction {
       if (value instanceof Identifiable)
         // Use RID as the key for deduplication to handle proxies and loaded records
         distinctValues.add(new IdentifiableWrapper((Identifiable) value));
+      else if (value instanceof Number)
+        // Canonicalize cross-type numeric equality (e.g. INTEGER 1 vs FLOAT 1.0) so DISTINCT stays
+        // consistent with Cypher's `=` operator (issue #5789).
+        distinctValues.add(new DistinctNumberWrapper(value));
       else
         distinctValues.add(value);
     }
@@ -77,6 +82,8 @@ public class CollectDistinctFunction implements StatelessFunction {
     for (final Object value : distinctValues) {
       if (value instanceof IdentifiableWrapper)
         result.add(((IdentifiableWrapper) value).getIdentifiable());
+      else if (value instanceof DistinctNumberWrapper)
+        result.add(((DistinctNumberWrapper) value).getOriginal());
       else
         result.add(value);
     }
