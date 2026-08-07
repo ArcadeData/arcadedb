@@ -72,6 +72,13 @@ public class RedisNetworkExecutor extends Thread {
   // server churning through connections against a static bad value does not flood the log.
   private static final Set<GlobalConfiguration> WARNED_MISCONFIGURED_LIMITS = ConcurrentHashMap.newKeySet();
 
+  // parseValueUntilLF() reads every RESP length/integer token (*, $, :) and simple-string reply value; all of
+  // them are always short (a signed 64-bit decimal has at most 20 characters). Without a bound, a client that
+  // never sends a terminating CRLF - e.g. "$" followed by megabytes of digits - grows this buffer unboundedly
+  // and holds the thread before parseLength()/maxBulkLength/maxMultiBulkLength ever get a value to check,
+  // since those only fire once a token has actually been parsed (issue #5895 review, round 6).
+  private static final int MAX_TOKEN_LENGTH = 64;
+
   /**
    * Holds the resolved key and database from key resolution.
    */
@@ -882,8 +889,11 @@ public class RedisNetworkExecutor extends Thread {
       if (!slashR) {
         if (b == '\r')
           slashR = true;
-        else
+        else {
+          if (value.length() >= MAX_TOKEN_LENGTH)
+            throw new RedisProtocolLimitException("Protocol error: token exceeds the maximum allowed length (" + MAX_TOKEN_LENGTH + ") without a terminating CRLF");
           value.append((char) b);
+        }
       } else {
         if (b == '\n')
           break;

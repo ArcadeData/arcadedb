@@ -189,6 +189,34 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
+  void unterminatedTokenIsRejectedInsteadOfGrowingUnbounded() throws IOException {
+    // The new size/depth checks only fire once parseValueUntilLF() has actually produced a token (it looks
+    // for a terminating CRLF), so a client that never sends one - e.g. "$" followed by a very long run of
+    // digits with no \r\n - grows that buffer unbounded and holds the thread before maxBulkLength ever gets
+    // a value to check against. A real RESP length token is always short, so it must be rejected on its own.
+    final String payload = "$" + "9".repeat(1000);
+
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+      socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+
+      final byte[] buffer = new byte[512];
+      final int    read   = socket.getInputStream().read(buffer);
+      assertThat(read).isGreaterThan(0);
+      final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("maximum allowed length");
+    }
+
+    // The listener/thread pool must still be healthy: a fresh connection behaves normally.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    }
+  }
+
+  @Test
   void configuredDepthLimitIsHonored() throws IOException {
     // Confirms arcadedb.redis.maxMultiBulkDepth is actually wired end to end, rather than the tests above
     // only ever exercising the (also never-directly-asserted) built-in default.
