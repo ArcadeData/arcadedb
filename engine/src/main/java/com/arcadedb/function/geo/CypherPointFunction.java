@@ -19,6 +19,7 @@
 package com.arcadedb.function.geo;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -86,8 +87,10 @@ public class CypherPointFunction implements StatelessFunction {
 
     if (args[0] == null)
       return null;
+    // A non-map argument is determined entirely by the supplied argument, so it is a client error (HTTP 400)
+    // rather than a CommandExecutionException (HTTP 500). See issue #5910.
     if (!(args[0] instanceof Map))
-      throw new CommandExecutionException("point() argument must be a map with coordinate properties");
+      throw new CommandSemanticException("point() argument must be a map with coordinate properties");
     final Map<?, ?> map = (Map<?, ?>) args[0];
 
     final Map<String, Object> result = new LinkedHashMap<>();
@@ -127,13 +130,15 @@ public class CypherPointFunction implements StatelessFunction {
         result.put("crs", result.containsKey("z") ? "cartesian-3D" : "cartesian");
       if (map.containsKey("srid")) {
         final Object sridObj = map.get("srid");
+        // Same rationale as the non-map argument above: a non-numeric srid is a client error (issue #5910).
         if (!(sridObj instanceof Number))
-          throw new CommandExecutionException(
+          throw new CommandSemanticException(
               "point() 'srid' must be numeric, found " + describe(sridObj));
         result.put("srid", ((Number) sridObj).intValue());
       }
     } else {
-      throw new CommandExecutionException("point() map must contain x/y or longitude/latitude properties");
+      // Missing recognized coordinate keys is a client error (issue #5910), same rationale as above.
+      throw new CommandSemanticException("point() map must contain x/y or longitude/latitude properties");
     }
 
     return result;
