@@ -30,9 +30,11 @@ import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Selects the optimal anchor node (starting point) for query execution.
@@ -66,6 +68,28 @@ public class AnchorSelector {
    * @return anchor selection with the best starting node
    */
   public AnchorSelection selectAnchor(final LogicalPlan plan) {
+    return selectAnchor(plan, Collections.emptySet());
+  }
+
+  /**
+   * Selects the optimal anchor node for the given logical plan, ignoring any node whose variable is
+   * in {@code excludedVariables}.
+   * <p>
+   * This is purely a cost-based choice with no relationship-reachability awareness: an indexed or
+   * filtered node is preferred regardless of whether it is actually reachable from the relationship
+   * pattern {@link com.arcadedb.query.opencypher.optimizer.CypherOptimizer#buildExpansionChain} is
+   * about to walk. A node that is disconnected from every relationship (e.g. {@code x} in
+   * {@code MATCH (n)-[:E]->(m) MATCH (x:B {id: 1})}) must therefore be excluded from anchor
+   * candidacy: if it wins purely on cost, the expansion chain would be asked to traverse a
+   * relationship from a node that is not one of its endpoints, which either strands the chain or
+   * returns wrong (empty) results. {@code CypherOptimizer} computes {@code excludedVariables} as
+   * every pattern node not touched by any relationship, before this method ever runs.
+   *
+   * @param plan               the logical plan to analyze
+   * @param excludedVariables  node variables to skip when choosing the anchor
+   * @return anchor selection with the best starting node
+   */
+  public AnchorSelection selectAnchor(final LogicalPlan plan, final Set<String> excludedVariables) {
     if (plan.getNodes().isEmpty()) {
       throw new IllegalArgumentException("Cannot select anchor from empty logical plan");
     }
@@ -85,6 +109,9 @@ public class AnchorSelector {
     // expansion chain already uses. The guard above still keys off the named nodes, so a pattern with
     // no named node at all keeps falling back the way count push-down expects.
     for (final LogicalNode node : plan.getPatternNodes().values()) {
+      if (excludedVariables.contains(node.getVariable()))
+        continue;
+
       final AnchorSelection candidate = evaluateNode(node, plan);
 
       if (candidate.useIndex()) {

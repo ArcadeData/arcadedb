@@ -146,8 +146,41 @@ public class CypherOptimizer {
       return optimizeMultiMatchIndependent(logicalPlan);
     }
 
-    // 3. Select anchor node (best starting point)
-    AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan);
+    // A later MATCH clause can introduce a node that shares no variable with any relationship in the
+    // pattern (e.g. "MATCH (n)-[:E]->(m) MATCH (x)"). shouldUseOptimizer() only lets such a query
+    // reach the optimizer when every disconnected component is a single, standalone node, so any
+    // pattern node not touched by a relationship is exactly that: an independent scan that must
+    // Cartesian-join with the rest, the same way optimizeMultiMatchIndependent handles a query with no
+    // relationships at all. This is computed BEFORE anchor selection (not after, keyed off the chosen
+    // anchor) because AnchorSelector.selectAnchor is purely cost-based with no relationship-
+    // reachability awareness: a disconnected node with its own selective filter can otherwise outrank
+    // the real relationship-connected nodes and get selected as the anchor itself, and
+    // buildExpansionChain would then try to expand a relationship from a node that is not one of its
+    // endpoints - silently returning wrong (often empty) results rather than the correct Cartesian
+    // product (#5810). getPatternNodes() (rather than the named-only getNodes()) is used so an
+    // anonymous disconnected node, e.g. "MATCH (n)-[:E]->(m) MATCH (:Label)", is caught too - it still
+    // multiplies the row count even though nothing reads its variable.
+    final Set<String> relationshipVariables = new HashSet<>();
+    for (final LogicalRelationship rel : logicalPlan.getRelationships()) {
+      relationshipVariables.add(rel.getSourceVariable());
+      relationshipVariables.add(rel.getTargetVariable());
+    }
+    final List<LogicalNode> disconnectedNodes = new ArrayList<>();
+    final Set<String> disconnectedVariables = new HashSet<>();
+    if (!relationshipVariables.isEmpty()) {
+      // Only exclude nodes from anchor candidacy when there IS a relationship pattern to be
+      // disconnected from - with no relationships at all this loop would otherwise treat every node
+      // (including the only candidate) as "disconnected" and starve anchor selection.
+      for (final LogicalNode node : logicalPlan.getPatternNodes().values())
+        if (!relationshipVariables.contains(node.getVariable())) {
+          disconnectedNodes.add(node);
+          disconnectedVariables.add(node.getVariable());
+        }
+    }
+
+    // 3. Select anchor node (best starting point), excluding any node disconnected from the
+    // relationship pattern - it cannot seed buildExpansionChain and is joined in separately below.
+    AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan, disconnectedVariables);
 
     // 3a. Validate anchor against UNIDIRECTIONAL edge constraints.
     // UNIDIRECTIONAL edges only store outgoing links on the source vertex,
@@ -165,56 +198,36 @@ public class CypherOptimizer {
       rootOperator = buildExpansionChain(logicalPlan, anchor, anchorOperator);
     }
 
-    // 5a. A later MATCH clause can introduce a node that shares no variable with the relationship
-    // pattern above (e.g. "MATCH (n)-[:E]->(m) MATCH (x)"). shouldUseOptimizer() only lets such a
-    // query reach the optimizer when every disconnected component is a single, standalone node, so
-    // any pattern node not reachable from the anchor via a relationship is exactly that: an
-    // independent scan that must Cartesian-join with the rest, the same way optimizeMultiMatchIndependent
-    // handles a query with no relationships at all. Without this, the node is silently dropped from the
-    // plan and its variable resolves to null downstream instead of expanding one row per match (#5810).
-    // getPatternNodes() (rather than the named-only getNodes()) is used so an anonymous disconnected
-    // node, e.g. "MATCH (n)-[:E]->(m) MATCH (:Label)", is caught too - it still multiplies the row
-    // count even though nothing reads its variable.
-    final Set<String> connectedVariables = new HashSet<>();
-    connectedVariables.add(anchor.getVariable());
-    for (final LogicalRelationship rel : logicalPlan.getRelationships()) {
-      connectedVariables.add(rel.getSourceVariable());
-      connectedVariables.add(rel.getTargetVariable());
-    }
-    final List<LogicalNode> disconnectedNodes = new ArrayList<>();
-    for (final LogicalNode node : logicalPlan.getPatternNodes().values())
-      if (!connectedVariables.contains(node.getVariable()))
-        disconnectedNodes.add(node);
-
     // 6. Apply ExpandInto optimization
     // ExpandInto is detected during expansion chain building (step 5)
     // and applied automatically when both endpoints are bound
 
-    // 7. Push down filters. A filter that reads a disconnected node's variable can only be evaluated
-    // once that node has been Cartesian-joined in, so it is deferred to step 9a; every other filter
-    // is applied here as before, so it still benefits from anchor pushdown and GAV fusion below.
+    // 7. Push down filters. A conjunct that reads a disconnected node's variable can only be
+    // evaluated once that node has been Cartesian-joined in, so it is deferred to step 9a; a
+    // compound predicate like "WHERE n.id = 1 AND x.id = 2" (n connected, x disconnected) is split
+    // per-conjunct via the existing extractForVariables/residualForVariables helpers so the connected
+    // conjunct still reaches anchor pushdown and GAV fusion below instead of the whole clause being
+    // deferred just because one AND-ed conjunct touches a disconnected variable.
     final List<WhereClause> connectedFilters;
     final List<WhereClause> deferredFilters;
     if (disconnectedNodes.isEmpty()) {
       connectedFilters = logicalPlan.getWhereFilters();
       deferredFilters = Collections.emptyList();
     } else {
-      final Set<String> disconnectedVariables = new HashSet<>();
-      for (final LogicalNode node : disconnectedNodes)
-        disconnectedVariables.add(node.getVariable());
       connectedFilters = new ArrayList<>();
       deferredFilters = new ArrayList<>();
       for (final WhereClause whereClause : logicalPlan.getWhereFilters()) {
-        final Set<String> vars = WhereClause.collectVariables(whereClause.getConditionExpression());
-        if (Collections.disjoint(vars, disconnectedVariables))
-          connectedFilters.add(whereClause);
-        else
-          deferredFilters.add(whereClause);
+        final BooleanExpression condition = whereClause.getConditionExpression();
+        final BooleanExpression connectedPart = WhereClause.extractForVariables(condition, relationshipVariables);
+        final BooleanExpression residualPart = WhereClause.residualForVariables(condition, relationshipVariables);
+        if (connectedPart != null)
+          connectedFilters.add(new WhereClause(connectedPart));
+        if (residualPart != null)
+          deferredFilters.add(new WhereClause(residualPart));
       }
     }
-    if (!connectedFilters.isEmpty()) {
+    if (!connectedFilters.isEmpty())
       rootOperator = applyFilterPushdown(connectedFilters, logicalPlan, rootOperator, anchor.getVariable(), anchorOperator);
-    }
 
     // 8. Fuse consecutive GAVExpandAll operators into a single GAVFusedChainOperator
     // This eliminates ALL intermediate ResultInternal/HashMap/Vertex allocations
@@ -232,9 +245,8 @@ public class CypherOptimizer {
       final long cardinality = rootOperator.getEstimatedCardinality() * Math.max(1, nodeAnchor.getEstimatedCardinality());
       rootOperator = new CartesianProduct(rootOperator, nodeOperator, cost, cardinality);
     }
-    if (!deferredFilters.isEmpty()) {
+    if (!deferredFilters.isEmpty())
       rootOperator = applyFilterPushdown(deferredFilters, logicalPlan, rootOperator, null, null);
-    }
 
     // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();

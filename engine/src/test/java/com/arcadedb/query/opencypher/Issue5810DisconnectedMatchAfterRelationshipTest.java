@@ -50,6 +50,10 @@ class Issue5810DisconnectedMatchAfterRelationshipTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE A_0 IF NOT EXISTS");
     database.command("sql", "CREATE VERTEX TYPE B_0 IF NOT EXISTS");
     database.command("sql", "CREATE EDGE TYPE E IF NOT EXISTS");
+    database.command("sql", "CREATE PROPERTY A_0.id IF NOT EXISTS INTEGER");
+    database.command("sql", "CREATE PROPERTY B_0.id IF NOT EXISTS INTEGER");
+    database.command("sql", "CREATE INDEX IF NOT EXISTS ON A_0 (id) UNIQUE");
+    database.command("sql", "CREATE INDEX IF NOT EXISTS ON B_0 (id) UNIQUE");
 
     database.command("opencypher", "CREATE (:A_0 {id: 1})");
     database.command("opencypher", "CREATE (:B_0 {id: 2})");
@@ -135,6 +139,65 @@ class Issue5810DisconnectedMatchAfterRelationshipTest extends TestHelper {
     final Result row = rs.next();
     assertThat(row.<Integer>getProperty("m")).isEqualTo(2);
     assertThat(row.<Integer>getProperty("x")).isEqualTo(3);
+    assertThat(rs.hasNext()).isFalse();
+    rs.close();
+  }
+
+  /**
+   * Review finding: {@link com.arcadedb.query.opencypher.optimizer.AnchorSelector#selectAnchor} is
+   * purely cost-based with no relationship-reachability awareness. Before the fix, a disconnected
+   * node with its own indexed equality filter (cheaper than either endpoint of the unfiltered
+   * relationship pattern) could win anchor selection outright; {@code buildExpansionChain} would then
+   * try to expand the {@code n-[:E]->m} relationship starting from {@code x}, which is not one of its
+   * endpoints, silently returning 0 rows instead of the correct single row.
+   */
+  @Test
+  void disconnectedNodeWithOwnIndexedFilterDoesNotHijackAnchorSelection() {
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:A_0)-[:E]->(m:B_0) MATCH (x:B_0 {id: 3}) RETURN m.id AS m, x.id AS x");
+
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<Integer>getProperty("m")).isEqualTo(2);
+    assertThat(row.<Integer>getProperty("x")).isEqualTo(3);
+    assertThat(rs.hasNext()).isFalse();
+    rs.close();
+  }
+
+  /** Two disconnected single-node MATCH clauses after a relationship pattern must both fan out. */
+  @Test
+  void multipleDisconnectedNodesChainCorrectly() {
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:A_0)-[:E]->(m:B_0) MATCH (x:B_0) MATCH (y:B_0) RETURN count(*) AS c");
+    assertThat(rs.hasNext()).isTrue();
+    // 1 relationship row x 2 B_0 nodes (x) x 2 B_0 nodes (y) = 4
+    assertThat(rs.next().<Long>getProperty("c")).isEqualTo(4L);
+    rs.close();
+  }
+
+  /**
+   * A compound WHERE mixing a connected conjunct (n.id = 1, always true here) and a disconnected
+   * conjunct (x.id = 3) must apply both correctly: the connected conjunct is safe to push down
+   * alongside anchor selection, the disconnected one only after the Cartesian join binds x.
+   */
+  @Test
+  void mixedConnectedAndDisconnectedWhereClauseAppliesBothParts() {
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:A_0)-[:E]->(m:B_0) MATCH (x:B_0) WHERE n.id = 1 AND x.id = 3 RETURN m.id AS m, x.id AS x");
+
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<Integer>getProperty("m")).isEqualTo(2);
+    assertThat(row.<Integer>getProperty("x")).isEqualTo(3);
+    assertThat(rs.hasNext()).isFalse();
+    rs.close();
+  }
+
+  /** Same mixed clause, but the connected conjunct excludes the only row: must return nothing. */
+  @Test
+  void mixedConnectedAndDisconnectedWhereClauseConnectedConjunctCanExcludeAllRows() {
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:A_0)-[:E]->(m:B_0) MATCH (x:B_0) WHERE n.id = 999 AND x.id = 3 RETURN m.id AS m, x.id AS x");
     assertThat(rs.hasNext()).isFalse();
     rs.close();
   }

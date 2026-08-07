@@ -75,9 +75,53 @@ All 6 tests were verified to fail without the fix (reverted the `CypherOptimizer
 `git stash`, re-ran the test class: 4 failures + 1 error) and pass with it restored, confirming the
 tests reach and depend on the fixed code path.
 
+## Round 2: fix from the `claude[bot]` PR review (PR #5888)
+
+The bot review found a real, live correctness gap in the round-1 fix: `AnchorSelector.selectAnchor`
+is purely cost-based with no relationship-reachability awareness. If a disconnected node carried its
+own selective filter (e.g. `MATCH (n:A_0)-[:E]->(m:B_0) MATCH (x:B_0 {id: 3})`), it could win anchor
+selection outright over the unfiltered `n`/`m`. Reproduced live: the plan picked `x` as anchor and then
+tried to expand the `n-[:E]->m` relationship starting from `x` (not one of its endpoints), returning 0
+rows instead of the correct 1.
+
+Fix:
+- `AnchorSelector` gained a `selectAnchor(LogicalPlan, Set<String> excludedVariables)` overload that
+  skips any node whose variable is in the exclusion set; the original 1-arg method now delegates to it
+  with an empty set.
+- `CypherOptimizer.optimize()` now computes the disconnected-node set **before** calling
+  `selectAnchor`, from `logicalPlan.getRelationships()` alone (not from the chosen anchor), and passes
+  it as the exclusion set - so a disconnected node can never be selected as anchor in the first place.
+- The WHERE-filter split was upgraded from a coarse "does the whole clause touch a disconnected
+  variable" check to a per-conjunct split using the existing
+  `WhereClause.extractForVariables`/`residualForVariables` helpers, so a compound predicate like
+  `WHERE n.id = 1 AND x.id = 2` still lets the connected conjunct (`n.id = 1`) reach anchor pushdown
+  instead of deferring the whole clause because of the disconnected conjunct.
+- Minor style nit from the review (brace-wrapped single-statement `if`) also cleaned up.
+
+New tests added to the same test class:
+- `disconnectedNodeWithOwnIndexedFilterDoesNotHijackAnchorSelection` - the review's exact reproduction.
+- `multipleDisconnectedNodesChainCorrectly` - two disconnected nodes chained (4-row Cartesian product).
+- `mixedConnectedAndDisconnectedWhereClauseAppliesBothParts` / `...ConnectedConjunctCanExcludeAllRows` -
+  compound WHERE clause correctness for the per-conjunct split.
+
+Verified via `git stash` (reverting only `AnchorSelector.java` + `CypherOptimizer.java`, keeping the
+round-1 fix from the initial commit) that the 2 new correctness-targeted tests fail without round 2 and
+pass with it restored.
+
+Independently, PR #5876 (opened earlier the same day, before this PR) fixes the identical root cause
+with a structurally similar approach (excluding isolated nodes from anchor selection). See the PR
+description / PR comment on #5888 for the cross-reference; picking which PR to carry forward is a
+developer decision.
+
 ## Verification run
 
 - `mvn -pl engine -am compile` - clean.
-- `mvn -pl engine -am test -Dtest=Issue5810DisconnectedMatchAfterRelationshipTest` - 6/6 pass.
-- Broader regression pass: `mvn -pl engine -am test -Dtest='com.arcadedb.query.opencypher.**'` (full
-  OpenCypher test package) - see PR/CI for the recorded result.
+- `mvn -pl engine -am test -Dtest=Issue5810DisconnectedMatchAfterRelationshipTest` - 10/10 pass (after
+  round 2).
+- `mvn -pl engine test -Dtest='com.arcadedb.query.opencypher.optimizer.**,Issue5117PatternOrderTest,Issue5136MatchMultipleCreateOptimizerTest,Issue5810DisconnectedMatchAfterRelationshipTest'`
+  - all pass, including `AnchorSelectorTest` and `CypherOptimizerIntegrationTest`.
+- Full `com.arcadedb.query.opencypher.**` package after round 2: **8011 tests, 0 failures, 0 errors,
+  98 skipped, BUILD SUCCESS** (3m22s). An earlier bulk run before round 2 showed 21 unrelated
+  `NoClassDefFoundError` errors in test classes untouched by this change; re-running each of those
+  classes in isolation passed cleanly, consistent with a local IDE background-compiler race against
+  `target/classes` (IntelliJ IDEA was running concurrently) rather than a regression from this change.
