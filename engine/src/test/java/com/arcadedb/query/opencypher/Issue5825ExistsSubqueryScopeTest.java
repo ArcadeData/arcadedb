@@ -56,7 +56,8 @@ class Issue5825ExistsSubqueryScopeTest extends TestHelper {
         } \
         RETURN n._id AS n, y""").close())
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("v");
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'v'");
   }
 
   /** Same shape, but the out-of-scope reference is inside COUNT { ... }. */
@@ -74,7 +75,8 @@ class Issue5825ExistsSubqueryScopeTest extends TestHelper {
         } > 0 \
         RETURN n._id AS n, y""").close())
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("v");
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'v'");
   }
 
   /** Same shape, but the out-of-scope reference is inside COLLECT { ... }. */
@@ -92,7 +94,8 @@ class Issue5825ExistsSubqueryScopeTest extends TestHelper {
           RETURN x._id \
         } AS c""").close())
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("v");
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'v'");
   }
 
   /** Control: the same out-of-scope reference is already rejected when it is a direct RETURN. */
@@ -105,7 +108,8 @@ class Issue5825ExistsSubqueryScopeTest extends TestHelper {
         WITH 0 AS y \
         RETURN v""").close())
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("v");
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'v'");
   }
 
   /** Same shape, but the out-of-scope reference is inside a UNION branch of an EXISTS subquery body. */
@@ -128,7 +132,8 @@ class Issue5825ExistsSubqueryScopeTest extends TestHelper {
         } \
         RETURN n._id AS n, y""").close())
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("v");
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'v'");
   }
 
   /** Control: keeping `v` in scope makes the EXISTS query valid and produces the expected rows. */
