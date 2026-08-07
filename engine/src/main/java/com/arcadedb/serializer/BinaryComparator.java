@@ -299,6 +299,9 @@ public class BinaryComparator {
    * Widens to whichever precision the string's own format needs - {@code double} for a fractional/exponent
    * literal, {@code long} otherwise - so an integral string is compared without the precision loss a double
    * round-trip would introduce for large longs, and a fractional string doesn't hard-fail a {@code long} parse.
+   * <p>
+   * A numeric string outside both {@code long} and {@code double} range (e.g. 20+ integral digits) still throws
+   * an uncaught {@code NumberFormatException} rather than degrading gracefully; tracked as #5945.
    */
   private static int compareAgainstNumericString(final Number value1, final String string) {
     if (string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0)
