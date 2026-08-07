@@ -916,8 +916,36 @@ public class CypherSemanticValidator {
       innerScope.add(lpe.getVariable());
       if (lpe.getWhereExpression() != null)
         checkExpressionScope(lpe.getWhereExpression(), innerScope);
+    } else if (expr instanceof ExistsExpression exists) {
+      checkSubqueryExpressionScope(exists.getParsedSubquery(), scope);
+    } else if (expr instanceof CountExpression count) {
+      checkSubqueryExpressionScope(count.getParsedSubquery(), scope);
+    } else if (expr instanceof CollectExpression collect) {
+      checkSubqueryExpressionScope(collect.getParsedSubquery(), scope);
     }
     // LiteralExpression, ParameterExpression, StarExpression — no variables to check
+  }
+
+  /**
+   * Validates the body of an {@code EXISTS { }} / {@code COUNT { }} / {@code COLLECT { }} expression against
+   * {@code outerScope}, the scope live at the point the expression appears.
+   * <p>
+   * Unlike a {@code CALL { }} subquery, these bodies need no import gate: the runtime hands the whole outer row to
+   * the body as a seed ({@link CorrelatedSubqueryRunner#run}), so every variable live in {@code outerScope} is
+   * visible to it without an explicit or importing-{@code WITH} declaration. A variable {@code WITH} has already
+   * dropped from {@code outerScope} must therefore be rejected here exactly as it would be if referenced directly
+   * (issue #5825) — before this fix it silently resolved as missing/null instead, so the predicate just evaluated
+   * to false/empty rather than raising a client error.
+   */
+  private void checkSubqueryExpressionScope(final CypherStatement parsedSubquery, final Set<String> outerScope) {
+    if (parsedSubquery == null)
+      // Best-effort AST build declined the body (#5626 case): nothing to statically check, falls back to text execution.
+      return;
+    if (parsedSubquery instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        validateVariableScope(branch, new HashSet<>(outerScope), Set.of());
+    } else
+      validateVariableScope(parsedSubquery, new HashSet<>(outerScope), Set.of());
   }
 
   private void checkBooleanExpressionScope(final BooleanExpression boolExpr, final Set<String> scope) {
