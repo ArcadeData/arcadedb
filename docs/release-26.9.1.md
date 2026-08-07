@@ -59,3 +59,47 @@ slow query. `SQLAntlrParser` now counts parenthesis nesting on the token stream 
 rejecting a query past `arcadedb.sql.maxExpressionDepth` (default 200) in O(n) time - the same depth that
 previously burned minutes of CPU is now rejected in single-digit milliseconds. Counting on the token stream
 rather than raw characters means a `(` inside a string literal or comment is not miscounted.
+
+## Vector index: the location index is laid out in primitive arrays, ~3x less heap
+
+The `LSM_VECTOR` location index is the only mapping from a vector id to the record it belongs to and to the byte
+offset of its entry in the index file. Nothing on disk reproduces it, so since 26.8.1 it cannot evict and its size
+is a hard requirement rather than a tunable. It used to hold that mapping in a `ConcurrentHashMap<Integer,
+VectorLocation>` plus a `ConcurrentHashMap<RID, int[]>` reverse index, which retained about **90 bytes per live
+vector** to carry about 20 bytes of payload.
+
+It is now four primitive arrays indexed by vector id - the file offset with its compacted flag packed into one
+`long`, the RID's bucket id and position, and one presence bit - at about **21 bytes per id, plus 8 to 16 bytes per
+live vector** for the reverse index. A 10M-vector index goes from roughly 900MB resident to roughly 320MB, and the
+garbage collector no longer traces one object graph per indexed vector.
+
+- **`estimatedLocationIndexBytes` is now measured, not multiplied out.** It reports the heap the index's own arrays
+  occupy instead of `live count x a per-entry constant`. On the same index it steps **down about 3x**. Re-base any
+  dashboard or alert wired to it.
+  If you tracked this stat across 26.8.1, note that it moved twice in consecutive releases and only one of the two
+  moves describes the index: the 3.75x increase in 26.8.1 (24 -> 90 bytes per entry) was an accounting correction
+  from the payload size to the retained size, with nothing about the memory it describes having changed. This one is
+  a real reduction.
+- **The arrays are chunked, and a chunk is released as soon as its last live id is tombstoned.** That preserves the
+  property 26.8.1 introduced: residency follows the live vectors, not the ids handed out. A workload that re-embeds
+  the same vectors hands out ids monotonically and tombstones the ones it supersedes - 9.3M ids for a 4K live set in
+  the case that motivated it - and a flat array indexed by id would have followed the id space instead.
+- **The reverse index stores no keys.** A candidate is verified by reading the vector id's RID back out of the
+  location arrays, which makes a tombstoned id structurally unreachable through it rather than something callers
+  have to re-check.
+- **The graph-build snapshot is the same structure now.** A rebuild used to copy the whole live set into a
+  `Map<Integer, VectorLocation>` for the duration of the build, on top of the live index and at the same per-vector
+  cost. On a 10M-vector index that was a transient ~900MB spike; it is now ~200MB.
+- **No new search allocation.** Every reader was moved onto accessors that answer one field without materializing
+  anything, so the liveness filter each search applies per traversed graph ordinal costs one presence bit as before.
+- **`countEntries()` on a dense `LSM_VECTOR` is a popcount** over the presence bits - one word per 128 ids -
+  instead of a stream over the whole location map.
+- **`VectorLocationIndex.getVectorIdsForRid` returns only LIVE ids now, in ascending order.** It used to return
+  tombstoned ids as well and require the caller to re-check the location's `deleted` flag. Nothing in the engine
+  is affected - both callers re-verified anyway - but the contract of a public method inverted, so embedding code
+  that relied on seeing tombstoned ids has to look elsewhere for them (`isDeleted(int)`).
+- `ArcadePageVectorValues` is built through `forSearch(...)` / `forGraphBuild(...)` factories instead of six
+  constructors: the two roles now take the same argument types and differ only in whether the reader may
+  short-circuit to the vectors persisted inline in the graph file.
+
+[#5588](https://github.com/ArcadeData/arcadedb/issues/5588)

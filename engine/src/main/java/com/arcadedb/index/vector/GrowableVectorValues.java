@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
@@ -138,8 +139,9 @@ class GrowableVectorValues implements RandomAccessVectorValues {
     if (vectorIndex == null || database == null)
       return null;
 
-    final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(ordinal);
-    if (loc == null || loc.deleted)
+    // One lookup, one word: nothing is materialized for an ordinal that turns out not to be live (issue #5588).
+    final long offsetAndFlag = vectorIndex.getOffsetAndFlag(ordinal);
+    if (offsetAndFlag == VectorLocationIndex.ABSENT)
       return null;
 
     try {
@@ -147,12 +149,16 @@ class GrowableVectorValues implements RandomAccessVectorValues {
 
       // Try quantized pages first (INT8/BINARY)
       if (lsmIndex != null)
-        vector = lsmIndex.readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
+        vector = lsmIndex.readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
+            VectorLocationIndex.isCompactedOf(offsetAndFlag));
 
       // Fall back to document lookup. WARNING on unsupported types so an INT8 index silently
       // losing vectors during search is observable, matching ArcadePageVectorValues.
       if (vector == null && vectorPropertyName != null) {
-        final var record = database.lookupByRID(loc.rid, false);
+        final RID rid = vectorIndex.getRid(ordinal);
+        if (rid == null)
+          return null;
+        final var record = database.lookupByRID(rid, false);
         final Document doc = (Document) record;
         final Object raw = doc.get(vectorPropertyName);
         if (raw != null) {
@@ -161,7 +167,7 @@ class GrowableVectorValues implements RandomAccessVectorValues {
           } catch (final IllegalArgumentException e) {
             LogManager.instance().log(this, Level.WARNING,
                 "Vector property '%s' has unsupported type %s (RID=%s, ordinal=%d): %s",
-                vectorPropertyName, raw.getClass().getName(), loc.rid, ordinal, e.getMessage());
+                vectorPropertyName, raw.getClass().getName(), rid, ordinal, e.getMessage());
           }
         }
       }
