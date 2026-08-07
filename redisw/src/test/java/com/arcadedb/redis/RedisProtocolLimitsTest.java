@@ -192,6 +192,68 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void configuredMultiBulkLengthLimitIsHonored() throws IOException {
+    // Confirms arcadedb.redis.maxMultiBulkLength is actually wired end to end, not just the built-in default.
+    GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH.setValue(5);
+    try {
+      final String payload = "*6\r\n";
+
+      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+        socket.setSoTimeout(10_000);
+        socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+
+        final byte[] buffer = new byte[512];
+        final int    read   = socket.getInputStream().read(buffer);
+        assertThat(read).isGreaterThan(0);
+        final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+        assertThat(reply).startsWith("-ERR");
+        assertThat(reply).contains("maximum allowed is 5");
+      }
+
+      // Ordinary traffic (AUTH's 3 elements, PING's 1) is well under the lowered limit and must still work.
+      try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+        assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+        assertThat(jedis.ping()).isEqualTo("PONG");
+      }
+    } finally {
+      GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH.reset();
+    }
+  }
+
+  @Test
+  void configuredBulkLengthLimitIsHonored() throws IOException {
+    // Confirms arcadedb.redis.maxBulkLength is actually wired end to end, not just the built-in default.
+    // 64 comfortably fits every bulk string AUTH/PING send (including the test password), while still being
+    // a small, clearly non-default value to prove the setting is honored rather than ignored.
+    GlobalConfiguration.REDIS_MAX_BULK_LENGTH.setValue(64);
+    try {
+      final String payload = "$100\r\n";
+
+      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+        socket.setSoTimeout(10_000);
+        socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+
+        final byte[] buffer = new byte[512];
+        final int    read   = socket.getInputStream().read(buffer);
+        assertThat(read).isGreaterThan(0);
+        final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
+        assertThat(reply).startsWith("-ERR");
+        assertThat(reply).contains("maximum allowed is 64");
+      }
+
+      // Ordinary traffic well under the lowered limit must still be accepted.
+      try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+        assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+        assertThat(jedis.ping()).isEqualTo("PONG");
+      }
+    } finally {
+      GlobalConfiguration.REDIS_MAX_BULK_LENGTH.reset();
+    }
+  }
+
   @Override
   protected void populateDatabase() {
   }

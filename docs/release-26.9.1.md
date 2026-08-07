@@ -165,6 +165,8 @@ garbage collector no longer traces one object graph per indexed vector.
   constructors: the two roles now take the same argument types and differ only in whether the reader may
   short-circuit to the vectors persisted inline in the graph file.
 
+[#5588](https://github.com/ArcadeData/arcadedb/issues/5588)
+
 ## Redis wire protocol: an unauthenticated RESP array could overflow the connection thread's stack (#5895)
 
 `RedisNetworkExecutor.parseNext()` decoded RESP arrays recursively, once per nesting level, with no bound
@@ -189,5 +191,3 @@ without bound if the client actually sent the declared bytes. It is now capped b
 `arcadedb.redis.maxBulkLength` (default 512MB, matching Redis' own `proto-max-bulk-len`). Malformed, non-numeric
 lengths (e.g. `$abc\r\n`) also used to throw an uncaught `NumberFormatException` that killed the connection
 thread outright; they now get the same clean error-reply-and-close treatment as an oversized length.
-
-[#5588](https://github.com/ArcadeData/arcadedb/issues/5588)
