@@ -21,9 +21,10 @@ package com.arcadedb.query.sql.parser;
 /**
  * Human-readable image of every SQL keyword and literal token, keyed by the token order the retired JavaCC/JJTree grammar used
  * to assign. The sole consumer, {@code FunctionReferenceGenerator.extractSqlKeywords()}, iterates the whole array at runtime and
- * filters to the {@code "quoted"} alphabetic entries itself, so every entry - keyword, operator and literal-token placeholder
- * alike - is kept and none can be dropped without re-deriving that filter; only the ~500 numeric token-id constants the retired
- * generator also produced are gone (issue #5867). DO NOT try to wire a JavaCC generator back to this file - it is hand-maintained.
+ * itself filters it down to the {@code "quoted"} alphabetic entries; the non-keyword entries (operators, literal-token
+ * placeholders) are harmless to keep and dropping them would only save space, not simplify anything downstream, so the array is
+ * left intact. Only the ~500 numeric token-id constants the retired generator also produced are gone (issue #5867).
+ * DO NOT try to wire a JavaCC generator back to this file - it is hand-maintained.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
