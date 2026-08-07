@@ -123,3 +123,46 @@ pattern already used by `PropertyAccessExpression`, so there is no new performan
 - `OrderByStep.java` has its own separate, near-duplicate `convertFromStorage` implementation
   that was not consolidated into `TemporalUtil.convertFromStorage()` here, since it's pre-existing
   and out of scope for this bug fix - worth a small follow-up cleanup.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5893
+
+## Review cycles
+
+Automated review loop via `resolve-issue-with-review`, gated on the `claude` GitHub Actions
+reviewer, up to 4 cycles.
+
+1. **`ba99a6e`** (initial fix + test) - Claude review requested one change before merge: the new
+   `RID` branch didn't apply `convertFromStorage`'s temporal-type restoration, unlike the sibling
+   `PropertyAccessExpression` branch it claimed to mirror; a temporal-typed dereferenced property
+   would silently come back as a raw `String`. Applied in the next commit.
+2. **`5f4d382`** (extract `TemporalUtil.convertFromStorage`, add temporal-parity test) - Claude
+   review: positive, with three non-blocking observations (a stale Javadoc reference the refactor
+   left behind; a separate pre-existing duplicate in `OrderByStep`; the pre-existing
+   `asVertex()` unfriendly-error gap, now reachable via a second path). Applied the Javadoc fix;
+   recorded the other two as deferred/skip items with rationale.
+3. **`6fad3df9`** (Javadoc fix + deferred-items note) - Claude review: still positive, but
+   reiterated the `asVertex()` unfriendly-error gap more strongly ("the one thing I'd actually
+   want before/after merge is a tracked follow-up issue") and separately noted the
+   `review-deferred-*.md` file reads as PR-discussion audit trail rather than root-cause
+   documentation and would go stale after merge. Filed
+   [#5898](https://github.com/ArcadeData/arcadedb/issues/5898) to track the `asVertex()` gap,
+   posted the two deferred observations as a PR comment instead, and removed the
+   `docs/review-deferred-*.md` file.
+4. **`9712c69`** (file #5898, move review notes to a PR comment, update this doc) - Claude
+   review: clean approval - "Nothing missing that should block merge... No blocking issues
+   found."
+
+## Deferred items
+
+None outstanding as unattended-decision items. Two review observations were explicitly deferred
+to the developer's judgment rather than actioned in this PR (see "Recommendations" above and the
+cycle-2/3 history): the `OrderByStep` duplicate-logic cleanup, and #5898 (filed, not fixed, per
+the reviewer's own framing of it as a separate concern). The `docs/review-deferred-5f4d382.md`
+audit-trail file that existed between cycles 2 and 3 was removed in cycle 3; its content is
+preserved in a PR comment instead.
+
+## Final state
+
+`clean-approval` after 4 review cycles.
