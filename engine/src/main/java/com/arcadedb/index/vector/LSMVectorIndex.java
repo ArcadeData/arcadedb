@@ -646,7 +646,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The CPU cost is the same as the in-place refill it replaces, but peak heap is not: the instance being replaced
    * stays reachable for its in-flight readers while the new one is built, so a rebuild transiently holds two
    * location sets instead of one. That is a bounded, promptly released spike and the price of the atomicity, and
-   * issue #5588 made it far cheaper: a location generation costs ~32 bytes per live entry rather than ~90.
+   * issue #5588 made it far cheaper: a location generation costs about
+   * {@value VectorLocationIndex#APPROX_RETAINED_BYTES_PER_LOCATION} bytes per live entry rather than ~90.
    * <p>
    * The population loop runs under the write lock even though only the final store needs it. Hoisting it out would
    * shorten the locked window, but it would also let an insert commit into the instance about to be discarded, so
@@ -3537,10 +3538,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       //
       // Asked of the tombstone set, because a resident location cannot answer it: since issue #5516 a tombstoned
       // id keeps no location at all, so the `getLocation(id) != null && loc.deleted` this replaces was
-      // permanently false. That was not costing anything - remove() purges the delta buffer for the RID it
-      // deletes, so no delta entry survives its own deletion on any path reachable today - and no test here can
-      // reach it, since forcing a tombstone in behind the buffer only makes the next rebuild republish the live
-      // entry the pages still carry. It stays because it is what the line says it does, at the price of one bit.
+      // permanently false and this guard did nothing at all.
+      //
+      // It is unreachable today for a second, better reason: remove() purges the delta buffer of every entry for
+      // the RID it deletes, so no delta entry survives its own deletion on any path a test can drive - forcing a
+      // tombstone in behind the buffer only makes the next rebuild republish the live entry the pages still
+      // carry. It stays anyway, at the price of one bit, because it is what the line above says it does and
+      // because the buffer and the tombstone set are maintained by different code paths.
+      if (vectorIndex.isDeleted(delta.vectorId))
+        continue;
 
       final float score = metadata.similarityFunction.compare(queryVectorFloat, delta.vector);
       final float distance = scoreToDistance(metadata.similarityFunction, score);
@@ -5902,7 +5908,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The cap was introduced when the index held one location per WRITE, so it grew without bound on a re-embedding
    * workload. Issue #5516 removed that: a tombstoned id releases its location, so residency is O(live vectors) -
    * proportional to the data the user asked to index - and issue #5588 brought the per-vector cost from ~90 bytes
-   * to ~32. Capping that buys a memory ceiling by silently returning wrong results, which is never the right trade
+   * to {@value VectorLocationIndex#APPROX_RETAINED_BYTES_PER_LOCATION}. Capping that buys a memory ceiling by silently returning wrong results, which is never the right trade
    * for a database.
    * <p>
    * {@code locationCacheSize} is refused outright when it arrives through DDL or a builder

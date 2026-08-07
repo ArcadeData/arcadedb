@@ -179,8 +179,10 @@ public class VectorLocationIndex {
   private volatile int     liveCount;
 
   // Times a present id had its RID rewritten in place, which retires it for the duration of the write. Zero on
-  // every engine path; see put(). Guarded by writeLock.
-  private          int     inPlaceRidRewrites;
+  // every engine path; see put(). Written under writeLock, volatile so the accessor is honest for a caller that
+  // reads it without having joined the writer - it is a diagnostic, and one that silently under-reports would be
+  // worse than none.
+  private volatile int     inPlaceRidRewrites;
 
   private final RidIndex   ridIndex;
   // Ids whose location was dropped because they were tombstoned: 1 bit per id instead of a resident location
@@ -908,6 +910,9 @@ public class VectorLocationIndex {
    * resident location, and a tombstoned id has none. Callers do not have to re-check.
    *
    * @param rid The document RID
+   *
+   * Allocates the array it returns, so it is a resolution step and not something to call per traversed ordinal:
+   * its callers are the delete path and the allow-list walk, both of which are already resolving records.
    *
    * @return the matching vector ids, or an empty array if none are live
    */
