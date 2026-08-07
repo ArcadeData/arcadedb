@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -153,7 +154,9 @@ public class UnionStep extends AbstractExecutionStep {
         for (final String prop : result.getPropertyNames()) {
           sb.append(prop).append("=");
           final Object value = result.getProperty(prop);
-          sb.append(value == null ? "null" : value.toString());
+          // Canonicalize numeric values so UNION treats e.g. INTEGER 1 and FLOAT 1.0 as the same
+          // value, consistent with Cypher's `=` operator (issue #5789).
+          sb.append(value == null ? "null" : DistinctNumericKey.canonicalize(value));
           sb.append("|");
         }
         return sb.toString();

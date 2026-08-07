@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -135,14 +136,16 @@ public class ProjectReturnStep extends AbstractExecutionStep {
                   if (InternalVariables.isInternal(name))
                     continue;
                   final Object val = projectedResult.getProperty(name);
-                  keyBuilder.append(name).append('=').append(val).append('|');
+                  // Canonicalize numeric values so DISTINCT treats e.g. INTEGER 1 and FLOAT 1.0 as
+                  // the same value, consistent with Cypher's `=` operator (issue #5789).
+                  keyBuilder.append(name).append('=').append(DistinctNumericKey.canonicalize(val)).append('|');
                 }
               } else {
                 for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
                   final String outputName = item.getOutputName();
                   keyBuilder.append(outputName).append('=');
                   final Object val = projectedResult.getProperty(outputName);
-                  keyBuilder.append(val).append('|');
+                  keyBuilder.append(DistinctNumericKey.canonicalize(val)).append('|');
                 }
               }
               if (!seenResults.add(keyBuilder.toString()))
