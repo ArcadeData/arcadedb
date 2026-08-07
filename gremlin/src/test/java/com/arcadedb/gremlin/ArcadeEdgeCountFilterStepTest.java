@@ -30,7 +30,6 @@ import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import javax.script.SimpleBindings;
@@ -80,31 +79,6 @@ class ArcadeEdgeCountFilterStepTest {
   }
 
   @Test
-  @Disabled("""
-      Whether ArcadeEdgeCountFilterStep installs for this exact traversal is NOT stable across JVMs, \
-      even for byte-identical code and unchanged test-method order. Captured failing plan (top-level \
-      only; TraversalPlans.describe() does not recurse into children):
-        plan was: GraphStep -> TraversalFilterStep
-      Verified mechanism (see the companion test \
-      whenTheRewriteDoesNotInstallTinkerPopsCountStrategyExplainsWhy below, which is written to hold \
-      under either outcome instead of asserting one): TinkerPop's own CountStrategy is not declared in \
-      ArcadeTraversalStrategy.applyPrior() (only InlineFilterStrategy is), so their relative application \
-      order is left to TinkerPop's TraversalStrategies.sortStrategies() tie-break, which resolves ties \
-      via a HashSet<Class<?>>. Class does not override hashCode(), so iteration order follows JVM \
-      identity hashes - arbitrary per JVM process, not per test-method order. ArcadeGraph's static block \
-      registers the strategy set exactly once, freezing that arbitrary order for the JVM's lifetime: \
-      within a single Surefire fork the outcome is fully deterministic, but it flips depending on WHICH \
-      Surefire fork (i.e. which JVM process, seeded with its own identity hashes) runs the test - not on \
-      the presence/order of unrelated methods and not on which traversal happens to run first. When \
-      CountStrategy wins that race for a bounded predicate such as gt(1), it rewrites the where-child from
-        VertexStep(OUT,[KNOWS],edge), CountGlobalStep, IsStep(gt(1))            (3 steps - matches)
-      to
-        VertexStep(OUT,[KNOWS],edge), RangeGlobalStep(0,2), CountGlobalStep, IsStep(gt(1))  (4 steps)
-      which permanently defeats applyEdgeCountFilterOptimization's exact-3-substep check, so the O(1) \
-      GAV path silently does not fire for this query shape on that JVM - a genuine, \
-      JVM-identity-hash-dependent "sometimes unreachable in normal use" defect in ArcadeTraversalStrategy, \
-      not merely an untested branch. Tracked as issue #5841; full writeup: PR #5829.
-      """)
   void theDegreeFilterStepIsInstalled() {
     assertThat(TraversalPlans.hasStepOfType(
         graph.traversal().V().where(outE("KNOWS").count().is(P.gt(1))), ArcadeEdgeCountFilterStep.class))
