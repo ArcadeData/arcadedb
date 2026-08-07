@@ -635,8 +635,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
     final Database database = context.getDatabase();
-    // Bounded by the shorter array rather than requiring equal lengths, matching convertKeys()'s own assumption
-    // that a partial-key lookup supplies no more values than the index has key types for.
+    // Bounded by the shorter array rather than requiring equal lengths: convertKeys() itself assumes
+    // values.length <= keyTypes.length (it indexes keyTypes[i] unguarded for every key), so a partial-key
+    // lookup is expected to supply no more values than the index has key types for.
     for (int i = 0; i < values.length && i < keyTypes.length; i++) {
       if (values[i] == null)
         continue;
