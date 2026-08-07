@@ -89,7 +89,7 @@ class LSMVectorIndexGraphBuildProgressTest {
         // A wide beam and a high degree make each insertion expensive, so the build spans several 100ms progress
         // polls even on a warm JVM. Without that the whole insertion finishes inside one poll and the only samples
         // are the two boundary ones, which the old meter would have passed - the guard below is what catches that.
-        populate(db, SLOW_BUILD_MAX_CONNECTIONS, SLOW_BUILD_BEAM_WIDTH);
+        populate(db, NUM_VECTORS, SLOW_BUILD_MAX_CONNECTIONS, SLOW_BUILD_BEAM_WIDTH);
 
         final LSMVectorIndex index = vectorIndex(db);
         index.buildVectorGraphNow(
@@ -139,8 +139,9 @@ class LSMVectorIndexGraphBuildProgressTest {
   void buildPoolWidthFollowsTheConfiguredParallelism() {
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       try (final Database db = factory.create()) {
-        // The default shape is enough here: this test only checks the pool width, not the progress stream.
-        populate(db, 16, 100);
+        // A small corpus and the default index shape are enough here: this test only checks the pool width, not
+        // the progress stream, so it does not need a build long enough to span several progress polls.
+        populate(db, 500, 16, 100);
 
         final LSMVectorIndex index = vectorIndex(db);
 
@@ -179,7 +180,7 @@ class LSMVectorIndexGraphBuildProgressTest {
     }
   }
 
-  private static void populate(final Database db, final int maxConnections, final int beamWidth) {
+  private static void populate(final Database db, final int vectors, final int maxConnections, final int beamWidth) {
     final Random rnd = new Random(7);
 
     db.transaction(() -> {
@@ -192,7 +193,7 @@ class LSMVectorIndexGraphBuildProgressTest {
     });
 
     db.begin();
-    for (int i = 0; i < NUM_VECTORS; i++) {
+    for (int i = 0; i < vectors; i++) {
       final float[] vector = new float[DIMENSIONS];
       for (int d = 0; d < DIMENSIONS; d++)
         vector[d] = rnd.nextFloat();

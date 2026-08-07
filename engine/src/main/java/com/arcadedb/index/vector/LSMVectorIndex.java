@@ -1523,8 +1523,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (pool != null && !pool.isShutdown() && pool.getParallelism() == wanted)
       return pool;
 
-    // A reconfigured width takes effect on the next build. shutdown() rather than shutdownNow() so a build that
-    // somehow still holds the old pool finishes on it instead of failing.
+    // A reconfigured width takes effect on the next build. The pool being replaced can never have a build running
+    // on it: every live caller of this method is inside buildGraphFromScratchExclusively, which runs under
+    // graphBuildLock, so at most one build per index exists at a time and it is the one asking for this pool.
+    // (The other caller, ensureLiveBuilder, is dead code.) shutdown() rather than shutdownNow() keeps that true
+    // even if a future caller breaks the invariant: the work would finish rather than fail.
     if (pool != null && !pool.isShutdown())
       pool.shutdown();
 
@@ -2161,6 +2164,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // and what makes the boundary between them observable at all - JVector emits nothing between them, and
           // cleanup() is not a quick finalisation but a second refinement pass over the graph that can be worth as
           // much wall clock as the insertion itself (issue #5577).
+          //
+          // MAINTENANCE: this mirrors GraphIndexBuilder.build() as of JVector 4.0.0-rc.9, which is exactly
+          //   simdExecutor.submit(() -> IntStream.range(0, size).parallel().forEach(
+          //       n -> addGraphNode(n, vv.get().getVector(n)))).join();
+          //   cleanup();
+          //   return graph;
+          // Nothing here detects it if a future jvector.version adds a step around those two, so re-read build()
+          // when bumping the dependency. The alternative - calling build() and keeping the broken meter - is worse:
+          // it is what hid a phase worth half the wall clock of a large build.
           final Supplier<RandomAccessVectorValues> vectorSupplier = vectors.threadLocalSupplier();
 
           // One shared atomic per node is affordable here in a way the vector cache counters were not: a node costs
