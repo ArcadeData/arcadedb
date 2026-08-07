@@ -18,6 +18,8 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.GlobalConfiguration;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -29,9 +31,19 @@ import java.io.InputStream;
  */
 public class BoltChunkedInput {
   private final DataInputStream in;
+  private final int             maxMessageSize;
 
   public BoltChunkedInput(final InputStream in) {
+    this(in, GlobalConfiguration.BOLT_MAX_MESSAGE_SIZE.getValueAsInteger());
+  }
+
+  /**
+   * As {@link #BoltChunkedInput(InputStream)}, with the reassembled-message size bound passed explicitly instead
+   * of read from {@link GlobalConfiguration}, so unit tests can exercise the bound without mutating global config.
+   */
+  public BoltChunkedInput(final InputStream in, final int maxMessageSize) {
     this.in = new DataInputStream(in);
+    this.maxMessageSize = maxMessageSize;
   }
 
   /**
@@ -40,6 +52,7 @@ public class BoltChunkedInput {
    */
   public byte[] readMessage() throws IOException {
     final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    int totalSize = 0;
 
     while (true) {
       // Read chunk size (2 bytes, big-endian)
@@ -49,6 +62,12 @@ public class BoltChunkedInput {
         // End of message
         break;
       }
+
+      // A client that never sends the terminating zero-length chunk would otherwise grow this buffer unbounded
+      // (issue #5918), before the BOLT handshake or authentication ever runs.
+      totalSize += chunkSize;
+      if (totalSize > maxMessageSize)
+        throw new IOException("BOLT message too large: exceeds " + maxMessageSize + " bytes after chunk reassembly");
 
       // Read chunk data
       final byte[] chunk = new byte[chunkSize];

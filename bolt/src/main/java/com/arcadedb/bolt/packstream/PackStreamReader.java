@@ -18,6 +18,8 @@
  */
 package com.arcadedb.bolt.packstream;
 
+import com.arcadedb.GlobalConfiguration;
+
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -67,26 +69,69 @@ public class PackStreamReader {
   private final DataInputStream in;
   private int                   bytesRead = 0;
 
+  // Bounds on client-supplied, unauthenticated size fields (issue #5918): every *_32 length/size is read off the
+  // wire and used directly to size an allocation, and readValue() recurses once per nesting level, before the
+  // BOLT handshake or authentication ever runs. Read once per message rather than cached statically so a runtime
+  // change to the setting takes effect on the next message.
+  private final int maxValueLength;
+  private final int maxElements;
+  private final int maxDepth;
+
   public PackStreamReader(final byte[] data) {
+    this(data, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.getValueAsInteger(),
+        GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.getValueAsInteger(),
+        GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.getValueAsInteger());
+  }
+
+  /**
+   * As {@link #PackStreamReader(byte[])}, with the client-supplied-size bounds passed explicitly instead of read
+   * from {@link GlobalConfiguration}, so unit tests can exercise a bound without mutating global server config.
+   */
+  public PackStreamReader(final byte[] data, final int maxValueLength, final int maxElements, final int maxDepth) {
     this.in = new DataInputStream(new ByteArrayInputStream(data));
+    this.maxValueLength = maxValueLength;
+    this.maxElements = maxElements;
+    this.maxDepth = maxDepth;
   }
 
   public PackStreamReader(final DataInputStream in) {
+    this(in, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.getValueAsInteger(),
+        GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.getValueAsInteger(),
+        GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.getValueAsInteger());
+  }
+
+  /**
+   * As {@link #PackStreamReader(DataInputStream)}, with the client-supplied-size bounds passed explicitly.
+   */
+  public PackStreamReader(final DataInputStream in, final int maxValueLength, final int maxElements, final int maxDepth) {
     this.in = in;
+    this.maxValueLength = maxValueLength;
+    this.maxElements = maxElements;
+    this.maxDepth = maxDepth;
   }
 
   /**
    * Read the next value of any type.
    */
   public Object readValue() throws IOException {
+    return readValue(0);
+  }
+
+  /**
+   * Read the next value of any type, tracking nesting depth so a stream of nesting markers cannot recurse the
+   * connection thread's JVM stack into a {@link StackOverflowError} (issue #5918).
+   */
+  private Object readValue(final int depth) throws IOException {
+    if (depth > maxDepth)
+      throw new IOException("PackStream value nesting exceeds the maximum allowed depth (" + maxDepth + ")");
     final int marker = readMarker();
-    return readValueWithMarker(marker);
+    return readValueWithMarker(marker, depth);
   }
 
   /**
    * Read a value given its marker byte.
    */
-  private Object readValueWithMarker(final int marker) throws IOException {
+  private Object readValueWithMarker(final int marker, final int depth) throws IOException {
     // NULL
     if (marker == (NULL & 0xFF)) {
       return null;
@@ -156,7 +201,7 @@ public class PackStreamReader {
     // STRING_32
     if (marker == (STRING_32 & 0xFF)) {
       final int length = in.readInt();
-      return readStringBytes(length);
+      return readStringBytes(checkValueLength(length, "STRING_32"));
     }
 
     // BYTES_8
@@ -174,62 +219,62 @@ public class PackStreamReader {
     // BYTES_32
     if (marker == (BYTES_32 & 0xFF)) {
       final int length = in.readInt();
-      return readBytes(length);
+      return readBytes(checkValueLength(length, "BYTES_32"));
     }
 
     // TINY_LIST: 0x90 - 0x9F
     if (marker >= 0x90 && marker <= 0x9F) {
       final int size = marker & 0x0F;
-      return readListItems(size);
+      return readListItems(size, depth);
     }
 
     // LIST_8
     if (marker == (LIST_8 & 0xFF)) {
       final int size = in.readUnsignedByte();
-      return readListItems(size);
+      return readListItems(size, depth);
     }
 
     // LIST_16
     if (marker == (LIST_16 & 0xFF)) {
       final int size = in.readUnsignedShort();
-      return readListItems(size);
+      return readListItems(size, depth);
     }
 
     // LIST_32
     if (marker == (LIST_32 & 0xFF)) {
       final int size = in.readInt();
-      return readListItems(size);
+      return readListItems(checkElementCount(size, "LIST_32"), depth);
     }
 
     // TINY_MAP: 0xA0 - 0xAF
     if (marker >= 0xA0 && marker <= 0xAF) {
       final int size = marker & 0x0F;
-      return readMapEntries(size);
+      return readMapEntries(size, depth);
     }
 
     // MAP_8
     if (marker == (MAP_8 & 0xFF)) {
       final int size = in.readUnsignedByte();
-      return readMapEntries(size);
+      return readMapEntries(size, depth);
     }
 
     // MAP_16
     if (marker == (MAP_16 & 0xFF)) {
       final int size = in.readUnsignedShort();
-      return readMapEntries(size);
+      return readMapEntries(size, depth);
     }
 
     // MAP_32
     if (marker == (MAP_32 & 0xFF)) {
       final int size = in.readInt();
-      return readMapEntries(size);
+      return readMapEntries(checkElementCount(size, "MAP_32"), depth);
     }
 
     // TINY_STRUCT: 0xB0 - 0xBF
     if (marker >= 0xB0 && marker <= 0xBF) {
       final int fieldCount = marker & 0x0F;
       final byte signature = in.readByte();
-      return readStructure(signature, fieldCount);
+      return readStructure(signature, fieldCount, depth);
     }
 
     throw new IOException("Unknown PackStream marker: 0x" + Integer.toHexString(marker));
@@ -249,6 +294,39 @@ public class PackStreamReader {
    */
   private double readFloat() throws IOException {
     return in.readDouble();
+  }
+
+  /**
+   * Validates a BYTES_32/STRING_32 declared length before it is used to size an allocation (issue #5918): rejects
+   * a negative length, one above the configured ceiling, and - the exact, un-configurable bound - one larger than
+   * the bytes actually remaining in this message, which the declared length can never legitimately exceed.
+   */
+  private int checkValueLength(final int length, final String what) throws IOException {
+    if (length < 0)
+      throw new IOException("PackStream " + what + " has an invalid negative length: " + length);
+    if (length > maxValueLength)
+      throw new IOException(
+          "PackStream " + what + " length " + length + " exceeds the maximum allowed (" + maxValueLength + ")");
+    if (length > in.available())
+      throw new IOException(
+          "PackStream " + what + " declared length " + length + " exceeds the remaining message bytes (" + in.available() + ")");
+    return length;
+  }
+
+  /**
+   * Validates a LIST_32/MAP_32 declared size before it is used to size a collection's backing array (issue
+   * #5918): each element/entry needs at least one wire byte to encode, so a declared count larger than the bytes
+   * remaining in this message is impossible and rejected without allocating.
+   */
+  private int checkElementCount(final int size, final String what) throws IOException {
+    if (size < 0)
+      throw new IOException("PackStream " + what + " has an invalid negative size: " + size);
+    if (size > maxElements)
+      throw new IOException("PackStream " + what + " size " + size + " exceeds the maximum allowed (" + maxElements + ")");
+    if (size > in.available())
+      throw new IOException(
+          "PackStream " + what + " declared size " + size + " exceeds the remaining message bytes (" + in.available() + ")");
+    return size;
   }
 
   /**
@@ -272,10 +350,10 @@ public class PackStreamReader {
   /**
    * Read list items.
    */
-  private List<Object> readListItems(final int size) throws IOException {
+  private List<Object> readListItems(final int size, final int depth) throws IOException {
     final List<Object> list = new ArrayList<>(size);
     for (int i = 0; i < size; i++) {
-      list.add(readValue());
+      list.add(readValue(depth + 1));
     }
     return list;
   }
@@ -283,11 +361,11 @@ public class PackStreamReader {
   /**
    * Read map entries.
    */
-  private Map<String, Object> readMapEntries(final int size) throws IOException {
+  private Map<String, Object> readMapEntries(final int size, final int depth) throws IOException {
     final Map<String, Object> map = new LinkedHashMap<>(size);
     for (int i = 0; i < size; i++) {
-      final String key = (String) readValue();
-      final Object value = readValue();
+      final String key = (String) readValue(depth + 1);
+      final Object value = readValue(depth + 1);
       map.put(key, value);
     }
     return map;
@@ -297,10 +375,10 @@ public class PackStreamReader {
    * Read a structure with given signature and field count.
    * Returns a StructureValue containing the signature and fields.
    */
-  private StructureValue readStructure(final byte signature, final int fieldCount) throws IOException {
+  private StructureValue readStructure(final byte signature, final int fieldCount, final int depth) throws IOException {
     final List<Object> fields = new ArrayList<>(fieldCount);
     for (int i = 0; i < fieldCount; i++) {
-      fields.add(readValue());
+      fields.add(readValue(depth + 1));
     }
     return new StructureValue(signature, fields);
   }
