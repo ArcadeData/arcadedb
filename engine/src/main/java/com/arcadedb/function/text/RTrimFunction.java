@@ -20,6 +20,7 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -45,14 +46,18 @@ public class RTrimFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
     if (args.length == 1) {
-      if (args[0] == null)
+      final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+      if (source == null)
         return null;
-      return args[0].toString().stripTrailing();
+      return source.stripTrailing();
     }
     if (args.length == 2) {
-      if (args[0] == null || args[1] == null)
+      // The primary argument is type-checked before a null trim character decides the answer, so an
+      // out-of-domain primary argument is still reported even when args[1] happens to be null (issue
+      // #5798 review: rTrim(5, null) must still be a type error, not a silent null).
+      final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+      if (source == null || args[1] == null)
         return null;
-      final String source = args[0].toString();
       final String trimChar = args[1].toString();
       if (trimChar.isEmpty())
         return source.stripTrailing();
