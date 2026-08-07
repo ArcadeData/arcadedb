@@ -190,4 +190,106 @@ class GraphBatchBoundedStateTest extends TestHelper {
     assertThatThrownBy(() -> GraphBatch.builder(database).withMaxDeferredIncomingEdges(-1))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  /**
+   * Regression test for the PR #5950 review finding: bounding {@code outChunkRIDCache}/
+   * {@code inChunkRIDCache} with an LRU broke an invariant the "known-new vertex" fast path
+   * ({@code knownNewVertexKeys}, populated only by {@link GraphBatch#createVertices}) relied on -
+   * that a cache miss for a known-new vertex could only mean "no segment exists yet". Once the RID
+   * cache entry for such a vertex is evicted (easy on a large stream once more than
+   * {@code chunkCacheCapacity} *other* distinct vertices are touched between two edges of the same
+   * vertex), touching that vertex again wrongly took the "assume brand new" branch and created a
+   * second, unlinked segment that overwrote the pointer to the first - permanently orphaning the
+   * first segment's already-committed edges once the batch closes.
+   * <p>
+   * This must reproduce with {@link GraphBatch#createVertices}, not plain {@code database.newVertex()}
+   * / {@code save()}, since only {@code createVertices} populates {@code knownNewVertexKeys} - the
+   * existing bounded-cache tests in this class do not exercise this path at all.
+   */
+  @Test
+  void knownNewVertexSurvivesCacheEvictionBetweenItsOwnEdgesSequential() {
+    assertKnownNewVertexSurvivesCacheEviction(false);
+  }
+
+  /**
+   * Same scenario on the parallel flush path, which reads/writes the caches through
+   * {@code connectOutEdgesRangeLocal}/{@code connectIncomingEdgesRangeLocal} rather than the
+   * {@code getOrCreate*SegmentDeferred} helpers, but is vulnerable to the exact same eviction race.
+   */
+  @Test
+  void knownNewVertexSurvivesCacheEvictionBetweenItsOwnEdgesParallel() {
+    assertKnownNewVertexSurvivesCacheEviction(true);
+  }
+
+  private void assertKnownNewVertexSurvivesCacheEviction(final boolean parallelFlush) {
+    final int chunkCacheCapacity = 20;
+    final int evictionPairs      = 200; // far more than chunkCacheCapacity distinct OTHER vertices
+    final int namedVertices      = 6;   // v0, d0, targetA, targetB, srcA, srcB
+    final int vertices           = namedVertices + 2 * evictionPairs;
+
+    final GraphBatch importer = GraphBatch.builder(database)
+        .withBatchSize(1_000)
+        .withEdgeListInitialSize(256)
+        .withChunkCacheCapacity(chunkCacheCapacity)
+        .withMaxDeferredIncomingEdges(1) // drain IN edges on every flush(), for precise eviction control
+        .withParallelFlush(parallelFlush)
+        .build();
+
+    final RID[] vertexRIDs;
+    try {
+      // createVertices() (unlike database.newVertex()/save()) populates knownNewVertexKeys for every
+      // one of these vertices - the exact fast path the LRU eviction bug trips over.
+      vertexRIDs = importer.createVertices(VERTEX_TYPE, vertices);
+
+      final RID v0     = vertexRIDs[0]; // OUT-direction: source whose head-chunk cache entry gets evicted
+      final RID d0     = vertexRIDs[1]; // IN-direction: destination whose head-chunk cache entry gets evicted
+      final RID targetA = vertexRIDs[2];
+      final RID targetB = vertexRIDs[3];
+      final RID srcA     = vertexRIDs[4];
+      final RID srcB     = vertexRIDs[5];
+
+      // Step 1: v0's and d0's FIRST edge - each gets a brand-new segment, cached in both the bounded
+      // RID cache and the unbounded deferred head map.
+      importer.newEdge(v0, EDGE_TYPE, targetA);
+      importer.newEdge(srcA, EDGE_TYPE, d0);
+      importer.flush();
+
+      // Step 2: touch evictionPairs*2 = 400 other distinct vertices (200 distinct OUT sources, 200
+      // distinct IN destinations), far more than chunkCacheCapacity=20, guaranteeing v0's OUT cache
+      // entry and d0's IN cache entry are evicted by the time this flush returns.
+      for (int i = 0; i < evictionPairs; i++)
+        importer.newEdge(vertexRIDs[namedVertices + i], EDGE_TYPE, vertexRIDs[namedVertices + evictionPairs + i]);
+      importer.flush();
+
+      // Step 3: v0's and d0's SECOND edge. The RID cache misses (evicted in step 2); knownNewVertexKeys
+      // still contains v0/d0, so the buggy code assumed "no segment yet" and created a second, unlinked
+      // segment - silently orphaning the step-1 edge. The fix consults deferredOutHead/deferredInHead
+      // (unbounded, always accurate) before making that assumption.
+      importer.newEdge(v0, EDGE_TYPE, targetB);
+      importer.newEdge(srcB, EDGE_TYPE, d0);
+      importer.flush();
+    } finally {
+      importer.close();
+    }
+
+    database.transaction(() -> {
+      final Vertex v0Vertex = vertexRIDs[0].asVertex();
+      int outCount = 0;
+      for (final Edge ignored : v0Vertex.getEdges(Vertex.DIRECTION.OUT, EDGE_TYPE))
+        outCount++;
+      assertThat(outCount)
+          .as("v0's first outgoing edge must survive its OUT head-chunk cache entry being evicted "
+              + "between its own two edges (parallelFlush=%s)", parallelFlush)
+          .isEqualTo(2);
+
+      final Vertex d0Vertex = vertexRIDs[1].asVertex();
+      int inCount = 0;
+      for (final Edge ignored : d0Vertex.getEdges(Vertex.DIRECTION.IN, EDGE_TYPE))
+        inCount++;
+      assertThat(inCount)
+          .as("d0's first incoming edge must survive its IN head-chunk cache entry being evicted "
+              + "between its own two edges (parallelFlush=%s)", parallelFlush)
+          .isEqualTo(2);
+    });
+  }
 }
