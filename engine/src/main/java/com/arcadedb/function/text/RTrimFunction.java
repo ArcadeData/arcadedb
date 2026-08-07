@@ -20,6 +20,7 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -45,14 +46,15 @@ public class RTrimFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
     if (args.length == 1) {
-      if (args[0] == null)
+      final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+      if (source == null)
         return null;
-      return args[0].toString().stripTrailing();
+      return source.stripTrailing();
     }
     if (args.length == 2) {
       if (args[0] == null || args[1] == null)
         return null;
-      final String source = args[0].toString();
+      final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
       final String trimChar = args[1].toString();
       if (trimChar.isEmpty())
         return source.stripTrailing();

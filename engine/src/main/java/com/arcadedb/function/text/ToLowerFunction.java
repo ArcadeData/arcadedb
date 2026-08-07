@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Locale;
@@ -45,8 +46,9 @@ public class ToLowerFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null)
+    final String value = CypherFunctionHelper.requireStringArgument(args[0], getName());
+    if (value == null)
       return null;
-    return args[0].toString().toLowerCase(Locale.ROOT);
+    return value.toLowerCase(Locale.ROOT);
   }
 }

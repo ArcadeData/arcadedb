@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -50,7 +51,7 @@ public class CypherSplitFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
-    final String str = args[0].toString();
+    final String str = CypherFunctionHelper.requireStringArgument(args[0], getName());
     final String delimiter = args[1].toString();
 
     // An empty delimiter splits the string into its individual characters (Neo4j/Memgraph semantics).

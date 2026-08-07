@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -48,6 +49,7 @@ public class ReplaceFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null || args[1] == null || args[2] == null)
       return null;
-    return args[0].toString().replace(args[1].toString(), args[2].toString());
+    final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+    return source.replace(args[1].toString(), args[2].toString());
   }
 }
