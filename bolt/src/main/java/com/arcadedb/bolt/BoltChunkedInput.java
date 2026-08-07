@@ -64,10 +64,13 @@ public class BoltChunkedInput {
       }
 
       // A client that never sends the terminating zero-length chunk would otherwise grow this buffer unbounded
-      // (issue #5918), before the BOLT handshake or authentication ever runs.
-      totalSize += chunkSize;
-      if (totalSize > maxMessageSize)
+      // (issue #5918), before the BOLT handshake or authentication ever runs. Checked as "chunkSize > remaining"
+      // rather than "totalSize + chunkSize > maxMessageSize": the latter can wrap totalSize negative (permanently
+      // defeating the bound) once enough chunks accumulate against a maxMessageSize configured close to
+      // Integer.MAX_VALUE, since chunkSize is only bounded by the 16-bit chunk-size field, not by this check.
+      if (chunkSize > maxMessageSize - totalSize)
         throw new IOException("BOLT message too large: exceeds " + maxMessageSize + " bytes after chunk reassembly");
+      totalSize += chunkSize;
 
       // Read chunk data
       final byte[] chunk = new byte[chunkSize];

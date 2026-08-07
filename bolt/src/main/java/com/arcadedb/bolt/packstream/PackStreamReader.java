@@ -94,6 +94,14 @@ public class PackStreamReader {
     this.maxDepth = maxDepth;
   }
 
+  /**
+   * Not used in production (only the {@link #PackStreamReader(byte[])} constructor is, against an already fully
+   * reassembled message). {@link #checkValueLength}/{@link #checkElementCount} bound a declared length/size
+   * against {@code in.available()}, which is exact only when {@code in} is backed by a fully-buffered source
+   * (e.g. {@link ByteArrayInputStream}): wiring this constructor to a live socket/stream would make
+   * {@code available()} reflect only currently-buffered bytes, not the true remaining message size, weakening
+   * that bound to a false sense of safety rather than the exact one it provides today.
+   */
   public PackStreamReader(final DataInputStream in) {
     this(in, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.getValueAsInteger(),
         GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.getValueAsInteger(),
