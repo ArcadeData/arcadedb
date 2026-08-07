@@ -83,24 +83,42 @@ class PostgresBindParamBoundIT extends BaseGraphServerTest {
       sendParse(out, "SELECT 1");
       readMessage(in); // ParseComplete
 
-      // Bind message declaring a single parameter whose 32-bit length claims ~2GB, then filler bytes that
-      // let the server's own drain-on-error recovery finish without blocking on bytes we never send: a
-      // zero-length slot for the failed parameter, then a zero result-format-code count (the drain also
-      // consumes the Bind message's trailing section). The attacker never sends anything resembling a
-      // 2GB payload - only the declared length.
+      // Bind message declaring a single parameter whose 32-bit length claims ~2GB. The attacker never
+      // sends anything resembling a 2GB payload - only the declared length - mirroring the report's
+      // "declare a huge length, don't follow through" shape.
       sendMaliciousBind(out, 0x7FFFFFFF);
-      out.writeInt(0);   // filler: post-error drain loop reads this as the failed slot's zero length
-      out.writeShort(0); // filler: post-error drain also reads the result-format-code count
       out.flush();
 
       // Without a bound check, the server allocates `new byte[0x7FFFFFFF]`, which throws OutOfMemoryError
       // (an Error, not an Exception) - it is never caught by bindCommand's `catch (Exception e)`, so the
       // connection thread dies silently and the client never gets a response, hanging here. With the
-      // bound check the oversized length is rejected as a plain (caught) IOException and the server
-      // replies with a normal ErrorResponse ('E') well within the timeout.
+      // bound check, the value bytes were never read (so the channel cannot be safely resynchronized
+      // without risking the same unbounded/blocking read this fix closes), so the server replies with a
+      // normal ErrorResponse ('E') and then closes the connection outright, well within the timeout.
       final int responseType = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> readMessageType(in));
       org.assertj.core.api.Assertions.assertThat((char) responseType).isEqualTo('E');
+
+      // The connection is not left half-aligned or hanging: the server closes it after the error, so a
+      // further read reaches EOF (rather than blocking or returning garbage from a desynced channel).
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> in.readUnsignedByte())
+            .isInstanceOf(java.io.EOFException.class);
+      });
     }
+
+    // The rejected connection must not have wedged the shared listener/thread pool: a fresh,
+    // well-behaved client is still served promptly right after.
+    assertTimeoutPreemptively(Duration.ofSeconds(15), () -> {
+      try (final Socket client = new Socket()) {
+        client.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+        final DataOutputStream out = new DataOutputStream(client.getOutputStream());
+        final DataInputStream in = new DataInputStream(client.getInputStream());
+        sendStartupMessage(out, "root", getDatabaseName());
+        readMessage(in); // AuthenticationCleartextPassword
+        sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+        readMessageOfType(in, 'Z'); // AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+      }
+    });
   }
 
   private static void sendStartupMessage(final DataOutputStream out, final String user, final String database) throws Exception {
