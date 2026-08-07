@@ -66,7 +66,7 @@ import java.util.stream.StreamSupport;
  * drain wholesale and are handed back. The residual cost is the partially drained band trailing the live region:
  * a chunk holding a single live id retains {@value #CHUNK_RETAINED_BYTES} bytes, which is why {@value #CHUNK_SIZE}
  * and not a larger chunk. Making the id space dense by construction - renumbering during the data file rewrite -
- * is the structural fix and is tracked separately in issue #5860.
+ * is the structural fix and is tracked separately in issue #5870.
  *
  * <h2>Concurrency</h2>
  * Writers serialize on a single monitor; every read is lock-free and weakly consistent, matching what the

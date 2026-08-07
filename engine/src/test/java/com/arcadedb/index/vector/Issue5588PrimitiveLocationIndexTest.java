@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.Spliterator;
+import java.util.stream.StreamSupport;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -257,7 +258,49 @@ class Issue5588PrimitiveLocationIndexTest {
     assertThat(index.getAllVectorIds().spliterator().hasCharacteristics(Spliterator.SORTED))
         .as("SORTED is what makes the .sorted() at the call sites a no-op")
         .isTrue();
+    assertThat(index.getAllVectorIds().filter(id -> true).spliterator().hasCharacteristics(Spliterator.SORTED))
+        .as("and it has to survive the filter() the call sites apply before sorting")
+        .isTrue();
     assertThat(index.getAllVectorIds().sorted().toArray()).containsExactly(3, 5000, 1_000_000);
+
+    // That the flag really elides the sort is a JDK behaviour worth pinning rather than asserting from memory:
+    // IntPipeline.sorted() returns the sink unchanged when StreamOpFlag.SORTED is known, and the flag propagates
+    // from a spliterator whose getComparator() is null. A spliterator that CLAIMS sorted and yields descending
+    // values comes back descending if the sort was elided, and ascending if it was not.
+    final Spliterator.OfInt liesAboutBeingSorted = new Spliterator.OfInt() {
+      private int next = 5;
+
+      @Override
+      public boolean tryAdvance(final java.util.function.IntConsumer action) {
+        if (next <= 0)
+          return false;
+        action.accept(next--);
+        return true;
+      }
+
+      @Override
+      public OfInt trySplit() {
+        return null;
+      }
+
+      @Override
+      public long estimateSize() {
+        return 5;
+      }
+
+      @Override
+      public int characteristics() {
+        return ORDERED | DISTINCT | SORTED | NONNULL;
+      }
+
+      @Override
+      public java.util.Comparator<? super Integer> getComparator() {
+        return null;
+      }
+    };
+    assertThat(StreamSupport.intStream(liesAboutBeingSorted, false).filter(id -> true).sorted().toArray())
+        .as("IntStream.sorted() elides the sort when SORTED is known, so declaring it is load-bearing")
+        .containsExactly(5, 4, 3, 2, 1);
     assertThat(index.getAllVectorIds().max().orElse(-1)).isEqualTo(1_000_000);
 
     assertThat(index.getNextId()).as("the sequence follows the highest id ever handed out").isEqualTo(1_000_001);

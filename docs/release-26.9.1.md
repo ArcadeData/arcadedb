@@ -94,6 +94,10 @@ garbage collector no longer traces one object graph per indexed vector.
   anything, so the liveness filter each search applies per traversed graph ordinal costs one presence bit as before.
 - **`countEntries()` on a dense `LSM_VECTOR` is a popcount** over the presence bits - one word per 128 ids -
   instead of a stream over the whole location map.
+- **`VectorLocationIndex.getVectorIdsForRid` returns only LIVE ids now, in ascending order.** It used to return
+  tombstoned ids as well and require the caller to re-check the location's `deleted` flag. Nothing in the engine
+  is affected - both callers re-verified anyway - but the contract of a public method inverted, so embedding code
+  that relied on seeing tombstoned ids has to look elsewhere for them (`isDeleted(int)`).
 - `ArcadePageVectorValues` is built through `forSearch(...)` / `forGraphBuild(...)` factories instead of six
   constructors: the two roles now take the same argument types and differ only in whether the reader may
   short-circuit to the vectors persisted inline in the graph file.
