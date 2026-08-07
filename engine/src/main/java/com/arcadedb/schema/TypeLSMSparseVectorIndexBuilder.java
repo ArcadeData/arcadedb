@@ -120,6 +120,22 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Restores the builder from a PERSISTED index definition - the JSON {@code LSMSparseVectorIndex.toJSON()} writes
+   * into {@code schema.json} and the exporters copy verbatim. Unlike {@link #withMetadata(JSONObject)} this tolerates
+   * (and ignores) the structural keys of such a definition: {@code type}, {@code bucket}, {@code properties},
+   * {@code nullStrategy}, {@code unique}.
+   *
+   * @param json the persisted index definition
+   *
+   * @return this builder for chaining
+   */
+  public TypeLSMSparseVectorIndexBuilder withPersistedMetadata(final JSONObject json) {
+    if (json != null)
+      sparseMetadata().fromJSON(json);
+    return this;
+  }
+
+  /**
    * Returns the builder's metadata as {@link LSMSparseVectorIndexMetadata}. The constructors always create one, but
    * guard the cast so that, if the metadata were ever replaced with a non-sparse instance through
    * {@link #withMetadata(IndexMetadata)}, callers get an actionable error instead of a {@link ClassCastException}.

@@ -154,6 +154,22 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Restores the builder from a PERSISTED index definition - the JSON {@code LSMTreeFullTextIndex.toJSON()} writes
+   * into {@code schema.json} and the exporters copy verbatim. Unlike {@link #withMetadata(JSONObject)} this tolerates
+   * (and ignores) the structural keys of such a definition: {@code type}, {@code bucket}, {@code properties},
+   * {@code nullStrategy}, {@code unique} and the persisted corpus counters ({@code ft_*}).
+   *
+   * @param json the persisted index definition
+   *
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withPersistedMetadata(final JSONObject json) {
+    if (json != null)
+      ftMetadata().fromJSON(json);
+    return this;
+  }
+
+  /**
    * Returns the builder's metadata as {@link FullTextIndexMetadata}. The full-text builder constructors always create one, but
    * guard the cast so that, if the metadata were ever replaced with a non-full-text instance, callers get an actionable error
    * instead of a bare {@link ClassCastException} at configuration time.
