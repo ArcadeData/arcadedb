@@ -426,6 +426,36 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return convertedKeys;
   }
 
+  /**
+   * Narrows each bound component to the property's declared Java type (e.g. the numeric {@code String} literal
+   * {@code "15"} to {@code Integer} for an {@code INTEGER} column), WITHOUT the disk-storage-oriented
+   * {@code String}-to-{@code byte[]} probe encoding {@link #convertKeys} additionally applies.
+   * <p>
+   * That {@code byte[]} encoding exists only to seed {@code lookupInPage}'s (and the compacted series'
+   * equivalent) own raw-bytes binary search within a page - every OTHER place a bound is compared against an
+   * already-deserialized key needs this narrower conversion instead (#5932): a full page-entry deserialization
+   * ({@code PageIterator.getKeys()}) hands back the plain declared-type value, e.g. a {@code String}, never a
+   * {@code byte[]}, and so does {@code TransactionIndexContext}'s in-flight overlay (written by the record-save
+   * path, not through this index's own {@code convertKeys}). Comparing either against a {@code byte[]} bound
+   * either throws - inside {@code TransactionIndexContext.ComparableKey.compareTo}, which dispatches purely on
+   * the runtime class of both operands and has no {@code byte[]}-vs-{@code String} case - or silently
+   * miscompares, since {@link com.arcadedb.serializer.BinaryComparator}'s {@code TYPE_STRING} branch falls back
+   * to comparing against a {@code byte[]}'s generic {@code Object.toString()} instead of its content.
+   */
+  protected Object[] convertKeysToDeclaredTypes(final Object[] keys, final byte[] keyTypes) {
+    if (keys == null)
+      return null;
+
+    final Object[] convertedKeys = new Object[keys.length];
+    for (int i = 0; i < keys.length; ++i) {
+      if (keys[i] == null)
+        continue;
+
+      convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+    }
+    return convertedKeys;
+  }
+
   protected Object[] getPageKeyRange(final BasePage currentPage) {
     final Binary currentPageBuffer = new Binary(currentPage.slice());
     final Object[] min = getKeyInPagePosition(currentPage.getPageId().getPageNumber(), currentPageBuffer, 0);
