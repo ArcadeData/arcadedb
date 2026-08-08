@@ -32,21 +32,29 @@ import java.util.Arrays;
  * vs {@code HashMap<Long, V>} at ~72-90 bytes (Node + Long + table slot) -
  * roughly <b>4-5x savings</b>.
  * <p>
- * The reserved sentinel {@link Long#MIN_VALUE} marks empty slots and therefore
- * cannot be used as a key. Designed for vertex-key / position maps where this
- * limitation is irrelevant.
+ * The reserved sentinels {@link Long#MIN_VALUE} (empty slot) and {@code Long.MIN_VALUE + 2}
+ * (tombstone, left behind by {@link #remove(long)}) cannot be used as keys. Designed for
+ * vertex-key / position maps where this limitation is irrelevant.
  * <p>
  * Not thread-safe. Mirrors the pattern of {@link LongHashSet}.
  */
 public final class LongObjectHashMap<V> {
-  private static final long  EMPTY_KEY   = Long.MIN_VALUE;
-  private static final float LOAD_FACTOR = 0.75f;
+  private static final long  EMPTY_KEY     = Long.MIN_VALUE;
+  private static final long  TOMBSTONE_KEY = Long.MIN_VALUE + 2;
+  private static final float LOAD_FACTOR   = 0.75f;
 
   private long[]   keys;
   private Object[] values;
   private int      capacity;
   private int      mask;
   private int      size;
+  /**
+   * Slots holding {@link #TOMBSTONE_KEY}. Counted toward {@link #threshold} alongside {@link #size}
+   * because every linear probe here terminates only on {@code EMPTY_KEY}: if removals were allowed to
+   * fill the table with tombstones without ever triggering a rehash, a lookup for an absent key would
+   * find no empty slot to stop at and spin forever.
+   */
+  private int      tombstones;
   private int      threshold;
 
   public LongObjectHashMap() {
@@ -66,28 +74,66 @@ public final class LongObjectHashMap<V> {
    * Associates {@code value} with {@code key}. Returns the previous value, or {@code null}
    * if the key was absent.
    *
-   * @throws IllegalArgumentException if {@code key == Long.MIN_VALUE}
-   *                                  (reserved as the empty-slot sentinel).
+   * @throws IllegalArgumentException if {@code key} is one of the two reserved sentinels.
    */
   @SuppressWarnings("unchecked")
   public V put(final long key, final V value) {
-    if (key == EMPTY_KEY)
-      throw new IllegalArgumentException("Long.MIN_VALUE is reserved as the empty-slot sentinel");
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
+      throw new IllegalArgumentException("Long.MIN_VALUE and Long.MIN_VALUE + 2 are reserved sentinels");
+
+    int idx = hash(key) & mask;
+    int tombstoneIdx = -1; // first reusable tombstone slot seen while probing, if any
+    while (true) {
+      final long slot = keys[idx];
+      if (slot == EMPTY_KEY) {
+        final int target = tombstoneIdx >= 0 ? tombstoneIdx : idx;
+        keys[target] = key;
+        values[target] = value;
+        if (tombstoneIdx >= 0)
+          // Reused a tombstoned slot: occupancy is unchanged, one fewer tombstone.
+          tombstones--;
+        ++size;
+        // size + tombstones is exactly the number of non-EMPTY slots; keeping that under the threshold
+        // guarantees an empty slot always remains for probes to terminate on.
+        if (size + tombstones >= threshold)
+          resize();
+        return null;
+      }
+      if (slot == TOMBSTONE_KEY) {
+        if (tombstoneIdx < 0)
+          tombstoneIdx = idx;
+      } else if (slot == key) {
+        final V prev = (V) values[idx];
+        values[idx] = value;
+        return prev;
+      }
+      idx = (idx + 1) & mask;
+    }
+  }
+
+  /**
+   * Removes the mapping for {@code key}, if present, leaving a tombstone behind so later lookups for
+   * other keys that probed past this slot still find them. Returns the previous value, or
+   * {@code null} if the key was absent. A tombstoned slot is reclaimed by a later {@link #put} of a
+   * different key at the same slot, or by {@link #resize()}.
+   */
+  @SuppressWarnings("unchecked")
+  public V remove(final long key) {
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
+      return null;
 
     int idx = hash(key) & mask;
     while (true) {
       final long slot = keys[idx];
-      if (slot == EMPTY_KEY) {
-        keys[idx] = key;
-        values[idx] = value;
-        if (++size >= threshold)
-          resize();
+      if (slot == EMPTY_KEY)
         return null;
-      }
       if (slot == key) {
-        final V prev = (V) values[idx];
-        values[idx] = value;
-        return prev;
+        final V removed = (V) values[idx];
+        keys[idx] = TOMBSTONE_KEY;
+        values[idx] = null;
+        size--;
+        tombstones++;
+        return removed;
       }
       idx = (idx + 1) & mask;
     }
@@ -98,7 +144,9 @@ public final class LongObjectHashMap<V> {
    */
   @SuppressWarnings("unchecked")
   public V get(final long key) {
-    if (key == EMPTY_KEY)
+    // Both sentinels short-circuit, matching put()/remove(): put() rejects them so neither can ever be a
+    // real mapping, and probing for TOMBSTONE_KEY would otherwise "match" a tombstoned slot.
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
       return null;
 
     int idx = hash(key) & mask;
@@ -113,7 +161,8 @@ public final class LongObjectHashMap<V> {
   }
 
   public boolean containsKey(final long key) {
-    if (key == EMPTY_KEY)
+    // See get(): without the TOMBSTONE_KEY guard this would report true for a tombstoned slot.
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
       return false;
 
     int idx = hash(key) & mask;
@@ -139,6 +188,7 @@ public final class LongObjectHashMap<V> {
     Arrays.fill(keys, EMPTY_KEY);
     Arrays.fill(values, null);
     size = 0;
+    tombstones = 0;
   }
 
   /**
@@ -148,7 +198,7 @@ public final class LongObjectHashMap<V> {
   public void forEach(final EntryConsumer<V> consumer) {
     for (int i = 0; i < capacity; i++) {
       final long k = keys[i];
-      if (k != EMPTY_KEY)
+      if (k != EMPTY_KEY && k != TOMBSTONE_KEY)
         consumer.accept(k, (V) values[i]);
     }
   }
@@ -161,7 +211,7 @@ public final class LongObjectHashMap<V> {
     int o = 0;
     for (int i = 0; i < capacity; i++) {
       final long k = keys[i];
-      if (k != EMPTY_KEY)
+      if (k != EMPTY_KEY && k != TOMBSTONE_KEY)
         out[o++] = k;
     }
     return out;
@@ -183,9 +233,18 @@ public final class LongObjectHashMap<V> {
     return (int) h;
   }
 
+  /**
+   * Rehashes into a table sized from the LIVE entry count, dropping all tombstones. Sizing from
+   * {@link #size} rather than always doubling matters once {@link #remove(long)} is in play: a
+   * remove-heavy workload triggers this through the tombstone term of the threshold check, and must
+   * reclaim those slots in place instead of doubling the table every time.
+   */
   @SuppressWarnings("unchecked")
   private void resize() {
-    final int newCapacity = capacity << 1;
+    int newCapacity = capacity;
+    while (size >= (int) (newCapacity * LOAD_FACTOR))
+      newCapacity <<= 1;
+
     final int newMask = newCapacity - 1;
     final long[] newKeys = new long[newCapacity];
     final Object[] newValues = new Object[newCapacity];
@@ -193,7 +252,7 @@ public final class LongObjectHashMap<V> {
 
     for (int i = 0; i < capacity; i++) {
       final long k = keys[i];
-      if (k != EMPTY_KEY) {
+      if (k != EMPTY_KEY && k != TOMBSTONE_KEY) {
         int idx = hash(k) & newMask;
         while (newKeys[idx] != EMPTY_KEY)
           idx = (idx + 1) & newMask;
@@ -207,6 +266,7 @@ public final class LongObjectHashMap<V> {
     capacity = newCapacity;
     mask = newMask;
     threshold = (int) (newCapacity * LOAD_FACTOR);
+    tombstones = 0;
   }
 
   private static int nextPowerOfTwo(final int v) {
