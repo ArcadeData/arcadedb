@@ -118,9 +118,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
-      database.async()
-          .onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting documents", exception));
-
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
@@ -146,12 +143,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           LogManager.instance()
               .log(this, Level.WARNING, "Error on importing document at line %d, skipping it (reason: %s)", null, line,
                   e.getMessage());
+          LogManager.instance().log(this, Level.FINE, "Full error on importing document at line %d", e, line);
           context.errors.incrementAndGet();
         }
       }
 
       database.commit();
-      database.async().waitCompletion();
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
@@ -213,6 +210,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       firstAsyncError.compareAndSet(null, exception);
     });
 
+    // A PERSIST-TIME FAILURE (MANDATORY PROPERTY, UNIQUE INDEX, ...) ROLLS BACK THE WHOLE IN-FLIGHT ASYNC BATCH ON ITS
+    // WORKER THREAD (DatabaseAsyncExecutorImpl#executeTask), NOT JUST THE FAILING VERTEX. IN "skip" MODE THE WHOLE POINT
+    // IS TO LOSE ONLY THE BAD ROW, SO SHRINK THE BATCH TO 1 OPERATION FOR THE DURATION OF THIS IMPORT: EACH VERTEX THEN
+    // COMMITS (OR ROLLS BACK) ON ITS OWN, TRADING SOME THROUGHPUT FOR THE RESILIENCE THE SETTING PROMISES.
+    final int originalCommitEvery = database.async().getCommitEvery();
+    if (settings.isSkipOnRowError())
+      database.async().setCommitEvery(1);
+
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
       skipEntries = 1L;
@@ -265,6 +270,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           LogManager.instance()
               .log(this, Level.WARNING, "Error on importing vertex at line %d, skipping it (reason: %s)", null, line,
                   e.getMessage());
+          LogManager.instance().log(this, Level.FINE, "Full error on importing vertex at line %d", e, line);
           context.errors.incrementAndGet();
         }
       }
@@ -280,6 +286,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     } finally {
+      if (settings.isSkipOnRowError())
+        database.async().setCommitEvery(originalCommitEvery);
+
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()
           .log(this, Level.INFO, "Importing of vertices from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,

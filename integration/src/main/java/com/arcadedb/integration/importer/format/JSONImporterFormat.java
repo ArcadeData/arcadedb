@@ -160,6 +160,7 @@ public class JSONImporterFormat implements FormatImporter {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on importing JSON record #%d, skipping it (reason: %s)", null, recordIndex,
                 e.getMessage());
+        LogManager.instance().log(this, Level.FINE, "Full error on importing JSON record #%d", e, recordIndex);
         context.errors.incrementAndGet();
       }
 

@@ -97,6 +97,43 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * Symmetric to {@link #csvVertexImportSkipsOutOfRangeValueWhenOptedIn()} but for {@code CSVImporterFormat.loadDocuments},
+   * which is fully synchronous ({@code document.save()}, no {@code database.async()}), so unlike vertices, "skip" mode
+   * here guarantees an exact surviving count.
+   */
+  @Test
+  void csvDocumentImportSkipsOutOfRangeValueWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-csv-doc-skip";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Widget");
+      db.command("sql", "CREATE PROPERTY Widget.Score SHORT");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-documents src/test/resources/importer-vertices-outofrange.csv -database " + databasePath
+              + " -documentType Widget -onRowError skip").split(" "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+
+      try (final Database db = databaseFactory.open()) {
+        // BOB'S "99999" DOES NOT FIT A SHORT: THAT ROW IS SKIPPED, THE OTHER TWO ARE IMPORTED
+        assertThat(db.countType("Widget", true)).isEqualTo(2);
+        db.iterateType("Widget", true).forEachRemaining(record -> assertThat(record.asDocument().getString("Name"))
+            .isIn("Alice", "Carol"));
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
   @Test
   void jsonDocumentImportAbortsOnOutOfRangeValueByDefault() {
     final String databasePath = "target/databases/test-import-5968-json-abort";
@@ -206,13 +243,14 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(result.get("errors")).isEqualTo(1L);
 
       try (final Database db = databaseFactory.open()) {
-        // BOB IS MISSING THE MANDATORY Email PROPERTY: IT NEVER GETS PERSISTED, EITHER WAY.
-        // NOTE: VERTICES ARE PERSISTED VIA database.async(), WHOSE PER-WORKER TRANSACTION BATCHES A FAILING TASK'S
-        // database.rollback() ON TOP OF (DatabaseAsyncExecutorImpl#executeTask). "skip" GUARANTEES THE BAD ROW ITSELF
-        // IS NEVER PERSISTED, BUT - UNLIKE THE FULLY SYNCHRONOUS DOCUMENT/JSON PATHS - DOES NOT GUARANTEE THAT SIBLING
-        // ROWS QUEUED IN THE SAME UNCOMMITTED ASYNC BATCH SURVIVE, SO THE SURVIVING COUNT IS NOT ASSERTED HERE.
+        // BOB IS MISSING THE MANDATORY Email PROPERTY: IT FAILS AT ASYNC PERSIST TIME, THE OTHER TWO ARE IMPORTED.
+        // A FAILING ASYNC TASK ROLLS BACK ITS WHOLE IN-FLIGHT BATCH (DatabaseAsyncExecutorImpl#executeTask), NOT JUST
+        // ITSELF: "skip" MODE FORCES A BATCH SIZE OF 1 FOR THIS IMPORT (SEE loadVertices) SO THAT BLAST RADIUS IS
+        // ALWAYS EXACTLY THE FAILING ROW, WHICH IS WHY THE SURVIVING COUNT CAN BE ASSERTED EXACTLY HERE.
         assertThat(db.lookupByKey("Node", "Id", 2L).hasNext()).isFalse();
-        assertThat(db.countType("Node", true)).isLessThanOrEqualTo(2);
+        assertThat(db.countType("Node", true)).isEqualTo(2);
+        assertThat(db.lookupByKey("Node", "Id", 1L).next().getRecord().asVertex().getString("Name")).isEqualTo("Alice");
+        assertThat(db.lookupByKey("Node", "Id", 3L).next().getRecord().asVertex().getString("Name")).isEqualTo("Carol");
       }
     } finally {
       databaseFactory.open().drop();
