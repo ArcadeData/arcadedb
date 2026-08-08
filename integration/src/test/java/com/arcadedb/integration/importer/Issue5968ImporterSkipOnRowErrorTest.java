@@ -535,7 +535,9 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
     try {
       final Importer importer = new Importer(new String[] {
-          "-url", "file://src/test/resources/importer-documents-malformed.json",
+          // .json.txt (NOT .json): AN INTENTIONALLY-MALFORMED JSON FIXTURE WOULD FAIL THE REPO'S check-json PRE-COMMIT
+          // HOOK OTHERWISE. THE IMPORTER DETECTS THE FORMAT FROM CONTENT (A LEADING '{'), NOT THE FILE EXTENSION.
+          "-url", "file://src/test/resources/importer-documents-malformed.json.txt",
           "-database", databasePath,
           "-mapping", NESTED_MAPPING,
           "-onRowError", "skip"
