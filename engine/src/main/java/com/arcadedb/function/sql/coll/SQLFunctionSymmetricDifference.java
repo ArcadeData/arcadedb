@@ -41,6 +41,11 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
   private static void addItemToResult(final Object o, final Set<Object> accepted, final Set<Object> rejected) {
     if (!accepted.contains(o) && !rejected.contains(o)) {
       accepted.add(o);

@@ -45,6 +45,16 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (method == null && params.length > 1 && params[1] != null)

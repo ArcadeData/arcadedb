@@ -40,6 +40,16 @@ public class SQLFunctionGeoPolygon extends SQLFunctionAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
     if (iParams == null || iParams.length < 1 || iParams[0] == null)

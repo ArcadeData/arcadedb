@@ -38,6 +38,11 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext ctx) {
     Object value = params[0];

@@ -49,6 +49,16 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   public Object execute(final Object self, final Identifiable record, final Object currentResult, final Object[] params, final CommandContext context) {
     final Object inputValue = params[0];
 

@@ -38,7 +38,10 @@ public class SQLFunctionCount extends SQLAggregatedFunction {
   }
 
   /**
-   * {@code count(*)} carries no argument at all, which is why the minimum is 0 rather than 1.
+   * The parser represents {@code count(*)} as a single synthetic argument, not zero - {@code FunctionCall.isStar()}
+   * requires {@code params.size() == 1} to recognize the star form. The minimum is 0 rather than 1 because
+   * {@link #execute} itself also tolerates an empty {@code params} array ({@code params.length == 0}) as an
+   * alternate "count everything" shape, so both need to pass {@code checkArity()} without a real field argument.
    */
   @Override
   public int getMinArgs() {

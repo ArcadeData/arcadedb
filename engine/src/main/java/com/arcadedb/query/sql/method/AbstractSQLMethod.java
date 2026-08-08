@@ -49,6 +49,16 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   }
 
   @Override
+  public int getMinParams() {
+    return minParams;
+  }
+
+  @Override
+  public int getMaxParams() {
+    return maxParams;
+  }
+
+  @Override
   public String getSyntax() {
     final StringBuilder sb = new StringBuilder("<field>.");
     sb.append(getName());

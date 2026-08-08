@@ -37,6 +37,11 @@ public class FunctionAggregationContext implements AggregationContext {
     this.params = params;
     if (this.params == null)
       this.params = new ArrayList<>();
+    // Argument count does not change across the rows apply() is called for, so the check belongs here, once,
+    // rather than on every row (#5884): this is the aggregate-projection dispatch path (used for both real
+    // aggregate functions and any function projected with no FROM), a second entry point FunctionCall.execute()'s
+    // checkArity does not cover.
+    this.aggregateFunction.checkArity(new Object[this.params.size()]);
   }
 
   @Override

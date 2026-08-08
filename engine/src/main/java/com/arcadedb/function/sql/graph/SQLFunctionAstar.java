@@ -76,6 +76,16 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 4;
+  }
+
   public LinkedList<RID> execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext ctx) {
     context = ctx;

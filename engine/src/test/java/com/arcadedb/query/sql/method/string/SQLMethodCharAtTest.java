@@ -40,6 +40,14 @@ class SQLMethodCharAtTest {
     }
 
     @Test
+    void nullReceiverWithANonNullIndexIsReturnedAsNull() {
+        // Isolates the value == null guard (#5885): before it was added, a non-null index still reached
+        // value.toString() unconditionally and threw a NullPointerException on a null receiver.
+        final Object result = method.execute(null, null, null, new Object[]{0});
+        assertThat(result).isNull();
+    }
+
+    @Test
     void chartAt() {
         final Object result = method.execute("chars", null, null, new Object[]{3});
         assertThat(result).isEqualTo("r");

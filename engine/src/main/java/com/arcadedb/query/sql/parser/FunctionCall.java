@@ -127,12 +127,14 @@ public class FunctionCall extends SimpleNode {
 
     final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
     if (function != null) {
+      final Object[] functionParams = paramValues.toArray();
+      function.checkArity(functionParams);
       if (record instanceof Identifiable identifiable) {
-        return function.execute(targetObjects, identifiable, null, paramValues.toArray(), context);
+        return function.execute(targetObjects, identifiable, null, functionParams, context);
       } else if (record instanceof Result result) {
-        return function.execute(targetObjects, result.getElement().orElse(null), null, paramValues.toArray(), context);
+        return function.execute(targetObjects, result.getElement().orElse(null), null, functionParams, context);
       } else if (record == null) {
-        return function.execute(targetObjects, null, null, paramValues.toArray(), context);
+        return function.execute(targetObjects, null, null, functionParams, context);
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + record);
       }

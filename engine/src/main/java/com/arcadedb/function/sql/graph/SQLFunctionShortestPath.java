@@ -66,6 +66,16 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 5;
+  }
+
   private static class ShortestPathContext {
     Vertex           sourceVertex;
     Vertex           destinationVertex;

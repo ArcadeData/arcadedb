@@ -42,7 +42,7 @@ public class SQLMethodTransform extends AbstractSQLMethod {
   private static final Object[] EMPTY_ARGS = new Object[] {};
 
   public SQLMethodTransform() {
-    super(NAME, 0, 0);
+    super(NAME, 0, -1);
   }
 
   @Override

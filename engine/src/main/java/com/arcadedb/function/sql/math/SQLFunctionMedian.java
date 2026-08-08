@@ -34,6 +34,20 @@ public class SQLFunctionMedian extends SQLFunctionPercentile {
     this.quantiles.add(.5);
   }
 
+  /**
+   * Unlike {@link SQLFunctionPercentile}, the quantile is fixed at construction (0.5), so a call only ever
+   * supplies the field.
+   */
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   @Override
   public String getSyntax() {
     return NAME + "(<field>)";
