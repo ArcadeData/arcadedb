@@ -857,6 +857,10 @@ public class RedisNetworkExecutor extends Thread {
         // RESP2 null bulk string ($-1): the header IS the complete, self-terminated token - unlike a
         // present bulk string, there is no trailing CRLF to skip (issue #5911). Mirrors the null/empty
         // array short-circuit below; skipping it here avoided consuming the next token's leading byte.
+        // Deliberately treats every negative size as null, not just -1: RESP2 only defines -1, but nothing
+        // else about "negative" is meaningful either, and rejecting e.g. $-2 would need its own protocol-
+        // error branch for no behavioral benefit over just treating it the same as the one negative value
+        // that is defined.
         return null;
       if (size > maxBulkLength)
         throw new RedisProtocolLimitException(
