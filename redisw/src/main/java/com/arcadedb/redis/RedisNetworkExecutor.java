@@ -96,9 +96,12 @@ public class RedisNetworkExecutor extends Thread {
     // Bound the pre-authentication window (issue #5912): without a read timeout, a client that opens a
     // connection and never completes AUTH/HELLO - or trickles bytes arbitrarily slowly - can hold this
     // connection thread open indefinitely. Lifted back to infinite once authentication succeeds (see
-    // markAuthenticated), mirroring how BoltNetworkExecutor bounds its own pre-handshake window: an
-    // authenticated RESP client is expected to keep a long-lived, often idle connection open between
-    // commands, so the timeout must not keep applying past that point.
+    // markAuthenticated), reusing the same setSoTimeout(NETWORK_SOCKET_TIMEOUT)-then-setSoTimeout(0) idiom
+    // BoltNetworkExecutor.negotiateTransport() uses to bound its own TLS-detection window (review on #5965:
+    // Bolt only bounds that window, not its own subsequent HELLO/LOGON auth phase, so this goes further -
+    // it bounds the entire pre-auth phase here, through AUTH/HELLO itself). An authenticated RESP client is
+    // expected to keep a long-lived, often idle connection open between commands, so the timeout must not
+    // keep applying past that point.
     final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
     if (handshakeTimeout > 0)
       channel.socket.setSoTimeout(handshakeTimeout);
@@ -685,6 +688,9 @@ public class RedisNetworkExecutor extends Thread {
     try {
       channel.socket.setSoTimeout(0);
     } catch (final SocketException e) {
+      // setSoTimeout() only throws on an already-broken/closed socket (review on #5965): there is nothing
+      // left to hold open in that case, so logging and moving on - rather than failing the whole
+      // authentication - is safe. The connection dies on its next read/write either way.
       LogManager.instance().log(this, Level.FINE, "Redis wrapper: unable to lift the idle read timeout after authentication", e);
     }
   }
@@ -703,6 +709,9 @@ public class RedisNetworkExecutor extends Thread {
     try {
       channel.socket.setSoTimeout(Math.max(handshakeTimeout, 0));
     } catch (final SocketException e) {
+      // As in markAuthenticated(): setSoTimeout() only throws on an already-broken/closed socket, so there
+      // is no live connection left for the un-restored timeout to matter on - the "unauthenticated implies
+      // bounded timeout" invariant this method exists for has nothing left to protect in that case.
       LogManager.instance().log(this, Level.FINE, "Redis wrapper: unable to restore the idle read timeout after failed authentication", e);
     }
   }
