@@ -329,6 +329,8 @@ public class BinaryComparator {
   private static int compareAgainstNumericString(final Number value1, final String string) {
     switch (string) {
     case "NaN":
+    case "+NaN":
+    case "-NaN":
     case "Infinity":
     case "+Infinity":
     case "-Infinity":

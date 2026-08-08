@@ -88,6 +88,14 @@ class Issue5945NumericStringOverflowTest {
     // being routed to Double.parseDouble, which correctly parses it as Double.NaN.
     assertThat(comparator.compare(5, BinaryTypes.TYPE_INT, "NaN", BinaryTypes.TYPE_STRING))
         .isEqualTo(Double.compare(5, Double.NaN));
+
+    // Double.parseDouble's grammar also accepts an explicit sign on NaN (Signopt NaN), even though it has no
+    // effect on the parsed value: both must be routed the same way as the unsigned form, not fall through to
+    // Long.parseLong.
+    assertThat(comparator.compare(5, BinaryTypes.TYPE_INT, "+NaN", BinaryTypes.TYPE_STRING))
+        .isEqualTo(Double.compare(5, Double.NaN));
+    assertThat(comparator.compare(5, BinaryTypes.TYPE_INT, "-NaN", BinaryTypes.TYPE_STRING))
+        .isEqualTo(Double.compare(5, Double.NaN));
   }
 
   @Test
