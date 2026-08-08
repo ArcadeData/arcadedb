@@ -225,12 +225,20 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   /**
    * Auto determine if it's ascending or descending by checking the keys. In case of partial match index, pass the ascending parameter.
+   * <p>
+   * Unreachable through the SQL/Cypher engines today - every caller goes through the explicit-direction
+   * {@link #range(boolean, Object[], boolean, Object[], boolean)} via the {@link com.arcadedb.index.RangeIndex}
+   * interface - but it is a public method on a public class, so a direct caller with a mismatched-type bound
+   * (e.g. a {@code String} against an {@code INTEGER} key) would otherwise hit the exact
+   * {@code ClassCastException} #5932 fixed inside {@link LSMTreeIndexCursor}: {@code compareKeys()} here compares
+   * the RAW caller-supplied bounds, not narrowed to the index's declared key types.
    */
   public IndexCursor range(final Object[] fromKeys, final boolean beginKeysInclusive, final Object[] toKeys,
       final boolean endKeysInclusive) throws IOException {
     final boolean ascending;
     if (fromKeys != null && toKeys != null)
-      ascending = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, fromKeys, toKeys) <= 0;
+      ascending = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, convertKeysToDeclaredTypes(fromKeys, binaryKeyTypes),
+          convertKeysToDeclaredTypes(toKeys, binaryKeyTypes)) <= 0;
     else
       ascending = true;
 

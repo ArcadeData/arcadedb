@@ -58,9 +58,11 @@ import java.util.*;
 public class LSMTreeIndexCursor implements IndexCursor {
   private final LSMTreeIndexMutable                    index;
   private final boolean                                ascendingOrder;
-  private final Object[]                               fromKeys;
-  private final Object[]                               toKeys;
-  private final Object[]                               serializedToKeys;
+  /** Bounds narrowed to the index's declared key types WITHOUT the byte[]-for-String probe encoding (#5932):
+   *  used for every comparison against an already-deserialized key, whether read back from a page
+   *  ({@code PageIterator.getKeys()}) or from the transaction-overlay - both hold this same plain form. */
+  private final Object[]                               typedFromKeys;
+  private final Object[]                               typedToKeys;
   private final boolean                                toKeysInclusive;
   private final LSMTreeIndexUnderlyingAbstractCursor[] pageCursors;
   private final int                                    totalCursors;
@@ -97,12 +99,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
     index.checkForNulls(fromKeys);
     index.checkForNulls(toKeys);
 
+    // Disk-probe encoding (byte[]-for-String): needed ONLY to seed lookupInPage and the compacted series'
+    // equivalent below - both purely local to this constructor - never for a comparison against an
+    // already-deserialized key, which is what every typedFromKeys/typedToKeys comparison elsewhere is for.
     final Object[] serializedFromKeys = index.convertKeys(fromKeys, binaryKeyTypes);
+    this.typedFromKeys = index.convertKeysToDeclaredTypes(fromKeys, binaryKeyTypes);
 
-    this.fromKeys = fromKeys;
-
-    this.toKeys = toKeys != null && toKeys.length == 0 ? null : toKeys;
-    this.serializedToKeys = index.convertKeys(this.toKeys, binaryKeyTypes);
+    final Object[] normalizedToKeys = toKeys != null && toKeys.length == 0 ? null : toKeys;
+    final Object[] serializedToKeys = index.convertKeys(normalizedToKeys, binaryKeyTypes);
+    this.typedToKeys = index.convertKeysToDeclaredTypes(normalizedToKeys, binaryKeyTypes);
     this.toKeysInclusive = endKeysInclusive;
 
     final DatabaseInternal database = index.getDatabase();
@@ -171,13 +176,18 @@ public class LSMTreeIndexCursor implements IndexCursor {
             pageCursors[cursorIdx] = index.newPageIterator(pageId, lookupResult.keyIndex, ascendingOrder);
             cursorKeys[cursorIdx] = pageCursors[cursorIdx].getKeys();
 
+            // #5932: cursorKeys[] comes from a full page-entry deserialization (PageIterator.getKeys()), so it is
+            // already in the index's declared Java types (e.g. a plain String) - NOT the byte[]-for-String probe
+            // encoding serializedFromKeys carries for lookupInPage's own raw-bytes binary search above. Comparing
+            // it against that probe hits BinaryComparator's generic Object.toString() fallback for a byte[]
+            // operand, comparing a garbage "[B@hash" string instead of the real bound and misjudging the range.
             if (ascendingOrder) {
-              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) < 0) {
+              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], typedFromKeys) < 0) {
                 pageCursors[cursorIdx] = null;
                 cursorKeys[cursorIdx] = null;
               }
             } else {
-              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) > 0) {
+              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], typedFromKeys) > 0) {
                 pageCursors[cursorIdx] = null;
                 cursorKeys[cursorIdx] = null;
               }
@@ -226,8 +236,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
           break;
         }
 
-        if (fromKeys != null && !beginKeysInclusive) {
-          if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[i], fromKeys) == 0) {
+        if (typedFromKeys != null && !beginKeysInclusive) {
+          if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[i], typedFromKeys) == 0) {
             // SKIP THIS
             if (pageCursor.hasNext()) {
               advanceCursor(i);
@@ -242,9 +252,9 @@ public class LSMTreeIndexCursor implements IndexCursor {
           }
         }
 
-        if (this.serializedToKeys != null) {
+        if (this.typedToKeys != null) {
           //final Object[] cursorKey = index.convertKeys(index.checkForNulls(pageCursor.getKeys()), keyTypes);
-          final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, pageCursor.getKeys(), this.toKeys);
+          final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, pageCursor.getKeys(), this.typedToKeys);
 
           if ((ascendingOrder && ((endKeysInclusive && compare <= 0) || (!endKeysInclusive && compare < 0))) || //
               (!ascendingOrder && ((endKeysInclusive && compare >= 0) || (!endKeysInclusive && compare > 0))))
@@ -299,7 +309,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       }
     }
 
-    getClosestEntryInTx(fromKeys, beginKeysInclusive);
+    getClosestEntryInTx(typedFromKeys, beginKeysInclusive);
   }
 
   /**
@@ -536,8 +546,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
           if (currentCursor.hasNext()) {
             advanceCursor(minorKeyIndex);
 
-            if (serializedToKeys != null) {
-              final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[minorKeyIndex], toKeys);
+            if (typedToKeys != null) {
+              final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[minorKeyIndex], typedToKeys);
 
               if ((ascendingOrder && ((toKeysInclusive && compare > 0) || (!toKeysInclusive && compare >= 0))) || (!ascendingOrder
                   && ((toKeysInclusive && compare < 0) || (!toKeysInclusive && compare <= 0)))) {
@@ -569,7 +579,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       currentValues = mergedRIDs.isEmpty() ? null : mergedRIDs.toArray(new RID[0]);
 
       if (txCursor == null || !txCursor.hasNext())
-        getClosestEntryInTx(currentKeys != null ? currentKeys : fromKeys, false);
+        getClosestEntryInTx(currentKeys != null ? currentKeys : typedFromKeys, false);
     }
   }
 
@@ -660,13 +670,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
               final Object[] tmpKeys = entry.getKey().values;
 
-              if (toKeys != null) {
+              if (typedToKeys != null) {
                 // #5055: toKeys bounds the FAR end of the scan, whose direction flips with the order: for an
                 // ascending scan it is the upper bound (skip entries ABOVE it), for a descending scan it is the
                 // lower bound (skip entries BELOW it). The filter used the ascending sense unconditionally, so
                 // a descending in-tx overlay dropped every entry above the lower bound - e.g. the top key of a
                 // range, including a committed/uncommitted collision there.
-                final int cmp = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, tmpKeys, toKeys);
+                // #5932: tmpKeys comes straight from the overlay's own ComparableKey, so the bound compared
+                // against it must be typedToKeys (no disk byte[]-for-String encoding), not serializedToKeys.
+                final int cmp = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, tmpKeys, typedToKeys);
 
                 if (ascendingOrder ? cmp > 0 : cmp < 0)
                   continue;
