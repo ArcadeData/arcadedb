@@ -120,6 +120,19 @@ class FunctionArgumentValidationRegressionTest extends TestHelper {
   }
 
   @Test
+  void graphFunctionAsMethodCallSyntaxStillWorksWithCorrectArguments() {
+    // MethodCall's isGraphFunction() branch (used for the <expr>.out()/.in()/.both()/... method-call syntax,
+    // as opposed to the out()/in()/both() function-call syntax the other tests exercise) also calls
+    // checkArity() now. Confirm a normal traversal through that branch still works.
+    database.getSchema().createVertexType("ArityMethodSyntaxVertex");
+    database.transaction(() -> database.newVertex("ArityMethodSyntaxVertex").save());
+
+    assertThatCode(() -> consume("SELECT @this.bothE() AS r FROM ArityMethodSyntaxVertex")) //
+        .as("bothE() via method-call syntax with correct (zero) arguments must not throw") //
+        .doesNotThrowAnyException();
+  }
+
+  @Test
   void everyAffectedFunctionIsAccountedFor() {
     // Every name in AFFECTED_FUNCTIONS is exercised by exactly one of the two parameterized tests above.
     for (final String name : AFFECTED_FUNCTIONS) {
