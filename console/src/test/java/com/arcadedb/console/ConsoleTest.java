@@ -244,8 +244,9 @@ class ConsoleTest {
    */
   @Test
   void progressBarClampsPercentageAboveHundred() {
-    assertThatCode(() -> Console.formatProgressLine("import", "loading", 1, 2, 110)).doesNotThrowAnyException();
-    assertThat(Console.formatProgressLine("import", "loading", 1, 2, 110)).contains("|" + "=".repeat(20) + "| 110%");
+    final String[] line = new String[1];
+    assertThatCode(() -> line[0] = Console.formatProgressLine("import", "loading", 1, 2, 110)).doesNotThrowAnyException();
+    assertThat(line[0]).contains("|" + "=".repeat(20) + "| 110%");
   }
 
   /**
@@ -265,6 +266,31 @@ class ConsoleTest {
     } finally {
       System.clearProperty(key);
     }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5928: a value containing further '=' characters must be kept whole,
+   * not truncated at the second one.
+   */
+  @Test
+  void systemPropertyArgumentWithEmbeddedEqualsKeepsFullValue() throws Exception {
+    final String key = "arcadedb.test.issue5928.multi";
+    try {
+      assertThatCode(() -> Console.execute(new String[] { "-D" + key + "=bar=baz", "-b" })).doesNotThrowAnyException();
+      assertThat(System.getProperty(key)).isEqualTo("bar=baz");
+    } finally {
+      System.clearProperty(key);
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5928: an argument with no key at all ('-D' alone or '-D=value') must
+   * not crash the console with IllegalArgumentException from System.setProperty.
+   */
+  @Test
+  void systemPropertyArgumentWithoutKeyDoesNotCrash() throws Exception {
+    assertThatCode(() -> Console.execute(new String[] { "-D", "-b" })).doesNotThrowAnyException();
+    assertThatCode(() -> Console.execute(new String[] { "-D=value", "-b" })).doesNotThrowAnyException();
   }
 
   /**

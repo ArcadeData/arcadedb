@@ -188,8 +188,12 @@ public class Console {
         final int separatorPos = keyValue.indexOf('=');
         final String key = separatorPos < 0 ? keyValue : keyValue.substring(0, separatorPos);
         final String propertyValue = separatorPos < 0 ? "" : keyValue.substring(separatorPos + 1);
-        System.setProperty(key, propertyValue);
-        setGlobalConfiguration(key, propertyValue, true);
+        if (key.isEmpty())
+          System.err.println("Ignoring malformed system property argument '" + value + "': missing key");
+        else {
+          System.setProperty(key, propertyValue);
+          setGlobalConfiguration(key, propertyValue, true);
+        }
       } else if ("-b".equalsIgnoreCase(value)) {
         batchMode = true;
       } else if ("-fae".equalsIgnoreCase(value)) {
