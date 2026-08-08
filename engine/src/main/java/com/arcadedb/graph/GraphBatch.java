@@ -84,6 +84,16 @@ import java.util.logging.Level;
  *       (issue #5664)</li>
  * </ul>
  * <p>
+ * <b>Memory bounding is partial, by design (issue #5664).</b> The two head-chunk RID caches and the deferred
+ * incoming-edge buffer above are bounded, but {@code deferredOutHead}, {@code deferredInHead} and
+ * {@code knownNewVertexKeys} still grow with the number of DISTINCT VERTICES the batch touches (not with the
+ * edge count, and not with {@code batchSize}); they are only cleared by {@code batchUpdateVertexHeadChunks()}
+ * at {@link #close()}. They are also load-bearing rather than merely an optimization: since #5664 they are the
+ * authoritative fallback consulted when a bounded RID cache evicts an entry, which is what keeps an eviction
+ * from silently orphaning an earlier segment. So a stream touching hundreds of millions of distinct vertices
+ * still carries per-vertex state proportional to that count. Bounding those too means draining vertex head
+ * pointers mid-batch, a materially larger change; it is deliberately not attempted here.
+ * <p>
  * <b>Super-node promotion (#5667):</b> unlike the standard {@code Vertex.newEdge()} path, a bulk load through
  * this class never promotes a hot vertex to the striped super-node layout (see
  * {@link GlobalConfiguration#GRAPH_SUPERNODE_THRESHOLD}) - every vertex loaded here keeps the classic chained

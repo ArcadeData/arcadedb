@@ -282,6 +282,62 @@ class LongObjectHashMapTest {
     assertThat(m.keysArray()).containsExactly(1L);
   }
 
+  /**
+   * The tombstone sentinel ({@code Long.MIN_VALUE + 2}) must be inert on every read path, the same way the
+   * empty-slot sentinel already is. {@code put()} rejects it so it can never be a real mapping - but without an
+   * explicit guard, {@code containsKey()} probing for it would "match" the first tombstoned slot it walked over
+   * and wrongly answer true. Unreachable through this map's own API today, since a tombstone only exists after a
+   * {@link LongObjectHashMap#remove(long)} and the key that produces one cannot be inserted; guarded anyway
+   * because this is a general-purpose utility and a caller has no reason to know which longs are reserved.
+   */
+  @Test
+  void tombstoneSentinelIsInertOnEveryReadPath() {
+    final long tombstoneSentinel = Long.MIN_VALUE + 2;
+    final int capacity = 16; // the map's minimum/default, so no resize can move slots under us
+    final int mask = capacity - 1;
+
+    // A tombstone anywhere in the table is NOT enough to exercise this: containsKey() probes from
+    // hash(tombstoneSentinel) and stops at the first EMPTY slot, so in a sparse table it returns false
+    // for the wrong reason and the test would pass even with the guard removed. Place the tombstone at
+    // exactly the slot the sentinel's own probe starts on, so the probe is guaranteed to reach it.
+    final int sentinelSlot = murmurHash(tombstoneSentinel) & mask;
+    long collidingKey = 1L;
+    while ((murmurHash(collidingKey) & mask) != sentinelSlot)
+      collidingKey++;
+
+    final LongObjectHashMap<String> m = new LongObjectHashMap<>(capacity);
+    m.put(collidingKey, "victim");
+    assertThat(m.remove(collidingKey))
+        .as("removing the only entry must leave a tombstone at slot %d, where the sentinel's probe begins",
+            sentinelSlot)
+        .isEqualTo("victim");
+
+    assertThatThrownBy(() -> m.put(tombstoneSentinel, "nope"))
+        .as("the tombstone sentinel is reserved and must never be storable")
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThat(m.containsKey(tombstoneSentinel))
+        .as("containsKey must not report a tombstoned slot as a live mapping for the sentinel")
+        .isFalse();
+    assertThat(m.get(tombstoneSentinel)).isNull();
+    assertThat(m.remove(tombstoneSentinel)).isNull();
+
+    // Live data around the tombstone still behaves.
+    m.put(collidingKey, "back");
+    assertThat(m.get(collidingKey)).isEqualTo("back");
+    assertThat(m.size()).isEqualTo(1);
+  }
+
+  /** Mirrors {@code LongObjectHashMap.hash()} (MurmurHash3 finalizer) so a slot collision can be constructed. */
+  private static int murmurHash(final long value) {
+    long h = value;
+    h ^= h >>> 33;
+    h *= 0xff51afd7ed558ccdL;
+    h ^= h >>> 33;
+    h *= 0xc4ceb9fe1a85ec53L;
+    h ^= h >>> 33;
+    return (int) h;
+  }
+
   @Test
   void equivalentToHashMapUnderRandomLoad() {
     final LongObjectHashMap<String> a = new LongObjectHashMap<>();

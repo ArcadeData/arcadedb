@@ -144,7 +144,9 @@ public final class LongObjectHashMap<V> {
    */
   @SuppressWarnings("unchecked")
   public V get(final long key) {
-    if (key == EMPTY_KEY)
+    // Both sentinels short-circuit, matching put()/remove(): put() rejects them so neither can ever be a
+    // real mapping, and probing for TOMBSTONE_KEY would otherwise "match" a tombstoned slot.
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
       return null;
 
     int idx = hash(key) & mask;
@@ -159,7 +161,8 @@ public final class LongObjectHashMap<V> {
   }
 
   public boolean containsKey(final long key) {
-    if (key == EMPTY_KEY)
+    // See get(): without the TOMBSTONE_KEY guard this would report true for a tombstoned slot.
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
       return false;
 
     int idx = hash(key) & mask;
