@@ -18,7 +18,12 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -218,5 +223,50 @@ class BinaryComparatorNarrowingTest {
     assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
     assertThat(forward).isLessThan(0);
     assertThat(backward).isGreaterThan(0);
+  }
+
+  /**
+   * {@code TYPE_STRING} as {@code type1} against a {@code TYPE_DATETIME}/{@code TYPE_DATE}/{@code type2} fell
+   * through the same unconditional lexicographic {@code compareTo()} the numeric/boolean branches had before the
+   * previous fix - issue #5947, filed as a follow-up to #5900/#5922 since it needed date parsing rather than a
+   * mechanical widen-and-negate. An epoch-millis string makes the mismatch deterministic: every ISO date string
+   * for a real-world year starts with {@code '1'} (years 1000-1999) or {@code '2'} (years 2000+), and every
+   * epoch-millis string for a real-world moment also starts with {@code '1'} (millis since 1970 stay 13 digits
+   * until the year 2286) - so a millis string compared against a post-2000 ISO date string always loses
+   * lexicographically, regardless of which moment is actually later.
+   */
+  @Test
+  void stringVersusDateTimeIsAntisymmetric() {
+    final LocalDateTime earlierDate = LocalDateTime.of(2001, 1, 1, 0, 0, 0);
+    // Chronologically AFTER earlierDate, despite its epoch-millis string starting with '1' - a lexicographically
+    // smaller digit than the date's ISO string ("2001-01-01T00:00").
+    final String laterAsEpochMillis =
+        String.valueOf(DateUtils.dateTimeToTimestamp(LocalDateTime.of(2023, 11, 14, 0, 0, 0), ChronoUnit.MILLIS));
+
+    final int forward = comparator.compare(laterAsEpochMillis, BinaryTypes.TYPE_STRING, earlierDate, BinaryTypes.TYPE_DATETIME);
+    final int backward = comparator.compare(earlierDate, BinaryTypes.TYPE_DATETIME, laterAsEpochMillis, BinaryTypes.TYPE_STRING);
+
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    // The 2023 moment is strictly later than the 2001 date.
+    assertThat(forward).isGreaterThan(0);
+    assertThat(backward).isLessThan(0);
+  }
+
+  /**
+   * Same defect as {@link #stringVersusDateTimeIsAntisymmetric()} but for {@code TYPE_DATE}, and using a
+   * parseable ISO datetime string (rather than an epoch-millis string) to exercise the date-parsing path end to
+   * end - the shape a user's {@code WHERE dateColumn < '2001-06-01T00:00:00'} query would actually hit.
+   */
+  @Test
+  void stringVersusDateIsAntisymmetric() {
+    final LocalDate earlierDate = LocalDate.of(2001, 1, 1);
+    final String laterIsoDateTime = "2001-06-01T00:00:00";
+
+    final int forward = comparator.compare(laterIsoDateTime, BinaryTypes.TYPE_STRING, earlierDate, BinaryTypes.TYPE_DATE);
+    final int backward = comparator.compare(earlierDate, BinaryTypes.TYPE_DATE, laterIsoDateTime, BinaryTypes.TYPE_STRING);
+
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    assertThat(forward).isGreaterThan(0);
+    assertThat(backward).isLessThan(0);
   }
 }

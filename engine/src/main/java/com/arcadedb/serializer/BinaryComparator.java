@@ -78,10 +78,17 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DOUBLE:
       case BinaryTypes.TYPE_DECIMAL:
       case BinaryTypes.TYPE_BOOLEAN:
-        // A String value1 against a numeric/boolean value2 must agree with the reverse call - delegate to the
-        // numeric side's own widening comparator and negate, rather than falling through to a lexicographic
-        // compareTo() that silently ignores type2 and breaks antisymmetry the same way the narrowing branches
-        // did before this fix (e.g. compare("2", STRING, 10, INT) and its reverse both answered "greater").
+      case BinaryTypes.TYPE_DATE:
+      case BinaryTypes.TYPE_DATETIME:
+      case BinaryTypes.TYPE_DATETIME_SECOND:
+      case BinaryTypes.TYPE_DATETIME_MICROS:
+      case BinaryTypes.TYPE_DATETIME_NANOS:
+        // A String value1 against a numeric/boolean/date value2 must agree with the reverse call - delegate to
+        // the other side's own comparator and negate, rather than falling through to a lexicographic compareTo()
+        // that silently ignores type2 and breaks antisymmetry the same way the narrowing branches did before this
+        // fix (e.g. compare("2", STRING, 10, INT) and its reverse both answered "greater"). The DATE/DATETIME
+        // branch below already parses a String operand via DateUtils.dateTimeToTimestamp(), so this reuses that
+        // parsing rather than duplicating it (issue #5947).
         return -compare(value2, type2, value1, type1);
 
       default:
