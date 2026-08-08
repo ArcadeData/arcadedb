@@ -19,7 +19,6 @@
 package com.arcadedb.function.coll;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.utility.LongRangeList;
 import org.junit.jupiter.api.Test;
@@ -191,7 +190,7 @@ class RangeFunctionTest {
   @Test
   void stepZeroIsStillRejected() {
     assertThatThrownBy(() -> fn.execute(new Object[]{ 0L, 10L, 0L }, null))
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("step cannot be zero");
   }
 }

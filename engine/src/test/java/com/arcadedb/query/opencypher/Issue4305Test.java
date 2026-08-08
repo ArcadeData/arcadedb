@@ -19,7 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code point({latitude: c.lat, longitude: c.lon})}, the function fails with a raw
  * {@link ClassCastException} from {@code java.lang.String cannot be cast to java.lang.Number}.
  * The fix coerces numeric strings to {@link Number} and otherwise raises a clean
- * {@link CommandExecutionException} naming the offending key.
+ * {@link CommandSemanticException} naming the offending key.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -123,7 +123,7 @@ class Issue4305Test extends TestHelper {
         rs.stream().toList();
       }
     })
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("point()")
         .hasMessageMatching("(?s).*(latitude|longitude).*")
         .hasMessageMatching("(?s).*(abc|def).*");
