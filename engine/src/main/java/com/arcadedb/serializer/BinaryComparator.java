@@ -87,8 +87,8 @@ public class BinaryComparator {
         // the other side's own comparator and negate, rather than falling through to a lexicographic compareTo()
         // that silently ignores type2 and breaks antisymmetry the same way the narrowing branches did before this
         // fix (e.g. compare("2", STRING, 10, INT) and its reverse both answered "greater"). The DATE/DATETIME
-        // branch below already parses a String operand via DateUtils.dateTimeToTimestamp(), so this reuses that
-        // parsing rather than duplicating it (issue #5947).
+        // branch below already parses a String operand via DateUtils.dateTimeToTimestampInferringStringPrecision(),
+        // so this reuses that parsing rather than duplicating it (issue #5947).
         return -compare(value2, type2, value1, type1);
 
       default:
@@ -166,8 +166,8 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DATETIME_MICROS:
     case BinaryTypes.TYPE_DATETIME_NANOS: {
       final ChronoUnit higherPrecision = DateUtils.getHigherPrecision(value1, value2);
-      final long v1 = DateUtils.dateTimeToTimestamp(value1, higherPrecision);
-      final long v2 = DateUtils.dateTimeToTimestamp(value2, higherPrecision);
+      final long v1 = DateUtils.dateTimeToTimestampInferringStringPrecision(value1, higherPrecision);
+      final long v2 = DateUtils.dateTimeToTimestampInferringStringPrecision(value2, higherPrecision);
       return Long.compare(v1, v2);
     }
 
@@ -441,7 +441,8 @@ public class BinaryComparator {
     else if (a instanceof ChronoLocalDateTime<?> aDate && b instanceof ChronoLocalDateTime<?> bDate)
       return aDate.compareTo(bDate);
     else if (DateUtils.isDate(a) || DateUtils.isDate(b))
-      return DateUtils.dateTimeToTimestamp(a, ChronoUnit.NANOS).compareTo(DateUtils.dateTimeToTimestamp(b, ChronoUnit.NANOS));
+      return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
+          .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
     return ((Comparable<Object>) a).compareTo(b);
   }
 
