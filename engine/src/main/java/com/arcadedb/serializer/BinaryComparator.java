@@ -87,8 +87,8 @@ public class BinaryComparator {
         // the other side's own comparator and negate, rather than falling through to a lexicographic compareTo()
         // that silently ignores type2 and breaks antisymmetry the same way the narrowing branches did before this
         // fix (e.g. compare("2", STRING, 10, INT) and its reverse both answered "greater"). The DATE/DATETIME
-        // branch below already parses a String operand via DateUtils.dateTimeToTimestamp(), so this reuses that
-        // parsing rather than duplicating it (issue #5947).
+        // branch below already parses a String operand via DateUtils.dateTimeToTimestampInferringStringPrecision(),
+        // so this reuses that parsing rather than duplicating it (issue #5947).
         return -compare(value2, type2, value1, type1);
 
       default:
