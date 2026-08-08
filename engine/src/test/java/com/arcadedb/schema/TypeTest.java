@@ -28,6 +28,7 @@ import com.arcadedb.utility.MultiIterator;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.*;
 import java.util.*;
 
@@ -454,6 +455,30 @@ class TypeTest extends TestHelper {
     assertThat(Type.convert(database, "42", Byte.class)).isEqualTo((byte) 42);
     assertThat(Type.convert(database, 42, Byte.class)).isEqualTo((byte) 42);
     assertThat(Type.convert(database, 42L, Byte.TYPE)).isEqualTo((byte) 42);
+    // BOUNDARY VALUES MUST STILL CONVERT
+    assertThat(Type.convert(database, (long) Byte.MAX_VALUE, Byte.class)).isEqualTo(Byte.MAX_VALUE);
+    assertThat(Type.convert(database, (long) Byte.MIN_VALUE, Byte.class)).isEqualTo(Byte.MIN_VALUE);
+  }
+
+  /**
+   * Issue #5905: narrowing an out-of-range value to a BYTE property must reject it rather than silently wrap
+   * (two's-complement truncation), which would corrupt the stored value with no error.
+   */
+  @Test
+  void convertToByteOutOfRangeRejected() {
+    assertThatThrownBy(() -> Type.convert(database, Byte.MAX_VALUE + 1, Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Byte.MIN_VALUE - 1, Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, 3_000_000_000L, Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // THE BigDecimal/BigInteger BRANCHES OF narrowToIntegral() ARE SHARED CODE, EXERCISED ELSEWHERE ONLY FOR
+    // INTEGER TARGETS (convertToIntegerOutOfRangeRejected) - COVER BYTE TOO SO A BOUNDARY-CONSTANT TYPO THERE
+    // WOULD BE CAUGHT REGARDLESS OF TARGET TYPE
+    assertThatThrownBy(() -> Type.convert(database, new BigDecimal("200"), Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigInteger("200"), Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -463,6 +488,26 @@ class TypeTest extends TestHelper {
     assertThat(Type.convert(database, "", Short.class)).isEqualTo((short) 0);
     assertThat(Type.convert(database, 42, Short.class)).isEqualTo((short) 42);
     assertThat(Type.convert(database, 42L, Short.TYPE)).isEqualTo((short) 42);
+    // BOUNDARY VALUES MUST STILL CONVERT
+    assertThat(Type.convert(database, (long) Short.MAX_VALUE, Short.class)).isEqualTo(Short.MAX_VALUE);
+    assertThat(Type.convert(database, (long) Short.MIN_VALUE, Short.class)).isEqualTo(Short.MIN_VALUE);
+  }
+
+  /**
+   * Issue #5905: same as {@link #convertToByteOutOfRangeRejected()} for SHORT.
+   */
+  @Test
+  void convertToShortOutOfRangeRejected() {
+    assertThatThrownBy(() -> Type.convert(database, Short.MAX_VALUE + 1, Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Short.MIN_VALUE - 1, Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, 3_000_000_000L, Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigDecimal("40000"), Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigInteger("40000"), Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -472,6 +517,42 @@ class TypeTest extends TestHelper {
     assertThat(Type.convert(database, "", Integer.class)).isEqualTo(0);
     assertThat(Type.convert(database, 42L, Integer.class)).isEqualTo(42);
     assertThat(Type.convert(database, 42L, Integer.TYPE)).isEqualTo(42);
+    // BOUNDARY VALUES MUST STILL CONVERT
+    assertThat(Type.convert(database, (long) Integer.MAX_VALUE, Integer.class)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(Type.convert(database, (long) Integer.MIN_VALUE, Integer.class)).isEqualTo(Integer.MIN_VALUE);
+    assertThat(Type.convert(database, new BigDecimal(Integer.MAX_VALUE), Integer.class)).isEqualTo(Integer.MAX_VALUE);
+  }
+
+  /**
+   * Issue #5905: {@code Type.convert()} narrowed an out-of-range value to INTEGER with {@code .intValue()}, which
+   * wraps on overflow instead of rejecting (e.g. {@code 3000000000L -> -1294967296}). A typed column must reject
+   * the value rather than silently corrupt it.
+   */
+  @Test
+  void convertToIntegerOutOfRangeRejected() {
+    assertThatThrownBy(() -> Type.convert(database, 3_000_000_000L, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("3000000000");
+    assertThatThrownBy(() -> Type.convert(database, 2_147_483_648L, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Long.MAX_VALUE, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Long.MIN_VALUE, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // A WIDE FLOATING-POINT VALUE MUST ALSO BE REJECTED, NOT SILENTLY WRAPPED
+    assertThatThrownBy(() -> Type.convert(database, 1e20d, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // A BIGDECIMAL WHOSE MAGNITUDE EXCEEDS EVEN A LONG MUST ALSO BE REJECTED
+    assertThatThrownBy(() -> Type.convert(database, new BigDecimal("9999999999999999999999999999"), Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // A BIGINTEGER WHOSE MAGNITUDE EXCEEDS EVEN A LONG MUST ALSO BE REJECTED (longValue() TRUNCATES BITS INSTEAD OF
+    // SATURATING, SO THIS EXERCISES THE DEDICATED BigInteger BRANCH IN narrowToIntegral()), IN BOTH DIRECTIONS
+    assertThatThrownBy(() -> Type.convert(database, new BigInteger("9999999999999999999999999999"), Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigInteger("-9999999999999999999999999999"), Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // AN IN-RANGE BIGINTEGER MUST STILL CONVERT
+    assertThat(Type.convert(database, BigInteger.valueOf(42), Integer.class)).isEqualTo(42);
   }
 
   @Test
@@ -783,9 +864,67 @@ class TypeTest extends TestHelper {
 
   @Test
   void incrementIntegerOverflow() {
-    // Integer + Integer overflow -> upgrade to Long
+    // Integer + Integer positive overflow -> upgrade to Long, WITH THE CORRECT VALUE (issue #5906: the guard used
+    // to recompute the same overflowing int addition before widening it, e.g. (long)(2000000000+2000000000)
+    // produced -294967296L instead of 4000000000L)
     final Number result = Type.increment(Integer.MAX_VALUE, 1);
     assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo((long) Integer.MAX_VALUE + 1L);
+
+    final Number bigSum = Type.increment(2_000_000_000, 2_000_000_000);
+    assertThat(bigSum).isInstanceOf(Long.class);
+    assertThat(bigSum.longValue()).isEqualTo(4_000_000_000L);
+  }
+
+  @Test
+  void incrementIntegerNegativeOverflow() {
+    // Issue #5906: the overflow guard only checked "sum < 0 && a > 0 && b > 0", so two large negative operands
+    // (whose sum wraps positive) slipped through unchecked.
+    final Number result = Type.increment(-2_000_000_000, -2_000_000_000);
+    assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo(-4_000_000_000L);
+
+    final Number minValueResult = Type.increment(Integer.MIN_VALUE, -1);
+    assertThat(minValueResult).isInstanceOf(Long.class);
+    assertThat(minValueResult.longValue()).isEqualTo((long) Integer.MIN_VALUE - 1L);
+  }
+
+  @Test
+  void decrementIntegerOverflow() {
+    // Integer - Integer negative overflow -> upgrade to Long, with the correct value
+    final Number result = Type.decrement(Integer.MIN_VALUE, 1);
+    assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo((long) Integer.MIN_VALUE - 1L);
+
+    final Number bigDiff = Type.decrement(-2_000_000_000, 2_000_000_000);
+    assertThat(bigDiff).isInstanceOf(Long.class);
+    assertThat(bigDiff.longValue()).isEqualTo(-4_000_000_000L);
+  }
+
+  @Test
+  void decrementIntegerPositiveOverflow() {
+    // a - (-b) is an addition in disguise: Integer.MAX_VALUE - (-1) overflows positively.
+    final Number result = Type.decrement(Integer.MAX_VALUE, -1);
+    assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo((long) Integer.MAX_VALUE + 1L);
+  }
+
+  /**
+   * Issue #5906: the Integer-Short and Short-Integer branches of {@code decrement} have the same "recompute before
+   * widening" bug shape as {@code increment}.
+   */
+  @Test
+  void decrementIntegerMinusShortOverflow() {
+    final Number result = Type.decrement(Integer.MIN_VALUE, (short) 1);
+    assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo((long) Integer.MIN_VALUE - 1L);
+  }
+
+  @Test
+  void decrementShortMinusIntegerOverflow() {
+    final Number result = Type.decrement((short) -30_000, Integer.MAX_VALUE);
+    assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo(-30_000L - Integer.MAX_VALUE);
   }
 
   @Test
@@ -813,6 +952,27 @@ class TypeTest extends TestHelper {
     // Short + Short overflow -> upgrade to Integer
     final Number result = Type.increment((short) Short.MAX_VALUE, (short) 1);
     assertThat(result.intValue()).isEqualTo(Short.MAX_VALUE + 1);
+  }
+
+  /**
+   * Issue #5906: the Integer+Short branch has the identical "recompute the overflowing sum before widening" shape
+   * as the Integer+Integer branch.
+   */
+  @Test
+  void incrementIntegerPlusShortOverflow() {
+    final Number result = Type.increment(Integer.MAX_VALUE, (short) 1);
+    assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo((long) Integer.MAX_VALUE + 1L);
+  }
+
+  /**
+   * Issue #5906: same bug shape in the Short+Integer branch.
+   */
+  @Test
+  void incrementShortPlusIntegerOverflow() {
+    final Number result = Type.increment((short) 30_000, Integer.MAX_VALUE);
+    assertThat(result).isInstanceOf(Long.class);
+    assertThat(result.longValue()).isEqualTo(30_000L + Integer.MAX_VALUE);
   }
 
   @Test
