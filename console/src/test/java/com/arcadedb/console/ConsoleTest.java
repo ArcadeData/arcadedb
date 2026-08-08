@@ -244,9 +244,7 @@ class ConsoleTest {
    */
   @Test
   void progressBarClampsPercentageAboveHundred() {
-    final String[] line = new String[1];
-    assertThatCode(() -> line[0] = Console.formatProgressLine("import", "loading", 1, 2, 110)).doesNotThrowAnyException();
-    assertThat(line[0]).contains("|" + "=".repeat(20) + "| 110%");
+    assertThat(Console.formatProgressLine("import", "loading", 1, 2, 110)).contains("|" + "=".repeat(20) + "| 110%");
   }
 
   /**

@@ -934,7 +934,7 @@ public class Console {
     final StringBuilder line = new StringBuilder(128);
     line.append(operation).append(" [step ").append(stepIndex).append('/').append(totalSteps).append("] ").append(stepName);
     if (percentage >= 0) {
-      final int filled = Math.max(0, Math.min(20, percentage / 5));
+      final int filled = Math.min(20, percentage / 5);
       line.append(" |").append("=".repeat(filled)).append(" ".repeat(20 - filled)).append("| ").append(percentage).append('%');
     } else
       line.append(" ...");
