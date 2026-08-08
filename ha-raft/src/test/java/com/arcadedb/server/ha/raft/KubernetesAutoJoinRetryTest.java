@@ -155,5 +155,9 @@ class KubernetesAutoJoinRetryTest {
     // probe client must always set a bounded policy so a stuck reconfiguration fails fast instead.
     assertThat(KubernetesAutoJoin.PROBE_RETRY_POLICY).isInstanceOf(RetryPolicies.RetryLimited.class);
     assertThat(((RetryPolicies.RetryLimited) KubernetesAutoJoin.PROBE_RETRY_POLICY).getMaxAttempts()).isEqualTo(5);
+    // RetryLimited/RetryForeverWithSleep expose no sleep-time getter, only toString(); pin it here too
+    // so a future edit can't silently widen 500ms to something much larger while maxAttempts still
+    // reads 5 and this test still passes (code-review feedback on the PR that introduced this test).
+    assertThat(KubernetesAutoJoin.PROBE_RETRY_POLICY.toString()).contains("sleepTime=500ms");
   }
 }
