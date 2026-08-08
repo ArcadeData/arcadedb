@@ -153,10 +153,12 @@ public class JSONImporterFormat implements FormatImporter {
         if (!settings.isSkipOnRowError())
           throw e;
 
-        // THE UNDERLYING JsonReader IS POSITIONED RIGHT AFTER THE OFFENDING RECORD (Type/schema conversion errors ONLY
-        // HAPPEN AFTER THE RECORD'S OBJECT TOKENS ARE FULLY CONSUMED), SO IT IS SAFE TO CONTINUE WITH THE NEXT ARRAY ENTRY.
-        // IF THE STREAM WAS LEFT IN AN INCONSISTENT STATE (E.G. A MALFORMED JSON STRUCTURE), THE NEXT reader.peek() CALL
-        // IN THE LOOP CONDITION WILL THROW AND THE IMPORT WILL ABORT, EVEN IN SKIP MODE.
+        // THE UNDERLYING JsonReader IS POSITIONED RIGHT AFTER THE OFFENDING RECORD, SO IT IS SAFE TO CONTINUE WITH THE
+        // NEXT ARRAY ENTRY: parseRecord()/parseArray() ALSO CATCH RuntimeException AT EVERY NESTED BEGIN_OBJECT/BEGIN_ARRAY
+        // RECURSION SITE (SUBSTITUTING null AND CONTINUING THE ENCLOSING OBJECT/ARRAY), SO A Type/schema CONVERSION ERROR
+        // AT ANY DEPTH NEVER UNWINDS PAST THE reader.endObject()/reader.endArray() OF ITS OWN NESTING LEVEL - IT CANNOT
+        // REACH HERE WITH THE TOP-LEVEL RECORD'S TOKENS ONLY PARTIALLY CONSUMED. A GENUINELY MALFORMED JSON STRUCTURE
+        // (IOException, NOT RuntimeException) IS NOT CAUGHT ANYWHERE IN THIS CHAIN AND STILL ABORTS THE IMPORT.
         LogManager.instance()
             .log(this, Level.WARNING, "Error on importing JSON record #%d, skipping it (reason: %s)", null, recordIndex,
                 e.getMessage());
@@ -189,7 +191,7 @@ public class JSONImporterFormat implements FormatImporter {
     reader.beginObject();
     while (reader.peek() != END_OBJECT) {
       final String attributeName = reader.nextName();
-      final Object attributeValue;
+      Object attributeValue;
 
       final JsonToken propertyType = reader.peek();
       switch (propertyType) {
@@ -217,12 +219,38 @@ public class JSONImporterFormat implements FormatImporter {
           else if (mappingValue instanceof String && "@ignore".equals(mappingValue.toString()))
             ignoreObject = true;
         }
-        attributeValue = parseRecord(reader, settings, context, database, mappingObject, ignoreObject);
+        // A Type/schema conversion error from createRecord() (called by the recursive parseRecord() AFTER its own
+        // reader.endObject() already ran) must be caught HERE, at the call site, not left to unwind through THIS
+        // object's own while loop: by the time it is caught in parseRecords() the outer reader.endObject() below
+        // would have been skipped, desyncing the stream for the rest of the array (see #5974 review).
+        try {
+          attributeValue = parseRecord(reader, settings, context, database, mappingObject, ignoreObject);
+        } catch (final RuntimeException e) {
+          if (!settings.isSkipOnRowError())
+            throw e;
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on importing nested JSON object property '%s', skipping it (reason: %s)", null,
+                  attributeName, e.getMessage());
+          LogManager.instance().log(this, Level.FINE, "Full error on importing nested JSON object property '%s'", e, attributeName);
+          context.errors.incrementAndGet();
+          attributeValue = null;
+        }
         break;
 
       case BEGIN_ARRAY: {
         final JSONArray mappingArray = mapping != null && mapping.has(attributeName) ? mapping.getJSONArray(attributeName) : null;
-        attributeValue = parseArray(reader, settings, context, database, mappingArray, ignore);
+        try {
+          attributeValue = parseArray(reader, settings, context, database, mappingArray, ignore);
+        } catch (final RuntimeException e) {
+          if (!settings.isSkipOnRowError())
+            throw e;
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on importing JSON array property '%s', skipping it (reason: %s)", null,
+                  attributeName, e.getMessage());
+          LogManager.instance().log(this, Level.FINE, "Full error on importing JSON array property '%s'", e, attributeName);
+          context.errors.incrementAndGet();
+          attributeValue = null;
+        }
       }
       break;
       default:
@@ -449,7 +477,7 @@ public class JSONImporterFormat implements FormatImporter {
     final List<Object> list = ignore ? null : new ArrayList<>();
     reader.beginArray();
     while (reader.peek() != END_ARRAY) {
-      final Object entryValue;
+      Object entryValue;
 
       final JsonToken entryType = reader.peek();
       switch (entryType) {
@@ -468,11 +496,33 @@ public class JSONImporterFormat implements FormatImporter {
         break;
       case BEGIN_OBJECT:
         final JSONObject mappingObject = mapping != null && !mapping.isEmpty() ? mapping.getJSONObject(0) : null;
-        entryValue = parseRecord(reader, settings, context, database, mappingObject, ignore);
+        // SAME REASONING AS parseRecord()'S BEGIN_OBJECT CASE: CATCH HERE, AT THE CALL SITE, SO A SCHEMA-CONVERSION
+        // FAILURE ON ONE ARRAY ITEM CANNOT DESYNC THE READER FOR THE REST OF THIS ARRAY.
+        try {
+          entryValue = parseRecord(reader, settings, context, database, mappingObject, ignore);
+        } catch (final RuntimeException e) {
+          if (!settings.isSkipOnRowError())
+            throw e;
+          LogManager.instance().log(this, Level.WARNING, "Error on importing JSON array entry, skipping it (reason: %s)", null,
+              e.getMessage());
+          LogManager.instance().log(this, Level.FINE, "Full error on importing JSON array entry", e);
+          context.errors.incrementAndGet();
+          entryValue = null;
+        }
         break;
       case BEGIN_ARRAY:
         final JSONArray mappingArray = mapping != null && !mapping.isEmpty() ? mapping.getJSONArray(0) : null;
-        entryValue = parseArray(reader, settings, context, database, mappingArray, ignore);
+        try {
+          entryValue = parseArray(reader, settings, context, database, mappingArray, ignore);
+        } catch (final RuntimeException e) {
+          if (!settings.isSkipOnRowError())
+            throw e;
+          LogManager.instance().log(this, Level.WARNING, "Error on importing nested JSON array entry, skipping it (reason: %s)", null,
+              e.getMessage());
+          LogManager.instance().log(this, Level.FINE, "Full error on importing nested JSON array entry", e);
+          context.errors.incrementAndGet();
+          entryValue = null;
+        }
         break;
       default:
         LogManager.instance().log(this, Level.WARNING, "Skipping entry of type '%s'", entryType);

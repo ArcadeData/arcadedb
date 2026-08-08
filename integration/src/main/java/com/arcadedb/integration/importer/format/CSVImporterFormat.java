@@ -203,20 +203,23 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final long beginTime = System.currentTimeMillis();
 
-    final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
-    database.async().onError(exception -> {
-      LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
-      context.errors.incrementAndGet();
-      firstAsyncError.compareAndSet(null, exception);
-    });
+    // A PERSIST-TIME FAILURE (MANDATORY PROPERTY, UNIQUE INDEX, ...) ON AN database.async() WORKER THREAD ROLLS BACK
+    // THE WHOLE IN-FLIGHT BATCH ON THAT THREAD (DatabaseAsyncExecutorImpl#executeTask), NOT JUST THE FAILING VERTEX. IN
+    // "skip" MODE THE WHOLE POINT IS TO LOSE ONLY THE BAD ROW, SO VERTICES ARE SAVED SYNCHRONOUSLY INSTEAD - THE SAME
+    // WAY loadDocuments() ALREADY DOES - TRADING ASYNC THROUGHPUT FOR THE GUARANTEE THE SETTING PROMISES. THIS ALSO
+    // AVOIDS MUTATING database.async()'S SHARED, DATABASE-WIDE commitEvery, WHICH WOULD OTHERWISE THROTTLE ANY OTHER
+    // CONCURRENT USER OF THE SAME ASYNC EXECUTOR FOR THE DURATION OF THIS IMPORT.
+    final boolean skipOnError = settings.isSkipOnRowError();
 
-    // A PERSIST-TIME FAILURE (MANDATORY PROPERTY, UNIQUE INDEX, ...) ROLLS BACK THE WHOLE IN-FLIGHT ASYNC BATCH ON ITS
-    // WORKER THREAD (DatabaseAsyncExecutorImpl#executeTask), NOT JUST THE FAILING VERTEX. IN "skip" MODE THE WHOLE POINT
-    // IS TO LOSE ONLY THE BAD ROW, SO SHRINK THE BATCH TO 1 OPERATION FOR THE DURATION OF THIS IMPORT: EACH VERTEX THEN
-    // COMMITS (OR ROLLS BACK) ON ITS OWN, TRADING SOME THROUGHPUT FOR THE RESILIENCE THE SETTING PROMISES.
-    final int originalCommitEvery = database.async().getCommitEvery();
-    if (settings.isSkipOnRowError())
-      database.async().setCommitEvery(1);
+    final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
+    if (!skipOnError)
+      database.async().onError(exception -> {
+        LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
+        context.errors.incrementAndGet();
+        firstAsyncError.compareAndSet(null, exception);
+      });
+    else if (!database.isTransactionActive())
+      database.begin();
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
@@ -263,9 +266,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             if (value != null && !value.isEmpty())
               v.set(prop.getName(), value);
           }
-          database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
+
+          if (skipOnError) {
+            v.save();
+            context.createdVertices.incrementAndGet();
+          } else
+            database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
         } catch (final RuntimeException e) {
-          if (!settings.isSkipOnRowError())
+          if (!skipOnError)
             throw e;
           LogManager.instance()
               .log(this, Level.WARNING, "Error on importing vertex at line %d, skipping it (reason: %s)", null, line,
@@ -275,20 +283,21 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       }
 
-      database.async().waitCompletion();
+      if (skipOnError)
+        database.commit();
+      else {
+        database.async().waitCompletion();
 
-      // A VERTEX CAN ALSO FAIL AT PERSIST TIME ON THE ASYNC WORKER THREAD (MANDATORY PROPERTY, UNIQUE INDEX, ...), OUTSIDE
-      // THE PER-ROW try/catch ABOVE: IN "abort" MODE (THE DEFAULT) THAT MUST STILL FAIL THE IMPORT INSTEAD OF SILENTLY
-      // LOGGING AND CONTINUING.
-      if (!settings.isSkipOnRowError() && firstAsyncError.get() != null)
-        throw new ImportException("Error on inserting vertices", firstAsyncError.get());
+        // A VERTEX CAN ALSO FAIL AT PERSIST TIME ON THE ASYNC WORKER THREAD (MANDATORY PROPERTY, UNIQUE INDEX, ...), OUTSIDE
+        // THE PER-ROW try/catch ABOVE: IN "abort" MODE (THE DEFAULT) THAT MUST STILL FAIL THE IMPORT INSTEAD OF SILENTLY
+        // LOGGING AND CONTINUING.
+        if (firstAsyncError.get() != null)
+          throw new ImportException("Error on inserting vertices", firstAsyncError.get());
+      }
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
     } finally {
-      if (settings.isSkipOnRowError())
-        database.async().setCommitEvery(originalCommitEvery);
-
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()
           .log(this, Level.INFO, "Importing of vertices from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,

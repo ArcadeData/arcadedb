@@ -257,6 +257,88 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * Regression test for the PR #5974 review finding: a Type/schema conversion error thrown from a NESTED mapped
+   * object (parsed via a recursive {@code parseRecord()} call, before the enclosing object's own {@code endObject()}
+   * runs) must not desync the {@code JsonReader} for the rest of the array. Each "Order" has a nested "customer"
+   * object independently mapped to its own document type with a {@code SHORT} property that overflows for Bob.
+   */
+  private static final String NESTED_MAPPING = """
+      {
+        "Orders":[
+          {
+            "@cat":"d",
+            "@type":"Order",
+            "customer":{
+              "@cat":"d",
+              "@type":"Customer"
+            }
+          }
+        ]
+      }""";
+
+  @Test
+  void jsonNestedObjectImportAbortsOnOutOfRangeValueByDefault() {
+    final String databasePath = "target/databases/test-import-5968-json-nested-abort";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Customer");
+      db.getSchema().getType("Customer").createProperty("age", Type.SHORT);
+    }
+
+    try {
+      final Importer importer = new Importer(new String[] {
+          "-url", "file://src/test/resources/importer-documents-nested-outofrange.json",
+          "-database", databasePath,
+          "-mapping", NESTED_MAPPING
+      });
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  @Test
+  void jsonNestedObjectImportSkipsOutOfRangeValueAndKeepsProcessingSiblingsWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-json-nested-skip";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Customer");
+      db.getSchema().getType("Customer").createProperty("age", Type.SHORT);
+    }
+
+    try {
+      final Importer importer = new Importer(new String[] {
+          "-url", "file://src/test/resources/importer-documents-nested-outofrange.json",
+          "-database", databasePath,
+          "-mapping", NESTED_MAPPING,
+          "-onRowError", "skip"
+      });
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isNotNull();
+
+      try (final Database db = databaseFactory.open()) {
+        // ALL THREE Orders MUST STILL BE PROCESSED (THE READER MUST NOT DESYNC AND SILENTLY DROP ORDER 3): BOB'S
+        // NESTED Customer FAILS AND IS SKIPPED, BUT ALICE'S AND CAROL'S SIBLING Customer RECORDS STILL GET CREATED.
+        assertThat(db.countType("Order", true)).isEqualTo(3);
+        assertThat(db.countType("Customer", true)).isEqualTo(2);
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
   @Test
   void invalidOnRowErrorValueIsRejected() {
     assertThatThrownBy(() -> new Importer(

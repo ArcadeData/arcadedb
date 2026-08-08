@@ -85,10 +85,11 @@ public class ImporterSettings {
    * Tells whether a single malformed/out-of-range row or property should be skipped and logged instead of aborting the
    * whole import job. Opt-in via {@code -onRowError skip}; defaults to {@code abort} for backward compatibility.
    * <p>
-   * For CSV vertex imports (the only path that persists records asynchronously via {@code database.async()}), enabling
-   * this also forces the async commit batch size down to 1 for the duration of the import, so a persist-time failure
-   * (mandatory property, unique index, ...) rolls back only the failing vertex instead of every other vertex queued in
-   * the same uncommitted batch. This trades some throughput for the guarantee that "skip" only ever loses the bad row.
+   * For CSV vertex imports, which normally persist records asynchronously via {@code database.async()} in batches,
+   * enabling this switches to a synchronous save per vertex instead (the same way document imports already work): a
+   * batched async commit rolling back on a persist-time failure (mandatory property, unique index, ...) would otherwise
+   * take down every other vertex queued in the same uncommitted batch, not just the failing one. This trades async
+   * throughput for the guarantee that "skip" only ever loses the bad row.
    */
   public boolean isSkipOnRowError() {
     return "skip".equalsIgnoreCase(onRowError);
