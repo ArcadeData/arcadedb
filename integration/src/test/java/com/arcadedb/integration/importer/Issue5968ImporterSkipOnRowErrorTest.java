@@ -193,8 +193,8 @@ class Issue5968ImporterSkipOnRowErrorTest {
       db.command("sql", "CREATE PROPERTY Widget.Score SHORT");
       db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
 
-      // THE CALLER STARTS THEIR OWN TRANSACTION WITH UNRELATED PENDING WORK BEFORE HANDING THE Database TO THE
-      // IMPORTER, THEN CALLS IT DIRECTLY IN DEFAULT "abort" MODE (NOT "skip", WHICH WOULD BE REJECTED OUTRIGHT).
+      // The caller starts their own transaction with unrelated pending work before handing the Database to the
+      // importer, then calls it directly in default "abort" mode (not "skip", which would be rejected outright).
       db.begin();
       db.newDocument("CallerWork").set("name", "pre-existing").save();
 
@@ -205,12 +205,18 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
           .hasRootCauseInstanceOf(IllegalArgumentException.class);
 
-      // THE IMPORT FAILED, BUT THE CALLER'S OWN TRANSACTION - AND THEREFORE THEIR PRE-EXISTING PENDING WORK - MUST
-      // STILL BE THERE FOR THEM TO DECIDE WHAT TO DO WITH, NOT SILENTLY DISCARDED BY THE IMPORTER'S FAILURE HANDLING.
+      // The import failed, but the caller's own transaction - and therefore their pre-existing pending work - must
+      // still be there for them to decide what to do with, not silently discarded by the importer's failure handling.
       assertThat(db.isTransactionActive()).isTrue();
       db.commit();
 
       assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+      // Alice (row 1) was already save()d into the shared caller transaction before Bob (row 2) failed. Since this
+      // transaction isn't ours to roll back (ownsTransaction is false here), Alice survives the caller's own
+      // commit() above: "abort" mode's "nothing is imported" guarantee only holds for a self-managed database (see
+      // csvDocumentImportAbortsOnOutOfRangeValueByDefaultAndRollsBackPartialRows()), not inside a caller-managed
+      // transaction the caller chose not to protect with "skip" mode's exclusive-ownership guard.
+      assertThat(db.countType("Widget", true)).isEqualTo(1);
     } finally {
       db.drop();
     }
@@ -273,12 +279,16 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
           .hasRootCauseInstanceOf(IllegalArgumentException.class);
 
-      // THE CALLER'S OWN TRANSACTION MUST SURVIVE THE IMPORT FAILURE INTACT, WITH THEIR PRE-EXISTING PENDING WORK
-      // STILL IN IT - SEE THE CSV COUNTERPART OF THIS TEST FOR THE FULL REASONING.
+      // The caller's own transaction must survive the import failure intact, with their pre-existing pending work
+      // still in it - see the CSV counterpart of this test for the full reasoning.
       assertThat(db.isTransactionActive()).isTrue();
       db.commit();
 
       assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+      // Unlike the CSV counterpart, Apple (record 1) is durably committed here regardless of the caller's own
+      // commit() above: each JSON record commits in its own nested transaction (see parseRecords()), and a nested
+      // commit() is independently durable even though Banana (record 2) then fails and aborts the whole import.
+      assertThat(db.countType("Food", true)).isEqualTo(1);
     } finally {
       db.drop();
     }

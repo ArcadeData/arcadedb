@@ -85,42 +85,32 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
     final long beginTime = System.currentTimeMillis();
-    // context.errors IS SHARED ACROSS THE WHOLE IMPORT (DOCUMENTS/VERTICES/EDGES ALL FEED IT), SO THE PER-PHASE
-    // SUMMARY LOG BELOW REPORTS ONLY THE DELTA THIS METHOD CONTRIBUTED, NOT THE RUNNING TOTAL.
+    // context.errors is shared across the whole import, so the per-phase summary log below reports only this
+    // method's own delta, not the running total.
     final long errorsBefore = context.errors.get();
 
-    // "skip" MODE: EACH ROW OWNS ITS OWN commit()/rollback() (WHY: ImporterSettings#isSkipOnRowError()). csvParser.parseNext(),
-    // THIS METHOD'S ONLY OTHER THROWING CALL, RUNS AT THE TOP OF THE NEXT ITERATION - AFTER THE PRIOR ROW'S TRANSACTION
-    // ALREADY CLOSED - SO ITS IOException NEVER HITS AN OPEN ONE. IT IS DELIBERATELY LEFT OUTSIDE THE PER-ROW try/catch
-    // THOUGH: A univocity TextParsingException (E.G. maxCharsPerColumn/maxColumns EXCEEDED) LEAVES THE PARSER'S OWN
-    // POSITION TRACKING COMPROMISED - VERIFIED EMPIRICALLY THAT RETRYING parseNext() AFTER ONE CAN SILENTLY DROP THE
-    // NEXT GOOD ROW WITH NO ERROR, WORSE THAN ABORTING - SO A SYNTAX-LEVEL PARSE FAILURE STILL ABORTS EVEN IN "skip"
-    // MODE; ONLY ROW-CONTENT FAILURES (OUT-OF-RANGE VALUES, MISSING MANDATORY PROPERTIES, DUPLICATE KEYS) ARE SKIPPABLE.
+    // csvParser.parseNext() is deliberately left outside the per-row try/catch below: a univocity TextParsingException
+    // (e.g. maxCharsPerColumn exceeded) leaves the parser's own position tracking compromised - verified empirically
+    // that retrying parseNext() after one can silently drop the next good row with no error. A syntax-level parse
+    // failure therefore still aborts even in "skip" mode; only row-content failures are skippable.
     final boolean skipOnError = settings.isSkipOnRowError();
 
-    // "skip" MODE COMMITS/ROLLS BACK PER ROW, SO IT MUST OWN THE TRANSACTION OUTRIGHT. AN ACTIVE TRANSACTION ON A
-    // SELF-OPENED database (context.externallyManagedDatabase == false) IS THIS IMPORTER'S OWN, ALWAYS-EMPTY AMBIENT
-    // TRANSACTION FROM AbstractImporter#openDatabase() - SAFE TO COMMANDEER. ON AN EXTERNALLY-MANAGED database (THE
-    // Importer(Database, String) EMBEDDING CONSTRUCTOR, OR THE IMPORT DATABASE SQL STATEMENT REUSING THE CALLER'S
-    // Database - E.G. A SERVER HTTP COMMAND, WHICH DatabaseAbstractHandler WRAPS IN ITS OWN ATOMIC TRANSACTION BY
-    // DEFAULT) AN ACTIVE TRANSACTION MAY HOLD UNRELATED PENDING WORK: THE FIRST ROW'S commit()/rollback() WOULD
-    // SILENTLY COMMIT OR DISCARD IT. FAIL LOUDLY INSTEAD OF DOING THAT.
+    // "skip" mode commits/rolls back per row, so it must own the transaction outright (see
+    // ImporterSettings#isSkipOnRowError()). An externally-managed database's active transaction may hold unrelated
+    // pending work that a row's commit()/rollback() would otherwise silently touch - fail loudly instead.
     if (skipOnError && context.externallyManagedDatabase && database.isTransactionActive())
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
+      // by default skip the first line as header
       skipEntries = 1l;
 
-    // CAPTURED BEFORE THE try BELOW SO IT'S ALSO VISIBLE TO THE catch BLOCKS THAT NEED IT (A VARIABLE DECLARED INSIDE
-    // A try BLOCK ISN'T VISIBLE IN ITS OWN catch). SAFE TO COMMIT/ROLL BACK THE ACTIVE TRANSACTION OURSELVES BELOW
-    // ONLY WHEN WE'RE NOT SHARING SOMEONE ELSE'S: A SELF-MANAGED database'S AMBIENT TRANSACTION
-    // (context.externallyManagedDatabase == false) IS ALWAYS EMPTY AND SAFE TO COMMANDEER REGARDLESS OF WHO BEGAN IT
-    // (SEE AbstractImporter#openDatabase()). ON AN EXTERNALLY-MANAGED database WE ONLY OWN IT IF WE OURSELVES JUST
-    // BEGAN IT BELOW - OTHERWISE IT'S THE CALLER'S OWN TRANSACTION, POSSIBLY HOLDING UNRELATED PENDING WORK WE MUST
-    // NEVER COMMIT OR ROLL BACK OUT FROM UNDER THEM. NOTE THIS CAN ONLY BE false IN "abort" MODE: THE ENTRY GUARD
-    // ABOVE ALREADY REJECTS "skip" MODE WHENEVER context.externallyManagedDatabase && transactionActiveOnEntry.
+    // Captured before the try below so it's also visible in the catch blocks (a variable declared inside a try isn't
+    // visible in its own catch). ownsTransaction is true for a self-managed database (its ambient transaction is
+    // always empty, safe to commandeer regardless of who began it - see AbstractImporter#openDatabase()), or for an
+    // externally-managed one only if this call itself began the transaction below rather than reusing the caller's
+    // own. It can only be false in "abort" mode: the guard above already rejects "skip" mode in that situation.
     final boolean transactionActiveOnEntry = database.isTransactionActive();
     final boolean ownsTransaction = !context.externallyManagedDatabase || !transactionActiveOnEntry;
 
@@ -171,32 +161,26 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           document.save();
 
           if (skipOnError) {
-            // COUNT ONLY AFTER commit() SUCCEEDS: A DUPLICATE-KEY VIOLATION IS ONLY DETECTED AT COMMIT TIME (SEE THE
-            // COMMENT ABOVE), SO INCREMENTING RIGHT AFTER save() WOULD OVERCOUNT A ROW THAT commit() THEN ROLLS BACK.
+            // Count only after commit() succeeds: a duplicate-key violation is only detected at commit time, so
+            // incrementing right after save() would overcount a row that commit() then rolls back.
             database.commit();
             context.createdDocuments.incrementAndGet();
             database.begin();
           } else
             context.createdDocuments.incrementAndGet();
         } catch (final RuntimeException e) {
-          // ROLL BACK BEFORE DECIDING WHETHER TO RETHROW, BUT ONLY IF WE OWN THIS TRANSACTION (SEE ownsTransaction
-          // ABOVE): IN THE DEFAULT "abort" MODE, WHEN WE DO OWN IT, IT'S THE WHOLE-FILE ONE (BEGUN ONCE, BEFORE THE
-          // LOOP), SO BY THE TIME ROW N FAILS, ROWS 1..N-1 ARE ALREADY save()D BUT UNCOMMITTED IN IT. LEAVING IT
-          // ACTIVE HERE AND JUST RETHROWING WOULD LET IT SURVIVE AS A PARTIAL IMPORT: closeDatabase() COMMITS
-          // WHATEVER IS STILL ACTIVE ON ITS WAY OUT, EVEN THOUGH THE CALLER SEES AN ImportException AND REASONABLY
-          // EXPECTS NOTHING WAS IMPORTED. WHEN WE DON'T OWN IT (EXTERNALLY-MANAGED database, "abort" MODE, A
-          // TRANSACTION WAS ALREADY ACTIVE ON ENTRY), IT'S THE CALLER'S OWN - ROLLING IT BACK WOULD DISCARD THEIR
-          // UNRELATED PENDING WORK TOO, SO LEAVE IT FOR THEM TO RECONCILE INSTEAD.
+          // Roll back before deciding whether to rethrow, but only if we own this transaction (see ownsTransaction
+          // above): in "abort" mode, when we do own it, rows 1..N-1 are already save()d but uncommitted in the
+          // whole-file transaction by the time row N fails, and closeDatabase() would otherwise commit them anyway
+          // on the way out. When we don't own it (an externally-managed database's pre-existing transaction), we
+          // leave it for the caller to reconcile instead of discarding their unrelated pending work.
           if (ownsTransaction && database.isTransactionActive())
             database.rollback();
 
           if (!skipOnError)
             throw e;
 
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on importing document at line %d, skipping it (reason: %s)", null, line,
-                  e.getMessage());
-          LogManager.instance().log(this, Level.FINE, "Full error on importing document at line %d", e, line);
+          logSkippedRow("document", line, e);
           context.errors.incrementAndGet();
           database.begin();
         }
@@ -205,16 +189,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       database.commit();
 
     } catch (final IOException e) {
-      // SAME REASONING AS THE RuntimeException catch BELOW: DON'T LEAVE A PARTIALLY-FILLED TRANSACTION FOR
-      // closeDatabase() TO COMMIT ON THE WAY OUT, BUT ONLY IF WE OWN IT.
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
-      // EITHER A SOURCE-LEVEL FAILURE (parseNext()'S TextParsingException, DELIBERATELY LEFT OUTSIDE THE PER-ROW
-      // try/catch ABOVE) ESCAPED THE LOOP, OR THE PER-ROW catch ABOVE RETHREW IN "abort" MODE AFTER ITS OWN (ALREADY
-      // ownsTransaction-GATED) ROLLBACK. EITHER WAY, ROLL BACK BEFORE RETHROWING ONLY IF WE OWN THE TRANSACTION - SEE
-      // ownsTransaction ABOVE FOR WHY THAT'S NOT ALWAYS SAFE IN "abort" MODE.
+      // Either a source-level failure (parseNext()'s TextParsingException) escaped the loop, or the per-row catch
+      // above already rolled back (if it owned the transaction) and rethrew in "abort" mode - see ownsTransaction.
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw e;
@@ -231,14 +211,22 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     }
   }
 
+  /**
+   * Logs a skipped row at WARNING (message only) and FINE (full stack trace), used by both {@code loadDocuments} and
+   * {@code loadVertices} when {@code -onRowError skip} discards a row.
+   */
+  private void logSkippedRow(final String what, final long line, final RuntimeException e) {
+    LogManager.instance()
+        .log(this, Level.WARNING, "Error on importing %s at line %d, skipping it (reason: %s)", null, what, line, e.getMessage());
+    LogManager.instance().log(this, Level.FINE, "Full error on importing %s at line %d", e, what, line);
+  }
+
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
-    // CHECKED FIRST, BEFORE ANY SCHEMA SIDE EFFECT BELOW (typeIdProperty/UNIQUE INDEX AUTO-CREATION): "skip" MODE
-    // MUST OWN THE TRANSACTION OUTRIGHT, SINCE IT COMMITS/ROLLS BACK PER ROW (SEE ImporterSettings#isSkipOnRowError()).
-    // database.transaction(...) BELOW COMMITS INDEPENDENTLY OF THIS METHOD'S OWN TRANSACTION, SO THE GUARD HAS TO
-    // FIRE BEFORE THAT RUNS - OTHERWISE A REJECTED skip-MODE CALL COULD STILL LEAVE A NEWLY CREATED PROPERTY/INDEX
-    // COMMITTED ON THE WAY TO THROWING.
+    // Checked first, before any schema side effect below (typeIdProperty/unique index auto-creation): "skip" mode
+    // must own the transaction outright (see ImporterSettings#isSkipOnRowError()), and the schema changes below
+    // commit independently of this method's own transaction - so a rejected call must never leave one committed.
     if (settings.isSkipOnRowError() && context.externallyManagedDatabase && database.isTransactionActive())
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
@@ -278,9 +266,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     final long beginTime = System.currentTimeMillis();
     final long errorsBefore = context.errors.get();
 
-    // "skip" MODE SAVES VERTICES SYNCHRONOUSLY INSTEAD OF VIA database.async() - SEE ImporterSettings#isSkipOnRowError()
-    // FOR WHY (AN ASYNC BATCH ROLLBACK ON A PERSIST-TIME FAILURE WOULD TAKE DOWN EVERY OTHER VERTEX QUEUED IN THE SAME
-    // UNCOMMITTED BATCH, NOT JUST THE FAILING ONE).
+    // "skip" mode saves vertices synchronously instead of via database.async() - see
+    // ImporterSettings#isSkipOnRowError() for why (an async batch rollback on a persist-time failure would take down
+    // every other vertex queued in the same uncommitted batch, not just the failing one).
     final boolean skipOnError = settings.isSkipOnRowError();
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
@@ -295,8 +283,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (settings.verticesSkipEntries == null)
       skipEntries = 1L;
 
-    // CAPTURED BEFORE THE try BELOW - SEE THE loadDocuments() COMMENT FOR WHY (VISIBILITY IN THE catch BLOCKS) AND
-    // FOR THE FULL ownsTransaction REASONING.
+    // Captured before the try below - see the loadDocuments() comment for why (visibility in the catch blocks) and
+    // for the full ownsTransaction reasoning.
     final boolean transactionActiveOnEntry = database.isTransactionActive();
     final boolean ownsTransaction = !context.externallyManagedDatabase || !transactionActiveOnEntry;
 
@@ -304,8 +292,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
-      // BEGUN ONLY AFTER THE SOURCE IS SUCCESSFULLY OPENED: IF beginParsing()/THE READER ITSELF THROWS IOException, NO
-      // TRANSACTION IS LEFT DANGLING FOR THE CALLER TO RECONCILE.
+      // Begun only after the source is successfully opened, so a failure here never leaves a transaction dangling.
       if (skipOnError && !transactionActiveOnEntry)
         database.begin();
 
@@ -348,7 +335,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           }
 
           if (skipOnError) {
-            // EACH VERTEX COMMITS IN ITS OWN TRANSACTION; COUNT ONLY AFTER commit() SUCCEEDS (SEE loadDocuments()).
+            // Each vertex commits in its own transaction; count only after commit() succeeds (see loadDocuments()).
             v.save();
             database.commit();
             context.createdVertices.incrementAndGet();
@@ -356,20 +343,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
         } catch (final RuntimeException e) {
-          // SAME REASONING AS loadDocuments(): ROLL BACK BEFORE DECIDING WHETHER TO RETHROW, ONLY IF WE OWN THE
-          // TRANSACTION. IN "abort" MODE THIS ROLLBACK IS CURRENTLY A NO-OP IN PRACTICE EITHER WAY (VERTICES GO
-          // THROUGH database.async() THERE, SO THE FOREGROUND TRANSACTION STAYS EMPTY), BUT GATING ON ownsTransaction
-          // KEEPS BOTH METHODS SYMMETRIC WITHOUT RELYING ON THAT AS AN INVARIANT.
+          // Same reasoning as loadDocuments(). In "abort" mode this rollback is currently a no-op either way
+          // (vertices go through database.async() there, so the foreground transaction stays empty), but gating on
+          // ownsTransaction keeps both methods symmetric without relying on that as an invariant.
           if (ownsTransaction && database.isTransactionActive())
             database.rollback();
 
           if (!skipOnError)
             throw e;
 
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on importing vertex at line %d, skipping it (reason: %s)", null, line,
-                  e.getMessage());
-          LogManager.instance().log(this, Level.FINE, "Full error on importing vertex at line %d", e, line);
+          logSkippedRow("vertex", line, e);
           context.errors.incrementAndGet();
           database.begin();
         }
@@ -380,9 +363,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       else {
         database.async().waitCompletion();
 
-        // A VERTEX CAN ALSO FAIL AT PERSIST TIME ON THE ASYNC WORKER THREAD (MANDATORY PROPERTY, UNIQUE INDEX, ...), OUTSIDE
-        // THE PER-ROW try/catch ABOVE: IN "abort" MODE (THE DEFAULT) THAT MUST STILL FAIL THE IMPORT INSTEAD OF SILENTLY
-        // LOGGING AND CONTINUING.
+        // A vertex can also fail at persist time on the async worker thread (mandatory property, unique index, ...),
+        // outside the per-row try/catch above: in "abort" mode that must still fail the import.
         if (firstAsyncError.get() != null)
           throw new ImportException("Error on inserting vertices", firstAsyncError.get());
       }
@@ -392,7 +374,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
-      // SAME REASONING AS loadDocuments(): ROLL BACK BEFORE RETHROWING ONLY IF WE OWN THE TRANSACTION.
+      // Same reasoning as loadDocuments(): roll back before rethrowing only if we own the transaction.
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw e;
@@ -492,9 +474,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             txCount = 0;
           }
         } catch (final Exception e) {
-          // UNLIKE loadDocuments/loadVertices, EDGE ROWS ARE ALWAYS SKIPPED-AND-LOGGED REGARDLESS OF -onRowError: A "BAD"
-          // EDGE ROW HERE IS TYPICALLY JUST AN UNRESOLVED from/to VERTEX REFERENCE (ALREADY TRACKED VIA context.skippedEdges
-          // IN createEdgeFromRow), WHICH IS EXPECTED DURING GRAPH IMPORTS RATHER THAN A DATA-CORRUPTION CASE.
+          // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError: a
+          // "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
+          // imports rather than a data-corruption case.
           LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
         }
       }

@@ -82,13 +82,17 @@ public class JSONImporterFormat implements FormatImporter {
         JsonToken token = reader.peek();
 
         if (mapping == null) {
-          // A SINGLE TOP-LEVEL OBJECT: THERE IS NO SIBLING RECORD TO CONTINUE WITH ON FAILURE, SO -onRowError skip HAS
-          // NO RECOVERY TO DO HERE - THE FLAG IS UNUSED AND ANY NESTED FAILURE SIMPLY PROPAGATES AND ABORTS AS BEFORE.
+          // A single top-level object: there is no sibling record to continue with on failure, so -onRowError skip
+          // has no recovery to do here - any error still aborts the import.
           if (settings.isSkipOnRowError())
             LogManager.instance()
                 .log(this, Level.WARNING,
                     "-onRowError skip has no effect on a single top-level JSON object (no -mapping set): there is no "
                         + "sibling record to continue with, so any error still aborts the import");
+          // The AtomicBoolean here is discarded rather than checked, unlike the top-level records in parseRecords():
+          // safe only because createRecord() returns null immediately whenever mapping is null (as it is throughout
+          // this whole recursion, since there's no per-property mapping to pass down), before any type conversion
+          // that could actually throw.
           final Object record = parseRecord(reader, settings, context, database, mapping, false, new AtomicBoolean());
           if (record instanceof Map)
             saveAnonymousRecord(database, settings, (Map<String, Object>) record);
@@ -132,39 +136,34 @@ public class JSONImporterFormat implements FormatImporter {
   private void parseRecords(final JsonReader reader, final Database database, final ImporterSettings settings,
       final ImporterContext context,
       final JSONArray mapping, boolean ignore) throws IOException {
-    // SAME GUARD AND REASONING AS CSVImporterFormat (see ImporterSettings#isSkipOnRowError()): EACH RECORD BELOW
-    // COMMITS/ROLLS BACK ITS OWN TRANSACTION, WHICH database.begin() ACHIEVES BY NESTING RATHER THAN REUSING ONE
-    // THAT'S ALREADY ACTIVE - BUT A NESTED commit() IS STILL INDEPENDENTLY DURABLE, SO ON AN EXTERNALLY-MANAGED
-    // database (ImporterContext#externallyManagedDatabase) THAT COULD PERSIST A RECORD EVEN IF THE CALLER'S OWN
-    // TRANSACTION LATER FAILS. FAIL LOUDLY INSTEAD OF RISKING IT.
+    // Same guard and reasoning as CSVImporterFormat (see ImporterSettings#isSkipOnRowError()): each record below
+    // commits/rolls back its own transaction, which database.begin() achieves by nesting rather than reusing one
+    // that's already active - but a nested commit() is still independently durable, so on an externally-managed
+    // database that could persist a record even if the caller's own transaction later fails. Fail loudly instead.
     if (settings.isSkipOnRowError() && context.externallyManagedDatabase && database.isTransactionActive())
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     reader.beginArray();
 
-    // database.begin() ALWAYS NESTS RATHER THAN REUSING A TRANSACTION THAT'S ALREADY ACTIVE (SEE LocalDatabase#begin()),
-    // SO THIS METHOD'S OWN LEVEL IS NEVER THE SAME ONE AS A PRE-EXISTING CALLER'S - UNLIKE CSVImporterFormat, WHICH
-    // REUSES AN ALREADY-ACTIVE TRANSACTION DIRECTLY IN "abort" MODE. THAT DISTINCTION IS WHY THE catch BLOCKS BELOW
-    // DON'T NEED A CSVImporterFormat-STYLE ownsTransaction CHECK - BUT SEE EACH ONE FOR WHY THEY STILL CAN'T BOTH
-    // ROLL BACK UNCONDITIONALLY THE SAME WAY.
+    // database.begin() always nests rather than reusing a transaction that's already active (see
+    // LocalDatabase#begin()), so this method's own level is never the same one as a pre-existing caller's - unlike
+    // CSVImporterFormat, which reuses an already-active transaction directly in "abort" mode.
     database.begin();
     try {
       parseRecordsArray(reader, database, settings, context, mapping, ignore);
     } catch (final IOException e) {
-      // A GENUINELY SOURCE-LEVEL FAILURE (E.G. A MALFORMED JSON STRUCTURE FROM reader.peek()) NEVER PASSES THROUGH
-      // parseRecordsArray()'s PER-RECORD catch BELOW, WHICH ONLY CATCHES RuntimeException - SO THE ACTIVE TRANSACTION
-      // HERE IS ALWAYS THIS METHOD'S OWN, UNTOUCHED LEVEL (A FRESH ONE IS BEGUN RIGHT AFTER EVERY RECORD'S OWN
-      // commit()/rollback(), INCLUDING BEFORE THE FIRST ONE). SAFE TO ROLL BACK UNCONDITIONALLY, REGARDLESS OF MODE.
+      // A genuinely source-level failure (e.g. a malformed JSON structure from reader.peek()) never passes through
+      // parseRecordsArray()'s per-record catch below, which only catches RuntimeException - so the active
+      // transaction here is always this method's own, untouched level. Safe to roll back unconditionally.
       if (database.isTransactionActive())
         database.rollback();
       throw e;
     } catch (final RuntimeException e) {
-      // UNLIKE IOException ABOVE: ANY RuntimeException REACHING HERE HAS ALREADY PASSED THROUGH parseRecordsArray()'s
-      // PER-RECORD catch, WHICH - IN "abort" MODE, THE ONLY MODE WHERE IT RETHROWS INSTEAD OF SWALLOWING - ALREADY
-      // ROLLED BACK ITS OWN NESTED LEVEL, POPPING BACK DOWN TO WHATEVER WAS ACTIVE BEFORE THIS METHOD'S OWN
-      // database.begin() ABOVE (POSSIBLY A CALLER'S OWN TRANSACTION ON AN EXTERNALLY-MANAGED database). DO NOT ROLL
-      // BACK AGAIN HERE: THAT WOULD DISCARD THE CALLER'S OWN UNRELATED PENDING WORK INSTEAD OF THIS METHOD'S
-      // (ALREADY-RESOLVED) CONTRIBUTION.
+      // Unlike IOException above: any RuntimeException reaching here has already passed through
+      // parseRecordsArray()'s per-record catch, which - in "abort" mode, the only mode where it rethrows instead of
+      // swallowing - already rolled back its own nested level, popping back down to whatever was active before this
+      // method's own database.begin() above (possibly a caller's own transaction). Don't roll back again here: that
+      // would discard the caller's unrelated pending work instead of this method's already-resolved contribution.
       throw e;
     }
   }
@@ -184,17 +183,15 @@ public class JSONImporterFormat implements FormatImporter {
       } else
         mappingObject = null;
 
-      // SET BY parseRecord()/parseArray() IF A NESTED BEGIN_OBJECT/BEGIN_ARRAY RECURSION FAILED SOMEWHERE BELOW THIS
-      // RECORD (SEE THE NESTED catch BLOCKS): A NESTED RECORD CAN ALREADY HAVE WRITTEN A BUCKET ENTRY BEFORE ITS OWN
-      // INDEXING FAILED (E.G. A DUPLICATE KEY), AND THE ONLY SAFE WAY TO DISCARD THAT PARTIAL WRITE WITHOUT ALSO
-      // DISCARDING SOME UNRELATED, ALREADY-COMMITTED RECORD IS TO ROLL BACK THIS WHOLE TOP-LEVEL RECORD'S OWN
-      // TRANSACTION - THE SAME TRANSACTION BOUNDARY database.rollback() BELOW ALREADY USES.
+      // Set by parseRecord()/parseArray() if a nested BEGIN_OBJECT/BEGIN_ARRAY recursion failed somewhere below this
+      // record: a nested record can already have written a bucket entry before its own indexing failed, and the
+      // only safe way to discard that partial write without also discarding an unrelated, already-committed record
+      // is to roll back this whole top-level record's own transaction below.
       final AtomicBoolean recordFailed = new AtomicBoolean();
 
-      // createRecord()/convertMap() COUNT A NEW DOCUMENT/VERTEX/EDGE AS SOON AS IT IS ALLOCATED - WELL BEFORE ITS
-      // PROPERTIES ARE SET, IT IS save()D, OR THIS TRANSACTION COMMITS, ANY OF WHICH CAN STILL FAIL. SNAPSHOT THE
-      // COUNTERS SO A ROLLED-BACK RECORD (TOP-LEVEL OR NESTED) CAN HAVE ITS COUNTS UNDONE BELOW INSTEAD OF LEAKING
-      // INTO THE REPORTED SUMMARY.
+      // createRecord()/convertMap() count a new document/vertex/edge as soon as it is allocated, well before its
+      // properties are set, it is save()d, or this transaction commits, any of which can still fail. Snapshot the
+      // counters so a rolled-back record can have its counts undone below instead of leaking into the summary.
       final long createdDocumentsBefore = context.createdDocuments.get();
       final long createdVerticesBefore = context.createdVertices.get();
       final long createdEdgesBefore = context.createdEdges.get();
@@ -212,9 +209,9 @@ public class JSONImporterFormat implements FormatImporter {
         if (database.isTransactionActive())
           database.rollback();
 
-        // SUBTRACT THIS RECORD'S OWN DELTA RATHER THAN OVERWRITING WITH THE SNAPSHOT: JSON RECORD PARSING IS
-        // SINGLE-THREADED AGAINST ONE ImporterContext TODAY, SO EITHER FORM IS SAFE, BUT A DELTA CANNOT SILENTLY
-        // ERASE A CONCURRENT INCREMENT IF THAT EVER CHANGES.
+        // Subtract this record's own delta rather than overwriting with the snapshot: JSON record parsing is
+        // single-threaded against one ImporterContext today, so either form is safe, but a delta cannot silently
+        // erase a concurrent increment if that ever changes.
         context.createdDocuments.addAndGet(createdDocumentsBefore - context.createdDocuments.get());
         context.createdVertices.addAndGet(createdVerticesBefore - context.createdVertices.get());
         context.createdEdges.addAndGet(createdEdgesBefore - context.createdEdges.get());
@@ -222,16 +219,10 @@ public class JSONImporterFormat implements FormatImporter {
         if (!settings.isSkipOnRowError())
           throw e;
 
-        // THE UNDERLYING JsonReader IS POSITIONED RIGHT AFTER THE OFFENDING RECORD, SO IT IS SAFE TO CONTINUE WITH THE
-        // NEXT ARRAY ENTRY: parseRecord()/parseArray() ALSO CATCH RuntimeException AT EVERY NESTED BEGIN_OBJECT/BEGIN_ARRAY
-        // RECURSION SITE (SUBSTITUTING null AND CONTINUING THE ENCLOSING OBJECT/ARRAY), SO A Type/schema CONVERSION ERROR
-        // AT ANY DEPTH NEVER UNWINDS PAST THE reader.endObject()/reader.endArray() OF ITS OWN NESTING LEVEL - IT CANNOT
-        // REACH HERE WITH THE TOP-LEVEL RECORD'S TOKENS ONLY PARTIALLY CONSUMED. A GENUINELY MALFORMED JSON STRUCTURE
-        // (IOException, NOT RuntimeException) IS NOT CAUGHT ANYWHERE IN THIS CHAIN AND STILL ABORTS THE IMPORT.
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error on importing JSON record #%d, skipping it (reason: %s)", null, recordIndex,
-                e.getMessage());
-        LogManager.instance().log(this, Level.FINE, "Full error on importing JSON record #%d", e, recordIndex);
+        // The underlying JsonReader is positioned right after the offending record, so it's safe to continue with
+        // the next array entry: a genuinely malformed JSON structure (IOException, not RuntimeException) is not
+        // caught anywhere in this chain and still aborts the import.
+        logSkippedRecord("JSON record #" + recordIndex, e);
         context.errors.incrementAndGet();
       }
 
@@ -248,6 +239,15 @@ public class JSONImporterFormat implements FormatImporter {
     // NO MAPPING, SAVE THE RECORD AS A DOCUMENT
     database.getSchema().getOrCreateDocumentType(settings.documentTypeName);
     return database.newDocument(settings.documentTypeName).set(map).save();
+  }
+
+  /**
+   * Logs a skipped record/entry at WARNING (message only) and FINE (full stack trace), used wherever
+   * {@code -onRowError skip} discards a JSON record, property, or array entry.
+   */
+  private void logSkippedRecord(final String what, final RuntimeException e) {
+    LogManager.instance().log(this, Level.WARNING, "Error on importing %s, skipping it (reason: %s)", null, what, e.getMessage());
+    LogManager.instance().log(this, Level.FINE, "Full error on importing %s", e, what);
   }
 
   private Object parseRecord(final JsonReader reader, final ImporterSettings settings, final ImporterContext context,
@@ -300,10 +300,7 @@ public class JSONImporterFormat implements FormatImporter {
         } catch (final RuntimeException e) {
           if (!settings.isSkipOnRowError())
             throw e;
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on importing nested JSON object property '%s', skipping it (reason: %s)", null,
-                  attributeName, e.getMessage());
-          LogManager.instance().log(this, Level.FINE, "Full error on importing nested JSON object property '%s'", e, attributeName);
+          logSkippedRecord("nested JSON object property '" + attributeName + "'", e);
           recordFailed.set(true);
           attributeValue = null;
         }
@@ -316,10 +313,7 @@ public class JSONImporterFormat implements FormatImporter {
         } catch (final RuntimeException e) {
           if (!settings.isSkipOnRowError())
             throw e;
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on importing JSON array property '%s', skipping it (reason: %s)", null,
-                  attributeName, e.getMessage());
-          LogManager.instance().log(this, Level.FINE, "Full error on importing JSON array property '%s'", e, attributeName);
+          logSkippedRecord("JSON array property '" + attributeName + "'", e);
           recordFailed.set(true);
           attributeValue = null;
         }
@@ -568,16 +562,14 @@ public class JSONImporterFormat implements FormatImporter {
         break;
       case BEGIN_OBJECT:
         final JSONObject mappingObject = mapping != null && !mapping.isEmpty() ? mapping.getJSONObject(0) : null;
-        // SAME REASONING AS parseRecord()'S BEGIN_OBJECT CASE: CATCH HERE, AT THE CALL SITE, SO A SCHEMA-CONVERSION
-        // FAILURE ON ONE ARRAY ITEM CANNOT DESYNC THE READER FOR THE REST OF THIS ARRAY.
+        // Same reasoning as parseRecord()'s BEGIN_OBJECT case: catch here, at the call site, so a schema-conversion
+        // failure on one array item cannot desync the reader for the rest of this array.
         try {
           entryValue = parseRecord(reader, settings, context, database, mappingObject, ignore, recordFailed);
         } catch (final RuntimeException e) {
           if (!settings.isSkipOnRowError())
             throw e;
-          LogManager.instance().log(this, Level.WARNING, "Error on importing JSON array entry, skipping it (reason: %s)", null,
-              e.getMessage());
-          LogManager.instance().log(this, Level.FINE, "Full error on importing JSON array entry", e);
+          logSkippedRecord("JSON array entry", e);
           recordFailed.set(true);
           entryValue = null;
         }
@@ -589,9 +581,7 @@ public class JSONImporterFormat implements FormatImporter {
         } catch (final RuntimeException e) {
           if (!settings.isSkipOnRowError())
             throw e;
-          LogManager.instance().log(this, Level.WARNING, "Error on importing nested JSON array entry, skipping it (reason: %s)", null,
-              e.getMessage());
-          LogManager.instance().log(this, Level.FINE, "Full error on importing nested JSON array entry", e);
+          logSkippedRecord("nested JSON array entry", e);
           recordFailed.set(true);
           entryValue = null;
         }
