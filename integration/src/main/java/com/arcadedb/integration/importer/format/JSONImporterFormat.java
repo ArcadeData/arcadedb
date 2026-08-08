@@ -84,6 +84,11 @@ public class JSONImporterFormat implements FormatImporter {
         if (mapping == null) {
           // A SINGLE TOP-LEVEL OBJECT: THERE IS NO SIBLING RECORD TO CONTINUE WITH ON FAILURE, SO -onRowError skip HAS
           // NO RECOVERY TO DO HERE - THE FLAG IS UNUSED AND ANY NESTED FAILURE SIMPLY PROPAGATES AND ABORTS AS BEFORE.
+          if (settings.isSkipOnRowError())
+            LogManager.instance()
+                .log(this, Level.WARNING,
+                    "-onRowError skip has no effect on a single top-level JSON object (no -mapping set): there is no "
+                        + "sibling record to continue with, so any error still aborts the import");
           final Object record = parseRecord(reader, settings, context, database, mapping, false, new AtomicBoolean());
           if (record instanceof Map)
             saveAnonymousRecord(database, settings, (Map<String, Object>) record);
