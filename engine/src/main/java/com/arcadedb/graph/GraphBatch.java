@@ -40,15 +40,19 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.LRUCache;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.LongObjectHashMap;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
@@ -71,9 +75,24 @@ import java.util.logging.Level;
  *   <li>Edge type bucket ID is cached to avoid repeated schema lookups</li>
  *   <li>O(n) counting sort partitions edges by bucket before per-bucket position sort</li>
  *   <li>Optional parallel flush: edge connection dispatched to async threads by bucket</li>
- *   <li>Head chunk RID cache: skips vertex record loads when segment RID is already known</li>
+ *   <li>Head chunk RID cache: skips vertex record loads when segment RID is already known, bounded by a
+ *       configurable LRU cap so a long-lived stream's cache memory does not grow with distinct vertex count
+ *       (issue #5664)</li>
  *   <li>Lazy vertex loading: vertex only loaded from disk on segment overflow</li>
+ *   <li>Deferred incoming edges drain early once buffered past a configurable cap, instead of only at
+ *       {@link #close()}, so the buffer and the close-time connection pass stay bounded on a long stream
+ *       (issue #5664)</li>
  * </ul>
+ * <p>
+ * <b>Memory bounding is partial, by design (issue #5664).</b> The two head-chunk RID caches and the deferred
+ * incoming-edge buffer above are bounded, but {@code deferredOutHead}, {@code deferredInHead} and
+ * {@code knownNewVertexKeys} still grow with the number of DISTINCT VERTICES the batch touches (not with the
+ * edge count, and not with {@code batchSize}); they are only cleared by {@code batchUpdateVertexHeadChunks()}
+ * at {@link #close()}. They are also load-bearing rather than merely an optimization: since #5664 they are the
+ * authoritative fallback consulted when a bounded RID cache evicts an entry, which is what keeps an eviction
+ * from silently orphaning an earlier segment. So a stream touching hundreds of millions of distinct vertices
+ * still carries per-vertex state proportional to that count. Bounding those too means draining vertex head
+ * pointers mid-batch, a materially larger change; it is deliberately not attempted here.
  * <p>
  * <b>Super-node promotion (#5667):</b> unlike the standard {@code Vertex.newEdge()} path, a bulk load through
  * this class never promotes a hot vertex to the striped super-node layout (see
@@ -133,9 +152,27 @@ public class GraphBatch implements AutoCloseable {
   private final boolean parallelFlush;
   private final int     commitRetries;
   private final long    commitRetryDelayMs;
+  private final int     chunkCacheCapacity;
+  private final int     maxDeferredIncomingEdges;
 
   /** Upper bound for the exponential back-off between vertex-commit retries. */
   private static final long MAX_COMMIT_RETRY_DELAY_MS = 10_000L;
+
+  /**
+   * Default cap on the {@link #outChunkRIDCache} / {@link #inChunkRIDCache} entries (issue #5664). Both caches
+   * are pure lookup accelerators - every call site falls back to reading the vertex's head chunk from disk on a
+   * miss - so bounding each with an LRU keeps its memory flat on a long-lived stream instead of growing with the
+   * number of distinct vertices touched. ~1M entries is roughly 100-150 MB per cache.
+   */
+  private static final int DEFAULT_CHUNK_CACHE_CAPACITY = 1_000_000;
+
+  /**
+   * Default cap on the deferred incoming-edge buffer (issue #5664). Once {@link #inEdgeCount} reaches this many
+   * buffered entries, {@link #connectDeferredIncomingEdges()} runs early from {@link #flush()} instead of
+   * waiting for {@link #close()}, amortizing the connection pass over the load and keeping the buffer's
+   * primitive arrays (and the transient doubling copy when they grow) from scaling with the full stream length.
+   */
+  private static final int DEFAULT_MAX_DEFERRED_INCOMING_EDGES = 5_000_000;
 
   /**
    * Test-only fault-injection hook. Invoked just before each {@link #createVertices} commit with
@@ -144,6 +181,36 @@ public class GraphBatch implements AutoCloseable {
    * commit-retry recovers. Always {@code null} in production.
    */
   public static volatile IntConsumer TEST_BEFORE_VERTEX_COMMIT_HOOK = null;
+
+  /**
+   * Test-only fault-injection hook. Invoked with a 1-based call number immediately before each
+   * {@code database.commit()} that durably persists a slice of deferred incoming edges - both the
+   * sequential path's {@code commitEvery}-driven commits ({@link #connectIncomingEdgesSequential})
+   * and the parallel path's one commit per destination-bucket task (fired at the end of
+   * {@link #connectIncomingEdgesRangeLocal}, right before the surrounding {@code async.transaction}
+   * commits). A test can throw to simulate a commit failing partway through
+   * {@link #connectDeferredIncomingEdges()} and verify that a subsequent retry (e.g. from
+   * {@link #close()}) does not reprocess the slices that already committed durably (issue #5950
+   * review cycle 3). Always {@code null} in production.
+   */
+  public static volatile IntConsumer TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK = null;
+
+  /**
+   * Test-only fault-injection hook. Invoked with a 1-based call number at the end of each
+   * {@link #connectOutEdgesRangeLocal} bucket task, right before the surrounding
+   * {@code async.transaction} commits it. A test throwing a {@link ConcurrentModificationException} here
+   * drives the async executor's own CME retry (which re-invokes the same bucket lambda after a rollback,
+   * see {@code DatabaseAsyncTransaction.execute()}) and so verifies that a rolled-back attempt left no
+   * non-durable RID behind in the shared head-chunk caches (issue #5950 review cycle 4). Always
+   * {@code null} in production.
+   */
+  public static volatile IntConsumer TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK = null;
+
+  /** Monotonic call counter feeding {@link #TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK}'s 1-based argument. */
+  private final AtomicInteger outgoingEdgeCommitAttempt = new AtomicInteger(0);
+
+  /** Monotonic call counter feeding {@link #TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK}'s 1-based argument. */
+  private final AtomicInteger incomingEdgeCommitAttempt = new AtomicInteger(0);
 
   // --- Edge buffer: flat arrays for minimal GC pressure ---
   // Each edge occupies one slot across these parallel arrays.
@@ -168,6 +235,43 @@ public class GraphBatch implements AutoCloseable {
   private long[] inDstPositions;      // destination vertex RID position
   private int    inEdgeCount;
 
+  /**
+   * How far into the sort index built at the top of {@link #connectDeferredIncomingEdges()} the
+   * sequential path ({@link #connectIncomingEdgesSequential}) has durably committed a prefix of
+   * groups. Lets a retry after a partial failure resume after the last committed group instead of
+   * recommitting it (issue #5950 review cycle 3): {@link #flush()}'s early drain can fail partway
+   * through a large {@code connectDeferredIncomingEdges()} pass, after which {@link #close()}
+   * unconditionally re-runs the drain over the same deferred buffer.
+   * <p>
+   * Sound because the retry rebuilds its sort index over the SAME pinned row count
+   * ({@link #inEdgesDrainPrefix}) the failed attempt used, so the index has an identical shape and this
+   * raw offset still means the same thing. Reset to 0 only once a pinned prefix completes in full.
+   */
+  private int inEdgesResumeSortIndex = 0;
+
+  /**
+   * Number of buffered rows the in-progress (or last failed) incoming-edge drain pass covers, or 0 when
+   * no pass is pending. Pinning this decouples the resume state from later appends to the buffer (issue
+   * #5950 review cycle 4): {@link #partitionIncomingByDestBucket} is a counting sort, so a buffer that
+   * grew between a failed attempt and its retry would produce a differently-shaped sort index, against
+   * which {@link #inEdgesResumeSortIndex} (a raw index) and {@link #completedIncomingBuckets} (bucket
+   * ranges) would silently skip or reprocess groups. Rows appended past the pin are drained separately.
+   */
+  private int inEdgesDrainPrefix = 0;
+
+  /**
+   * Destination-bucket ids whose incoming-edge slice the parallel path
+   * ({@link #connectIncomingEdgesParallel}) has already durably committed, across possibly several
+   * attempts at {@link #connectDeferredIncomingEdges()} (issue #5950 review cycle 3). Each bucket
+   * runs as its own independent {@code async.transaction} unit, so one bucket's commit failing does
+   * not roll back another's; a retry skips scheduling any bucket already in this set instead of
+   * recommitting it. Marked from the transaction's post-commit {@code OkCallback} - never from
+   * inside the bucket-range lambda itself, which runs BEFORE the surrounding commit and could still
+   * fail there - so membership always implies a durable commit. Cleared alongside the buffer arrays
+   * only once {@code connectDeferredIncomingEdges()} completes ALL remaining work.
+   */
+  private final Set<Integer> completedIncomingBuckets = ConcurrentHashMap.newKeySet();
+
   // --- Temp arrays for vectorized segment writes (reused across flushes) ---
   private int[]  tmpEdgeBucketIds;
   private long[] tmpEdgePositions;
@@ -190,9 +294,12 @@ public class GraphBatch implements AutoCloseable {
   private final Map<String, Boolean> lightweightTypeCache     = new ConcurrentHashMap<>();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
-  // Must be ConcurrentHashMap because getOrCreate*EdgeChunk() is called from parallel async slots
-  private final Map<Long, RID> outChunkRIDCache = new ConcurrentHashMap<>();
-  private final Map<Long, RID> inChunkRIDCache = new ConcurrentHashMap<>();
+  // Bounded LRU wrapped in synchronizedMap (issue #5664): getOrCreate*EdgeChunk() is called from parallel async
+  // slots, so the map must stay thread-safe, and an unbounded cache grows with the number of distinct vertices
+  // touched over the WHOLE lifetime of the batch rather than with batchSize. Every call site falls back to
+  // reading the vertex's head chunk from disk on a miss, so eviction is always safe, just slower on a miss.
+  private final Map<Long, RID> outChunkRIDCache;
+  private final Map<Long, RID> inChunkRIDCache;
 
   // --- Deferred vertex head chunk updates: persisted in one batch pass at close() ---
   // vertexKey → latest segment RID that needs to be set on the vertex record.
@@ -200,14 +307,17 @@ public class GraphBatch implements AutoCloseable {
   // Lifecycle (matters for the choice of non-concurrent collection):
   //   1. Sequential put() calls happen from connectOutgoingEdgesSorted /
   //      connectIncomingEdgesSequential (single-threaded paths).
-  //   2. The PARALLEL paths (connectOutEdgesRangeLocal, connectIncomingEdgesRangeLocal)
-  //      do NOT touch these fields directly - they write to per-flush local
-  //      ConcurrentHashMap parameters (parallelDeferredOutHead / parallelDeferredInHead)
-  //      which are merged into these fields via putAll() AFTER async.waitCompletion(),
-  //      establishing a happens-before barrier.
+  //   2. The PARALLEL paths (connectOutEdgesRangeLocal, connectIncomingEdgesRangeLocal) do NOT
+  //      WRITE to these fields directly - they write to per-flush local ConcurrentHashMap
+  //      parameters (parallelDeferredOutHead / parallelDeferredInHead) which are merged into
+  //      these fields via putAll() AFTER async.waitCompletion(), establishing a happens-before
+  //      barrier. They DO read these fields directly (issue #5950 review: the LRU-eviction fix),
+  //      via LongObjectHashMap.get(), a pure read with no internal mutation - safe because no
+  //      concurrent WRITER touches these fields during a parallel round; the read-only access from
+  //      multiple async slots is fine.
   //   3. batchUpdateVertexHeadChunks() reads these single-threaded at flush end.
-  // LongObjectHashMap (zero-boxing, ~5x less memory than ConcurrentHashMap<Long, RID>)
-  // is safe because no concurrent writes ever hit these fields.
+  // LongObjectHashMap (zero-boxing, ~5x less memory than ConcurrentHashMap<Long, RID>) is safe
+  // under this lifecycle because writes are never concurrent and concurrent reads never race a write.
   private final LongObjectHashMap<RID> deferredOutHead = new LongObjectHashMap<>();
   private final LongObjectHashMap<RID> deferredInHead = new LongObjectHashMap<>();
 
@@ -248,7 +358,8 @@ public class GraphBatch implements AutoCloseable {
       final int edgeListInitialSize,
       final boolean lightEdges, final boolean bidirectional, final int commitEvery,
       final boolean useWAL, final WALFile.FlushType walFlush, final boolean preAllocateEdgeChunks,
-      final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs) {
+      final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs,
+      final int chunkCacheCapacity, final int maxDeferredIncomingEdges) {
     this.database = database;
     this.guardOwner = guardOwner;
     this.batchSize = batchSize;
@@ -258,6 +369,10 @@ public class GraphBatch implements AutoCloseable {
     this.commitEvery = commitEvery;
     this.commitRetries = commitRetries;
     this.commitRetryDelayMs = commitRetryDelayMs;
+    this.chunkCacheCapacity = chunkCacheCapacity;
+    this.maxDeferredIncomingEdges = maxDeferredIncomingEdges;
+    this.outChunkRIDCache = Collections.synchronizedMap(new LRUCache<>(chunkCacheCapacity));
+    this.inChunkRIDCache = Collections.synchronizedMap(new LRUCache<>(chunkCacheCapacity));
     // Already the effective value: Builder.build() forces the WAL on for replicated databases (issue #4076)
     // before it derives commitEvery from it (issue #5470).
     this.useWAL = useWAL;
@@ -630,8 +745,17 @@ public class GraphBatch implements AutoCloseable {
       }
 
       // --- PHASE 4: Accumulate incoming edges in deferred buffer (array-only, no DB) ---
-      if (bidirectional)
+      if (bidirectional) {
         accumulateIncomingEdges(edgeRIDs);
+
+        // Drain early once the buffer crosses the configured cap (issue #5664): left alone, the deferred
+        // incoming-edge arrays (and the in-chunk RID cache they populate) grow with the FULL stream length,
+        // not with batchSize, and connectDeferredIncomingEdges() would land as one unbounded pass at close().
+        // Draining here amortizes that pass over the load instead. maxDeferredIncomingEdges=0 opts back into
+        // the pre-#5664 behavior of deferring everything to close().
+        if (maxDeferredIncomingEdges > 0 && inEdgeCount >= maxDeferredIncomingEdges)
+          connectDeferredIncomingEdges();
+      }
 
       totalEdgesCreated += edgeCount;
       totalFlushes++;
@@ -1126,6 +1250,22 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
+   * Test-only accessor: current size of the OUT head-chunk RID cache. Used to verify the bound from issue #5664
+   * holds regardless of how many distinct vertices the stream has touched.
+   */
+  int getOutChunkRIDCacheSize() {
+    return outChunkRIDCache.size();
+  }
+
+  /**
+   * Test-only accessor: current size of the IN head-chunk RID cache. Used to verify the bound from issue #5664
+   * holds regardless of how many distinct vertices the stream has touched.
+   */
+  int getInChunkRIDCacheSize() {
+    return inChunkRIDCache.size();
+  }
+
+  /**
    * Number of records written inside one transaction during an edge flush, or 0 when the whole flush is
    * committed at once. On a replicated database this is also the size of a single Raft entry, so it bounds
    * how large a replicated entry can get (issue #5470).
@@ -1320,6 +1460,18 @@ public class GraphBatch implements AutoCloseable {
    * Accumulates incoming edge info from the current flush buffer into the deferred arrays.
    */
   private void accumulateIncomingEdges(final RID[] edgeRIDs) {
+    // An earlier in-flush drain (issue #5664) frees these arrays at the end of connectDeferredIncomingEdges();
+    // re-allocate at the same initial size the constructor would have used.
+    if (inEdgeBucketIds == null) {
+      final int initialInCapacity = batchSize;
+      inEdgeBucketIds = new int[initialInCapacity];
+      inEdgePositions = new long[initialInCapacity];
+      inVertexBucketIds = new int[initialInCapacity];
+      inVertexPositions = new long[initialInCapacity];
+      inDstBucketIds = new int[initialInCapacity];
+      inDstPositions = new long[initialInCapacity];
+    }
+
     final int needed = inEdgeCount + edgeCount;
     if (needed > inEdgeBucketIds.length)
       growIncomingBuffers(needed);
@@ -1355,27 +1507,53 @@ public class GraphBatch implements AutoCloseable {
    * so each vertex's segment is loaded, filled, and written exactly once.
    */
   private void connectDeferredIncomingEdges() {
-    LogManager.instance().log(this, Level.INFO,
-        "Connecting %d deferred incoming edges...", null, inEdgeCount);
+    // Drains in PINNED PREFIXES rather than straight over inEdgeCount (issue #5950 review cycle 4).
+    //
+    // The resume state (inEdgesResumeSortIndex, completedIncomingBuckets) is expressed against the sort
+    // index built at the top of a pass. That index is a counting sort over the buffer, so appending rows
+    // changes bucketCounts/bucketOffsets and therefore what a given raw index - and a given bucket's
+    // [from,to) range - refers to. A caller that catches the exception from a failed early drain and keeps
+    // calling newEdge() (nothing forbids it, and this class supports exactly that "absorb a transient
+    // failure and keep streaming" shape elsewhere - see createVerticesWithRetry for #4724) would grow the
+    // buffer between the failed attempt and the retry, and the resume state would then be applied to a
+    // differently-shaped index: silently skipping groups (edge loss) or reprocessing them (duplicates).
+    //
+    // Pinning the row count a failed pass covered, and reusing that exact pin on the retry, keeps the
+    // index shape identical across attempts. Rows appended after the pin are drained by a later iteration
+    // of the loop below, against their own freshly-built index.
+    while (inEdgeCount > 0) {
+      final int prefix = inEdgesDrainPrefix > 0 ? inEdgesDrainPrefix : inEdgeCount;
+      inEdgesDrainPrefix = prefix;
 
-    final long startNs = System.nanoTime();
+      LogManager.instance().log(this, Level.INFO,
+          "Connecting %d deferred incoming edges...", null, prefix);
 
-    // Build sort index, partitioned by destination bucket (O(n) counting sort)
-    final int[] inSortIndex = new int[inEdgeCount];
-    final int maxDstBucket = partitionIncomingByDestBucket(inSortIndex);
+      final long startNs = System.nanoTime();
 
-    if (parallelFlush)
-      connectIncomingEdgesParallel(inSortIndex, maxDstBucket);
-    else
-      connectIncomingEdgesSequential(inSortIndex);
+      // Build sort index over the pinned prefix only, partitioned by destination bucket (O(n) counting sort)
+      final int[] inSortIndex = new int[prefix];
+      final int maxDstBucket = partitionIncomingByDestBucket(inSortIndex, prefix);
 
-    final double ms = (System.nanoTime() - startNs) / 1_000_000.0;
-    LogManager.instance().log(this, Level.INFO,
-        "Incoming edges connected: %d edges in %.1f ms (%.0f edges/sec)",
-        null, inEdgeCount, ms, inEdgeCount / (ms / 1000.0));
+      if (parallelFlush)
+        connectIncomingEdgesParallel(inSortIndex, maxDstBucket);
+      else
+        connectIncomingEdgesSequential(inSortIndex, prefix);
 
-    // Free deferred buffers
-    inEdgeCount = 0;
+      final double ms = (System.nanoTime() - startNs) / 1_000_000.0;
+      LogManager.instance().log(this, Level.INFO,
+          "Incoming edges connected: %d edges in %.1f ms (%.0f edges/sec)",
+          null, prefix, ms, prefix / (ms / 1000.0));
+
+      // This prefix is fully durable (an exception from either connect* method above skips this point
+      // entirely, leaving the pin and the resume state in place for the retry). Drop it from the buffer and
+      // clear the resume state so the next iteration - or the next drain - starts clean.
+      discardDrainedIncomingPrefix(prefix);
+      inEdgesDrainPrefix = 0;
+      inEdgesResumeSortIndex = 0;
+      completedIncomingBuckets.clear();
+    }
+
+    // Fully drained - release the buffers so a long-lived batch does not hold them between drains.
     inEdgeBucketIds = null;
     inEdgePositions = null;
     inVertexBucketIds = null;
@@ -1384,72 +1562,134 @@ public class GraphBatch implements AutoCloseable {
     inDstPositions = null;
   }
 
-  private void connectIncomingEdgesSequential(final int[] inSortIndex) {
+  /**
+   * Removes the first {@code prefix} rows from the deferred incoming buffer, shifting anything appended
+   * after the pin down to the front. On the normal path {@code prefix == inEdgeCount}, so this is just a
+   * counter reset with no copying (issue #5950 review cycle 4).
+   */
+  private void discardDrainedIncomingPrefix(final int prefix) {
+    final int remaining = inEdgeCount - prefix;
+    if (remaining > 0) {
+      System.arraycopy(inEdgeBucketIds, prefix, inEdgeBucketIds, 0, remaining);
+      System.arraycopy(inEdgePositions, prefix, inEdgePositions, 0, remaining);
+      System.arraycopy(inVertexBucketIds, prefix, inVertexBucketIds, 0, remaining);
+      System.arraycopy(inVertexPositions, prefix, inVertexPositions, 0, remaining);
+      System.arraycopy(inDstBucketIds, prefix, inDstBucketIds, 0, remaining);
+      System.arraycopy(inDstPositions, prefix, inDstPositions, 0, remaining);
+    }
+    inEdgeCount = remaining;
+  }
+
+  /** Fires {@link #TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK}, if set, right before a deferred incoming-edge commit. */
+  private void fireBeforeIncomingEdgeCommitHook() {
+    final IntConsumer hook = TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK;
+    if (hook != null)
+      hook.accept(incomingEdgeCommitAttempt.incrementAndGet());
+  }
+
+  private void connectIncomingEdgesSequential(final int[] inSortIndex, final int count) {
     beginTx();
-    int i = 0;
+    // Resume after the last durably committed group instead of recommitting it, if a previous attempt
+    // at this drain partially succeeded before failing (issue #5950 review cycle 3).
+    int i = inEdgesResumeSortIndex;
     int edgesInBatch = 0;
 
-    while (i < inEdgeCount) {
-      final int idx = inSortIndex[i];
-      final int dstBucket = inDstBucketIds[idx];
-      final long dstPos = inDstPositions[idx];
+    // getOrCreateInSegmentDeferred/persistNewSegment/addIncomingEdgesToSegmentBulkLazy mutate
+    // deferredInHead/inChunkRIDCache as a side effect of processing a group, BEFORE the transaction
+    // containing that group's writes commits. If the commit that would make those writes durable never
+    // happens (an exception anywhere in this slice), the maps are left pointing at segment records from
+    // a transaction the caller is about to roll back. Snapshot each touched vertex's PRE-slice
+    // deferredInHead value (only once per vertex per slice) so a failure can restore it exactly -
+    // "was absent" restores via remove(), "had segment X" restores X - before rethrowing (issue #5950
+    // review cycle 3).
+    final Map<Long, RID> inHeadUndoLog = new HashMap<>();
 
-      int j = i;
-      while (j < inEdgeCount) {
-        final int jIdx = inSortIndex[j];
-        if (inDstBucketIds[jIdx] != dstBucket || inDstPositions[jIdx] != dstPos)
-          break;
-        j++;
-      }
+    try {
+      while (i < count) {
+        final int idx = inSortIndex[i];
+        final int dstBucket = inDstBucketIds[idx];
+        final long dstPos = inDstPositions[idx];
 
-      // Pre-compute exact bytes needed for this group
-      final int groupSize = j - i;
-      ensureTmpArrays(groupSize);
-      int totalBytesNeeded = 0;
-      for (int k = 0; k < groupSize; k++) {
-        final int kIdx = inSortIndex[i + k];
-        tmpEdgeBucketIds[k] = inEdgeBucketIds[kIdx];
-        tmpEdgePositions[k] = inEdgePositions[kIdx];
-        tmpVertexBucketIds[k] = inVertexBucketIds[kIdx];
-        tmpVertexPositions[k] = inVertexPositions[kIdx];
-        totalBytesNeeded += Binary.getNumberSpace(tmpEdgeBucketIds[k]) + Binary.getNumberSpace(tmpEdgePositions[k])
-            + Binary.getNumberSpace(tmpVertexBucketIds[k]) + Binary.getNumberSpace(tmpVertexPositions[k]);
-      }
+        int j = i;
+        while (j < count) {
+          final int jIdx = inSortIndex[j];
+          if (inDstBucketIds[jIdx] != dstBucket || inDstPositions[jIdx] != dstPos)
+            break;
+          j++;
+        }
 
-      final long vertexKey = packVertexKey(dstBucket, dstPos);
-      final EdgeSegment inChunk = getOrCreateInSegmentDeferred(dstBucket, dstPos, vertexKey, totalBytesNeeded);
+        // Pre-compute exact bytes needed for this group
+        final int groupSize = j - i;
+        ensureTmpArrays(groupSize);
+        int totalBytesNeeded = 0;
+        for (int k = 0; k < groupSize; k++) {
+          final int kIdx = inSortIndex[i + k];
+          tmpEdgeBucketIds[k] = inEdgeBucketIds[kIdx];
+          tmpEdgePositions[k] = inEdgePositions[kIdx];
+          tmpVertexBucketIds[k] = inVertexBucketIds[kIdx];
+          tmpVertexPositions[k] = inVertexPositions[kIdx];
+          totalBytesNeeded += Binary.getNumberSpace(tmpEdgeBucketIds[k]) + Binary.getNumberSpace(tmpEdgePositions[k])
+              + Binary.getNumberSpace(tmpVertexBucketIds[k]) + Binary.getNumberSpace(tmpVertexPositions[k]);
+        }
 
-      if (lastSegmentPromoted) {
-        // #5667: the vertex is already a promoted super-node - route through StripedEdgeList.
-        addGroupThroughStripedEdgeList(lastPromotedVertex, Vertex.DIRECTION.IN, lastPromotedDirectory,
-            tmpEdgeBucketIds, tmpEdgePositions, tmpVertexBucketIds, tmpVertexPositions, groupSize);
-      } else if (lastSegmentIsNew) {
-        // New segment: fill FIRST, then persist ONCE
-        inChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
-            tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
-        persistNewSegment(inChunk, dstBucket, Vertex.DIRECTION.IN, vertexKey);
-      } else {
-        final int available = inChunk.getRecordSize() - inChunk.getUsed();
-        if (totalBytesNeeded <= available) {
+        final long vertexKey = packVertexKey(dstBucket, dstPos);
+        // Snapshot BEFORE getOrCreateInSegmentDeferred can mutate deferredInHead for this vertex (issue
+        // #5950 review cycle 3) - see the undo-log comment above. A promoted vertex (below) never touches
+        // deferredInHead/inChunkRIDCache, so this snapshot is harmlessly unused in that case.
+        if (!inHeadUndoLog.containsKey(vertexKey))
+          inHeadUndoLog.put(vertexKey, deferredInHead.get(vertexKey));
+        final EdgeSegment inChunk = getOrCreateInSegmentDeferred(dstBucket, dstPos, vertexKey, totalBytesNeeded);
+
+        if (lastSegmentPromoted) {
+          // #5667: the vertex is already a promoted super-node - route through StripedEdgeList.
+          addGroupThroughStripedEdgeList(lastPromotedVertex, Vertex.DIRECTION.IN, lastPromotedDirectory,
+              tmpEdgeBucketIds, tmpEdgePositions, tmpVertexBucketIds, tmpVertexPositions, groupSize);
+        } else if (lastSegmentIsNew) {
+          // New segment: fill FIRST, then persist ONCE
           inChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
               tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
-          database.updateRecord(inChunk);
+          persistNewSegment(inChunk, dstBucket, Vertex.DIRECTION.IN, vertexKey);
         } else {
-          addIncomingEdgesToSegmentBulkLazy(dstBucket, dstPos, inChunk, inSortIndex, i, j);
+          final int available = inChunk.getRecordSize() - inChunk.getUsed();
+          if (totalBytesNeeded <= available) {
+            inChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
+                tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
+            database.updateRecord(inChunk);
+          } else {
+            addIncomingEdgesToSegmentBulkLazy(dstBucket, dstPos, inChunk, inSortIndex, i, j);
+          }
         }
+
+        edgesInBatch += groupSize;
+        if (commitEvery > 0 && edgesInBatch >= commitEvery) {
+          fireBeforeIncomingEdgeCommitHook();
+          database.commit();
+          // Record the committed prefix only AFTER the commit succeeds (issue #5950 review cycle 3).
+          inEdgesResumeSortIndex = j;
+          inHeadUndoLog.clear();
+          beginTx();
+          edgesInBatch = 0;
+        }
+
+        i = j;
       }
 
-      edgesInBatch += groupSize;
-      if (commitEvery > 0 && edgesInBatch >= commitEvery) {
-        database.commit();
-        beginTx();
-        edgesInBatch = 0;
+      fireBeforeIncomingEdgeCommitHook();
+      database.commit();
+      inEdgesResumeSortIndex = count;
+    } catch (final RuntimeException e) {
+      for (final Map.Entry<Long, RID> undo : inHeadUndoLog.entrySet()) {
+        final long key = undo.getKey();
+        final RID previous = undo.getValue();
+        if (previous == null)
+          deferredInHead.remove(key);
+        else
+          deferredInHead.put(key, previous);
+        // Just an accelerator cache - evicting is always safe, forces a deferredInHead/disk fallback.
+        inChunkRIDCache.remove(key);
       }
-
-      i = j;
+      throw e;
     }
-
-    database.commit();
   }
 
   private void connectIncomingEdgesParallel(final int[] inSortIndex, final int maxBucket) {
@@ -1459,8 +1699,19 @@ public class GraphBatch implements AutoCloseable {
 
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
-    final ConcurrentHashMap<Long, RID> parallelDeferredInHead = new ConcurrentHashMap<>();
-    final ConcurrentHashMap<Long, RID> parallelInChunkCache = new ConcurrentHashMap<>();
+
+    // One local (non-concurrent) head-pointer map pair per scheduled bucket task, keyed by bucket id.
+    // Each bucket's vertexKeys are disjoint from every other bucket's (vertexKey encodes the
+    // destination bucket id), and a bucket runs on exactly one thread at a time - including across its
+    // own internal CME retries, which rerun connectIncomingEdgesRangeLocal from scratch into the SAME
+    // local maps - so no synchronization is needed for these. They are merged into the class-level,
+    // NOT-thread-safe deferredInHead/inChunkRIDCache only in the single-threaded pass below, and only
+    // for buckets that are actually in completedIncomingBuckets: a bucket that exhausts its retries
+    // must not poison the authoritative state with RIDs from its rolled-back transaction, which a
+    // subsequent retry of connectDeferredIncomingEdges() would then dereference and crash on (issue
+    // #5950 review cycle 3).
+    final Map<Integer, Map<Long, RID>> bucketDeferredInHead = new HashMap<>();
+    final Map<Integer, Map<Long, RID>> bucketInChunkCache = new HashMap<>();
 
     // Schedule each bucket as a transaction on its assigned async slot (bucket % parallelLevel).
     // Buckets assigned to the same slot run sequentially within that slot's thread, so
@@ -1469,21 +1720,50 @@ public class GraphBatch implements AutoCloseable {
       if (bucketCounts[b] == 0)
         continue;
 
+      // Already durably committed by a prior, partially-failed attempt at this drain - skip
+      // rescheduling it so a retry doesn't recommit it (issue #5950 review cycle 3).
+      if (completedIncomingBuckets.contains(b))
+        continue;
+
       final int from = bucketOffsets[b];
       final int to = bucketOffsets[b + 1];
       final int slot = b % parallelLevel;
+      final int bucketId = b;
 
-      async.transaction(() -> connectIncomingEdgesRangeLocal(inSortIndex, from, to,
-              parallelDeferredInHead, parallelInChunkCache),
-          3, null, e -> error.compareAndSet(null, e), slot);
+      final Map<Long, RID> localDeferredInHead = new HashMap<>();
+      final Map<Long, RID> localInChunkCache = new HashMap<>();
+      bucketDeferredInHead.put(bucketId, localDeferredInHead);
+      bucketInChunkCache.put(bucketId, localInChunkCache);
+
+      // Mark the bucket complete from the transaction's OWN post-commit success callback, never from
+      // inside connectIncomingEdgesRangeLocal itself: that method runs BEFORE the surrounding commit
+      // and could still fail there, so only the OkCallback (fired strictly after database.commit()
+      // succeeds, see DatabaseAsyncTransaction.execute()) guarantees membership implies a durable
+      // commit (issue #5950 review cycle 3).
+      //
+      // The clear() makes each attempt start from an empty local map: async.transaction retries the same
+      // lambda on a ConcurrentModificationException, and a rolled-back attempt's entries point at records
+      // rollback undid (issue #5950 review cycle 4 - the retry does recompute and overwrite every entry
+      // for this fixed range, so this is belt-and-braces, but it removes the dependency on that argument).
+      async.transaction(() -> {
+            localDeferredInHead.clear();
+            localInChunkCache.clear();
+            connectIncomingEdgesRangeLocal(inSortIndex, from, to, localDeferredInHead, localInChunkCache);
+          },
+          3, () -> completedIncomingBuckets.add(bucketId), e -> error.compareAndSet(null, e), slot);
     }
 
     async.waitCompletion();
 
-    // Merge deferred head pointers back into the (non-concurrent) shared maps.
-    // putAll is unavailable on LongObjectHashMap by design; iterate and put.
-    parallelDeferredInHead.forEach(deferredInHead::put);
-    inChunkRIDCache.putAll(parallelInChunkCache);
+    // Merge deferred head pointers back into the (non-concurrent) shared maps, single-threaded here,
+    // and ONLY for buckets that durably committed (issue #5950 review cycle 3) - putAll is unavailable
+    // on LongObjectHashMap by design; iterate and put.
+    for (final Map.Entry<Integer, Map<Long, RID>> entry : bucketDeferredInHead.entrySet()) {
+      if (!completedIncomingBuckets.contains(entry.getKey()))
+        continue;
+      entry.getValue().forEach(deferredInHead::put);
+      bucketInChunkCache.get(entry.getKey()).forEach(inChunkRIDCache::put);
+    }
 
     final Throwable t = error.get();
     if (t != null)
@@ -1496,8 +1776,8 @@ public class GraphBatch implements AutoCloseable {
    * Each invocation runs within a single async slot's transaction.
    */
   private void connectIncomingEdgesRangeLocal(final int[] inSortIndex, final int from, final int to,
-      final ConcurrentHashMap<Long, RID> sharedDeferredInHead,
-      final ConcurrentHashMap<Long, RID> sharedInChunkCache) {
+      final Map<Long, RID> sharedDeferredInHead,
+      final Map<Long, RID> sharedInChunkCache) {
 
     // Local tmp arrays (not shared across threads)
     int tmpSize = 64;
@@ -1550,8 +1830,21 @@ public class GraphBatch implements AutoCloseable {
       EdgeSegment inChunk;
       boolean isNew;
       final RID cachedChunkRID = inChunkRIDCache.get(vertexKey);
+      // Checked unconditionally (not just for known-new vertices): a pre-existing vertex touched
+      // earlier in this batch is equally vulnerable to inChunkRIDCache eviction, and its on-disk head
+      // is stale mid-batch too (issue #5950 review, second sub-case).
+      final RID deferredChunkRID = cachedChunkRID == null ? deferredInHead.get(vertexKey) : null;
       if (cachedChunkRID != null) {
         inChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
+        isNew = false;
+      } else if (deferredChunkRID != null) {
+        // inChunkRIDCache entry was LRU-evicted: deferredInHead is unbounded and always authoritative
+        // for the current head, so reuse it instead of creating an unlinked duplicate segment (issue
+        // #5950 review: silent edge loss otherwise). Repopulate the cache so a vertex touched again
+        // later in this parallel round doesn't keep paying for the fallback lookup (issue #5950
+        // review cycle 3: minor cache-refresh consistency with the sequential path).
+        inChunkRIDCache.put(vertexKey, deferredChunkRID);
+        inChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (knownNewVertexKeys.contains(vertexKey)) {
         final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
@@ -1559,19 +1852,38 @@ public class GraphBatch implements AutoCloseable {
         isNew = true;
       } else {
         final MutableVertex dstVertex = ((Vertex) database.lookupByRID(new RID(dstBucket, dstPos), true)).modify();
-        // #5667: check for an already-promoted super-node BEFORE calling getOrCreateInEdgeChunk, with purely
+        // #5667: check for an already-promoted super-node BEFORE assuming a plain segment, with purely
         // local variables - this method runs concurrently across async-executor threads (one per bucket slot),
         // so signalling through a shared instance field (as the single-threaded sequential path does) would race.
         final RID dstHeadChunk = dstVertex.getInEdgesHeadChunk();
-        if (dstHeadChunk != null && database.lookupByRID(dstHeadChunk, true) instanceof StripeDirectory directory) {
-          // Route through StripedEdgeList and skip the bulk segment write below entirely.
-          addGroupThroughStripedEdgeList(dstVertex, Vertex.DIRECTION.IN, directory,
-              localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
-          i = j;
-          continue;
+        if (dstHeadChunk != null) {
+          final Record head = database.lookupByRID(dstHeadChunk, true);
+          if (head instanceof StripeDirectory directory) {
+            // Route through StripedEdgeList and skip the bulk segment write below entirely.
+            addGroupThroughStripedEdgeList(dstVertex, Vertex.DIRECTION.IN, directory,
+                localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
+            i = j;
+            continue;
+          }
+          // Existing, durable head chunk - safe to cache immediately, unlike a freshly created segment:
+          // this RID is already committed on disk, not pending in the current (possibly still-failing)
+          // transaction (issue #5950 review cycle 3).
+          inChunkRIDCache.put(vertexKey, dstHeadChunk);
+          inChunk = (EdgeSegment) head;
+          isNew = false;
+        } else {
+          // No segment yet: build in-memory only here, same as the knownNewVertexKeys branch above -
+          // NOT via getOrCreateInEdgeChunk(), which persists AND caches into the class-level
+          // inChunkRIDCache immediately. That eager cache write survives this bucket's transaction being
+          // rolled back on failure, so a retry that skips completed buckets but reschedules this one
+          // would still see the phantom RID and crash with RecordNotFoundException. Deferring to the
+          // isNew branch below persists through - and caches via - the per-bucket LOCAL map, merged into
+          // the shared caches only once this bucket's commit actually succeeds (issue #5950 review cycle
+          // 3), exactly mirroring the sequential path's getOrCreateInSegmentDeferred/persistNewSegment.
+          final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
+          inChunk = new MutableEdgeSegment(database, segmentSize);
+          isNew = true;
         }
-        inChunk = getOrCreateInEdgeChunk(dstVertex);
-        isNew = false;
       }
 
       final String edgeBucketName = database.getGraphEngine().getEdgesBucketName(dstBucket, Vertex.DIRECTION.IN);
@@ -1604,6 +1916,10 @@ public class GraphBatch implements AutoCloseable {
 
       i = j;
     }
+
+    // Fired right before the surrounding async.transaction commits this bucket's work (see
+    // DatabaseAsyncTransaction.execute()), so a test hook throwing here simulates that commit failing.
+    fireBeforeIncomingEdgeCommitHook();
   }
 
   /**
@@ -1739,7 +2055,22 @@ public class GraphBatch implements AutoCloseable {
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
     }
 
-    // For known-new vertices, skip loading — we know there's no existing segment
+    // outChunkRIDCache is LRU-bounded and may have already evicted this vertex's entry even though
+    // the vertex was already given a segment earlier in this batch (large batch, many other vertices
+    // touched in between) - both for a known-new vertex (whose on-disk head stays null until close())
+    // and for a pre-existing vertex (whose on-disk head, if any, predates this batch and is stale once
+    // this batch has overflowed it). deferredOutHead is unbounded for the whole batch and always
+    // reflects the vertex's true current head once touched, so it must be checked BEFORE falling back
+    // to knownNewVertexKeys / an on-disk read for either case (issue #5950 review, both sub-cases:
+    // a second, unlinked segment would otherwise silently orphan the earlier one's committed edges).
+    final RID deferredRID = deferredOutHead.get(vertexKey);
+    if (deferredRID != null) {
+      outChunkRIDCache.put(vertexKey, deferredRID);
+      lastSegmentIsNew = false;
+      return (EdgeSegment) database.lookupByRID(deferredRID, true);
+    }
+
+    // For known-new vertices with no deferred head yet, skip loading — we know there's no existing segment
     if (!knownNewVertexKeys.contains(vertexKey)) {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getOutEdgesHeadChunk();
@@ -1779,6 +2110,15 @@ public class GraphBatch implements AutoCloseable {
     if (cachedRID != null) {
       lastSegmentIsNew = false;
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
+    }
+
+    // See getOrCreateOutSegmentDeferred: deferredInHead must be checked unconditionally, before
+    // knownNewVertexKeys / an on-disk read, for both the known-new and pre-existing vertex cases.
+    final RID deferredRID = deferredInHead.get(vertexKey);
+    if (deferredRID != null) {
+      inChunkRIDCache.put(vertexKey, deferredRID);
+      lastSegmentIsNew = false;
+      return (EdgeSegment) database.lookupByRID(deferredRID, true);
     }
 
     if (!knownNewVertexKeys.contains(vertexKey)) {
@@ -2193,16 +2533,20 @@ public class GraphBatch implements AutoCloseable {
   /**
    * Partitions deferred incoming edges by destination bucket using counting sort.
    */
-  private int partitionIncomingByDestBucket(final int[] inSortIndex) {
+  /**
+   * @param count number of leading buffer rows to partition - the pinned drain prefix, not necessarily
+   *              {@link #inEdgeCount} (issue #5950 review cycle 4).
+   */
+  private int partitionIncomingByDestBucket(final int[] inSortIndex, final int count) {
     int maxBucket = 0;
-    for (int i = 0; i < inEdgeCount; i++)
+    for (int i = 0; i < count; i++)
       if (inDstBucketIds[i] > maxBucket)
         maxBucket = inDstBucketIds[i];
 
     ensureCountingSortArrays(maxBucket);
 
     Arrays.fill(bucketCounts, 0, maxBucket + 1, 0);
-    for (int i = 0; i < inEdgeCount; i++)
+    for (int i = 0; i < count; i++)
       bucketCounts[inDstBucketIds[i]]++;
 
     bucketOffsets[0] = 0;
@@ -2210,14 +2554,14 @@ public class GraphBatch implements AutoCloseable {
       bucketOffsets[b + 1] = bucketOffsets[b] + bucketCounts[b];
 
     System.arraycopy(bucketOffsets, 0, countingSortCursor, 0, maxBucket + 1);
-    for (int i = 0; i < inEdgeCount; i++) {
+    for (int i = 0; i < count; i++) {
       final int bucket = inDstBucketIds[i];
       inSortIndex[countingSortCursor[bucket]++] = i;
     }
 
     // Ensure merge temp buffer is large enough
-    if (mergeTmp.length < inEdgeCount / 2 + 1)
-      mergeTmp = new int[inEdgeCount / 2 + 1];
+    if (mergeTmp.length < count / 2 + 1)
+      mergeTmp = new int[count / 2 + 1];
 
     // Sort within each bucket by position
     for (int b = 0; b <= maxBucket; b++)
@@ -2247,8 +2591,22 @@ public class GraphBatch implements AutoCloseable {
 
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
-    final ConcurrentHashMap<Long, RID> parallelDeferredOutHead = new ConcurrentHashMap<>();
-    final ConcurrentHashMap<Long, RID> parallelOutChunkCache = new ConcurrentHashMap<>();
+
+    // One local head-pointer map pair per scheduled bucket, merged into the class-level maps only for
+    // buckets that durably committed - structurally identical to connectIncomingEdgesParallel (issue
+    // #5950 review cycle 4). Two distinct pre-commit-write hazards make this necessary here too:
+    //   1. async.transaction(..., 3, ...) retries the SAME lambda on a ConcurrentModificationException,
+    //      re-invoking connectOutEdgesRangeLocal over the same range after a rollback. Anything the
+    //      failed attempt wrote into a class-level map still points at records that rollback undid, and
+    //      the retry reads those maps FIRST - dereferencing a RID that was never made durable.
+    //   2. A bucket that exhausts its 3 retries would otherwise still have its entries merged below,
+    //      poisoning deferredOutHead - the authoritative head-chunk fallback the review-cycle-1/2 fix
+    //      depends on - for the whole rest of the batch.
+    // Unlike the IN side this set is method-local, not an instance field: a failed flush() drops the
+    // outgoing buffer outright (see flush()'s catch block), so there is no cross-call resume to support.
+    final Map<Integer, Map<Long, RID>> bucketDeferredOutHead = new HashMap<>();
+    final Map<Integer, Map<Long, RID>> bucketOutChunkCache = new HashMap<>();
+    final Set<Integer> completedOutgoingBuckets = ConcurrentHashMap.newKeySet();
 
     for (int b = 0; b <= maxBucket; b++) {
       if (bucketCounts[b] == 0)
@@ -2257,18 +2615,33 @@ public class GraphBatch implements AutoCloseable {
       final int from = bucketOffsets[b];
       final int to = bucketOffsets[b + 1];
       final int slot = b % parallelLevel;
+      final int bucketId = b;
 
-      async.transaction(() -> connectOutEdgesRangeLocal(edgeRIDs, from, to,
-              parallelDeferredOutHead, parallelOutChunkCache),
-          3, null, e -> error.compareAndSet(null, e), slot);
+      // Re-created per attempt inside the lambda, not captured from here: a CME retry must not inherit
+      // the rolled-back attempt's entries (issue #5950 review cycle 4, hazard 1 above).
+      final Map<Long, RID> localDeferredOutHead = new HashMap<>();
+      final Map<Long, RID> localOutChunkCache = new HashMap<>();
+      bucketDeferredOutHead.put(bucketId, localDeferredOutHead);
+      bucketOutChunkCache.put(bucketId, localOutChunkCache);
+
+      async.transaction(() -> {
+            localDeferredOutHead.clear();
+            localOutChunkCache.clear();
+            connectOutEdgesRangeLocal(edgeRIDs, from, to, localDeferredOutHead, localOutChunkCache);
+          },
+          3, () -> completedOutgoingBuckets.add(bucketId), e -> error.compareAndSet(null, e), slot);
     }
 
     async.waitCompletion();
 
-    // Merge deferred head pointers back into the (non-concurrent) shared maps.
-    // putAll is unavailable on LongObjectHashMap by design; iterate and put.
-    parallelDeferredOutHead.forEach(deferredOutHead::put);
-    outChunkRIDCache.putAll(parallelOutChunkCache);
+    // Merge deferred head pointers back into the (non-concurrent) shared maps, single-threaded here, and
+    // ONLY for buckets that durably committed - putAll is unavailable on LongObjectHashMap by design.
+    for (final Map.Entry<Integer, Map<Long, RID>> entry : bucketDeferredOutHead.entrySet()) {
+      if (!completedOutgoingBuckets.contains(entry.getKey()))
+        continue;
+      entry.getValue().forEach(deferredOutHead::put);
+      bucketOutChunkCache.get(entry.getKey()).forEach(outChunkRIDCache::put);
+    }
 
     final Throwable t = error.get();
     if (t != null)
@@ -2280,8 +2653,8 @@ public class GraphBatch implements AutoCloseable {
    * Uses fill-then-persist for new segments and vectorized writes for existing ones.
    */
   private void connectOutEdgesRangeLocal(final RID[] edgeRIDs, final int from, final int to,
-      final ConcurrentHashMap<Long, RID> sharedDeferredOutHead,
-      final ConcurrentHashMap<Long, RID> sharedOutChunkCache) {
+      final Map<Long, RID> sharedDeferredOutHead,
+      final Map<Long, RID> sharedOutChunkCache) {
 
     int tmpSize = 64;
     int[] localTmpEdgeBucketIds = new int[tmpSize];
@@ -2333,8 +2706,21 @@ public class GraphBatch implements AutoCloseable {
       EdgeSegment outChunk;
       boolean isNew;
       final RID cachedChunkRID = outChunkRIDCache.get(vertexKey);
+      // Checked unconditionally (not just for known-new vertices): a pre-existing vertex touched
+      // earlier in this batch is equally vulnerable to outChunkRIDCache eviction, and its on-disk head
+      // is stale mid-batch too (issue #5950 review, second sub-case).
+      final RID deferredChunkRID = cachedChunkRID == null ? deferredOutHead.get(vertexKey) : null;
       if (cachedChunkRID != null) {
         outChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
+        isNew = false;
+      } else if (deferredChunkRID != null) {
+        // outChunkRIDCache entry was LRU-evicted: deferredOutHead is unbounded and always authoritative
+        // for the current head, so reuse it instead of creating an unlinked duplicate segment (issue
+        // #5950 review: silent edge loss otherwise). Repopulate the cache so a vertex touched again
+        // later in this parallel round doesn't keep paying for the fallback lookup (issue #5950
+        // review cycle 3: minor cache-refresh consistency with the sequential path).
+        outChunkRIDCache.put(vertexKey, deferredChunkRID);
+        outChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (knownNewVertexKeys.contains(vertexKey)) {
         final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
@@ -2342,17 +2728,35 @@ public class GraphBatch implements AutoCloseable {
         isNew = true;
       } else {
         final MutableVertex srcVertex = ((Vertex) database.lookupByRID(new RID(srcBucket, srcPos), true)).modify();
-        // #5667: see connectIncomingEdgesRangeLocal - check locally BEFORE calling getOrCreateOutEdgeChunk;
-        // this method runs concurrently across async-executor threads, so a shared instance field would race.
+        // #5667: check locally for an already-promoted super-node BEFORE assuming a plain segment; this
+        // method runs concurrently across async-executor threads, so a shared instance field would race.
         final RID srcHeadChunk = srcVertex.getOutEdgesHeadChunk();
-        if (srcHeadChunk != null && database.lookupByRID(srcHeadChunk, true) instanceof StripeDirectory directory) {
-          addGroupThroughStripedEdgeList(srcVertex, Vertex.DIRECTION.OUT, directory,
-              localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
-          i = j;
-          continue;
+        if (srcHeadChunk != null) {
+          final Record head = database.lookupByRID(srcHeadChunk, true);
+          if (head instanceof StripeDirectory directory) {
+            addGroupThroughStripedEdgeList(srcVertex, Vertex.DIRECTION.OUT, directory,
+                localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
+            i = j;
+            continue;
+          }
+          // Existing, durable head chunk - already committed on disk, so caching it immediately is safe
+          // even if this bucket's transaction later rolls back (issue #5950 review cycle 4).
+          outChunkRIDCache.put(vertexKey, srcHeadChunk);
+          outChunk = (EdgeSegment) head;
+          isNew = false;
+        } else {
+          // No segment yet: build in-memory only, same as the knownNewVertexKeys branch above - NOT via
+          // getOrCreateOutEdgeChunk(), which persists the segment AND writes it into the class-level
+          // outChunkRIDCache before this bucket's transaction commits. That eager write survives a
+          // rollback, so the async CME retry (or any later flush) would read a RID belonging to a
+          // rolled-back transaction and fail with RecordNotFoundException. Falling through to the isNew
+          // branch below routes the write through the per-bucket LOCAL maps, merged into the shared state
+          // only once this bucket's commit actually succeeds (issue #5950 review cycle 4), mirroring what
+          // connectIncomingEdgesRangeLocal already does for the IN direction.
+          final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
+          outChunk = new MutableEdgeSegment(database, segmentSize);
+          isNew = true;
         }
-        outChunk = getOrCreateOutEdgeChunk(srcVertex);
-        isNew = false;
       }
 
       final String edgeBucketName = database.getGraphEngine().getEdgesBucketName(srcBucket, Vertex.DIRECTION.OUT);
@@ -2384,6 +2788,12 @@ public class GraphBatch implements AutoCloseable {
 
       i = j;
     }
+
+    // Fired right before the surrounding async.transaction commits this bucket's work, so a test hook
+    // throwing here simulates that commit failing (issue #5950 review cycle 4).
+    final IntConsumer hook = TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK;
+    if (hook != null)
+      hook.accept(outgoingEdgeCommitAttempt.incrementAndGet());
   }
 
   // ---------------------------------------------------------------------------
@@ -2522,6 +2932,8 @@ public class GraphBatch implements AutoCloseable {
     private boolean            parallelFlush         = true;
     private int                commitRetries         = 10;
     private long               commitRetryDelayMs    = 1000;
+    private int                chunkCacheCapacity       = DEFAULT_CHUNK_CACHE_CAPACITY;
+    private int                maxDeferredIncomingEdges = DEFAULT_MAX_DEFERRED_INCOMING_EDGES;
 
     Builder(final DatabaseInternal database, final LocalDatabase guardOwner) {
       this.database = database;
@@ -2659,6 +3071,32 @@ public class GraphBatch implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Maximum number of entries retained in each of the OUT/IN head-chunk RID lookup caches (issue #5664).
+     * Both caches are pure accelerators - a miss falls back to loading the vertex's head chunk from disk - so
+     * bounding them with an LRU keeps memory flat on a long-lived stream instead of growing with the number of
+     * distinct vertices touched. Default: 1,000,000 (roughly 100-150 MB per cache).
+     */
+    public Builder withChunkCacheCapacity(final int chunkCacheCapacity) {
+      if (chunkCacheCapacity <= 0)
+        throw new IllegalArgumentException("Chunk cache capacity must be > 0");
+      this.chunkCacheCapacity = chunkCacheCapacity;
+      return this;
+    }
+
+    /**
+     * Maximum number of buffered deferred incoming edges before the incoming-edge connection pass that
+     * {@link #close()} would otherwise run alone runs early, from {@link #flush()} (issue #5664). This
+     * amortizes the cost over the load instead of paying it in one unbounded pass at close time. Default:
+     * 5,000,000. Set to 0 to defer everything to close(), matching pre-#5664 behavior (unbounded buffer growth).
+     */
+    public Builder withMaxDeferredIncomingEdges(final int maxDeferredIncomingEdges) {
+      if (maxDeferredIncomingEdges < 0)
+        throw new IllegalArgumentException("Max deferred incoming edges must be >= 0");
+      this.maxDeferredIncomingEdges = maxDeferredIncomingEdges;
+      return this;
+    }
+
     public GraphBatch build() {
       int effectiveBatchSize = batchSize;
       if (!batchSizeExplicit && expectedEdgeCount > 0)
@@ -2689,7 +3127,7 @@ public class GraphBatch implements AutoCloseable {
       try {
         return new GraphBatch(database, guardOwner, effectiveBatchSize, edgeListInitialSize, lightEdges,
             bidirectional, effectiveCommitEvery, effectiveUseWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
-            commitRetries, commitRetryDelayMs);
+            commitRetries, commitRetryDelayMs, chunkCacheCapacity, maxDeferredIncomingEdges);
       } catch (final RuntimeException | Error e) {
         if (guardOwner != null)
           guardOwner.batchFinished();
