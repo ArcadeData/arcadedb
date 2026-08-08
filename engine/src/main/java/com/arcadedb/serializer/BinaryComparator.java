@@ -321,16 +321,37 @@ public class BinaryComparator {
 
   /**
    * Widens to whichever precision the string's own format needs - {@code double} for a fractional/exponent
-   * literal, {@code long} otherwise - so an integral string is compared without the precision loss a double
-   * round-trip would introduce for large longs, and a fractional string doesn't hard-fail a {@code long} parse.
+   * literal or one of the {@code Double} special values, {@code long} otherwise - so an integral string is
+   * compared without the precision loss a double round-trip would introduce for large longs, and a fractional
+   * string doesn't hard-fail a {@code long} parse. {@code value1} is always integral here: this helper is only
+   * reached from {@link #compareNarrowIntegral} and {@link #compareWideningLong}, both of which declare
+   * {@code value1} as {@code INT}/{@code SHORT}/{@code BYTE}/{@code LONG}.
    * <p>
-   * A numeric string outside both {@code long} and {@code double} range (e.g. 20+ integral digits) still throws
-   * an uncaught {@code NumberFormatException} rather than degrading gracefully; tracked as #5945.
+   * An integral string outside {@code long}'s range (e.g. 20+ digits, issue #5945) falls back to
+   * {@link BigDecimal}, which compares it exactly rather than losing precision through a {@code double}
+   * round-trip. The same catch also covers a string that isn't numeric at all (e.g. {@code "abc"}): the
+   * {@code BigDecimal} constructor throws its own {@code NumberFormatException} for that case, so behaviour is
+   * unchanged there, this method has never guaranteed a result for a non-numeric string.
    */
   private static int compareAgainstNumericString(final Number value1, final String string) {
+    switch (string) {
+    case "NaN":
+    case "+NaN":
+    case "-NaN":
+    case "Infinity":
+    case "+Infinity":
+    case "-Infinity":
+      return Double.compare(value1.doubleValue(), Double.parseDouble(string));
+    }
+
     if (string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0)
       return Double.compare(value1.doubleValue(), Double.parseDouble(string));
-    return Long.compare(value1.longValue(), Long.parseLong(string));
+
+    try {
+      return Long.compare(value1.longValue(), Long.parseLong(string));
+    } catch (final NumberFormatException e) {
+      return BigDecimal.valueOf(value1.longValue()).compareTo(new BigDecimal(string));
+    }
   }
 
   public int compareBytes(final byte[] buffer1, final Binary buffer2) {
