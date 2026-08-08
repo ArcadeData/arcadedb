@@ -57,10 +57,11 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // which the old `(char) b` per-byte widening corrupted instead of decoding.
     final String valueText = "héllo wörld 日本語 😀";
 
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
-    jedis.auth(USER, PASSWORD);
-    jedis.set("utf8Key", valueText);
-    assertThat(jedis.get("utf8Key")).isEqualTo(valueText);
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      jedis.auth(USER, PASSWORD);
+      jedis.set("utf8Key", valueText);
+      assertThat(jedis.get("utf8Key")).isEqualTo(valueText);
+    }
   }
 
   @Test
