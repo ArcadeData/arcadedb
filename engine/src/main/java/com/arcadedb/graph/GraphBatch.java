@@ -234,6 +234,15 @@ public class GraphBatch implements AutoCloseable {
   private final boolean savedReadYourWrites;
   private final boolean savedUseWAL;
   private final WALFile.FlushType savedWALFlush;
+  // Async executor WAL policy, relaxed/restored ONCE for the whole batch instead of once per flush
+  // (issue #5665): DatabaseAsyncExecutorImpl tears down and respawns its entire worker pool on every
+  // setTransactionUseWAL()/setTransactionSync() call, so applying the relaxed policy around every
+  // flush's parallel connect phase recreated every async worker thread on every flush - killing any
+  // concurrent async work on this database (an unrelated caller's in-flight/queued tasks force-exited
+  // with "Async executor has been shut down") and, on a large multi-flush bulk load, doing so tens of
+  // thousands of times. Meaningful only when parallelFlush is true; unused (false/null) otherwise.
+  private final boolean            savedAsyncUseWAL;
+  private final WALFile.FlushType  savedAsyncWALFlush;
 
   private GraphBatch(final DatabaseInternal database, final LocalDatabase guardOwner, final int batchSize,
       final int edgeListInitialSize,
@@ -313,6 +322,43 @@ public class GraphBatch implements AutoCloseable {
       LogManager.instance().log(this, Level.INFO,
           "GraphBatch: relaxing durability for the bulk load (useWAL %s->%s, walFlush %s->%s); the previous settings are "
               + "restored on close()", savedUseWAL, this.useWAL, savedWALFlush, this.walFlush);
+
+    // Relax the shared async executor's WAL policy once, here, instead of once per flush (issue
+    // #5665; see the field javadoc on savedAsyncUseWAL). Guarded on an actual change because the
+    // setters below are not - each unconditionally tears down and respawns the worker pool.
+    if (parallelFlush) {
+      final DatabaseAsyncExecutor asyncExecutor = database.async();
+      final boolean           priorAsyncUseWAL   = asyncExecutor.isTransactionUseWAL();
+      final WALFile.FlushType priorAsyncWALFlush = asyncExecutor.getTransactionSync();
+      savedAsyncUseWAL = priorAsyncUseWAL;
+      savedAsyncWALFlush = priorAsyncWALFlush;
+
+      final boolean asyncWALChanged   = priorAsyncUseWAL != this.useWAL;
+      final boolean asyncFlushChanged = priorAsyncWALFlush != this.walFlush;
+
+      if (asyncWALChanged)
+        asyncExecutor.setTransactionUseWAL(this.useWAL);
+      try {
+        if (asyncFlushChanged)
+          asyncExecutor.setTransactionSync(this.walFlush);
+      } catch (final RuntimeException e) {
+        // The constructor never completes on this path, so no instance exists afterwards to call
+        // restoreAsyncSettings() - undo the first setter here or the async executor's WAL policy
+        // stays relaxed forever for every other caller on this database.
+        if (asyncWALChanged)
+          asyncExecutor.setTransactionUseWAL(priorAsyncUseWAL);
+        throw e;
+      }
+
+      if (asyncWALChanged || asyncFlushChanged)
+        LogManager.instance().log(this, Level.INFO,
+            "GraphBatch: relaxing async executor durability for the bulk load (useWAL %s->%s, walFlush %s->%s); the "
+                + "previous settings are restored on close()/abandon()", priorAsyncUseWAL, this.useWAL, priorAsyncWALFlush,
+            this.walFlush);
+    } else {
+      savedAsyncUseWAL = false;
+      savedAsyncWALFlush = null;
+    }
   }
 
   /**
@@ -987,11 +1033,16 @@ public class GraphBatch implements AutoCloseable {
    * <p>
    * The read-your-writes policy is database wide and was relaxed for the load, so it is put back here: a
    * batch that ends this way is never closed and would otherwise leave every later reader on that database
-   * unable to see its own writes. The WAL policy is not, because it lives on the {@code TransactionContext}
-   * of the thread that opened the batch and this method is expected to run on another one.
+   * unable to see its own writes. The per-thread transaction WAL policy is not, because it lives on the
+   * {@code TransactionContext} of the thread that opened the batch and this method is expected to run on
+   * another one. The async executor's WAL policy (issue #5665) IS restored here: unlike the per-thread
+   * one, it is database-wide and, when {@code parallelFlush} is true, was already relaxed at construction
+   * regardless of whether any flush ever ran - leaving it behind would permanently downgrade durability
+   * for every other async caller on this database.
    */
   public void abandon() {
     database.setReadYourWrites(savedReadYourWrites);
+    restoreAsyncSettings();
     releaseBatchGuard();
   }
 
@@ -1011,6 +1062,7 @@ public class GraphBatch implements AutoCloseable {
    */
   private void restoreDatabaseSettings() {
     database.setReadYourWrites(savedReadYourWrites);
+    restoreAsyncSettings();
 
     // If the thread still has no TransactionContext (the batch never began a transaction), nothing leaked.
     final TransactionContext tx = database.getTransactionIfExists();
@@ -1021,6 +1073,35 @@ public class GraphBatch implements AutoCloseable {
 
     LogManager.instance().log(this, Level.FINE, "GraphBatch: restored WAL settings useWAL=%s walFlush=%s", savedUseWAL,
         savedWALFlush);
+  }
+
+  /**
+   * Puts back the async executor's WAL policy relaxed once at construction for {@code parallelFlush}
+   * (issue #5665). Guarded on an actual change for the same reason as the constructor: the setters are
+   * not, so calling them unconditionally would tear down and respawn the worker pool for nothing. A
+   * no-op when {@code parallelFlush} is false (the policy was never touched) or when called twice
+   * (idempotent: {@link #abandon()} and {@link #close()} can both reach this).
+   */
+  private void restoreAsyncSettings() {
+    if (!parallelFlush)
+      return;
+
+    final DatabaseAsyncExecutor asyncExecutor = database.async();
+    final boolean           currentAsyncUseWAL   = asyncExecutor.isTransactionUseWAL();
+    final WALFile.FlushType currentAsyncWALFlush = asyncExecutor.getTransactionSync();
+
+    final boolean walChanged = currentAsyncUseWAL != savedAsyncUseWAL;
+    final boolean flushChanged = currentAsyncWALFlush != savedAsyncWALFlush;
+
+    if (walChanged)
+      asyncExecutor.setTransactionUseWAL(savedAsyncUseWAL);
+    if (flushChanged)
+      asyncExecutor.setTransactionSync(savedAsyncWALFlush);
+
+    if (walChanged || flushChanged)
+      LogManager.instance().log(this, Level.INFO,
+          "GraphBatch: restored async executor durability (useWAL %s->%s, walFlush %s->%s)", currentAsyncUseWAL,
+          savedAsyncUseWAL, currentAsyncWALFlush, savedAsyncWALFlush);
   }
 
   /**
@@ -1372,11 +1453,9 @@ public class GraphBatch implements AutoCloseable {
   }
 
   private void connectIncomingEdgesParallel(final int[] inSortIndex, final int maxBucket) {
+    // The async executor's WAL policy is relaxed once for the whole batch in the constructor and
+    // restored once in restoreAsyncSettings(), not around every parallel phase (issue #5665).
     final DatabaseAsyncExecutor async = database.async();
-    final boolean savedAsyncWAL = async.isTransactionUseWAL();
-    final WALFile.FlushType savedAsyncSync = async.getTransactionSync();
-    async.setTransactionUseWAL(useWAL);
-    async.setTransactionSync(walFlush);
 
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
@@ -1400,8 +1479,6 @@ public class GraphBatch implements AutoCloseable {
     }
 
     async.waitCompletion();
-    async.setTransactionUseWAL(savedAsyncWAL);
-    async.setTransactionSync(savedAsyncSync);
 
     // Merge deferred head pointers back into the (non-concurrent) shared maps.
     // putAll is unavailable on LongObjectHashMap by design; iterate and put.
@@ -2164,11 +2241,9 @@ public class GraphBatch implements AutoCloseable {
   // ---------------------------------------------------------------------------
 
   private void connectOutgoingEdgesParallel(final RID[] edgeRIDs, final int maxBucket) {
+    // The async executor's WAL policy is relaxed once for the whole batch in the constructor and
+    // restored once in restoreAsyncSettings(), not around every parallel phase (issue #5665).
     final DatabaseAsyncExecutor async = database.async();
-    final boolean savedAsyncWAL = async.isTransactionUseWAL();
-    final WALFile.FlushType savedAsyncSync = async.getTransactionSync();
-    async.setTransactionUseWAL(useWAL);
-    async.setTransactionSync(walFlush);
 
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
@@ -2189,8 +2264,6 @@ public class GraphBatch implements AutoCloseable {
     }
 
     async.waitCompletion();
-    async.setTransactionUseWAL(savedAsyncWAL);
-    async.setTransactionSync(savedAsyncSync);
 
     // Merge deferred head pointers back into the (non-concurrent) shared maps.
     // putAll is unavailable on LongObjectHashMap by design; iterate and put.
