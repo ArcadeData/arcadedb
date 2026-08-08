@@ -327,6 +327,12 @@ jobs:
   ha-integration-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
+    # Safety net for issue #5973: a stuck Raft reconfiguration made a probe's RaftClient retry
+    # unboundedly (no sleep) inside a single blocking call, livelocking the job for the full GitHub
+    # Actions 6-hour default cap. The retry itself is now bounded (see KubernetesAutoJoin), but this
+    # keeps any future hang from silently eating a runner for hours: normal runs finish in well under
+    # 60 minutes.
+    timeout-minutes: 90
     permissions:
       contents: read
       checks: write

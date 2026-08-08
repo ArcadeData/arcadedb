@@ -22,6 +22,7 @@ import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.retry.RetryPolicies;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
@@ -140,5 +141,19 @@ class KubernetesAutoJoinRetryTest {
     assertThat(result).isEqualTo(KubernetesAutoJoin.Outcome.INTERRUPTED);
     // The interrupt flag must be restored for the owning thread's shutdown handling.
     assertThat(Thread.interrupted()).isTrue(); // also clears it so it does not leak into other tests
+  }
+
+  @Test
+  void probeRetryPolicyIsBoundedNotUnboundedDefault() {
+    // Regression for issue #5973: RaftClient.Builder falls back to RetryPolicies.retryForeverNoSleep()
+    // when no policy is set explicitly. A setConfiguration ADD racing an in-flight reconfiguration on
+    // the peer fails fast with ReconfigurationInProgressException - a synchronous rejection, not an RPC
+    // that can time out - so an unbounded no-sleep policy spins inside a single blocking
+    // admin().setConfiguration() call as fast as the JVM can throw/catch/log, forever. This is exactly
+    // what happened in CI: the probe hammered a permanently-stuck reconfiguration for 5.5 hours straight
+    // (a 41GB log of the identical exception) until GitHub Actions' 6-hour job cap force-killed it. The
+    // probe client must always set a bounded policy so a stuck reconfiguration fails fast instead.
+    assertThat(KubernetesAutoJoin.PROBE_RETRY_POLICY).isInstanceOf(RetryPolicies.RetryLimited.class);
+    assertThat(((RetryPolicies.RetryLimited) KubernetesAutoJoin.PROBE_RETRY_POLICY).getMaxAttempts()).isEqualTo(5);
   }
 }
