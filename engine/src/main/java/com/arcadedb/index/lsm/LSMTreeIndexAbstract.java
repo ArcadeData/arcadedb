@@ -405,20 +405,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected Object[] convertKeys(final Object[] keys, final byte[] keyTypes) {
+    // Declared-type narrowing AND case-insensitive folding both happen here; this layers only the disk-storage
+    // byte[]-for-String probe encoding on top, so a case-insensitive String is never folded twice.
     final Object[] convertedKeys = convertKeysToDeclaredTypes(keys, keyTypes);
     if (convertedKeys == null)
       return null;
 
     for (int i = 0; i < convertedKeys.length; ++i) {
-      if (convertedKeys[i] instanceof String string) {
-        // Apply case-insensitive collation: lowercase before storing/searching (already applied by
-        // convertKeysToDeclaredTypes() above, but toLowerCase() on an already-lowercase String is a no-op, and
-        // keeping the check here documents that BOTH methods must fold before a String reaches its own encoding)
-        if (caseInsensitiveKeys != null && i < caseInsensitiveKeys.length && caseInsensitiveKeys[i])
-          string = string.toLowerCase(Locale.ROOT);
+      if (convertedKeys[i] instanceof String string)
         // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
         convertedKeys[i] = string.getBytes(DatabaseFactory.getDefaultCharset());
-      }
     }
     return convertedKeys;
   }
