@@ -151,6 +151,14 @@ public class JSONImporterFormat implements FormatImporter {
       // TRANSACTION - THE SAME TRANSACTION BOUNDARY database.rollback() BELOW ALREADY USES.
       final AtomicBoolean recordFailed = new AtomicBoolean();
 
+      // createRecord()/convertMap() COUNT A NEW DOCUMENT/VERTEX/EDGE AS SOON AS IT IS ALLOCATED - WELL BEFORE ITS
+      // PROPERTIES ARE SET, IT IS save()D, OR THIS TRANSACTION COMMITS, ANY OF WHICH CAN STILL FAIL. SNAPSHOT THE
+      // COUNTERS SO A ROLLED-BACK RECORD (TOP-LEVEL OR NESTED) CAN HAVE ITS COUNTS UNDONE BELOW INSTEAD OF LEAKING
+      // INTO THE REPORTED SUMMARY.
+      final long createdDocumentsBefore = context.createdDocuments.get();
+      final long createdVerticesBefore = context.createdVertices.get();
+      final long createdEdgesBefore = context.createdEdges.get();
+
       try {
         final Object record = parseRecord(reader, settings, context, database, mappingObject, ignore, recordFailed);
         if (recordFailed.get())
@@ -163,6 +171,10 @@ public class JSONImporterFormat implements FormatImporter {
       } catch (final RuntimeException e) {
         if (database.isTransactionActive())
           database.rollback();
+
+        context.createdDocuments.set(createdDocumentsBefore);
+        context.createdVertices.set(createdVerticesBefore);
+        context.createdEdges.set(createdEdgesBefore);
 
         if (!settings.isSkipOnRowError())
           throw e;
@@ -236,10 +248,10 @@ public class JSONImporterFormat implements FormatImporter {
         // A Type/schema conversion error from createRecord() (called by the recursive parseRecord() AFTER its own
         // reader.endObject() already ran) must be caught HERE, at the call site, not left to unwind through THIS
         // object's own while loop: by the time it is caught in parseRecords() the outer reader.endObject() below
-        // would have been skipped, desyncing the stream for the rest of the array (see #5974 review). Setting
-        // recordFailed (instead of just swallowing the error) makes parseRecords() discard the WHOLE enclosing
-        // top-level record via its normal rollback path, since a nested record can already have a bucket write that
-        // only a full transaction rollback can safely undo (see #5974 review, round 2).
+        // would have been skipped, desyncing the stream for the rest of the array. Setting recordFailed (instead of
+        // just swallowing the error) makes parseRecords() discard the WHOLE enclosing top-level record via its
+        // normal rollback path, since a nested record can already have a bucket write that only a full transaction
+        // rollback can safely undo.
         try {
           attributeValue = parseRecord(reader, settings, context, database, mappingObject, ignoreObject, recordFailed);
         } catch (final RuntimeException e) {

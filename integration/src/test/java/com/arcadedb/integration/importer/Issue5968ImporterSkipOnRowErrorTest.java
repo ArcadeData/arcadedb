@@ -258,11 +258,11 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
-   * Regression test for the PR #5974 review finding (round 4, "Confirmed"): a failure that surfaces AFTER the bucket
-   * write - a duplicate value on the unique index {@code loadVertices} auto-creates on {@code -typeIdProperty} -
-   * used to leave a "ghost" vertex: present in the bucket (inflating {@code countType()}) but never indexed, because
-   * the whole file shared one transaction that only got rolled back on total abort, never on a per-row skip. Each
-   * vertex now commits in its own transaction in skip mode, so a duplicate key rolls back only that one row.
+   * A failure that surfaces AFTER the bucket write - a duplicate value on the unique index {@code loadVertices}
+   * auto-creates on {@code -typeIdProperty} - must not leave a "ghost" vertex: present in the bucket (inflating
+   * {@code countType()}) but never indexed, because the whole file shared one transaction that only got rolled back
+   * on total abort, never on a per-row skip. Each vertex commits in its own transaction in skip mode, so a duplicate
+   * key rolls back only that one row.
    */
   @Test
   void csvVertexImportRollsBackGhostRecordOnDuplicateKeyWhenOptedIn() {
@@ -280,6 +280,9 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
       final Map<String, Object> result = importer.load();
       assertThat(result.get("errors")).isEqualTo(1L);
+      // THE DUPLICATE IS ONLY DETECTED AT commit() TIME (AFTER save() ALREADY SUCCEEDED), SO createdVertices MUST
+      // ONLY BE INCREMENTED ONCE commit() ITSELF SUCCEEDS - OTHERWISE THIS WOULD OVERCOUNT TO 4.
+      assertThat(result.get("createdVertices")).isEqualTo(3L);
 
       try (final Database db = databaseFactory.open()) {
         // BOB'S DUPLICATE Id=2 ROW MUST LEAVE NO TRACE: NEITHER A SECOND INDEX ENTRY NOR AN UNINDEXED GHOST IN THE
@@ -320,6 +323,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
       final Map<String, Object> result = importer.load();
       assertThat(result.get("errors")).isEqualTo(1L);
+      assertThat(result.get("createdDocuments")).isEqualTo(3L);
 
       try (final Database db = databaseFactory.open()) {
         assertThat(db.countType("Widget2", true)).isEqualTo(3);
@@ -331,10 +335,10 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
-   * Regression test for the PR #5974 review finding: a Type/schema conversion error thrown from a NESTED mapped
-   * object (parsed via a recursive {@code parseRecord()} call, before the enclosing object's own {@code endObject()}
-   * runs) must not desync the {@code JsonReader} for the rest of the array. Each "Order" has a nested "customer"
-   * object independently mapped to its own document type with a {@code SHORT} property that overflows for Bob.
+   * A Type/schema conversion error thrown from a NESTED mapped object (parsed via a recursive {@code parseRecord()}
+   * call, before the enclosing object's own {@code endObject()} runs) must not desync the {@code JsonReader} for the
+   * rest of the array. Each "Order" has a nested "customer" object independently mapped to its own document type
+   * with a {@code SHORT} property that overflows for Bob.
    */
   private static final String NESTED_MAPPING = """
       {
@@ -402,12 +406,16 @@ class Issue5968ImporterSkipOnRowErrorTest {
       // THE NESTED catch SETS recordFailed BUT DOES NOT ITSELF INCREMENT context.errors: THE OUTER parseRecords()
       // CATCH IS THE SOLE INCREMENT POINT, SO THIS MUST BE EXACTLY 1, NOT JUST NON-NULL.
       assertThat(result.get("errors")).isEqualTo(1L);
+      // createRecord() COUNTS A NEW Order/Customer AS SOON AS IT IS ALLOCATED, BEFORE PROPERTIES ARE SET OR THE
+      // TRANSACTION COMMITS: BOB'S Order AND ITS NESTED Customer MUST BOTH BE EXCLUDED HERE (2 Orders + 2 Customers),
+      // NOT JUST ABSENT FROM THE DATABASE.
+      assertThat(result.get("createdDocuments")).isEqualTo(4L);
 
       try (final Database db = databaseFactory.open()) {
         // THE READER MUST NOT DESYNC AND SILENTLY DROP ORDER 3: BOB'S NESTED Customer FAILS, WHICH DISCARDS BOB'S
         // WHOLE Order TOO (A NESTED FAILURE CAN ONLY BE UNDONE BY ROLLING BACK THE ENCLOSING TOP-LEVEL RECORD'S OWN
-        // TRANSACTION - THE NESTED Customer MAY ALREADY HAVE A BUCKET WRITE THAT NOTHING ELSE CAN SAFELY UNDO - SEE
-        // #5974 REVIEW ROUND 2), BUT ALICE'S AND CAROL'S Orders (AND THEIR Customers) STILL GET CREATED NORMALLY.
+        // TRANSACTION - THE NESTED Customer MAY ALREADY HAVE A BUCKET WRITE THAT NOTHING ELSE CAN SAFELY UNDO), BUT
+        // ALICE'S AND CAROL'S Orders (AND THEIR Customers) STILL GET CREATED NORMALLY.
         assertThat(db.countType("Order", true)).isEqualTo(2);
         assertThat(db.countType("Customer", true)).isEqualTo(2);
       }

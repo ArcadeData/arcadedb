@@ -148,12 +148,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           }
 
           document.save();
-          context.createdDocuments.incrementAndGet();
 
           if (skipOnError) {
+            // COUNT ONLY AFTER commit() SUCCEEDS: A DUPLICATE-KEY VIOLATION IS ONLY DETECTED AT COMMIT TIME (SEE THE
+            // COMMENT ABOVE), SO INCREMENTING RIGHT AFTER save() WOULD OVERCOUNT A ROW THAT commit() THEN ROLLS BACK.
             database.commit();
+            context.createdDocuments.incrementAndGet();
             database.begin();
-          }
+          } else
+            context.createdDocuments.incrementAndGet();
         } catch (final RuntimeException e) {
           if (!skipOnError)
             throw e;
@@ -290,10 +293,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           if (skipOnError) {
             // EACH VERTEX COMMITS IN ITS OWN TRANSACTION (SEE THE COMMENT ABOVE AND loadDocuments()): A FAILURE THAT
             // SURFACES AFTER THE BUCKET WRITE (E.G. A DUPLICATE typeIdProperty VALUE, CAUGHT BY THE UNIQUE INDEX
-            // CREATED ABOVE) MUST ROLL BACK ONLY THIS ROW, NEVER A PREVIOUSLY COMMITTED ONE.
+            // CREATED ABOVE) MUST ROLL BACK ONLY THIS ROW, NEVER A PREVIOUSLY COMMITTED ONE. COUNT ONLY AFTER commit()
+            // SUCCEEDS, SINCE A DUPLICATE KEY IS ONLY DETECTED THERE, NOT IN save() (SAME REASONING AS loadDocuments()).
             v.save();
-            context.createdVertices.incrementAndGet();
             database.commit();
+            context.createdVertices.incrementAndGet();
             database.begin();
           } else
             database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
