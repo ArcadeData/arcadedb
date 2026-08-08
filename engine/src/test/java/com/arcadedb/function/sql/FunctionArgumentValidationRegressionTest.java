@@ -31,6 +31,7 @@ import java.util.Arrays;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.offset;
 
 /**
  * Regression test for #5884: calling one of the 43 listed SQL functions with too few arguments used to surface a raw JDK
@@ -89,6 +90,33 @@ class FunctionArgumentValidationRegressionTest extends TestHelper {
     assertThatCode(() -> consume("SELECT " + functionName + "() AS r")) //
         .as("%s() with no current vertex must return gracefully, not throw", functionName) //
         .doesNotThrowAnyException();
+  }
+
+  @Test
+  void aggregateProjectionDispatchPathStillWorksWithCorrectArguments() {
+    // FunctionAggregationContext (used for real GROUP BY aggregation, not just a no-FROM synthetic call) got its
+    // own checkArity() call alongside FunctionCall's. A call with the right argument count must still work through
+    // that path, not just through the no-FROM cases the other tests above exercise.
+    database.getSchema().createDocumentType("AggregateArityFixture");
+    database.transaction(() -> {
+      for (final int value : new int[] { 1, 2, 3, 4, 5 })
+        database.newDocument("AggregateArityFixture").set("value", value).save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT stddev(value) AS r FROM AggregateArityFixture")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((Double) rs.next().getProperty("r")).isCloseTo(Math.sqrt(2.5), offset(0.0001));
+    }
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT (value % 2) AS parity, count(*) AS c FROM AggregateArityFixture GROUP BY parity")) {
+      int rows = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        rows++;
+      }
+      assertThat(rows).isEqualTo(2);
+    }
   }
 
   @Test
