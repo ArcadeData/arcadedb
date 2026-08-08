@@ -215,6 +215,139 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
     assertThat(database.query("sql", "SELECT FROM Orphaned").stream().count()).isEqualTo(1);
   }
 
+  // ---------------------------------------------------------------------------------------------------------------
+  // 3b. Issue #5646: a DROP INDEX that leaves a partitioned type without its partition index is reported when it
+  //     happens, not only on the next open.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * The single-statement / auto-commit case: there is no enclosing transaction for the diagnosis to defer to, so it
+   * has to run immediately, exactly like the pre-#5646 {@code CREATE INDEX} side already does.
+   */
+  @Test
+  void dropIndexOnAnOrphanedPartitionIsReportedImmediatelyOutsideATransaction() {
+    createPartitionedType("Immediate");
+
+    final List<String> warnings = captureWarnings(() -> database.command("sql", "DROP INDEX `Immediate[k]`"));
+
+    assertThat(warnings)
+        .as("dropping the partition's only unique automatic index must say so right away, not wait for a restart")
+        .anyMatch(m -> m.contains("Immediate") && m.contains("unique automatic index"));
+  }
+
+  /**
+   * Inside an explicit transaction the diagnosis must wait for the commit: reporting mid-transaction would describe
+   * a state the transaction might still walk back from (recollating is exactly a DROP followed by a CREATE).
+   */
+  @Test
+  void dropIndexOnAnOrphanedPartitionInATransactionIsReportedOnCommit() {
+    createPartitionedType("Deferred");
+
+    // captureWarnings nests: the inner capture sees only what is logged while the DROP INDEX statement itself runs,
+    // the outer capture (which is still installed as the inner one's delegate) also sees everything logged
+    // afterwards, including at commit.
+    final List<String>[] midTransactionWarnings = new List[1];
+    final List<String> afterCommitWarnings = captureWarnings(() -> database.transaction(
+        () -> midTransactionWarnings[0] = captureWarnings(() -> database.command("sql", "DROP INDEX `Deferred[k]`"))));
+
+    assertThat(midTransactionWarnings[0])
+        .as("the diagnosis must not fire before the transaction that dropped the index commits")
+        .noneMatch(m -> m.contains("Deferred"));
+    assertThat(afterCommitWarnings)
+        .as("the blocker is reported once the transaction that dropped the index commits")
+        .anyMatch(m -> m.contains("Deferred") && m.contains("unique automatic index"));
+  }
+
+  /**
+   * The case the synchronous hook could not handle: DROP followed by a re-CREATE of the identical index in one
+   * transaction must settle quietly, the same way {@link #anIndexChangeThatChangesNothingStaysQuiet} already pins
+   * for the CREATE side. Driving it from the DROP side is what #5646 is about - this used to be silent only because
+   * DROP INDEX never reported anything at all, not because the settled state was correctly recognised as unchanged.
+   */
+  @Test
+  void dropThenRecreateInOneTransactionReportsOnlyTheSettledState() {
+    createPartitionedType("Recreated");
+
+    final List<String> warnings = captureWarnings(() -> database.transaction(() -> {
+      database.command("sql", "DROP INDEX `Recreated[k]`");
+      database.command("sql", "CREATE INDEX ON Recreated(k) UNIQUE");
+    }));
+
+    assertThat(warnings).as("re-creating the partition index unchanged is not worth a line, even driven from DROP")
+        .noneMatch(m -> m.contains("Recreated"));
+  }
+
+  /**
+   * {@code DROP TYPE} drops every one of the type's indexes (via the same {@code dropIndexInternal} the two tests
+   * above exercise) before removing the type itself from the schema. Without suppressing the report for that
+   * cascade, dropping a partitioned type would trigger the exact "no unique automatic index" blocker this issue
+   * fixes for {@code DROP INDEX} - except about a type that no longer exists by the time anyone reads it. Found by
+   * review on PR #5946: reusing the type-survives assertion style of the two tests above, driven from
+   * {@code DROP TYPE} outside a transaction, which is the immediate-report path and the one the fix's first
+   * attempt (an existence check made only at commit time) still missed.
+   */
+  @Test
+  void dropTypeOfAPartitionedTypeReportsNothingAboutTheTypeItJustRemoved() {
+    createPartitionedType("Vanishing");
+
+    final List<String> warnings = captureWarnings(() -> database.command("sql", "DROP TYPE Vanishing"));
+
+    assertThat(warnings)
+        .as("the type is gone by the time this report would be read - it must not be diagnosed at all")
+        .noneMatch(m -> m.contains("Vanishing"));
+    assertThat(database.getSchema().existsType("Vanishing")).isFalse();
+  }
+
+  /**
+   * The cross-statement variant: a {@code DROP INDEX} inside a transaction schedules the after-commit callback
+   * (the deferred case above), and a {@code DROP TYPE} of the same type later in the same transaction removes the
+   * type before that callback fires. This is what the existence re-check inside the deferred diagnosis itself
+   * (rather than only at scheduling time) is for.
+   */
+  @Test
+  void dropTypeAfterDropIndexInTheSameTransactionReportsNothing() {
+    createPartitionedType("VanishingDeferred");
+
+    final List<String> warnings = captureWarnings(() -> database.transaction(() -> {
+      database.command("sql", "DROP INDEX `VanishingDeferred[k]`");
+      database.command("sql", "DROP TYPE VanishingDeferred");
+    }));
+
+    assertThat(warnings)
+        .as("the DROP INDEX callback must not fire once the same transaction went on to drop the type entirely")
+        .noneMatch(m -> m.contains("VanishingDeferred"));
+  }
+
+  /**
+   * Found on review of this fix (PR #5946): {@code reportPartitionSuitabilityAfterSchemaChange()} schedules a
+   * callback bound to {@code this} - the {@code LocalDocumentType} instance live when the DROP INDEX ran.
+   * {@code CREATE TYPE} always builds a brand-new instance ({@code LocalSchema}, {@code case "d" ->}), so a
+   * DROP-then-CREATE of the same name in one transaction leaves the scheduled callback pointing at a stale,
+   * no-longer-registered object by the time it fires. A bare {@code schema.existsType(name)} re-check would have
+   * come back {@code true} anyway - off the *new* type sharing the name - and gone on to read the *old* instance's
+   * fields. Re-resolving the live type by name before reading anything is what closes that: the new type here is
+   * plain (round-robin, the default), so if the diagnosis were still reading the old, partitioned instance's
+   * fields, this would report; reading the live instance's, it must not.
+   */
+  @Test
+  void dropTypeThenRecreateWithTheSameNameInOneTransactionDiagnosesTheLiveInstance() {
+    createPartitionedType("VanishingRecreated");
+
+    final List<String> warnings = captureWarnings(() -> database.transaction(() -> {
+      database.command("sql", "DROP INDEX `VanishingRecreated[k]`");
+      database.command("sql", "DROP TYPE VanishingRecreated");
+      database.command("sql", "CREATE DOCUMENT TYPE VanishingRecreated");
+    }));
+
+    assertThat(warnings)
+        .as("the callback must diagnose the new, plain (round-robin) type actually registered under the name, "
+            + "not the dropped partitioned instance it was scheduled against")
+        .noneMatch(m -> m.contains("VanishingRecreated"));
+    assertThat(database.getSchema().getType("VanishingRecreated").getBucketSelectionStrategy().getName())
+        .as("sanity check that the recreated type really is the plain default, not still partitioned")
+        .isEqualTo("round-robin");
+  }
+
   /**
    * The same fault isolation, from the other direction: a strategy whose implementation class cannot be resolved at
    * all. Nothing about it is recoverable, but it must not take the rest of the schema down - the strategy block runs
