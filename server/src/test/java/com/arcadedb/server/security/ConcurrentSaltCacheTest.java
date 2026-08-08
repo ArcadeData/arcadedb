@@ -59,9 +59,10 @@ class ConcurrentSaltCacheTest {
   @Test
   void shouldNotOverflowInitialCapacityForVeryLargeMaxSize() {
     // A naive HashMap-style "maxSize / 0.75f" pre-sizing hint applied to a ConcurrentHashMap either
-    // wraps negative (rejected by the constructor) or, once clamped, forces an eager multi-GB
-    // Node[] allocation that OOMs before a single entry is ever inserted. The constructor must
-    // cap the pre-sized capacity instead of scaling it with maxSize.
+    // wraps negative (rejected by the constructor) or, once clamped, sizes ConcurrentHashMap's
+    // sizeCtl so large that its lazy table allocation (triggered by the first put()/get() call, not
+    // by the constructor) OOMs on a multi-GB Node[] array. The constructor must cap the pre-sized
+    // capacity instead of scaling it with maxSize.
     final ConcurrentSaltCache cache = new ConcurrentSaltCache(Integer.MAX_VALUE);
 
     cache.put("k1", "v1");
@@ -71,10 +72,14 @@ class ConcurrentSaltCacheTest {
 
   @Test
   void shouldConstructManyHugeCachesWithoutExhaustingMemory() {
-    // A per-instance eager allocation proportional to maxSize (the original bug) would exhaust
-    // heap well before 1,000 iterations; a bounded initial capacity completes instantly.
-    for (int i = 0; i < 1_000; i++)
-      new ConcurrentSaltCache(Integer.MAX_VALUE);
+    // ConcurrentHashMap allocates its backing table lazily on the first put()/get(), not in the
+    // constructor, so each iteration must insert an entry to actually trigger that allocation. A
+    // per-instance allocation proportional to maxSize (the original bug) would exhaust heap well
+    // before 1,000 iterations; a bounded initial capacity completes instantly.
+    for (int i = 0; i < 1_000; i++) {
+      final ConcurrentSaltCache cache = new ConcurrentSaltCache(Integer.MAX_VALUE);
+      cache.put("k", "v");
+    }
   }
 
   @Test

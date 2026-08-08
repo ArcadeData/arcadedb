@@ -45,7 +45,8 @@ public class ConcurrentSaltCache {
   // its own ~1.5x headroom internally (tableSizeFor(n + (n >>> 1) + 1)) - unlike HashMap, where the
   // argument is a bucket count and the caller must pre-divide by the load factor. Applying that
   // HashMap-only idiom here double-provisioned the table and, for maxSize near Integer.MAX_VALUE,
-  // forced an eager ~8GB Node[] allocation that OOMs before a single entry is ever inserted.
+  // sized ConcurrentHashMap's sizeCtl so large that its lazy table allocation - triggered by the
+  // first put()/get() call, not by this constructor - OOMs on a multi-GB Node[] array.
   //
   // The cache is FIFO-evicted down to maxSize by put() regardless of the map's starting capacity
   // (see the loop below), so pre-sizing for a theoretical maxSize far beyond any realistic number
