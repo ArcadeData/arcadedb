@@ -75,6 +75,18 @@ import java.util.logging.Level;
  *   <li>Lazy vertex loading: vertex only loaded from disk on segment overflow</li>
  * </ul>
  * <p>
+ * <b>Super-node promotion (#5667):</b> unlike the standard {@code Vertex.newEdge()} path, a bulk load through
+ * this class never promotes a hot vertex to the striped super-node layout (see
+ * {@link GlobalConfiguration#GRAPH_SUPERNODE_THRESHOLD}) - every vertex loaded here keeps the classic chained
+ * edge-list layout no matter how many edges land on it, so a very high-degree vertex ends up as a long chain of
+ * capped-size segments instead of being striped across a per-type bucket pool. If the graph already has
+ * promoted vertices (created through the standard API before this bulk load ran, or by disabling promotion
+ * only partway through a long-running import), this class resumes over them correctly - edges for an
+ * already-promoted vertex are routed through the same {@link StripedEdgeList} write path {@code Vertex.newEdge()}
+ * uses, at ordinary (non-bulk) speed - it just does not perform new promotions itself. Set
+ * {@code arcadedb.graph.supernodeThreshold=0} database-wide to disable promotion entirely if a bulk-loaded
+ * super-node's degraded traversal performance is a concern.
+ * <p>
  * Usage:
  * <pre>
  * try (final GraphBatch batch = database.batch()
@@ -1183,7 +1195,12 @@ public class GraphBatch implements AutoCloseable {
       // transaction wrote to it was declared replayable, and these bulk writes declare nothing - so a page this
       // path touched can never be rebased, even if the same transaction also drove EdgeLinkedList.add on it.
       // See docs/supernode.md §3.
-      if (lastSegmentIsNew) {
+      if (lastSegmentPromoted) {
+        // #5667: the vertex is already a promoted super-node - route this group through the standard,
+        // MVCC-safe StripedEdgeList write path instead of the bulk segment path.
+        addGroupThroughStripedEdgeList(lastPromotedVertex, Vertex.DIRECTION.OUT, lastPromotedDirectory,
+            tmpEdgeBucketIds, tmpEdgePositions, tmpVertexBucketIds, tmpVertexPositions, groupSize);
+      } else if (lastSegmentIsNew) {
         // New segment: fill FIRST, then persist ONCE (no updateRecord needed)
         outChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
             tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
@@ -1321,7 +1338,11 @@ public class GraphBatch implements AutoCloseable {
       final long vertexKey = packVertexKey(dstBucket, dstPos);
       final EdgeSegment inChunk = getOrCreateInSegmentDeferred(dstBucket, dstPos, vertexKey, totalBytesNeeded);
 
-      if (lastSegmentIsNew) {
+      if (lastSegmentPromoted) {
+        // #5667: the vertex is already a promoted super-node - route through StripedEdgeList.
+        addGroupThroughStripedEdgeList(lastPromotedVertex, Vertex.DIRECTION.IN, lastPromotedDirectory,
+            tmpEdgeBucketIds, tmpEdgePositions, tmpVertexBucketIds, tmpVertexPositions, groupSize);
+      } else if (lastSegmentIsNew) {
         // New segment: fill FIRST, then persist ONCE
         inChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
             tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
@@ -1461,6 +1482,17 @@ public class GraphBatch implements AutoCloseable {
         isNew = true;
       } else {
         final MutableVertex dstVertex = ((Vertex) database.lookupByRID(new RID(dstBucket, dstPos), true)).modify();
+        // #5667: check for an already-promoted super-node BEFORE calling getOrCreateInEdgeChunk, with purely
+        // local variables - this method runs concurrently across async-executor threads (one per bucket slot),
+        // so signalling through a shared instance field (as the single-threaded sequential path does) would race.
+        final RID dstHeadChunk = dstVertex.getInEdgesHeadChunk();
+        if (dstHeadChunk != null && database.lookupByRID(dstHeadChunk, true) instanceof StripeDirectory directory) {
+          // Route through StripedEdgeList and skip the bulk segment write below entirely.
+          addGroupThroughStripedEdgeList(dstVertex, Vertex.DIRECTION.IN, directory,
+              localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
+          i = j;
+          continue;
+        }
         inChunk = getOrCreateInEdgeChunk(dstVertex);
         isNew = false;
       }
@@ -1601,6 +1633,17 @@ public class GraphBatch implements AutoCloseable {
   private EdgeSegment lastSegmentResult;
   private boolean     lastSegmentIsNew;
 
+  // #5667: set by getOrCreateOutSegmentDeferred/getOrCreateInSegmentDeferred when the vertex is already
+  // promoted to the super-node striped layout (a StripeDirectory head). GraphBatch's bulk path writes segments
+  // and flips the vertex head pointer directly, which is only safe for the classic (non-promoted) layout - see
+  // addGroupThroughStripedEdgeList. ONLY safe as an instance field because those two methods are called
+  // exclusively from the single-threaded SEQUENTIAL connect path (connectOutgoingEdgesSorted /
+  // connectIncomingEdgesSequential); the PARALLEL range-local connectors check locally instead - see
+  // getOrCreateOutEdgeChunk's javadoc.
+  private boolean         lastSegmentPromoted;
+  private Vertex          lastPromotedVertex;
+  private StripeDirectory lastPromotedDirectory;
+
   /**
    * Gets or creates an OUT segment for a vertex without loading the vertex record.
    * For known-new vertices (from createVertices()), skips the vertex load entirely.
@@ -1609,6 +1652,8 @@ public class GraphBatch implements AutoCloseable {
    */
   private EdgeSegment getOrCreateOutSegmentDeferred(final int bucketId, final long position,
       final long vertexKey, final int dataBytesNeeded) {
+
+    lastSegmentPromoted = false;
 
     // Check cache first
     final RID cachedRID = outChunkRIDCache.get(vertexKey);
@@ -1623,10 +1668,15 @@ public class GraphBatch implements AutoCloseable {
       final RID headChunk = vertex.getOutEdgesHeadChunk();
       if (headChunk != null) {
         final Record head = database.lookupByRID(headChunk, true);
-        if (head instanceof StripeDirectory)
-          // The bulk path manipulates the vertex head pointer directly and would corrupt a striped layout.
-          throw new IllegalStateException("Bulk edge import into the super-node promoted vertex " + vertex.getIdentity()
-              + " is not supported: use the standard API or disable promotion (arcadedb.graph.supernodeThreshold=0)");
+        if (head instanceof StripeDirectory directory) {
+          // #5667: the bulk path manipulates the vertex head pointer directly and cannot safely touch a
+          // promoted vertex's striped layout. Route this group through the standard, MVCC-safe StripedEdgeList
+          // write path instead of failing the whole batch (see the GraphBatch class javadoc).
+          lastSegmentPromoted = true;
+          lastPromotedVertex = vertex;
+          lastPromotedDirectory = directory;
+          return null;
+        }
         outChunkRIDCache.put(vertexKey, headChunk);
         lastSegmentIsNew = false;
         return (EdgeSegment) head;
@@ -1646,6 +1696,8 @@ public class GraphBatch implements AutoCloseable {
   private EdgeSegment getOrCreateInSegmentDeferred(final int bucketId, final long position,
       final long vertexKey, final int dataBytesNeeded) {
 
+    lastSegmentPromoted = false;
+
     final RID cachedRID = inChunkRIDCache.get(vertexKey);
     if (cachedRID != null) {
       lastSegmentIsNew = false;
@@ -1657,9 +1709,13 @@ public class GraphBatch implements AutoCloseable {
       final RID headChunk = vertex.getInEdgesHeadChunk();
       if (headChunk != null) {
         final Record head = database.lookupByRID(headChunk, true);
-        if (head instanceof StripeDirectory)
-          throw new IllegalStateException("Bulk edge import into the super-node promoted vertex " + vertex.getIdentity()
-              + " is not supported: use the standard API or disable promotion (arcadedb.graph.supernodeThreshold=0)");
+        if (head instanceof StripeDirectory directory) {
+          // #5667: see getOrCreateOutSegmentDeferred - route through StripedEdgeList instead of failing.
+          lastSegmentPromoted = true;
+          lastPromotedVertex = vertex;
+          lastPromotedDirectory = directory;
+          return null;
+        }
         inChunkRIDCache.put(vertexKey, headChunk);
         lastSegmentIsNew = false;
         return (EdgeSegment) head;
@@ -1688,10 +1744,36 @@ public class GraphBatch implements AutoCloseable {
     }
   }
 
+  /**
+   * #5667: writes a batch group's edges for an already-promoted (super-node) vertex through the standard
+   * {@link StripedEdgeList} write path, one edge at a time. GraphBatch's bulk segment-manipulation code writes
+   * segments directly and flips the vertex head pointer without going through the MVCC-anchored, directory-aware
+   * writes {@link StripedEdgeList} depends on for its stripe slot updates - safe only for the classic
+   * (non-promoted) layout. This lets a bulk load resume over a graph that was promoted through the standard API
+   * (or by a previous, non-bulk write) instead of hard-failing.
+   * <p>
+   * GraphBatch itself never promotes a vertex during bulk load - see the class javadoc.
+   */
+  private void addGroupThroughStripedEdgeList(final Vertex vertex, final Vertex.DIRECTION direction,
+      final StripeDirectory directory, final int[] edgeBucketIds, final long[] edgePositions,
+      final int[] vertexBucketIds, final long[] vertexPositions, final int count) {
+    final StripedEdgeList striped = new StripedEdgeList(vertex, direction, directory);
+    for (int k = 0; k < count; k++)
+      striped.add(new RID(edgeBucketIds[k], edgePositions[k]), new RID(vertexBucketIds[k], vertexPositions[k]));
+  }
+
   // ---------------------------------------------------------------------------
   // Edge segment helpers (with edgeListInitialSize override)
   // ---------------------------------------------------------------------------
 
+  /**
+   * #5667: unlike {@code getOrCreateOutSegmentDeferred}/{@code getOrCreateInSegmentDeferred}, this method (and
+   * its IN counterpart) is also called from the PARALLEL range-local connectors, which run concurrently across
+   * multiple async-executor threads (see {@code connectOutEdgesRangeLocal}). It therefore does NOT signal a
+   * promoted vertex through the shared {@code lastSegmentPromoted}/{@code lastPromotedVertex} instance fields -
+   * those are safe only for the single-threaded sequential path. Callers on the parallel path check for a
+   * {@link StripeDirectory} head themselves, with purely local variables, before ever calling this method.
+   */
   private EdgeSegment getOrCreateOutEdgeChunk(final MutableVertex vertex) {
     final RID vertexRID = vertex.getIdentity();
     final long key = packVertexKey(vertexRID.getBucketId(), vertexRID.getPosition());
@@ -1717,6 +1799,7 @@ public class GraphBatch implements AutoCloseable {
     return chunk;
   }
 
+  /** #5667: see {@link #getOrCreateOutEdgeChunk} - same thread-safety contract for the IN direction. */
   private EdgeSegment getOrCreateInEdgeChunk(final MutableVertex vertex) {
     final RID vertexRID = vertex.getIdentity();
     final long key = packVertexKey(vertexRID.getBucketId(), vertexRID.getPosition());
@@ -2186,6 +2269,15 @@ public class GraphBatch implements AutoCloseable {
         isNew = true;
       } else {
         final MutableVertex srcVertex = ((Vertex) database.lookupByRID(new RID(srcBucket, srcPos), true)).modify();
+        // #5667: see connectIncomingEdgesRangeLocal - check locally BEFORE calling getOrCreateOutEdgeChunk;
+        // this method runs concurrently across async-executor threads, so a shared instance field would race.
+        final RID srcHeadChunk = srcVertex.getOutEdgesHeadChunk();
+        if (srcHeadChunk != null && database.lookupByRID(srcHeadChunk, true) instanceof StripeDirectory directory) {
+          addGroupThroughStripedEdgeList(srcVertex, Vertex.DIRECTION.OUT, directory,
+              localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
+          i = j;
+          continue;
+        }
         outChunk = getOrCreateOutEdgeChunk(srcVertex);
         isNew = false;
       }
