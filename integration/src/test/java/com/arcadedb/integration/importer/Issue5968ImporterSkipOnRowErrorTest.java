@@ -592,6 +592,43 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
+   * A source-level parse failure (see {@link #csvVertexImportStillAbortsOnSyntaxLevelParseFailureWhenOptedIn()}) that
+   * escapes the per-row loop while skip mode's own transaction machinery is active must not leave a dangling active
+   * transaction behind on an externally-managed {@link Database} - the caller never had one active before this call
+   * (see the entry guard exercised in {@link #csvVertexImportRejectsSkipModeInsideActiveTransaction()}), and
+   * shouldn't be left holding one afterwards either.
+   */
+  @Test
+  void csvVertexImportRollsBackDanglingTransactionOnSyntaxLevelParseFailureViaEmbeddingConstructor() {
+    final String databasePath = "target/databases/test-import-5968-csv-embed-syntax-abort";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = "src/test/resources/importer-vertices-oversized-value.csv";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+      importer.settings.onRowError = "skip";
+      importer.settings.parseParameter("maxPropertySize", "10");
+
+      // TextParsingException ITSELF WRAPS A LOWER-LEVEL CAUSE, SO ASSERT ON THE DIRECT CAUSE OF ImportException RATHER
+      // THAN THE ROOT ONE.
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .cause().isInstanceOf(com.univocity.parsers.common.TextParsingException.class);
+
+      assertThat(db.isTransactionActive()).isFalse();
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
    * A CSV-syntax-level parse failure (a value exceeding {@code maxPropertySize}, causing univocity-parsers'
    * {@code TextParsingException}) must still abort the import even in skip mode: {@code csvParser.parseNext()} is
    * deliberately left outside the per-row try/catch (see the comment in {@code loadDocuments}/{@code loadVertices}).

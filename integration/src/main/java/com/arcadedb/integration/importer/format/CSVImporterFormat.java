@@ -185,6 +185,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
+    } catch (final RuntimeException e) {
+      // A SOURCE-LEVEL FAILURE (parseNext()'S TextParsingException, DELIBERATELY LEFT OUTSIDE THE PER-ROW try/catch
+      // ABOVE) ESCAPED THE LOOP. IN "skip" MODE THERE IS ALWAYS AN ACTIVE TRANSACTION AT THIS POINT (A FRESH ONE IS
+      // BEGUN RIGHT AFTER EVERY ROW'S OWN commit()/rollback()) - ROLL IT BACK BEFORE RETHROWING SO THIS METHOD NEVER
+      // LEAVES ONE OPEN ON A CALLER'S Database THAT DIDN'T HAVE ONE BEFORE THIS CALL (SEE THE ENTRY GUARD ABOVE).
+      if (skipOnError && database.isTransactionActive())
+        database.rollback();
+      throw e;
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()
@@ -345,6 +353,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
+    } catch (final RuntimeException e) {
+      // SAME REASONING AS loadDocuments(): IN "skip" MODE, A SOURCE-LEVEL FAILURE ESCAPING THE LOOP ALWAYS LEAVES AN
+      // ACTIVE TRANSACTION BEHIND - ROLL IT BACK BEFORE RETHROWING. HARMLESS NO-OP IN "abort" MODE (INCLUDING FOR THE
+      // firstAsyncError ImportException ABOVE, WHICH ONLY THROWS WHEN !skipOnError).
+      if (skipOnError && database.isTransactionActive())
+        database.rollback();
+      throw e;
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()

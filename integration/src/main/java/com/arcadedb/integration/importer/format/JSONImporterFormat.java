@@ -143,7 +143,22 @@ public class JSONImporterFormat implements FormatImporter {
     reader.beginArray();
 
     database.begin();
+    try {
+      parseRecordsArray(reader, database, settings, context, mapping, ignore);
+    } catch (final RuntimeException | IOException e) {
+      // A FAILURE THAT ESCAPES parseRecordsArray() ENTIRELY (E.G. A MALFORMED JSON STRUCTURE FROM reader.peek(),
+      // DELIBERATELY UNCAUGHT BELOW) LEAVES AN ACTIVE TRANSACTION BEHIND IN "skip" MODE: A FRESH ONE IS ALWAYS BEGUN
+      // RIGHT AFTER EVERY RECORD'S OWN commit()/rollback(), INCLUDING BEFORE THE FIRST ONE. ROLL IT BACK BEFORE
+      // RETHROWING SO THIS METHOD NEVER LEAVES ONE OPEN ON A CALLER'S Database THAT DIDN'T HAVE ONE BEFORE THIS CALL
+      // (SEE THE ENTRY GUARD ABOVE). HARMLESS NO-OP IN "abort" MODE.
+      if (settings.isSkipOnRowError() && database.isTransactionActive())
+        database.rollback();
+      throw e;
+    }
+  }
 
+  private void parseRecordsArray(final JsonReader reader, final Database database, final ImporterSettings settings,
+      final ImporterContext context, final JSONArray mapping, boolean ignore) throws IOException {
     final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
 
