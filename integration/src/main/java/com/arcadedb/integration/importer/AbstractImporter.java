@@ -115,6 +115,8 @@ public abstract class AbstractImporter {
   }
 
   protected void openDatabase() {
+    context.externallyManagedDatabase = !databaseCreatedDuringImporting;
+
     if (database != null && database.isOpen())
       return;
 

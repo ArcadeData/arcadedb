@@ -424,6 +424,75 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * "skip" mode commits/rolls back per row, so it must own the transaction outright. Simulates what happens when
+   * {@code -onRowError skip} is used from inside a caller-managed transaction (e.g. a server HTTP command executed
+   * with the default atomic/{@code autoCommit} behavior, which wraps the whole command in one transaction): rather
+   * than the first row's commit silently discarding/committing whatever the caller had pending, this must fail
+   * loudly and immediately.
+   */
+  @Test
+  void csvVertexImportRejectsSkipModeInsideActiveTransaction() {
+    final String databasePath = "target/databases/test-import-5968-csv-active-tx";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+
+      db.begin();
+      try {
+        final Importer importer = new Importer(db, null);
+        importer.settings.vertices = "src/test/resources/importer-vertices-outofrange.csv";
+        importer.settings.typeIdProperty = "Id";
+        importer.settings.typeIdType = "Long";
+        importer.settings.onRowError = "skip";
+
+        assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+            .hasRootCauseInstanceOf(IllegalStateException.class);
+      } finally {
+        if (db.isTransactionActive())
+          db.rollback();
+      }
+    } finally {
+      db.drop();
+    }
+  }
+
+  @Test
+  void jsonDocumentImportRejectsSkipModeInsideActiveTransaction() {
+    final String databasePath = "target/databases/test-import-5968-json-active-tx";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Food");
+      db.getSchema().getType("Food").createProperty("qty", Type.SHORT);
+
+      db.begin();
+      try {
+        final Importer importer = new Importer(db, "file://src/test/resources/importer-documents-outofrange.json");
+        importer.settings.mapping = "{'*':[]}";
+        importer.settings.documentTypeName = "Food";
+        importer.settings.onRowError = "skip";
+
+        assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+            .hasRootCauseInstanceOf(IllegalStateException.class);
+      } finally {
+        if (db.isTransactionActive())
+          db.rollback();
+      }
+    } finally {
+      db.drop();
+    }
+  }
+
   @Test
   void invalidOnRowErrorValueIsRejected() {
     assertThatThrownBy(() -> new Importer(

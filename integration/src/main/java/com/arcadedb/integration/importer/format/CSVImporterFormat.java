@@ -102,6 +102,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // SKIPPABLE.
     final boolean skipOnError = settings.isSkipOnRowError();
 
+    // "skip" MODE COMMITS/ROLLS BACK PER ROW, SO IT MUST OWN THE TRANSACTION OUTRIGHT. AN ACTIVE TRANSACTION ON A
+    // SELF-OPENED database (context.externallyManagedDatabase == false) IS THIS IMPORTER'S OWN, ALWAYS-EMPTY AMBIENT
+    // TRANSACTION FROM AbstractImporter#openDatabase() - SAFE TO COMMANDEER. ON AN EXTERNALLY-MANAGED database (THE
+    // Importer(Database, String) EMBEDDING CONSTRUCTOR, OR THE IMPORT DATABASE SQL STATEMENT REUSING THE CALLER'S
+    // Database - E.G. A SERVER HTTP COMMAND, WHICH DatabaseAbstractHandler WRAPS IN ITS OWN ATOMIC TRANSACTION BY
+    // DEFAULT) AN ACTIVE TRANSACTION MAY HOLD UNRELATED PENDING WORK: THE FIRST ROW'S commit()/rollback() WOULD
+    // SILENTLY COMMIT OR DISCARD IT. FAIL LOUDLY INSTEAD OF DOING THAT.
+    if (skipOnError && context.externallyManagedDatabase && database.isTransactionActive())
+      throw new IllegalStateException(
+          "-onRowError skip requires exclusive control of the transaction and cannot be used while a transaction is "
+              + "already active (e.g. inside a caller-managed transaction, or a server HTTP command executed with the "
+              + "default atomic/autoCommit behavior - retry with autoCommit=false or from a session)");
+
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
@@ -234,6 +247,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // FOR WHY (AN ASYNC BATCH ROLLBACK ON A PERSIST-TIME FAILURE WOULD TAKE DOWN EVERY OTHER VERTEX QUEUED IN THE SAME
     // UNCOMMITTED BATCH, NOT JUST THE FAILING ONE).
     final boolean skipOnError = settings.isSkipOnRowError();
+
+    // SAME REASONING AS loadDocuments(): "skip" MODE MUST OWN THE TRANSACTION OUTRIGHT, SINCE IT COMMITS/ROLLS BACK
+    // PER ROW.
+    if (skipOnError && context.externallyManagedDatabase && database.isTransactionActive())
+      throw new IllegalStateException(
+          "-onRowError skip requires exclusive control of the transaction and cannot be used while a transaction is "
+              + "already active (e.g. inside a caller-managed transaction, or a server HTTP command executed with the "
+              + "default atomic/autoCommit behavior - retry with autoCommit=false or from a session)");
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
     if (!skipOnError)

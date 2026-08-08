@@ -101,6 +101,12 @@ public class ImporterSettings {
    * an unrelated, already-committed row. In short, "skip" trades import throughput - effectively a batch size of 1
    * for the whole run, not just for the failing row - for the guarantee that a bad row can never take a good one
    * down with it, nor leave a partially-written "ghost" record behind.
+   * <p>
+   * Because of that per-row transaction ownership, "skip" requires exclusive control of the transaction and cannot
+   * be used while one is already active on the target {@code Database} - e.g. inside an embedding caller's own
+   * transaction, or a server HTTP command executed with the default atomic/{@code autoCommit} behavior, which wraps
+   * the whole command in one transaction. Both CSV formats reject this combination eagerly with a clear
+   * {@code IllegalStateException} rather than silently committing/discarding whatever the caller had pending.
    */
   public boolean isSkipOnRowError() {
     return "skip".equalsIgnoreCase(onRowError);

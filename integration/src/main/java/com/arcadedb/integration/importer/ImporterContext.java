@@ -35,6 +35,17 @@ public class ImporterContext {
   public final AtomicLong skippedEdges               = new AtomicLong();
   public final AtomicLong errors                     = new AtomicLong();
   public final AtomicLong warnings                   = new AtomicLong();
+  /**
+   * Set by {@link AbstractImporter#openDatabase()}: true when the target {@link com.arcadedb.database.Database} was
+   * handed to the importer already open by the caller (the {@code Importer(Database, String)} embedding constructor,
+   * or the {@code IMPORT DATABASE} SQL statement, which reuses the caller's own {@code Database}), as opposed to one
+   * this importer opened/created itself. An active transaction is safe to commandeer for per-row commits only when
+   * this is false: a self-opened database's ambient transaction (left active by {@code openDatabase()} for the
+   * DDL/schema setup it does) is this importer's own and always empty by the time a format's {@code load()} runs, so
+   * taking it over cannot discard anything; an externally-managed database's active transaction may hold unrelated
+   * pending work the caller is not expecting this importer to commit or roll back.
+   */
+  public       boolean       externallyManagedDatabase;
   public       long          startedOn;
   public       long          lastLapOn;
   public       long          lastParsed;
