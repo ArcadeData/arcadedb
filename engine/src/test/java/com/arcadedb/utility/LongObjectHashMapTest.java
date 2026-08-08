@@ -139,6 +139,90 @@ class LongObjectHashMapTest {
   }
 
   @Test
+  void removeAbsentKeyReturnsNullAndLeavesMapUnchanged() {
+    final LongObjectHashMap<String> m = new LongObjectHashMap<>();
+    m.put(1L, "one");
+    assertThat(m.remove(2L)).isNull();
+    assertThat(m.size()).isEqualTo(1);
+    assertThat(m.get(1L)).isEqualTo("one");
+  }
+
+  @Test
+  void removePresentKeyReturnsPreviousValueAndForgetsIt() {
+    final LongObjectHashMap<String> m = new LongObjectHashMap<>();
+    m.put(42L, "hello");
+    assertThat(m.remove(42L)).isEqualTo("hello");
+    assertThat(m.get(42L)).isNull();
+    assertThat(m.containsKey(42L)).isFalse();
+    assertThat(m.size()).isZero();
+    assertThat(m.isEmpty()).isTrue();
+  }
+
+  @Test
+  void removeDoesNotBreakProbeChainForLaterKeys() {
+    // Force several keys to collide into the same initial bucket by using a tiny capacity, then
+    // remove the FIRST one inserted and confirm the others (which had to probe past it) are still
+    // reachable - proves the tombstone doesn't terminate the probe chain like an empty slot would.
+    final LongObjectHashMap<Integer> m = new LongObjectHashMap<>(16);
+    final long[] keys = new long[10];
+    for (int i = 0; i < keys.length; i++) {
+      keys[i] = i * 16L; // all hash to slot 0 mod 16 before probing
+      m.put(keys[i], i);
+    }
+    assertThat(m.remove(keys[0])).isEqualTo(0);
+    for (int i = 1; i < keys.length; i++)
+      assertThat(m.get(keys[i])).as("key %d must still be reachable after removing an earlier colliding key", i).isEqualTo(i);
+    assertThat(m.get(keys[0])).isNull();
+    assertThat(m.size()).isEqualTo(keys.length - 1);
+  }
+
+  @Test
+  void putAfterRemoveRevivesTheSlotAndRestoresSize() {
+    final LongObjectHashMap<String> m = new LongObjectHashMap<>();
+    m.put(42L, "first");
+    m.remove(42L);
+    assertThat(m.put(42L, "revived")).isNull(); // was absent (tombstoned), not "first"
+    assertThat(m.get(42L)).isEqualTo("revived");
+    assertThat(m.size()).isEqualTo(1);
+  }
+
+  @Test
+  void forEachAndKeysArraySkipTombstones() {
+    final LongObjectHashMap<Integer> m = new LongObjectHashMap<>();
+    for (int i = 0; i < 20; i++)
+      m.put((long) i, i);
+    for (int i = 0; i < 20; i += 2)
+      m.remove((long) i);
+
+    final HashMap<Long, Integer> seen = new HashMap<>();
+    m.forEach(seen::put);
+    assertThat(seen).hasSize(10);
+    for (int i = 1; i < 20; i += 2)
+      assertThat(seen).containsEntry((long) i, i);
+
+    assertThat(m.keysArray()).hasSize(10);
+  }
+
+  @Test
+  void resizeReclaimsTombstonedSlots() {
+    final LongObjectHashMap<Integer> m = new LongObjectHashMap<>(16);
+    for (int i = 0; i < 1_000; i++)
+      m.put((long) i, i);
+    for (int i = 0; i < 900; i++)
+      m.remove((long) i);
+    // Triggers further growth/resizing while tombstones are present; must not resurrect removed keys
+    // nor lose live ones.
+    for (int i = 1_000; i < 5_000; i++)
+      m.put((long) i, i);
+
+    assertThat(m.size()).isEqualTo(100 + 4_000);
+    for (int i = 0; i < 900; i++)
+      assertThat(m.get((long) i)).isNull();
+    for (int i = 900; i < 5_000; i++)
+      assertThat(m.get((long) i)).isEqualTo(i);
+  }
+
+  @Test
   void equivalentToHashMapUnderRandomLoad() {
     final LongObjectHashMap<String> a = new LongObjectHashMap<>();
     final HashMap<Long, String> b = new HashMap<>();

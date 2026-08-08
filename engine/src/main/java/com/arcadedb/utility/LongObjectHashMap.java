@@ -32,15 +32,16 @@ import java.util.Arrays;
  * vs {@code HashMap<Long, V>} at ~72-90 bytes (Node + Long + table slot) -
  * roughly <b>4-5x savings</b>.
  * <p>
- * The reserved sentinel {@link Long#MIN_VALUE} marks empty slots and therefore
- * cannot be used as a key. Designed for vertex-key / position maps where this
- * limitation is irrelevant.
+ * The reserved sentinels {@link Long#MIN_VALUE} (empty slot) and {@code Long.MIN_VALUE + 2}
+ * (tombstone, left behind by {@link #remove(long)}) cannot be used as keys. Designed for
+ * vertex-key / position maps where this limitation is irrelevant.
  * <p>
  * Not thread-safe. Mirrors the pattern of {@link LongHashSet}.
  */
 public final class LongObjectHashMap<V> {
-  private static final long  EMPTY_KEY   = Long.MIN_VALUE;
-  private static final float LOAD_FACTOR = 0.75f;
+  private static final long  EMPTY_KEY     = Long.MIN_VALUE;
+  private static final long  TOMBSTONE_KEY = Long.MIN_VALUE + 2;
+  private static final float LOAD_FACTOR   = 0.75f;
 
   private long[]   keys;
   private Object[] values;
@@ -66,28 +67,59 @@ public final class LongObjectHashMap<V> {
    * Associates {@code value} with {@code key}. Returns the previous value, or {@code null}
    * if the key was absent.
    *
-   * @throws IllegalArgumentException if {@code key == Long.MIN_VALUE}
-   *                                  (reserved as the empty-slot sentinel).
+   * @throws IllegalArgumentException if {@code key} is one of the two reserved sentinels.
    */
   @SuppressWarnings("unchecked")
   public V put(final long key, final V value) {
-    if (key == EMPTY_KEY)
-      throw new IllegalArgumentException("Long.MIN_VALUE is reserved as the empty-slot sentinel");
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
+      throw new IllegalArgumentException("Long.MIN_VALUE and Long.MIN_VALUE + 2 are reserved sentinels");
 
     int idx = hash(key) & mask;
+    int tombstoneIdx = -1; // first reusable tombstone slot seen while probing, if any
     while (true) {
       final long slot = keys[idx];
       if (slot == EMPTY_KEY) {
-        keys[idx] = key;
-        values[idx] = value;
+        final int target = tombstoneIdx >= 0 ? tombstoneIdx : idx;
+        keys[target] = key;
+        values[target] = value;
         if (++size >= threshold)
           resize();
         return null;
       }
-      if (slot == key) {
+      if (slot == TOMBSTONE_KEY) {
+        if (tombstoneIdx < 0)
+          tombstoneIdx = idx;
+      } else if (slot == key) {
         final V prev = (V) values[idx];
         values[idx] = value;
         return prev;
+      }
+      idx = (idx + 1) & mask;
+    }
+  }
+
+  /**
+   * Removes the mapping for {@code key}, if present, leaving a tombstone behind so later lookups for
+   * other keys that probed past this slot still find them. Returns the previous value, or
+   * {@code null} if the key was absent. A tombstoned slot is reclaimed by a later {@link #put} of a
+   * different key at the same slot, or by {@link #resize()}.
+   */
+  @SuppressWarnings("unchecked")
+  public V remove(final long key) {
+    if (key == EMPTY_KEY || key == TOMBSTONE_KEY)
+      return null;
+
+    int idx = hash(key) & mask;
+    while (true) {
+      final long slot = keys[idx];
+      if (slot == EMPTY_KEY)
+        return null;
+      if (slot == key) {
+        final V removed = (V) values[idx];
+        keys[idx] = TOMBSTONE_KEY;
+        values[idx] = null;
+        size--;
+        return removed;
       }
       idx = (idx + 1) & mask;
     }
@@ -148,7 +180,7 @@ public final class LongObjectHashMap<V> {
   public void forEach(final EntryConsumer<V> consumer) {
     for (int i = 0; i < capacity; i++) {
       final long k = keys[i];
-      if (k != EMPTY_KEY)
+      if (k != EMPTY_KEY && k != TOMBSTONE_KEY)
         consumer.accept(k, (V) values[i]);
     }
   }
@@ -161,7 +193,7 @@ public final class LongObjectHashMap<V> {
     int o = 0;
     for (int i = 0; i < capacity; i++) {
       final long k = keys[i];
-      if (k != EMPTY_KEY)
+      if (k != EMPTY_KEY && k != TOMBSTONE_KEY)
         out[o++] = k;
     }
     return out;
@@ -193,7 +225,7 @@ public final class LongObjectHashMap<V> {
 
     for (int i = 0; i < capacity; i++) {
       final long k = keys[i];
-      if (k != EMPTY_KEY) {
+      if (k != EMPTY_KEY && k != TOMBSTONE_KEY) {
         int idx = hash(k) & newMask;
         while (newKeys[idx] != EMPTY_KEY)
           idx = (idx + 1) & newMask;
