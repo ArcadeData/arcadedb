@@ -472,6 +472,13 @@ class TypeTest extends TestHelper {
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> Type.convert(database, 3_000_000_000L, Byte.class))
         .isInstanceOf(IllegalArgumentException.class);
+    // THE BigDecimal/BigInteger BRANCHES OF narrowToIntegral() ARE SHARED CODE, EXERCISED ELSEWHERE ONLY FOR
+    // INTEGER TARGETS (convertToIntegerOutOfRangeRejected) - COVER BYTE TOO SO A BOUNDARY-CONSTANT TYPO THERE
+    // WOULD BE CAUGHT REGARDLESS OF TARGET TYPE
+    assertThatThrownBy(() -> Type.convert(database, new BigDecimal("200"), Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigInteger("200"), Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -496,6 +503,10 @@ class TypeTest extends TestHelper {
     assertThatThrownBy(() -> Type.convert(database, Short.MIN_VALUE - 1, Short.class))
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> Type.convert(database, 3_000_000_000L, Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigDecimal("40000"), Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigInteger("40000"), Short.class))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
