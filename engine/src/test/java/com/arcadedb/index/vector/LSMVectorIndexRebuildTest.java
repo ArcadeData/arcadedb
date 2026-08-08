@@ -58,8 +58,16 @@ class LSMVectorIndexRebuildTest extends TestHelper {
    * has nothing to do with how long the timer waits before starting it. Scaling the bound off {@code timeoutMs} made
    * the wait shortest exactly where the work is slowest. Generous on purpose - it costs nothing when the rebuild
    * lands on time, and these are liveness assertions: a rebuild that never happens still fails, just later.
+   * <p>
+   * Raised from 120s to 300s (PR #5960's CI run): {@code asyncRebuildShouldBeRetriggeredForMutationsDuringBuild}
+   * and {@code deltaBufferShouldFlushAfterInactivityTimeout} both hit the 120s ceiling on a loaded runner in the
+   * same job where an unrelated vector test ({@code PQSearchDebugTest}) took 403s for work that normally
+   * completes in seconds - concrete evidence that 120s is not generous enough on this CI environment's worst
+   * case. {@code REBUILD_SEMAPHORE} (JVM-wide, one permit) is shared by every vector index in the whole Surefire
+   * fork, so a slow rebuild left over from an unrelated, already-finished test class can still be holding the
+   * permit when this class's own tests start.
    */
-  private static final Duration REBUILD_SETTLE_TIMEOUT = Duration.ofSeconds(120);
+  private static final Duration REBUILD_SETTLE_TIMEOUT = Duration.ofSeconds(300);
 
   // Issue #3147: REBUILD INDEX preserves vector metadata (dimensions, similarity, maxConnections, beamWidth, idPropertyName) instead of recreating with dimensions=0.
   @Test
