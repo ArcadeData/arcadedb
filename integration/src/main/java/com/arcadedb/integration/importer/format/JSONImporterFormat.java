@@ -137,11 +137,29 @@ public class JSONImporterFormat implements FormatImporter {
       } else
         mappingObject = null;
 
-      final Object record = parseRecord(reader, settings, context, database, mappingObject, ignore);
-      if (record instanceof Map)
-        saveAnonymousRecord(database, settings, (Map<String, Object>) record);
+      try {
+        final Object record = parseRecord(reader, settings, context, database, mappingObject, ignore);
+        if (record instanceof Map)
+          saveAnonymousRecord(database, settings, (Map<String, Object>) record);
 
-      database.commit();
+        database.commit();
+      } catch (final RuntimeException e) {
+        if (database.isTransactionActive())
+          database.rollback();
+
+        if (!settings.isSkipOnRowError())
+          throw e;
+
+        // THE UNDERLYING JsonReader IS POSITIONED RIGHT AFTER THE OFFENDING RECORD (Type/schema conversion errors ONLY
+        // HAPPEN AFTER THE RECORD'S OBJECT TOKENS ARE FULLY CONSUMED), SO IT IS SAFE TO CONTINUE WITH THE NEXT ARRAY ENTRY.
+        // IF THE STREAM WAS LEFT IN AN INCONSISTENT STATE (E.G. A MALFORMED JSON STRUCTURE), THE NEXT reader.peek() CALL
+        // IN THE LOOP CONDITION WILL THROW AND THE IMPORT WILL ABORT, EVEN IN SKIP MODE.
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on importing JSON record #%d, skipping it (reason: %s)", null, context.parsed.get(),
+                e.getMessage());
+        context.errors.incrementAndGet();
+      }
+
       database.begin();
     }
 

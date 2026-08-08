@@ -128,16 +128,25 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           // SKIP IT
           continue;
 
-        final MutableDocument document = database.newDocument(settings.documentTypeName);
+        try {
+          final MutableDocument document = database.newDocument(settings.documentTypeName);
 
-        for (final AnalyzedProperty prop : properties) {
-          final String value = row[prop.getIndex()];
-          if (value != null && !value.isEmpty())
-            document.set(prop.getName(), value);
+          for (final AnalyzedProperty prop : properties) {
+            final String value = row[prop.getIndex()];
+            if (value != null && !value.isEmpty())
+              document.set(prop.getName(), value);
+          }
+
+          document.save();
+          context.createdDocuments.incrementAndGet();
+        } catch (final RuntimeException e) {
+          if (!settings.isSkipOnRowError())
+            throw e;
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on importing document at line %d, skipping it (reason: %s)", null, line,
+                  e.getMessage());
+          context.errors.incrementAndGet();
         }
-
-        document.save();
-        context.createdDocuments.incrementAndGet();
       }
 
       database.commit();
@@ -152,6 +161,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               elapsedInSecs > 0 ? context.createdDocuments.get() / elapsedInSecs : context.createdDocuments.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total documents: %d", null, context.createdDocuments.get());
+      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get());
 
       csvParser.stopParsing();
     }
@@ -232,16 +242,25 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           continue;
         }
 
-        final MutableVertex v = database.newVertex(settings.vertexTypeName);
-        if (idIndex >= 0)
-          v.set(settings.typeIdProperty, row[idIndex]);
-        for (int p = 0; p < properties.size(); ++p) {
-          final AnalyzedProperty prop = properties.get(p);
-          final String value = row[prop.getIndex()];
-          if (value != null && !value.isEmpty())
-            v.set(prop.getName(), value);
+        try {
+          final MutableVertex v = database.newVertex(settings.vertexTypeName);
+          if (idIndex >= 0)
+            v.set(settings.typeIdProperty, row[idIndex]);
+          for (int p = 0; p < properties.size(); ++p) {
+            final AnalyzedProperty prop = properties.get(p);
+            final String value = row[prop.getIndex()];
+            if (value != null && !value.isEmpty())
+              v.set(prop.getName(), value);
+          }
+          database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
+        } catch (final RuntimeException e) {
+          if (!settings.isSkipOnRowError())
+            throw e;
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on importing vertex at line %d, skipping it (reason: %s)", null, line,
+                  e.getMessage());
+          context.errors.incrementAndGet();
         }
-        database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
       }
 
       database.async().waitCompletion();
@@ -255,6 +274,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               elapsedInSecs > 0 ? context.createdVertices.get() / elapsedInSecs : context.createdVertices.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total vertices.: %d", null, context.createdVertices.get());
+      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get());
 
       csvParser.stopParsing();
     }

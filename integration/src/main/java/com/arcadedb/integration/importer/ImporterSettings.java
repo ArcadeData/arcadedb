@@ -70,6 +70,7 @@ public class ImporterSettings {
   public long    parsingLimitEntries;
   public int     commitEvery            = 5000;
   public String  mapping                = null;
+  public String  onRowError             = "abort";
 
   public final Map<String, Object> options = new HashMap<>();
 
@@ -77,6 +78,14 @@ public class ImporterSettings {
     parallel = Runtime.getRuntime().availableProcessors() / 2 - 1;
     if (parallel < 1)
       parallel = 1;
+  }
+
+  /**
+   * Tells whether a single malformed/out-of-range row or property should be skipped and logged instead of aborting the
+   * whole import job. Opt-in via {@code -onRowError skip}; defaults to {@code abort} for backward compatibility.
+   */
+  public boolean isSkipOnRowError() {
+    return "skip".equalsIgnoreCase(onRowError);
   }
 
   public <T> T getValue(final String name, final T defaultValue) {
@@ -125,6 +134,11 @@ public class ImporterSettings {
     case "parsingLimitEntries" -> parsingLimitEntries = Long.parseLong(value);
     case "mapping" -> mapping = value;
     case "probeOnly" -> probeOnly = Boolean.parseBoolean(value);
+    case "onRowError" -> {
+      if (!"abort".equalsIgnoreCase(value) && !"skip".equalsIgnoreCase(value))
+        throw new IllegalArgumentException("Invalid value '" + value + "' for -onRowError. Supported values are 'abort' and 'skip'");
+      onRowError = value;
+    }
     // DOCUMENT SETTINGS
     case "documents" -> documents = value;
     case "documentsFileType" -> documentsFileType = value;
