@@ -179,4 +179,61 @@ class Issue5932IndexedRangeTypedBoundsTest {
       }
     });
   }
+
+  /**
+   * Code review follow-up on PR #5961: {@code LSMTreeIndexAbstract.convertKeysToDeclaredTypes()} must apply the
+   * same case-insensitive collation folding as {@code convertKeys()} - page- and transaction-overlay-stored keys
+   * of a {@code COLLATE CI} property are always lowercased, so a range bound compared against them has to be
+   * folded too, or a differently-cased literal silently miscompares by plain byte order instead of throwing.
+   */
+  @Test
+  void caseInsensitiveIndexedStringRangeQueryWithDifferentlyCasedBoundReturnsCorrectRow() throws Exception {
+    TestHelper.executeInNewDatabase("testIssue5932CaseInsensitiveRange", db -> {
+      db.getSchema().createDocumentType("V").createProperty("name", Type.STRING);
+      db.command("sql", "CREATE INDEX ON V (name COLLATE CI) NOTUNIQUE");
+      db.newDocument("V").set("name", "Alpha").save();
+      db.newDocument("V").set("name", "Bravo").save();
+      db.newDocument("V").set("name", "Charlie").save();
+      db.commit();
+      db.begin();
+
+      try (final ResultSet rs = db.query("sql", "select name from V where name > 'bravo'")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("Charlie");
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = db.query("sql", "select name from V where name < 'BRAVO'")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("Alpha");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  /**
+   * Code review follow-up on PR #5961: unlike the {@code BETWEEN} test above (whose planner falls back to a
+   * bucket scan for that shape), an {@code AND} of two range conditions plans as a single indexed range scan
+   * with both bounds set, exercising {@code typedFromKeys} and {@code typedToKeys} simultaneously through
+   * {@code LSMTreeIndexCursor}.
+   */
+  @Test
+  void compoundAndRangeConditionOnIndexedIntegerColumnUsesBothBoundsThroughIndexCursor() throws Exception {
+    TestHelper.executeInNewDatabase("testIssue5932CompoundAndRange", db -> {
+      db.getSchema().createDocumentType("V").createProperty("n", Type.INTEGER);
+      db.command("sql", "CREATE INDEX ON V (n) NOTUNIQUE");
+      db.newDocument("V").set("n", 10).save();
+      db.newDocument("V").set("n", 20).save();
+      db.newDocument("V").set("n", 30).save();
+      db.commit();
+      db.begin();
+
+      try (final ResultSet rs = db.query("sql", "select n from V where n > '5' and n < '25'")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Integer>getProperty("n")).isEqualTo(10);
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Integer>getProperty("n")).isEqualTo(20);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
 }

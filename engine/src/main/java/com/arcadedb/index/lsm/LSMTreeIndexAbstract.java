@@ -405,18 +405,15 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected Object[] convertKeys(final Object[] keys, final byte[] keyTypes) {
-    if (keys == null)
+    final Object[] convertedKeys = convertKeysToDeclaredTypes(keys, keyTypes);
+    if (convertedKeys == null)
       return null;
 
-    final Object[] convertedKeys = new Object[keys.length];
-    for (int i = 0; i < keys.length; ++i) {
-      if (keys[i] == null)
-        continue;
-
-      convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
-
+    for (int i = 0; i < convertedKeys.length; ++i) {
       if (convertedKeys[i] instanceof String string) {
-        // Apply case-insensitive collation: lowercase before storing/searching
+        // Apply case-insensitive collation: lowercase before storing/searching (already applied by
+        // convertKeysToDeclaredTypes() above, but toLowerCase() on an already-lowercase String is a no-op, and
+        // keeping the check here documents that BOTH methods must fold before a String reaches its own encoding)
         if (caseInsensitiveKeys != null && i < caseInsensitiveKeys.length && caseInsensitiveKeys[i])
           string = string.toLowerCase(Locale.ROOT);
         // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
@@ -428,19 +425,23 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   /**
    * Narrows each bound component to the property's declared Java type (e.g. the numeric {@code String} literal
-   * {@code "15"} to {@code Integer} for an {@code INTEGER} column), WITHOUT the disk-storage-oriented
-   * {@code String}-to-{@code byte[]} probe encoding {@link #convertKeys} additionally applies.
+   * {@code "15"} to {@code Integer} for an {@code INTEGER} column) and applies the same case-insensitive
+   * collation folding as {@link #convertKeys}, WITHOUT that method's additional disk-storage-oriented
+   * {@code String}-to-{@code byte[]} probe encoding.
    * <p>
    * That {@code byte[]} encoding exists only to seed {@code lookupInPage}'s (and the compacted series'
    * equivalent) own raw-bytes binary search within a page - every OTHER place a bound is compared against an
    * already-deserialized key needs this narrower conversion instead (#5932): a full page-entry deserialization
    * ({@code PageIterator.getKeys()}) hands back the plain declared-type value, e.g. a {@code String}, never a
    * {@code byte[]}, and so does {@code TransactionIndexContext}'s in-flight overlay (written by the record-save
-   * path, not through this index's own {@code convertKeys}). Comparing either against a {@code byte[]} bound
-   * either throws - inside {@code TransactionIndexContext.ComparableKey.compareTo}, which dispatches purely on
-   * the runtime class of both operands and has no {@code byte[]}-vs-{@code String} case - or silently
-   * miscompares, since {@link com.arcadedb.serializer.BinaryComparator}'s {@code TYPE_STRING} branch falls back
-   * to comparing against a {@code byte[]}'s generic {@code Object.toString()} instead of its content.
+   * path, not through this index's own {@code convertKeys}) - both already case-folded for a case-insensitive
+   * property, since {@code LSMTreeIndex.put()} writes them through {@code convertKeys()}. Comparing either
+   * against a {@code byte[]} bound either throws - inside {@code TransactionIndexContext.ComparableKey.compareTo},
+   * which dispatches purely on the runtime class of both operands and has no {@code byte[]}-vs-{@code String}
+   * case - or silently miscompares, since {@link com.arcadedb.serializer.BinaryComparator}'s {@code TYPE_STRING}
+   * branch falls back to comparing against a {@code byte[]}'s generic {@code Object.toString()} instead of its
+   * content; comparing against an un-folded bound would independently miscompare a mixed-case literal by plain
+   * byte order (e.g. {@code 'F'} 0x46 vs {@code 'f'} 0x66).
    */
   protected Object[] convertKeysToDeclaredTypes(final Object[] keys, final byte[] keyTypes) {
     if (keys == null)
@@ -452,6 +453,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         continue;
 
       convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+
+      if (convertedKeys[i] instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
+          && caseInsensitiveKeys[i])
+        convertedKeys[i] = string.toLowerCase(Locale.ROOT);
     }
     return convertedKeys;
   }

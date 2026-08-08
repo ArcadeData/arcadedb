@@ -58,13 +58,6 @@ import java.util.*;
 public class LSMTreeIndexCursor implements IndexCursor {
   private final LSMTreeIndexMutable                    index;
   private final boolean                                ascendingOrder;
-  /** Bounds converted to the index's declared key types AND the byte[]-for-String probe encoding that
-   *  {@code lookupInPage}'s own raw-bytes binary search (and the compacted series' equivalent) requires
-   *  (#5932). Used ONLY to seed those two low-level page lookups - never for a comparison against a fully
-   *  deserialized key, page-stored or transaction-overlay, both of which hold plain declared-type values
-   *  (a {@code String}, never a {@code byte[]}). */
-  private final Object[]                               serializedFromKeys;
-  private final Object[]                               serializedToKeys;
   /** Bounds narrowed to the index's declared key types WITHOUT the byte[]-for-String probe encoding (#5932):
    *  used for every comparison against an already-deserialized key, whether read back from a page
    *  ({@code PageIterator.getKeys()}) or from the transaction-overlay - both hold this same plain form. */
@@ -106,11 +99,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
     index.checkForNulls(fromKeys);
     index.checkForNulls(toKeys);
 
-    this.serializedFromKeys = index.convertKeys(fromKeys, binaryKeyTypes);
+    // Disk-probe encoding (byte[]-for-String): needed ONLY to seed lookupInPage and the compacted series'
+    // equivalent below - both purely local to this constructor - never for a comparison against an
+    // already-deserialized key, which is what every typedFromKeys/typedToKeys comparison elsewhere is for.
+    final Object[] serializedFromKeys = index.convertKeys(fromKeys, binaryKeyTypes);
     this.typedFromKeys = index.convertKeysToDeclaredTypes(fromKeys, binaryKeyTypes);
 
     final Object[] normalizedToKeys = toKeys != null && toKeys.length == 0 ? null : toKeys;
-    this.serializedToKeys = index.convertKeys(normalizedToKeys, binaryKeyTypes);
+    final Object[] serializedToKeys = index.convertKeys(normalizedToKeys, binaryKeyTypes);
     this.typedToKeys = index.convertKeysToDeclaredTypes(normalizedToKeys, binaryKeyTypes);
     this.toKeysInclusive = endKeysInclusive;
 
