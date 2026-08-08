@@ -228,14 +228,17 @@ public class GraphBatch implements AutoCloseable {
   // Lifecycle (matters for the choice of non-concurrent collection):
   //   1. Sequential put() calls happen from connectOutgoingEdgesSorted /
   //      connectIncomingEdgesSequential (single-threaded paths).
-  //   2. The PARALLEL paths (connectOutEdgesRangeLocal, connectIncomingEdgesRangeLocal)
-  //      do NOT touch these fields directly - they write to per-flush local
-  //      ConcurrentHashMap parameters (parallelDeferredOutHead / parallelDeferredInHead)
-  //      which are merged into these fields via putAll() AFTER async.waitCompletion(),
-  //      establishing a happens-before barrier.
+  //   2. The PARALLEL paths (connectOutEdgesRangeLocal, connectIncomingEdgesRangeLocal) do NOT
+  //      WRITE to these fields directly - they write to per-flush local ConcurrentHashMap
+  //      parameters (parallelDeferredOutHead / parallelDeferredInHead) which are merged into
+  //      these fields via putAll() AFTER async.waitCompletion(), establishing a happens-before
+  //      barrier. They DO read these fields directly (issue #5950 review: the LRU-eviction fix),
+  //      via LongObjectHashMap.get(), a pure read with no internal mutation - safe because no
+  //      concurrent WRITER touches these fields during a parallel round; the read-only access from
+  //      multiple async slots is fine.
   //   3. batchUpdateVertexHeadChunks() reads these single-threaded at flush end.
-  // LongObjectHashMap (zero-boxing, ~5x less memory than ConcurrentHashMap<Long, RID>)
-  // is safe because no concurrent writes ever hit these fields.
+  // LongObjectHashMap (zero-boxing, ~5x less memory than ConcurrentHashMap<Long, RID>) is safe
+  // under this lifecycle because writes are never concurrent and concurrent reads never race a write.
   private final LongObjectHashMap<RID> deferredOutHead = new LongObjectHashMap<>();
   private final LongObjectHashMap<RID> deferredInHead = new LongObjectHashMap<>();
 
