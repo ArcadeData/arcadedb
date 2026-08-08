@@ -86,6 +86,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final long beginTime = System.currentTimeMillis();
 
+    // IN "skip" MODE, EACH ROW GETS ITS OWN commit()/rollback() INSTEAD OF SHARING ONE TRANSACTION FOR THE WHOLE FILE:
+    // A FAILURE THAT HAPPENS AFTER THE RECORD IS ALREADY WRITTEN TO ITS BUCKET (E.G. A DUPLICATE-KEY VIOLATION RAISED
+    // BY THE INDEXER, WHICH RUNS AFTER THE BUCKET WRITE IN LocalDatabase#createRecordNoLock) WOULD OTHERWISE LEAVE A
+    // GHOST RECORD - PRESENT IN THE BUCKET BUT NEVER INDEXED - RIDING ALONG INTO THE FINAL COMMIT. ROLLING BACK THAT
+    // ONE ROW'S OWN TRANSACTION CANNOT TOUCH ANY PREVIOUSLY COMMITTED ROW, SO THIS IS SAFE REGARDLESS OF HOW MANY ROWS
+    // CAME BEFORE IT, AT THE COST OF THE MACRO-BATCHING abort MODE STILL GETS.
+    final boolean skipOnError = settings.isSkipOnRowError();
+
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
@@ -137,14 +145,22 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
           document.save();
           context.createdDocuments.incrementAndGet();
+
+          if (skipOnError) {
+            database.commit();
+            database.begin();
+          }
         } catch (final RuntimeException e) {
-          if (!settings.isSkipOnRowError())
+          if (!skipOnError)
             throw e;
+          if (database.isTransactionActive())
+            database.rollback();
           LogManager.instance()
               .log(this, Level.WARNING, "Error on importing document at line %d, skipping it (reason: %s)", null, line,
                   e.getMessage());
           LogManager.instance().log(this, Level.FINE, "Full error on importing document at line %d", e, line);
           context.errors.incrementAndGet();
+          database.begin();
         }
       }
 
@@ -268,18 +284,26 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           }
 
           if (skipOnError) {
+            // EACH VERTEX COMMITS IN ITS OWN TRANSACTION (SEE THE COMMENT ABOVE AND loadDocuments()): A FAILURE THAT
+            // SURFACES AFTER THE BUCKET WRITE (E.G. A DUPLICATE typeIdProperty VALUE, CAUGHT BY THE UNIQUE INDEX
+            // CREATED ABOVE) MUST ROLL BACK ONLY THIS ROW, NEVER A PREVIOUSLY COMMITTED ONE.
             v.save();
             context.createdVertices.incrementAndGet();
+            database.commit();
+            database.begin();
           } else
             database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
         } catch (final RuntimeException e) {
           if (!skipOnError)
             throw e;
+          if (database.isTransactionActive())
+            database.rollback();
           LogManager.instance()
               .log(this, Level.WARNING, "Error on importing vertex at line %d, skipping it (reason: %s)", null, line,
                   e.getMessage());
           LogManager.instance().log(this, Level.FINE, "Full error on importing vertex at line %d", e, line);
           context.errors.incrementAndGet();
+          database.begin();
         }
       }
 

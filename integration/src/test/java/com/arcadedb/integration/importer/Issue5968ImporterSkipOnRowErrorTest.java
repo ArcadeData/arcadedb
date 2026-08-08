@@ -222,7 +222,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   @Test
-  void csvVertexImportCountsAsyncPersistTimeFailureWhenOptedIn() {
+  void csvVertexImportCountsPersistTimeFailureWhenOptedIn() {
     final String databasePath = "target/databases/test-import-5968-csv-async-skip";
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
@@ -243,14 +243,87 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(result.get("errors")).isEqualTo(1L);
 
       try (final Database db = databaseFactory.open()) {
-        // BOB IS MISSING THE MANDATORY Email PROPERTY: IT FAILS AT ASYNC PERSIST TIME, THE OTHER TWO ARE IMPORTED.
-        // A FAILING ASYNC TASK ROLLS BACK ITS WHOLE IN-FLIGHT BATCH (DatabaseAsyncExecutorImpl#executeTask), NOT JUST
-        // ITSELF: "skip" MODE FORCES A BATCH SIZE OF 1 FOR THIS IMPORT (SEE loadVertices) SO THAT BLAST RADIUS IS
-        // ALWAYS EXACTLY THE FAILING ROW, WHICH IS WHY THE SURVIVING COUNT CAN BE ASSERTED EXACTLY HERE.
+        // BOB IS MISSING THE MANDATORY Email PROPERTY: IT FAILS AT PERSIST TIME (DocumentValidator, NOT THE SYNCHRONOUS
+        // Type-CONVERSION PATH), THE OTHER TWO ARE IMPORTED. "skip" MODE SAVES EACH VERTEX SYNCHRONOUSLY IN ITS OWN
+        // TRANSACTION (SEE loadVertices), SO A FAILING ROW'S rollback() CAN NEVER TOUCH A PREVIOUSLY COMMITTED SIBLING -
+        // WHICH IS WHY THE SURVIVING COUNT CAN BE ASSERTED EXACTLY HERE.
         assertThat(db.lookupByKey("Node", "Id", 2L).hasNext()).isFalse();
         assertThat(db.countType("Node", true)).isEqualTo(2);
         assertThat(db.lookupByKey("Node", "Id", 1L).next().getRecord().asVertex().getString("Name")).isEqualTo("Alice");
         assertThat(db.lookupByKey("Node", "Id", 3L).next().getRecord().asVertex().getString("Name")).isEqualTo("Carol");
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  /**
+   * Regression test for the PR #5974 review finding (round 4, "Confirmed"): a failure that surfaces AFTER the bucket
+   * write - a duplicate value on the unique index {@code loadVertices} auto-creates on {@code -typeIdProperty} -
+   * used to leave a "ghost" vertex: present in the bucket (inflating {@code countType()}) but never indexed, because
+   * the whole file shared one transaction that only got rolled back on total abort, never on a per-row skip. Each
+   * vertex now commits in its own transaction in skip mode, so a duplicate key rolls back only that one row.
+   */
+  @Test
+  void csvVertexImportRollsBackGhostRecordOnDuplicateKeyWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-csv-ghost-vertex";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try {
+      final Importer importer = new Importer(
+          ("-vertices src/test/resources/importer-vertices-duplicate-id.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long -typeIdUnique true -forceDatabaseCreate true -onRowError skip").split(
+              " "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+
+      try (final Database db = databaseFactory.open()) {
+        // BOB'S DUPLICATE Id=2 ROW MUST LEAVE NO TRACE: NEITHER A SECOND INDEX ENTRY NOR AN UNINDEXED GHOST IN THE
+        // BUCKET. IF THE GHOST-RECORD BUG WERE PRESENT, countType() WOULD REPORT 4 INSTEAD OF 3.
+        assertThat(db.countType("Node", true)).isEqualTo(3);
+        assertThat(db.lookupByKey("Node", "Id", 2L).next().getRecord().asVertex().getString("Name")).isEqualTo("Bob");
+        assertThat(db.lookupByKey("Node", "Id", 1L).next().getRecord().asVertex().getString("Name")).isEqualTo("Alice");
+        assertThat(db.lookupByKey("Node", "Id", 3L).next().getRecord().asVertex().getString("Name")).isEqualTo("Carol");
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  /**
+   * Same as {@link #csvVertexImportRollsBackGhostRecordOnDuplicateKeyWhenOptedIn()} but for the fully-synchronous
+   * {@code loadDocuments} path, against a manually created unique index (documents have no {@code -typeIdProperty}
+   * concept of their own).
+   */
+  @Test
+  void csvDocumentImportRollsBackGhostRecordOnDuplicateKeyWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-csv-ghost-doc";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Widget2");
+      db.command("sql", "CREATE PROPERTY Widget2.Code STRING");
+      db.command("sql", "CREATE INDEX ON Widget2 (Code) UNIQUE");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-documents src/test/resources/importer-documents-duplicate-code.csv -database " + databasePath
+              + " -documentType Widget2 -onRowError skip").split(" "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+
+      try (final Database db = databaseFactory.open()) {
+        assertThat(db.countType("Widget2", true)).isEqualTo(3);
+        assertThat(db.lookupByKey("Widget2", "Code", "B").next().getRecord().asDocument().getString("Name")).isEqualTo("Bob");
       }
     } finally {
       databaseFactory.open().drop();
@@ -305,7 +378,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   @Test
-  void jsonNestedObjectImportSkipsOutOfRangeValueAndKeepsProcessingSiblingsWhenOptedIn() {
+  void jsonNestedObjectImportSkipsWholeRecordAndKeepsProcessingSiblingsWhenOptedIn() {
     final String databasePath = "target/databases/test-import-5968-json-nested-skip";
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
@@ -329,9 +402,11 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(result.get("errors")).isNotNull();
 
       try (final Database db = databaseFactory.open()) {
-        // ALL THREE Orders MUST STILL BE PROCESSED (THE READER MUST NOT DESYNC AND SILENTLY DROP ORDER 3): BOB'S
-        // NESTED Customer FAILS AND IS SKIPPED, BUT ALICE'S AND CAROL'S SIBLING Customer RECORDS STILL GET CREATED.
-        assertThat(db.countType("Order", true)).isEqualTo(3);
+        // THE READER MUST NOT DESYNC AND SILENTLY DROP ORDER 3: BOB'S NESTED Customer FAILS, WHICH DISCARDS BOB'S
+        // WHOLE Order TOO (A NESTED FAILURE CAN ONLY BE UNDONE BY ROLLING BACK THE ENCLOSING TOP-LEVEL RECORD'S OWN
+        // TRANSACTION - THE NESTED Customer MAY ALREADY HAVE A BUCKET WRITE THAT NOTHING ELSE CAN SAFELY UNDO - SEE
+        // #5974 REVIEW ROUND 2), BUT ALICE'S AND CAROL'S Orders (AND THEIR Customers) STILL GET CREATED NORMALLY.
+        assertThat(db.countType("Order", true)).isEqualTo(2);
         assertThat(db.countType("Customer", true)).isEqualTo(2);
       }
     } finally {
