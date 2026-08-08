@@ -145,14 +145,9 @@ class KubernetesAutoJoinRetryTest {
 
   @Test
   void probeRetryPolicyIsBoundedNotUnboundedDefault() {
-    // Regression for issue #5973: RaftClient.Builder falls back to RetryPolicies.retryForeverNoSleep()
-    // when no policy is set explicitly. A setConfiguration ADD racing an in-flight reconfiguration on
-    // the peer fails fast with ReconfigurationInProgressException - a synchronous rejection, not an RPC
-    // that can time out - so an unbounded no-sleep policy spins inside a single blocking
-    // admin().setConfiguration() call as fast as the JVM can throw/catch/log, forever. This is exactly
-    // what happened in CI: the probe hammered a permanently-stuck reconfiguration for 5.5 hours straight
-    // (a 41GB log of the identical exception) until GitHub Actions' 6-hour job cap force-killed it. The
-    // probe client must always set a bounded policy so a stuck reconfiguration fails fast instead.
+    // Regression for issue #5973 (see KubernetesAutoJoin.PROBE_RETRY_POLICY for the full root-cause
+    // writeup): the probe client must always set a bounded retry policy, not fall back to Ratis's
+    // unbounded retryForeverNoSleep() default.
     assertThat(KubernetesAutoJoin.PROBE_RETRY_POLICY).isInstanceOf(RetryPolicies.RetryLimited.class);
     assertThat(((RetryPolicies.RetryLimited) KubernetesAutoJoin.PROBE_RETRY_POLICY).getMaxAttempts()).isEqualTo(5);
     // RetryLimited/RetryForeverWithSleep expose no sleep-time getter, only toString(); pin it here too
