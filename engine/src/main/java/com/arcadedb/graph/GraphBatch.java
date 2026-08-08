@@ -185,6 +185,20 @@ public class GraphBatch implements AutoCloseable {
    */
   public static volatile IntConsumer TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK = null;
 
+  /**
+   * Test-only fault-injection hook. Invoked with a 1-based call number at the end of each
+   * {@link #connectOutEdgesRangeLocal} bucket task, right before the surrounding
+   * {@code async.transaction} commits it. A test throwing a {@link ConcurrentModificationException} here
+   * drives the async executor's own CME retry (which re-invokes the same bucket lambda after a rollback,
+   * see {@code DatabaseAsyncTransaction.execute()}) and so verifies that a rolled-back attempt left no
+   * non-durable RID behind in the shared head-chunk caches (issue #5950 review cycle 4). Always
+   * {@code null} in production.
+   */
+  public static volatile IntConsumer TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK = null;
+
+  /** Monotonic call counter feeding {@link #TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK}'s 1-based argument. */
+  private final AtomicInteger outgoingEdgeCommitAttempt = new AtomicInteger(0);
+
   /** Monotonic call counter feeding {@link #TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK}'s 1-based argument. */
   private final AtomicInteger incomingEdgeCommitAttempt = new AtomicInteger(0);
 
@@ -219,14 +233,21 @@ public class GraphBatch implements AutoCloseable {
    * through a large {@code connectDeferredIncomingEdges()} pass, after which {@link #close()}
    * unconditionally re-runs the drain over the same deferred buffer.
    * <p>
-   * Valid only because both call sites leave the deferred incoming buffer untouched between a
-   * failed attempt and the retry that reprocesses it - {@code flush()}'s catch block never touches
-   * {@link #inEdgeCount} or the incoming arrays, and {@code close()} retries immediately with no
-   * intervening {@code newEdge()} calls - so the sort index rebuilt on retry is identical to the one
-   * built on the failed attempt. Reset to 0 alongside the buffer arrays only once
-   * {@code connectDeferredIncomingEdges()} completes ALL remaining work.
+   * Sound because the retry rebuilds its sort index over the SAME pinned row count
+   * ({@link #inEdgesDrainPrefix}) the failed attempt used, so the index has an identical shape and this
+   * raw offset still means the same thing. Reset to 0 only once a pinned prefix completes in full.
    */
   private int inEdgesResumeSortIndex = 0;
+
+  /**
+   * Number of buffered rows the in-progress (or last failed) incoming-edge drain pass covers, or 0 when
+   * no pass is pending. Pinning this decouples the resume state from later appends to the buffer (issue
+   * #5950 review cycle 4): {@link #partitionIncomingByDestBucket} is a counting sort, so a buffer that
+   * grew between a failed attempt and its retry would produce a differently-shaped sort index, against
+   * which {@link #inEdgesResumeSortIndex} (a raw index) and {@link #completedIncomingBuckets} (bucket
+   * ranges) would silently skip or reprocess groups. Rows appended past the pin are drained separately.
+   */
+  private int inEdgesDrainPrefix = 0;
 
   /**
    * Destination-bucket ids whose incoming-edge slice the parallel path
@@ -1476,39 +1497,77 @@ public class GraphBatch implements AutoCloseable {
    * so each vertex's segment is loaded, filled, and written exactly once.
    */
   private void connectDeferredIncomingEdges() {
-    LogManager.instance().log(this, Level.INFO,
-        "Connecting %d deferred incoming edges...", null, inEdgeCount);
+    // Drains in PINNED PREFIXES rather than straight over inEdgeCount (issue #5950 review cycle 4).
+    //
+    // The resume state (inEdgesResumeSortIndex, completedIncomingBuckets) is expressed against the sort
+    // index built at the top of a pass. That index is a counting sort over the buffer, so appending rows
+    // changes bucketCounts/bucketOffsets and therefore what a given raw index - and a given bucket's
+    // [from,to) range - refers to. A caller that catches the exception from a failed early drain and keeps
+    // calling newEdge() (nothing forbids it, and this class supports exactly that "absorb a transient
+    // failure and keep streaming" shape elsewhere - see createVerticesWithRetry for #4724) would grow the
+    // buffer between the failed attempt and the retry, and the resume state would then be applied to a
+    // differently-shaped index: silently skipping groups (edge loss) or reprocessing them (duplicates).
+    //
+    // Pinning the row count a failed pass covered, and reusing that exact pin on the retry, keeps the
+    // index shape identical across attempts. Rows appended after the pin are drained by a later iteration
+    // of the loop below, against their own freshly-built index.
+    while (inEdgeCount > 0) {
+      final int prefix = inEdgesDrainPrefix > 0 ? inEdgesDrainPrefix : inEdgeCount;
+      inEdgesDrainPrefix = prefix;
 
-    final long startNs = System.nanoTime();
+      LogManager.instance().log(this, Level.INFO,
+          "Connecting %d deferred incoming edges...", null, prefix);
 
-    // Build sort index, partitioned by destination bucket (O(n) counting sort)
-    final int[] inSortIndex = new int[inEdgeCount];
-    final int maxDstBucket = partitionIncomingByDestBucket(inSortIndex);
+      final long startNs = System.nanoTime();
 
-    if (parallelFlush)
-      connectIncomingEdgesParallel(inSortIndex, maxDstBucket);
-    else
-      connectIncomingEdgesSequential(inSortIndex);
+      // Build sort index over the pinned prefix only, partitioned by destination bucket (O(n) counting sort)
+      final int[] inSortIndex = new int[prefix];
+      final int maxDstBucket = partitionIncomingByDestBucket(inSortIndex, prefix);
 
-    final double ms = (System.nanoTime() - startNs) / 1_000_000.0;
-    LogManager.instance().log(this, Level.INFO,
-        "Incoming edges connected: %d edges in %.1f ms (%.0f edges/sec)",
-        null, inEdgeCount, ms, inEdgeCount / (ms / 1000.0));
+      if (parallelFlush)
+        connectIncomingEdgesParallel(inSortIndex, maxDstBucket);
+      else
+        connectIncomingEdgesSequential(inSortIndex, prefix);
 
-    // Free deferred buffers
-    inEdgeCount = 0;
+      final double ms = (System.nanoTime() - startNs) / 1_000_000.0;
+      LogManager.instance().log(this, Level.INFO,
+          "Incoming edges connected: %d edges in %.1f ms (%.0f edges/sec)",
+          null, prefix, ms, prefix / (ms / 1000.0));
+
+      // This prefix is fully durable (an exception from either connect* method above skips this point
+      // entirely, leaving the pin and the resume state in place for the retry). Drop it from the buffer and
+      // clear the resume state so the next iteration - or the next drain - starts clean.
+      discardDrainedIncomingPrefix(prefix);
+      inEdgesDrainPrefix = 0;
+      inEdgesResumeSortIndex = 0;
+      completedIncomingBuckets.clear();
+    }
+
+    // Fully drained - release the buffers so a long-lived batch does not hold them between drains.
     inEdgeBucketIds = null;
     inEdgePositions = null;
     inVertexBucketIds = null;
     inVertexPositions = null;
     inDstBucketIds = null;
     inDstPositions = null;
+  }
 
-    // All remaining work completed durably (an exception from either connect* method above skips this
-    // point entirely) - clear the cross-attempt resume state so the next drain starts clean (issue #5950
-    // review cycle 3).
-    inEdgesResumeSortIndex = 0;
-    completedIncomingBuckets.clear();
+  /**
+   * Removes the first {@code prefix} rows from the deferred incoming buffer, shifting anything appended
+   * after the pin down to the front. On the normal path {@code prefix == inEdgeCount}, so this is just a
+   * counter reset with no copying (issue #5950 review cycle 4).
+   */
+  private void discardDrainedIncomingPrefix(final int prefix) {
+    final int remaining = inEdgeCount - prefix;
+    if (remaining > 0) {
+      System.arraycopy(inEdgeBucketIds, prefix, inEdgeBucketIds, 0, remaining);
+      System.arraycopy(inEdgePositions, prefix, inEdgePositions, 0, remaining);
+      System.arraycopy(inVertexBucketIds, prefix, inVertexBucketIds, 0, remaining);
+      System.arraycopy(inVertexPositions, prefix, inVertexPositions, 0, remaining);
+      System.arraycopy(inDstBucketIds, prefix, inDstBucketIds, 0, remaining);
+      System.arraycopy(inDstPositions, prefix, inDstPositions, 0, remaining);
+    }
+    inEdgeCount = remaining;
   }
 
   /** Fires {@link #TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK}, if set, right before a deferred incoming-edge commit. */
@@ -1518,7 +1577,7 @@ public class GraphBatch implements AutoCloseable {
       hook.accept(incomingEdgeCommitAttempt.incrementAndGet());
   }
 
-  private void connectIncomingEdgesSequential(final int[] inSortIndex) {
+  private void connectIncomingEdgesSequential(final int[] inSortIndex, final int count) {
     beginTx();
     // Resume after the last durably committed group instead of recommitting it, if a previous attempt
     // at this drain partially succeeded before failing (issue #5950 review cycle 3).
@@ -1536,13 +1595,13 @@ public class GraphBatch implements AutoCloseable {
     final Map<Long, RID> inHeadUndoLog = new HashMap<>();
 
     try {
-      while (i < inEdgeCount) {
+      while (i < count) {
         final int idx = inSortIndex[i];
         final int dstBucket = inDstBucketIds[idx];
         final long dstPos = inDstPositions[idx];
 
         int j = i;
-        while (j < inEdgeCount) {
+        while (j < count) {
           final int jIdx = inSortIndex[j];
           if (inDstBucketIds[jIdx] != dstBucket || inDstPositions[jIdx] != dstPos)
             break;
@@ -1607,7 +1666,7 @@ public class GraphBatch implements AutoCloseable {
 
       fireBeforeIncomingEdgeCommitHook();
       database.commit();
-      inEdgesResumeSortIndex = inEdgeCount;
+      inEdgesResumeSortIndex = count;
     } catch (final RuntimeException e) {
       for (final Map.Entry<Long, RID> undo : inHeadUndoLog.entrySet()) {
         final long key = undo.getKey();
@@ -1671,8 +1730,16 @@ public class GraphBatch implements AutoCloseable {
       // and could still fail there, so only the OkCallback (fired strictly after database.commit()
       // succeeds, see DatabaseAsyncTransaction.execute()) guarantees membership implies a durable
       // commit (issue #5950 review cycle 3).
-      async.transaction(() -> connectIncomingEdgesRangeLocal(inSortIndex, from, to,
-              localDeferredInHead, localInChunkCache),
+      //
+      // The clear() makes each attempt start from an empty local map: async.transaction retries the same
+      // lambda on a ConcurrentModificationException, and a rolled-back attempt's entries point at records
+      // rollback undid (issue #5950 review cycle 4 - the retry does recompute and overwrite every entry
+      // for this fixed range, so this is belt-and-braces, but it removes the dependency on that argument).
+      async.transaction(() -> {
+            localDeferredInHead.clear();
+            localInChunkCache.clear();
+            connectIncomingEdgesRangeLocal(inSortIndex, from, to, localDeferredInHead, localInChunkCache);
+          },
           3, () -> completedIncomingBuckets.add(bucketId), e -> error.compareAndSet(null, e), slot);
     }
 
@@ -2456,16 +2523,20 @@ public class GraphBatch implements AutoCloseable {
   /**
    * Partitions deferred incoming edges by destination bucket using counting sort.
    */
-  private int partitionIncomingByDestBucket(final int[] inSortIndex) {
+  /**
+   * @param count number of leading buffer rows to partition - the pinned drain prefix, not necessarily
+   *              {@link #inEdgeCount} (issue #5950 review cycle 4).
+   */
+  private int partitionIncomingByDestBucket(final int[] inSortIndex, final int count) {
     int maxBucket = 0;
-    for (int i = 0; i < inEdgeCount; i++)
+    for (int i = 0; i < count; i++)
       if (inDstBucketIds[i] > maxBucket)
         maxBucket = inDstBucketIds[i];
 
     ensureCountingSortArrays(maxBucket);
 
     Arrays.fill(bucketCounts, 0, maxBucket + 1, 0);
-    for (int i = 0; i < inEdgeCount; i++)
+    for (int i = 0; i < count; i++)
       bucketCounts[inDstBucketIds[i]]++;
 
     bucketOffsets[0] = 0;
@@ -2473,14 +2544,14 @@ public class GraphBatch implements AutoCloseable {
       bucketOffsets[b + 1] = bucketOffsets[b] + bucketCounts[b];
 
     System.arraycopy(bucketOffsets, 0, countingSortCursor, 0, maxBucket + 1);
-    for (int i = 0; i < inEdgeCount; i++) {
+    for (int i = 0; i < count; i++) {
       final int bucket = inDstBucketIds[i];
       inSortIndex[countingSortCursor[bucket]++] = i;
     }
 
     // Ensure merge temp buffer is large enough
-    if (mergeTmp.length < inEdgeCount / 2 + 1)
-      mergeTmp = new int[inEdgeCount / 2 + 1];
+    if (mergeTmp.length < count / 2 + 1)
+      mergeTmp = new int[count / 2 + 1];
 
     // Sort within each bucket by position
     for (int b = 0; b <= maxBucket; b++)
@@ -2510,8 +2581,22 @@ public class GraphBatch implements AutoCloseable {
 
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
-    final ConcurrentHashMap<Long, RID> parallelDeferredOutHead = new ConcurrentHashMap<>();
-    final ConcurrentHashMap<Long, RID> parallelOutChunkCache = new ConcurrentHashMap<>();
+
+    // One local head-pointer map pair per scheduled bucket, merged into the class-level maps only for
+    // buckets that durably committed - structurally identical to connectIncomingEdgesParallel (issue
+    // #5950 review cycle 4). Two distinct pre-commit-write hazards make this necessary here too:
+    //   1. async.transaction(..., 3, ...) retries the SAME lambda on a ConcurrentModificationException,
+    //      re-invoking connectOutEdgesRangeLocal over the same range after a rollback. Anything the
+    //      failed attempt wrote into a class-level map still points at records that rollback undid, and
+    //      the retry reads those maps FIRST - dereferencing a RID that was never made durable.
+    //   2. A bucket that exhausts its 3 retries would otherwise still have its entries merged below,
+    //      poisoning deferredOutHead - the authoritative head-chunk fallback the review-cycle-1/2 fix
+    //      depends on - for the whole rest of the batch.
+    // Unlike the IN side this set is method-local, not an instance field: a failed flush() drops the
+    // outgoing buffer outright (see flush()'s catch block), so there is no cross-call resume to support.
+    final Map<Integer, Map<Long, RID>> bucketDeferredOutHead = new HashMap<>();
+    final Map<Integer, Map<Long, RID>> bucketOutChunkCache = new HashMap<>();
+    final Set<Integer> completedOutgoingBuckets = ConcurrentHashMap.newKeySet();
 
     for (int b = 0; b <= maxBucket; b++) {
       if (bucketCounts[b] == 0)
@@ -2520,18 +2605,33 @@ public class GraphBatch implements AutoCloseable {
       final int from = bucketOffsets[b];
       final int to = bucketOffsets[b + 1];
       final int slot = b % parallelLevel;
+      final int bucketId = b;
 
-      async.transaction(() -> connectOutEdgesRangeLocal(edgeRIDs, from, to,
-              parallelDeferredOutHead, parallelOutChunkCache),
-          3, null, e -> error.compareAndSet(null, e), slot);
+      // Re-created per attempt inside the lambda, not captured from here: a CME retry must not inherit
+      // the rolled-back attempt's entries (issue #5950 review cycle 4, hazard 1 above).
+      final Map<Long, RID> localDeferredOutHead = new HashMap<>();
+      final Map<Long, RID> localOutChunkCache = new HashMap<>();
+      bucketDeferredOutHead.put(bucketId, localDeferredOutHead);
+      bucketOutChunkCache.put(bucketId, localOutChunkCache);
+
+      async.transaction(() -> {
+            localDeferredOutHead.clear();
+            localOutChunkCache.clear();
+            connectOutEdgesRangeLocal(edgeRIDs, from, to, localDeferredOutHead, localOutChunkCache);
+          },
+          3, () -> completedOutgoingBuckets.add(bucketId), e -> error.compareAndSet(null, e), slot);
     }
 
     async.waitCompletion();
 
-    // Merge deferred head pointers back into the (non-concurrent) shared maps.
-    // putAll is unavailable on LongObjectHashMap by design; iterate and put.
-    parallelDeferredOutHead.forEach(deferredOutHead::put);
-    outChunkRIDCache.putAll(parallelOutChunkCache);
+    // Merge deferred head pointers back into the (non-concurrent) shared maps, single-threaded here, and
+    // ONLY for buckets that durably committed - putAll is unavailable on LongObjectHashMap by design.
+    for (final Map.Entry<Integer, Map<Long, RID>> entry : bucketDeferredOutHead.entrySet()) {
+      if (!completedOutgoingBuckets.contains(entry.getKey()))
+        continue;
+      entry.getValue().forEach(deferredOutHead::put);
+      bucketOutChunkCache.get(entry.getKey()).forEach(outChunkRIDCache::put);
+    }
 
     final Throwable t = error.get();
     if (t != null)
@@ -2543,8 +2643,8 @@ public class GraphBatch implements AutoCloseable {
    * Uses fill-then-persist for new segments and vectorized writes for existing ones.
    */
   private void connectOutEdgesRangeLocal(final RID[] edgeRIDs, final int from, final int to,
-      final ConcurrentHashMap<Long, RID> sharedDeferredOutHead,
-      final ConcurrentHashMap<Long, RID> sharedOutChunkCache) {
+      final Map<Long, RID> sharedDeferredOutHead,
+      final Map<Long, RID> sharedOutChunkCache) {
 
     int tmpSize = 64;
     int[] localTmpEdgeBucketIds = new int[tmpSize];
@@ -2618,17 +2718,35 @@ public class GraphBatch implements AutoCloseable {
         isNew = true;
       } else {
         final MutableVertex srcVertex = ((Vertex) database.lookupByRID(new RID(srcBucket, srcPos), true)).modify();
-        // #5667: see connectIncomingEdgesRangeLocal - check locally BEFORE calling getOrCreateOutEdgeChunk;
-        // this method runs concurrently across async-executor threads, so a shared instance field would race.
+        // #5667: check locally for an already-promoted super-node BEFORE assuming a plain segment; this
+        // method runs concurrently across async-executor threads, so a shared instance field would race.
         final RID srcHeadChunk = srcVertex.getOutEdgesHeadChunk();
-        if (srcHeadChunk != null && database.lookupByRID(srcHeadChunk, true) instanceof StripeDirectory directory) {
-          addGroupThroughStripedEdgeList(srcVertex, Vertex.DIRECTION.OUT, directory,
-              localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
-          i = j;
-          continue;
+        if (srcHeadChunk != null) {
+          final Record head = database.lookupByRID(srcHeadChunk, true);
+          if (head instanceof StripeDirectory directory) {
+            addGroupThroughStripedEdgeList(srcVertex, Vertex.DIRECTION.OUT, directory,
+                localTmpEdgeBucketIds, localTmpEdgePositions, localTmpVertexBucketIds, localTmpVertexPositions, groupSize);
+            i = j;
+            continue;
+          }
+          // Existing, durable head chunk - already committed on disk, so caching it immediately is safe
+          // even if this bucket's transaction later rolls back (issue #5950 review cycle 4).
+          outChunkRIDCache.put(vertexKey, srcHeadChunk);
+          outChunk = (EdgeSegment) head;
+          isNew = false;
+        } else {
+          // No segment yet: build in-memory only, same as the knownNewVertexKeys branch above - NOT via
+          // getOrCreateOutEdgeChunk(), which persists the segment AND writes it into the class-level
+          // outChunkRIDCache before this bucket's transaction commits. That eager write survives a
+          // rollback, so the async CME retry (or any later flush) would read a RID belonging to a
+          // rolled-back transaction and fail with RecordNotFoundException. Falling through to the isNew
+          // branch below routes the write through the per-bucket LOCAL maps, merged into the shared state
+          // only once this bucket's commit actually succeeds (issue #5950 review cycle 4), mirroring what
+          // connectIncomingEdgesRangeLocal already does for the IN direction.
+          final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
+          outChunk = new MutableEdgeSegment(database, segmentSize);
+          isNew = true;
         }
-        outChunk = getOrCreateOutEdgeChunk(srcVertex);
-        isNew = false;
       }
 
       final String edgeBucketName = database.getGraphEngine().getEdgesBucketName(srcBucket, Vertex.DIRECTION.OUT);
@@ -2660,6 +2778,12 @@ public class GraphBatch implements AutoCloseable {
 
       i = j;
     }
+
+    // Fired right before the surrounding async.transaction commits this bucket's work, so a test hook
+    // throwing here simulates that commit failing (issue #5950 review cycle 4).
+    final IntConsumer hook = TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK;
+    if (hook != null)
+      hook.accept(outgoingEdgeCommitAttempt.incrementAndGet());
   }
 
   // ---------------------------------------------------------------------------

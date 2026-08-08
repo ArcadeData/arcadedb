@@ -48,6 +48,13 @@ public final class LongObjectHashMap<V> {
   private int      capacity;
   private int      mask;
   private int      size;
+  /**
+   * Slots holding {@link #TOMBSTONE_KEY}. Counted toward {@link #threshold} alongside {@link #size}
+   * because every linear probe here terminates only on {@code EMPTY_KEY}: if removals were allowed to
+   * fill the table with tombstones without ever triggering a rehash, a lookup for an absent key would
+   * find no empty slot to stop at and spin forever.
+   */
+  private int      tombstones;
   private int      threshold;
 
   public LongObjectHashMap() {
@@ -82,7 +89,13 @@ public final class LongObjectHashMap<V> {
         final int target = tombstoneIdx >= 0 ? tombstoneIdx : idx;
         keys[target] = key;
         values[target] = value;
-        if (++size >= threshold)
+        if (tombstoneIdx >= 0)
+          // Reused a tombstoned slot: occupancy is unchanged, one fewer tombstone.
+          tombstones--;
+        ++size;
+        // size + tombstones is exactly the number of non-EMPTY slots; keeping that under the threshold
+        // guarantees an empty slot always remains for probes to terminate on.
+        if (size + tombstones >= threshold)
           resize();
         return null;
       }
@@ -119,6 +132,7 @@ public final class LongObjectHashMap<V> {
         keys[idx] = TOMBSTONE_KEY;
         values[idx] = null;
         size--;
+        tombstones++;
         return removed;
       }
       idx = (idx + 1) & mask;
@@ -171,6 +185,7 @@ public final class LongObjectHashMap<V> {
     Arrays.fill(keys, EMPTY_KEY);
     Arrays.fill(values, null);
     size = 0;
+    tombstones = 0;
   }
 
   /**
@@ -215,9 +230,18 @@ public final class LongObjectHashMap<V> {
     return (int) h;
   }
 
+  /**
+   * Rehashes into a table sized from the LIVE entry count, dropping all tombstones. Sizing from
+   * {@link #size} rather than always doubling matters once {@link #remove(long)} is in play: a
+   * remove-heavy workload triggers this through the tombstone term of the threshold check, and must
+   * reclaim those slots in place instead of doubling the table every time.
+   */
   @SuppressWarnings("unchecked")
   private void resize() {
-    final int newCapacity = capacity << 1;
+    int newCapacity = capacity;
+    while (size >= (int) (newCapacity * LOAD_FACTOR))
+      newCapacity <<= 1;
+
     final int newMask = newCapacity - 1;
     final long[] newKeys = new long[newCapacity];
     final Object[] newValues = new Object[newCapacity];
@@ -239,6 +263,7 @@ public final class LongObjectHashMap<V> {
     capacity = newCapacity;
     mask = newMask;
     threshold = (int) (newCapacity * LOAD_FACTOR);
+    tombstones = 0;
   }
 
   private static int nextPowerOfTwo(final int v) {

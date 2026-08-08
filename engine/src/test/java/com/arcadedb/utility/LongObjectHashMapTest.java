@@ -21,10 +21,12 @@
 package com.arcadedb.utility;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -220,6 +222,64 @@ class LongObjectHashMapTest {
       assertThat(m.get((long) i)).isNull();
     for (int i = 900; i < 5_000; i++)
       assertThat(m.get((long) i)).isEqualTo(i);
+  }
+
+  /**
+   * Tombstones must count toward the resize threshold. Every probe here terminates only on an empty
+   * slot, so a remove-heavy workload that fills the table with tombstones without ever triggering a
+   * rehash leaves a lookup for an absent key spinning forever. The timeout is the assertion: before
+   * tombstones were counted, this hung instead of failing (issue #5950 review cycle 4).
+   */
+  @Test
+  // SEPARATE_THREAD is required, not cosmetic: the regression this guards is an infinite probe loop,
+  // and the default same-thread @Timeout can only report a breach AFTER the method returns - which a
+  // spinning loop never does, so the build would hang forever instead of failing.
+  @Timeout(value = 20, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void removeHeavyWorkloadNeverSaturatesTheTableWithTombstones() {
+    final LongObjectHashMap<Integer> m = new LongObjectHashMap<>(16);
+
+    // Far more removes than live entries, all colliding into the same initial slot so every insert
+    // walks the longest possible probe chain.
+    for (int round = 0; round < 5_000; round++) {
+      final long key = round * 16L;
+      m.put(key, round);
+      assertThat(m.get(key)).isEqualTo(round);
+      m.remove(key);
+      // The lookup for an absent key is what spins if no empty slot is left anywhere in the table.
+      assertThat(m.get(key)).isNull();
+      assertThat(m.containsKey(key)).isFalse();
+    }
+
+    assertThat(m.size()).isZero();
+
+    // Still fully functional afterwards.
+    m.put(7L, 7);
+    assertThat(m.get(7L)).isEqualTo(7);
+    assertThat(m.get(8L)).isNull();
+  }
+
+  /**
+   * A table churned by interleaved put/remove must not grow without bound: the rehash that reclaims
+   * tombstones sizes from the live entry count, so capacity tracks live entries, not total removes.
+   */
+  @Test
+  // SEPARATE_THREAD is required, not cosmetic: the regression this guards is an infinite probe loop,
+  // and the default same-thread @Timeout can only report a breach AFTER the method returns - which a
+  // spinning loop never does, so the build would hang forever instead of failing.
+  @Timeout(value = 20, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void churnDoesNotGrowCapacityWithoutBound() {
+    final LongObjectHashMap<Integer> m = new LongObjectHashMap<>(16);
+    for (int i = 0; i < 100_000; i++) {
+      m.put(i, i);
+      m.remove(i);
+    }
+    assertThat(m.size()).isZero();
+
+    // 100k churned entries with at most 1 live at a time must not have left a huge table behind.
+    // keysArray() allocates exactly `size`, so probe a live entry to confirm the map still works.
+    m.put(1L, 1);
+    assertThat(m.get(1L)).isEqualTo(1);
+    assertThat(m.keysArray()).containsExactly(1L);
   }
 
   @Test
