@@ -219,6 +219,21 @@ public class RedisNetworkExecutor extends Thread {
 
       final String cmdString = ((String) cmd).toUpperCase(Locale.ENGLISH);
 
+      // A RESP2 null bulk string ($-1) is only meaningful as an "absent" value; no real command handler
+      // below is written to expect one as an argument (issue #5911 made it reachable here at all, since the
+      // $ branch used to desync instead of returning null). Reject it uniformly, with a clean protocol
+      // error, rather than letting whichever handler happens to touch it first crash with a raw
+      // NullPointerException it wasn't written to expect - e.g. defaultBucket is a ConcurrentHashMap, whose
+      // put/get reject a null key or value outright, so "SET key $-1" or "GET $-1" would otherwise NPE deep
+      // inside setVariable/getVariable instead of getting a clear, single reply.
+      for (int i = 1; i < list.size(); i++) {
+        if (list.get(i) == null) {
+          value.append("-ERR Protocol error: unexpected null bulk string argument");
+          appendCrLf();
+          return;
+        }
+      }
+
       // Redis maps commands directly to engine operations rather than going through
       // Database.query/command, so the engine-boundary span never fires for it. Open one here so
       // Redis is traced like the other protocols (protocol=redis comes from ProtocolContext, set in

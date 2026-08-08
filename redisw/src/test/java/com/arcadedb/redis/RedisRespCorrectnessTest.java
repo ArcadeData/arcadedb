@@ -21,6 +21,7 @@ package com.arcadedb.redis;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
@@ -115,6 +116,31 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
+  void nullBulkStringAsCommandArgumentIsRejectedCleanly() throws IOException {
+    // $-1 is reachable as any array element now (issue #5911's fix), not just the command name - including
+    // as a SET argument, which used to reach ConcurrentHashMap.put() with a null value and NPE deep inside
+    // setVariable() instead of getting one clear reply. Must get a clean protocol error instead, and the
+    // connection must stay usable afterward.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      assertThat(readReply(socket)).isEqualTo("+OK");
+
+      sendRaw(socket, "*3\r\n$3\r\nSET\r\n$6\r\nsomeky\r\n$-1\r\n");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("null bulk string");
+
+      // The connection must still be usable - the malformed command must not have desynced the parser or
+      // left the connection in a broken state.
+      sendCommand(socket, "PING");
+      assertThat(readReply(socket)).isEqualTo("+PONG");
+    }
+  }
+
+  @Test
+  @Tag("slow")
   void idleUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws IOException {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
     try {
@@ -136,6 +162,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
+  @Tag("slow")
   void authenticatedConnectionIsNotClosedWhileIdle() throws Exception {
     // The idle timeout only bounds the pre-authentication window: once authenticated, a RESP connection is
     // expected to sit idle between commands (that is normal client usage, not a hostile pattern).
