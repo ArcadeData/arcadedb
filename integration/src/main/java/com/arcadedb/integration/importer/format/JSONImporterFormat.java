@@ -132,13 +132,11 @@ public class JSONImporterFormat implements FormatImporter {
   private void parseRecords(final JsonReader reader, final Database database, final ImporterSettings settings,
       final ImporterContext context,
       final JSONArray mapping, boolean ignore) throws IOException {
-    // EACH RECORD COMMITS/ROLLS BACK ITS OWN TRANSACTION BELOW, REGARDLESS OF -onRowError. database.begin() PUSHES A
-    // NESTED TRANSACTION WHEN ONE IS ALREADY ACTIVE RATHER THAN REUSING IT, SO THIS NEVER TOUCHES A CALLER'S PENDING
-    // WORK DIRECTLY - BUT IN skip MODE EACH NESTED commit() IS STILL INDEPENDENTLY DURABLE, SO A RECORD WOULD PERSIST
-    // EVEN IF THE CALLER'S OWN (E.G. AN HTTP COMMAND'S ATOMIC) TRANSACTION LATER FAILS. THIS IS ONLY A CONCERN ON AN
-    // EXTERNALLY-MANAGED database (SEE ImporterContext#externallyManagedDatabase): A SELF-OPENED database'S ACTIVE
-    // TRANSACTION IS THIS IMPORTER'S OWN, ALWAYS-EMPTY AMBIENT ONE FROM openDatabase(), SAFE TO NEST UNDER. FAIL
-    // LOUDLY INSTEAD OF RISKING A CALLER'S TRANSACTION, SAME AS CSVImporterFormat.
+    // SAME GUARD AND REASONING AS CSVImporterFormat (see ImporterSettings#isSkipOnRowError()): EACH RECORD BELOW
+    // COMMITS/ROLLS BACK ITS OWN TRANSACTION, WHICH database.begin() ACHIEVES BY NESTING RATHER THAN REUSING ONE
+    // THAT'S ALREADY ACTIVE - BUT A NESTED commit() IS STILL INDEPENDENTLY DURABLE, SO ON AN EXTERNALLY-MANAGED
+    // database (ImporterContext#externallyManagedDatabase) THAT COULD PERSIST A RECORD EVEN IF THE CALLER'S OWN
+    // TRANSACTION LATER FAILS. FAIL LOUDLY INSTEAD OF RISKING IT.
     if (settings.isSkipOnRowError() && context.externallyManagedDatabase && database.isTransactionActive())
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 

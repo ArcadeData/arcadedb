@@ -510,6 +510,13 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
         assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
             .hasRootCauseInstanceOf(IllegalStateException.class);
+
+        // THE GUARD MUST FIRE BEFORE loadVertices()'S OWN UNIQUE-INDEX AUTO-CREATION SIDE EFFECT, NOT AFTER: THAT
+        // database.transaction(...) CALL COMMITS INDEPENDENTLY OF THIS METHOD'S OWN TRANSACTION, SO A GUARD CHECKED
+        // TOO LATE WOULD STILL LEAVE THE INDEX BEHIND EVEN THOUGH THE IMPORT ITSELF WAS REJECTED. (THE Id PROPERTY
+        // ITSELF ALREADY EXISTS REGARDLESS OF THE GUARD - Importer#loadFromSource() AUTO-CREATES IT FROM SCHEMA
+        // ANALYSIS BEFORE format.load() EVEN RUNS - SO ONLY THE INDEX IS A MEANINGFUL SIGNAL HERE.)
+        assertThat(db.getSchema().getType("Node").getIndexesByProperties("Id")).isEmpty();
       } finally {
         if (db.isTransactionActive())
           db.rollback();

@@ -89,20 +89,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // SUMMARY LOG BELOW REPORTS ONLY THE DELTA THIS METHOD CONTRIBUTED, NOT THE RUNNING TOTAL.
     final long errorsBefore = context.errors.get();
 
-    // IN "skip" MODE, EACH ROW GETS ITS OWN commit()/rollback() INSTEAD OF SHARING ONE TRANSACTION FOR THE WHOLE FILE
-    // (WHY: SEE ImporterSettings#isSkipOnRowError()). THE OTHER THROWING CALL IN THIS METHOD, csvParser.parseNext(),
-    // ONLY RUNS AT THE TOP OF THE NEXT LOOP ITERATION - RIGHT AFTER THE PRIOR ROW'S TRANSACTION WAS ALREADY COMMITTED
-    // OR ROLLED BACK AND A FRESH, EMPTY ONE BEGUN - SO AN IOException FROM IT CAN NEVER LEAVE A ROW'S PARTIAL WRITE
-    // SITTING IN AN OPEN TRANSACTION.
-    //
-    // parseNext() IS DELIBERATELY LEFT OUTSIDE THE PER-ROW try/catch BELOW, UNLIKE THE ROW-PROCESSING LOGIC: A
-    // univocity TextParsingException (E.G. A VALUE EXCEEDING maxCharsPerColumn/maxColumns, A MALFORMED QUOTED FIELD)
-    // MEANS THE UNDERLYING PARSER'S OWN POSITION TRACKING IS COMPROMISED. TESTED EMPIRICALLY: CATCHING SUCH AN
-    // EXCEPTION AND CALLING parseNext() AGAIN DOES NOT CLEANLY RESUME AT THE NEXT LINE - IT CAN RETURN A TRUNCATED,
-    // WRONG ROW AND SILENTLY DROP THE FOLLOWING ONE ENTIRELY, WITH NO ERROR RAISED FOR THE LOST ROW. THAT IS WORSE
-    // THAN ABORTING, SO A CSV-SYNTAX-LEVEL PARSE FAILURE STILL ABORTS THE IMPORT EVEN IN "skip" MODE; ONLY
-    // ROW-CONTENT VALIDATION FAILURES (OUT-OF-RANGE VALUES, MISSING MANDATORY PROPERTIES, DUPLICATE KEYS, ...) ARE
-    // SKIPPABLE.
+    // "skip" MODE: EACH ROW OWNS ITS OWN commit()/rollback() (WHY: ImporterSettings#isSkipOnRowError()). csvParser.parseNext(),
+    // THIS METHOD'S ONLY OTHER THROWING CALL, RUNS AT THE TOP OF THE NEXT ITERATION - AFTER THE PRIOR ROW'S TRANSACTION
+    // ALREADY CLOSED - SO ITS IOException NEVER HITS AN OPEN ONE. IT IS DELIBERATELY LEFT OUTSIDE THE PER-ROW try/catch
+    // THOUGH: A univocity TextParsingException (E.G. maxCharsPerColumn/maxColumns EXCEEDED) LEAVES THE PARSER'S OWN
+    // POSITION TRACKING COMPROMISED - VERIFIED EMPIRICALLY THAT RETRYING parseNext() AFTER ONE CAN SILENTLY DROP THE
+    // NEXT GOOD ROW WITH NO ERROR, WORSE THAN ABORTING - SO A SYNTAX-LEVEL PARSE FAILURE STILL ABORTS EVEN IN "skip"
+    // MODE; ONLY ROW-CONTENT FAILURES (OUT-OF-RANGE VALUES, MISSING MANDATORY PROPERTIES, DUPLICATE KEYS) ARE SKIPPABLE.
     final boolean skipOnError = settings.isSkipOnRowError();
 
     // "skip" MODE COMMITS/ROLLS BACK PER ROW, SO IT MUST OWN THE TRANSACTION OUTRIGHT. AN ACTIVE TRANSACTION ON A
@@ -208,6 +201,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
+    // CHECKED FIRST, BEFORE ANY SCHEMA SIDE EFFECT BELOW (typeIdProperty/UNIQUE INDEX AUTO-CREATION): "skip" MODE
+    // MUST OWN THE TRANSACTION OUTRIGHT, SINCE IT COMMITS/ROLLS BACK PER ROW (SEE ImporterSettings#isSkipOnRowError()).
+    // database.transaction(...) BELOW COMMITS INDEPENDENTLY OF THIS METHOD'S OWN TRANSACTION, SO THE GUARD HAS TO
+    // FIRE BEFORE THAT RUNS - OTHERWISE A REJECTED skip-MODE CALL COULD STILL LEAVE A NEWLY CREATED PROPERTY/INDEX
+    // COMMITTED ON THE WAY TO THROWING.
+    if (settings.isSkipOnRowError() && context.externallyManagedDatabase && database.isTransactionActive())
+      throw ImporterSettings.newExclusiveTransactionRequiredException();
+
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.vertexTypeName);
     if (entity == null) {
       LogManager.instance().log(this, Level.INFO, "Vertex type '%s' not defined", null, settings.vertexTypeName);
@@ -248,11 +249,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // FOR WHY (AN ASYNC BATCH ROLLBACK ON A PERSIST-TIME FAILURE WOULD TAKE DOWN EVERY OTHER VERTEX QUEUED IN THE SAME
     // UNCOMMITTED BATCH, NOT JUST THE FAILING ONE).
     final boolean skipOnError = settings.isSkipOnRowError();
-
-    // SAME REASONING AS loadDocuments(): "skip" MODE MUST OWN THE TRANSACTION OUTRIGHT, SINCE IT COMMITS/ROLLS BACK
-    // PER ROW.
-    if (skipOnError && context.externallyManagedDatabase && database.isTransactionActive())
-      throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
     if (!skipOnError)
