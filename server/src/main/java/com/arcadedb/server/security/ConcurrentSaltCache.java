@@ -41,6 +41,19 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * PBKDF2 recomputation.
  */
 public class ConcurrentSaltCache {
+  // ConcurrentHashMap(int) already treats its argument as an element-count estimate and reserves
+  // its own ~1.5x headroom internally (tableSizeFor(n + (n >>> 1) + 1)) - unlike HashMap, where the
+  // argument is a bucket count and the caller must pre-divide by the load factor. Applying that
+  // HashMap-only idiom here double-provisioned the table and, for maxSize near Integer.MAX_VALUE,
+  // sized ConcurrentHashMap's sizeCtl so large that its lazy table allocation - triggered by the
+  // first put()/get() call, not by this constructor - OOMs on a multi-GB Node[] array.
+  //
+  // The cache is FIFO-evicted down to maxSize by put() regardless of the map's starting capacity
+  // (see the loop below), so pre-sizing for a theoretical maxSize far beyond any realistic number
+  // of distinct credentials buys nothing: cap the pre-sized capacity at a practical ceiling and let
+  // ConcurrentHashMap resize normally if actual usage ever exceeds it.
+  private static final int MAX_PRESIZE_CAPACITY = 1 << 16;
+
   private final ConcurrentHashMap<String, String> map;
   private final ConcurrentLinkedQueue<String>     insertionOrder = new ConcurrentLinkedQueue<>();
   private final int                               maxSize;
@@ -50,12 +63,8 @@ public class ConcurrentSaltCache {
       throw new IllegalArgumentException("Cache size must be greater than 0");
     this.maxSize = maxSize;
 
-    // Guard against integer overflow for very large cache sizes: (int) (maxSize / 0.75f) + 1 can
-    // wrap to a negative value, which ConcurrentHashMap rejects. Cap at the map's max capacity.
-    int initialCapacity = (int) (maxSize / 0.75f) + 1;
-    if (initialCapacity < 0)
-      initialCapacity = 1 << 30;
-    this.map = new ConcurrentHashMap<>(Math.max(16, initialCapacity));
+    final int initialCapacity = Math.max(16, Math.min(maxSize, MAX_PRESIZE_CAPACITY));
+    this.map = new ConcurrentHashMap<>(initialCapacity);
   }
 
   public String get(final String key) {
