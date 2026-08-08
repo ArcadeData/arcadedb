@@ -494,6 +494,40 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
+   * Symmetric to {@link #sqlImportDatabaseSupportsOnRowErrorSkipSetting()} but for CSV vertices (routed through
+   * {@code loadVertices} instead of {@code loadDocuments}) via the embedding {@code Importer(Database, String)}
+   * constructor directly, with no pre-existing active transaction: confirms skip mode works normally through this
+   * entry point when it isn't rejected by the guard exercised in
+   * {@link #csvVertexImportRejectsSkipModeInsideActiveTransaction()}.
+   */
+  @Test
+  void csvVertexImportSupportsSkipModeViaEmbeddingConstructorWithoutActiveTransaction() {
+    final String databasePath = "target/databases/test-import-5968-csv-embed-vertex";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Score SHORT");
+
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = "src/test/resources/importer-vertices-outofrange.csv";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+      importer.settings.onRowError = "skip";
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+      assertThat(db.countType("Node", true)).isEqualTo(2);
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
    * A CSV-syntax-level parse failure (a value exceeding {@code maxPropertySize}, causing univocity-parsers'
    * {@code TextParsingException}) must still abort the import even in skip mode: {@code csvParser.parseNext()} is
    * deliberately left outside the per-row try/catch (see the comment in {@code loadDocuments}/{@code loadVertices}).
