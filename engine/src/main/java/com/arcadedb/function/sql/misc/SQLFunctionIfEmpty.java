@@ -69,6 +69,16 @@ public class SQLFunctionIfEmpty extends SQLFunctionAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     /*

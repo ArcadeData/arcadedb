@@ -48,7 +48,9 @@ public class SQLMethodLeft extends AbstractSQLMethod {
 
     final String valueAsString = value.toString();
 
-    final int len = Integer.parseInt(params[0].toString());
+    // A negative length has no characters to return, same as MySQL's LEFT(): clamp rather than let
+    // substring() throw StringIndexOutOfBoundsException (#5885).
+    final int len = Math.max(0, Integer.parseInt(params[0].toString()));
     return valueAsString.substring(0, len <= valueAsString.length() ? len : valueAsString.length());
   }
 }

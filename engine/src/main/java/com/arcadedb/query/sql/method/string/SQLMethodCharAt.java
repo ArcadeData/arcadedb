@@ -43,11 +43,16 @@ public class SQLMethodCharAt extends AbstractSQLMethod {
 
   @Override
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
-    if (params[0] == null) {
+    if (value == null || params[0] == null) {
       return null;
     }
 
     final int index = Integer.parseInt(params[0].toString());
-    return "" + value.toString().charAt(index);
+    final String valueAsString = value.toString();
+    // Out of range (including negative) has no character to return: null rather than letting
+    // charAt() throw StringIndexOutOfBoundsException (#5885).
+    if (index < 0 || index >= valueAsString.length())
+      return null;
+    return "" + valueAsString.charAt(index);
   }
 }
