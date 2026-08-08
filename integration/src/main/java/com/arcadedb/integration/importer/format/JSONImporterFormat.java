@@ -140,10 +140,7 @@ public class JSONImporterFormat implements FormatImporter {
     // TRANSACTION IS THIS IMPORTER'S OWN, ALWAYS-EMPTY AMBIENT ONE FROM openDatabase(), SAFE TO NEST UNDER. FAIL
     // LOUDLY INSTEAD OF RISKING A CALLER'S TRANSACTION, SAME AS CSVImporterFormat.
     if (settings.isSkipOnRowError() && context.externallyManagedDatabase && database.isTransactionActive())
-      throw new IllegalStateException(
-          "-onRowError skip requires exclusive control of the transaction and cannot be used while a transaction is "
-              + "already active (e.g. inside a caller-managed transaction, or a server HTTP command executed with the "
-              + "default atomic/autoCommit behavior - retry with autoCommit=false or from a session)");
+      throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     reader.beginArray();
 

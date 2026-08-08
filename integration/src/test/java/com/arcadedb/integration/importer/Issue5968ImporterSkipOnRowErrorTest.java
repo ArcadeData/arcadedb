@@ -424,6 +424,63 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  private static final String NESTED_VERTEX_MAPPING = """
+      {
+        "Orders":[
+          {
+            "@cat":"v",
+            "@type":"Order",
+            "customer":{
+              "@cat":"v",
+              "@type":"Customer"
+            }
+          }
+        ]
+      }""";
+
+  /**
+   * Same scenario as {@link #jsonNestedObjectImportSkipsWholeRecordAndKeepsProcessingSiblingsWhenOptedIn()} but with
+   * a {@code "@cat":"v"} mapping instead of {@code "d"}, so the counter snapshot/restore in {@code parseRecords()}
+   * exercises {@code context.createdVertices} - the sibling counter to {@code createdDocuments}, otherwise
+   * untested by any other case here.
+   */
+  @Test
+  void jsonNestedVertexImportSkipsWholeRecordWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-json-nested-vertex-skip";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE VERTEX TYPE Customer");
+      db.getSchema().getType("Customer").createProperty("age", Type.SHORT);
+    }
+
+    try {
+      final Importer importer = new Importer(new String[] {
+          "-url", "file://src/test/resources/importer-documents-nested-outofrange.json",
+          "-database", databasePath,
+          "-mapping", NESTED_VERTEX_MAPPING,
+          "-onRowError", "skip"
+      });
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+      // BOB'S Order AND ITS NESTED Customer MUST BOTH BE EXCLUDED FROM createdVertices, NOT JUST createdDocuments
+      // (WHICH THIS MAPPING DOESN'T EVEN TOUCH) - 2 Orders + 2 Customers SURVIVE.
+      assertThat(result.get("createdVertices")).isEqualTo(4L);
+      assertThat(result.get("createdDocuments")).isNull();
+
+      try (final Database db = databaseFactory.open()) {
+        assertThat(db.countType("Order", true)).isEqualTo(2);
+        assertThat(db.countType("Customer", true)).isEqualTo(2);
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
   /**
    * "skip" mode commits/rolls back per row, so it must own the transaction outright. Simulates what happens when
    * {@code -onRowError skip} is used from inside a caller-managed transaction (e.g. a server HTTP command executed

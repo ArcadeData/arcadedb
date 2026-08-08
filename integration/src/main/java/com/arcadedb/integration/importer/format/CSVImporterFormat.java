@@ -85,6 +85,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
     final long beginTime = System.currentTimeMillis();
+    // context.errors IS SHARED ACROSS THE WHOLE IMPORT (DOCUMENTS/VERTICES/EDGES ALL FEED IT), SO THE PER-PHASE
+    // SUMMARY LOG BELOW REPORTS ONLY THE DELTA THIS METHOD CONTRIBUTED, NOT THE RUNNING TOTAL.
+    final long errorsBefore = context.errors.get();
 
     // IN "skip" MODE, EACH ROW GETS ITS OWN commit()/rollback() INSTEAD OF SHARING ONE TRANSACTION FOR THE WHOLE FILE
     // (WHY: SEE ImporterSettings#isSkipOnRowError()). THE OTHER THROWING CALL IN THIS METHOD, csvParser.parseNext(),
@@ -110,10 +113,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // DEFAULT) AN ACTIVE TRANSACTION MAY HOLD UNRELATED PENDING WORK: THE FIRST ROW'S commit()/rollback() WOULD
     // SILENTLY COMMIT OR DISCARD IT. FAIL LOUDLY INSTEAD OF DOING THAT.
     if (skipOnError && context.externallyManagedDatabase && database.isTransactionActive())
-      throw new IllegalStateException(
-          "-onRowError skip requires exclusive control of the transaction and cannot be used while a transaction is "
-              + "already active (e.g. inside a caller-managed transaction, or a server HTTP command executed with the "
-              + "default atomic/autoCommit behavior - retry with autoCommit=false or from a session)");
+      throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
@@ -199,7 +199,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               elapsedInSecs > 0 ? context.createdDocuments.get() / elapsedInSecs : context.createdDocuments.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total documents: %d", null, context.createdDocuments.get());
-      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get());
+      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
 
       csvParser.stopParsing();
     }
@@ -242,6 +242,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.INFO, "Started importing vertices from CSV source");
 
     final long beginTime = System.currentTimeMillis();
+    final long errorsBefore = context.errors.get();
 
     // "skip" MODE SAVES VERTICES SYNCHRONOUSLY INSTEAD OF VIA database.async() - SEE ImporterSettings#isSkipOnRowError()
     // FOR WHY (AN ASYNC BATCH ROLLBACK ON A PERSIST-TIME FAILURE WOULD TAKE DOWN EVERY OTHER VERTEX QUEUED IN THE SAME
@@ -251,10 +252,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // SAME REASONING AS loadDocuments(): "skip" MODE MUST OWN THE TRANSACTION OUTRIGHT, SINCE IT COMMITS/ROLLS BACK
     // PER ROW.
     if (skipOnError && context.externallyManagedDatabase && database.isTransactionActive())
-      throw new IllegalStateException(
-          "-onRowError skip requires exclusive control of the transaction and cannot be used while a transaction is "
-              + "already active (e.g. inside a caller-managed transaction, or a server HTTP command executed with the "
-              + "default atomic/autoCommit behavior - retry with autoCommit=false or from a session)");
+      throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
     if (!skipOnError)
@@ -358,7 +356,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               elapsedInSecs > 0 ? context.createdVertices.get() / elapsedInSecs : context.createdVertices.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total vertices.: %d", null, context.createdVertices.get());
-      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get());
+      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
 
       csvParser.stopParsing();
     }

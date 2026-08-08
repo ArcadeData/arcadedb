@@ -21,7 +21,6 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
 
 public class ImporterSettings {
@@ -105,11 +104,24 @@ public class ImporterSettings {
    * Because of that per-row transaction ownership, "skip" requires exclusive control of the transaction and cannot
    * be used while one is already active on the target {@code Database} - e.g. inside an embedding caller's own
    * transaction, or a server HTTP command executed with the default atomic/{@code autoCommit} behavior, which wraps
-   * the whole command in one transaction. Both CSV formats reject this combination eagerly with a clear
-   * {@code IllegalStateException} rather than silently committing/discarding whatever the caller had pending.
+   * the whole command in one transaction. Both CSV and JSON reject this combination eagerly (see
+   * {@link #newExclusiveTransactionRequiredException()}) rather than silently committing/discarding whatever the
+   * caller had pending.
    */
   public boolean isSkipOnRowError() {
     return "skip".equalsIgnoreCase(onRowError);
+  }
+
+  /**
+   * Shared exception for the constraint documented on {@link #isSkipOnRowError()}: {@code -onRowError skip} commits
+   * or rolls back per row, so it must own the transaction outright. Used by both {@code CSVImporterFormat} and
+   * {@code JSONImporterFormat} so the message can't drift between them.
+   */
+  public static IllegalStateException newExclusiveTransactionRequiredException() {
+    return new IllegalStateException(
+        "-onRowError skip requires exclusive control of the transaction and cannot be used while a transaction is "
+            + "already active (e.g. inside a caller-managed transaction, or a server HTTP command executed with the "
+            + "default atomic/autoCommit behavior - retry with autoCommit=false or from a session)");
   }
 
   public <T> T getValue(final String name, final T defaultValue) {
@@ -161,7 +173,7 @@ public class ImporterSettings {
     case "onRowError" -> {
       if (!"abort".equalsIgnoreCase(value) && !"skip".equalsIgnoreCase(value))
         throw new IllegalArgumentException("Invalid value '" + value + "' for -onRowError. Supported values are 'abort' and 'skip'");
-      onRowError = value.toLowerCase(Locale.ENGLISH);
+      onRowError = value;
     }
     // DOCUMENT SETTINGS
     case "documents" -> documents = value;
