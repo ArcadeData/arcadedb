@@ -105,18 +105,22 @@ public class MethodCall extends SimpleNode {
     }
     if (isGraphFunction()) {
       final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
-      function.checkArity(paramValues.toArray());
+      if (function == null)
+        throw new CommandExecutionException("Function not found: " + name);
+
+      final Object[] functionParams = paramValues.toArray();
+      function.checkArity(functionParams);
       if (function instanceof SQLFunctionFiltered filtered) {
         final Identifiable currentRecord = resolveCurrentAsIdentifiable(context);
-        return filtered.execute(targetObjects, currentRecord, null, paramValues.toArray(), iPossibleResults, context);
+        return filtered.execute(targetObjects, currentRecord, null, functionParams, iPossibleResults, context);
       } else {
         final Object current = context.getVariable("current");
         if (current instanceof Identifiable identifiable) {
-          return function.execute(targetObjects, identifiable, null, paramValues.toArray(), context);
+          return function.execute(targetObjects, identifiable, null, functionParams, context);
         } else if (current instanceof Result result) {
-          return function.execute(targetObjects, result.getElement().orElse(null), null, paramValues.toArray(), context);
+          return function.execute(targetObjects, result.getElement().orElse(null), null, functionParams, context);
         } else {
-          return function.execute(targetObjects, null, null, paramValues.toArray(), context);
+          return function.execute(targetObjects, null, null, functionParams, context);
         }
       }
 
