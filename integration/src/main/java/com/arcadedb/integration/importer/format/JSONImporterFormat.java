@@ -190,9 +190,12 @@ public class JSONImporterFormat implements FormatImporter {
         if (database.isTransactionActive())
           database.rollback();
 
-        context.createdDocuments.set(createdDocumentsBefore);
-        context.createdVertices.set(createdVerticesBefore);
-        context.createdEdges.set(createdEdgesBefore);
+        // SUBTRACT THIS RECORD'S OWN DELTA RATHER THAN OVERWRITING WITH THE SNAPSHOT: JSON RECORD PARSING IS
+        // SINGLE-THREADED AGAINST ONE ImporterContext TODAY, SO EITHER FORM IS SAFE, BUT A DELTA CANNOT SILENTLY
+        // ERASE A CONCURRENT INCREMENT IF THAT EVER CHANGES.
+        context.createdDocuments.addAndGet(createdDocumentsBefore - context.createdDocuments.get());
+        context.createdVertices.addAndGet(createdVerticesBefore - context.createdVertices.get());
+        context.createdEdges.addAndGet(createdEdgesBefore - context.createdEdges.get());
 
         if (!settings.isSkipOnRowError())
           throw e;

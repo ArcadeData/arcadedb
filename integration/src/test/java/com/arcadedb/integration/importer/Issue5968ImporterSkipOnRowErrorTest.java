@@ -493,6 +493,98 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * A CSV-syntax-level parse failure (a value exceeding {@code maxPropertySize}, causing univocity-parsers'
+   * {@code TextParsingException}) must still abort the import even in skip mode: {@code csvParser.parseNext()} is
+   * deliberately left outside the per-row try/catch (see the comment in {@code loadDocuments}/{@code loadVertices}).
+   */
+  @Test
+  void csvVertexImportStillAbortsOnSyntaxLevelParseFailureWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-csv-syntax-abort";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try {
+      final Importer importer = new Importer(
+          ("-vertices src/test/resources/importer-vertices-oversized-value.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long -forceDatabaseCreate true -maxPropertySize 10 -onRowError skip")
+              .split(" "));
+
+      // TextParsingException ITSELF WRAPS A LOWER-LEVEL CAUSE, SO ASSERT ON THE DIRECT CAUSE OF ImportException RATHER
+      // THAN THE ROOT ONE.
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .cause().isInstanceOf(com.univocity.parsers.common.TextParsingException.class);
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  /**
+   * A genuinely malformed JSON structure (here, a missing closing brace) must still abort the import even in skip
+   * mode: {@code IOException} is never caught by the per-record/nested try/catch blocks, only {@code RuntimeException}.
+   */
+  @Test
+  void jsonDocumentImportStillAbortsOnMalformedStructureWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-json-malformed-abort";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try {
+      final Importer importer = new Importer(new String[] {
+          "-url", "file://src/test/resources/importer-documents-malformed.json",
+          "-database", databasePath,
+          "-mapping", NESTED_MAPPING,
+          "-onRowError", "skip"
+      });
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(java.io.IOException.class);
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  /**
+   * Multiple, non-consecutive-in-effect bad rows in the same file must all be individually skipped and counted,
+   * with every good row still imported - not just the single-bad-row case the other tests exercise.
+   */
+  @Test
+  void csvVertexImportSkipsMultipleOutOfRangeRowsWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-csv-multi-skip";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Score SHORT");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-vertices src/test/resources/importer-vertices-multiple-outofrange.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long -onRowError skip").split(" "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(2L);
+
+      try (final Database db = databaseFactory.open()) {
+        assertThat(db.countType("Node", true)).isEqualTo(2);
+        assertThat(db.lookupByKey("Node", "Id", 1L).next().getRecord().asVertex().getString("Name")).isEqualTo("Alice");
+        assertThat(db.lookupByKey("Node", "Id", 4L).next().getRecord().asVertex().getString("Name")).isEqualTo("Dave");
+        assertThat(db.lookupByKey("Node", "Id", 2L).hasNext()).isFalse();
+        assertThat(db.lookupByKey("Node", "Id", 3L).hasNext()).isFalse();
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
   @Test
   void invalidOnRowErrorValueIsRejected() {
     assertThatThrownBy(() -> new Importer(
