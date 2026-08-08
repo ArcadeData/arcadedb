@@ -292,4 +292,26 @@ class BinaryComparatorNarrowingTest {
     assertThat(forward).isGreaterThan(0);
     assertThat(backward).isLessThan(0);
   }
+
+  /**
+   * Same defect as {@link #numericStringVersusDateInfersPrecisionFromDigitCountAndIsAntisymmetric()}, but for
+   * {@link BinaryComparator#compareTo(Object, Object)} - the entry point the SQL {@code <}/{@code >}/{@code <=}/
+   * {@code >=} operators ({@code LtOperator}, {@code GtOperator}, ...) and {@code ORDER BY} actually use, and which
+   * always compares at {@code NANOS} precision. A 10-digit epoch-SECONDS string used to be read as raw NANOS
+   * digits (1.7 seconds after epoch - January 1970), always earlier than {@code millisDate} (2000) regardless of
+   * the string's true (2023) moment, which is actually LATER than {@code millisDate}.
+   */
+  @Test
+  void compareToInfersNumericStringPrecisionAndIsAntisymmetric() {
+    final Date millisDate = new Date(946_684_800_000L); // 2000-01-01T00:00:00.000Z
+    final String secondsString = "1700000000"; // 10 digits: 2023-11-14T22:13:20Z expressed in epoch seconds
+
+    final int forward = BinaryComparator.compareTo(millisDate, secondsString);
+    final int backward = BinaryComparator.compareTo(secondsString, millisDate);
+
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    // 2000 is chronologically before 2023, regardless of how the seconds digits were misread before the fix.
+    assertThat(forward).isLessThan(0);
+    assertThat(backward).isGreaterThan(0);
+  }
 }

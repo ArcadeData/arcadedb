@@ -240,10 +240,9 @@ public class DateUtils {
     } else if (value instanceof Number number)
       timestamp = number.longValue();
     else if (value instanceof String string) {
-      if (FileUtils.isLong(string)) {
-        final long rawValue = Long.parseLong(string);
-        timestamp = convertTimestamp(rawValue, inferEpochPrecision(rawValue), precisionToUse);
-      } else
+      if (FileUtils.isLong(string))
+        timestamp = Long.parseLong(string);
+      else
         return dateTimeToTimestamp(database, parseIsoDateTime(database, string), precisionToUse);
     } else
       // UNSUPPORTED
@@ -253,13 +252,34 @@ public class DateUtils {
   }
 
   /**
+   * Like {@link #dateTimeToTimestamp(Object, ChronoUnit)}, except a bare numeric {@link String} has its own epoch
+   * precision inferred from its digit count and converted to {@code precisionToUse}, instead of its raw digits
+   * being assumed to already be at {@code precisionToUse}.
+   * <p>
+   * This distinction matters because {@code dateTimeToTimestamp}'s numeric-string handling is shared by two
+   * semantically different callers: {@link com.arcadedb.serializer.BinaryComparator}'s {@code TYPE_DATE}/
+   * {@code TYPE_DATETIME*} branch, where the string represents an independent absolute moment being compared
+   * against another date/time value - use this method there - and {@code MathExpression}'s date {@code +}/{@code -}
+   * arithmetic, where a numeric operand represents a raw duration/offset count to add at the date's own precision
+   * (e.g. {@code date + '10'} meaning "10 units of the date's precision"), for which digit count carries no
+   * meaning and {@code dateTimeToTimestamp} must keep its original raw-digits behavior.
+   * <p>
+   * Without this, a numeric string holding a <em>different</em> precision than whatever the comparison settled on
+   * (e.g. a nanos-epoch string compared against a {@link Date}/{@link Calendar} operand, which forces
+   * {@code MILLIS}) was misinterpreted by orders of magnitude instead of being converted (issue #5956).
+   */
+  public static Long dateTimeToTimestampInferringStringPrecision(final Object value, final ChronoUnit precisionToUse) {
+    if (value instanceof String string && FileUtils.isLong(string)) {
+      final long rawValue = Long.parseLong(string);
+      return convertTimestamp(rawValue, inferEpochPrecision(rawValue), precisionToUse);
+    }
+    return dateTimeToTimestamp(value, precisionToUse);
+  }
+
+  /**
    * Infers the epoch precision a bare numeric string most likely represents, from its digit count: for a
    * present-day moment, an epoch value grows by roughly 3 digits per finer precision step (~10 digits for
-   * seconds, ~13 for millis, ~16 for micros, ~19 for nanos). Without this, a numeric string handed to
-   * {@link #dateTimeToTimestamp(Database, Object, ChronoUnit)} was assumed to already be at whatever
-   * {@code precisionToUse} the caller asked for, so e.g. a nanos-epoch string compared against a
-   * {@link Date}/{@link Calendar} operand (which forces {@code MILLIS}) was misinterpreted by 6 orders of
-   * magnitude instead of being converted (issue #5956).
+   * seconds, ~13 for millis, ~16 for micros, ~19 for nanos).
    * <p>
    * This cannot distinguish a genuinely small value from the coarser unit it also matches digit-for-digit at each
    * boundary - e.g. a millis timestamp within the first ~3 months of 1970, or a micros/nanos timestamp within the

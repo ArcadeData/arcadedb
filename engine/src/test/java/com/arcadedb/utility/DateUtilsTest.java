@@ -160,35 +160,86 @@ class DateUtilsTest {
   }
 
   /**
-   * Regression for issue #5956: the numeric-string branch of {@link DateUtils#dateTimeToTimestamp(Object, ChronoUnit)}
-   * used to hand a bare numeric string's digits straight to the caller's requested {@code precisionToUse} via
-   * {@code Long.parseLong()}, with no regard for which precision those digits actually represent - a nanos-epoch
-   * string asked for at {@code MILLIS} came back 6 orders of magnitude wrong instead of being converted. The fix
-   * infers the string's own precision from its digit count (present-day epoch values grow by ~3 digits per finer
-   * step: ~10 for seconds, ~13 for millis, ~16 for micros, ~19 for nanos) and routes it through the same
-   * {@code convertTimestamp} helper every other branch in this method already uses.
+   * Regression for issue #5956: {@link DateUtils#dateTimeToTimestampInferringStringPrecision(Object, ChronoUnit)}
+   * infers a bare numeric string's own precision from its digit count (present-day epoch values grow by ~3 digits
+   * per finer step: ~10 for seconds, ~13 for millis, ~16 for micros, ~19 for nanos) and converts it to
+   * {@code precisionToUse}, instead of assuming the raw digits already are at {@code precisionToUse} - a
+   * nanos-epoch string asked for at {@code MILLIS} used to come back 6 orders of magnitude wrong.
    */
   @Test
   void numericStringInfersOwnPrecisionFromDigitCountInsteadOfAssumingPrecisionToUse() {
     // 10 digits: looks like epoch-SECONDS (2023-11-14T22:13:20Z).
     final String epochSecondsString = "1700000000";
-    assertThat(DateUtils.dateTimeToTimestamp(epochSecondsString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
-    assertThat(DateUtils.dateTimeToTimestamp(epochSecondsString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_000L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochSecondsString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochSecondsString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_000L);
 
-    // 13 digits: looks like epoch-MILLIS: unaffected by the fix, matches pre-existing behavior.
+    // 13 digits: looks like epoch-MILLIS.
     final String epochMillisString = "1700000000123";
-    assertThat(DateUtils.dateTimeToTimestamp(epochMillisString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
-    assertThat(DateUtils.dateTimeToTimestamp(epochMillisString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochMillisString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochMillisString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
 
     // 16 digits: looks like epoch-MICROS.
     final String epochMicrosString = "1700000000123456";
-    assertThat(DateUtils.dateTimeToTimestamp(epochMicrosString, ChronoUnit.MICROS)).isEqualTo(1_700_000_000_123_456L);
-    assertThat(DateUtils.dateTimeToTimestamp(epochMicrosString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochMicrosString, ChronoUnit.MICROS)).isEqualTo(1_700_000_000_123_456L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochMicrosString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
 
     // 19 digits: looks like epoch-NANOS - the exact case raised in #5956.
     final String epochNanosString = "1700000000123456789";
-    assertThat(DateUtils.dateTimeToTimestamp(epochNanosString, ChronoUnit.NANOS)).isEqualTo(1_700_000_000_123_456_789L);
-    assertThat(DateUtils.dateTimeToTimestamp(epochNanosString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
-    assertThat(DateUtils.dateTimeToTimestamp(epochNanosString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochNanosString, ChronoUnit.NANOS)).isEqualTo(1_700_000_000_123_456_789L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochNanosString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(epochNanosString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
+  }
+
+  /**
+   * Off-boundary digit counts (11/12, 14/15, 17/18) must resolve to the same unit as their bucket's edges - this
+   * locks in the exact thresholds documented on {@code DateUtils#inferEpochPrecision}, per code review follow-up
+   * on PR #5960.
+   */
+  @Test
+  void numericStringPrecisionInferenceCoversOffBoundaryDigitCounts() {
+    // 11 and 12 digits: still MILLIS (bucket is 11-13 digits).
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("17000000000", ChronoUnit.MILLIS)).isEqualTo(17_000_000_000L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("170000000000", ChronoUnit.MILLIS)).isEqualTo(170_000_000_000L);
+
+    // 14 and 15 digits: still MICROS (bucket is 14-16 digits).
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("17000000001234", ChronoUnit.MICROS)).isEqualTo(17_000_000_001_234L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("170000000012345", ChronoUnit.MICROS)).isEqualTo(170_000_000_012_345L);
+
+    // 17 and 18 digits: still NANOS (bucket is 17+ digits).
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("17000000001234567", ChronoUnit.NANOS)).isEqualTo(17_000_000_001_234_567L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("170000000012345678", ChronoUnit.NANOS)).isEqualTo(170_000_000_012_345_678L);
+  }
+
+  /**
+   * A small value matches the digit count of more than one precision bucket at once (e.g. {@code "5"} is a valid
+   * 1-digit SECONDS value, but also a valid 1-digit MILLIS/MICROS/NANOS value within the first fraction of a
+   * second after the epoch) - the coarser unit (SECONDS) must win every such tie, per the documented tie-break
+   * rule on {@code DateUtils#inferEpochPrecision}.
+   */
+  @Test
+  void numericStringPrecisionInferenceTieBreaksTowardCoarserUnit() {
+    final String nearZero = "5";
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(nearZero, ChronoUnit.SECONDS)).isEqualTo(5L);
+    // Interpreted as 5 SECONDS, converted (not left as raw "5") to every finer target precision.
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(nearZero, ChronoUnit.MILLIS)).isEqualTo(5_000L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(nearZero, ChronoUnit.MICROS)).isEqualTo(5_000_000L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(nearZero, ChronoUnit.NANOS)).isEqualTo(5_000_000_000L);
+  }
+
+  /**
+   * Guard against over-fixing: the original {@link DateUtils#dateTimeToTimestamp(Object, ChronoUnit)} must keep its
+   * pre-#5956 raw-digits behavior for numeric strings. It is shared by {@code MathExpression}'s date {@code +}/
+   * {@code -} arithmetic, where a numeric string operand represents a raw duration/offset count to add at the
+   * date's own precision (e.g. {@code date + '10'} meaning "10 units of the date's precision") - digit-count
+   * inference would silently turn a small offset into a wildly different one there. Only
+   * {@code dateTimeToTimestampInferringStringPrecision} (used by comparison-context callers, where the numeric
+   * string represents an independent absolute moment) applies the inference.
+   */
+  @Test
+  void plainDateTimeToTimestampKeepsRawDigitsBehaviorForMathExpressionCompatibility() {
+    // "10" is a 2-digit string that would infer as SECONDS: the plain method must NOT convert it, unlike the
+    // inferring one.
+    assertThat(DateUtils.dateTimeToTimestamp("10", ChronoUnit.MILLIS)).isEqualTo(10L);
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("10", ChronoUnit.MILLIS)).isEqualTo(10_000L);
   }
 }
