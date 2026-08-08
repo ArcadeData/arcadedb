@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.antlr;
 
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.parser.*;
 import org.junit.jupiter.api.Test;
 
@@ -479,6 +480,38 @@ class SQLGrammarRegressionTest {
     // Unicode escape mixed with regular text
     assertParses("SELECT 'Hello\\u0020World'");
     assertParses("SELECT 'test\\u003Dvalue'");
+  }
+
+  @Test
+  void malformedUnicodeEscapeRaisesParsingException() {
+    // Issue #5951: a backslash-u escape with fewer than 4 hex digits is a lexer-level error that must be
+    // reported as a CommandSQLParsingException, not silently dropped by the lexer's default error
+    // recovery (which would leave the malformed token stream to parse into a different, bogus statement).
+    assertThatThrownBy(() -> parser.parse("SELECT 'abc \\u30 def'"))
+        .isInstanceOf(CommandSQLParsingException.class);
+    assertThatThrownBy(() -> parser.parse("SELECT \"abc \\u30 def\""))
+        .isInstanceOf(CommandSQLParsingException.class);
+  }
+
+  @Test
+  void malformedUnicodeEscapeRaisesParsingExceptionInScript() {
+    // Same lexer-error-listener-timing bug as parse(), reproduced through parseScript().
+    assertThatThrownBy(() -> parser.parseScript("SELECT 'abc \\u30 def';"))
+        .isInstanceOf(CommandSQLParsingException.class);
+  }
+
+  @Test
+  void malformedUnicodeEscapeRaisesParsingExceptionInExpression() {
+    // Same lexer-error-listener-timing bug as parse(), reproduced through parseExpression().
+    assertThatThrownBy(() -> parser.parseExpression("'abc \\u30 def'"))
+        .isInstanceOf(CommandSQLParsingException.class);
+  }
+
+  @Test
+  void malformedUnicodeEscapeRaisesParsingExceptionInCondition() {
+    // Same lexer-error-listener-timing bug as parse(), reproduced through parseCondition().
+    assertThatThrownBy(() -> parser.parseCondition("name = 'abc \\u30 def'"))
+        .isInstanceOf(CommandSQLParsingException.class);
   }
 
   // ============================================================================
