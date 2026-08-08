@@ -75,20 +75,23 @@ public record SQLAntlrParser(Database database) {
       final CharStream input = CharStreams.fromString(sqlText);
       final SQLLexer lexer = new SQLLexer(input);
 
+      // Remove the default error listener (prints to stderr) and install ours before any token is
+      // pulled from the lexer - tokenize() below fills the whole stream eagerly, so the listener must
+      // already be in place or a lexer-level error (e.g. a malformed string escape) is only logged,
+      // never thrown, and the query silently falls through to parsing a mangled token stream.
+      final SQLErrorListener errorListener = new SQLErrorListener(sqlText);
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(errorListener);
+
       // Create token stream
       final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
 
-      // Remove default error listeners (they print to stderr)
+      // Remove default error listeners (they print to stderr) and add our custom one
       parser.removeErrorListeners();
-      lexer.removeErrorListeners();
-
-      // Add our custom error listener
-      final SQLErrorListener errorListener = new SQLErrorListener(sqlText);
       parser.addErrorListener(errorListener);
-      lexer.addErrorListener(errorListener);
 
       // Parse the SQL using two-stage strategy:
       // 1. Try SLL mode first (faster, handles most cases)
@@ -140,20 +143,21 @@ public record SQLAntlrParser(Database database) {
       final CharStream input = CharStreams.fromString(sqlScript);
       final SQLLexer lexer = new SQLLexer(input);
 
+      // See the note in parse() - the lexer's error listener must be attached before tokenize() fills
+      // the token stream, or a lexer-level error is only logged, never thrown.
+      final SQLErrorListener errorListener = new SQLErrorListener(sqlScript);
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(errorListener);
+
       // Create token stream
       final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
 
-      // Remove default error listeners
+      // Remove default error listeners and add our custom one
       parser.removeErrorListeners();
-      lexer.removeErrorListeners();
-
-      // Add our custom error listener
-      final SQLErrorListener errorListener = new SQLErrorListener(sqlScript);
       parser.addErrorListener(errorListener);
-      lexer.addErrorListener(errorListener);
 
       // Parse the script using two-stage strategy (SLL first, then ALL(*) on failure)
       SQLParser.ParseScriptContext parseTree;
@@ -204,20 +208,21 @@ public record SQLAntlrParser(Database database) {
       final CharStream input = CharStreams.fromString(exprText);
       final SQLLexer lexer = new SQLLexer(input);
 
+      // See the note in parse() - the lexer's error listener must be attached before tokenize() fills
+      // the token stream, or a lexer-level error is only logged, never thrown.
+      final SQLErrorListener errorListener = new SQLErrorListener(exprText);
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(errorListener);
+
       // Create token stream
       final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
 
-      // Remove default error listeners
+      // Remove default error listeners and add our custom one
       parser.removeErrorListeners();
-      lexer.removeErrorListeners();
-
-      // Add our custom error listener
-      final SQLErrorListener errorListener = new SQLErrorListener(exprText);
       parser.addErrorListener(errorListener);
-      lexer.addErrorListener(errorListener);
 
       // Parse the expression using two-stage strategy (SLL first, then ALL(*) on failure)
       SQLParser.ParseExpressionContext parseTree;
@@ -258,20 +263,21 @@ public record SQLAntlrParser(Database database) {
       final CharStream input = CharStreams.fromString(conditionText);
       final SQLLexer lexer = new SQLLexer(input);
 
+      // See the note in parse() - the lexer's error listener must be attached before tokenize() fills
+      // the token stream, or a lexer-level error is only logged, never thrown.
+      final SQLErrorListener errorListener = new SQLErrorListener(conditionText);
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(errorListener);
+
       // Create token stream
       final CommonTokenStream tokens = tokenize(lexer);
 
       // Create parser
       final SQLParser parser = new SQLParser(tokens);
 
-      // Remove default error listeners
+      // Remove default error listeners and add our custom one
       parser.removeErrorListeners();
-      lexer.removeErrorListeners();
-
-      // Add our custom error listener
-      final SQLErrorListener errorListener = new SQLErrorListener(conditionText);
       parser.addErrorListener(errorListener);
-      lexer.addErrorListener(errorListener);
 
       // Parse the condition using two-stage strategy (SLL first, then ALL(*) on failure)
       SQLParser.ParseConditionContext parseTree;
