@@ -516,7 +516,7 @@ public enum Type {
         else if (value instanceof String string)
           return Byte.parseByte(string);
         else
-          return ((Number) value).byteValue();
+          return narrowToIntegral((Number) value, Byte.MIN_VALUE, Byte.MAX_VALUE, "BYTE", property).byteValue();
 
       } else if (targetClass.equals(Short.TYPE) || targetClass.equals(Short.class)) {
         if (value instanceof Short)
@@ -524,7 +524,7 @@ public enum Type {
         else if (value instanceof String string)
           return string.isEmpty() ? 0 : Short.parseShort(string);
         else
-          return ((Number) value).shortValue();
+          return narrowToIntegral((Number) value, Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
 
       } else if (targetClass.equals(Integer.TYPE) || targetClass.equals(Integer.class)) {
         if (value instanceof Integer)
@@ -532,7 +532,7 @@ public enum Type {
         else if (value instanceof String string)
           return string.isEmpty() ? 0 : Integer.parseInt(string);
         else
-          return ((Number) value).intValue();
+          return narrowToIntegral((Number) value, Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
 
       } else if (targetClass.equals(Long.TYPE) || targetClass.equals(Long.class)) {
         if (value instanceof Long)
@@ -784,6 +784,37 @@ public enum Type {
     return value;
   }
 
+  /**
+   * Range-checks {@code value} before narrowing it to a smaller integral type ({@code BYTE}, {@code SHORT} or
+   * {@code INTEGER}). Narrowing with a plain {@code .intValue()}/{@code .shortValue()}/{@code .byteValue()} wraps
+   * two's-complement on overflow instead of rejecting - {@code 3000000000L} silently became {@code -1294967296} -
+   * which corrupts the stored value without any error (issue #5905).
+   * <p>
+   * The comparison is done in {@code long}, so a {@link Double}/{@link Float} outside the long range (including
+   * {@code Infinity}) is caught via the saturating conversion {@link Number#longValue()} already performs. A
+   * {@link BigDecimal}/{@link BigInteger} can exceed even the long range, where {@code longValue()} truncates bits
+   * instead of saturating, so those two types are range-checked directly against {@code long} bounds first.
+   */
+  private static Number narrowToIntegral(final Number value, final long min, final long max, final String targetType,
+      final Property property) {
+    final long longValue;
+    if (value instanceof BigDecimal bigDecimal)
+      longValue = bigDecimal.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE
+          : bigDecimal.compareTo(BigDecimal.valueOf(Long.MIN_VALUE)) < 0 ? Long.MIN_VALUE : bigDecimal.longValue();
+    else if (value instanceof BigInteger bigInteger)
+      longValue = bigInteger.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE
+          : bigInteger.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) < 0 ? Long.MIN_VALUE : bigInteger.longValue();
+    else
+      longValue = value.longValue();
+
+    if (longValue < min || longValue > max)
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    return longValue;
+  }
+
   public static Number increment(final Number a, final Number b) {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot increment a null value");
@@ -792,21 +823,23 @@ public enum Type {
     case Integer i -> {
       switch (b) {
       case Integer integer -> {
-        final int sum = a.intValue() + b.intValue();
-        if (sum < 0 && a.intValue() > 0 && b.intValue() > 0)
+        try {
+          return Math.addExact(a.intValue(), b.intValue());
+        } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
-          return (long) (a.intValue() + b.intValue());
-        return sum;
+          return (long) a.intValue() + (long) b.intValue();
+        }
       }
       case Long l -> {
         return a.intValue() + b.longValue();
       }
       case Short aShort -> {
-        final int sum = a.intValue() + b.shortValue();
-        if (sum < 0 && a.intValue() > 0 && b.shortValue() > 0)
+        try {
+          return Math.addExact(a.intValue(), b.shortValue());
+        } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
-          return (long) (a.intValue() + b.shortValue());
-        return sum;
+          return (long) a.intValue() + (long) b.shortValue();
+        }
       }
       case Float v -> {
         return a.intValue() + b.floatValue();
@@ -848,21 +881,19 @@ public enum Type {
     case Short i -> {
       switch (b) {
       case Integer integer -> {
-        final int sum = a.shortValue() + b.intValue();
-        if (sum < 0 && a.shortValue() > 0 && b.intValue() > 0)
+        try {
+          return Math.addExact(a.shortValue(), b.intValue());
+        } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
-          return Long.valueOf(a.shortValue() + b.intValue());
-        return sum;
+          return (long) a.shortValue() + (long) b.intValue();
+        }
       }
       case Long l -> {
         return Long.valueOf(a.shortValue() + b.longValue());
       }
       case Short aShort -> {
-        final int sum = a.shortValue() + b.shortValue();
-        if (sum < 0 && a.shortValue() > 0 && b.shortValue() > 0)
-          // SPECIAL CASE: UPGRADE TO INTEGER
-          return a.intValue() + b.intValue();
-        return sum;
+        // A SHORT + SHORT SUM CAN NEVER OVERFLOW int (MAGNITUDE <= 2 * 32768), SO int ARITHMETIC IS ALWAYS EXACT HERE
+        return a.shortValue() + b.shortValue();
       }
       case Float v -> {
         return a.shortValue() + b.floatValue();
@@ -965,21 +996,23 @@ public enum Type {
     case Integer i -> {
       switch (b) {
       case Integer integer -> {
-        final int sum = a.intValue() - b.intValue();
-        if (sum < 0 && a.intValue() > 0 && b.intValue() > 0)
+        try {
+          return Math.subtractExact(a.intValue(), b.intValue());
+        } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
-          return (long) (a.intValue() - b.intValue());
-        return sum;
+          return (long) a.intValue() - (long) b.intValue();
+        }
       }
       case Long l -> {
         return a.intValue() - b.longValue();
       }
       case Short aShort -> {
-        final int sum = a.intValue() - b.shortValue();
-        if (sum < 0 && a.intValue() > 0 && b.shortValue() > 0)
+        try {
+          return Math.subtractExact(a.intValue(), b.shortValue());
+        } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
-          return (long) (a.intValue() - b.shortValue());
-        return sum;
+          return (long) a.intValue() - (long) b.shortValue();
+        }
       }
       case Float v -> {
         return a.intValue() - b.floatValue();
@@ -1021,21 +1054,19 @@ public enum Type {
     case Short i -> {
       switch (b) {
       case Integer integer -> {
-        final int sum = a.shortValue() - b.intValue();
-        if (sum < 0 && a.shortValue() > 0 && b.intValue() > 0)
+        try {
+          return Math.subtractExact(a.shortValue(), b.intValue());
+        } catch (final ArithmeticException e) {
           // SPECIAL CASE: UPGRADE TO LONG
-          return (long) (a.shortValue() - b.intValue());
-        return sum;
+          return (long) a.shortValue() - (long) b.intValue();
+        }
       }
       case Long l -> {
         return a.shortValue() - b.longValue();
       }
       case Short aShort -> {
-        final int sum = a.shortValue() - b.shortValue();
-        if (sum < 0 && a.shortValue() > 0 && b.shortValue() > 0)
-          // SPECIAL CASE: UPGRADE TO INTEGER
-          return a.intValue() - b.intValue();
-        return sum;
+        // A SHORT - SHORT DIFFERENCE CAN NEVER OVERFLOW int (MAGNITUDE <= 2 * 32768), SO int ARITHMETIC IS ALWAYS EXACT HERE
+        return a.shortValue() - b.shortValue();
       }
       case Float v -> {
         return a.shortValue() - b.floatValue();
