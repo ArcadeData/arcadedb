@@ -21,6 +21,7 @@ package com.arcadedb.serializer;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #5945. {@link BinaryComparator}'s {@code compareAgainstNumericString} helper (added by
@@ -92,9 +93,29 @@ class Issue5945NumericStringOverflowTest {
   @Test
   void infinityStringComparesAsDoubleInfinityRatherThanThrowing() {
     assertThat(comparator.compare(5, BinaryTypes.TYPE_INT, "Infinity", BinaryTypes.TYPE_STRING)).isLessThan(0);
+    assertThat(comparator.compare(5, BinaryTypes.TYPE_INT, "+Infinity", BinaryTypes.TYPE_STRING)).isLessThan(0);
     assertThat(comparator.compare(5, BinaryTypes.TYPE_INT, "-Infinity", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
     assertThat(comparator.compare(5L, BinaryTypes.TYPE_LONG, "Infinity", BinaryTypes.TYPE_STRING)).isLessThan(0);
     assertThat(comparator.compare(5L, BinaryTypes.TYPE_LONG, "-Infinity", BinaryTypes.TYPE_STRING)).isGreaterThan(0);
+  }
+
+  @Test
+  void minLongMinusOneNumericStringComparesCorrectly() {
+    // Long.MIN_VALUE (9223372036854775808, 19 digits after the sign) minus one, expressed as its own
+    // out-of-range string: covers the low-end boundary, complementing the MAX_VALUE + 1 check above.
+    final long minLong = Long.MIN_VALUE;
+    final String minLongMinusOne = "-9223372036854775809";
+
+    assertThat(comparator.compare(minLong, BinaryTypes.TYPE_LONG, minLongMinusOne, BinaryTypes.TYPE_STRING)).isGreaterThan(0);
+    assertThat(comparator.compare(minLongMinusOne, BinaryTypes.TYPE_STRING, minLong, BinaryTypes.TYPE_LONG)).isLessThan(0);
+  }
+
+  @Test
+  void nonNumericStringStillThrowsRatherThanSilentlyComparing() {
+    // Regression guard: the overflow catch must not swallow a genuinely non-numeric string; BigDecimal's own
+    // NumberFormatException should still propagate, same as before this fix.
+    assertThatThrownBy(() -> comparator.compare(5, BinaryTypes.TYPE_INT, "abc", BinaryTypes.TYPE_STRING))
+        .isInstanceOf(NumberFormatException.class);
   }
 
   @Test

@@ -322,12 +322,15 @@ public class BinaryComparator {
    * <p>
    * An integral string outside {@code long}'s range (e.g. 20+ digits, issue #5945) falls back to
    * {@link BigDecimal}, which compares it exactly rather than losing precision through a {@code double}
-   * round-trip.
+   * round-trip. The same catch also covers a string that isn't numeric at all (e.g. {@code "abc"}): the
+   * {@code BigDecimal} constructor throws its own {@code NumberFormatException} for that case, so behaviour is
+   * unchanged there, this method has never guaranteed a result for a non-numeric string.
    */
   private static int compareAgainstNumericString(final Number value1, final String string) {
     switch (string) {
     case "NaN":
     case "Infinity":
+    case "+Infinity":
     case "-Infinity":
       return Double.compare(value1.doubleValue(), Double.parseDouble(string));
     }
