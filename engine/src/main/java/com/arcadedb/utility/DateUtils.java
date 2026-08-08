@@ -240,15 +240,40 @@ public class DateUtils {
     } else if (value instanceof Number number)
       timestamp = number.longValue();
     else if (value instanceof String string) {
-      if (FileUtils.isLong(string))
-        timestamp = Long.parseLong(value.toString());
-      else
+      if (FileUtils.isLong(string)) {
+        final long rawValue = Long.parseLong(string);
+        timestamp = convertTimestamp(rawValue, inferEpochPrecision(rawValue), precisionToUse);
+      } else
         return dateTimeToTimestamp(database, parseIsoDateTime(database, string), precisionToUse);
     } else
       // UNSUPPORTED
       return null;
 
     return timestamp;
+  }
+
+  /**
+   * Infers the epoch precision a bare numeric string most likely represents, from its digit count: for a
+   * present-day moment, an epoch value grows by roughly 3 digits per finer precision step (~10 digits for
+   * seconds, ~13 for millis, ~16 for micros, ~19 for nanos). Without this, a numeric string handed to
+   * {@link #dateTimeToTimestamp(Database, Object, ChronoUnit)} was assumed to already be at whatever
+   * {@code precisionToUse} the caller asked for, so e.g. a nanos-epoch string compared against a
+   * {@link Date}/{@link Calendar} operand (which forces {@code MILLIS}) was misinterpreted by 6 orders of
+   * magnitude instead of being converted (issue #5956).
+   * <p>
+   * This cannot distinguish a genuinely small value (e.g. a millis timestamp within the first ~3 months of 1970)
+   * from the coarser unit it also matches digit-for-digit; {@code SECONDS} wins that tie, since a near-zero
+   * epoch value is far more common as a duration/offset than as an actual date that close to the epoch.
+   */
+  private static ChronoUnit inferEpochPrecision(final long epochValue) {
+    final int digits = Long.toString(Math.abs(epochValue)).length();
+    if (digits <= 10)
+      return ChronoUnit.SECONDS;
+    else if (digits <= 13)
+      return ChronoUnit.MILLIS;
+    else if (digits <= 16)
+      return ChronoUnit.MICROS;
+    return ChronoUnit.NANOS;
   }
 
   /**

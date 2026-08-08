@@ -158,4 +158,37 @@ class DateUtilsTest {
     assertThat(farFutureNanos).isEqualTo(Long.MAX_VALUE);
     assertThat(farFutureNanos).isGreaterThan(nearPresentNanos);
   }
+
+  /**
+   * Regression for issue #5956: the numeric-string branch of {@link DateUtils#dateTimeToTimestamp(Object, ChronoUnit)}
+   * used to hand a bare numeric string's digits straight to the caller's requested {@code precisionToUse} via
+   * {@code Long.parseLong()}, with no regard for which precision those digits actually represent - a nanos-epoch
+   * string asked for at {@code MILLIS} came back 6 orders of magnitude wrong instead of being converted. The fix
+   * infers the string's own precision from its digit count (present-day epoch values grow by ~3 digits per finer
+   * step: ~10 for seconds, ~13 for millis, ~16 for micros, ~19 for nanos) and routes it through the same
+   * {@code convertTimestamp} helper every other branch in this method already uses.
+   */
+  @Test
+  void numericStringInfersOwnPrecisionFromDigitCountInsteadOfAssumingPrecisionToUse() {
+    // 10 digits: looks like epoch-SECONDS (2023-11-14T22:13:20Z).
+    final String epochSecondsString = "1700000000";
+    assertThat(DateUtils.dateTimeToTimestamp(epochSecondsString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
+    assertThat(DateUtils.dateTimeToTimestamp(epochSecondsString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_000L);
+
+    // 13 digits: looks like epoch-MILLIS: unaffected by the fix, matches pre-existing behavior.
+    final String epochMillisString = "1700000000123";
+    assertThat(DateUtils.dateTimeToTimestamp(epochMillisString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
+    assertThat(DateUtils.dateTimeToTimestamp(epochMillisString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
+
+    // 16 digits: looks like epoch-MICROS.
+    final String epochMicrosString = "1700000000123456";
+    assertThat(DateUtils.dateTimeToTimestamp(epochMicrosString, ChronoUnit.MICROS)).isEqualTo(1_700_000_000_123_456L);
+    assertThat(DateUtils.dateTimeToTimestamp(epochMicrosString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
+
+    // 19 digits: looks like epoch-NANOS - the exact case raised in #5956.
+    final String epochNanosString = "1700000000123456789";
+    assertThat(DateUtils.dateTimeToTimestamp(epochNanosString, ChronoUnit.NANOS)).isEqualTo(1_700_000_000_123_456_789L);
+    assertThat(DateUtils.dateTimeToTimestamp(epochNanosString, ChronoUnit.MILLIS)).isEqualTo(1_700_000_000_123L);
+    assertThat(DateUtils.dateTimeToTimestamp(epochNanosString, ChronoUnit.SECONDS)).isEqualTo(1_700_000_000L);
+  }
 }

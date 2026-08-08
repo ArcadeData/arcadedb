@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -266,6 +267,28 @@ class BinaryComparatorNarrowingTest {
     final int backward = comparator.compare(earlierDate, BinaryTypes.TYPE_DATE, laterIsoDateTime, BinaryTypes.TYPE_STRING);
 
     assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    assertThat(forward).isGreaterThan(0);
+    assertThat(backward).isLessThan(0);
+  }
+
+  /**
+   * Regression for issue #5956: {@code DateUtils.dateTimeToTimestamp()}'s numeric-string branch used to hand the
+   * string's raw digits straight through as if they were already at whatever precision the comparison settled on
+   * (here {@code MILLIS}, forced by {@code java.util.Date}), instead of converting from the precision those digits
+   * actually represent. {@code millisDate} (2033) is chronologically AFTER {@code nanosString}'s true moment
+   * (2001), but misreading the 19 nanos digits directly as millis inflates it to a moment ~31 million years in the
+   * future - larger than {@code millisDate} - which used to flip the comparison's sign.
+   */
+  @Test
+  void numericStringVersusDateInfersPrecisionFromDigitCountAndIsAntisymmetric() {
+    final Date millisDate = new Date(2_000_000_000_000L); // 2033-05-18T03:33:20.000Z
+    final String nanosString = "1000000000000000000"; // 19 digits: 2001-09-09T01:46:40Z expressed in epoch nanos
+
+    final int forward = comparator.compare(millisDate, BinaryTypes.TYPE_DATETIME, nanosString, BinaryTypes.TYPE_STRING);
+    final int backward = comparator.compare(nanosString, BinaryTypes.TYPE_STRING, millisDate, BinaryTypes.TYPE_DATETIME);
+
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(backward));
+    // 2033 is chronologically after 2001, regardless of how the nanos digits were misread before the fix.
     assertThat(forward).isGreaterThan(0);
     assertThat(backward).isLessThan(0);
   }
