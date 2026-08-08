@@ -184,9 +184,16 @@ public class Console {
       final String value = args[i].trim();
       if (value.startsWith("-D")) {
         // SETTING
-        final String[] parts = value.substring(2).split("=");
-        System.setProperty(parts[0], parts[1]);
-        setGlobalConfiguration(parts[0], parts[1], true);
+        final String keyValue = value.substring(2);
+        final int separatorPos = keyValue.indexOf('=');
+        final String key = separatorPos < 0 ? keyValue : keyValue.substring(0, separatorPos);
+        final String propertyValue = separatorPos < 0 ? "" : keyValue.substring(separatorPos + 1);
+        if (key.isEmpty())
+          System.err.println("Ignoring malformed system property argument '" + value + "': missing key");
+        else {
+          System.setProperty(key, propertyValue);
+          setGlobalConfiguration(key, propertyValue, true);
+        }
       } else if ("-b".equalsIgnoreCase(value)) {
         batchMode = true;
       } else if ("-fae".equalsIgnoreCase(value)) {
@@ -421,9 +428,11 @@ public class Console {
       }
     } else {
       // LOCAL DATABASE
-      for (final String f : new File(databaseDirectory).list()) {
-        outputLine(3, "- " + f);
-      }
+      final String[] databaseNames = new File(databaseDirectory).list();
+      if (databaseNames != null)
+        for (final String f : databaseNames) {
+          outputLine(3, "- " + f);
+        }
     }
 
     flushOutput();
@@ -920,12 +929,12 @@ public class Console {
     return formatProgressLine(op.getOperation(), op.getStepName(), op.getStepIndex(), op.getTotalSteps(), op.getPercentage());
   }
 
-  private static String formatProgressLine(final String operation, final String stepName, final int stepIndex,
+  static String formatProgressLine(final String operation, final String stepName, final int stepIndex,
       final int totalSteps, final int percentage) {
     final StringBuilder line = new StringBuilder(128);
     line.append(operation).append(" [step ").append(stepIndex).append('/').append(totalSteps).append("] ").append(stepName);
     if (percentage >= 0) {
-      final int filled = percentage / 5;
+      final int filled = Math.min(20, percentage / 5);
       line.append(" |").append("=".repeat(filled)).append(" ".repeat(20 - filled)).append("| ").append(percentage).append('%');
     } else
       line.append(" ...");
@@ -997,7 +1006,7 @@ public class Console {
       table.setMaxWidthSize(maxWidth);
 
       try (final ResultSet typeResult = databaseProxy.command("sql",
-          "select from schema:types where name = \"" + typeName + "\"")) {
+          "select from schema:types where name = :name", Map.of("name", typeName))) {
         if (!typeResult.hasNext())
           return;
 

@@ -47,6 +47,7 @@ import java.util.Iterator;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ConsoleTest {
@@ -222,6 +223,98 @@ class ConsoleTest {
     buffer.setLength(0);
     assertThat(console.parse("info type Person")).isTrue();
     assertThat(buffer.toString().contains("DOCUMENT TYPE 'Person'")).isTrue();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5931
+   */
+  @Test
+  void infoTypeWithQuoteInName() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("CREATE DOCUMENT TYPE `a\"b`")).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    assertThat(console.parse("info type a\"b")).isTrue();
+    assertThat(buffer.toString()).contains("DOCUMENT TYPE 'a\"b'").doesNotContain("ERROR");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5929
+   */
+  @Test
+  void progressBarClampsPercentageAboveHundred() {
+    assertThat(Console.formatProgressLine("import", "loading", 1, 2, 110)).contains("|" + "=".repeat(20) + "| 110%");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5928
+   */
+  @Test
+  void systemPropertyArgumentWithoutValueDoesNotCrash() throws Exception {
+    final String key = "arcadedb.test.issue5928";
+    try {
+      assertThatCode(() -> Console.execute(new String[] { "-D" + key + "=", "-b" })).doesNotThrowAnyException();
+      assertThat(System.getProperty(key)).isEqualTo("");
+
+      System.clearProperty(key);
+
+      assertThatCode(() -> Console.execute(new String[] { "-D" + key, "-b" })).doesNotThrowAnyException();
+      assertThat(System.getProperty(key)).isEqualTo("");
+    } finally {
+      System.clearProperty(key);
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5928: a value containing further '=' characters must be kept whole,
+   * not truncated at the second one.
+   */
+  @Test
+  void systemPropertyArgumentWithEmbeddedEqualsKeepsFullValue() throws Exception {
+    final String key = "arcadedb.test.issue5928.multi";
+    try {
+      assertThatCode(() -> Console.execute(new String[] { "-D" + key + "=bar=baz", "-b" })).doesNotThrowAnyException();
+      assertThat(System.getProperty(key)).isEqualTo("bar=baz");
+    } finally {
+      System.clearProperty(key);
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5928: an argument with no key at all ('-D' alone or '-D=value') must
+   * not crash the console with IllegalArgumentException from System.setProperty.
+   */
+  @Test
+  void systemPropertyArgumentWithoutKeyDoesNotCrash() throws Exception {
+    assertThatCode(() -> Console.execute(new String[] { "-D", "-b" })).doesNotThrowAnyException();
+    assertThatCode(() -> Console.execute(new String[] { "-D=value", "-b" })).doesNotThrowAnyException();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5927
+   */
+  @Test
+  void listDatabasesOnFreshInstallDoesNotThrow() throws Exception {
+    final File freshRoot = new File("./target/fresh-install-5927");
+    FileUtils.deleteRecursively(freshRoot);
+    assertThat(freshRoot.mkdirs()).isTrue();
+
+    final String previousRootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue(freshRoot.getAbsolutePath());
+    try {
+      assertThat(new File(freshRoot, "databases").exists()).isFalse();
+
+      final Console freshConsole = new Console();
+      try {
+        assertThatCode(() -> freshConsole.parse("list databases")).doesNotThrowAnyException();
+      } finally {
+        freshConsole.close();
+      }
+    } finally {
+      GlobalConfiguration.SERVER_ROOT_PATH.setValue(previousRootPath);
+      FileUtils.deleteRecursively(freshRoot);
+    }
   }
 
   @Test
