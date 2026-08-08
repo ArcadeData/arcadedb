@@ -130,7 +130,10 @@ public class JSONImporterFormat implements FormatImporter {
     final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
 
+    long recordIndex = 0;
     while (reader.peek() == BEGIN_OBJECT) {
+      ++recordIndex;
+
       if (mappingValue instanceof JSONObject object) {
         mappingObject = object;
         ignore = false;
@@ -155,7 +158,7 @@ public class JSONImporterFormat implements FormatImporter {
         // IF THE STREAM WAS LEFT IN AN INCONSISTENT STATE (E.G. A MALFORMED JSON STRUCTURE), THE NEXT reader.peek() CALL
         // IN THE LOOP CONDITION WILL THROW AND THE IMPORT WILL ABORT, EVEN IN SKIP MODE.
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on importing JSON record #%d, skipping it (reason: %s)", null, context.parsed.get(),
+            .log(this, Level.WARNING, "Error on importing JSON record #%d, skipping it (reason: %s)", null, recordIndex,
                 e.getMessage());
         context.errors.incrementAndGet();
       }

@@ -55,6 +55,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class CSVImporterFormat extends AbstractImporterFormat {
@@ -205,7 +206,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final long beginTime = System.currentTimeMillis();
 
-    database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception));
+    final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
+    database.async().onError(exception -> {
+      LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
+      context.errors.incrementAndGet();
+      firstAsyncError.compareAndSet(null, exception);
+    });
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
@@ -264,6 +270,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       }
 
       database.async().waitCompletion();
+
+      // A VERTEX CAN ALSO FAIL AT PERSIST TIME ON THE ASYNC WORKER THREAD (MANDATORY PROPERTY, UNIQUE INDEX, ...), OUTSIDE
+      // THE PER-ROW try/catch ABOVE: IN "abort" MODE (THE DEFAULT) THAT MUST STILL FAIL THE IMPORT INSTEAD OF SILENTLY
+      // LOGGING AND CONTINUING.
+      if (!settings.isSkipOnRowError() && firstAsyncError.get() != null)
+        throw new ImportException("Error on inserting vertices", firstAsyncError.get());
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
@@ -363,6 +375,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             txCount = 0;
           }
         } catch (final Exception e) {
+          // UNLIKE loadDocuments/loadVertices, EDGE ROWS ARE ALWAYS SKIPPED-AND-LOGGED REGARDLESS OF -onRowError: A "BAD"
+          // EDGE ROW HERE IS TYPICALLY JUST AN UNRESOLVED from/to VERTEX REFERENCE (ALREADY TRACKED VIA context.skippedEdges
+          // IN createEdgeFromRow), WHICH IS EXPECTED DURING GRAPH IMPORTS RATHER THAN A DATA-CORRUPTION CASE.
           LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
         }
       }

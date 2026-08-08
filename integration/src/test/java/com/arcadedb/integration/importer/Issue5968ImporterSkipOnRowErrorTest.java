@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
@@ -147,6 +148,71 @@ class Issue5968ImporterSkipOnRowErrorTest {
         assertThat(db.countType("Food", true)).isEqualTo(2);
         db.iterateType("Food", true).forEachRemaining(record -> assertThat(record.asDocument().getString("name"))
             .isIn("Apple", "Cherry"));
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  /**
+   * Vertices are queued via {@code database.async().createRecord(...)}, so a violation that only surfaces at persist
+   * time on the async worker thread (e.g. a missing mandatory property, as opposed to a synchronous type-conversion
+   * error caught inline in the CSV row loop) must still abort the import in the default {@code abort} mode.
+   */
+  @Test
+  void csvVertexImportAbortsOnAsyncPersistTimeFailureByDefault() {
+    final String databasePath = "target/databases/test-import-5968-csv-async-abort";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Email STRING (MANDATORY TRUE)");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-vertices src/test/resources/importer-vertices-missing-mandatory.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long").split(" "));
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(ValidationException.class);
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  @Test
+  void csvVertexImportCountsAsyncPersistTimeFailureWhenOptedIn() {
+    final String databasePath = "target/databases/test-import-5968-csv-async-skip";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Email STRING (MANDATORY TRUE)");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-vertices src/test/resources/importer-vertices-missing-mandatory.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long -onRowError skip").split(" "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+
+      try (final Database db = databaseFactory.open()) {
+        // BOB IS MISSING THE MANDATORY Email PROPERTY: IT NEVER GETS PERSISTED, EITHER WAY.
+        // NOTE: VERTICES ARE PERSISTED VIA database.async(), WHOSE PER-WORKER TRANSACTION BATCHES A FAILING TASK'S
+        // database.rollback() ON TOP OF (DatabaseAsyncExecutorImpl#executeTask). "skip" GUARANTEES THE BAD ROW ITSELF
+        // IS NEVER PERSISTED, BUT - UNLIKE THE FULLY SYNCHRONOUS DOCUMENT/JSON PATHS - DOES NOT GUARANTEE THAT SIBLING
+        // ROWS QUEUED IN THE SAME UNCOMMITTED ASYNC BATCH SURVIVE, SO THE SURVIVING COUNT IS NOT ASSERTED HERE.
+        assertThat(db.lookupByKey("Node", "Id", 2L).hasNext()).isFalse();
+        assertThat(db.countType("Node", true)).isLessThanOrEqualTo(2);
       }
     } finally {
       databaseFactory.open().drop();

@@ -21,6 +21,7 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 public class ImporterSettings {
@@ -137,7 +138,7 @@ public class ImporterSettings {
     case "onRowError" -> {
       if (!"abort".equalsIgnoreCase(value) && !"skip".equalsIgnoreCase(value))
         throw new IllegalArgumentException("Invalid value '" + value + "' for -onRowError. Supported values are 'abort' and 'skip'");
-      onRowError = value;
+      onRowError = value.toLowerCase(Locale.ENGLISH);
     }
     // DOCUMENT SETTINGS
     case "documents" -> documents = value;
