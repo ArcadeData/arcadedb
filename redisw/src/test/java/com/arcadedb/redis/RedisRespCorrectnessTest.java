@@ -1,0 +1,226 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.redis;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import redis.clients.jedis.Jedis;
+
+import java.io.IOException;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression tests for three follow-ups filed during the security review of #5895/#5902:
+ * <ul>
+ *   <li>#5907 - {@code RedisNetworkExecutor.parseChars()} widened each byte to a UTF-16 char instead of
+ *   decoding it, mangling any non-ASCII bulk string.</li>
+ *   <li>#5911 - the {@code $} (bulk string) branch of {@code parseNext()} unconditionally skipped a
+ *   trailing CRLF even for a RESP2 null bulk string ({@code $-1\r\n}), which has none, desyncing the
+ *   parser from the next token on the wire.</li>
+ *   <li>#5912 - the Redis listener never configured a socket read timeout, so an unauthenticated client
+ *   that opens a connection and never sends anything held the connection thread open indefinitely.</li>
+ * </ul>
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class RedisRespCorrectnessTest extends BaseGraphServerTest {
+
+  private static final int    DEF_PORT = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
+  private static final String USER     = "root";
+  private static final String PASSWORD = DEFAULT_PASSWORD_FOR_TESTS;
+
+  @Test
+  void bulkStringWithMultibyteUtf8RoundTripsExactly() {
+    // Accented Latin, CJK and a 4-byte emoji code point: every one of these has at least one byte >= 0x80,
+    // which the old `(char) b` per-byte widening corrupted instead of decoding.
+    final String valueText = "héllo wörld 日本語 😀";
+
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth(USER, PASSWORD);
+    jedis.set("utf8Key", valueText);
+    assertThat(jedis.get("utf8Key")).isEqualTo(valueText);
+  }
+
+  @Test
+  void bulkStringRawWireBytesDecodeAsUtf8NotPerByteWidening() throws IOException {
+    // Same regression as above, but talking raw RESP so the assertion is against the exact bytes the
+    // server sends back rather than however the client library happens to decode them.
+    final byte[] payloadValue = "café".getBytes(StandardCharsets.UTF_8); // 5 bytes: c,a,f,e-acute(2 bytes)
+
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendRaw(socket, "*3\r\n$3\r\nSET\r\n$6\r\nrawKey\r\n$" + payloadValue.length + "\r\n");
+      socket.getOutputStream().write(payloadValue);
+      socket.getOutputStream().write("\r\n".getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+      readReply(socket); // +OK
+
+      sendCommand(socket, "GET", "rawKey");
+      final String reply = readReply(socket);
+
+      // A well-formed bulk-string reply: "$<len>\r\n<payload>" (readReply() strips the trailing CRLF) with
+      // <len> matching the UTF-8 byte length of the original value, not the char-widened (and re-encoded)
+      // mismatch the bug produced.
+      assertThat(reply).isEqualTo("$" + payloadValue.length + "\r\n" + new String(payloadValue, StandardCharsets.UTF_8));
+    }
+  }
+
+  @Test
+  void nullBulkStringArgumentDoesNotDesyncParser() throws IOException {
+    // A RESP2 null bulk string ($-1) as a command argument, immediately followed - on the very same
+    // connection - by a normal AUTH/PING pair. Before the fix, the unconditional skipLF() after $-1
+    // swallowed the leading byte of the next command, corrupting everything parsed afterward.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      final StringBuilder payload = new StringBuilder();
+      payload.append("*1\r\n$-1\r\n"); // a 1-element array containing a null bulk string
+      payload.append("*3\r\n$4\r\nAUTH\r\n$4\r\nroot\r\n$").append(PASSWORD.length()).append("\r\n").append(PASSWORD).append("\r\n");
+      payload.append("*1\r\n$4\r\nPING\r\n");
+
+      socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+
+      // The null-bulk command itself has no valid command name, so it produces no reply at all; the very
+      // next bytes on the wire must be AUTH's clean "+OK", followed by PING's clean "+PONG" - proving the
+      // parser stayed in sync instead of drifting into the following command's bytes.
+      assertThat(readReply(socket)).isEqualTo("+OK");
+      assertThat(readReply(socket)).isEqualTo("+PONG");
+    }
+  }
+
+  @Test
+  void idleUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws IOException {
+    GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
+    try {
+      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+        // Safety bound for the test itself only, well above the lowered server-side timeout: if this
+        // fires instead of a clean EOF, the server is still holding the idle connection open.
+        socket.setSoTimeout(10_000);
+        assertThat(socket.getInputStream().read()).isEqualTo(-1);
+      }
+    } finally {
+      GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.reset();
+    }
+
+    // The listener/thread pool must still be healthy: a fresh connection behaves normally.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    }
+  }
+
+  @Test
+  void authenticatedConnectionIsNotClosedWhileIdle() throws Exception {
+    // The idle timeout only bounds the pre-authentication window: once authenticated, a RESP connection is
+    // expected to sit idle between commands (that is normal client usage, not a hostile pattern).
+    GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+      Thread.sleep(1_500); // well over the lowered pre-auth timeout
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    } finally {
+      GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.reset();
+    }
+  }
+
+  private static void sendCommand(final Socket socket, final String... args) throws IOException {
+    sendRaw(socket, encodeCommand(args));
+  }
+
+  private static void sendRaw(final Socket socket, final String raw) throws IOException {
+    socket.getOutputStream().write(raw.getBytes(StandardCharsets.US_ASCII));
+    socket.getOutputStream().flush();
+  }
+
+  private static String encodeCommand(final String... args) {
+    final StringBuilder sb = new StringBuilder();
+    sb.append("*").append(args.length).append("\r\n");
+    for (final String arg : args)
+      sb.append("$").append(arg.length()).append("\r\n").append(arg).append("\r\n");
+    return sb.toString();
+  }
+
+  /**
+   * Reads exactly one RESP reply frame (simple string, error, integer or bulk string) from the socket.
+   * Returns the frame without its trailing CRLF, e.g. {@code "+OK"} or {@code "$4\r\ntest"}.
+   */
+  private static String readReply(final Socket socket) throws IOException {
+    final String firstLine = readLine(socket);
+    if (firstLine.startsWith("$")) {
+      final int size = Integer.parseInt(firstLine.substring(1));
+      if (size < 0)
+        return firstLine;
+      final byte[] body = new byte[size];
+      int read = 0;
+      while (read < size) {
+        final int n = socket.getInputStream().read(body, read, size - read);
+        if (n == -1)
+          throw new IOException("Unexpected EOF while reading bulk string body");
+        read += n;
+      }
+      readLine(socket); // trailing CRLF
+      return firstLine + "\r\n" + new String(body, StandardCharsets.UTF_8);
+    }
+    return firstLine;
+  }
+
+  private static String readLine(final Socket socket) throws IOException {
+    final StringBuilder sb = new StringBuilder();
+    int prev = -1;
+    while (true) {
+      final int b = socket.getInputStream().read();
+      if (b == -1)
+        throw new IOException("Unexpected EOF while reading a line");
+      if (prev == '\r' && b == '\n') {
+        sb.setLength(sb.length() - 1);
+        break;
+      }
+      sb.append((char) b);
+      prev = b;
+    }
+    return sb.toString();
+  }
+
+  @Override
+  protected void populateDatabase() {
+  }
+
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    GlobalConfiguration.SERVER_PLUGINS.setValue("Redis Protocol:com.arcadedb.redis.RedisProtocolPlugin");
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    super.endTest();
+  }
+}
