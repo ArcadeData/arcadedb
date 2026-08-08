@@ -42,6 +42,16 @@ public class SQLFunctionRank extends SQLAggregatedFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     pairs.add(new Object[] { params[0], params[1] });

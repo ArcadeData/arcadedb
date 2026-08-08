@@ -32,7 +32,7 @@ public class SQLMethodIfNull extends AbstractSQLMethod {
   public static final String NAME = "ifnull";
 
   public SQLMethodIfNull() {
-    super(NAME);
+    super(NAME, 1, 1);
   }
 
   @Override

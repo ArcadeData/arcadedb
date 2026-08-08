@@ -33,7 +33,7 @@ public class SQLMethodToLowerCase extends AbstractSQLMethod {
   public static final String NAME = "tolowercase";
 
   public SQLMethodToLowerCase() {
-    super(NAME);
+    super(NAME, 0, 1);
   }
 
   @Override

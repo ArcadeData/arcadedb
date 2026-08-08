@@ -35,7 +35,7 @@ public class SQLMethodSort extends AbstractSQLMethod {
   public static final String NAME = "sort";
 
   public SQLMethodSort() {
-    super(NAME);
+    super(NAME, 0, 1);
   }
 
   @Override

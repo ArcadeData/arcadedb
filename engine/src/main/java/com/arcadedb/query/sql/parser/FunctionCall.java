@@ -127,6 +127,7 @@ public class FunctionCall extends SimpleNode {
 
     final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
     if (function != null) {
+      function.checkArity(paramValues.toArray());
       if (record instanceof Identifiable identifiable) {
         return function.execute(targetObjects, identifiable, null, paramValues.toArray(), context);
       } else if (record instanceof Result result) {

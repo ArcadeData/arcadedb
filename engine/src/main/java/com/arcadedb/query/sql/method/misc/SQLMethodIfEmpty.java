@@ -35,7 +35,7 @@ public class SQLMethodIfEmpty extends AbstractSQLMethod {
   public static final String NAME = "ifempty";
 
   public SQLMethodIfEmpty() {
-    super(NAME);
+    super(NAME, 1, 1);
   }
 
   @Override

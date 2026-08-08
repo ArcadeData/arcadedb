@@ -33,7 +33,7 @@ public class SQLMethodToUpperCase extends AbstractSQLMethod {
   public static final String NAME = "touppercase";
 
   public SQLMethodToUpperCase() {
-    super(NAME);
+    super(NAME, 0, 1);
   }
 
   @Override

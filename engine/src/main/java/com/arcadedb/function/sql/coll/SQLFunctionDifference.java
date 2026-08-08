@@ -39,6 +39,11 @@ public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<O
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
   @SuppressWarnings("unchecked")
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {

@@ -105,6 +105,7 @@ public class MethodCall extends SimpleNode {
     }
     if (isGraphFunction()) {
       final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
+      function.checkArity(paramValues.toArray());
       if (function instanceof SQLFunctionFiltered filtered) {
         final Identifiable currentRecord = resolveCurrentAsIdentifiable(context);
         return filtered.execute(targetObjects, currentRecord, null, paramValues.toArray(), iPossibleResults, context);
@@ -123,6 +124,9 @@ public class MethodCall extends SimpleNode {
 
     final SQLMethod method = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getMethod(name);
     if (method != null) {
+      final Object[] methodParams = paramValues.toArray();
+      method.checkArity(methodParams);
+
       final Identifiable currentRecord;
       if (val instanceof Result result)
         currentRecord = result.getElement().orElse(null);
@@ -131,7 +135,7 @@ public class MethodCall extends SimpleNode {
       else
         currentRecord = null;
 
-      return method.execute(targetObjects, currentRecord, context, paramValues.toArray());
+      return method.execute(targetObjects, currentRecord, context, methodParams);
     }
     throw new UnsupportedOperationException("OMethod call, something missing in the implementation...?");
   }

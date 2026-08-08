@@ -94,6 +94,8 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
   // not edge RIDs. Unlike v2v, there is no CSR acceleration possible for edge-returning functions.
   protected Object v2e(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
       final String[] iLabels) {
+    if (iRecord == null)
+      return null;
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Vertex vertex)
       return vertex.getEdges(iDirection, iLabels);
@@ -103,6 +105,8 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
 
   protected Object e2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
       final String[] iLabels) {
+    if (iRecord == null)
+      return null;
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Edge edge) {
       // Tolerate a ghost edge (dangling segment pointer whose backing edge record is gone): it has no

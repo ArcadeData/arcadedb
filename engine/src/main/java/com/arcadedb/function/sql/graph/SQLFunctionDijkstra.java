@@ -48,6 +48,16 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 4;
+  }
+
   public LinkedList<RID> execute(final Object thisObj, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
     return new SQLFunctionAstar().execute(thisObj, currentRecord, currentResult, toAStarParams(params), context);

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
@@ -48,6 +49,32 @@ public interface SQLMethod extends Comparable<SQLMethod> {
    * @return String , never null.
    */
   String getSyntax();
+
+  /**
+   * Returns the minimum number of parameters required.
+   *
+   * @return minimum parameter count (>= 0)
+   */
+  int getMinParams();
+
+  /**
+   * Returns the maximum number of parameters allowed, or {@link Integer#MAX_VALUE} when the method is variadic.
+   *
+   * @return maximum parameter count (>= getMinParams())
+   */
+  int getMaxParams();
+
+  /**
+   * Rejects a call whose argument count falls outside {@link #getMinParams()}..{@link #getMaxParams()}, mirroring
+   * {@link com.arcadedb.function.Function#checkArity} on the SQL-function side (#5884/#5885): a wrong argument count
+   * is the caller's mistake, so it is reported as a {@link com.arcadedb.exception.CommandSemanticException} (HTTP
+   * 400) rather than surfacing as whatever raw JDK exception the unguarded {@link #execute} happened to throw.
+   *
+   * @param params the arguments the call carried
+   */
+  default void checkArity(final Object[] params) {
+    FunctionArity.check("Method", getName(), getMinParams(), getMaxParams(), params);
+  }
 
   /**
    * Process a record.
