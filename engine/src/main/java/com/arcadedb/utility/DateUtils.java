@@ -261,12 +261,13 @@ public class DateUtils {
    * {@link Date}/{@link Calendar} operand (which forces {@code MILLIS}) was misinterpreted by 6 orders of
    * magnitude instead of being converted (issue #5956).
    * <p>
-   * This cannot distinguish a genuinely small value (e.g. a millis timestamp within the first ~3 months of 1970)
-   * from the coarser unit it also matches digit-for-digit; {@code SECONDS} wins that tie, since a near-zero
-   * epoch value is far more common as a duration/offset than as an actual date that close to the epoch.
+   * This cannot distinguish a genuinely small value from the coarser unit it also matches digit-for-digit at each
+   * boundary - e.g. a millis timestamp within the first ~3 months of 1970, or a micros/nanos timestamp within the
+   * first ~10 seconds of 1970 - the coarser unit wins every such tie, since a near-zero epoch value is far more
+   * common as a duration/offset than as an actual date that close to the epoch.
    */
   private static ChronoUnit inferEpochPrecision(final long epochValue) {
-    final int digits = Long.toString(Math.abs(epochValue)).length();
+    final int digits = digitCount(epochValue);
     if (digits <= 10)
       return ChronoUnit.SECONDS;
     else if (digits <= 13)
@@ -274,6 +275,22 @@ public class DateUtils {
     else if (digits <= 16)
       return ChronoUnit.MICROS;
     return ChronoUnit.NANOS;
+  }
+
+  /**
+   * Counts the decimal digits of a non-negative value without the {@code String} allocation a
+   * {@code Long.toString(value).length()} round trip would cost - {@link #inferEpochPrecision(long)} runs on the
+   * {@code BinaryComparator} hot path for every date/numeric-string comparison. {@code value} is always
+   * non-negative here: its only caller receives it from {@code Long.parseLong()} on a string that already passed
+   * {@code FileUtils.isLong()}, which accepts only the digits {@code 0-9} (no sign).
+   */
+  private static int digitCount(long value) {
+    int digits = 1;
+    while (value >= 10) {
+      value /= 10;
+      digits++;
+    }
+    return digits;
   }
 
   /**
