@@ -493,6 +493,27 @@ class SQLGrammarRegressionTest {
         .isInstanceOf(CommandSQLParsingException.class);
   }
 
+  @Test
+  void malformedUnicodeEscapeRaisesParsingExceptionInScript() {
+    // Same lexer-error-listener-timing bug as parse(), reproduced through parseScript().
+    assertThatThrownBy(() -> parser.parseScript("SELECT 'abc \\u30 def';"))
+        .isInstanceOf(CommandSQLParsingException.class);
+  }
+
+  @Test
+  void malformedUnicodeEscapeRaisesParsingExceptionInExpression() {
+    // Same lexer-error-listener-timing bug as parse(), reproduced through parseExpression().
+    assertThatThrownBy(() -> parser.parseExpression("'abc \\u30 def'"))
+        .isInstanceOf(CommandSQLParsingException.class);
+  }
+
+  @Test
+  void malformedUnicodeEscapeRaisesParsingExceptionInCondition() {
+    // Same lexer-error-listener-timing bug as parse(), reproduced through parseCondition().
+    assertThatThrownBy(() -> parser.parseCondition("name = 'abc \\u30 def'"))
+        .isInstanceOf(CommandSQLParsingException.class);
+  }
+
   // ============================================================================
   // SYSTEM Keyword as Identifier (Regression)
   // ============================================================================
