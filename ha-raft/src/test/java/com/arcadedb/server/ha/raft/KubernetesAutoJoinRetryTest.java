@@ -152,7 +152,8 @@ class KubernetesAutoJoinRetryTest {
     assertThat(((RetryPolicies.RetryLimited) KubernetesAutoJoin.PROBE_RETRY_POLICY).getMaxAttempts()).isEqualTo(5);
     // RetryLimited/RetryForeverWithSleep expose no sleep-time getter, only toString(); pin it here too
     // so a future edit can't silently widen 500ms to something much larger while maxAttempts still
-    // reads 5 and this test still passes (code-review feedback on the PR that introduced this test).
+    // reads 5 and this test still passes. If this breaks after a ratis.version bump, check whether
+    // Ratis changed its toString() format before assuming an actual regression.
     assertThat(KubernetesAutoJoin.PROBE_RETRY_POLICY.toString()).contains("sleepTime=500ms");
   }
 }
