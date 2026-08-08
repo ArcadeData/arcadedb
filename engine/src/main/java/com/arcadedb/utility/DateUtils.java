@@ -285,11 +285,6 @@ public class DateUtils {
    * boundary - e.g. a millis timestamp within the first ~3 months of 1970, or a micros/nanos timestamp within the
    * first ~10 seconds of 1970 - the coarser unit wins every such tie, since a near-zero epoch value is far more
    * common as a duration/offset than as an actual date that close to the epoch.
-   * <p>
-   * A value near the top of the MICROS bucket (16 digits) widened up to NANOS by {@link #convertTimestamp} can
-   * exceed {@link Long#MAX_VALUE} - unlike {@link #addNanosClampingOverflow}, {@code convertTimestamp}'s widening
-   * multiplication has no saturation guard, so it wraps silently. Pre-existing behavior in {@code convertTimestamp},
-   * not introduced by this inference; noted here since a bare numeric string now reaches that path more directly.
    */
   private static ChronoUnit inferEpochPrecision(final long epochValue) {
     final int digits = digitCount(epochValue);
@@ -413,43 +408,30 @@ public class DateUtils {
       return ChronoUnit.NANOS;
   }
 
+  /**
+   * Widening conversions (e.g. SECONDS to NANOS) delegate to {@link TimeUnit#convert}, which saturates to
+   * {@link Long#MAX_VALUE}/{@link Long#MIN_VALUE} on overflow instead of silently wrapping the way a raw
+   * multiplication would - the same reasoning already applied to {@code LocalDate}'s conversion a few lines up
+   * in {@link #dateTimeToTimestamp(Database, Object, ChronoUnit)} (issue #5625). This matters more directly since
+   * {@link #dateTimeToTimestampInferringStringPrecision} started routing bare numeric strings through a widening
+   * conversion here (issue #5956 review follow-up): a MICROS-bucketed 16-digit string above roughly
+   * {@code Long.MAX_VALUE / 1000} widened to NANOS by {@code BinaryComparator.compareTo} used to wrap to a large
+   * negative number and silently invert the comparison.
+   */
   public static long convertTimestamp(final long timestamp, final ChronoUnit from, final ChronoUnit to) {
     if (from == to)
       return timestamp;
+    return toTimeUnit(to).convert(timestamp, toTimeUnit(from));
+  }
 
-    if (from == ChronoUnit.SECONDS) {
-      if (to == ChronoUnit.MILLIS)
-        return timestamp * 1_000;
-      else if (to == ChronoUnit.MICROS)
-        return timestamp * 1_000_000;
-      else if (to == ChronoUnit.NANOS)
-        return timestamp * 1_000_000_000;
-
-    } else if (from == ChronoUnit.MILLIS) {
-      if (to == ChronoUnit.SECONDS)
-        return timestamp / 1_000;
-      else if (to == ChronoUnit.MICROS)
-        return timestamp * 1_000;
-      else if (to == ChronoUnit.NANOS)
-        return timestamp * 1_000_000;
-
-    } else if (from == ChronoUnit.MICROS) {
-      if (to == ChronoUnit.SECONDS)
-        return timestamp / 1_000_000;
-      else if (to == ChronoUnit.MILLIS)
-        return timestamp / 1_000;
-      else if (to == ChronoUnit.NANOS)
-        return timestamp * 1_000;
-
-    } else if (from == ChronoUnit.NANOS) {
-      if (to == ChronoUnit.SECONDS)
-        return timestamp / 1_000_000_000;
-      else if (to == ChronoUnit.MILLIS)
-        return timestamp / 1_000_000;
-      else if (to == ChronoUnit.MICROS)
-        return timestamp / 1_000;
-    }
-    throw new IllegalArgumentException("Not supported conversion from '" + from + "' to '" + to + "'");
+  private static TimeUnit toTimeUnit(final ChronoUnit unit) {
+    return switch (unit) {
+      case SECONDS -> TimeUnit.SECONDS;
+      case MILLIS -> TimeUnit.MILLISECONDS;
+      case MICROS -> TimeUnit.MICROSECONDS;
+      case NANOS -> TimeUnit.NANOSECONDS;
+      default -> throw new IllegalArgumentException("Not supported conversion unit '" + unit + "'");
+    };
   }
 
   public static byte getBestBinaryTypeForPrecision(final ChronoUnit precision) {

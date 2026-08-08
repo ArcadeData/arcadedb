@@ -242,4 +242,22 @@ class DateUtilsTest {
     assertThat(DateUtils.dateTimeToTimestamp("10", ChronoUnit.MILLIS)).isEqualTo(10L);
     assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision("10", ChronoUnit.MILLIS)).isEqualTo(10_000L);
   }
+
+  /**
+   * Regression for a code-review follow-up on PR #5960: a 16-digit numeric string infers as {@code MICROS}, and
+   * {@link DateUtils#convertTimestamp} widening it to {@code NANOS} used to be a raw {@code * 1_000} with no
+   * overflow guard - a value above {@code Long.MAX_VALUE / 1000} silently wrapped to a large negative number
+   * instead of saturating, which would have inverted a {@code BinaryComparator.compareTo()}-based comparison
+   * (that entry point always widens to {@code NANOS}). {@code convertTimestamp} now delegates to
+   * {@link java.util.concurrent.TimeUnit#convert}, which saturates to {@link Long#MAX_VALUE} on overflow instead.
+   */
+  @Test
+  void numericStringPrecisionInferenceSaturatesInsteadOfOverflowingOnWideningToNanos() {
+    // 16 digits: infers as MICROS. Value chosen above Long.MAX_VALUE / 1_000 (~9_223_372_036_854_775) so the
+    // MICROS -> NANOS widening multiplication would overflow a signed 64-bit long.
+    final String microsAboveNanosRange = "9999999999999999";
+    assertThat(DateUtils.dateTimeToTimestampInferringStringPrecision(microsAboveNanosRange, ChronoUnit.NANOS))
+        .as("must saturate to Long.MAX_VALUE instead of silently wrapping to a negative number")
+        .isEqualTo(Long.MAX_VALUE);
+  }
 }
