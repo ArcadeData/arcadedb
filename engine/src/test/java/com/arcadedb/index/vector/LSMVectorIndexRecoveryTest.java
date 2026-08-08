@@ -1691,10 +1691,14 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
    * Waits for the inactivity-triggered rebuild to drain the delta buffer, replacing a fixed sleep that could only
    * ever be long enough to be slow, never long enough to be correct (issue #5765). The ceiling is generous on
    * purpose: what varies is how long a loaded machine takes to run the rebuild, not whether it runs.
+   * <p>
+   * Raised from 120s to 300s (PR #5960's CI run): {@code vectorNeighborsShouldReturnCorrectCountAfterIncrementalInsertAndRebuild}
+   * hit the 120s ceiling on a loaded runner in the same job where an unrelated vector test took 403s for work
+   * that normally completes in seconds. See the matching note on {@code LSMVectorIndexRebuildTest.REBUILD_SETTLE_TIMEOUT}.
    */
   private void awaitEmptyDeltaBuffer(final LSMVectorIndex index) {
     Awaitility.await("the inactivity rebuild drains the delta buffer")
-        .atMost(Duration.ofSeconds(120))
+        .atMost(Duration.ofSeconds(300))
         .pollInterval(Duration.ofMillis(200))
         .untilAsserted(() -> assertThat(index.getStats().get("deltaVectorsCount"))
             .as("Delta buffer should be empty after inactivity rebuild")
