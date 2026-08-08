@@ -285,6 +285,11 @@ public class DateUtils {
    * boundary - e.g. a millis timestamp within the first ~3 months of 1970, or a micros/nanos timestamp within the
    * first ~10 seconds of 1970 - the coarser unit wins every such tie, since a near-zero epoch value is far more
    * common as a duration/offset than as an actual date that close to the epoch.
+   * <p>
+   * A value near the top of the MICROS bucket (16 digits) widened up to NANOS by {@link #convertTimestamp} can
+   * exceed {@link Long#MAX_VALUE} - unlike {@link #addNanosClampingOverflow}, {@code convertTimestamp}'s widening
+   * multiplication has no saturation guard, so it wraps silently. Pre-existing behavior in {@code convertTimestamp},
+   * not introduced by this inference; noted here since a bare numeric string now reaches that path more directly.
    */
   private static ChronoUnit inferEpochPrecision(final long epochValue) {
     final int digits = digitCount(epochValue);
