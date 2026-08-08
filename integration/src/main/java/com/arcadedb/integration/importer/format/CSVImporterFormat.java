@@ -168,10 +168,17 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             context.createdDocuments.incrementAndGet();
         } catch (final RuntimeException e) {
-          if (!skipOnError)
-            throw e;
+          // ROLL BACK UNCONDITIONALLY, BEFORE DECIDING WHETHER TO RETHROW: IN THE DEFAULT "abort" MODE THIS TRANSACTION
+          // IS THE WHOLE-FILE ONE (BEGUN ONCE, BEFORE THE LOOP), SO BY THE TIME ROW N FAILS, ROWS 1..N-1 ARE ALREADY
+          // save()D BUT UNCOMMITTED IN IT. LEAVING IT ACTIVE HERE AND JUST RETHROWING WOULD LET IT SURVIVE AS A
+          // PARTIAL IMPORT: closeDatabase() COMMITS WHATEVER IS STILL ACTIVE ON ITS WAY OUT, EVEN THOUGH THE CALLER
+          // SEES AN ImportException AND REASONABLY EXPECTS NOTHING WAS IMPORTED.
           if (database.isTransactionActive())
             database.rollback();
+
+          if (!skipOnError)
+            throw e;
+
           LogManager.instance()
               .log(this, Level.WARNING, "Error on importing document at line %d, skipping it (reason: %s)", null, line,
                   e.getMessage());
@@ -184,13 +191,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       database.commit();
 
     } catch (final IOException e) {
+      // SAME REASONING AS THE RuntimeException catch BELOW: DON'T LEAVE A PARTIALLY-FILLED TRANSACTION FOR
+      // closeDatabase() TO COMMIT ON THE WAY OUT.
+      if (database.isTransactionActive())
+        database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
-      // A SOURCE-LEVEL FAILURE (parseNext()'S TextParsingException, DELIBERATELY LEFT OUTSIDE THE PER-ROW try/catch
-      // ABOVE) ESCAPED THE LOOP. IN "skip" MODE THERE IS ALWAYS AN ACTIVE TRANSACTION AT THIS POINT (A FRESH ONE IS
-      // BEGUN RIGHT AFTER EVERY ROW'S OWN commit()/rollback()) - ROLL IT BACK BEFORE RETHROWING SO THIS METHOD NEVER
-      // LEAVES ONE OPEN ON A CALLER'S Database THAT DIDN'T HAVE ONE BEFORE THIS CALL (SEE THE ENTRY GUARD ABOVE).
-      if (skipOnError && database.isTransactionActive())
+      // EITHER A SOURCE-LEVEL FAILURE (parseNext()'S TextParsingException, DELIBERATELY LEFT OUTSIDE THE PER-ROW
+      // try/catch ABOVE) ESCAPED THE LOOP, OR THE PER-ROW catch ABOVE RETHREW IN "abort" MODE AFTER ITS OWN ROLLBACK.
+      // EITHER WAY, ROLL BACK UNCONDITIONALLY BEFORE RETHROWING SO THIS METHOD NEVER LEAVES AN ACTIVE TRANSACTION -
+      // WHETHER IT'S "skip" MODE'S OWN FRESH ONE, OR "abort" MODE'S WHOLE-FILE ONE - FOR A CALLER THAT DIDN'T HAVE ONE
+      // ACTIVE (OR EXPECT ONE COMMITTED) BEFORE THIS CALL.
+      if (database.isTransactionActive())
         database.rollback();
       throw e;
     } finally {
@@ -326,10 +338,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
         } catch (final RuntimeException e) {
-          if (!skipOnError)
-            throw e;
+          // SAME REASONING AS loadDocuments(): ROLL BACK UNCONDITIONALLY, BEFORE DECIDING WHETHER TO RETHROW. IN "abort"
+          // MODE THIS IS CURRENTLY A NO-OP IN PRACTICE (VERTICES GO THROUGH database.async() THERE, SO THE FOREGROUND
+          // TRANSACTION STAYS EMPTY), BUT KEEPING BOTH METHODS SYMMETRIC AVOIDS RELYING ON THAT AS AN INVARIANT.
           if (database.isTransactionActive())
             database.rollback();
+
+          if (!skipOnError)
+            throw e;
+
           LogManager.instance()
               .log(this, Level.WARNING, "Error on importing vertex at line %d, skipping it (reason: %s)", null, line,
                   e.getMessage());
@@ -352,12 +369,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       }
 
     } catch (final IOException e) {
+      if (database.isTransactionActive())
+        database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
-      // SAME REASONING AS loadDocuments(): IN "skip" MODE, A SOURCE-LEVEL FAILURE ESCAPING THE LOOP ALWAYS LEAVES AN
-      // ACTIVE TRANSACTION BEHIND - ROLL IT BACK BEFORE RETHROWING. HARMLESS NO-OP IN "abort" MODE (INCLUDING FOR THE
-      // firstAsyncError ImportException ABOVE, WHICH ONLY THROWS WHEN !skipOnError).
-      if (skipOnError && database.isTransactionActive())
+      // SAME REASONING AS loadDocuments(): ROLL BACK UNCONDITIONALLY BEFORE RETHROWING, REGARDLESS OF MODE.
+      if (database.isTransactionActive())
         database.rollback();
       throw e;
     } finally {

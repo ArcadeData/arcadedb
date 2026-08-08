@@ -134,6 +134,42 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * Default "abort" mode must guarantee no partial import: {@code loadDocuments} persists the whole file in one
+   * synchronous transaction ({@code document.save()} per row, no {@code database.async()}), so if row 2 (Bob, whose
+   * Score overflows SHORT) fails, row 1 (Alice) must never survive either - even though it was already {@code save()}d
+   * into the still-open transaction before the failure was thrown.
+   */
+  @Test
+  void csvDocumentImportAbortsOnOutOfRangeValueByDefaultAndRollsBackPartialRows() {
+    final String databasePath = "target/databases/test-import-5968-csv-doc-abort-partial";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Widget");
+      db.command("sql", "CREATE PROPERTY Widget.Score SHORT");
+    }
+
+    try {
+      final Importer importer = new Importer(("-documents src/test/resources/importer-vertices-outofrange.csv -database "
+          + databasePath + " -documentType Widget").split(" "));
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      try (final Database db = databaseFactory.open()) {
+        // ALICE (ROW 1) WAS ALREADY save()D BEFORE BOB (ROW 2) FAILED: THE WHOLE TRANSACTION, INCLUDING ALICE, MUST BE
+        // ROLLED BACK, NOT JUST LEFT OPEN FOR closeDatabase() TO COMMIT ON THE WAY OUT.
+        assertThat(db.countType("Widget", true)).isZero();
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
   @Test
   void jsonDocumentImportAbortsOnOutOfRangeValueByDefault() {
     final String databasePath = "target/databases/test-import-5968-json-abort";
