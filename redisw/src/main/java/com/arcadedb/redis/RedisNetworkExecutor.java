@@ -656,7 +656,7 @@ public class RedisNetworkExecutor extends Thread {
       password = (String) list.get(2);
     } else if (list.size() == 2) {
       // Single-argument AUTH targets Redis' "default" user, which ArcadeDB does not model.
-      this.authenticatedUser = null;
+      markUnauthenticated();
       throw new RedisException("WRONGPASS ArcadeDB requires the 'AUTH <username> <password>' form");
     } else
       throw new RedisException("ERR wrong number of arguments for 'auth' command");
@@ -665,7 +665,7 @@ public class RedisNetworkExecutor extends Thread {
       markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       value.append("+OK");
     } catch (final ServerSecurityException e) {
-      this.authenticatedUser = null;
+      markUnauthenticated();
       throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
     }
   }
@@ -681,6 +681,24 @@ public class RedisNetworkExecutor extends Thread {
       channel.socket.setSoTimeout(0);
     } catch (final SocketException e) {
       LogManager.instance().log(this, Level.FINE, "Redis wrapper: unable to lift the idle read timeout after authentication", e);
+    }
+  }
+
+  /**
+   * Marks the connection unauthenticated and (re-)arms the bounded pre-authentication idle read timeout
+   * (issue #5912 follow-up, review on #5965): a connection that authenticated once has its timeout lifted
+   * to infinite by {@link #markAuthenticated}. If it then fails a subsequent AUTH/HELLO re-authentication
+   * attempt on the same connection, {@code authenticatedUser} goes back to null - and without this, the
+   * infinite timeout would stay in place, breaking the invariant that "unauthenticated" always implies the
+   * bounded handshake timeout applies.
+   */
+  private void markUnauthenticated() {
+    this.authenticatedUser = null;
+    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    try {
+      channel.socket.setSoTimeout(Math.max(handshakeTimeout, 0));
+    } catch (final SocketException e) {
+      LogManager.instance().log(this, Level.FINE, "Redis wrapper: unable to restore the idle read timeout after failed authentication", e);
     }
   }
 
@@ -714,7 +732,7 @@ public class RedisNetworkExecutor extends Thread {
       try {
         markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       } catch (final ServerSecurityException e) {
-        this.authenticatedUser = null;
+        markUnauthenticated();
         throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
       }
     }

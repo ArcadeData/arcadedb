@@ -141,6 +141,39 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
 
   @Test
   @Tag("slow")
+  void failedReauthenticationRearmsThePreAuthTimeout() throws IOException {
+    // A connection that already authenticated once has its idle timeout lifted to infinite. If it then
+    // fails a *subsequent* AUTH on the same connection, it goes back to logically unauthenticated and must
+    // not be left with an infinite read timeout - otherwise it could be held open forever despite never
+    // (currently) holding valid credentials, exactly the resource-exhaustion shape #5912 fixes pre-auth.
+    GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      assertThat(readReply(socket)).isEqualTo("+OK");
+
+      sendCommand(socket, "AUTH", USER, "wrong-password");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-");
+      assertThat(reply).containsIgnoringCase("WRONGPASS");
+
+      // Now idle: must be closed like a never-authenticated connection, not held open by the timeout that
+      // got lifted on the earlier successful AUTH.
+      assertThat(socket.getInputStream().read()).isEqualTo(-1);
+    } finally {
+      GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.reset();
+    }
+
+    // The listener/thread pool must still be healthy: a fresh connection behaves normally.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    }
+  }
+
+  @Test
+  @Tag("slow")
   void idleUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws IOException {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
     try {
