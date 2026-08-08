@@ -71,6 +71,10 @@ public class ImporterSettings {
   public long    parsingLimitEntries;
   public int     commitEvery            = 5000;
   public String  mapping                = null;
+  /**
+   * Governs document/vertex rows only (see {@link #isSkipOnRowError()}); edges always skip-and-log unconditionally
+   * because an unresolved from/to vertex reference is an expected outcome during graph import, not a data error.
+   */
   public String  onRowError             = "abort";
 
   public final Map<String, Object> options = new HashMap<>();
@@ -88,8 +92,15 @@ public class ImporterSettings {
    * For CSV vertex imports, which normally persist records asynchronously via {@code database.async()} in batches,
    * enabling this switches to a synchronous save per vertex instead (the same way document imports already work): a
    * batched async commit rolling back on a persist-time failure (mandatory property, unique index, ...) would otherwise
-   * take down every other vertex queued in the same uncommitted batch, not just the failing one. This trades async
-   * throughput for the guarantee that "skip" only ever loses the bad row.
+   * take down every other vertex queued in the same uncommitted batch, not just the failing one.
+   * <p>
+   * Both CSV document and vertex imports also commit each row in its own transaction while this is enabled, rather
+   * than the single whole-file transaction (documents) / {@code commitEvery}-sized async batches (vertices) used in
+   * the default {@code abort} mode: a failure that only surfaces at index time (e.g. a duplicate key) already has a
+   * bucket write by then, and only rolling back that one row's own transaction can undo it without also discarding
+   * an unrelated, already-committed row. In short, "skip" trades import throughput - effectively a batch size of 1
+   * for the whole run, not just for the failing row - for the guarantee that a bad row can never take a good one
+   * down with it, nor leave a partially-written "ghost" record behind.
    */
   public boolean isSkipOnRowError() {
     return "skip".equalsIgnoreCase(onRowError);

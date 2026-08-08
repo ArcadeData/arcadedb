@@ -399,7 +399,9 @@ class Issue5968ImporterSkipOnRowErrorTest {
       });
 
       final Map<String, Object> result = importer.load();
-      assertThat(result.get("errors")).isNotNull();
+      // THE NESTED catch SETS recordFailed BUT DOES NOT ITSELF INCREMENT context.errors: THE OUTER parseRecords()
+      // CATCH IS THE SOLE INCREMENT POINT, SO THIS MUST BE EXACTLY 1, NOT JUST NON-NULL.
+      assertThat(result.get("errors")).isEqualTo(1L);
 
       try (final Database db = databaseFactory.open()) {
         // THE READER MUST NOT DESYNC AND SILENTLY DROP ORDER 3: BOB'S NESTED Customer FAILS, WHICH DISCARDS BOB'S
@@ -419,5 +421,37 @@ class Issue5968ImporterSkipOnRowErrorTest {
     assertThatThrownBy(() -> new Importer(
         ("-vertices src/test/resources/importer-vertices.csv -database target/databases/test-import-5968-invalid"
             + " -onRowError bogus").split(" "))).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * The CLI-arg tests above all go through {@code new Importer(String[])}, which parses {@code -onRowError} directly.
+   * {@code IMPORT DATABASE ... WITH onRowError=skip} is a separate, reflection-based entry point
+   * ({@code ImportDatabaseStatement} forwards every {@code WITH} key/value to {@code ImporterSettings.parseParameter}),
+   * so it needs its own regression coverage to lock in that integration point.
+   */
+  @Test
+  void sqlImportDatabaseSupportsOnRowErrorSkipSetting() {
+    final String databasePath = "target/databases/test-import-5968-sql-onrowerror";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Document");
+      db.command("sql", "CREATE PROPERTY Document.Score SHORT");
+
+      db.command("sql", """
+          IMPORT DATABASE file://src/test/resources/importer-vertices-outofrange.csv
+          WITH onRowError=skip
+          """);
+
+      // BOB'S "99999" DOES NOT FIT A SHORT: THAT ROW IS SKIPPED, THE OTHER TWO ARE IMPORTED AS DOCUMENTS (THE DEFAULT
+      // ENTITY TYPE FOR THE PRIMARY -url/DATABASE SOURCE)
+      assertThat(db.countType("Document", true)).isEqualTo(2);
+    } finally {
+      db.drop();
+    }
   }
 }
