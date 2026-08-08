@@ -116,6 +116,28 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
+  void nonMinusOneNegativeBulkLengthIsAlsoTreatedAsNull() throws IOException {
+    // RESP2 only defines -1 as the null bulk string, but parseNext() deliberately treats every negative
+    // size the same way (see the comment on that branch) rather than adding a separate protocol-error case
+    // for e.g. $-5. Locks in that this is a real, tested decision and not just an artifact of `size < 0`
+    // happening to also be true for -1: same parser-resync proof as the $-1 case above, with $-5 instead.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      final StringBuilder payload = new StringBuilder();
+      payload.append("*1\r\n$-5\r\n");
+      payload.append("*3\r\n$4\r\nAUTH\r\n$4\r\nroot\r\n$").append(PASSWORD.length()).append("\r\n").append(PASSWORD).append("\r\n");
+      payload.append("*1\r\n$4\r\nPING\r\n");
+
+      socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+
+      assertThat(readReply(socket)).isEqualTo("+OK");
+      assertThat(readReply(socket)).isEqualTo("+PONG");
+    }
+  }
+
+  @Test
   void nullBulkStringAsCommandArgumentIsRejectedCleanly() throws IOException {
     // $-1 is reachable as any array element now (issue #5911's fix), not just the command name - including
     // as a SET argument, which used to reach ConcurrentHashMap.put() with a null value and NPE deep inside

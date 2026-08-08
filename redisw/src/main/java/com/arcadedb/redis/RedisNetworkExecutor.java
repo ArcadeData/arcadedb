@@ -226,6 +226,11 @@ public class RedisNetworkExecutor extends Thread {
       // NullPointerException it wasn't written to expect - e.g. defaultBucket is a ConcurrentHashMap, whose
       // put/get reject a null key or value outright, so "SET key $-1" or "GET $-1" would otherwise NPE deep
       // inside setVariable/getVariable instead of getting a clear, single reply.
+      // Deliberately checks only top-level (depth-1) arguments: a $-1 nested inside a multibulk argument
+      // (e.g. "SET key *1\r\n$-1\r\n") still reaches a handler as a null inside a List and would surface as a
+      // raw ClassCastException from the generic catch-all instead of this message. No handler actually
+      // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
+      // than a gap worth a recursive check for.
       for (int i = 1; i < list.size(); i++) {
         if (list.get(i) == null) {
           value.append("-ERR Protocol error: unexpected null bulk string argument");
@@ -990,6 +995,11 @@ public class RedisNetworkExecutor extends Thread {
       // UTF-8 character (e.g. accented Latin, CJK, emoji) is 1 String char but more than 1 byte once
       // replyToClient() encodes the whole reply, so v.toString().length() under-declares the length for any
       // non-ASCII value and desyncs the client exactly like a truncated bulk string would.
+      // TODO(perf): this encodes `text` to bytes here just to measure its length, then replyToClient()
+      // encodes the whole accumulated `value` StringBuilder (including this same text) to bytes again right
+      // after - a double UTF-8 encode per non-numeric reply, noticeable for a value near maxBulkLength.
+      // Avoiding it cleanly needs `value`'s reply-building to move off a single shared StringBuilder of
+      // chars onto something byte-oriented, which is a larger change than this correctness fix warrants.
       final String text = v.toString();
       value.append("$");
       value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
