@@ -113,11 +113,22 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
+    // CAPTURED BEFORE THE try BELOW SO IT'S ALSO VISIBLE TO THE catch BLOCKS THAT NEED IT (A VARIABLE DECLARED INSIDE
+    // A try BLOCK ISN'T VISIBLE IN ITS OWN catch). SAFE TO COMMIT/ROLL BACK THE ACTIVE TRANSACTION OURSELVES BELOW
+    // ONLY WHEN WE'RE NOT SHARING SOMEONE ELSE'S: A SELF-MANAGED database'S AMBIENT TRANSACTION
+    // (context.externallyManagedDatabase == false) IS ALWAYS EMPTY AND SAFE TO COMMANDEER REGARDLESS OF WHO BEGAN IT
+    // (SEE AbstractImporter#openDatabase()). ON AN EXTERNALLY-MANAGED database WE ONLY OWN IT IF WE OURSELVES JUST
+    // BEGAN IT BELOW - OTHERWISE IT'S THE CALLER'S OWN TRANSACTION, POSSIBLY HOLDING UNRELATED PENDING WORK WE MUST
+    // NEVER COMMIT OR ROLL BACK OUT FROM UNDER THEM. NOTE THIS CAN ONLY BE false IN "abort" MODE: THE ENTRY GUARD
+    // ABOVE ALREADY REJECTS "skip" MODE WHENEVER context.externallyManagedDatabase && transactionActiveOnEntry.
+    final boolean transactionActiveOnEntry = database.isTransactionActive();
+    final boolean ownsTransaction = !context.externallyManagedDatabase || !transactionActiveOnEntry;
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
-      if (!database.isTransactionActive())
+      if (!transactionActiveOnEntry)
         database.begin();
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
@@ -168,12 +179,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             context.createdDocuments.incrementAndGet();
         } catch (final RuntimeException e) {
-          // ROLL BACK UNCONDITIONALLY, BEFORE DECIDING WHETHER TO RETHROW: IN THE DEFAULT "abort" MODE THIS TRANSACTION
-          // IS THE WHOLE-FILE ONE (BEGUN ONCE, BEFORE THE LOOP), SO BY THE TIME ROW N FAILS, ROWS 1..N-1 ARE ALREADY
-          // save()D BUT UNCOMMITTED IN IT. LEAVING IT ACTIVE HERE AND JUST RETHROWING WOULD LET IT SURVIVE AS A
-          // PARTIAL IMPORT: closeDatabase() COMMITS WHATEVER IS STILL ACTIVE ON ITS WAY OUT, EVEN THOUGH THE CALLER
-          // SEES AN ImportException AND REASONABLY EXPECTS NOTHING WAS IMPORTED.
-          if (database.isTransactionActive())
+          // ROLL BACK BEFORE DECIDING WHETHER TO RETHROW, BUT ONLY IF WE OWN THIS TRANSACTION (SEE ownsTransaction
+          // ABOVE): IN THE DEFAULT "abort" MODE, WHEN WE DO OWN IT, IT'S THE WHOLE-FILE ONE (BEGUN ONCE, BEFORE THE
+          // LOOP), SO BY THE TIME ROW N FAILS, ROWS 1..N-1 ARE ALREADY save()D BUT UNCOMMITTED IN IT. LEAVING IT
+          // ACTIVE HERE AND JUST RETHROWING WOULD LET IT SURVIVE AS A PARTIAL IMPORT: closeDatabase() COMMITS
+          // WHATEVER IS STILL ACTIVE ON ITS WAY OUT, EVEN THOUGH THE CALLER SEES AN ImportException AND REASONABLY
+          // EXPECTS NOTHING WAS IMPORTED. WHEN WE DON'T OWN IT (EXTERNALLY-MANAGED database, "abort" MODE, A
+          // TRANSACTION WAS ALREADY ACTIVE ON ENTRY), IT'S THE CALLER'S OWN - ROLLING IT BACK WOULD DISCARD THEIR
+          // UNRELATED PENDING WORK TOO, SO LEAVE IT FOR THEM TO RECONCILE INSTEAD.
+          if (ownsTransaction && database.isTransactionActive())
             database.rollback();
 
           if (!skipOnError)
@@ -192,17 +206,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     } catch (final IOException e) {
       // SAME REASONING AS THE RuntimeException catch BELOW: DON'T LEAVE A PARTIALLY-FILLED TRANSACTION FOR
-      // closeDatabase() TO COMMIT ON THE WAY OUT.
-      if (database.isTransactionActive())
+      // closeDatabase() TO COMMIT ON THE WAY OUT, BUT ONLY IF WE OWN IT.
+      if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
       // EITHER A SOURCE-LEVEL FAILURE (parseNext()'S TextParsingException, DELIBERATELY LEFT OUTSIDE THE PER-ROW
-      // try/catch ABOVE) ESCAPED THE LOOP, OR THE PER-ROW catch ABOVE RETHREW IN "abort" MODE AFTER ITS OWN ROLLBACK.
-      // EITHER WAY, ROLL BACK UNCONDITIONALLY BEFORE RETHROWING SO THIS METHOD NEVER LEAVES AN ACTIVE TRANSACTION -
-      // WHETHER IT'S "skip" MODE'S OWN FRESH ONE, OR "abort" MODE'S WHOLE-FILE ONE - FOR A CALLER THAT DIDN'T HAVE ONE
-      // ACTIVE (OR EXPECT ONE COMMITTED) BEFORE THIS CALL.
-      if (database.isTransactionActive())
+      // try/catch ABOVE) ESCAPED THE LOOP, OR THE PER-ROW catch ABOVE RETHREW IN "abort" MODE AFTER ITS OWN (ALREADY
+      // ownsTransaction-GATED) ROLLBACK. EITHER WAY, ROLL BACK BEFORE RETHROWING ONLY IF WE OWN THE TRANSACTION - SEE
+      // ownsTransaction ABOVE FOR WHY THAT'S NOT ALWAYS SAFE IN "abort" MODE.
+      if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw e;
     } finally {
@@ -282,13 +295,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (settings.verticesSkipEntries == null)
       skipEntries = 1L;
 
+    // CAPTURED BEFORE THE try BELOW - SEE THE loadDocuments() COMMENT FOR WHY (VISIBILITY IN THE catch BLOCKS) AND
+    // FOR THE FULL ownsTransaction REASONING.
+    final boolean transactionActiveOnEntry = database.isTransactionActive();
+    final boolean ownsTransaction = !context.externallyManagedDatabase || !transactionActiveOnEntry;
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
       // BEGUN ONLY AFTER THE SOURCE IS SUCCESSFULLY OPENED: IF beginParsing()/THE READER ITSELF THROWS IOException, NO
       // TRANSACTION IS LEFT DANGLING FOR THE CALLER TO RECONCILE.
-      if (skipOnError && !database.isTransactionActive())
+      if (skipOnError && !transactionActiveOnEntry)
         database.begin();
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
@@ -338,10 +356,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
         } catch (final RuntimeException e) {
-          // SAME REASONING AS loadDocuments(): ROLL BACK UNCONDITIONALLY, BEFORE DECIDING WHETHER TO RETHROW. IN "abort"
-          // MODE THIS IS CURRENTLY A NO-OP IN PRACTICE (VERTICES GO THROUGH database.async() THERE, SO THE FOREGROUND
-          // TRANSACTION STAYS EMPTY), BUT KEEPING BOTH METHODS SYMMETRIC AVOIDS RELYING ON THAT AS AN INVARIANT.
-          if (database.isTransactionActive())
+          // SAME REASONING AS loadDocuments(): ROLL BACK BEFORE DECIDING WHETHER TO RETHROW, ONLY IF WE OWN THE
+          // TRANSACTION. IN "abort" MODE THIS ROLLBACK IS CURRENTLY A NO-OP IN PRACTICE EITHER WAY (VERTICES GO
+          // THROUGH database.async() THERE, SO THE FOREGROUND TRANSACTION STAYS EMPTY), BUT GATING ON ownsTransaction
+          // KEEPS BOTH METHODS SYMMETRIC WITHOUT RELYING ON THAT AS AN INVARIANT.
+          if (ownsTransaction && database.isTransactionActive())
             database.rollback();
 
           if (!skipOnError)
@@ -369,12 +388,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       }
 
     } catch (final IOException e) {
-      if (database.isTransactionActive())
+      if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
-      // SAME REASONING AS loadDocuments(): ROLL BACK UNCONDITIONALLY BEFORE RETHROWING, REGARDLESS OF MODE.
-      if (database.isTransactionActive())
+      // SAME REASONING AS loadDocuments(): ROLL BACK BEFORE RETHROWING ONLY IF WE OWN THE TRANSACTION.
+      if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw e;
     } finally {

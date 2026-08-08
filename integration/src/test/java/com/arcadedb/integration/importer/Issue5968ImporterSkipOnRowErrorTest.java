@@ -170,6 +170,52 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * Default "abort" mode has no exclusive-transaction-ownership guard - only "skip" mode rejects an already-active
+   * transaction on an externally-managed {@link Database} (see
+   * {@link #csvVertexImportRejectsSkipModeInsideActiveTransaction()}) - so it can run directly inside a caller's own
+   * transaction that already holds unrelated pending work. A failing row must still abort the import, but the fix in
+   * {@link #csvDocumentImportAbortsOnOutOfRangeValueByDefaultAndRollsBackPartialRows()} must not roll back that
+   * pre-existing work out from under the caller: only the caller who started that transaction gets to decide what
+   * happens to it.
+   */
+  @Test
+  void csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction() {
+    final String databasePath = "target/databases/test-import-5968-csv-doc-abort-caller-tx";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Widget");
+      db.command("sql", "CREATE PROPERTY Widget.Score SHORT");
+      db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+      // THE CALLER STARTS THEIR OWN TRANSACTION WITH UNRELATED PENDING WORK BEFORE HANDING THE Database TO THE
+      // IMPORTER, THEN CALLS IT DIRECTLY IN DEFAULT "abort" MODE (NOT "skip", WHICH WOULD BE REJECTED OUTRIGHT).
+      db.begin();
+      db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+      final Importer importer = new Importer(db, null);
+      importer.settings.documents = "src/test/resources/importer-vertices-outofrange.csv";
+      importer.settings.documentTypeName = "Widget";
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      // THE IMPORT FAILED, BUT THE CALLER'S OWN TRANSACTION - AND THEREFORE THEIR PRE-EXISTING PENDING WORK - MUST
+      // STILL BE THERE FOR THEM TO DECIDE WHAT TO DO WITH, NOT SILENTLY DISCARDED BY THE IMPORTER'S FAILURE HANDLING.
+      assertThat(db.isTransactionActive()).isTrue();
+      db.commit();
+
+      assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+    } finally {
+      db.drop();
+    }
+  }
+
   @Test
   void jsonDocumentImportAbortsOnOutOfRangeValueByDefault() {
     final String databasePath = "target/databases/test-import-5968-json-abort";
@@ -192,6 +238,49 @@ class Issue5968ImporterSkipOnRowErrorTest {
           .hasRootCauseInstanceOf(IllegalArgumentException.class);
     } finally {
       databaseFactory.open().drop();
+    }
+  }
+
+  /**
+   * Symmetric to {@link #csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction()}:
+   * {@code JSONImporterFormat.parseRecords} always begins its own transaction before parsing, regardless of mode -
+   * {@code database.begin()} nests rather than reusing one that's already active (see
+   * {@code LocalDatabase#begin()}), so its own {@code commit()}/{@code rollback()} can never affect a caller's
+   * pre-existing transaction. This locks in that invariant so a future change doesn't accidentally reuse the
+   * caller's transaction the way {@code CSVImporterFormat} does.
+   */
+  @Test
+  void jsonDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction() {
+    final String databasePath = "target/databases/test-import-5968-json-doc-abort-caller-tx";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Food");
+      db.getSchema().getType("Food").createProperty("qty", Type.SHORT);
+      db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+      db.begin();
+      db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+      final Importer importer = new Importer(db, "file://src/test/resources/importer-documents-outofrange.json");
+      importer.settings.documentTypeName = "Food";
+      importer.settings.mapping = "{'*':[]}";
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      // THE CALLER'S OWN TRANSACTION MUST SURVIVE THE IMPORT FAILURE INTACT, WITH THEIR PRE-EXISTING PENDING WORK
+      // STILL IN IT - SEE THE CSV COUNTERPART OF THIS TEST FOR THE FULL REASONING.
+      assertThat(db.isTransactionActive()).isTrue();
+      db.commit();
+
+      assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+    } finally {
+      db.drop();
     }
   }
 

@@ -142,17 +142,29 @@ public class JSONImporterFormat implements FormatImporter {
 
     reader.beginArray();
 
+    // database.begin() ALWAYS NESTS RATHER THAN REUSING A TRANSACTION THAT'S ALREADY ACTIVE (SEE LocalDatabase#begin()),
+    // SO THIS METHOD'S OWN LEVEL IS NEVER THE SAME ONE AS A PRE-EXISTING CALLER'S - UNLIKE CSVImporterFormat, WHICH
+    // REUSES AN ALREADY-ACTIVE TRANSACTION DIRECTLY IN "abort" MODE. THAT DISTINCTION IS WHY THE catch BLOCKS BELOW
+    // DON'T NEED A CSVImporterFormat-STYLE ownsTransaction CHECK - BUT SEE EACH ONE FOR WHY THEY STILL CAN'T BOTH
+    // ROLL BACK UNCONDITIONALLY THE SAME WAY.
     database.begin();
     try {
       parseRecordsArray(reader, database, settings, context, mapping, ignore);
-    } catch (final RuntimeException | IOException e) {
-      // A FAILURE THAT ESCAPES parseRecordsArray() ENTIRELY (E.G. A MALFORMED JSON STRUCTURE FROM reader.peek(),
-      // DELIBERATELY UNCAUGHT BELOW) LEAVES AN ACTIVE TRANSACTION BEHIND IN "skip" MODE: A FRESH ONE IS ALWAYS BEGUN
-      // RIGHT AFTER EVERY RECORD'S OWN commit()/rollback(), INCLUDING BEFORE THE FIRST ONE. ROLL IT BACK BEFORE
-      // RETHROWING SO THIS METHOD NEVER LEAVES ONE OPEN ON A CALLER'S Database THAT DIDN'T HAVE ONE BEFORE THIS CALL
-      // (SEE THE ENTRY GUARD ABOVE). HARMLESS NO-OP IN "abort" MODE.
-      if (settings.isSkipOnRowError() && database.isTransactionActive())
+    } catch (final IOException e) {
+      // A GENUINELY SOURCE-LEVEL FAILURE (E.G. A MALFORMED JSON STRUCTURE FROM reader.peek()) NEVER PASSES THROUGH
+      // parseRecordsArray()'s PER-RECORD catch BELOW, WHICH ONLY CATCHES RuntimeException - SO THE ACTIVE TRANSACTION
+      // HERE IS ALWAYS THIS METHOD'S OWN, UNTOUCHED LEVEL (A FRESH ONE IS BEGUN RIGHT AFTER EVERY RECORD'S OWN
+      // commit()/rollback(), INCLUDING BEFORE THE FIRST ONE). SAFE TO ROLL BACK UNCONDITIONALLY, REGARDLESS OF MODE.
+      if (database.isTransactionActive())
         database.rollback();
+      throw e;
+    } catch (final RuntimeException e) {
+      // UNLIKE IOException ABOVE: ANY RuntimeException REACHING HERE HAS ALREADY PASSED THROUGH parseRecordsArray()'s
+      // PER-RECORD catch, WHICH - IN "abort" MODE, THE ONLY MODE WHERE IT RETHROWS INSTEAD OF SWALLOWING - ALREADY
+      // ROLLED BACK ITS OWN NESTED LEVEL, POPPING BACK DOWN TO WHATEVER WAS ACTIVE BEFORE THIS METHOD'S OWN
+      // database.begin() ABOVE (POSSIBLY A CALLER'S OWN TRANSACTION ON AN EXTERNALLY-MANAGED database). DO NOT ROLL
+      // BACK AGAIN HERE: THAT WOULD DISCARD THE CALLER'S OWN UNRELATED PENDING WORK INSTEAD OF THIS METHOD'S
+      // (ALREADY-RESOLVED) CONTRIBUTION.
       throw e;
     }
   }
