@@ -87,10 +87,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     final long beginTime = System.currentTimeMillis();
 
     // IN "skip" MODE, EACH ROW GETS ITS OWN commit()/rollback() INSTEAD OF SHARING ONE TRANSACTION FOR THE WHOLE FILE
-    // (WHY: SEE ImporterSettings#isSkipOnRowError()). THE ONLY OTHER THROWING CALL IN THIS METHOD, csvParser.parseNext(),
+    // (WHY: SEE ImporterSettings#isSkipOnRowError()). THE OTHER THROWING CALL IN THIS METHOD, csvParser.parseNext(),
     // ONLY RUNS AT THE TOP OF THE NEXT LOOP ITERATION - RIGHT AFTER THE PRIOR ROW'S TRANSACTION WAS ALREADY COMMITTED
     // OR ROLLED BACK AND A FRESH, EMPTY ONE BEGUN - SO AN IOException FROM IT CAN NEVER LEAVE A ROW'S PARTIAL WRITE
     // SITTING IN AN OPEN TRANSACTION.
+    //
+    // parseNext() IS DELIBERATELY LEFT OUTSIDE THE PER-ROW try/catch BELOW, UNLIKE THE ROW-PROCESSING LOGIC: A
+    // univocity TextParsingException (E.G. A VALUE EXCEEDING maxCharsPerColumn/maxColumns, A MALFORMED QUOTED FIELD)
+    // MEANS THE UNDERLYING PARSER'S OWN POSITION TRACKING IS COMPROMISED. TESTED EMPIRICALLY: CATCHING SUCH AN
+    // EXCEPTION AND CALLING parseNext() AGAIN DOES NOT CLEANLY RESUME AT THE NEXT LINE - IT CAN RETURN A TRUNCATED,
+    // WRONG ROW AND SILENTLY DROP THE FOLLOWING ONE ENTIRELY, WITH NO ERROR RAISED FOR THE LOST ROW. THAT IS WORSE
+    // THAN ABORTING, SO A CSV-SYNTAX-LEVEL PARSE FAILURE STILL ABORTS THE IMPORT EVEN IN "skip" MODE; ONLY
+    // ROW-CONTENT VALIDATION FAILURES (OUT-OF-RANGE VALUES, MISSING MANDATORY PROPERTIES, DUPLICATE KEYS, ...) ARE
+    // SKIPPABLE.
     final boolean skipOnError = settings.isSkipOnRowError();
 
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
@@ -233,8 +242,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         context.errors.incrementAndGet();
         firstAsyncError.compareAndSet(null, exception);
       });
-    else if (!database.isTransactionActive())
-      database.begin();
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
@@ -243,6 +250,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
+
+      // BEGUN ONLY AFTER THE SOURCE IS SUCCESSFULLY OPENED: IF beginParsing()/THE READER ITSELF THROWS IOException, NO
+      // TRANSACTION IS LEFT DANGLING FOR THE CALLER TO RECONCILE.
+      if (skipOnError && !database.isTransactionActive())
+        database.begin();
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!settings.vertexPropertiesInclude.isEmpty() && !"*".equalsIgnoreCase(settings.vertexPropertiesInclude)) {
