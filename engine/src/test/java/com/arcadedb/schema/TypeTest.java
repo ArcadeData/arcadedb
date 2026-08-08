@@ -546,8 +546,10 @@ class TypeTest extends TestHelper {
     assertThatThrownBy(() -> Type.convert(database, new BigDecimal("9999999999999999999999999999"), Integer.class))
         .isInstanceOf(IllegalArgumentException.class);
     // A BIGINTEGER WHOSE MAGNITUDE EXCEEDS EVEN A LONG MUST ALSO BE REJECTED (longValue() TRUNCATES BITS INSTEAD OF
-    // SATURATING, SO THIS EXERCISES THE DEDICATED BigInteger BRANCH IN narrowToIntegral())
+    // SATURATING, SO THIS EXERCISES THE DEDICATED BigInteger BRANCH IN narrowToIntegral()), IN BOTH DIRECTIONS
     assertThatThrownBy(() -> Type.convert(database, new BigInteger("9999999999999999999999999999"), Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new BigInteger("-9999999999999999999999999999"), Integer.class))
         .isInstanceOf(IllegalArgumentException.class);
     // AN IN-RANGE BIGINTEGER MUST STILL CONVERT
     assertThat(Type.convert(database, BigInteger.valueOf(42), Integer.class)).isEqualTo(42);
