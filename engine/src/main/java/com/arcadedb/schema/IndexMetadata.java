@@ -294,6 +294,22 @@ public class IndexMetadata {
   }
 
   /**
+   * Whether this definition carries the indications of WHAT to index - a type and the properties of it whose values
+   * populate the index - which is what {@link com.arcadedb.index.Index#isAutomatic()} answers.
+   * <p>
+   * The empty check is the whole point and cannot be dropped for a plain null check: the constructor above coerces a
+   * null property list to {@link List#of()}, so {@code propertyNames} is never null and a manual index - the one kind
+   * built with {@code new IndexMetadata(null, null, -1)} and never bound to a type - used to report itself as
+   * automatic. {@code REBUILD INDEX *} and {@code COMPACT INDEX *} both select their targets on that answer, so every
+   * manual index entered a sweep that could only fail on it (issue #5780).
+   *
+   * @return true when the index is derived from records, false when its entries are whatever the caller put in it
+   */
+  public boolean hasIndexedProperties() {
+    return propertyNames != null && !propertyNames.isEmpty();
+  }
+
+  /**
    * Returns true if the property at the given index has case-insensitive collation.
    */
   public boolean isCaseInsensitive(final int propertyIndex) {

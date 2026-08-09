@@ -363,7 +363,7 @@ public class HashIndex implements IndexInternal {
 
   @Override
   public boolean isAutomatic() {
-    return metadata.propertyNames != null;
+    return metadata.hasIndexedProperties();
   }
 
   // ─── INDEX INTERNAL ──────────────────────────────────────
