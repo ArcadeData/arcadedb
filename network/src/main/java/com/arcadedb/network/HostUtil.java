@@ -40,25 +40,63 @@ public class HostUtil {
         throw new IllegalArgumentException("Invalid host " + host);
 
       final String addr = host.substring(1, closeBracket);
+      if (addr.isEmpty() || addr.indexOf('[') >= 0 || addr.indexOf(']') >= 0)
+        throw new IllegalArgumentException("Invalid host " + host);
+
       if (closeBracket == host.length() - 1)
         return new String[] { addr, defaultPort };
       if (host.charAt(closeBracket + 1) == ':')
-        return new String[] { addr, host.substring(closeBracket + 2) };
+        return new String[] { addr, validatePort(host, host.substring(closeBracket + 2)) };
 
       throw new IllegalArgumentException("Invalid host " + host);
     }
 
-    // Legacy unbracketed format: colon-count heuristic for fully-expanded IPv6
-    final String[] parts = host.split(":");
-    if (parts.length == 1 || parts.length == 8)
-      // ( IPV4 OR IPV6 ) NO PORT
+    // A bracket outside the RFC 3986 bracketed-IPv6 form above is always malformed.
+    if (host.indexOf('[') >= 0 || host.indexOf(']') >= 0)
+      throw new IllegalArgumentException("Invalid host " + host);
+
+    // Legacy unbracketed format: colon-count heuristic for fully-expanded IPv6.
+    // Split with limit -1 so a trailing colon (e.g. "host:") surfaces as a trailing
+    // empty part instead of being silently dropped.
+    final String[] parts = host.split(":", -1);
+    if (parts.length == 1)
+      // IPV4 OR HOST NAME, NO PORT
       return new String[] { host, defaultPort };
-    else if (parts.length == 2 || parts.length == 9) {
-      // ( IPV4 OR IPV6 ) + PORT
-      final int pos = host.lastIndexOf(":");
-      return new String[] { host.substring(0, pos), host.substring(pos + 1) };
+    else if (parts.length == 2) {
+      // ( IPV4 OR HOST NAME ) + PORT
+      if (parts[0].isEmpty())
+        throw new IllegalArgumentException("Invalid host " + host);
+      return new String[] { parts[0], validatePort(host, parts[1]) };
+    } else if (parts.length == 8 && !host.endsWith(":"))
+      // IPV6 NO PORT
+      return new String[] { host, defaultPort };
+    else if (parts.length == 9 && !host.endsWith(":")) {
+      // IPV6 + PORT
+      final int pos = host.lastIndexOf(':');
+      return new String[] { host.substring(0, pos), validatePort(host, host.substring(pos + 1)) };
     }
 
     throw new IllegalArgumentException("Invalid host " + host);
+  }
+
+  /**
+   * Validates that {@code port} is a non-empty integer in the range 1-65535. The full original
+   * {@code host} string is only used to name the offending value in the exception message.
+   */
+  private static String validatePort(final String host, final String port) {
+    if (port.isEmpty())
+      throw new IllegalArgumentException("Invalid host " + host);
+
+    final int value;
+    try {
+      value = Integer.parseInt(port);
+    } catch (final NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid host " + host);
+    }
+
+    if (value < 1 || value > 65535)
+      throw new IllegalArgumentException("Invalid host " + host);
+
+    return port;
   }
 }
