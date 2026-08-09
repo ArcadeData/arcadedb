@@ -979,7 +979,7 @@ public class HashIndexBucket extends PaginatedComponent {
    * and hence half the pages - for free. See issue #5677.
    */
   static byte storageKeyType(final byte declaredBinaryType) {
-    return declaredBinaryType == BinaryTypes.TYPE_RID ? BinaryTypes.TYPE_COMPRESSED_RID : declaredBinaryType;
+    return BinaryTypes.getIndexStorageType(declaredBinaryType);
   }
 
   /**

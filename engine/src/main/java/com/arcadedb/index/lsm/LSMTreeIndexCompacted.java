@@ -141,8 +141,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    */
   public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
       final boolean unique, final String filePath,
-      final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, binaryKeyTypes,
+      final Type[] keyTypes, final byte[] storageKeyTypes, final int pageSize) throws IOException {
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, storageKeyTypes,
         pageSize,
         LSMTreeIndexMutable.CURRENT_VERSION);
   }
@@ -405,9 +405,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     if (txPageCounter == 0) {
       pos += currentPage.writeInt(pos, -1); // SUB-INDEX FILE ID
 
-      currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
-      for (int i = 0; i < binaryKeyTypes.length; ++i)
-        currentPage.writeByte(pos++, binaryKeyTypes[i]);
+      // The STORAGE types, for the same reason as in LSMTreeIndexMutable.createNewPage: this is the encoding the
+      // entries on this page actually use.
+      currentPage.writeByte(pos++, (byte) storageKeyTypes.length);
+      for (int i = 0; i < storageKeyTypes.length; ++i)
+        currentPage.writeByte(pos++, storageKeyTypes[i]);
     }
 
     updatePageCount(txPageCounter + 1);
@@ -502,10 +504,10 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           // bound; descending keeps series below the (upper) fromKeys bound. The opposite (far) bound is enforced by
           // LSMTreeIndexCursor's toKeys termination. Without this, a series lying wholly inside [fromKeys, toKeys] -
           // containing neither endpoint - produced no cursor and every interior series was silently dropped (#5214).
-          iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
+          iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, storageKeyTypes,
               ascendingOrder, -1);
       } else
-        iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
+        iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, storageKeyTypes,
             ascendingOrder, -1);
 
       if (iterator != null)
@@ -578,7 +580,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           ++posInPage;
       }
 
-      iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
+      iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, storageKeyTypes,
           ascendingOrder, posInPage);
     }
     return iterator;
