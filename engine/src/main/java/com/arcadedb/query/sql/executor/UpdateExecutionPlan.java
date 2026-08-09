@@ -60,14 +60,29 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
     executeInternal();
   }
 
+  /**
+   * #5681: an UPDATE/DELETE with a {@code LIMIT} chains {@code LimitExecutionStep} above the sub-plan that holds the
+   * actual scan (e.g. an index scan wrapped in {@link SubQueryStep}). Once the limit is satisfied,
+   * {@code LimitExecutionStep} simply stops pulling - it never tells the sub-plan there will be no more requests, so
+   * the scan is abandoned mid-flight unless something closes the chain. By the time this method returns, the
+   * statement is done: every result the caller will ever see is already buffered in {@link #result}, and
+   * {@link #fetchNext(int)} never touches the steps chain again. Closing here - in a {@code finally} so it also runs
+   * on the exception path - releases the abandoned scan immediately instead of leaving it for the caller to close
+   * the returned {@link ResultSet} (the DML result is very commonly used only for its side effect and never closed)
+   * or, failing that, for the GC to reclaim it later.
+   */
   public void executeInternal() throws CommandExecutionException {
-    while (true) {
-      final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
-      if (!nextBlock.hasNext())
-        return;
+    try {
+      while (true) {
+        final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
+        if (!nextBlock.hasNext())
+          return;
 
-      while (nextBlock.hasNext())
-        result.add(nextBlock.next());
+        while (nextBlock.hasNext())
+          result.add(nextBlock.next());
+      }
+    } finally {
+      close();
     }
   }
 

@@ -64,14 +64,24 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
     executeInternal();
   }
 
+  /**
+   * #5681: an {@code INSERT ... SELECT ... LIMIT} shares the same abandoned-scan risk as UPDATE/DELETE (see
+   * {@link UpdateExecutionPlan#executeInternal()}) - closing here, in a {@code finally} so it also runs on the
+   * exception path, releases the sub-plan's scan as soon as the statement is done instead of waiting for the caller
+   * to close the returned {@link ResultSet} or for the GC to reclaim it.
+   */
   public void executeInternal() throws CommandExecutionException {
-    while (true) {
-      final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
-      if (!nextBlock.hasNext())
-        return;
+    try {
+      while (true) {
+        final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
+        if (!nextBlock.hasNext())
+          return;
 
-      while (nextBlock.hasNext())
-        result.add(nextBlock.next());
+        while (nextBlock.hasNext())
+          result.add(nextBlock.next());
+      }
+    } finally {
+      close();
     }
   }
 
