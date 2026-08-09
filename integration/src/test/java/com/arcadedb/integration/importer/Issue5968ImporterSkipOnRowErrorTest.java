@@ -909,6 +909,42 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
+   * Explicitly setting {@code -commitEvery}/{@code -parallel} alongside {@code -onRowError skip} has no effect on
+   * vertices (skip mode saves synchronously, one at a time, never touching {@code database.async()}) - this locks
+   * in that the combination is still functionally correct (no crash, no leftover async worker state, correct skip
+   * accounting) despite settings that would otherwise tune batching/parallelism being silently inapplicable.
+   */
+  @Test
+  void csvVertexImportSkipModeIgnoresExplicitCommitEveryAndParallelWithoutError() {
+    final String databasePath = "target/databases/test-import-5968-csv-skip-commitevery-parallel";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Score SHORT");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-vertices src/test/resources/importer-vertices-outofrange.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long -onRowError skip -commitEvery 1 -parallel 4").split(" "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+      assertThat(result.get("createdVertices")).isEqualTo(2L);
+
+      try (final Database db = databaseFactory.open()) {
+        assertThat(db.countType("Node", true)).isEqualTo(2);
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  /**
    * Unlike every other embedding-constructor test above, this one does NOT pre-create the vertex type: with no
    * {@code Node} type yet, {@code Importer#loadFromSource -> updateDatabaseSchema -> getOrCreateVertexType} begins a
    * transaction for the schema DDL and never commits it, so by the time {@code loadVertices} runs, a transaction is

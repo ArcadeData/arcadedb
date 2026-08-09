@@ -268,7 +268,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * when this method owns the transaction (see {@link ImporterContext#callerTransactionActiveOnEntry}) and one is
    * nonetheless already active, in which case it's committed first, then a fresh one begun: that combination can
    * only mean {@code updateDatabaseSchema()}'s lazy type creation left one open moments earlier in the same call,
-   * and a row-1 failure in "skip" mode must not undo the type/property it just created along with it.
+   * and a row-1 failure in "skip" mode must not undo the type/property it just created along with it. Committing
+   * here first means correctness doesn't depend on whether a data-transaction {@code database.rollback()} would
+   * also undo schema mutations bundled into the same transaction - which, traced empirically rather than merely
+   * assumed, it does not - see
+   * {@code Issue5968ImporterSkipOnRowErrorTest#csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor}.
    */
   private void beginRowTransaction(final Database database, final boolean transactionActiveOnEntry, final boolean ownsTransaction) {
     if (transactionActiveOnEntry) {
@@ -348,6 +352,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // ImporterSettings#isSkipOnRowError() for why (an async batch rollback on a persist-time failure would take down
     // every other vertex queued in the same uncommitted batch, not just the failing one).
     final boolean skipOnError = settings.isSkipOnRowError();
+
+    // -commitEvery/-parallel only affect the database.async() path, which "skip" mode doesn't use for vertices at
+    // all - silently ignoring an explicitly-set value would otherwise cost someone a confusing perf-debugging
+    // session, so call it out once if either was set.
+    if (skipOnError && (settings.options.containsKey("commitEvery") || settings.options.containsKey("parallel")))
+      LogManager.instance().log(this, Level.INFO,
+          "-onRowError skip saves vertices synchronously, one at a time: -commitEvery/-parallel have no effect while it's enabled");
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
     // database.async().onError() replaces the previous handler rather than stacking, so a second registration
