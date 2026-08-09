@@ -864,6 +864,44 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
+   * Symmetric to {@link #csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor()}
+   * but for documents in default "abort" mode, which - unlike that "skip" mode test - reaches
+   * {@code loadDocuments}'s method-level catch and its whole-file rollback instead of a per-row one. Pins down that
+   * the auto-created {@code Widget} type itself is NOT rolled back along with row 1's own failed data, even though
+   * {@link #csvDocumentImportAbortsOnOutOfRangeValueByDefaultAndRollsBackPartialRows()}'s "nothing is imported"
+   * framing might otherwise suggest the whole transaction - schema included - goes with it.
+   */
+  @Test
+  void csvDocumentImportAbortsOnFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor() {
+    final String databasePath = "target/databases/test-import-5968-csv-embed-doc-schema-autocreate";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.documents = "src/test/resources/importer-documents-outofrange-firstrow.csv";
+      importer.settings.documentTypeName = "Widget";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      // The Widget type (auto-created by updateDatabaseSchema() since it didn't pre-exist) survives even though the
+      // whole import aborts and no document is imported: schema mutations aren't undone by the data transaction's
+      // rollback (see the "skip" mode counterpart for how this was traced), so re-running the import after fixing
+      // row 1 wouldn't need to re-create the type from scratch.
+      assertThat(db.getSchema().existsType("Widget")).isTrue();
+      assertThat(db.countType("Widget", true)).isZero();
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
    * A source-level parse failure (see {@link #csvVertexImportStillAbortsOnSyntaxLevelParseFailureWhenOptedIn()}) that
    * escapes the per-row loop while skip mode's own transaction machinery is active must not leave a dangling active
    * transaction behind on an externally-managed {@link Database} - the caller never had one active before this call

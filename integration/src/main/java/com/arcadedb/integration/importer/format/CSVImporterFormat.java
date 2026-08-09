@@ -336,6 +336,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       csvParser.beginParsing(inputFileReader);
 
       // Begun only after the source is successfully opened, so a failure here never leaves a transaction dangling.
+      // Unlike loadDocuments(), gated on skipOnError: in "abort" mode vertices persist via database.async() instead
+      // of this foreground transaction, so there is no per-row commit/rollback cycle here to protect from a dangling
+      // schema-creation transaction - whatever's active (if anything) is left exactly as it was, same as before this
+      // PR, and gets resolved the same way it always did (closeDatabase()'s commit for a self-managed database, or
+      // left for the caller on an externally-managed one).
       if (skipOnError)
         beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
