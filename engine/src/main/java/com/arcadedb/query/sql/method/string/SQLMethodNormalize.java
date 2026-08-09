@@ -56,7 +56,10 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
         // The 2nd argument is a caller-supplied regex, not a literal (issue #5886) - bounded the same way as
         // every other user-controlled regex entry point. context is null in some direct/unit-test invocations
         // of this method (see SQLMethodNormalizeTest); GlobalConfiguration.getValueAsLong(Database) falls back
-        // to the compiled-in default in that case.
+        // to the compiled-in default in that case. A TimeoutException from the bound propagates as-is rather
+        // than being rewrapped (unlike TextRegexReplace, which rewraps to preserve its own pre-existing
+        // IllegalArgumentException contract for regex failures) - this method had no such prior contract, and
+        // TimeoutException is the shape MatchesCondition/RegexExpression/LIKE/full-text/PromQL all surface too.
         final long regexTimeout = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context != null ? context.getDatabase() : null);
         return TimeBoundRegex.replaceAll(Pattern.compile(FileUtils.getStringContent(params[1].toString())), normalized, "", regexTimeout);
       }
