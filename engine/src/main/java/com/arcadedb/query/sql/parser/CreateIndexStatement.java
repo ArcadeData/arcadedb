@@ -254,6 +254,11 @@ public class CreateIndexStatement extends DDLStatement {
 
     final AtomicLong total = new AtomicLong();
 
+    // What create() answered with: the index this statement built, or - for a guarded request whose NAME did not
+    // exist but whose properties are already indexed - the existing index the builder decided satisfies it. The two
+    // are told apart by the name, see {@link #isNewlyCreated}.
+    final TypeIndex resultingIndex;
+
     // Use unified buildTypeIndex() API for all index types
     TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName.getStringValue(), fields);
     builder = builder.withType(indexType);  // This may return LSMVectorIndexBuilder for LSM_VECTOR
@@ -324,9 +329,12 @@ public class CreateIndexStatement extends DDLStatement {
       }
 
       final TypeIndex typeIndex = vectorBuilder.create();
+      resultingIndex = typeIndex;
 
-      // Build the HNSW graph immediately unless explicitly disabled
-      if (buildGraphNow)
+      // Build the HNSW graph immediately unless explicitly disabled - and only for an index this statement actually
+      // created. When create() answered a guarded request with the index already on those properties (issue #5781),
+      // rebuilding its graph is work nobody asked for on an index the statement was told to leave alone.
+      if (buildGraphNow && isNewlyCreated(typeIndex, name.getValue()))
         for (final Index idx : typeIndex.getIndexesOnBuckets())
           if (idx instanceof LSMVectorIndex)
             ((LSMVectorIndex) idx).buildVectorGraphNow();
@@ -345,7 +353,7 @@ public class CreateIndexStatement extends DDLStatement {
         // statement, so an unknown key or an out-of-range BM25 parameter is a client mistake and must answer 400.
         throw new CommandSQLParsingException("Invalid METADATA for FULL_TEXT index: " + e.getMessage(), e);
       }
-      ftBuilder.create();
+      resultingIndex = ftBuilder.create();
 
     } else if (indexType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
       final TypeLSMSparseVectorIndexBuilder sparseBuilder = builder.withType(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR)
@@ -360,7 +368,7 @@ public class CreateIndexStatement extends DDLStatement {
           throw new CommandSQLParsingException("Invalid METADATA for LSM_SPARSE_VECTOR index: " + e.getMessage(), e);
         }
       }
-      sparseBuilder.create();
+      resultingIndex = sparseBuilder.create();
 
     } else if (indexType == Schema.INDEX_TYPE.GEOSPATIAL) {
       // Builder is already a TypeGeoIndexBuilder after withType(GEOSPATIAL)
@@ -379,7 +387,7 @@ public class CreateIndexStatement extends DDLStatement {
           throw new CommandSQLParsingException(e.getMessage(), e);
         }
       }
-      geoBuilder.create();
+      resultingIndex = geoBuilder.create();
 
     } else {
       // Every index type whose settings live in METADATA is handled above. Reaching here with a METADATA clause means
@@ -387,20 +395,40 @@ public class CreateIndexStatement extends DDLStatement {
       if (metadata != null && !metadata.toMap((Result) null, context).isEmpty())
         throw new CommandSQLParsingException(
             "METADATA is not supported by index type '" + typeAsString + "'");
-      builder.create();
+      resultingIndex = builder.create();
     }
     typeName = prevName;
+
+    // A guarded statement that named an index NOT yet in the schema gets past the existsIndex shortcut above and
+    // reaches the builder, which answers it with the index already on those properties whenever that one provides
+    // what was asked for (issue #5781). Nothing was created under the requested name, so reporting created=true
+    // under that name told the caller its name is now on an index - leaving a later DROP INDEX <name> to fail on a
+    // name that never existed. Report the index that actually satisfied the request, under its own name.
+    final boolean created = isNewlyCreated(resultingIndex, name.getValue());
 
     final InternalResultSet rs = new InternalResultSet();
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "create index");
-    result.setProperty("name", name.getValue());
+    result.setProperty("name", created ? name.getValue() : resultingIndex.getName());
     result.setProperty("type", indexType);
-    result.setProperty("created", true);
+    result.setProperty("created", created);
     result.setProperty("totalIndexed", total.get());
 
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * Whether {@code create()} built a new index, as opposed to answering a guarded request with the index already on
+   * those properties. The builder returns that existing index under ITS own name, and an index this statement created
+   * always carries the name the statement asked for - the manual one when written, otherwise the auto-derived
+   * {@code typeName[properties]} form both this method and {@code LocalDocumentType.addIndexInternal} derive.
+   * <p>
+   * A {@code null} answer counts as created: no builder returns one today, and treating an unexpected null as a no-op
+   * would turn a successful statement into a reported one.
+   */
+  private static boolean isNewlyCreated(final TypeIndex index, final String requestedName) {
+    return index == null || index.getName().equals(requestedName);
   }
 
   /**
