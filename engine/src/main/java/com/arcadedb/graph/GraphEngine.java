@@ -852,6 +852,13 @@ public class GraphEngine {
     // readable. moveEdge writes FRESH external records for the replacement, so without this the old ones are
     // orphaned. Same transaction as the removal itself. Runs BEFORE the index cleanup because it reads the
     // record's own buffer and restores its position, while the pre-image built below consumes that same buffer.
+    //
+    // Deliberately NOT pre-gated on hasExternalProperties() the way LocalDatabase.cascadeDeleteExternalValues is:
+    // that flag reflects the CURRENT schema and flips to false the instant setExternal(false) commits, so it would
+    // skip cleanup during the EXTERNAL -> inline migration window and leak the blobs of every record not yet
+    // re-serialised. findExistingExternalRids gates itself on hasExternalBuckets(), which stays true for the whole
+    // window and is the correct test - and it is already a couple of field reads for a type that never used the
+    // feature, so there is nothing to save by guarding it again here.
     final Map<String, RID> externalRids = database.getSerializer().findExistingExternalRids(database, edge);
     for (final RID externalRID : externalRids.values()) {
       final Bucket externalBucket = database.getSchema().getBucketByIdIfExists(externalRID.getBucketId());
@@ -882,8 +889,10 @@ public class GraphEngine {
    *   index has left behind;</li>
    *   <li>otherwise an immutable record over that frozen buffer, which is exactly the committed state the index
    *   entries were written from;</li>
-   *   <li>otherwise the live instance, which is the only image there is for a record created inside this
-   *   transaction (no committed buffer to read).</li>
+   *   <li>otherwise the live instance, for a record with no committed buffer to read at all - one created inside
+   *   this transaction, and equally one saved with {@code discardRecordAfter} (the bulk-import path through
+   *   {@code LocalBucket.createRecord}), which drops the buffer although the record is persisted. There is no
+   *   better image available in either case, and it is the same one the ordinary delete path uses.</li>
    * </ol>
    */
   private Document indexedImageOf(final MutableEdge edge) {
