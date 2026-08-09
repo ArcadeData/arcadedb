@@ -162,7 +162,10 @@ public class JSONImporterFormat implements FormatImporter {
     } catch (final RuntimeException e) {
       // Any RuntimeException reaching here has already passed through parseRecordsArray()'s per-record catch, which
       // (in "abort" mode, the only mode where it rethrows) already rolled back its own nested level. Don't roll back
-      // again here: that would discard the caller's unrelated pending work instead.
+      // again here: by this point the transaction stack may have already correctly unwound past our own level to a
+      // caller's own still-active transaction (see parseRecordsArray()'s per-record catch for why that's safe to
+      // leave alone) - rolling back again here can't tell that apart from a genuinely dangling level of our own, and
+      // would discard the caller's unrelated pending work instead.
       throw e;
     }
   }
@@ -173,7 +176,22 @@ public class JSONImporterFormat implements FormatImporter {
     JSONObject mappingObject;
 
     long recordIndex = 0;
-    while (reader.peek() == BEGIN_OBJECT) {
+    while (true) {
+      final JsonToken next;
+      try {
+        next = reader.peek();
+      } catch (final RuntimeException e) {
+        // Right here, the active transaction is always this loop's own level, just begun and not yet touched by
+        // anything else this iteration (either parseRecords()'s initial database.begin() or this loop's own, at the
+        // end of the previous iteration) - unlike a RuntimeException reaching parseRecords()'s outer catch after the
+        // per-record try/catch below has already run (see there), there's no ambiguity here about whose level this
+        // is, so it's unconditionally safe to roll back.
+        if (database.isTransactionActive())
+          database.rollback();
+        throw e;
+      }
+      if (next != BEGIN_OBJECT)
+        break;
       ++recordIndex;
 
       if (mappingValue instanceof JSONObject object) {
