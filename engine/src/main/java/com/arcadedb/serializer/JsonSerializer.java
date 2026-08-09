@@ -263,7 +263,7 @@ public class JsonSerializer {
       // includeMetadata - which keeps meaning "include @rid/@type/@cat/@in/@out" only. Unlike serializeResult
       // (which omits JSON-faithful types), this opt-in path is exhaustive by design when enabled.
       if (includeTypeHints && propertyType != null) {
-        if (propertyTypes.length() > 0)
+        if (!propertyTypes.isEmpty())
           propertyTypes.append(",");
         propertyTypes.append(propertyName).append(":").append(propertyType.getId());
       }
