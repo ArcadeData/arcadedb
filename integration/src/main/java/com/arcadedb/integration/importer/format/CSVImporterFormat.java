@@ -249,6 +249,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    */
   private void attachConcurrentAsyncError(final Throwable target, final AtomicReference<Throwable> firstAsyncError) {
     final Throwable asyncError = firstAsyncError.get();
+    // Throwable doesn't override equals(), so this is really an identity check (== would flag under ErrorProne's
+    // Throwable-reference-equality lint) - not a "same message" comparison.
     if (asyncError != null && !asyncError.equals(target.getCause()) && !asyncError.equals(target))
       target.addSuppressed(asyncError);
   }
