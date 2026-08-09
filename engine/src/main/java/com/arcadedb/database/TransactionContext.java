@@ -534,7 +534,8 @@ public class TransactionContext implements Transaction {
           // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
           // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
           // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
-          // below into a hard failure on this read path instead (code review on #6013).
+          // below into a hard failure on this read path instead (code review on #6013). The cast is safe
+          // because PaginatedComponent is the only direct subclass of Component in the codebase.
           final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
           final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
           if (!isNewPage)
