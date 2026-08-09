@@ -20,23 +20,24 @@ package com.arcadedb.utility;
 
 import com.arcadedb.exception.TimeoutException;
 
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
- * Bounds a {@link Pattern} match against catastrophic backtracking. {@code java.util.regex} never polls
+ * Bounds a {@link Pattern} operation against catastrophic backtracking. {@code java.util.regex} never polls
  * {@code Thread.interrupted()} or checks a deadline while backtracking, so a pathological pattern (e.g. nested
  * quantifiers like {@code (.*a){20}$}) keeps its calling thread busy for as long as the backtracking takes, no
  * matter what timeout the surrounding query execution enforces. What it does call, on every single backtracking
- * step, is {@link CharSequence#charAt(int)} on the input it is matching. Wrapping that input in a sequence that
- * throws once a deadline elapses turns that call site into the interruption point {@code Matcher.matches()} does
- * not otherwise offer.
+ * step, is {@link CharSequence#charAt(int)} on the input it is operating on. Wrapping that input in a sequence
+ * that throws once a deadline elapses turns that call site into the interruption point {@code Matcher} does not
+ * otherwise offer.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class TimeBoundRegex {
   // Deadline is checked every CHECK_INTERVAL charAt() calls (a power of two, checked via bitmask) rather than on
   // every call, since charAt() is on the hottest possible path here (called on every backtracking step) and
-  // System.nanoTime() is not free. A pattern that finishes in fewer than CHECK_INTERVAL total charAt() calls
+  // System.nanoTime() is not free. An operation that finishes in fewer than CHECK_INTERVAL total charAt() calls
   // finishes essentially instantly anyway, so the coarser granularity only matters for the runaway case this
   // class exists to bound.
   private static final int CHECK_INTERVAL = 256;
@@ -63,19 +64,13 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the match does not complete within {@code timeoutMillis}
    */
   public static boolean matches(final Pattern pattern, final CharSequence input, final long timeoutMillis) {
-    try {
-      return match(pattern, input, newDeadline(timeoutMillis));
-    } catch (final RegexDeadlineExceeded e) {
-      throw new TimeoutException(
-          "Regular expression evaluation aborted after exceeding the " + timeoutMillis + "ms limit (arcadedb.command.regexTimeout): pattern '"
-              + pattern.pattern() + "' against input of length " + input.length());
-    }
+    return matchesUntil(pattern, input, newDeadline(timeoutMillis));
   }
 
   /**
    * Computes an absolute deadline, in {@link System#nanoTime()} terms, {@code timeoutMillis} from now, for use
-   * with {@link #matchesUntil(Pattern, CharSequence, long)} across a series of related matches that must share one
-   * overall time budget rather than each getting their own.
+   * with {@link #matchesUntil(Pattern, CharSequence, long)} across a series of related operations that must share
+   * one overall time budget rather than each getting their own.
    *
    * @param timeoutMillis maximum time allowed from now, in milliseconds; a value {@code <= 0} disables the bound
    *
@@ -91,8 +86,8 @@ public final class TimeBoundRegex {
    * {@code deadlineNanos} - an absolute deadline from {@link #newDeadline(long)}, shared across every call in a
    * series so the series as a whole is bounded rather than each call individually.
    *
-   * @param pattern      the compiled pattern to match
-   * @param input        the input to match against
+   * @param pattern       the compiled pattern to match
+   * @param input         the input to match against
    * @param deadlineNanos an absolute {@link System#nanoTime()} deadline, as returned by {@link #newDeadline(long)}
    *
    * @return {@code true} if {@code input} matches {@code pattern} in its entirety
@@ -100,19 +95,40 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the match does not complete before {@code deadlineNanos}
    */
   public static boolean matchesUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
-    try {
-      return match(pattern, input, deadlineNanos);
-    } catch (final RegexDeadlineExceeded e) {
-      throw new TimeoutException(
-          "Regular expression evaluation aborted after exceeding its arcadedb.command.regexTimeout deadline: pattern '" + pattern.pattern()
-              + "' against input of length " + input.length());
-    }
+    return run(pattern, input, deadlineNanos, bounded -> pattern.matcher(bounded).matches());
   }
 
-  private static boolean match(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
-    if (deadlineNanos == Long.MAX_VALUE)
-      return pattern.matcher(input).matches();
-    return pattern.matcher(new DeadlineBoundCharSequence(input, deadlineNanos)).matches();
+  /**
+   * Replaces every match of {@code pattern} in {@code input} with {@code replacement}, aborting if it runs past
+   * {@code timeoutMillis}. Same rationale as {@link #matches(Pattern, CharSequence, long)}: {@code replaceAll()}
+   * backtracks through the same {@code java.util.regex} machinery and is just as exposed to a pathological
+   * pattern.
+   *
+   * @param pattern       the compiled pattern to replace matches of
+   * @param input         the input to search
+   * @param replacement   the replacement string, per {@link java.util.regex.Matcher#replaceAll(String)}
+   * @param timeoutMillis maximum time allowed for the operation, in milliseconds; a value {@code <= 0} disables
+   *                      the bound
+   *
+   * @return {@code input} with every match of {@code pattern} replaced by {@code replacement}
+   *
+   * @throws TimeoutException if the operation does not complete within {@code timeoutMillis}
+   */
+  public static String replaceAll(final Pattern pattern, final CharSequence input, final String replacement, final long timeoutMillis) {
+    return run(pattern, input, newDeadline(timeoutMillis), bounded -> pattern.matcher(bounded).replaceAll(replacement));
+  }
+
+  private static <T> T run(final Pattern pattern, final CharSequence input, final long deadlineNanos, final Function<CharSequence, T> operation) {
+    try {
+      return operation.apply(deadlineNanos == Long.MAX_VALUE ? input : new DeadlineBoundCharSequence(input, deadlineNanos));
+    } catch (final RegexDeadlineExceeded | StackOverflowError e) {
+      // A sufficiently pathological pattern/input combination can blow the (recursive) backtracking stack before
+      // the next CHECK_INTERVAL checkpoint is reached; treated the same as an explicit deadline trip, since both
+      // are catastrophic backtracking manifesting through a different symptom.
+      throw new TimeoutException(
+          "Regular expression operation aborted (arcadedb.command.regexTimeout): pattern '" + pattern.pattern() + "' against input of length "
+              + input.length(), e);
+    }
   }
 
   private static final class DeadlineBoundCharSequence implements CharSequence {
@@ -139,7 +155,8 @@ public final class TimeBoundRegex {
 
     @Override
     public char charAt(final int index) {
-      if ((++calls[0] & (CHECK_INTERVAL - 1)) == 0 && System.nanoTime() > deadlineNanos)
+      // Overflow-safe form recommended by System.nanoTime()'s own Javadoc, in place of a plain ">" comparison.
+      if ((++calls[0] & (CHECK_INTERVAL - 1)) == 0 && System.nanoTime() - deadlineNanos >= 0)
         throw RegexDeadlineExceeded.INSTANCE;
       return wrapped.charAt(index);
     }
@@ -156,10 +173,10 @@ public final class TimeBoundRegex {
   }
 
   /**
-   * Unchecked signal used only to unwind out of {@code Matcher.matches()} once the deadline elapses; caught and
-   * converted to a {@link TimeoutException} inside {@link #matches} and never seen outside this class. A single
+   * Unchecked signal used only to unwind out of a {@code Matcher} operation once the deadline elapses; caught and
+   * converted to a {@link TimeoutException} inside {@link #run} and never seen outside this class. A single
    * shared, stack-trace-less instance is used since the failure carries no per-occurrence information and this
-   * can be thrown a very large number of times on a single runaway match.
+   * can be thrown a very large number of times on a single runaway operation.
    */
   private static final class RegexDeadlineExceeded extends RuntimeException {
     private static final RegexDeadlineExceeded INSTANCE = new RegexDeadlineExceeded();

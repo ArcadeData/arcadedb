@@ -179,15 +179,21 @@ class MatchesConditionTest extends TestHelper {
   @Test
   void multiValueMatchesSharesOneTimeoutBudgetAcrossItems() {
     // A multi-value (list) property must not multiply the regex timeout budget by its item count: each
-    // catastrophic item getting its own full budget would let a crafted 5-item list run for 5 * regexTimeout
-    // instead of one evaluation bounded by regexTimeout overall.
+    // catastrophic item getting its own full budget would let a crafted 10-item list run for 10 * regexTimeout
+    // instead of one evaluation bounded by regexTimeout overall. 10 items (rather than a smaller count) widens
+    // the gap between the "shared" (~200-300ms) and "not shared" (~2000ms) outcomes, so the assertion below can
+    // use a generous margin without losing the ability to catch a regression.
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
 
     final String pathological = "a".repeat(40) + "!";
+    final String items = "'" + pathological + "'";
+    final StringBuilder list = new StringBuilder("[");
+    for (int i = 0; i < 10; i++)
+      list.append(i == 0 ? "" : ", ").append(items);
+    list.append(']');
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE MultiPathological");
-      database.command("sql", "INSERT INTO MultiPathological SET tags = ['" + pathological + "', '" + pathological + "', '" + pathological
-          + "', '" + pathological + "', '" + pathological + "']");
+      database.command("sql", "INSERT INTO MultiPathological SET tags = " + list);
     });
 
     final long begin = System.currentTimeMillis();
@@ -198,8 +204,8 @@ class MatchesConditionTest extends TestHelper {
     }).isInstanceOf(TimeoutException.class);
     final long elapsedMillis = System.currentTimeMillis() - begin;
 
-    // 5 independent 200ms-per-item budgets would take >= 1000ms; a shared deadline keeps the whole
-    // evaluation close to the single configured 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(800);
+    // 10 independent 200ms-per-item budgets would take >= 2000ms; a shared deadline keeps the whole evaluation
+    // close to the single configured 200ms bound instead. 1000ms leaves generous CI-runner slack on both sides.
+    assertThat(elapsedMillis).isLessThan(1000);
   }
 }

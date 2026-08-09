@@ -361,4 +361,15 @@ escapes every regex metacharacter except `%` (`.*`) and `?` (`.`), so the genera
 grouping, alternation, or nested quantifiers - the shapes catastrophic backtracking requires. It stays on
 plain `String.matches()`.
 
+A second review pass caught two more entry points the initial audit missed, both now bounded the same way:
+the `text.regexReplace(string, regex, replacement)` SQL function, whose only previous defense was a 500-char
+pattern-length cap plus a `catch (StackOverflowError)` - neither of which bounds a *time*-based catastrophic
+match, as opposed to a *stack-depth* one; and full-text search's Lucene `RegexpQuery` support (the `/pattern/`
+query syntax), arguably the worse instance of the two since a pathological pattern there is evaluated against
+every token in what is, absent a literal prefix, a full index scan. `TimeBoundRegex` gained a `replaceAll()`
+counterpart to `matches()` for the first case, and now also catches `StackOverflowError` alongside a deadline
+trip in both - a sufficiently pathological pattern can blow the (recursive) backtracking stack before the
+next 256-call checkpoint is reached, and that failure mode gets the same bound and the same `TimeoutException`
+as an explicit deadline.
+
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)

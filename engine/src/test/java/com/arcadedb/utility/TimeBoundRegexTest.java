@@ -62,4 +62,29 @@ class TimeBoundRegexTest {
     // merely being slow (the unbounded match takes tens of seconds).
     assertThat(elapsedMillis).isLessThan(5000);
   }
+
+  @Test
+  void replaceAllReplacesEveryMatch() {
+    assertThat(TimeBoundRegex.replaceAll(Pattern.compile("a"), "banana", "o", 1000)).isEqualTo("bonono");
+  }
+
+  @Test
+  void replaceAllWithNonPositiveTimeoutDisablesTheBound() {
+    assertThat(TimeBoundRegex.replaceAll(Pattern.compile("a"), "banana", "o", 0)).isEqualTo("bonono");
+  }
+
+  @Test
+  void replaceAllAbortsCatastrophicBacktrackingWithinTheDeadline() {
+    // text.regexReplace() (issue #5886 follow-up) runs Matcher.replaceAll(), which backtracks through the same
+    // java.util.regex machinery as matches() and is exposed to the same catastrophic-backtracking gap.
+    final Pattern pathological = Pattern.compile("(.*a){20}$");
+    final String input = "a".repeat(40) + "!";
+
+    final long begin = System.nanoTime();
+    assertThatThrownBy(() -> TimeBoundRegex.replaceAll(pathological, input, "x", 200))
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = (System.nanoTime() - begin) / 1_000_000L;
+
+    assertThat(elapsedMillis).isLessThan(5000);
+  }
 }

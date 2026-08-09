@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.text.TextLevenshteinDistance;
 import com.arcadedb.index.IndexCursor;
@@ -27,6 +28,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.TimeBoundRegex;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.classic.ParseException;
@@ -671,6 +673,10 @@ public class FullTextQueryExecutor {
     }
 
     final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
+    // A user-supplied regexp query (/pattern/ syntax) is matched against every token in what is, absent a literal
+    // prefix, a full index scan (issue #5886) - one shared deadline for the whole scan, not a fresh one per token,
+    // otherwise a crafted index could still tie the thread up for token count * regexTimeout.
+    final long deadline = TimeBoundRegex.newDeadline(index.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
 
     iterateAndMatch(null, key -> {
       if (!key.startsWith(fieldPrefix))
@@ -678,7 +684,7 @@ public class FullTextQueryExecutor {
       final String token = key.substring(fieldPrefix.length());
       if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
         return false;
-      return regex.matcher(token).matches();
+      return TimeBoundRegex.matchesUntil(regex, token, deadline);
     }, scoreMap, boostFor(field));
   }
 

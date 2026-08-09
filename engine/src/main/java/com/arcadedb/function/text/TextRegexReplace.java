@@ -18,7 +18,11 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -69,14 +73,24 @@ public class TextRegexReplace extends AbstractTextFunction {
           "Regex pattern exceeds maximum allowed length (" + MAX_PATTERN_LENGTH + "): " + regex.length());
     }
 
+    // Unlike a WHERE-clause condition (always evaluated with a database bound to the context), this SQL function
+    // is a lower-level entry point that unit tests across this package call directly with a bare or null context,
+    // so context/context.getDatabase() being unset here is a real, not just theoretical, case to fall back from -
+    // falling back to a fresh ContextConfiguration (itself just a proxy for the compiled-in default) keeps that
+    // usage working exactly as it did before this function read any configuration at all.
+    final ContextConfiguration configuration = context != null && context.getDatabase() != null
+        ? context.getDatabase().getConfiguration()
+        : new ContextConfiguration();
+    final long regexTimeout = configuration.getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
+
     try {
-      return Pattern.compile(regex).matcher(str).replaceAll(replacement == null ? "" : replacement);
+      return TimeBoundRegex.replaceAll(Pattern.compile(regex), str, replacement == null ? "" : replacement, regexTimeout);
     } catch (final PatternSyntaxException e) {
       throw new IllegalArgumentException("Invalid regex pattern: " + e.getMessage(), e);
-    } catch (final StackOverflowError e) {
-      // Catastrophic backtracking can cause stack overflow
-      throw new IllegalArgumentException(
-          "Regex pattern caused stack overflow (possible catastrophic backtracking): " + regex, e);
+    } catch (final TimeoutException e) {
+      // Catastrophic backtracking (issue #5886): TimeBoundRegex already bounds this to regexTimeout instead of
+      // running unbounded, but still surfaces it through this function's existing IllegalArgumentException contract.
+      throw new IllegalArgumentException("Regex pattern caused catastrophic backtracking and was aborted: " + regex, e);
     }
   }
 }
