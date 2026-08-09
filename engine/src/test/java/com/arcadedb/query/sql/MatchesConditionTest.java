@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.sql;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Regression tests for the MATCHES per-context regex pattern cache. */
 class MatchesConditionTest extends TestHelper {
@@ -91,6 +94,27 @@ class MatchesConditionTest extends TestHelper {
   }
 
   @Test
+  void patternTextDeadlineDoesNotCollideWithTheDeadlineCacheKey() {
+    // Issue #5886, 9th review pass: the deadline shared across a query's MATCHES evaluations was originally
+    // cached under the key "MATCHES_DEADLINE" - identical to the pattern-cache key the literal pattern text
+    // "DEADLINE" produces ("MATCHES_" + "DEADLINE"). A row using that pattern threw ClassCastException
+    // (java.util.regex.Pattern cast to java.lang.Long) on the very first evaluation, since both the compiled
+    // Pattern and the shared deadline were being stored under the exact same context cache slot. The deadline
+    // key now lives entirely outside the "MATCHES_" namespace the pattern cache uses, so it cannot collide
+    // with "MATCHES_" + <any regex text>, however that text reads.
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE DeadlineCollision");
+      database.command("sql", "INSERT INTO DeadlineCollision SET name = 'DEADLINE'");
+      database.command("sql", "INSERT INTO DeadlineCollision SET name = 'other'");
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT name FROM DeadlineCollision WHERE name MATCHES 'DEADLINE'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("DEADLINE");
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
   void parameterRegexWithMultipleDotsIsAccepted() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE ParamDotted");
@@ -145,5 +169,93 @@ class MatchesConditionTest extends TestHelper {
     assertThat(second.hasNext()).isTrue();
     assertThat(second.next().<String>getProperty("name")).isEqualTo("BBking");
     assertThat(second.hasNext()).isFalse();
+  }
+
+  @Test
+  void catastrophicPatternIsAbortedByRegexTimeout() {
+    // Issue #5886: (.*a){20}$ against "a".repeat(40) + "!" triggers catastrophic backtracking in
+    // java.util.regex. Matcher.matches() never polls interrupts or a deadline while backtracking, so
+    // arcadedb.command.timeout cannot stop it (still running 30s later per the issue report); only
+    // arcadedb.command.regexTimeout, enforced inside the match itself, can.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Pathological");
+      database.command("sql", "INSERT INTO Pathological SET name = '" + "a".repeat(40) + "!'");
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM Pathological WHERE name MATCHES '(.*a){20}$'");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the query was aborted near the configured deadline rather than
+    // merely being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
+  }
+
+  @Test
+  void multiValueMatchesSharesOneTimeoutBudgetAcrossItems() {
+    // A multi-value (list) property must not multiply the regex timeout budget by its item count: each
+    // catastrophic item getting its own full budget would let a crafted 10-item list run for 10 * regexTimeout
+    // instead of one evaluation bounded by regexTimeout overall. 10 items (rather than a smaller count) widens
+    // the gap between the "shared" (~200-300ms) and "not shared" (~2000ms) outcomes, so the assertion below can
+    // use a generous margin without losing the ability to catch a regression.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    final String items = "'" + pathological + "'";
+    final StringBuilder list = new StringBuilder("[");
+    for (int i = 0; i < 10; i++)
+      list.append(i == 0 ? "" : ", ").append(items);
+    list.append(']');
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE MultiPathological");
+      database.command("sql", "INSERT INTO MultiPathological SET tags = " + list);
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM MultiPathological WHERE tags MATCHES '(.*a){20}$'");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-item budgets would take >= 2000ms; a shared deadline keeps the whole evaluation
+    // close to the single configured 200ms bound instead. 1000ms leaves generous CI-runner slack on both sides.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
+  @Test
+  void matchesSharesOneTimeoutBudgetAcrossAllRowsInTheScan() {
+    // Issue #5886, 6th review pass: distinct from the multi-value-within-one-row case above, a WHERE ...
+    // MATCHES clause scanning many ROWS must not let each row's own evaluation start a fresh regexTimeout
+    // budget either - otherwise a table shaped so every row triggers catastrophic backtracking could still
+    // cost up to rowCount * regexTimeout overall. The deadline is now cached on the CommandContext (the same
+    // mechanism already used to cache the compiled Pattern), computed once for the whole query.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE PerRowPathological");
+      for (int i = 0; i < 10; i++)
+        database.command("sql", "INSERT INTO PerRowPathological SET name = '" + pathological + "'");
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM PerRowPathological WHERE name MATCHES '(.*a){20}$'");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-row budgets would take >= 2000ms; a query-wide shared deadline keeps the whole
+    // scan close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
   }
 }

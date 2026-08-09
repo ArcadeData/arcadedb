@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.text.TextLevenshteinDistance;
 import com.arcadedb.index.IndexCursor;
@@ -27,6 +28,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.TimeBoundRegex;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.classic.ParseException;
@@ -610,6 +612,10 @@ public class FullTextQueryExecutor {
     final String searchPrefix = buildSearchKey(field, literalPrefix);
     final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
     final Pattern regex = wildcardToRegex(pattern);
+    // A sequence of several *'s (translated to .* by wildcardToRegex, same shape as %  in SQL LIKE) reproduces
+    // catastrophic backtracking without needing grouping/alternation/nested quantifiers - issue #5886 follow-up.
+    // One shared deadline for the whole scan, same rationale as collectRegexpMatches.
+    final long deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(index.getDatabase()));
 
     if (literalPrefix.isEmpty()) {
       // Leading wildcard: full scan, then regex match against the unprefixed token portion
@@ -620,7 +626,7 @@ public class FullTextQueryExecutor {
         // Skip cross-field tokens for unqualified queries on multi-property indexes
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
-        return regex.matcher(token).matches();
+        return TimeBoundRegex.matchesUntil(regex, token, deadline);
       }, scoreMap, boostFor(field));
     } else {
       // Range scan starting at the literal prefix and stop when keys no longer share it
@@ -630,7 +636,7 @@ public class FullTextQueryExecutor {
         final String token = key.substring(fieldPrefix.length());
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
-        return regex.matcher(token).matches();
+        return TimeBoundRegex.matchesUntil(regex, token, deadline);
       }, scoreMap, boostFor(field));
     }
   }
@@ -671,6 +677,10 @@ public class FullTextQueryExecutor {
     }
 
     final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
+    // A user-supplied regexp query (/pattern/ syntax) is matched against every token in what is, absent a literal
+    // prefix, a full index scan (issue #5886) - one shared deadline for the whole scan, not a fresh one per token,
+    // otherwise a crafted index could still tie the thread up for token count * regexTimeout.
+    final long deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(index.getDatabase()));
 
     iterateAndMatch(null, key -> {
       if (!key.startsWith(fieldPrefix))
@@ -678,7 +688,7 @@ public class FullTextQueryExecutor {
       final String token = key.substring(fieldPrefix.length());
       if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
         return false;
-      return regex.matcher(token).matches();
+      return TimeBoundRegex.matchesUntil(regex, token, deadline);
     }, scoreMap, boostFor(field));
   }
 
