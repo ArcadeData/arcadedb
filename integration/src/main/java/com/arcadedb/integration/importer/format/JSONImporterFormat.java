@@ -221,12 +221,9 @@ public class JSONImporterFormat implements FormatImporter {
         if (database.isTransactionActive())
           database.rollback();
 
-        // Subtract this record's own delta rather than overwriting with the snapshot: JSON record parsing is
-        // single-threaded against one ImporterContext today, so either form is safe, but a delta cannot silently
-        // erase a concurrent increment if that ever changes.
-        context.createdDocuments.addAndGet(createdDocumentsBefore - context.createdDocuments.get());
-        context.createdVertices.addAndGet(createdVerticesBefore - context.createdVertices.get());
-        context.createdEdges.addAndGet(createdEdgesBefore - context.createdEdges.get());
+        context.createdDocuments.set(createdDocumentsBefore);
+        context.createdVertices.set(createdVerticesBefore);
+        context.createdEdges.set(createdEdgesBefore);
 
         if (!settings.isSkipOnRowError())
           throw e;
