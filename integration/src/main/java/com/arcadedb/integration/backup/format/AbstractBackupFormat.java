@@ -22,14 +22,15 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 public abstract class AbstractBackupFormat {
-  protected final        BackupSettings   settings;
-  protected final        DatabaseInternal database;
-  protected final        ConsoleLogger    logger;
-  protected static final DateFormat       dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+  protected final        BackupSettings    settings;
+  protected final        DatabaseInternal  database;
+  protected final        ConsoleLogger     logger;
+  protected static final DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
+      .withZone(ZoneId.systemDefault());
 
   protected AbstractBackupFormat(final DatabaseInternal database, final BackupSettings settings, final ConsoleLogger logger) {
     this.database = database;

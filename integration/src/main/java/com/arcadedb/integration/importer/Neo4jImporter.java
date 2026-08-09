@@ -42,8 +42,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -92,7 +94,7 @@ public class Neo4jImporter {
   private              boolean                        error                    = false;
   private final        ImporterContext                context;
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
-  private final static SimpleDateFormat               dateTimeISO8601Format    = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+  private final static DateTimeFormatter              dateTimeISO8601Format    = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
   // Allow-list for imported labels: ASCII letters, digits, underscore, hyphen and space only. Excluding '.', '/' and '\'
   // makes path-traversal sequences structurally impossible in the on-disk bucket file names derived from these labels.
   private final static Pattern                        SAFE_LABEL               = Pattern.compile("[A-Za-z0-9_ -]+");
@@ -275,7 +277,7 @@ public class Neo4jImporter {
             try {
               dateTimeISO8601Format.parse(string);
               currentType = Type.DATETIME;
-            } catch (final ParseException e) {
+            } catch (final DateTimeParseException e) {
               currentType = Type.STRING;
             }
           } else {
@@ -566,8 +568,8 @@ public class Neo4jImporter {
         propValue = array.toList();
       else if (propValue instanceof String string && typeSchema != null && typeSchema.get(propName) == Type.DATETIME) {
         try {
-          propValue = dateTimeISO8601Format.parse(string).getTime();
-        } catch (final ParseException e) {
+          propValue = LocalDateTime.parse(string, dateTimeISO8601Format).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        } catch (final DateTimeParseException e) {
           log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
           context.errors.incrementAndGet();
         }
