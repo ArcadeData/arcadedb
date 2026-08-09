@@ -93,6 +93,19 @@ public class RedisNetworkExecutor extends Thread {
     this.maxMultiBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
     this.maxBulkLength = sanitizedLimit(GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
 
+    // Bound the pre-authentication window (issue #5912): without a read timeout, a client that opens a
+    // connection and never completes AUTH/HELLO - or trickles bytes arbitrarily slowly - can hold this
+    // connection thread open indefinitely. Lifted back to infinite once authentication succeeds (see
+    // markAuthenticated), reusing the same setSoTimeout(NETWORK_SOCKET_TIMEOUT)-then-setSoTimeout(0) idiom
+    // BoltNetworkExecutor.negotiateTransport() uses to bound its own TLS-detection window (review on #5965:
+    // Bolt only bounds that window, not its own subsequent HELLO/LOGON auth phase, so this goes further -
+    // it bounds the entire pre-auth phase here, through AUTH/HELLO itself). An authenticated RESP client is
+    // expected to keep a long-lived, often idle connection open between commands, so the timeout must not
+    // keep applying past that point.
+    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    if (handshakeTimeout > 0)
+      channel.socket.setSoTimeout(handshakeTimeout);
+
     // Initialize default database from configuration if set. The database access is authorized lazily,
     // once the connection has authenticated (see getAuthorizedDatabase), so here we only record the name.
     final String defaultDbName = GlobalConfiguration.REDIS_DEFAULT_DATABASE.getValueAsString();
@@ -143,7 +156,11 @@ public class RedisNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
           close();
         } catch (final SocketTimeoutException e) {
-          // IGNORE IT
+          // No data received within the pre-authentication window (issue #5912): close instead of holding
+          // the connection thread open indefinitely. Authenticated connections never reach here - their
+          // read timeout is lifted to infinite in markAuthenticated().
+          LogManager.instance().log(this, Level.FINE, "Redis wrapper: closing idle unauthenticated connection %s", channel.socket.getRemoteSocketAddress());
+          close();
         } catch (final RedisProtocolLimitException e) {
           // The message violates a configured protocol limit (issue #5895): the stream position can no
           // longer be trusted, so report the error and close rather than trying to resync and continue.
@@ -196,12 +213,34 @@ public class RedisNetworkExecutor extends Thread {
 
       final Object cmd = list.get(0);
       if (!(cmd instanceof String)) {
+        // cmd can be null here (issue #5911: a RESP2 null bulk string, $-1, is now a legal array element),
+        // so guard the diagnostic itself rather than calling getClass() on a possibly-null reference.
         LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command,
-            cmd.getClass());
+            cmd == null ? "null" : cmd.getClass());
         return;
       }
 
       final String cmdString = ((String) cmd).toUpperCase(Locale.ENGLISH);
+
+      // A RESP2 null bulk string ($-1) is only meaningful as an "absent" value; no real command handler
+      // below is written to expect one as an argument (issue #5911 made it reachable here at all, since the
+      // $ branch used to desync instead of returning null). Reject it uniformly, with a clean protocol
+      // error, rather than letting whichever handler happens to touch it first crash with a raw
+      // NullPointerException it wasn't written to expect - e.g. defaultBucket is a ConcurrentHashMap, whose
+      // put/get reject a null key or value outright, so "SET key $-1" or "GET $-1" would otherwise NPE deep
+      // inside setVariable/getVariable instead of getting a clear, single reply.
+      // Deliberately checks only top-level (depth-1) arguments: a $-1 nested inside a multibulk argument
+      // (e.g. "SET key *1\r\n$-1\r\n") still reaches a handler as a null inside a List and would surface as a
+      // raw ClassCastException from the generic catch-all instead of this message. No handler actually
+      // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
+      // than a gap worth a recursive check for.
+      for (int i = 1; i < list.size(); i++) {
+        if (list.get(i) == null) {
+          value.append("-ERR Protocol error: unexpected null bulk string argument");
+          appendCrLf();
+          return;
+        }
+      }
 
       // Redis maps commands directly to engine operations rather than going through
       // Database.query/command, so the engine-boundary span never fires for it. Open one here so
@@ -625,17 +664,55 @@ public class RedisNetworkExecutor extends Thread {
       password = (String) list.get(2);
     } else if (list.size() == 2) {
       // Single-argument AUTH targets Redis' "default" user, which ArcadeDB does not model.
-      this.authenticatedUser = null;
+      markUnauthenticated();
       throw new RedisException("WRONGPASS ArcadeDB requires the 'AUTH <username> <password>' form");
     } else
       throw new RedisException("ERR wrong number of arguments for 'auth' command");
 
     try {
-      this.authenticatedUser = server.getSecurity().authenticate(userName, password, null);
+      markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       value.append("+OK");
     } catch (final ServerSecurityException e) {
-      this.authenticatedUser = null;
+      markUnauthenticated();
       throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
+    }
+  }
+
+  /**
+   * Marks the connection authenticated and lifts the pre-authentication idle read timeout (issue #5912):
+   * unlike the bounded handshake window enforced before authentication, an authenticated RESP client is
+   * expected to keep a long-lived, often idle connection open between commands.
+   */
+  private void markAuthenticated(final ServerSecurityUser user) {
+    this.authenticatedUser = user;
+    try {
+      channel.socket.setSoTimeout(0);
+    } catch (final SocketException e) {
+      // setSoTimeout() only throws on an already-broken/closed socket (review on #5965): there is nothing
+      // left to hold open in that case, so logging and moving on - rather than failing the whole
+      // authentication - is safe. The connection dies on its next read/write either way.
+      LogManager.instance().log(this, Level.FINE, "Redis wrapper: unable to lift the idle read timeout after authentication", e);
+    }
+  }
+
+  /**
+   * Marks the connection unauthenticated and (re-)arms the bounded pre-authentication idle read timeout
+   * (issue #5912 follow-up, review on #5965): a connection that authenticated once has its timeout lifted
+   * to infinite by {@link #markAuthenticated}. If it then fails a subsequent AUTH/HELLO re-authentication
+   * attempt on the same connection, {@code authenticatedUser} goes back to null - and without this, the
+   * infinite timeout would stay in place, breaking the invariant that "unauthenticated" always implies the
+   * bounded handshake timeout applies.
+   */
+  private void markUnauthenticated() {
+    this.authenticatedUser = null;
+    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    try {
+      channel.socket.setSoTimeout(Math.max(handshakeTimeout, 0));
+    } catch (final SocketException e) {
+      // As in markAuthenticated(): setSoTimeout() only throws on an already-broken/closed socket, so there
+      // is no live connection left for the un-restored timeout to matter on - the "unauthenticated implies
+      // bounded timeout" invariant this method exists for has nothing left to protect in that case.
+      LogManager.instance().log(this, Level.FINE, "Redis wrapper: unable to restore the idle read timeout after failed authentication", e);
     }
   }
 
@@ -667,9 +744,9 @@ public class RedisNetworkExecutor extends Thread {
       final String userName = (String) list.get(idx + 1);
       final String password = (String) list.get(idx + 2);
       try {
-        this.authenticatedUser = server.getSecurity().authenticate(userName, password, null);
+        markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       } catch (final ServerSecurityException e) {
-        this.authenticatedUser = null;
+        markUnauthenticated();
         throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
       }
     }
@@ -821,8 +898,17 @@ public class RedisNetworkExecutor extends Thread {
       // INTEGER
       return parseLength(parseValueUntilLF(), "integer");
     else if (b == '$') {
-      // BATCH STRING
+      // BULK STRING
       final int size = parseLength(parseValueUntilLF(), "bulk length");
+      if (size < 0)
+        // RESP2 null bulk string ($-1): the header IS the complete, self-terminated token - unlike a
+        // present bulk string, there is no trailing CRLF to skip (issue #5911). Mirrors the null/empty
+        // array short-circuit below; skipping it here avoided consuming the next token's leading byte.
+        // Deliberately treats every negative size as null, not just -1: RESP2 only defines -1, but nothing
+        // else about "negative" is meaningful either, and rejecting e.g. $-2 would need its own protocol-
+        // error branch for no behavioral benefit over just treating it the same as the one negative value
+        // that is defined.
+        return null;
       if (size > maxBulkLength)
         throw new RedisProtocolLimitException(
             "Protocol error: invalid bulk length " + size + " (maximum allowed is " + maxBulkLength + ")");
@@ -914,10 +1000,20 @@ public class RedisNetworkExecutor extends Thread {
       value.append(":");
       value.append(v);
     } else {
+      // The RESP bulk-length header is a byte count, not a char count (issue #5907 fallout): a multi-byte
+      // UTF-8 character (e.g. accented Latin, CJK, emoji) is 1 String char but more than 1 byte once
+      // replyToClient() encodes the whole reply, so v.toString().length() under-declares the length for any
+      // non-ASCII value and desyncs the client exactly like a truncated bulk string would.
+      // TODO(perf): this encodes `text` to bytes here just to measure its length, then replyToClient()
+      // encodes the whole accumulated `value` StringBuilder (including this same text) to bytes again right
+      // after - a double UTF-8 encode per non-numeric reply, noticeable for a value near maxBulkLength.
+      // Avoiding it cleanly needs `value`'s reply-building to move off a single shared StringBuilder of
+      // chars onto something byte-oriented, which is a larger change than this correctness fix warrants.
+      final String text = v.toString();
       value.append("$");
-      value.append(v.toString().length());
+      value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
       appendCrLf();
-      value.append(v);
+      value.append(text);
     }
   }
 
@@ -925,15 +1021,22 @@ public class RedisNetworkExecutor extends Thread {
     value.append("\r\n");
   }
 
+  /**
+   * Reads {@code size} raw bytes and decodes them once with the same charset {@link #replyToClient} encodes
+   * with, instead of the previous per-byte {@code (char) b} widening (issue #5907): that widening
+   * sign-extended any byte {@code >= 0x80} into the wrong UTF-16 code unit rather than decoding it, mangling
+   * every non-ASCII bulk string. Reading into a right-sized {@code byte[]} first - rather than building a
+   * {@link StringBuilder} one UTF-16 char at a time and copying it via {@code toString()} - also keeps the
+   * transient cost close to the wire size instead of roughly double it. {@code size} is assumed
+   * non-negative: the RESP2 null bulk string ({@code $-1}) is handled by the caller before this is reached.
+   */
   private String parseChars(final int size) throws IOException {
-    value.setLength(0);
+    final byte[] bytes = new byte[size];
+    int read = 0;
+    for (; read < size && !shutdown; ++read)
+      bytes[read] = readNext();
 
-    for (int i = 0; i < size && !shutdown; ++i) {
-      final byte b = readNext();
-      value.append((char) b);
-    }
-
-    return value.toString();
+    return new String(bytes, 0, read, DatabaseFactory.getDefaultCharset());
   }
 
   private byte readNext() throws IOException {
