@@ -117,6 +117,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
+      // Unlike loadVertices(), called unconditionally regardless of skipOnError: loadDocuments() needs an active
+      // transaction to save() into in both modes (it never goes through database.async()), so it cannot skip this.
+      // For the common self-managed/CLI case in default "abort" mode, this does one harmless commit()+begin() cycle
+      // on AbstractImporter#openDatabase()'s empty ambient transaction before the row loop even starts.
       beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
@@ -312,9 +316,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     final boolean skipOnError = settings.isSkipOnRowError();
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
-    // Assumes loadVertices() runs at most once per Database instance per import - registering this handler again on
-    // a second call would stack handlers and double-count context.errors for the same failure. True of every caller
-    // today (a single Importer run has exactly one vertex source), but would need a guard if that ever changes.
+    // database.async().onError() replaces the previous handler rather than stacking, so a second registration
+    // wouldn't double-count - but it would still let an earlier, still-in-flight batch's error escape unnoticed if
+    // this were ever called a second time before the first call's own waitCompletion() below had returned. Not
+    // reachable today: Importer.load()'s entity-type selection makes settings.url-as-vertex and settings.vertices
+    // mutually exclusive, so loadVertices() runs at most once per Importer.load() call.
     if (!skipOnError)
       database.async().onError(exception -> {
         LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
@@ -406,9 +412,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       }
 
-      if (skipOnError)
-        database.commit();
-      else {
+      if (skipOnError) {
+        // ownsTransaction is always true here (skipOnError implies it - see the entry guard above), but checked
+        // explicitly rather than relying on that implication staying true if this method is ever refactored.
+        if (ownsTransaction)
+          database.commit();
+      } else {
         database.async().waitCompletion();
 
         // A vertex can also fail at persist time on the async worker thread (mandatory property, unique index, ...),

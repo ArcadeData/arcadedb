@@ -1070,4 +1070,43 @@ class Issue5968ImporterSkipOnRowErrorTest {
       db.drop();
     }
   }
+
+  /**
+   * Every other skip-mode test above sets exactly one of {@code -documents}/{@code -vertices}. Both go through
+   * {@code loadFromSource()} in the same {@code Importer#load()} call, each with its own independently-computed
+   * {@code TransactionOwnership} (see {@code CSVImporterFormat#computeTransactionOwnership}) and its own commit
+   * cycle, so this locks in that a bad row in one source doesn't affect the other when both are imported together.
+   */
+  @Test
+  void csvDocumentAndVertexImportBothSkipIndependentlyInTheSameRun() {
+    final String databasePath = "target/databases/test-import-5968-csv-combined-skip";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Widget");
+      db.command("sql", "CREATE PROPERTY Widget.Score SHORT");
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Score SHORT");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-documents src/test/resources/importer-vertices-outofrange.csv -documentType Widget"
+              + " -vertices src/test/resources/importer-vertices-outofrange.csv -vertexType Node"
+              + " -typeIdProperty Id -typeIdType Long -database " + databasePath + " -onRowError skip").split(" "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(2L);
+
+      try (final Database db = databaseFactory.open()) {
+        assertThat(db.countType("Widget", true)).isEqualTo(2);
+        assertThat(db.countType("Node", true)).isEqualTo(2);
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
 }
