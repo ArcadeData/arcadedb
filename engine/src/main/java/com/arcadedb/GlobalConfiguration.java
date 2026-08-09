@@ -808,6 +808,15 @@ public enum GlobalConfiguration {
       Set to 1 to serialize all rebuilds (safest for memory). Higher values trade memory for throughput.""",
       Integer.class, 1),
 
+  VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS("arcadedb.vectorIndex.rebuildPermitTimeoutMs", SCOPE.JVM,
+      """
+      Maximum time in milliseconds an async vector index rebuild waits to acquire a JVM-wide rebuild permit \
+      (see arcadedb.vectorIndex.maxConcurrentRebuilds) before giving up on that rebuild cycle. Without this \
+      bound, a single rebuild that never returns its permit (e.g. one whose worker threads do not respond to \
+      interruption) would starve every other vector index's rebuild across the whole process indefinitely. \
+      A skipped cycle is not lost: the next mutation-threshold or inactivity trigger retries it.""",
+      Integer.class, 600_000),
+
   // NETWORK
   NETWORK_SAME_SERVER_ERROR_RETRIES("arcadedb.network.sameServerErrorRetry", SCOPE.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",

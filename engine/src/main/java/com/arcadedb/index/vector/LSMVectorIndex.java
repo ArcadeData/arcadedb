@@ -2674,13 +2674,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
         mutations, getEffectiveMutationsBeforeRebuild(), indexName);
 
     asyncRebuildThread = new Thread(() -> {
+      final boolean acquired;
       try {
         // Acquire a rebuild permit to limit concurrent rebuilds across all indexes (issue #3868).
         // This prevents multiple large graph rebuilds from running simultaneously and exhausting
-        // heap memory.  The thread blocks here until a permit becomes available.
-        REBUILD_SEMAPHORE.acquire();
+        // heap memory. Bounded rather than a plain acquire(): REBUILD_SEMAPHORE is JVM-wide with a
+        // default of a single permit, so one rebuild that never returns it (its ForkJoinPool workers
+        // not responding to shutdownNow()'s interrupt inside a tight JVector compute loop - see
+        // releaseBackgroundResources()) would otherwise starve every OTHER vector index's rebuild,
+        // process-wide, until restart - not just this index's.
+        acquired = REBUILD_SEMAPHORE.tryAcquire(
+            GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong(), TimeUnit.MILLISECONDS);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
+        asyncRebuildInProgress = false;
+        asyncRebuildThread = null;
+        return;
+      }
+      if (!acquired) {
+        // Give up this cycle rather than wait longer: the next mutation-threshold or inactivity trigger
+        // (rebuildGraphBeforeSearch()) retries, so nothing is permanently lost, only delayed.
+        LogManager.instance().log(this, Level.WARNING,
+            "Timed out after %dms waiting for a vector index rebuild permit for index %s; skipping this rebuild "
+                + "cycle. Another vector index has been holding the sole JVM-wide REBUILD_SEMAPHORE permit for at "
+                + "least that long - if this recurs, that other index's rebuild is likely stuck",
+            GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong(), indexName);
         asyncRebuildInProgress = false;
         asyncRebuildThread = null;
         return;
@@ -5174,6 +5192,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
+      if (rebuildThread.isAlive())
+        // The pool shutdownNow() above and this interrupt() are best-effort: if JVector's build code was in a
+        // stretch that does not check interruption, the thread outlives this close() call. It still holds its
+        // REBUILD_SEMAPHORE permit - only released in startAsyncGraphRebuild()'s own finally block once
+        // buildGraphFromScratch() actually returns - so surface that here rather than let it show up minutes
+        // later as an unrelated rebuild-permit timeout on a completely different index.
+        LogManager.instance().log(this, Level.WARNING,
+            "Async graph rebuild thread for index %s did not terminate within 5s of close(); it may keep "
+                + "running in the background and hold the JVM-wide REBUILD_SEMAPHORE permit until it finishes",
+            indexName);
       asyncRebuildThread = null;
       asyncRebuildInProgress = false;
     }
