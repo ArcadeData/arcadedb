@@ -65,7 +65,13 @@ public class Importer extends AbstractImporter {
       if (settings.probeOnly)
         return null;
 
-      if (database.isTransactionActive())
+      // Each loadFromSource() call above already commits its own transaction when it owns it (see
+      // CSVImporterFormat's ownsTransaction / JSONImporterFormat's own nesting), so a transaction still active here
+      // for an externally-managed database that genuinely had one active before this import began (see
+      // ImporterContext#callerTransactionActiveOnEntry) means a format deliberately left it open because it belongs
+      // to the caller - committing it here would undo that on the success path the same way an unconditional commit
+      // would on failure.
+      if (!context.callerTransactionActiveOnEntry && database.isTransactionActive())
         database.commit();
 
     } catch (final Exception e) {

@@ -140,7 +140,10 @@ public class JSONImporterFormat implements FormatImporter {
     // commits/rolls back its own transaction, which database.begin() achieves by nesting rather than reusing one
     // that's already active - but a nested commit() is still independently durable, so on an externally-managed
     // database that could persist a record even if the caller's own transaction later fails. Fail loudly instead.
-    if (settings.isSkipOnRowError() && context.externallyManagedDatabase && database.isTransactionActive())
+    // callerTransactionActiveOnEntry (not a live isTransactionActive() check) is what actually identifies a
+    // transaction that predates this whole import - see its Javadoc for why a live check would also misfire on a
+    // transaction this importer's own schema auto-creation left open moments ago.
+    if (settings.isSkipOnRowError() && context.callerTransactionActiveOnEntry)
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     reader.beginArray();

@@ -96,9 +96,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     final boolean skipOnError = settings.isSkipOnRowError();
 
     // "skip" mode commits/rolls back per row, so it must own the transaction outright (see
-    // ImporterSettings#isSkipOnRowError()). An externally-managed database's active transaction may hold unrelated
-    // pending work that a row's commit()/rollback() would otherwise silently touch - fail loudly instead.
-    if (skipOnError && context.externallyManagedDatabase && database.isTransactionActive())
+    // ImporterSettings#isSkipOnRowError()). callerTransactionActiveOnEntry (not a live isTransactionActive() check
+    // here) is what actually identifies a transaction that predates this whole import - see its Javadoc for why a
+    // live check would also misfire on a transaction this importer's own schema auto-creation left open moments ago.
+    if (skipOnError && context.callerTransactionActiveOnEntry)
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
@@ -106,13 +107,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // by default skip the first line as header
       skipEntries = 1l;
 
-    // Captured before the try below so it's also visible in the catch blocks (a variable declared inside a try isn't
-    // visible in its own catch). ownsTransaction is true for a self-managed database (its ambient transaction is
-    // always empty, safe to commandeer regardless of who began it - see AbstractImporter#openDatabase()), or for an
-    // externally-managed one only if this call itself began the transaction below rather than reusing the caller's
-    // own. It can only be false in "abort" mode: the guard above already rejects "skip" mode in that situation.
+    // ownsTransaction (captured before the try below so it's also visible in the catch blocks) is true for a
+    // self-managed database, or for an externally-managed one whenever the caller's own transaction wasn't already
+    // active before this whole import began (see ImporterContext#callerTransactionActiveOnEntry) - as opposed to a
+    // live isTransactionActive() check, which would also be true (incorrectly) after this importer's own schema
+    // auto-creation left a transaction open moments earlier in the same call.
     final boolean transactionActiveOnEntry = database.isTransactionActive();
-    final boolean ownsTransaction = !context.externallyManagedDatabase || !transactionActiveOnEntry;
+    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
@@ -186,7 +187,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       }
 
-      database.commit();
+      // Same ownsTransaction gate as the rollback paths below: when we don't own it (an externally-managed
+      // database's pre-existing transaction), leave it open for the caller instead of committing their unrelated
+      // pending work as a side effect of this import succeeding.
+      if (ownsTransaction)
+        database.commit();
 
     } catch (final IOException e) {
       if (ownsTransaction && database.isTransactionActive())
@@ -225,9 +230,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
     // Checked first, before any schema side effect below (typeIdProperty/unique index auto-creation): "skip" mode
-    // must own the transaction outright (see ImporterSettings#isSkipOnRowError()), and the schema changes below
-    // commit independently of this method's own transaction - so a rejected call must never leave one committed.
-    if (settings.isSkipOnRowError() && context.externallyManagedDatabase && database.isTransactionActive())
+    // must own the transaction outright (see ImporterSettings#isSkipOnRowError()). See the loadDocuments() comment
+    // for why callerTransactionActiveOnEntry, not a live isTransactionActive() check, is the correct signal here.
+    if (settings.isSkipOnRowError() && context.callerTransactionActiveOnEntry)
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.vertexTypeName);
@@ -286,7 +291,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // Captured before the try below - see the loadDocuments() comment for why (visibility in the catch blocks) and
     // for the full ownsTransaction reasoning.
     final boolean transactionActiveOnEntry = database.isTransactionActive();
-    final boolean ownsTransaction = !context.externallyManagedDatabase || !transactionActiveOnEntry;
+    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {

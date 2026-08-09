@@ -277,3 +277,25 @@ from raising while the request log line is built. Those guards named the Gson ex
 let escape, so they now cover `JSONException` too and keep answering an envelope rather than the transport's 400.
 
 [#5935](https://github.com/ArcadeData/arcadedb/issues/5935)
+
+## Bulk importer: a single out-of-range or malformed CSV/JSON row no longer has to abort the whole job (#5968)
+
+The CSV/JSON importer aborted an entire bulk import on the first bad row - a single out-of-range numeric
+value, a duplicate key, or a missing mandatory property threw away an otherwise-successful multi-hour load.
+A new opt-in setting, `-onRowError skip` (default remains `abort`, unchanged from today), logs and skips the
+offending row instead, reporting the count of skipped rows in the import summary.
+
+Making this safe required per-row transaction ownership: each row now commits or rolls back its own
+transaction rather than sharing one whole-file transaction, so a bad row's rollback can never take an
+already-committed good row down with it, and can never leave a partially-written "ghost" record behind (a
+bucket write whose index entry failed). CSV vertex imports, which normally persist asynchronously in
+batches, switch to a synchronous per-vertex save in this mode for the same reason - an async batch rollback
+would otherwise take down every other vertex queued in the same uncommitted batch.
+
+Because of that per-row ownership, **`-onRowError skip` requires exclusive control of the transaction** and
+is rejected outright if one is already active - including a plain `IMPORT DATABASE ... WITH onRowError=skip`
+over HTTP, since `DatabaseAbstractHandler` wraps a command in its own atomic transaction by default. Use it
+from an explicit session or with `autoCommit=false` instead; the CLI importer and the embedding
+`Importer(Database, String)` constructor (with no transaction already open) are unaffected.
+
+[#5968](https://github.com/ArcadeData/arcadedb/issues/5968)

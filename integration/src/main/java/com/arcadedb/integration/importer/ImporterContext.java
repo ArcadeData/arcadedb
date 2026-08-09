@@ -46,6 +46,16 @@ public class ImporterContext {
    * pending work the caller is not expecting this importer to commit or roll back.
    */
   public       boolean       externallyManagedDatabase;
+  /**
+   * Set by {@link AbstractImporter#openDatabase()}, before anything else in the import (including schema
+   * auto-creation, which can itself open and leave active a transaction of its own) touches the database's
+   * transaction state: true only when {@link #externallyManagedDatabase} is true and the caller's transaction was
+   * already active at that exact point. This is the one reliable signal that an active transaction later observed
+   * by a format's {@code load()} genuinely predates - and so may hold unrelated pending work belonging to - the
+   * caller, as opposed to one this importer's own schema setup opened moments earlier in the same call and still
+   * needs to finish committing itself.
+   */
+  public       boolean       callerTransactionActiveOnEntry;
   public       long          startedOn;
   public       long          lastLapOn;
   public       long          lastParsed;

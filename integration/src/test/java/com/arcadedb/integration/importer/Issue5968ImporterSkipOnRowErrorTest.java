@@ -22,9 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.Type;
+import com.univocity.parsers.common.TextParsingException;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -217,6 +219,50 @@ class Issue5968ImporterSkipOnRowErrorTest {
       // csvDocumentImportAbortsOnOutOfRangeValueByDefaultAndRollsBackPartialRows()), not inside a caller-managed
       // transaction the caller chose not to protect with "skip" mode's exclusive-ownership guard.
       assertThat(db.countType("Widget", true)).isEqualTo(1);
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
+   * Symmetric to {@link #csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction()}
+   * but for the success path: {@code loadDocuments}' final {@code database.commit()} after the row loop must also be
+   * gated on {@code ownsTransaction}, not just the failure-path rollbacks, otherwise a fully-successful import would
+   * commit the caller's own pre-existing transaction (and whatever unrelated work it holds) as a side effect.
+   */
+  @Test
+  void csvDocumentImportOnAllSuccessLeavesCallersExternallyManagedTransactionOpenForThemToCommit() {
+    final String databasePath = "target/databases/test-import-5968-csv-doc-success-caller-tx";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      // NO Score property/constraint created: unlike the aborting counterpart, every row of the same fixture
+      // (including Bob's "99999") imports successfully here, so this exercises the success path, not the failure one.
+      db.command("sql", "CREATE DOCUMENT TYPE Widget");
+      db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+      db.begin();
+      db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+      final Importer importer = new Importer(db, null);
+      importer.settings.documents = "src/test/resources/importer-vertices-outofrange.csv";
+      importer.settings.documentTypeName = "Widget";
+
+      final Map<String, Object> result = importer.load();
+      // ImporterContext#toMap() only adds "errors" when it's non-zero.
+      assertThat(result.get("errors")).isNull();
+
+      // The import succeeded, but the transaction was never ours to commit: it must still be active, with the
+      // caller's own pre-existing work not yet durable, for the caller to commit (or roll back) themselves.
+      assertThat(db.isTransactionActive()).isTrue();
+      db.commit();
+
+      assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+      assertThat(db.countType("Widget", true)).isEqualTo(3);
     } finally {
       db.drop();
     }
@@ -755,7 +801,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
       // TextParsingException ITSELF WRAPS A LOWER-LEVEL CAUSE, SO ASSERT ON THE DIRECT CAUSE OF ImportException RATHER
       // THAN THE ROOT ONE.
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
-          .cause().isInstanceOf(com.univocity.parsers.common.TextParsingException.class);
+          .cause().isInstanceOf(TextParsingException.class);
 
       assertThat(db.isTransactionActive()).isFalse();
     } finally {
@@ -785,7 +831,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
       // TextParsingException ITSELF WRAPS A LOWER-LEVEL CAUSE, SO ASSERT ON THE DIRECT CAUSE OF ImportException RATHER
       // THAN THE ROOT ONE.
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
-          .cause().isInstanceOf(com.univocity.parsers.common.TextParsingException.class);
+          .cause().isInstanceOf(TextParsingException.class);
     } finally {
       databaseFactory.open().drop();
     }
@@ -814,7 +860,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
       });
 
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
-          .hasRootCauseInstanceOf(java.io.IOException.class);
+          .hasRootCauseInstanceOf(IOException.class);
     } finally {
       databaseFactory.open().drop();
     }
