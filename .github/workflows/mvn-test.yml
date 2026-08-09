@@ -417,8 +417,38 @@ jobs:
         if: success() || failure()
         run: ./.github/scripts/check-test-results.py surefire-reports
 
-      - name: Upload openCypher TCK HTML report
+      # TCKReportPlugin writes both forms of the compliance report on every run. Putting the markdown one
+      # in the step summary is the whole reason this lane is separate: conformance becomes a number on the
+      # job page instead of a line buried in a 15,000-test pass count.
+      - name: Publish openCypher TCK compliance report
         if: success() || failure()
+        run: |
+          if [[ -f engine/target/tck-compliance-report.md ]]; then
+            cat engine/target/tck-compliance-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Not cosmetic: no report means the plugin never reached TestRunFinished, so the run died
+            # part-way and any scenario counts reported elsewhere describe a partial run.
+            echo "::error::TCK compliance report missing - the suite did not finish"
+            echo '## openCypher TCK compliance' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Report missing: the suite did not reach the end of the run.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Upload openCypher TCK compliance report
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opencypher-tck-compliance-report
+          path: |
+            engine/target/tck-compliance-report.md
+            engine/target/tck-compliance-report.txt
+          retention-days: 30
+
+      # Cucumber's HTML report embeds every scenario and runs to ~28 MB, so it is kept only when something
+      # failed and someone needs the per-scenario detail. On a green run the compliance report above and the
+      # surefire XML already say everything, and 28 MB per push is not worth retaining to say it again.
+      - name: Upload openCypher TCK HTML report
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: opencypher-tck-html-report
