@@ -45,9 +45,18 @@ public class DocumentValidator {
     // property getting its own full regexTimeout budget would let a document with N such properties, each
     // crafted to backtrack catastrophically, cost up to N * regexTimeout instead of one bounded validation -
     // the same N-times-timeout shape closed everywhere else in this issue, reopened here at the property level.
-    final long regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()));
-    for (Property entry : document.getType().getPolymorphicProperties())
+    // Computed lazily on the first REGEXP-constrained property encountered, not unconditionally: most document
+    // types have none, and this runs on every insert/update, so paying System.nanoTime() + the overflow-safe
+    // arithmetic in newDeadline() for types that never use REGEXP at all would be pure waste on that hot path.
+    long regexDeadline = 0;
+    boolean regexDeadlineComputed = false;
+    for (Property entry : document.getType().getPolymorphicProperties()) {
+      if (!regexDeadlineComputed && entry.getRegexp() != null) {
+        regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()));
+        regexDeadlineComputed = true;
+      }
       validateField(document, entry, regexDeadline);
+    }
   }
 
   /**
