@@ -79,7 +79,10 @@ public class GraphQLQueryEngine implements QueryEngine {
         if (def instanceof OperationDefinition op && !op.isQuery())
           return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
     } catch (final ParseException e) {
-      // Fall through to default READ — execution will report the parse error
+      // Cannot classify: assume the worst so an idempotency gate denies rather than admits. Execution
+      // still re-parses and reports the real syntax error; this only changes the answer given to a
+      // caller asking "is this read-only?" before execution runs. See issue #5853.
+      return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
     }
     return CollectionUtils.singletonSet(OperationType.READ);
   }

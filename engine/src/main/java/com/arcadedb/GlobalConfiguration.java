@@ -675,6 +675,19 @@ public enum GlobalConfiguration {
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
 
+  // GRAPHQL
+  GRAPHQL_MAX_NESTING_DEPTH("arcadedb.graphql.maxNestingDepth", SCOPE.DATABASE,
+      """
+      Maximum nesting depth allowed for '{' ... '}' blocks in a single GraphQL document - selection sets \
+      (fields nested inside one another) and object/interface/input type bodies both use the same delimiter. \
+      The JavaCC-generated parser re-enters its SelectionSet/Field grammar rules once per nesting level, so a \
+      few thousand levels is enough to exhaust the default JVM thread stack with a payload of only a few KB; a \
+      document past this limit is rejected as a normal parse error instead of crashing the worker thread with a \
+      StackOverflowError. Real-world documents rarely nest more than a handful of levels, so the default is \
+      deliberately generous while staying far below the point where the stack is at risk. Raise it only if a \
+      legitimate, deeply-nested or very long generated document needs it.""",
+      Integer.class, 200),
+
   // INDEXES
   INDEX_BUILD_CHUNK_SIZE_MB("arcadedb.index.buildChunkSizeMB", SCOPE.DATABASE,
       """
