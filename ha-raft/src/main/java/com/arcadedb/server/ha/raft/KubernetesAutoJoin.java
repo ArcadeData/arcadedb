@@ -27,6 +27,8 @@ import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.SetConfigurationRequest;
+import org.apache.ratis.retry.RetryPolicies;
+import org.apache.ratis.retry.RetryPolicy;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.util.TimeDuration;
 
@@ -73,6 +75,18 @@ public class KubernetesAutoJoin {
   // against the peers' allowlist DNS refresh on pod recreation, stranding the node forever.
   static final long RETRY_BACKOFF_INITIAL_MS = 2_000L;
   static final long RETRY_BACKOFF_MAX_MS     = 60_000L;
+  // Bounded retry policy for the probe's temp RaftClient (issue #5973): RaftClient.Builder defaults to
+  // RetryPolicies.retryForeverNoSleep() when none is set. A setConfiguration ADD racing an in-flight
+  // reconfiguration on the peer fails fast with ReconfigurationInProgressException (a synchronous
+  // rejection, not an RPC that can time out), so an unbounded no-sleep policy spins inside this single
+  // blocking admin().setConfiguration() call as fast as the JVM can throw/catch/log, indefinitely - the
+  // RPC timeouts set in buildProbeProperties() never get a chance to apply. Observed in CI hammering a
+  // permanently-stuck reconfiguration for 5.5 hours straight (a 41GB log of the identical exception)
+  // until the job's 6-hour wall-clock cap force-killed it. Bounding it here makes a stuck reconfiguration
+  // surface as a probe failure within a couple of seconds; tryAutoJoinWithRetry's own exponential
+  // backoff (up to RETRY_BACKOFF_MAX_MS) already covers retrying the probe over the longer term.
+  static final RetryPolicy PROBE_RETRY_POLICY =
+      RetryPolicies.retryUpToMaximumCountWithFixedSleep(5, TimeDuration.valueOf(500, TimeUnit.MILLISECONDS));
 
   /** Result of a single auto-join probe round. */
   public enum Outcome {
@@ -181,6 +195,7 @@ public class KubernetesAutoJoin {
         try (final RaftClient tempClient = RaftClient.newBuilder()
             .setRaftGroup(targetGroup)
             .setProperties(tempProps)
+            .setRetryPolicy(PROBE_RETRY_POLICY)
             .build()) {
 
           final var groupInfo = tempClient.getGroupManagementApi(peer.getId()).info(raftGroup.getGroupId());
