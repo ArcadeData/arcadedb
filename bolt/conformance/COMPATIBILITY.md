@@ -4,7 +4,7 @@
 
 Certification status of ArcadeDB's Bolt protocol against every official Neo4j driver, per the shared conformance spec ([`spec.yaml`](spec.yaml), epic #4882). Columns are driver language by pinned version ([`driver-versions.md`](driver-versions.md)).
 
-**Last verified:** 2026-08-08 13:38 UTC ([run](https://github.com/ArcadeData/arcadedb/actions/runs/31238540553))
+**Last verified:** 2026-08-09 04:17 UTC ([run](https://github.com/ArcadeData/arcadedb/actions/runs/31293919572))
 
 Legend: ✅ pass, ❌ fail, ⚠️ expected-fail / known limitation, ➖ not applicable, ⚪ skipped, `·` not reported. A `·` in a listed Coverage-gaps column means no result for that driver:version.
 
@@ -16,7 +16,7 @@ Legend: ✅ pass, ❌ fail, ⚠️ expected-fail / known limitation, ➖ not app
 | **CONN-002** Connect via bolt+s:// with TLS required | · | · | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **CONN-003** Connect via neo4j:// routing discovery, single-node deployment | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **CONN-004** neo4j:// routing reflects actual multi-node HA cluster topology | · | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ | ⚪ |
-| **CONN-005** TLS OPTIONAL mode falls back to plaintext bolt:// | · | · | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚪ | ✅ |
+| **CONN-005** TLS OPTIONAL mode falls back to plaintext bolt:// | · | · | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 > **CONN-004**: For clusters with heterogeneous Bolt ports, each node's client-reachable Bolt address must be declared with the object-form 'bolt:' field in HA_SERVER_LIST (host:{raft:..,http:..,bolt:..}). When omitted, the address is derived from each peer's Raft host plus this node's Bolt port, which is correct only for homogeneous deployments (e.g. a Kubernetes StatefulSet).
 
