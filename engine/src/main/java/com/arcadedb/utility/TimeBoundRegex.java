@@ -46,6 +46,12 @@ public final class TimeBoundRegex {
 
   /**
    * Matches {@code input} fully against {@code pattern}, aborting if it runs past {@code timeoutMillis}.
+   * <p>
+   * Evaluating several inputs against the same logical bound (e.g. one property holding a list of strings, each
+   * matched in turn against the same pattern) should not call this method once per item: each call starts a fresh
+   * {@code timeoutMillis} budget, so N items would be bounded by {@code N * timeoutMillis} instead of by
+   * {@code timeoutMillis} overall. Use {@link #newDeadline(long)} once up front and {@link #matchesUntil(Pattern,
+   * CharSequence, long)} for each item instead.
    *
    * @param pattern       the compiled pattern to match
    * @param input         the input to match against
@@ -57,17 +63,56 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the match does not complete within {@code timeoutMillis}
    */
   public static boolean matches(final Pattern pattern, final CharSequence input, final long timeoutMillis) {
-    if (timeoutMillis <= 0)
-      return pattern.matcher(input).matches();
-
-    final long deadline = System.nanoTime() + (timeoutMillis * 1_000_000L);
     try {
-      return pattern.matcher(new DeadlineBoundCharSequence(input, deadline)).matches();
+      return match(pattern, input, newDeadline(timeoutMillis));
     } catch (final RegexDeadlineExceeded e) {
       throw new TimeoutException(
           "Regular expression evaluation aborted after exceeding the " + timeoutMillis + "ms limit (arcadedb.command.regexTimeout): pattern '"
               + pattern.pattern() + "' against input of length " + input.length());
     }
+  }
+
+  /**
+   * Computes an absolute deadline, in {@link System#nanoTime()} terms, {@code timeoutMillis} from now, for use
+   * with {@link #matchesUntil(Pattern, CharSequence, long)} across a series of related matches that must share one
+   * overall time budget rather than each getting their own.
+   *
+   * @param timeoutMillis maximum time allowed from now, in milliseconds; a value {@code <= 0} disables the bound
+   *
+   * @return an absolute deadline for {@link #matchesUntil(Pattern, CharSequence, long)}, or a sentinel that never
+   * triggers if {@code timeoutMillis <= 0}
+   */
+  public static long newDeadline(final long timeoutMillis) {
+    return timeoutMillis <= 0 ? Long.MAX_VALUE : System.nanoTime() + (timeoutMillis * 1_000_000L);
+  }
+
+  /**
+   * Matches {@code input} fully against {@code pattern}, aborting if {@code System.nanoTime()} passes
+   * {@code deadlineNanos} - an absolute deadline from {@link #newDeadline(long)}, shared across every call in a
+   * series so the series as a whole is bounded rather than each call individually.
+   *
+   * @param pattern      the compiled pattern to match
+   * @param input        the input to match against
+   * @param deadlineNanos an absolute {@link System#nanoTime()} deadline, as returned by {@link #newDeadline(long)}
+   *
+   * @return {@code true} if {@code input} matches {@code pattern} in its entirety
+   *
+   * @throws TimeoutException if the match does not complete before {@code deadlineNanos}
+   */
+  public static boolean matchesUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
+    try {
+      return match(pattern, input, deadlineNanos);
+    } catch (final RegexDeadlineExceeded e) {
+      throw new TimeoutException(
+          "Regular expression evaluation aborted after exceeding its arcadedb.command.regexTimeout deadline: pattern '" + pattern.pattern()
+              + "' against input of length " + input.length());
+    }
+  }
+
+  private static boolean match(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
+    if (deadlineNanos == Long.MAX_VALUE)
+      return pattern.matcher(input).matches();
+    return pattern.matcher(new DeadlineBoundCharSequence(input, deadlineNanos)).matches();
   }
 
   private static final class DeadlineBoundCharSequence implements CharSequence {

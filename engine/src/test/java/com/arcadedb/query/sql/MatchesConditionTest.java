@@ -175,4 +175,31 @@ class MatchesConditionTest extends TestHelper {
     // merely being slow (the unbounded match takes tens of seconds).
     assertThat(elapsedMillis).isLessThan(5000);
   }
+
+  @Test
+  void multiValueMatchesSharesOneTimeoutBudgetAcrossItems() {
+    // A multi-value (list) property must not multiply the regex timeout budget by its item count: each
+    // catastrophic item getting its own full budget would let a crafted 5-item list run for 5 * regexTimeout
+    // instead of one evaluation bounded by regexTimeout overall.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE MultiPathological");
+      database.command("sql", "INSERT INTO MultiPathological SET tags = ['" + pathological + "', '" + pathological + "', '" + pathological
+          + "', '" + pathological + "', '" + pathological + "']");
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM MultiPathological WHERE tags MATCHES '(.*a){20}$'");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 5 independent 200ms-per-item budgets would take >= 1000ms; a shared deadline keeps the whole
+    // evaluation close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(800);
+  }
 }

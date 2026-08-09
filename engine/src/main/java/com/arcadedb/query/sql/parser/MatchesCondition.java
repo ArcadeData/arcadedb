@@ -78,16 +78,24 @@ public class MatchesCondition extends BooleanExpression {
       context.setCachedValue(key, p);
     }
 
-    final long regexTimeout = context.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
+    // context.getDatabase().getConfiguration(), not context.getConfiguration(): the latter is a fresh, disconnected
+    // ContextConfiguration for a plain SELECT/=~ evaluation (nothing wires it to the database's settings), so it
+    // would silently fall back to the compiled-in default and ignore a per-database override. This mirrors how
+    // SelectExecutionPlanner reads GlobalConfiguration.COMMAND_TIMEOUT.
+    final long regexTimeout = context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
+    // One shared deadline for the whole evaluation: a multi-value property can hold many items, and each getting
+    // its own full regexTimeout budget would let a crafted list bound the loop by N * regexTimeout instead of by
+    // regexTimeout overall.
+    final long deadline = TimeBoundRegex.newDeadline(regexTimeout);
 
     if (value instanceof CharSequence sequence) {
-      return TimeBoundRegex.matches(p, sequence, regexTimeout);
+      return TimeBoundRegex.matchesUntil(p, sequence, deadline);
     } else if (MultiValue.isMultiValue(value)) {
       final Iterator<?> values = MultiValue.getMultiValueIterator(value);
       while (values.hasNext()) {
         final Object item = values.next();
         if (item instanceof CharSequence seq) {
-          if (TimeBoundRegex.matches(p, seq, regexTimeout)) {
+          if (TimeBoundRegex.matchesUntil(p, seq, deadline)) {
             return true;
           }
         }

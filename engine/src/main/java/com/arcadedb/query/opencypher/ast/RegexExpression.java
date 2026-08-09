@@ -70,9 +70,11 @@ public class RegexExpression implements BooleanExpression {
       }
     }
 
-    // Match against value
+    // Match against value. context.getDatabase().getConfiguration(), not context.getConfiguration(): see
+    // MatchesCondition.matches() for why the latter would silently ignore a per-database override here.
     final String valueStr = value.toString();
-    return TimeBoundRegex.matches(compiledPattern, valueStr, context.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+    return TimeBoundRegex.matches(compiledPattern, valueStr,
+        context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
   }
 
   @Override
