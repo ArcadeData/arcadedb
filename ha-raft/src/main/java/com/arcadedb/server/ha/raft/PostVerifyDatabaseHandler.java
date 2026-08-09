@@ -40,6 +40,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
@@ -171,9 +172,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
       if (peer.getId().equals(raftHAServer.getLocalPeerId()))
         continue;
-      futures.add(CompletableFuture.supplyAsync(
-          () -> queryPeer(raftHAServer, peer, databaseName, localChecksums, user, useSsl),
-          peerQueryExecutor));
+      futures.add(submitPeerQuery(raftHAServer, peer, databaseName, localChecksums, user, useSsl));
     }
 
     final JSONArray peerResults = new JSONArray();
@@ -199,6 +198,29 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     result.put("overallStatus", allConsistent ? "ALL_CONSISTENT" : "INCONSISTENCY_DETECTED");
     response.put("result", result);
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Submits a peer query to {@link #peerQueryExecutor}. {@code stopService()}/a repeated {@code registerAPI()}
+   * call can shut the pool down concurrently with an in-flight request (issue #5890 follow-up: closing the
+   * pool introduced this narrow race, which could not happen while it leaked); {@code ExecutorService.execute()}
+   * then throws {@link RejectedExecutionException} synchronously, before {@code queryPeer} ever runs. Catching
+   * it here and degrading to a completed ERROR future keeps that one peer's failure inside the normal
+   * per-peer error reporting instead of aborting the whole request with an uncaught exception. Package-private
+   * for unit testing.
+   */
+  CompletableFuture<JSONObject> submitPeerQuery(final RaftHAServer raftHAServer, final RaftPeer peer, final String databaseName,
+      final JSONObject localChecksums, final ServerSecurityUser user, final boolean useSsl) {
+    try {
+      return CompletableFuture.supplyAsync(
+          () -> queryPeer(raftHAServer, peer, databaseName, localChecksums, user, useSsl), peerQueryExecutor);
+    } catch (final RejectedExecutionException e) {
+      final JSONObject err = new JSONObject();
+      err.put("peerId", peer.getId().toString());
+      err.put("status", "ERROR");
+      err.put("error", "peer query rejected: server is stopping");
+      return CompletableFuture.completedFuture(err);
+    }
   }
 
   /**
