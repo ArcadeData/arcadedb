@@ -468,7 +468,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         database.async().waitCompletion();
         // A different vertex could also have failed asynchronously around the same time as this synchronous
         // failure; it's already logged at SEVERE and counted in context.errors either way, but attaching it here
-        // too means it isn't lost from the exception that actually reaches the caller.
+        // too means it isn't lost from the exception that actually reaches the caller. If e is itself the
+        // ImportException thrown below for firstAsyncError (no synchronous failure, only an async one), this adds
+        // the same throwable as both Suppressed and its own Caused by - redundant in the stack trace but harmless.
         final Throwable asyncError = firstAsyncError.get();
         if (asyncError != null && asyncError != e)
           e.addSuppressed(asyncError);

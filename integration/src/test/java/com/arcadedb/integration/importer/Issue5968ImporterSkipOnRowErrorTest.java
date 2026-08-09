@@ -1156,6 +1156,41 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
+   * The scenario {@code newExclusiveTransactionRequiredException()}'s own message and the release notes call out as
+   * the primary reason for the guard: a plain {@code IMPORT DATABASE ... WITH onRowError=skip} over HTTP, where
+   * {@code DatabaseAbstractHandler} wraps the whole command in its own atomic transaction by default.
+   * {@link #csvVertexImportRejectsSkipModeInsideActiveTransaction()}/
+   * {@link #jsonDocumentImportRejectsSkipModeInsideActiveTransaction()} exercise the guard through the lower-level
+   * embedding constructor with a manual {@code db.begin()}, not through {@code ImportDatabaseStatement} itself -
+   * {@code db.transaction(() -> ...)} reproduces the same "already active when the statement runs" condition
+   * {@code DatabaseAbstractHandler} creates, without needing an actual HTTP server in this test.
+   */
+  @Test
+  void sqlImportDatabaseRejectsOnRowErrorSkipInsideAtomicTransactionLikeHttpDoes() {
+    final String databasePath = "target/databases/test-import-5968-sql-onrowerror-atomic";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Document");
+
+      assertThatThrownBy(() -> db.transaction(() -> db.command("sql", """
+          IMPORT DATABASE file://src/test/resources/importer-vertices-outofrange.csv
+          WITH onRowError=skip
+          """))).hasRootCauseInstanceOf(IllegalStateException.class)
+          .hasRootCauseMessage(ImporterSettings.newExclusiveTransactionRequiredException().getMessage());
+
+      // Nothing from the rejected import should have been committed either.
+      assertThat(db.countType("Document", true)).isZero();
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
    * Every other skip-mode test above sets exactly one of {@code -documents}/{@code -vertices}. Both go through
    * {@code loadFromSource()} in the same {@code Importer#load()} call, each with its own independently-computed
    * {@code TransactionOwnership} (see {@code CSVImporterFormat#computeTransactionOwnership}) and its own commit
