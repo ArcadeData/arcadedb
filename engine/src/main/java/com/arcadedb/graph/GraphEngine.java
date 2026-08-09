@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -27,6 +28,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
@@ -833,30 +835,70 @@ public class GraphEngine {
    * it, so there is no index entry, no external value and no counted record, and folding a {@code -1} here would
    * drift the cached bucket count behind {@code count(*)} - persisted in {@code statistics.json}, so it would
    * survive a reopen.
+   * <p>
+   * Unlike {@code deleteRecordNoLock} this does NOT tolerate a corrupted record buffer, and does not need to: that
+   * tolerance exists so a record whose body cannot be parsed can still be DELETED, while {@link #moveEdge} has
+   * already had to parse the whole record into {@code propertiesAsMap()} - the source of the replacement's
+   * properties - before it gets here. A buffer that cannot be read fails the move at that point, which is the right
+   * answer: there is nothing to copy the edge's content from. The one buffer read left here,
+   * {@code findExistingExternalRids}, absorbs its own parse failures and counts them for CHECK DATABASE.
    */
   private void cleanUpBeforePhysicalDelete(final MutableEdge edge) {
     final RID edgeRID = edge.getIdentity();
     if (edgeRID == null || edge instanceof LightEdge || edgeRID.getPosition() < 0)
       return;
 
-    database.getIndexer().deleteDocument(edge);
-
     // Cascade-delete EXTERNAL property values living in the paired external bucket, while the buffer is still
     // readable. moveEdge writes FRESH external records for the replacement, so without this the old ones are
-    // orphaned. Same transaction as the removal itself.
+    // orphaned. Same transaction as the removal itself. Runs BEFORE the index cleanup because it reads the
+    // record's own buffer and restores its position, while the pre-image built below consumes that same buffer.
     final Map<String, RID> externalRids = database.getSerializer().findExistingExternalRids(database, edge);
     for (final RID externalRID : externalRids.values()) {
-      final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalRID.getBucketId(), false);
+      final Bucket externalBucket = database.getSchema().getBucketByIdIfExists(externalRID.getBucketId());
       if (externalBucket != null) {
         externalBucket.deleteRecord(externalRID);
         database.getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
       }
     }
 
+    database.getIndexer().deleteDocument(indexedImageOf(edge));
+
     // The replacement folds its own +1 when it is created, so without this the move inflates the cached record
     // count of the type by one for every edge ever moved.
     database.getTransaction()
         .updateBucketRecordDelta(database.getSchema().getBucketById(edgeRID.getBucketId()).getFileId(), -1);
+  }
+
+  /**
+   * The image of {@code edge} that the INDEX was built from, which is NOT the instance the caller holds:
+   * {@code DocumentIndexer.deleteDocument} builds the keys it removes out of the LIVE property values of whatever
+   * record it is handed, and {@link #moveEdge} is entered from {@code MutableEdge.set("@in"/"@out")} - so a caller
+   * that changed an indexed property in the same session ({@code edge.set("code", "new"); edge.set("@in", v)})
+   * would have it remove a key the index never held, leaving the real entry dangling. Same resolution order
+   * {@code LocalDatabase.updateRecord} uses for the same reason (#4935):
+   * <ol>
+   *   <li>the transaction's last indexed snapshot, when an earlier {@code save()} in this transaction already
+   *   moved the index forward - the record's buffer stays frozen until commit, so it would describe a state the
+   *   index has left behind;</li>
+   *   <li>otherwise an immutable record over that frozen buffer, which is exactly the committed state the index
+   *   entries were written from;</li>
+   *   <li>otherwise the live instance, which is the only image there is for a record created inside this
+   *   transaction (no committed buffer to read).</li>
+   * </ol>
+   */
+  private Document indexedImageOf(final MutableEdge edge) {
+    final RID edgeRID = edge.getIdentity();
+    final Document snapshot = database.getTransaction().getLastIndexedSnapshot(edgeRID);
+    if (snapshot != null)
+      return snapshot;
+
+    final Binary committedBuffer = ((RecordInternal) edge).getBuffer();
+    if (committedBuffer == null)
+      return edge;
+
+    committedBuffer.rewind();
+    return (Document) database.getRecordFactory()
+        .newImmutableRecord(database, edge.getType(), edgeRID, committedBuffer, null);
   }
 
   public void deleteVertex(final VertexInternal vertex) {

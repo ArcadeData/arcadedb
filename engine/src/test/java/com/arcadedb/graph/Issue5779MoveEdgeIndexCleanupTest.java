@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #5779: {@code GraphEngine.moveEdge} re-points an edge by deleting the old edge record and creating a replacement,
@@ -145,6 +146,136 @@ class Issue5779MoveEdgeIndexCleanupTest extends TestHelper {
     database.transaction(() -> nearRID.asVertex().newEdge("Link", farRID.asVertex(), "code", "E1").save());
 
     assertThat(index.countEntries()).isEqualTo(1L);
+    assertIntegrityClean();
+  }
+
+  /**
+   * The OUT side takes the same route with {@code Vertex.DIRECTION.OUT}, and nothing about the cleanup is
+   * direction-specific - which is exactly why it is asserted rather than assumed.
+   */
+  @Test
+  void movingTheOutEndpointCleansTheOldRecordsIndexEntriesToo() {
+    createSchema(false);
+
+    final RID[] rids = createTriangleWithOneEdge();
+    final RID edgeRID = rids[0], farRID = rids[2];
+
+    final RID[] moved = new RID[1];
+    database.transaction(() -> {
+      final MutableEdge edge = edgeRID.asEdge().modify();
+      edge.set("@out", farRID);
+      moved[0] = edge.getIdentity();
+    });
+
+    final Index index = database.getSchema().getIndexByName("Link[code]");
+    assertThat(moved[0]).isNotEqualTo(edgeRID);
+    assertThat(index.countEntries()).isEqualTo(1L);
+    assertThat(lookup(index, "E1")).containsExactly(moved[0]);
+    database.transaction(() -> assertThat(moved[0].asEdge().getOut()).isEqualTo(farRID));
+
+    assertIntegrityClean();
+  }
+
+  /**
+   * A move that ALSO changes an indexed property in the same session. {@code DocumentIndexer.deleteDocument} builds
+   * the key it removes from the LIVE property values of the record handed to it, and after
+   * {@code edge.set("code", ...)} those are the new ones - the index still holds the old key. The cleanup therefore
+   * has to run against the state the index was built from, not against the caller's in-flight edits, or it removes
+   * a key that was never there and leaves the real entry dangling: the very leak this fix exists to close, reached
+   * through a different door.
+   */
+  @Test
+  void movingAnEdgeThatAlsoChangedItsIndexedPropertyCleansTheKeyTheIndexActuallyHolds() {
+    createSchema(false);
+
+    final RID[] rids = createTriangleWithOneEdge();
+    final RID edgeRID = rids[0], farRID = rids[2];
+
+    final RID[] moved = new RID[1];
+    database.transaction(() -> {
+      final MutableEdge edge = edgeRID.asEdge().modify();
+      edge.set("code", "E2");
+      edge.set("@in", farRID);
+      moved[0] = edge.getIdentity();
+    });
+
+    final Index index = database.getSchema().getIndexByName("Link[code]");
+    assertThat(lookup(index, "E1")).as("the key the record used to carry must be gone").isEmpty();
+    assertThat(lookup(index, "E2")).as("the key it carries now must name the surviving record")
+        .containsExactly(moved[0]);
+    assertThat(index.countEntries()).as("one edge, one entry").isEqualTo(1L);
+
+    assertIntegrityClean();
+  }
+
+  /**
+   * The same move, but with the indexed property already SAVED before it. The record's buffer stays frozen until
+   * commit (serialization is deferred), so it still describes {@code E1} while the index has already been moved to
+   * {@code E2} by that save - the committed buffer is the wrong pre-image here, and the transaction's indexed
+   * snapshot (#4935) is the right one.
+   */
+  @Test
+  void movingAnEdgeAfterAnIndexedPropertyWasAlreadySavedInTheSameTransaction() {
+    createSchema(false);
+
+    final RID[] rids = createTriangleWithOneEdge();
+    final RID edgeRID = rids[0], farRID = rids[2];
+
+    final RID[] moved = new RID[1];
+    database.transaction(() -> {
+      final MutableEdge edge = edgeRID.asEdge().modify();
+      edge.set("code", "E2");
+      edge.save();
+      edge.set("@in", farRID);
+      moved[0] = edge.getIdentity();
+    });
+
+    final Index index = database.getSchema().getIndexByName("Link[code]");
+    assertThat(lookup(index, "E1")).as("the committed key was already replaced by the save").isEmpty();
+    assertThat(lookup(index, "E2")).as("the key the index actually held must name the surviving record")
+        .containsExactly(moved[0]);
+    assertThat(index.countEntries()).as("one edge, one entry").isEqualTo(1L);
+
+    assertIntegrityClean();
+  }
+
+  /**
+   * {@code cleanUpBeforePhysicalDelete} returns early for a LIGHTWEIGHT edge, because {@code deleteEdge} performs
+   * no physical removal for one: there is no index entry, no external value and no counted record, and folding a
+   * {@code -1} would drift the cached bucket count the other way and persist that drift to
+   * {@code statistics.json}. That branch is currently UNREACHABLE, and this test is what says so out loud - both
+   * doors into {@code moveEdge} are shut for a lightweight edge, and if either is ever opened this fails and
+   * points at the guard that is then load-bearing rather than defensive.
+   */
+  @Test
+  void aLightweightEdgeCannotReachMoveEdgeAtAll() {
+    database.getSchema().createVertexType("Node", BUCKETS).createProperty("name", Type.STRING);
+    database.getSchema().buildEdgeType().withName("Link").withTotalBuckets(BUCKETS).withLightweight(true).create();
+
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex near = database.newVertex("Node").set("name", "near").save();
+      final MutableVertex far0 = database.newVertex("Node").set("name", "far0").save();
+      near.newEdge("Link", far0);
+      rids[0] = near.getIdentity();
+      rids[1] = far0.getIdentity();
+    });
+
+    assertThat(database.countType("Link", false))
+        .as("a lightweight edge allocates no record, so there is nothing for the cleanup to account for")
+        .isEqualTo(0L);
+
+    // Door 1: a persisted lightweight edge reached through its endpoint's list cannot be made mutable at all.
+    database.transaction(() -> assertThatThrownBy(
+        () -> rids[0].asVertex().getEdges(Vertex.DIRECTION.OUT, "Link").iterator().next().asEdge().modify())
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("cannot be modified"));
+
+    // Door 2: the MutableLightEdge newEdge() hands back inside the creating session refuses set() outright, so
+    // the "@in"/"@out" override in MutableEdge - the only caller of moveEdge - is never entered.
+    database.transaction(() -> assertThatThrownBy(
+        () -> rids[0].asVertex().modify().newEdge("Link", rids[1].asVertex()).set("@in", rids[0]))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("LIGHTWEIGHT"));
+
     assertIntegrityClean();
   }
 
