@@ -356,11 +356,6 @@ rather than giving each item its own full budget - otherwise a crafted list coul
 not as that one item silently failing to match, since swallowing it would let the pattern keep consuming its
 full budget on every future scan without ever surfacing.
 
-SQL `LIKE`/`ILIKE` were audited for the same gap and found not to need it: `QueryHelper.convertForRegExp`
-escapes every regex metacharacter except `%` (`.*`) and `?` (`.`), so the generated pattern can never contain
-grouping, alternation, or nested quantifiers - the shapes catastrophic backtracking requires. It stays on
-plain `String.matches()`.
-
 A second review pass caught two more entry points the initial audit missed, both now bounded the same way:
 the `text.regexReplace(string, regex, replacement)` SQL function, whose only previous defense was a 500-char
 pattern-length cap plus a `catch (StackOverflowError)` - neither of which bounds a *time*-based catastrophic
@@ -371,5 +366,16 @@ counterpart to `matches()` for the first case, and now also catches `StackOverfl
 trip in both - a sufficiently pathological pattern can blow the (recursive) backtracking stack before the
 next 256-call checkpoint is reached, and that failure mode gets the same bound and the same `TimeoutException`
 as an explicit deadline.
+
+A third review pass corrected a wrong conclusion from the first: SQL `LIKE`/`ILIKE` had been audited as "safe"
+because `QueryHelper.convertForRegExp` escapes every regex metacharacter except `%` (`.*`) and `?` (`.`), so
+the generated pattern can never contain grouping, alternation, or nested quantifiers - true, but that only
+rules out *one* class of catastrophic backtracking. A sequence of several `.*` segments reproduces the same
+exponential blowup with no nesting at all (`%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%c` against a string of
+just `a`s hangs exactly like the issue's own `(.*a){20}$` reproducer), and full-text search's wildcard queries
+(`*`/`?`, the `WildcardQuery` sibling of the already-fixed `RegexpQuery` path) build the identical shape.
+`LIKE`/`ILIKE` (`QueryHelper.like`/`likeUntil`, used by `LikeOperator`, `ILikeOperator`, and the native query
+engine's `SelectOperator`) and full-text wildcard matching now run through `TimeBoundRegex` like every other
+entry point here, including the same shared-deadline treatment for a multi-value `LIKE`/`ILIKE` evaluation.
 
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)

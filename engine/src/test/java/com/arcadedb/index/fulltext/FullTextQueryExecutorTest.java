@@ -548,4 +548,39 @@ class FullTextQueryExecutorTest extends TestHelper {
       assertThat(elapsedMillis).isLessThan(5000);
     });
   }
+
+  @Test
+  void catastrophicWildcardQueryIsAbortedByRegexTimeout() {
+    // Issue #5886 follow-up (2nd review pass): collectWildcardMatches() converts each '*' to '.*' via
+    // wildcardToRegex() - no grouping/alternation/nested quantifiers, but a sequence of several '*'s reproduces
+    // the exact same catastrophic-backtracking shape on its own, the same class of gap SQL LIKE/ILIKE turned
+    // out to have (verified separately) despite the original "structurally safe" audit conclusion for both.
+    // "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b" against a token ending in something other than 'b' forces the
+    // same exhaustive backtrack-then-fail this issue's own (.*a){20}$ reproducer relies on. A literal (not '*')
+    // leading character keeps this in the range-scan branch without needing allowLeadingWildcard=true - the
+    // leading-wildcard, full-scan branch is the same shape collectRegexpMatches already covers a test for.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "c";
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Article SET content = '" + pathological + "'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      final String wildcardPattern = "a" + "*a".repeat(19) + "*b";
+
+      final long begin = System.currentTimeMillis();
+      assertThatThrownBy(() -> executor.search(wildcardPattern, -1)).isInstanceOf(TimeoutException.class);
+      final long elapsedMillis = System.currentTimeMillis() - begin;
+
+      assertThat(elapsedMillis).isLessThan(5000);
+    });
+  }
 }

@@ -612,6 +612,10 @@ public class FullTextQueryExecutor {
     final String searchPrefix = buildSearchKey(field, literalPrefix);
     final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
     final Pattern regex = wildcardToRegex(pattern);
+    // A sequence of several *'s (translated to .* by wildcardToRegex, same shape as %  in SQL LIKE) reproduces
+    // catastrophic backtracking without needing grouping/alternation/nested quantifiers - issue #5886 follow-up.
+    // One shared deadline for the whole scan, same rationale as collectRegexpMatches.
+    final long deadline = TimeBoundRegex.newDeadline(index.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
 
     if (literalPrefix.isEmpty()) {
       // Leading wildcard: full scan, then regex match against the unprefixed token portion
@@ -622,7 +626,7 @@ public class FullTextQueryExecutor {
         // Skip cross-field tokens for unqualified queries on multi-property indexes
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
-        return regex.matcher(token).matches();
+        return TimeBoundRegex.matchesUntil(regex, token, deadline);
       }, scoreMap, boostFor(field));
     } else {
       // Range scan starting at the literal prefix and stop when keys no longer share it
@@ -632,7 +636,7 @@ public class FullTextQueryExecutor {
         final String token = key.substring(fieldPrefix.length());
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
-        return regex.matcher(token).matches();
+        return TimeBoundRegex.matchesUntil(regex, token, deadline);
       }, scoreMap, boostFor(field));
     }
   }

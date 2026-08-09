@@ -20,9 +20,12 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryHelper;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.Iterator;
 
@@ -40,18 +43,26 @@ public class LikeOperator extends SimpleNode implements BinaryCompareOperator {
     if (MultiValue.isMultiValue(right))
       return false;
 
+    // database is null in some direct/unit-test invocations of this operator (see LikeOperatorTest) - falls
+    // back to a plain ContextConfiguration (itself just a proxy for the compiled-in default) in that case.
+    final long regexTimeout = (database != null ? database.getConfiguration() : new ContextConfiguration())
+        .getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
+
     if (MultiValue.isMultiValue(left)) {
+      // One shared deadline for the whole evaluation, same rationale as MatchesCondition's multi-value case:
+      // each item getting its own full budget would let a crafted list run for item count * regexTimeout.
+      final long deadline = TimeBoundRegex.newDeadline(regexTimeout);
       Iterator<?> valueIterator = MultiValue.getMultiValueIterator(left);
       while (valueIterator.hasNext()) {
         Object val = valueIterator.next();
-        if (val != null && QueryHelper.like(val.toString(), right.toString())) {
+        if (val != null && QueryHelper.likeUntil(val.toString(), right.toString(), deadline)) {
           return true;
         }
       }
       return false;
     }
 
-    return QueryHelper.like(left.toString(), right.toString());
+    return QueryHelper.like(left.toString(), right.toString(), regexTimeout);
   }
 
   @Override
