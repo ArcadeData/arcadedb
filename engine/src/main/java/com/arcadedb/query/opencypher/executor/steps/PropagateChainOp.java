@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
 
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidLongHashMap;
@@ -151,13 +152,14 @@ public final class PropagateChainOp implements CountOp {
    * {@code COUNT { (n:Q)-[:LINKS]->(:Q) }} under an {@code n} of another label is 0, not the count over {@code Q}.
    */
   private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db) {
-    final int hops = edgeTypes.length;
-    final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
-    for (int i = 0; i <= hops; i++)
-      validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
-
-    if (!bucketMatches(validBuckets[0], anchorRid.getBucketId()))
+    if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
       return 0;
+
+    final int hops = edgeTypes.length;
+    // Position 0 is one known bucket, tested above without building a set for it: this runs once per outer row.
+    final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
+    for (int i = 1; i <= hops; i++)
+      validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
     final int anchorId = provider.getNodeId(anchorRid);
     if (anchorId < 0)
@@ -196,9 +198,21 @@ public final class PropagateChainOp implements CountOp {
     return total;
   }
 
-  /** Whether a bucket passes a position's label filter, where a null or empty set means "no label was written". */
-  private static boolean bucketMatches(final IntHashSet validBuckets, final int bucketId) {
-    return validBuckets == null || validBuckets.isEmpty() || validBuckets.contains(bucketId);
+  /**
+   * Whether the one bucket a seeded anchor lives in passes the label written on its position.
+   * <p>
+   * The same question {@link CSRCountUtils#buildValidBuckets} answers for a whole level, and read the same way - a
+   * null or undeclared label builds no filter there, so it filters nothing here either - but asked of a single known
+   * bucket, so it walks the supertype chain instead of allocating a bucket set. That matters because a seeded
+   * operator is built and run once per outer row, where the enumerating one is built once per query.
+   */
+  private static boolean anchorMatchesLabel(final Database db, final String label, final int bucketId) {
+    if (label == null || !db.getSchema().existsType(label))
+      return true;
+
+    // A bucket belongs to exactly one type, so "in this label's polymorphic buckets" is "of this label or below it".
+    final DocumentType type = db.getSchema().getTypeByBucketId(bucketId);
+    return type != null && type.instanceOf(label);
   }
 
   /**
@@ -642,7 +656,7 @@ public final class PropagateChainOp implements CountOp {
     RidLongHashMap current = new RidLongHashMap();
     if (anchorRid != null) {
       // A seeded anchor is an anchor set of one, and its label - if the body wrote one - filters it (issue #5758).
-      if (!bucketMatches(CSRCountUtils.buildValidBuckets(db, nodeLabels[0]), anchorRid.getBucketId()))
+      if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
         return 0;
       current.put(anchorRid, 1L);
     } else {

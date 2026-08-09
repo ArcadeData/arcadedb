@@ -251,6 +251,22 @@ class CypherCorrelatedCountPushDownIssue5758Test extends TestHelper {
         + "RETURN count(*) } AS c")).containsExactly(1L);
   }
 
+  /**
+   * A seeded push-down reads the value the <b>outer</b> row bound, so a body able to bind names for itself would
+   * break it. None can reach it: the detectors are only asked about a body made of nothing but {@code MATCH} and
+   * {@code RETURN}, which leaves out the two clauses that bind - {@code UNWIND} and {@code WITH}.
+   * <p>
+   * The {@code UNWIND} below is what makes this an assertion rather than a restatement: it multiplies the body's rows
+   * by two, so a plan that answered from the chain alone would say 1 where the pipeline says 2.
+   */
+  @Test
+  void aBodyThatCouldBindNamesOfItsOwnNeverReachesTheSeededPushDown() {
+    assertThat(countsOf("MATCH (q:Q {k: 1}) RETURN COUNT { UNWIND [1, 2] AS z MATCH (q)-[:LINKS]->(x:Q) RETURN x } AS c"))
+        .containsExactly(2L);
+    assertThat(countsOf("MATCH (q:Q {k: 1}) RETURN COUNT { MATCH (q)-[:LINKS]->(x:Q) WITH x AS y RETURN y } AS c"))
+        .containsExactly(1L);
+  }
+
   /** A bound value that is not a vertex matches no node pattern, whichever plan answers it. */
   @Test
   void aSeededNameBoundToANonVertexMatchesNothing() {

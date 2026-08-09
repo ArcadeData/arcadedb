@@ -4675,6 +4675,13 @@ public class CypherExecutionPlan {
    * The far end is reached by reversing the chain rather than by a second walk: {@code (a)-[:E]->(b)} counted from
    * {@code b} is {@code (b)<-[:E]-(a)}, which is the same arrays read the other way. That is what keeps
    * {@code COUNT { (:Person)-[:KNOWS]->(p) }} - "how many know me" - on the fast path alongside its mirror.
+   * <p>
+   * <b>The bound value is always the outer one.</b> The whole thing rests on the seeded name still meaning what the
+   * outer row bound, and what could break that is a body rebinding the name for itself. It cannot: the only clauses
+   * that bind a name to something other than a pattern position are {@code UNWIND} and {@code WITH}, and
+   * {@link #isMatchReturnOnlyStatement()} - asked by {@link #tryOptimizeCountStar} before any detector runs - admits
+   * nothing but {@code MATCH} and {@code RETURN}. A body's own {@code MATCH (q:Q)} written under an outer {@code q}
+   * is not a rebinding but the correlation itself, which is exactly what this seeds from.
    */
   private CountOp seededChainOp(final Database db, final SeedCorrelation correlation, final PathPattern pathPattern,
       final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
