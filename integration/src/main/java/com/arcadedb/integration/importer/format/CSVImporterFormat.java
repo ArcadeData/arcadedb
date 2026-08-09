@@ -107,13 +107,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // by default skip the first line as header
       skipEntries = 1l;
 
-    // ownsTransaction (captured before the try below so it's also visible in the catch blocks) is true for a
-    // self-managed database, or for an externally-managed one whenever the caller's own transaction wasn't already
-    // active before this whole import began (see ImporterContext#callerTransactionActiveOnEntry) - as opposed to a
-    // live isTransactionActive() check, which would also be true (incorrectly) after this importer's own schema
-    // auto-creation left a transaction open moments earlier in the same call.
-    final boolean transactionActiveOnEntry = database.isTransactionActive();
-    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
+    // See computeTransactionOwnership() for what these mean and why. Captured before the try below so both are also
+    // visible in the catch blocks (a variable declared inside a try isn't visible in its own catch).
+    final TransactionOwnership ownership = computeTransactionOwnership(database, context);
+    final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
+    final boolean ownsTransaction = ownership.ownsTransaction();
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
@@ -245,6 +243,24 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       database.begin();
   }
 
+  /**
+   * {@code transactionActiveOnEntry}: the live transaction state at the point {@code loadDocuments}/{@code
+   * loadVertices} is entered, needed by {@link #beginRowTransaction} to decide whether to begin, reuse, or replace
+   * the currently active transaction. {@code ownsTransaction}: true for a self-managed database (its ambient
+   * transaction is always empty, safe to commandeer regardless of who began it - see
+   * {@code AbstractImporter#openDatabase()}), or for an externally-managed one whenever the caller's own transaction
+   * wasn't already active before this whole import began (see {@link ImporterContext#callerTransactionActiveOnEntry}
+   * for why that, not a live check, is the correct signal). Captured once here, before either method's own {@code
+   * try} block, so both values are visible in that method's {@code catch} blocks too (a variable declared inside a
+   * {@code try} isn't visible in its own {@code catch}).
+   */
+  private record TransactionOwnership(boolean transactionActiveOnEntry, boolean ownsTransaction) {
+  }
+
+  private TransactionOwnership computeTransactionOwnership(final Database database, final ImporterContext context) {
+    return new TransactionOwnership(database.isTransactionActive(), !context.callerTransactionActiveOnEntry);
+  }
+
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
@@ -296,6 +312,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     final boolean skipOnError = settings.isSkipOnRowError();
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
+    // Assumes loadVertices() runs at most once per Database instance per import - registering this handler again on
+    // a second call would stack handlers and double-count context.errors for the same failure. True of every caller
+    // today (a single Importer run has exactly one vertex source), but would need a guard if that ever changes.
     if (!skipOnError)
       database.async().onError(exception -> {
         LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
@@ -307,10 +326,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (settings.verticesSkipEntries == null)
       skipEntries = 1L;
 
-    // Captured before the try below - see the loadDocuments() comment for why (visibility in the catch blocks) and
-    // for the full ownsTransaction reasoning.
-    final boolean transactionActiveOnEntry = database.isTransactionActive();
-    final boolean ownsTransaction = !context.callerTransactionActiveOnEntry;
+    // See loadDocuments()/computeTransactionOwnership() for what these mean and why.
+    final TransactionOwnership ownership = computeTransactionOwnership(database, context);
+    final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
+    final boolean ownsTransaction = ownership.ownsTransaction();
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {

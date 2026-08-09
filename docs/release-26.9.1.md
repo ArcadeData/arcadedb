@@ -298,4 +298,14 @@ over HTTP, since `DatabaseAbstractHandler` wraps a command in its own atomic tra
 from an explicit session or with `autoCommit=false` instead; the CLI importer and the embedding
 `Importer(Database, String)` constructor (with no transaction already open) are unaffected.
 
+**Behavior change in the default (`abort`) path.** CSV vertex imports persist via `database.async()`, and a
+persist-time failure (a missing mandatory property, a unique-index violation, ...) caught only on the async
+worker thread used to be logged at `SEVERE` and otherwise ignored - the import reported success even though
+some vertices silently failed to persist. That failure is now surfaced and aborts the import with an
+`ImportException`, regardless of `-onRowError`. A pipeline that was unknowingly relying on "vertex import
+completes even if a few rows fail validation" will now see that import fail loudly instead. Note this still
+isn't full atomicity for vertices: they persist in `commitEvery`-sized batches, and a persist-time failure
+only rolls back the batch containing the bad record, so earlier batches that already committed stay durable
+even though the import as a whole reports failure.
+
 [#5968](https://github.com/ArcadeData/arcadedb/issues/5968)
