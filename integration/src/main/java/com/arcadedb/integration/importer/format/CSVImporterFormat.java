@@ -142,9 +142,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
-      // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, so a later row's
-      // whole-file rollback simply never merges them in. "skip" mode doesn't use this: each row is counted directly,
-      // gated on its own commit() succeeding.
+      // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, merged in below only
+      // once the whole file has parsed without a mid-loop failure. On failure this is deliberate even when
+      // ownsTransaction is false: rows saved before the failing one are left staged, uncommitted, in the caller's
+      // own still-open transaction (see csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction)
+      // - whether they ultimately become durable is the caller's own commit/rollback decision, not this import's to
+      // report on. "skip" mode doesn't use this: each row is counted directly, gated on its own commit() succeeding.
       long documentsCreatedThisFile = 0;
 
       String[] row;

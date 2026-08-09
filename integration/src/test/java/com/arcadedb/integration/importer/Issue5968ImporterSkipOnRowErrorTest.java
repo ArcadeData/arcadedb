@@ -387,6 +387,11 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
           .hasRootCauseInstanceOf(IllegalArgumentException.class);
 
+      // Deliberate: this failed import's own summary does not credit Alice, even though she is about to survive the
+      // caller's commit() below. Whether Alice ultimately becomes durable is the caller's own decision on a
+      // transaction this import never controlled, not something a FAILED import can vouch for in its own summary.
+      assertThat(importer.getContext().createdDocuments.get()).isEqualTo(0);
+
       // The import failed, but the caller's own transaction - and therefore their pre-existing pending work - must
       // still be there for them to decide what to do with, not silently discarded by the importer's failure handling.
       assertThat(db.isTransactionActive()).isTrue();
@@ -1154,6 +1159,45 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(db.lookupByKey("Node", "Id", 2L).next().getRecord().asVertex().getString("Name")).isEqualTo("Bob");
       assertThat(db.lookupByKey("Node", "Id", 3L).next().getRecord().asVertex().getString("Name")).isEqualTo("Carol");
       assertThat(db.lookupByKey("Node", "Id", 1L).hasNext()).isFalse();
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
+   * Symmetric to {@link #csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor()}
+   * but for default "abort" mode: row 1's failure is a synchronous {@code v.set()} type-conversion error (the
+   * updateDatabaseSchema()-inferred {@code Node.Id} property is LONG, and "notanumber" can't convert), caught by
+   * {@code loadVertices}' per-row {@code catch (RuntimeException)} - the same {@code ownsTransaction} rollback path
+   * added by this PR that previously never existed for vertices at all. Pins down that the auto-created type/index
+   * still survive a synchronous (not just an async persist-time) failure, mirroring the document-side guarantee.
+   */
+  @Test
+  void csvVertexImportAbortsOnFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor() {
+    final String databasePath = "target/databases/test-import-5968-csv-embed-vertex-abort-schema-autocreate";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = "src/test/resources/importer-outofrange-firstrow.csv";
+      importer.settings.vertexTypeName = "Node";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      // The Node type (and its Id index) survive even though the whole import aborts on row 1 - schema mutations
+      // aren't undone by a data-transaction rollback (see the "skip" mode counterpart). Row 1 fails synchronously,
+      // before ever reaching the loop's database.async().createRecord() call, so - unlike a purely async persist-time
+      // failure - rows 2/3 are never even attempted: the loop rethrows straight out on row 1.
+      assertThat(db.getSchema().existsType("Node")).isTrue();
+      assertThat(db.getSchema().getType("Node").existsProperty("Id")).isTrue();
+      assertThat(db.countType("Node", true)).isZero();
     } finally {
       db.drop();
     }
