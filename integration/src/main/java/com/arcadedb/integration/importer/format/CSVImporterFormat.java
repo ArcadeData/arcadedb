@@ -260,6 +260,21 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
+   * A vertex can fail asynchronously (on the {@code database.async()} worker thread) around the same time as a
+   * synchronous or source-level failure on the calling thread - both {@code loadVertices} catch blocks reach here
+   * for their own kind of failure. Already logged at SEVERE and counted in {@code context.errors} either way; this
+   * just makes sure it isn't lost from the exception that actually propagates to the caller too, by attaching it as
+   * a suppressed exception - unless {@code target} already carries it as its own cause (the case where the only
+   * failure was the async one, and {@code target} is the {@code ImportException} constructed for it), which would
+   * otherwise duplicate the same throwable as both {@code Caused by} and {@code Suppressed}.
+   */
+  private void attachConcurrentAsyncError(final Throwable target, final AtomicReference<Throwable> firstAsyncError) {
+    final Throwable asyncError = firstAsyncError.get();
+    if (asyncError != null && !asyncError.equals(target.getCause()) && !asyncError.equals(target))
+      target.addSuppressed(asyncError);
+  }
+
+  /**
    * Begins the transaction the per-row loop below will commit/roll back, reusing one that's already active - except
    * when this method owns the transaction (see {@link ImporterContext#callerTransactionActiveOnEntry}) and one is
    * nonetheless already active, in which case it's committed first, then a fresh one begun. This is the common path
@@ -359,21 +374,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           "-onRowError skip saves vertices synchronously, one at a time: -commitEvery/-parallel have no effect while it's enabled");
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
-    // See ImporterContext#vertexAsyncErrorHandlerRegistered: fails loudly here rather than silently replacing a
-    // handler still watching an earlier, in-flight batch, since that would lose exactly the kind of async error
-    // this feature exists to stop losing.
-    if (!skipOnError) {
-      if (context.vertexAsyncErrorHandlerRegistered)
-        throw new IllegalStateException("loadVertices() called more than once for the same import - would replace "
-            + "the database.async() error handler an earlier, possibly still in-flight call registered");
-      context.vertexAsyncErrorHandlerRegistered = true;
-
+    // database.async().onError() replaces the previous handler rather than stacking. Not a concern in practice:
+    // Importer.load()'s entity-type selection makes settings.url-as-vertex and settings.vertices mutually
+    // exclusive, so loadVertices() runs at most once per Importer.load() call.
+    if (!skipOnError)
       database.async().onError(exception -> {
         LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
         context.errors.incrementAndGet();
         firstAsyncError.compareAndSet(null, exception);
       });
-    }
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
@@ -480,7 +489,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         database.async().waitCompletion();
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
-      throw new ImportException("Error on importing CSV", e);
+      final ImportException importException = new ImportException("Error on importing CSV", e);
+      if (!skipOnError)
+        attachConcurrentAsyncError(importException, firstAsyncError);
+      throw importException;
     } catch (final RuntimeException e) {
       // In "abort" mode, a synchronous per-row failure (as opposed to one caught by the async onError handler
       // above) rethrows straight out of the per-row loop, skipping the waitCompletion()/firstAsyncError check that
@@ -490,15 +502,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // signal to the caller for when they actually finish.
       if (!skipOnError) {
         database.async().waitCompletion();
-        // A different vertex could also have failed asynchronously around the same time as this synchronous
-        // failure; it's already logged at SEVERE and counted in context.errors either way, but attaching it here
-        // too means it isn't lost from the exception that actually reaches the caller. If e is itself the
-        // ImportException thrown below for firstAsyncError (no synchronous failure, only an async one), this adds
-        // the same throwable as both Suppressed and its own Caused by - redundant in the stack trace but harmless.
-        // Throwable doesn't override equals(), so this remains an identity check.
-        final Throwable asyncError = firstAsyncError.get();
-        if (asyncError != null && !asyncError.equals(e))
-          e.addSuppressed(asyncError);
+        attachConcurrentAsyncError(e, firstAsyncError);
       }
       // Same reasoning as loadDocuments(): roll back before rethrowing only if we own the transaction.
       if (ownsTransaction && database.isTransactionActive())

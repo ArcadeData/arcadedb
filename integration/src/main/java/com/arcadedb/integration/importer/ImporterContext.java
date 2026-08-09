@@ -48,16 +48,6 @@ public class ImporterContext {
    * time a format's {@code load()} runs, so this is unconditionally false for one and taking it over is always safe.
    */
   public       boolean       callerTransactionActiveOnEntry;
-  /**
-   * Set by {@code CSVImporterFormat#loadVertices} the first time it registers its {@code database.async().onError()}
-   * handler in default "abort" mode. That registration replaces any previous handler rather than stacking, so a
-   * second registration on the same {@code Database} would silently drop an earlier, still-in-flight batch's error
-   * instead of surfacing it - exactly the "async failure gets lost" bug class this feature fixes elsewhere. Reused
-   * across the whole import (not reset between sources) as a defensive check that {@code loadVertices} really does
-   * run at most once per {@link com.arcadedb.integration.importer.Importer#load()} call, an invariant that today is
-   * only enforced by that method's mutually-exclusive entity-type selection, not by anything local to this field.
-   */
-  public       boolean       vertexAsyncErrorHandlerRegistered;
   public       long          startedOn;
   public       long          lastLapOn;
   public       long          lastParsed;

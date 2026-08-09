@@ -520,6 +520,42 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
+   * {@code -onRowError skip} has no effect on a single top-level JSON object (no {@code -mapping} set, so
+   * {@code mapping == null} in {@code JSONImporterFormat.load()}): there is no sibling record to continue with on
+   * failure, so this path skips the {@code callerTransactionActiveOnEntry} guard and error recovery entirely, and
+   * just logs an INFO notice. Locks in that the import still succeeds normally in that case - it's a documented
+   * no-op, not a rejection or a crash.
+   */
+  @Test
+  void jsonDocumentImportSkipModeHasNoEffectOnSingleTopLevelObjectButStillSucceeds() {
+    final String databasePath = "target/databases/test-import-5968-json-single-object-skip";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Document");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-url file://src/test/resources/importer-single-object.json -database " + databasePath
+              + " -onRowError skip").split(" "));
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isNull();
+
+      try (final Database db = databaseFactory.open()) {
+        assertThat(db.countType("Document", true)).isEqualTo(1);
+        assertThat(db.iterateType("Document", true).next().getRecord().asDocument().getString("name")).isEqualTo("Alice");
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
+  /**
    * Vertices are queued via {@code database.async().createRecord(...)}, so a violation that only surfaces at persist
    * time on the async worker thread (e.g. a missing mandatory property, as opposed to a synchronous type-conversion
    * error caught inline in the CSV row loop) must still abort the import in the default {@code abort} mode.
