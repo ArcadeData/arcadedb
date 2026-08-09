@@ -100,6 +100,91 @@ class Neo4jImporterIT {
     }
   }
 
+  /**
+   * Regression test for issue #5889: {@code dateTimeISO8601Format} must tolerate fractional seconds,
+   * a zone offset, and a bracketed zone region id - shapes Neo4j actually emits for
+   * {@code OffsetDateTime}/{@code ZonedDateTime} properties - not just the plain
+   * {@code yyyy-MM-dd'T'HH:mm:ss} form. {@code DateTimeFormatter} requires the whole string to match
+   * (unlike the old {@code SimpleDateFormat}, which silently ignored trailing characters), so without
+   * the fix these values fail to parse entirely.
+   */
+  @Test
+  void importNeo4jDateTimeWithFractionalSecondsAndOffset() throws Exception {
+    final File databaseDirectory = new File(DATABASE_PATH);
+
+    try {
+      final String content =
+          "{\"type\":\"node\",\"id\":\"0\",\"labels\":[\"Event\"],\"properties\":{" +
+              "\"withOffset\":\"2015-06-24T12:50:35.556+01:00\"," +
+              "\"withZoneRegion\":\"2015-06-24T12:50:35.556+01:00[Europe/London]\"," +
+              "\"withFractionOnly\":\"2015-06-24T12:50:35.556\"}}\n";
+
+      final ByteArrayInputStream is = new ByteArrayInputStream(content.getBytes());
+      final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o").split(" "));
+      importer.run();
+
+      assertThat(importer.isError()).isFalse();
+
+      try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+        try (final Database database = factory.open()) {
+          final Vertex event = database.lookupByKey("Event", "id", "0").next().asVertex();
+
+          // The offset is explicit, so the resulting instant is deterministic regardless of the JVM's default zone.
+          assertThat(event.getLong("withOffset")).isEqualTo(1435146635556L);
+
+          // ZonedDateTime's bracketed region id must not break the whole-string match; the numeric
+          // offset it accompanies already pins the same instant as the offset-only case above.
+          assertThat(event.getLong("withZoneRegion")).isEqualTo(1435146635556L);
+
+          // No offset: resolved against the JVM default zone, like the pre-fix behavior for naive values,
+          // but the .556 fractional part must survive instead of being silently truncated.
+          assertThat(event.getLong("withFractionOnly") % 1000).isEqualTo(556L);
+        }
+      }
+      TestHelper.checkActiveDatabases();
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
+  /**
+   * Regression test for issue #5889: once a property is classified {@code DATETIME} from its first
+   * occurrence, a later record with an unparseable value for that same property must not abort the
+   * import or throw. {@code setProperties()} should catch {@code DateTimeParseException}, log it,
+   * count it as an import error, and leave the value as the original string.
+   */
+  @Test
+  void importNeo4jInvalidDateTimeAfterValidClassification() throws Exception {
+    final File databaseDirectory = new File(DATABASE_PATH);
+
+    try {
+      final String content =
+          "{\"type\":\"node\",\"id\":\"0\",\"labels\":[\"Event\"],\"properties\":{\"occurredAt\":\"2015-07-04T19:32:24\"}}\n" +
+              "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Event\"],\"properties\":{\"occurredAt\":\"not-a-date\"}}\n";
+
+      final ByteArrayInputStream is = new ByteArrayInputStream(content.getBytes());
+      final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o").split(" "));
+      importer.run();
+
+      assertThat(importer.isError()).isFalse();
+
+      try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+        try (final Database database = factory.open()) {
+          final Vertex validEvent = database.lookupByKey("Event", "id", "0").next().asVertex();
+          assertThat(validEvent.getLong("occurredAt")).isNotNull();
+
+          // The property was already classified DATETIME from record "0"; the unparseable value here
+          // must be left untouched as a string rather than throwing or corrupting the import.
+          final Vertex invalidEvent = database.lookupByKey("Event", "id", "1").next().asVertex();
+          assertThat(invalidEvent.get("occurredAt")).isEqualTo("not-a-date");
+        }
+      }
+      TestHelper.checkActiveDatabases();
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
   @Test
   void importNoFile() throws Exception {
     final URL inputFile = Neo4jImporterIT.class.getClassLoader().getResource("neo4j-export-mini.jsonl");

@@ -22,16 +22,17 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.utility.DateUtils;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 public abstract class AbstractExporterFormat {
-  protected final        ExporterSettings settings;
-  protected final        ExporterContext  context;
-  protected final        DatabaseInternal database;
-  protected final        ConsoleLogger    logger;
-  protected static final DateFormat       dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+  protected final        ExporterSettings  settings;
+  protected final        ExporterContext   context;
+  protected final        DatabaseInternal  database;
+  protected final        ConsoleLogger     logger;
+  protected static final DateTimeFormatter dateFormat = DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneId.systemDefault());
 
   protected AbstractExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
     this.database = database;
