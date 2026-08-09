@@ -110,6 +110,16 @@ public class SnapshotHttpHandler implements HttpHandler {
     this.httpServer = httpServer;
   }
 
+  /**
+   * Shuts down the stall watchdog scheduler. Called by {@link RaftHAPlugin#stopService()} so that
+   * a server stop/restart cycle within one JVM does not leak the watchdog thread (issue #5890): a
+   * fresh {@code SnapshotHttpHandler} (and watchdog) is otherwise created on every restart while the
+   * previous one is left running.
+   */
+  public void close() {
+    watchdogExecutor.shutdownNow();
+  }
+
   @Override
   public void handleRequest(final HttpServerExchange exchange) throws Exception {
     if (exchange.isInIoThread()) {

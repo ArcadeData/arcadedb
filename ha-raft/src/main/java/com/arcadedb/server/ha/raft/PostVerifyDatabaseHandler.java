@@ -58,8 +58,9 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   private final RaftHAPlugin    plugin;
   /**
    * Dedicated pool for fanning peer verify calls out in parallel. Cached (threads idle out after
-   * 60 s by default) so a rarely-invoked endpoint does not keep N idle threads around, daemon so
-   * the JVM can shut down without an explicit close on this handler.
+   * 60 s by default) so a rarely-invoked endpoint does not keep N idle threads around; daemon so a
+   * process exit is never blocked on it. {@link #close()} shuts it down explicitly on a plugin
+   * stop/restart within one JVM, where daemon-ness alone would not prevent a leak (issue #5890).
    */
   private final ExecutorService peerQueryExecutor;
 
@@ -72,6 +73,16 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       t.setDaemon(true);
       return t;
     });
+  }
+
+  /**
+   * Shuts down the peer-query pool. Called by {@link RaftHAPlugin#stopService()} so that a server
+   * stop/restart cycle within one JVM does not leak the pool (issue #5890): a fresh
+   * {@code PostVerifyDatabaseHandler} (and pool) is otherwise created on every restart while the
+   * previous one, and any in-flight peer queries on it, are left running.
+   */
+  public void close() {
+    peerQueryExecutor.shutdownNow();
   }
 
   @Override
