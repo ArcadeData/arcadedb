@@ -111,4 +111,117 @@ class HostUtilEdgeCasesTest {
     assertThat(parts[0]).isEqualTo("2001:db8:85a3:0:0:8a2e:370:7334");
     assertThat(parts[1]).isEqualTo(HostUtil.CLIENT_DEFAULT_PORT);
   }
+
+  // -- Malformed inputs that used to be silently accepted (issue #5891) --
+
+  @Test
+  void trailingColonIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("host:", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void doubleTrailingColonIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("host::", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void emptyHostBeforeColonIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress(":2480", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void bracketedIPv6EmptyPortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[::1]:", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void bracketedIPv6DoubleColonPortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[::1]::2480", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void emptyBracketedAddressIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[]", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void strayClosingBracketIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("]", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void nonNumericPortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("host:abc", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void negativePortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("host:-1", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void outOfRangePortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("host:99999999999999", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void portZeroIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("host:0", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void portAboveRangeIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("host:65536", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void validEdgePortsAreAccepted() {
+    assertThat(HostUtil.parseHostAddress("host:1", HostUtil.CLIENT_DEFAULT_PORT)[1]).isEqualTo("1");
+    assertThat(HostUtil.parseHostAddress("host:65535", HostUtil.CLIENT_DEFAULT_PORT)[1]).isEqualTo("65535");
+  }
+
+  @Test
+  void bracketedIPv6NonNumericPortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[::1]:abc", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void bracketedIPv6NegativePortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[::1]:-1", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void embeddedBracketInAddressIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[a[b]:80", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
 }
