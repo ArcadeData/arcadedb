@@ -36,15 +36,8 @@ public class QueryHelper {
    * @param timeoutMillis maximum time allowed for the match, in milliseconds; a value {@code <= 0} disables the
    *                      bound
    */
-  public static boolean like(String currentValue, String value, final long timeoutMillis) {
-    if (currentValue == null || value == null || (currentValue.isEmpty() ^ value.isEmpty()))
-      // EMPTY/NULL PARAMETERS
-      return false;
-    else if (currentValue.isEmpty() && value.isEmpty())
-      return true;
-
-    value = convertForRegExp(value);
-    return TimeBoundRegex.matches(Pattern.compile(value), currentValue, timeoutMillis);
+  public static boolean like(final String currentValue, final String value, final long timeoutMillis) {
+    return likeUntil(currentValue, value, TimeBoundRegex.newDeadline(timeoutMillis));
   }
 
   /**
@@ -55,6 +48,7 @@ public class QueryHelper {
    */
   public static boolean likeUntil(String currentValue, String value, final long deadlineNanos) {
     if (currentValue == null || value == null || (currentValue.isEmpty() ^ value.isEmpty()))
+      // EMPTY/NULL PARAMETERS
       return false;
     else if (currentValue.isEmpty() && value.isEmpty())
       return true;

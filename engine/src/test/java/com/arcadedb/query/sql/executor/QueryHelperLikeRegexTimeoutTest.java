@@ -103,4 +103,37 @@ class QueryHelperLikeRegexTimeoutTest extends TestHelper {
 
     assertThat(elapsedMillis).isLessThan(5000);
   }
+
+  @Test
+  void multiValueLikeSharesOneTimeoutBudgetAcrossItems() {
+    // A multi-value (list) left operand (LikeOperator's BY-ITEM branch, issue #2693) must not multiply the
+    // regex timeout budget by its item count, the same concern MatchesConditionTest#
+    // multiValueMatchesSharesOneTimeoutBudgetAcrossItems proves for MATCHES: each catastrophic item getting
+    // its own full budget would let a crafted 10-item list run for 10 * regexTimeout instead of one
+    // evaluation bounded by regexTimeout overall.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(41);
+    final String item = "'" + pathological + "'";
+    final StringBuilder list = new StringBuilder("[");
+    for (int i = 0; i < 10; i++)
+      list.append(i == 0 ? "" : ", ").append(item);
+    list.append(']');
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE MultiLikePathological");
+      database.command("sql", "INSERT INTO MultiLikePathological SET tags = " + list);
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM MultiLikePathological WHERE tags LIKE '" + PATHOLOGICAL_LIKE_PATTERN + "'");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-item budgets would take >= 2000ms; a shared deadline keeps the whole evaluation
+    // close to the single configured 200ms bound instead. 1000ms leaves generous CI-runner slack on both sides.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
 }

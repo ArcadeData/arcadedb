@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -81,13 +82,14 @@ public class MatchesCondition extends BooleanExpression {
     // context.getDatabase().getConfiguration(), not context.getConfiguration(): the latter is a fresh, disconnected
     // ContextConfiguration for a plain SELECT/=~ evaluation (nothing wires it to the database's settings), so it
     // would silently fall back to the compiled-in default and ignore a per-database override. This mirrors how
-    // SelectExecutionPlanner reads GlobalConfiguration.COMMAND_TIMEOUT. Unlike LikeOperator/ILikeOperator/
-    // TextRegexReplace, this call is intentionally unguarded against a null database: a MatchesCondition is only
-    // ever constructed by the SQL parser and evaluated by the query execution engine, which always binds a
-    // database to the context before any WHERE/RETURN expression runs (see SelectStatement, UpdateStatement,
-    // InsertStatement, ... all calling context.setDatabase(...)) - there is no direct-unit-test-style entry
-    // point into this class the way there is for a standalone SQL function or operator.
-    final long regexTimeout = context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
+    // SelectExecutionPlanner reads GlobalConfiguration.COMMAND_TIMEOUT. A MatchesCondition is, in practice, only
+    // ever constructed by the SQL parser and evaluated with a database already bound to the context (every
+    // top-level statement calls context.setDatabase(...) before any WHERE/RETURN expression runs) - but falling
+    // back to a plain ContextConfiguration when that ever isn't true costs nothing and avoids turning a future
+    // refactor or an unanticipated evaluation path into a hard NPE, same as LikeOperator/ILikeOperator/
+    // TextRegexReplace already do.
+    final long regexTimeout = (context.getDatabase() != null ? context.getDatabase().getConfiguration() : new ContextConfiguration())
+        .getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
     // One shared deadline for the whole evaluation: a multi-value property can hold many items, and each getting
     // its own full regexTimeout budget would let a crafted list bound the loop by N * regexTimeout instead of by
     // regexTimeout overall.

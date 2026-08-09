@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -72,11 +73,12 @@ public class RegexExpression implements BooleanExpression {
 
     // Match against value. context.getDatabase().getConfiguration(), not context.getConfiguration(): see
     // MatchesCondition.matches() for why the latter would silently ignore a per-database override here, and for
-    // why this call is intentionally unguarded against a null database (RegexExpression is likewise only ever
-    // constructed by the openCypher parser and evaluated with a database already bound to the context).
+    // why the database-null fallback below is defense-in-depth rather than a response to a known gap
+    // (RegexExpression is, in practice, only ever constructed by the openCypher parser and evaluated with a
+    // database already bound to the context).
     final String valueStr = value.toString();
-    return TimeBoundRegex.matches(compiledPattern, valueStr,
-        context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+    final ContextConfiguration configuration = context.getDatabase() != null ? context.getDatabase().getConfiguration() : new ContextConfiguration();
+    return TimeBoundRegex.matches(compiledPattern, valueStr, configuration.getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
   }
 
   @Override

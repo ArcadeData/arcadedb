@@ -386,4 +386,14 @@ equivalent of the `LIKE`/wildcard gap above) contains no `(` for that check to c
 unbounded `.matches()` call. Now bounded the same way, with one shared deadline across the whole row scan a
 label matcher runs against - the same N-rows-times-timeout concern as every other multi-item entry point here.
 
+**A sharper edge of the upgrade-behavior tradeoff, worth calling out on its own.** Full-text `RegexpQuery`/
+`WildcardQuery` and PromQL `=~`/`!~` each share one `regexTimeout` budget across an entire scan - every token
+in a full-text index, every row in a time-series range query - not per item, for the reasons above. That is
+correct (per-item budgets reopen the N-times-timeout bypass), but it means a large, *non-catastrophic* scan
+that legitimately takes more than the default 1000ms purely because there is a lot of data - a big full-text
+index, or a wide PromQL time range - now fails with `TimeoutException` where it previously (with
+`arcadedb.command.timeout` disabled by default) ran to completion, however slowly. If a workload does
+legitimate full-text or PromQL regex matching over a large volume of data, raise `arcadedb.command.regexTimeout`
+for that database rather than leaving it at the default.
+
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)
