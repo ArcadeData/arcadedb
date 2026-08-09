@@ -45,8 +45,11 @@ General design principles:
 - Annotate performance/benchmark tests so they're skipped from regular CI builds:
   - Use `@Tag("benchmark")` for pure microbenchmarks (e.g., JMH-style or comparison runs)
   - Use `@Tag("slow")` for functional regression tests that take noticeably long (large batches, multi-second elapsed time, big payloads)
+  - Use `@Tag("vector")` for an LSM vector-index test that spends most of its time waiting on a background rebuild. `LSMVectorIndex.REBUILD_SEMAPHORE` holds one permit for the whole JVM, so these tests convoy against each other and the waits have to be sized for the worst case; the tag routes the class to the `vector-unit-tests` lane where the convoy costs nobody else anything
   - Apply at the class level when every method in the class is slow; at the method level when only some methods are slow
+  - The tags are a partition, not a set of overlapping labels: CI selects each lane with `-Dgroups`/`-DexcludedGroups` such that every test runs in exactly one lane. Tagging a class `vector` and one of its methods `slow` is fine, but do not expect that method in the slow lane
   - Required imports: `import org.junit.jupiter.api.Tag;`
+  - A JUnit tag on a Cucumber `@Suite` does not work: Surefire's `groups`/`excludedGroups` reach the scenarios inside the suite rather than the suite class. Route a suite to a lane with `-Dsurefire.includes` instead, as `.github/workflows/mvn-test.yml` does for the openCypher TCK
 - don't add Claude as author of any source code
 
 ## Build and Development Commands
