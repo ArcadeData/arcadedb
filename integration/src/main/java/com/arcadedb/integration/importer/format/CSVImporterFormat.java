@@ -472,7 +472,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         // ImportException thrown below for firstAsyncError (no synchronous failure, only an async one), this adds
         // the same throwable as both Suppressed and its own Caused by - redundant in the stack trace but harmless.
         final Throwable asyncError = firstAsyncError.get();
-        if (asyncError != null && asyncError != e)
+        // Throwable doesn't override equals(), so this is still an identity check - just spelled the way static
+        // analysis (Codacy/ErrorProne) expects for a non-primitive comparison.
+        if (asyncError != null && !asyncError.equals(e))
           e.addSuppressed(asyncError);
       }
       // Same reasoning as loadDocuments(): roll back before rethrowing only if we own the transaction.
