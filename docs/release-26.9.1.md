@@ -290,7 +290,16 @@ transaction rather than sharing one whole-file transaction, so a bad row's rollb
 already-committed good row down with it, and can never leave a partially-written "ghost" record behind (a
 bucket write whose index entry failed). CSV vertex imports, which normally persist asynchronously in
 batches, switch to a synchronous per-vertex save in this mode for the same reason - an async batch rollback
-would otherwise take down every other vertex queued in the same uncommitted batch.
+would otherwise take down every other vertex queued in the same uncommitted batch. **That per-row commit is
+also the throughput cost of enabling this**: for the whole run, not just around a failing row, `-onRowError
+skip` drops effective batching to one row per transaction. Reserve it for imports where an occasional bad
+row is expected and worth tolerating, not as an always-on default.
+
+Skipped rows are counted in the existing `errors` field of the import summary, alongside any other
+non-fatal issue an import already reports (e.g. a nested JSON conversion failure) - there is no separate
+counter for `-onRowError skip` specifically, so `errors` being nonzero does not by itself distinguish a
+skipped row from another kind of already-logged, non-fatal problem. Check the per-row `WARNING` log lines
+for the specifics.
 
 Because of that per-row ownership, **`-onRowError skip` requires exclusive control of the transaction** and
 is rejected outright if one is already active - including a plain `IMPORT DATABASE ... WITH onRowError=skip`

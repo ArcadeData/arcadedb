@@ -58,6 +58,15 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
+/**
+ * On {@code -onRowError skip} (see {@link ImporterSettings#isSkipOnRowError()}), {@code loadDocuments}/
+ * {@code loadVertices} reuse whatever transaction is already active for each row's own commit/rollback rather than
+ * nesting a new one - safe only because {@code ownsTransaction} (see {@code computeTransactionOwnership}) has
+ * already established that transaction can only be this importer's own, never a caller's. Contrast
+ * {@code JSONImporterFormat}, which always begins a fresh, genuinely nested transaction per record regardless of
+ * what's already active - a different strategy reaching the same safety guarantee, not interchangeable with this
+ * one without also changing the reasoning behind {@code ownsTransaction} itself (see that class's own Javadoc).
+ */
 public class CSVImporterFormat extends AbstractImporterFormat {
   private static final Object[] NO_PARAMS = new Object[] {};
   public static final  int      _32MB     = 32 * 1024 * 1024;
@@ -457,8 +466,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // control to the caller - and, for an externally-managed database, closeDatabase() never drains it either -
       // while earlier rows' async writes are still in flight: uncounted in context.createdVertices, and with no
       // signal to the caller for when they actually finish.
-      if (!skipOnError)
+      if (!skipOnError) {
         database.async().waitCompletion();
+        // A different vertex could also have failed asynchronously around the same time as this synchronous
+        // failure; it's already logged at SEVERE and counted in context.errors either way, but attaching it here
+        // too means it isn't lost from the exception that actually reaches the caller.
+        final Throwable asyncError = firstAsyncError.get();
+        if (asyncError != null && asyncError != e)
+          e.addSuppressed(asyncError);
+      }
       // Same reasoning as loadDocuments(): roll back before rethrowing only if we own the transaction.
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
