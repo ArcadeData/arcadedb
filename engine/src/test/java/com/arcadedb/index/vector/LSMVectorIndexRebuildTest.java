@@ -53,7 +53,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * LSM vector index rebuild semantics: threshold-triggered, inactivity-triggered, async retrigger, metadata preservation, and concurrent rebuild serialization.
+ * <p>
+ * Tagged {@code vector} so the whole class runs in the {@code vector-unit-tests} CI lane. What earns the tag is not the average cost but the spread:
+ * measured on one commit, this class took 19 s in a green unit-test run and 626 s in a run that then hit the job's 60-minute timeout. Almost none of
+ * either figure is compute. {@link com.arcadedb.index.vector.LSMVectorIndex}'s {@code REBUILD_SEMAPHORE} has one permit for the entire JVM, so every
+ * vector class sharing a Surefire fork queues behind every other one - including a rebuild left over from an already-finished class - and the waits
+ * below then have to be sized for that worst case. A lane of its own keeps the convoy off the other ~1300 engine test classes. It does not fix the
+ * convoy, which is still here; making the permit count configurable, or scoping it per database, would.
  */
+@Tag("vector")
 class LSMVectorIndexRebuildTest extends TestHelper {
 
   private static final int EMBEDDING_DIM = 32;

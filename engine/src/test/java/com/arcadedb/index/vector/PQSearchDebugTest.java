@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -38,9 +39,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The root cause was FusedPQ approximate scoring producing incorrect results when PQ codes
  * were persisted through ArcadeDB's page-based storage, causing beam search to not expand
  * beyond the entry node.
+ * <p>
+ * Tagged {@code vector} so it runs in the {@code vector-unit-tests} CI lane. Unlike its siblings in that lane this one is steady rather than bimodal,
+ * at 408-431 s across runs, because each of the two tests genuinely builds a 10,000 x 128 PQ-quantized index. The dataset is far larger than the defect
+ * needs - the bug is about PQ codes surviving a reopen, not about scale - so shrinking {@link #NUM_VECTORS} is the obvious follow-up, and is
+ * deliberately not bundled with this lane split.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("vector")
 class PQSearchDebugTest {
   private static final String DB_PATH = "target/test-databases/PQSearchDebugTest";
   private static final int NUM_VECTORS = 10_000;

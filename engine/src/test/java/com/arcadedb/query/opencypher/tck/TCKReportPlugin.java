@@ -28,12 +28,28 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URI;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Cucumber plugin that generates a summary compliance report for the OpenCypher TCK.
+ * <p>
+ * Writes two files next to each other under {@code target/}, both consumed by the {@code opencypher-tck-tests} CI job:
+ * <ul>
+ *   <li>{@code tck-compliance-report.txt} - the fixed-width form, also echoed to stdout so it is readable in a raw build log;</li>
+ *   <li>{@code tck-compliance-report.md} - the same numbers as markdown, appended to {@code $GITHUB_STEP_SUMMARY} so conformance renders on the job
+ *       page without anyone downloading an artifact.</li>
+ * </ul>
+ * The markdown form leads with the categories that are not at 100%, because that is the question a compliance report exists to answer, and keeps the
+ * full list behind a {@code <details>} block so the summary stays short. Category order inside each table is stable (worst rate first for the gaps,
+ * alphabetical for the full list) so two runs can be diffed against each other.
+ * <p>
+ * Percentages are reported to one decimal here and as integers in the text form. Integer truncation is misleading at this scale: 3812 of 3897 is 97.8%,
+ * which the text form has always rendered as "97%".
  */
 public class TCKReportPlugin implements ConcurrentEventListener {
 
@@ -108,11 +124,57 @@ public class TCKReportPlugin implements ConcurrentEventListener {
 
     System.out.println(sb);
 
-    // Write report to file
-    try (final PrintWriter writer = new PrintWriter(new FileWriter("target/tck-compliance-report.txt"))) {
-      writer.print(sb);
+    write("target/tck-compliance-report.txt", sb.toString());
+    write("target/tck-compliance-report.md", buildMarkdownReport(total, pass, fail, skip));
+  }
+
+  private String buildMarkdownReport(final int total, final int pass, final int fail, final int skip) {
+    final StringBuilder md = new StringBuilder();
+
+    md.append("## openCypher TCK compliance\n\n");
+    md.append(String.format(Locale.ROOT, "**%,d of %,d scenarios passed (%s)** - %,d failed, %,d skipped%n%n", pass, total, percentage(pass, total),
+        fail, skip));
+
+    final List<Map.Entry<String, int[]>> gaps = categoryStats.entrySet().stream().filter(e -> e.getValue()[1] < e.getValue()[0])
+        .sorted(Comparator.<Map.Entry<String, int[]>>comparingDouble(e -> ratio(e.getValue()[1], e.getValue()[0]))
+            .thenComparing(Map.Entry::getKey)).toList();
+
+    if (gaps.isEmpty())
+      md.append("Every category is at 100%.\n\n");
+    else {
+      md.append(String.format(Locale.ROOT, "### Not yet at 100%% (%d of %d categories)%n%n", gaps.size(), categoryStats.size()));
+      appendTable(md, gaps);
+      md.append("\n");
+    }
+
+    md.append("<details>\n<summary>All ").append(categoryStats.size()).append(" categories</summary>\n\n");
+    appendTable(md, categoryStats.entrySet().stream().sorted(Map.Entry.comparingByKey()).toList());
+    md.append("\n</details>\n");
+
+    return md.toString();
+  }
+
+  private void appendTable(final StringBuilder md, final List<Map.Entry<String, int[]>> rows) {
+    md.append("| Category | Passed | Total | Rate |\n|---|---:|---:|---:|\n");
+    for (final Map.Entry<String, int[]> entry : rows) {
+      final int[] s = entry.getValue();
+      md.append(String.format(Locale.ROOT, "| `%s` | %,d | %,d | %s |%n", entry.getKey(), s[1], s[0], percentage(s[1], s[0])));
+    }
+  }
+
+  private static String percentage(final int part, final int whole) {
+    return String.format(Locale.ROOT, "%.1f%%", ratio(part, whole) * 100.0);
+  }
+
+  private static double ratio(final int part, final int whole) {
+    return whole > 0 ? (double) part / whole : 0.0;
+  }
+
+  private static void write(final String path, final String content) {
+    try (final PrintWriter writer = new PrintWriter(new FileWriter(path))) {
+      writer.print(content);
     } catch (final IOException e) {
-      System.err.println("Failed to write TCK report: " + e.getMessage());
+      System.err.println("Failed to write TCK report '" + path + "': " + e.getMessage());
     }
   }
 

@@ -56,7 +56,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * LSM vector index recovery, reopen, restore, and tombstone parsing regression tests.
+ * <p>
+ * Tagged {@code vector} so the whole class runs in the {@code vector-unit-tests} CI lane. Same spread as its sibling: 10 s in a green unit-test run and
+ * 607 s in the run that timed out, on the same commit. See {@link LSMVectorIndexRebuildTest} for why the vector classes are slow as a group rather than
+ * individually, and why the tag treats that as a property of the group.
  */
+@Tag("vector")
 class LSMVectorIndexRecoveryTest extends TestHelper {
 
   private static final int EMBEDDING_DIM = 32;
