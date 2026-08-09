@@ -152,6 +152,93 @@ class Issue5966BetweenUsesIndexTest {
     });
   }
 
+  // #5966: NOT BETWEEN must still return correct results after this change. NotBlock does not override
+  // isIndexAware(), so it correctly keeps falling back to the pre-existing bucket-scan path (no index-range
+  // support was added for NOT BETWEEN by this fix) - what matters here is that the row-level evaluation of the
+  // wrapped BetweenCondition itself is unaffected by the new isIndexAware()/resolveKeyFrom() wiring.
+  @Test
+  void notBetweenOnIndexedColumnStillReturnsCorrectResults() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V");
+      database.command("sql", "CREATE PROPERTY V.n INTEGER");
+      database.command("sql", "CREATE INDEX ON V (n) NOTUNIQUE");
+      database.command("sql", "INSERT INTO V SET n = 10");
+      database.command("sql", "INSERT INTO V SET n = 20");
+      database.command("sql", "INSERT INTO V SET n = 30");
+    });
+
+    database.transaction(() -> {
+      final List<Integer> result = collectN(database.query("sql", "SELECT n FROM V WHERE n NOT BETWEEN 15 AND 25"));
+      result.sort(Integer::compareTo);
+      assertThat(result).containsExactly(10, 30);
+    });
+  }
+
+  // #5966: BETWEEN on a case-insensitive (COLLATE CI) indexed STRING column must use the index and apply the
+  // range comparison after case-folding, exercising the shared convertKeys()/convertKeysToDeclaredTypes() path
+  // (both the insert-side fold and the query-side bound fold this PR's LSMTreeIndex.convertKeys dedupe touches).
+  @Test
+  void betweenOnCaseInsensitiveIndexedColumnUsesIndexAndFolds() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Product");
+      database.command("sql", "CREATE PROPERTY Product.name STRING");
+      database.command("sql", "CREATE INDEX ON Product (name COLLATE CI) NOTUNIQUE");
+
+      database.command("sql", "INSERT INTO Product SET name = 'Apple'");
+      database.command("sql", "INSERT INTO Product SET name = 'BANANA'");
+      database.command("sql", "INSERT INTO Product SET name = 'cherry'");
+      database.command("sql", "INSERT INTO Product SET name = 'Watermelon'");
+    });
+
+    database.transaction(() -> {
+      final String planString = plan("EXPLAIN SELECT name FROM Product WHERE name BETWEEN 'a' AND 'c'");
+      assertThat(planString).contains("FETCH FROM INDEX");
+
+      final List<String> names = new ArrayList<>();
+      final ResultSet rs = database.query("sql", "SELECT name FROM Product WHERE name BETWEEN 'a' AND 'c'");
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+
+      // case-insensitively, "apple" and "banana" fall in ['a'..'c'], "cherry" and "watermelon" do not
+      assertThat(names).containsExactlyInAnyOrder("Apple", "BANANA");
+    });
+  }
+
+  // #5966: BETWEEN as the FIRST field of a composite UNIQUE index, followed by a further equality field, must
+  // also stop key-building at the range field and return correct results. UNIQUE inserts go through
+  // LSMTreeIndex.convertKeys() for the constraint check, so this also exercises the refactored delegate on the
+  // insert side, not just the query side covered by the other tests in this class.
+  @Test
+  void betweenAsFirstFieldOfCompositeUniqueIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE U");
+      database.command("sql", "CREATE PROPERTY U.a INTEGER");
+      database.command("sql", "CREATE PROPERTY U.b INTEGER");
+      database.command("sql", "CREATE INDEX ON U (a, b) UNIQUE");
+
+      for (int a = 0; a < 30; a++)
+        for (int b = 0; b < 3; b++)
+          database.command("sql", "INSERT INTO U SET a = ?, b = ?", a, b);
+    });
+
+    database.transaction(() -> {
+      final String planString = plan("EXPLAIN SELECT a, b FROM U WHERE a BETWEEN 10 AND 20 AND b = 1");
+      assertThat(planString).contains("FETCH FROM INDEX U[a,b]");
+      assertThat(planString).contains("a BETWEEN 10 AND 20");
+
+      final ResultSet rs = database.query("sql", "SELECT a, b FROM U WHERE a BETWEEN 10 AND 20 AND b = 1");
+      int count = 0;
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        assertThat((Integer) r.getProperty("a")).isBetween(10, 20);
+        assertThat((Integer) r.getProperty("b")).isEqualTo(1);
+        count++;
+      }
+      // a in [10..20] inclusive -> 11 values, one row each for b = 1
+      assertThat(count).isEqualTo(11);
+    });
+  }
+
   private static List<Integer> collectN(final ResultSet rs) {
     final List<Integer> result = new ArrayList<>();
     while (rs.hasNext())
