@@ -232,6 +232,24 @@ public class DatabaseChecker {
     // no record corruption pointed at their bucket.
     affectedIndexes.addAll(corruptMetadataIndexes);
 
+    // A MANUAL index is reported but never rebuilt. It is bound to no type and no bucket, so there is no record to
+    // regenerate its entries from - they are the only copy - and the drop-and-recreate below would destroy them. It
+    // cannot even be attempted: with no associated bucket the very first line of the loop resolved bucket id -1 and
+    // raised "Bucket with id '-1' was not found", aborting the whole FIX before ANY index was repaired (issue #5780).
+    // The finding still reaches the operator through corruptedIndexes/warnings, which is all this pass can honestly
+    // do about it.
+    //
+    // Filtered here rather than inside the `if (fix)` loop below so that rebuiltIndexes, which is reported in BOTH
+    // modes, does not name an index no run would ever rebuild. The message is therefore phrased for both: it states
+    // what this check does not cover, not what a repair attempt failed to do.
+    affectedIndexes.removeIf(index -> {
+      if (index.isAutomatic())
+        return false;
+      addWarning("index '" + index.getName() + "': it is a manual index. Its entries are not derived from any record, "
+          + "so this check does not rebuild it - drop it and repopulate it to clear this finding");
+      return true;
+    });
+
     final Set<String> rebuildIndexes = affectedIndexes.stream().map(x -> x.getName()).collect(Collectors.toSet());
     result.put("rebuiltIndexes", rebuildIndexes);
 

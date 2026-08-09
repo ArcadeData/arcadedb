@@ -1959,12 +1959,29 @@ public class LocalSchema implements Schema {
           if (index.getTypeName() == null) {
             final String indexName = index.getName();
 
+            // A type-less index is USUALLY a bucket sub-index whose schema entry could not be matched by name, and
+            // those are always named "<bucketName>_<timestamp>". A MANUAL index is type-less too and is named by the
+            // caller, so it can carry no underscore at all - and lastIndexOf then returned -1, making this substring
+            // raise StringIndexOutOfBoundsException. That exception escaped into this method's own catch, reported as
+            // "Error on loading schema. The schema will be reset". The types are already parsed by this point and
+            // survive, which is what hid it: what a database merely CONTAINING such an index silently lost on every
+            // open was everything the loader had not reached yet - the bucket selection strategies, the triggers, the
+            // materialized views and continuous aggregates, the function libraries, the extensions, and the
+            // compaction file-migration map WAL recovery redirects through (issue #5780). Nothing to relink here.
             final int pos = indexName.lastIndexOf("_");
+            if (pos < 1)
+              continue;
+
             final String bucketName = indexName.substring(0, pos);
             final Bucket bucket = bucketMap.get(bucketName);
             if (bucket != null) {
               for (final Map.Entry<String, JSONObject> entry : orphanIndexes.entrySet()) {
+                // Same guard as above, for the same reason: these keys are persisted schema entries, so a hand-edited
+                // or restored schema.json is enough to put a name with no underscore here.
                 final int pos2 = entry.getKey().lastIndexOf("_");
+                if (pos2 < 1)
+                  continue;
+
                 final String bucketNameIndex = entry.getKey().substring(0, pos2);
 
                 if (bucketName.equals(bucketNameIndex)) {

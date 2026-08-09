@@ -534,7 +534,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public boolean isAutomatic() {
-    return metadata.propertyNames != null;
+    return metadata.hasIndexedProperties();
   }
 
   @Override
