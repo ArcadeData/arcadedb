@@ -239,6 +239,45 @@ class Issue5966BetweenUsesIndexTest {
     });
   }
 
+  // #5966: an OR across two separately-indexed fields, one of them a BETWEEN, must fetch each branch from its
+  // own index (via IndexSearchDescriptor.requiresDistinctStep(), already BetweenCondition-aware from this PR's
+  // first commit) with exactly one top-level DISTINCT to dedupe the merged branches - not one redundant DISTINCT
+  // per branch - and must still return the correct union of rows.
+  @Test
+  void orAcrossTwoIndexesWithBetweenBranchMergesWithoutRedundantDistinct() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE X");
+      database.command("sql", "CREATE PROPERTY X.a INTEGER");
+      database.command("sql", "CREATE PROPERTY X.b INTEGER");
+      database.command("sql", "CREATE INDEX ON X (a) NOTUNIQUE");
+      database.command("sql", "CREATE INDEX ON X (b) NOTUNIQUE");
+      for (int i = 0; i < 30; i++)
+        database.command("sql", "INSERT INTO X SET a = ?, b = ?", i, i);
+    });
+
+    database.transaction(() -> {
+      final String planString = plan("EXPLAIN SELECT a, b FROM X WHERE a = 1 OR b BETWEEN 10 AND 20");
+      assertThat(planString).contains("FETCH FROM INDEX X[a]").contains("FETCH FROM INDEX X[b]");
+      // exactly one DISTINCT merging the two branches, none chained inside either branch
+      assertThat(planString.split("DISTINCT", -1).length - 1).isEqualTo(1);
+
+      final List<Integer> aValues = new ArrayList<>();
+      final ResultSet rs = database.query("sql", "SELECT a, b FROM X WHERE a = 1 OR b BETWEEN 10 AND 20");
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        if (r.getProperty("a") != null)
+          aValues.add(r.getProperty("a"));
+      }
+      aValues.sort(Integer::compareTo);
+      // a = 1 (from the equality branch) plus a in [10..20] (from the BETWEEN branch, since a = b here)
+      final List<Integer> expected = new ArrayList<>();
+      expected.add(1);
+      for (int i = 10; i <= 20; i++)
+        expected.add(i);
+      assertThat(aValues).isEqualTo(expected);
+    });
+  }
+
   private static List<Integer> collectN(final ResultSet rs) {
     final List<Integer> result = new ArrayList<>();
     while (rs.hasNext())
