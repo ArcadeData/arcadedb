@@ -121,6 +121,18 @@ public class PromQLEvaluator {
   }
 
   /**
+   * Overrides the lazily-computed {@link #regexDeadline()} with one already resolved elsewhere (issue #5886,
+   * 17th review pass). {@code SQLFunctionPromQL} constructs a fresh {@code PromQLEvaluator} on every {@code
+   * promql()} call rather than reusing one across a query, so without this, each call would fall back to its
+   * own {@code GlobalConfiguration}-derived budget instead of the {@code CommandContext}-cached deadline every
+   * other per-row SQL function in this issue shares ({@code text.regexReplace()}, {@code .normalize()}).
+   * Must be called before the first regex-bearing evaluation on this instance to have any effect.
+   */
+  public void setRegexDeadline(final long regexDeadline) {
+    this.regexDeadline = regexDeadline;
+  }
+
+  /**
    * Evaluate an instant query at a single timestamp.
    */
   public PromQLResult evaluateInstant(final PromQLExpr expr, final long evalTimeMs) {

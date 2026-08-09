@@ -344,6 +344,58 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
+  void setRegexDeadlineOverridesTheLazilyComputedDefault() {
+    // Issue #5886, 17th review pass: SQLFunctionPromQL creates a fresh PromQLEvaluator per promql() call (never
+    // reused across executions the way rangeQuerySharesOneTimeoutBudgetAcrossAllSteps above relies on), so
+    // without a way to inject an externally-resolved deadline it would always fall back to its own
+    // GlobalConfiguration-derived budget rather than the CommandContext-cached one every other per-row SQL
+    // function in this issue shares. Verify setRegexDeadline() is actually honored - not silently ignored - by
+    // forcing an already-elapsed deadline and confirming it aborts an otherwise-trivial, non-catastrophic match
+    // that would normally complete instantly. The host value must be long enough to force more than
+    // TimeBoundRegex's CHECK_INTERVAL (256) charAt() calls - too short an input completes before the first
+    // deadline checkpoint is ever reached, regardless of whether the deadline is already expired.
+    final String typeName = "promql_setregexdeadline_metric";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String longHost = "a".repeat(256); // tag dictionary caps values at 256 bytes
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 1000, host = '" + longHost + "', value = 1.0"));
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    evaluator.setRegexDeadline(System.nanoTime() - 1_000_000_000L); // 1s in the past: already expired
+
+    final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"a*\"}").parse();
+
+    assertThatThrownBy(() -> evaluator.evaluateInstant(expr, 6000L)).isInstanceOf(TimeoutException.class);
+  }
+
+  @Test
+  void promQLSqlFunctionAbortsOnCatastrophicPattern() {
+    // End-to-end coverage for the promql() SQL function path specifically (as opposed to calling
+    // PromQLEvaluator.evaluateInstant directly, as unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout
+    // above does) - proves the context.getOrComputeRegexDeadline() -> evaluator.setRegexDeadline() wiring in
+    // SQLFunctionPromQL actually bounds a catastrophic =~ label matcher reached through SELECT promql(...).
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String typeName = "promql_function_redos";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String pathologicalHost = "a".repeat(40); // no trailing 'c': forces exhaustive backtrack-then-fail
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 0, host = '" + pathologicalHost + "', value = 1.0"));
+
+    final String wildcardPattern = "a*".repeat(20) + "c";
+    final String promqlExpr = typeName + "{host=~\"" + wildcardPattern + "\"}";
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> database.command("sql", "RETURN promql('" + promqlExpr + "', 6000)").close())
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the call was aborted near the configured deadline rather than merely being
+    // slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
+  }
+
+  @Test
   void promQLSqlFunctionUsesCurrentTimeWhenNoArgument() {
     createTypeAndInsertData("promql_sql_notime_test");
 
