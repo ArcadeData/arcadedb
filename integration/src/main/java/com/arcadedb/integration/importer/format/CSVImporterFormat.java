@@ -557,6 +557,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null,
             expectedVertices, expectedEdges);
 
+    // Edges already skip-and-log unconditionally regardless of -onRowError (see the reasoning further down in this
+    // method), so explicitly setting -onRowError skip here has no visible effect - worth a one-time notice, the same
+    // way JSONImporterFormat.load() calls out the equivalent no-op on a single top-level JSON object.
+    if (settings.isSkipOnRowError())
+      LogManager.instance().log(this, Level.INFO,
+          "-onRowError skip has no additional effect on edges: an unresolved from/to reference is already skipped and logged unconditionally");
+
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;

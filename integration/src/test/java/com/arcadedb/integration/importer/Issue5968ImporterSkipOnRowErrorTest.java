@@ -205,6 +205,39 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * Edges already skip-and-log unconditionally regardless of {@code -onRowError} (see the class-level reasoning in
+   * {@code CSVImporterFormat}), so setting {@code -onRowError skip} for an edges import is a documented no-op, not a
+   * rejection or a crash - this locks in that the import still succeeds normally and creates the same edges either
+   * way.
+   */
+  @Test
+  void csvEdgeImportSkipModeIsANoOpButStillSucceeds() {
+    final String databasePath = "target/databases/test-import-5968-csv-edge-skip-noop";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Importer verticesImporter = new Importer(
+        ("-vertices src/test/resources/importer-vertices.csv -database " + databasePath
+            + " -typeIdProperty Id -typeIdType Long -typeIdPropertyIsUnique true -forceDatabaseCreate true").split(" "));
+    verticesImporter.load();
+
+    try {
+      final Importer edgesImporter = new Importer(
+          ("-edges src/test/resources/importer-edges.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long -edgeFromField From -edgeToField To -onRowError skip").split(" "));
+      edgesImporter.load();
+
+      try (final Database db = databaseFactory.open()) {
+        assertThat(db.countType("Relationship", true)).isGreaterThan(0);
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
   @Test
   void csvVertexImportSkipsOutOfRangeValueWhenOptedIn() {
     final String databasePath = "target/databases/test-import-5968-csv-skip";
