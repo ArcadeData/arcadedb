@@ -836,12 +836,19 @@ public class GraphEngine {
    * drift the cached bucket count behind {@code count(*)} - persisted in {@code statistics.json}, so it would
    * survive a reopen.
    * <p>
-   * Unlike {@code deleteRecordNoLock} this does NOT tolerate a corrupted record buffer, and does not need to: that
-   * tolerance exists so a record whose body cannot be parsed can still be DELETED, while {@link #moveEdge} has
-   * already had to parse the whole record into {@code propertiesAsMap()} - the source of the replacement's
-   * properties - before it gets here. A buffer that cannot be read fails the move at that point, which is the right
-   * answer: there is nothing to copy the edge's content from. The one buffer read left here,
-   * {@code findExistingExternalRids}, absorbs its own parse failures and counts them for CHECK DATABASE.
+   * Unlike {@code deleteRecordNoLock} this takes no catch around the cleanup, and needs none: by the time it runs,
+   * {@link #moveEdge} has already read the whole record through {@code propertiesAsMap()} - the source of the
+   * replacement's properties - so a buffer broken badly enough to throw has already failed the move there, which
+   * is the right answer for a move (there is nothing to copy the edge's content from) even though it is the wrong
+   * one for a delete. The remaining buffer read here, {@code findExistingExternalRids}, absorbs its own parse
+   * failures and counts them for CHECK DATABASE.
+   * <p>
+   * That leaves one BOUNDARY, measured and pinned by
+   * {@code Issue5779MoveEdgeIndexCleanupTest.movingAnEdgeWithAnUnreadablePropertyIsBestEffortLikeTheDeletePath}:
+   * corruption the reader TOLERATES - a bad length prefix on an inline value (#4420) surfaces as the property
+   * being absent, not as an exception. Nothing here can then learn the key the index holds, so that entry outlives
+   * the record. It is not a leak this method can close, and not one it introduces: {@code deleteRecordNoLock}
+   * degrades identically on the same record, and CHECK DATABASE does not detect a dangling LSM entry either.
    */
   private void cleanUpBeforePhysicalDelete(final MutableEdge edge) {
     final RID edgeRID = edge.getIdentity();
@@ -889,10 +896,14 @@ public class GraphEngine {
    *   index has left behind;</li>
    *   <li>otherwise an immutable record over that frozen buffer, which is exactly the committed state the index
    *   entries were written from;</li>
-   *   <li>otherwise the live instance, for a record with no committed buffer to read at all - one created inside
-   *   this transaction, and equally one saved with {@code discardRecordAfter} (the bulk-import path through
-   *   {@code LocalBucket.createRecord}), which drops the buffer although the record is persisted. There is no
-   *   better image available in either case, and it is the same one the ordinary delete path uses.</li>
+   *   <li>otherwise the live instance, DEFENSIVE and not currently reachable from here. It would cover a record
+   *   with no committed buffer at all - one saved with {@code discardRecordAfter} (the bulk-import path through
+   *   {@code LocalBucket.createRecord}) drops the buffer although the record is persisted. Not the obvious
+   *   candidate, an edge created earlier in this same transaction: {@code newEdge()} saves it, and the save
+   *   serializes, so it reaches {@link #moveEdge} with a buffer like any other (verified by making this branch
+   *   throw and watching the whole test class still pass). Kept because the alternative on a null buffer is what
+   *   {@code LocalDatabase.getOriginalDocument} does - raise {@code IllegalStateException} - and failing a move
+   *   over a missing pre-image is worse than cleaning up from the only image there is.</li>
    * </ol>
    */
   private Document indexedImageOf(final MutableEdge edge) {

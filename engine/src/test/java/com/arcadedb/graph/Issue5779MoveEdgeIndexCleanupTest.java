@@ -19,7 +19,12 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.Result;
@@ -30,6 +35,7 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -56,7 +62,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class Issue5779MoveEdgeIndexCleanupTest extends TestHelper {
 
-  private static final int BUCKETS = 4;
+  private static final int    BUCKETS         = 4;
+  /** Long enough to be found verbatim in the page, and distinctive enough not to collide with anything else. */
+  private static final String CORRUPT_MARKER  = "CORRUPT5779MARKERVALUE";
 
   /**
    * The leak itself, on a NOTUNIQUE index: after the move the index must hold exactly one entry for the edge's key,
@@ -240,6 +248,86 @@ class Issue5779MoveEdgeIndexCleanupTest extends TestHelper {
   }
 
   /**
+   * A move of an edge CREATED in the same transaction, with its indexed property changed in between - the sequence
+   * that looks like it should reach {@code indexedImageOf}'s buffer-less fallback and does not: {@code newEdge()}
+   * saves the edge, the save serializes, so it arrives with a committed buffer like any other record and the
+   * ordinary pre-image path handles it. Worth pinning precisely because the intuition points the other way.
+   */
+  @Test
+  void movingAnEdgeCreatedInTheSameTransactionUsesItsCommittedPreImage() {
+    createSchema(false);
+
+    final RID[] moved = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex near = database.newVertex("Node").set("name", "near").save();
+      final MutableVertex far0 = database.newVertex("Node").set("name", "far0").save();
+      final MutableVertex far = database.newVertex("Node").set("name", "far").save();
+      final MutableEdge edge = near.newEdge("Link", far0, "code", "E1");
+      edge.set("code", "E2");
+      edge.set("@in", far.getIdentity());
+      moved[0] = edge.getIdentity();
+    });
+
+    final Index index = database.getSchema().getIndexByName("Link[code]");
+    assertThat(index.countEntries()).as("one edge, one entry - no entry left over from the create").isEqualTo(1L);
+    assertThat(lookup(index, "E2")).containsExactly(moved[0]);
+    assertThat(lookup(index, "E1")).isEmpty();
+    assertThat(scalar("select count() as n from Link")).isEqualTo(1L);
+    assertThat(database.countType("Link", false)).isEqualTo(1L);
+
+    assertIntegrityClean();
+  }
+
+  /**
+   * The BOUNDARY of the guarantee, measured rather than assumed, because it is the one case where
+   * {@code cleanUpBeforePhysicalDelete} cannot deliver: an indexed property whose value cannot be deserialized.
+   * <p>
+   * This fixture uses the #4420 shape - a corrupt length prefix on an inline STRING. The reader TOLERATES it by
+   * reporting the value as ABSENT rather than throwing (see {@code Issue4420TolerantDeleteTest}), so nothing here
+   * can learn the key the index actually holds, and the entry for the deleted record survives. That is not a
+   * regression this fix introduces and not one it can close: {@code LocalDatabase.deleteRecordNoLock} degrades
+   * identically on the same record, by design and with a logged warning. CHECK DATABASE does not detect a dangling
+   * LSM entry either ({@code totalErrors} 0, {@code corruptedIndexes} empty), so this test is what records the
+   * boundary instead.
+   * <p>
+   * What the move must still get right, and does: the record is removed, the counter stays truthful, and no key is
+   * fabricated for the replacement.
+   */
+  @Test
+  void movingAnEdgeWithAnUnreadablePropertyIsBestEffortLikeTheDeletePath() {
+    createSchema(false);
+
+    final RID[] rids = createTriangleWithOneEdge(CORRUPT_MARKER);
+    final RID edgeRID = rids[0], farRID = rids[2];
+
+    corruptPropertyLength(edgeRID);
+    // Reopen so the record is re-read from the corrupted page instead of the in-memory record cache. Every RID
+    // captured before this point still names the closed instance, so rebind them to the reopened one.
+    reopenDatabase();
+    final RID staleEdgeRID = RID.create(database, edgeRID.getBucketId(), edgeRID.getPosition());
+    final RID newInRID = RID.create(database, farRID.getBucketId(), farRID.getPosition());
+
+    final Index index = database.getSchema().getIndexByName("Link[code]");
+    final RID movedRID = moveEdgeIn(staleEdgeRID, newInRID);
+
+    database.transaction(
+        () -> assertThat(database.existsRecord(staleEdgeRID)).as("the old record is still removed").isFalse());
+    assertThat(scalar("select count() as n from Link")).as("a move is still not a duplication").isEqualTo(1L);
+    assertThat(database.countType("Link", false))
+        .as("and the counter stays truthful even on the degraded path").isEqualTo(1L);
+    assertThat(movedRID).isNotEqualTo(staleEdgeRID);
+
+    database.transaction(() -> assertThat((Object) movedRID.asEdge().get("code"))
+        .as("the unreadable value cannot be carried over, and must not be invented either").isNull());
+
+    // The boundary itself: the entry keyed by the unreadable value outlives the record. Asserted so that a future
+    // change able to recover the key (or a decision to fail the move instead) shows up here rather than silently.
+    assertThat(lookup(index, CORRUPT_MARKER))
+        .as("unreadable key: the stale entry survives, exactly as it does on the ordinary delete path")
+        .containsExactly(staleEdgeRID);
+  }
+
+  /**
    * {@code cleanUpBeforePhysicalDelete} returns early for a LIGHTWEIGHT edge, because {@code deleteEdge} performs
    * no physical removal for one: there is no index entry, no external value and no counted record, and folding a
    * {@code -1} would drift the cached bucket count the other way and persist that drift to
@@ -346,16 +434,68 @@ class Issue5779MoveEdgeIndexCleanupTest extends TestHelper {
    * {@code [edge, near, far]}.
    */
   private RID[] createTriangleWithOneEdge() {
+    return createTriangleWithOneEdge("E1");
+  }
+
+  private RID[] createTriangleWithOneEdge(final String code) {
     final RID[] rids = new RID[3];
     database.transaction(() -> {
       final MutableVertex near = database.newVertex("Node").set("name", "near").save();
       final MutableVertex far0 = database.newVertex("Node").set("name", "far0").save();
       final MutableVertex far = database.newVertex("Node").set("name", "far").save();
-      rids[0] = near.newEdge("Link", far0, "code", "E1").save().getIdentity();
+      rids[0] = near.newEdge("Link", far0, "code", code).save().getIdentity();
       rids[1] = near.getIdentity();
       rids[2] = far.getIdentity();
     });
     return rids;
+  }
+
+  /**
+   * The #4420 corruption shape, applied to the edge's indexed STRING property: the length-prefix varint of the
+   * inline value is overwritten with one that decodes above {@link Integer#MAX_VALUE}. The record's declared size
+   * in the page record table is left alone, so the record still loads - only deserializing that property fails.
+   * Lifted from {@code Issue4420TolerantDeleteTest}, which pins the same shape on the delete path.
+   */
+  private void corruptPropertyLength(final RID rid) {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final int fileId = rid.getBucketId();
+    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
+    final byte[] marker = CORRUPT_MARKER.getBytes(StandardCharsets.UTF_8);
+
+    final Binary varintBuffer = new Binary();
+    // 4_294_967_245L == (2^32 - 51); cast to int it becomes -51, the exact value reported in issue #4420.
+    varintBuffer.putUnsignedNumber(4_294_967_245L);
+    final byte[] corruptVarint = varintBuffer.toByteArray();
+
+    db.transaction(() -> {
+      try {
+        // Page 0: the fixture puts a single edge in this bucket, so its slot is on the first page.
+        final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, fileId, 0), pageSize, false);
+        final byte[] content = new byte[page.getContentSize()];
+        page.readByteArray(0, content);
+
+        final int markerStart = indexOf(content, marker);
+        assertThat(markerStart).as("marker value must be present inline in the page").isGreaterThan(0);
+
+        // The byte immediately before the inline value is its length varint; overwrite it (and the bytes it now
+        // spans) with the multi-byte corrupt length. The marker is long enough that this stays inside the record.
+        for (int i = 0; i < corruptVarint.length; i++)
+          page.writeByte(markerStart - 1 + i, corruptVarint[i]);
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
+  }
+
+  private static int indexOf(final byte[] haystack, final byte[] needle) {
+    outer:
+    for (int i = 0; i <= haystack.length - needle.length; i++) {
+      for (int j = 0; j < needle.length; j++)
+        if (haystack[i + j] != needle[j])
+          continue outer;
+      return i;
+    }
+    return -1;
   }
 
   /**
