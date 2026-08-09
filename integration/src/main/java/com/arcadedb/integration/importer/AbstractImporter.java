@@ -115,6 +115,9 @@ public abstract class AbstractImporter {
   }
 
   protected void openDatabase() {
+    // Captured here, before anything else in the import runs - see ImporterContext#callerTransactionActiveOnEntry.
+    context.callerTransactionActiveOnEntry = !databaseCreatedDuringImporting && database != null && database.isTransactionActive();
+
     if (database != null && database.isOpen())
       return;
 

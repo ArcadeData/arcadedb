@@ -277,3 +277,52 @@ from raising while the request log line is built. Those guards named the Gson ex
 let escape, so they now cover `JSONException` too and keep answering an envelope rather than the transport's 400.
 
 [#5935](https://github.com/ArcadeData/arcadedb/issues/5935)
+
+## Bulk importer: a single out-of-range or malformed CSV/JSON row no longer has to abort the whole job (#5968)
+
+The CSV/JSON importer aborted an entire bulk import on the first bad row - a single out-of-range numeric
+value, a duplicate key, or a missing mandatory property threw away an otherwise-successful multi-hour load.
+A new opt-in setting, `-onRowError skip` (default remains `abort`, unchanged from today), logs and skips the
+offending row instead, reporting the count of skipped rows in the import summary.
+
+Making this safe required per-row transaction ownership: each row now commits or rolls back its own
+transaction rather than sharing one whole-file transaction, so a bad row's rollback can never take an
+already-committed good row down with it, and can never leave a partially-written "ghost" record behind (a
+bucket write whose index entry failed). CSV vertex imports, which normally persist asynchronously in
+batches, switch to a synchronous per-vertex save in this mode for the same reason - an async batch rollback
+would otherwise take down every other vertex queued in the same uncommitted batch. **That per-row commit is
+also the throughput cost of enabling this**: for the whole run, not just around a failing row, `-onRowError
+skip` drops effective batching to one row per transaction. For vertices the cost is larger still - dropping
+`database.async()` entirely also gives up its worker-thread parallelism, so `-commitEvery`/`-parallel` are
+silently inapplicable to vertices while this is enabled. Reserve it for imports where an occasional bad row
+is expected and worth tolerating, not as an always-on default.
+
+Skipped rows are counted in the existing `errors` field of the import summary, alongside any other
+non-fatal issue an import already reports (e.g. a nested JSON conversion failure) - there is no separate
+counter for `-onRowError skip` specifically, so `errors` being nonzero does not by itself distinguish a
+skipped row from another kind of already-logged, non-fatal problem. Check the per-row `WARNING` log lines
+for the specifics.
+
+Because of that per-row ownership, **`-onRowError skip` requires exclusive control of the transaction** and
+is rejected outright if one is already active - including a plain `IMPORT DATABASE ... WITH onRowError=skip`
+over HTTP, since `DatabaseAbstractHandler` wraps a command in its own atomic transaction by default. Use it
+from an explicit session or with `autoCommit=false` instead; the CLI importer and the embedding
+`Importer(Database, String)` constructor (with no transaction already open) are unaffected.
+
+**Behavior change in the default (`abort`) path.** CSV vertex imports persist via `database.async()`, and a
+persist-time failure (a missing mandatory property, a unique-index violation, ...) caught only on the async
+worker thread used to be logged at `SEVERE` and otherwise ignored - the import reported success even though
+some vertices silently failed to persist. That failure is now surfaced and aborts the import with an
+`ImportException`, regardless of `-onRowError`. A pipeline that was unknowingly relying on "vertex import
+completes even if a few rows fail validation" will now see that import fail loudly instead. Note this still
+isn't full atomicity for vertices: they persist in `commitEvery`-sized batches, and a persist-time failure
+only rolls back the batch containing the bad record, so earlier batches that already committed stay durable
+even though the import as a whole reports failure.
+
+JSON imports have a similar gap, pre-existing rather than introduced here: each top-level record commits in
+its own transaction even in default `abort` mode, so a later record's failure does not roll back earlier
+records that already imported successfully - unlike CSV documents, which use one whole-file transaction and
+so are fully atomic. `abort` mode still fails the import and stops processing further records either way;
+only the "nothing at all was imported" guarantee differs between the two formats.
+
+[#5968](https://github.com/ArcadeData/arcadedb/issues/5968)

@@ -35,6 +35,19 @@ public class ImporterContext {
   public final AtomicLong skippedEdges               = new AtomicLong();
   public final AtomicLong errors                     = new AtomicLong();
   public final AtomicLong warnings                   = new AtomicLong();
+  /**
+   * Set by {@link AbstractImporter#openDatabase()}, before anything else in the import (including schema
+   * auto-creation, which can itself open and leave active a transaction of its own) touches the database's
+   * transaction state: true only when the target {@link com.arcadedb.database.Database} was handed to the importer
+   * already open by the caller (the {@code Importer(Database, String)} embedding constructor, or the
+   * {@code IMPORT DATABASE} SQL statement, which reuses the caller's own {@code Database}) AND a transaction was
+   * already active at that exact point. This is the one reliable signal that an active transaction later observed
+   * by a format's {@code load()} genuinely predates - and so may hold unrelated pending work belonging to - the
+   * caller, as opposed to one this importer's own schema auto-creation opened moments earlier in the same call and
+   * still needs to finish committing itself; a self-opened database's ambient transaction is always empty by the
+   * time a format's {@code load()} runs, so this is unconditionally false for one and taking it over is always safe.
+   */
+  public       boolean       callerTransactionActiveOnEntry;
   public       long          startedOn;
   public       long          lastLapOn;
   public       long          lastParsed;

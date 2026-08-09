@@ -29,6 +29,14 @@ public class Importer extends AbstractImporter {
     super(args);
   }
 
+  /**
+   * Embeds the importer into an already-open {@code database}, which the caller keeps owning (and may keep using)
+   * after {@link #load()} returns. Note: a CSV vertex import in default "abort" mode registers its own
+   * {@code database.async().onError(...)} handler for the duration of the import and does not restore whatever
+   * handler {@code database} had before - there is no getter on {@code DatabaseAsyncExecutor} to read it back (see
+   * {@code CSVImporterFormat.loadVertices}). If the caller had a custom handler of their own registered before
+   * calling {@link #load()}, it is gone afterward.
+   */
   public Importer(final Database database, final String url) {
     super((DatabaseInternal) database);
     settings.url = url;
@@ -65,7 +73,13 @@ public class Importer extends AbstractImporter {
       if (settings.probeOnly)
         return null;
 
-      if (database.isTransactionActive())
+      // Each loadFromSource() call above already commits its own transaction when it owns it (see
+      // CSVImporterFormat's ownsTransaction / JSONImporterFormat's own nesting), so a transaction still active here
+      // for an externally-managed database that genuinely had one active before this import began (see
+      // ImporterContext#callerTransactionActiveOnEntry) means a format deliberately left it open because it belongs
+      // to the caller - committing it here would undo that on the success path the same way an unconditional commit
+      // would on failure.
+      if (!context.callerTransactionActiveOnEntry && database.isTransactionActive())
         database.commit();
 
     } catch (final Exception e) {

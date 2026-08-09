@@ -55,8 +55,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
+/**
+ * On {@code -onRowError skip}, {@code loadDocuments}/{@code loadVertices} reuse whatever transaction is already
+ * active rather than nesting a new one - see {@link ImporterSettings#isSkipOnRowError()} for the full
+ * transaction-ownership contract this and {@code JSONImporterFormat} both satisfy, by different means.
+ */
 public class CSVImporterFormat extends AbstractImporterFormat {
   private static final Object[] NO_PARAMS = new Object[] {};
   public static final  int      _32MB     = 32 * 1024 * 1024;
@@ -84,18 +91,36 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
     final long beginTime = System.currentTimeMillis();
+    // Per-phase summary log below reports only this method's own delta, not the running total.
+    final long errorsBefore = context.errors.get();
+
+    // A syntax-level parseNext() failure (outside the per-row try/catch) still aborts even in "skip" mode: it leaves
+    // the parser's own position tracking compromised, so only row-content failures are skippable.
+    final boolean skipOnError = settings.isSkipOnRowError();
+
+    // "skip" mode commits/rolls back per row, so it must own the transaction outright (see
+    // ImporterSettings#isSkipOnRowError()); callerTransactionActiveOnEntry is the signal for that, not a live
+    // isTransactionActive() check (see its Javadoc).
+    if (skipOnError && context.callerTransactionActiveOnEntry)
+      throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
+      // by default skip the first line as header
       skipEntries = 1l;
+
+    // Captured before the try below so both are also visible in the catch blocks.
+    final TransactionOwnership ownership = computeTransactionOwnership(database, context);
+    final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
+    final boolean ownsTransaction = ownership.ownsTransaction();
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
-      if (!database.isTransactionActive())
-        database.begin();
+      // Unlike loadVertices(), called unconditionally regardless of skipOnError: loadDocuments() needs an active
+      // transaction to save() into in both modes (it never goes through database.async()).
+      beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
 
@@ -117,8 +142,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
-      database.async()
-          .onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting documents", exception));
+      // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, merged in below only
+      // once the whole file has parsed without a mid-loop failure. On failure this is deliberate even when
+      // ownsTransaction is false: rows saved before the failing one are left staged, uncommitted, in the caller's
+      // own still-open transaction (see csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction)
+      // - whether they ultimately become durable is the caller's own commit/rollback decision, not this import's to
+      // report on. "skip" mode doesn't use this: each row is counted directly, gated on its own commit() succeeding.
+      long documentsCreatedThisFile = 0;
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -128,23 +158,51 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           // SKIP IT
           continue;
 
-        final MutableDocument document = database.newDocument(settings.documentTypeName);
+        try {
+          final MutableDocument document = database.newDocument(settings.documentTypeName);
 
-        for (final AnalyzedProperty prop : properties) {
-          final String value = row[prop.getIndex()];
-          if (value != null && !value.isEmpty())
-            document.set(prop.getName(), value);
+          for (final AnalyzedProperty prop : properties) {
+            final String value = row[prop.getIndex()];
+            if (value != null && !value.isEmpty())
+              document.set(prop.getName(), value);
+          }
+
+          document.save();
+
+          if (skipOnError) {
+            // Count only after commit() succeeds: a duplicate-key violation is only detected at commit time, so
+            // incrementing right after save() would overcount a row that commit() then rolls back.
+            database.commit();
+            context.createdDocuments.incrementAndGet();
+            database.begin();
+          } else
+            ++documentsCreatedThisFile;
+        } catch (final RuntimeException e) {
+          rollbackIfOwned(database, ownsTransaction);
+
+          if (!skipOnError)
+            throw e;
+
+          logSkippedRow("document", line, e);
+          context.errors.incrementAndGet();
+          database.begin();
         }
-
-        document.save();
-        context.createdDocuments.incrementAndGet();
       }
 
-      database.commit();
-      database.async().waitCompletion();
+      // Same ownsTransaction gate as the rollback paths below: don't commit the caller's unrelated pending work as
+      // a side effect of this import succeeding.
+      if (ownsTransaction)
+        database.commit();
+
+      context.createdDocuments.addAndGet(documentsCreatedThisFile);
 
     } catch (final IOException e) {
+      rollbackIfOwned(database, ownsTransaction);
       throw new ImportException("Error on importing CSV", e);
+    } catch (final RuntimeException e) {
+      // A source-level failure (parseNext()) escaped the loop and never went through the per-row catch above.
+      rollbackIfOwned(database, ownsTransaction);
+      throw e;
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()
@@ -152,13 +210,99 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               elapsedInSecs > 0 ? context.createdDocuments.get() / elapsedInSecs : context.createdDocuments.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total documents: %d", null, context.createdDocuments.get());
+      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
 
-      csvParser.stopParsing();
+      stopParsingQuietly(csvParser);
     }
+  }
+
+  /**
+   * {@code AbstractParser#stopParsing()} can itself throw (e.g. "Stream closed" if the underlying reader was already
+   * closed by the time this runs). Cleanup in a {@code finally} block must never mask the exception already
+   * propagating, so this is swallowed (logged at FINE) rather than let to escape.
+   */
+  private void stopParsingQuietly(final AbstractParser<?> parser) {
+    try {
+      parser.stopParsing();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "Error stopping the CSV/TSV parser during cleanup", e);
+    }
+  }
+
+  /**
+   * Logs a skipped row at WARNING (message only) and FINE (full stack trace), used by both {@code loadDocuments} and
+   * {@code loadVertices} when {@code -onRowError skip} discards a row.
+   */
+  private void logSkippedRow(final String what, final long line, final RuntimeException e) {
+    LogManager.instance()
+        .log(this, Level.WARNING, "Error on importing %s at line %d, skipping it (reason: %s)", null, what, line, e.getMessage());
+    LogManager.instance().log(this, Level.FINE, "Full error on importing %s at line %d", e, what, line);
+  }
+
+  /**
+   * A vertex can fail asynchronously (on the {@code database.async()} worker thread) around the same time as a
+   * synchronous or source-level failure on the calling thread. Attaches the async failure to {@code target} as a
+   * suppressed exception so it isn't lost, unless {@code target} already carries it as its own cause (which would
+   * otherwise duplicate the same throwable as both {@code Caused by} and {@code Suppressed}).
+   */
+  private void attachConcurrentAsyncError(final Throwable target, final AtomicReference<Throwable> firstAsyncError) {
+    final Throwable asyncError = firstAsyncError.get();
+    // Throwable doesn't override equals(), so this is really an identity check (== would flag under ErrorProne's
+    // Throwable-reference-equality lint) - not a "same message" comparison.
+    if (asyncError != null && !asyncError.equals(target.getCause()) && !asyncError.equals(target))
+      target.addSuppressed(asyncError);
+  }
+
+  /**
+   * Only roll back if we own this transaction - an externally-managed database's pre-existing transaction is left
+   * for the caller to reconcile instead of discarding their unrelated pending work.
+   */
+  private void rollbackIfOwned(final Database database, final boolean ownsTransaction) {
+    if (ownsTransaction && database.isTransactionActive())
+      database.rollback();
+  }
+
+  /**
+   * Begins the transaction the per-row loop below will commit/roll back, reusing one that's already active - except
+   * when this method owns the transaction (see {@link ImporterContext#callerTransactionActiveOnEntry}) and one is
+   * nonetheless already active, in which case it's committed first, then a fresh one begun. That's the routine path
+   * for a self-managed database ({@code AbstractImporter#openDatabase()} always leaves its own ambient transaction
+   * active before this method runs) and also covers the rarer case of {@code updateDatabaseSchema()}'s lazy type
+   * creation leaving a transaction open on an externally-managed database: committing it here first means a row-1
+   * failure in "skip" mode can't undo the type/property it just created
+   * (see {@code Issue5968ImporterSkipOnRowErrorTest#csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor}).
+   */
+  private void beginRowTransaction(final Database database, final boolean transactionActiveOnEntry, final boolean ownsTransaction) {
+    if (transactionActiveOnEntry) {
+      if (ownsTransaction) {
+        LogManager.instance()
+            .log(this, Level.FINE, "Committing a transaction already active on entry before starting the per-row loop");
+        database.commit();
+        database.begin();
+      }
+    } else
+      database.begin();
+  }
+
+  /**
+   * {@code transactionActiveOnEntry}: the live transaction state, used by {@link #beginRowTransaction} to decide
+   * whether to begin, reuse, or replace it. {@code ownsTransaction}: see
+   * {@link ImporterContext#callerTransactionActiveOnEntry}.
+   */
+  private record TransactionOwnership(boolean transactionActiveOnEntry, boolean ownsTransaction) {
+  }
+
+  private TransactionOwnership computeTransactionOwnership(final Database database, final ImporterContext context) {
+    return new TransactionOwnership(database.isTransactionActive(), !context.callerTransactionActiveOnEntry);
   }
 
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
+
+    // Checked first, before any schema side effect below (typeIdProperty/unique index auto-creation) - see
+    // loadDocuments() for why "skip" mode must own the transaction outright.
+    if (settings.isSkipOnRowError() && context.callerTransactionActiveOnEntry)
+      throw ImporterSettings.newExclusiveTransactionRequiredException();
 
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.vertexTypeName);
     if (entity == null) {
@@ -194,16 +338,51 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.INFO, "Started importing vertices from CSV source");
 
     final long beginTime = System.currentTimeMillis();
+    final long errorsBefore = context.errors.get();
 
-    database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception));
+    // "skip" mode saves vertices synchronously instead of via database.async() - see
+    // ImporterSettings#isSkipOnRowError() for why (an async batch rollback on a persist-time failure would take down
+    // every other vertex queued in the same uncommitted batch, not just the failing one).
+    final boolean skipOnError = settings.isSkipOnRowError();
+
+    // -commitEvery/-parallel only affect the database.async() path, which "skip" mode doesn't use for vertices at
+    // all - silently ignoring an explicitly-set value would otherwise cost someone a confusing perf-debugging
+    // session, so call it out once if either was set.
+    if (skipOnError && (settings.options.containsKey("commitEvery") || settings.options.containsKey("parallel")))
+      LogManager.instance().log(this, Level.INFO,
+          "-onRowError skip saves vertices synchronously, one at a time: -commitEvery/-parallel have no effect while it's enabled");
+
+    final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
+    // database.async().onError() replaces the previous handler rather than stacking, with no getter to save/restore
+    // whatever was registered before this call - handlerActive makes this handler inert once loadVertices() returns
+    // (finally block below), so an externally-managed Database's later, unrelated async() failures don't get routed
+    // into this call's stale context/firstAsyncError.
+    final AtomicBoolean handlerActive = new AtomicBoolean(true);
+    if (!skipOnError)
+      database.async().onError(exception -> {
+        if (!handlerActive.get())
+          return;
+        LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
+        context.errors.incrementAndGet();
+        firstAsyncError.compareAndSet(null, exception);
+      });
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
       skipEntries = 1L;
 
+    final TransactionOwnership ownership = computeTransactionOwnership(database, context);
+    final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
+    final boolean ownsTransaction = ownership.ownsTransaction();
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
+
+      // Unlike loadDocuments(), gated on skipOnError: in "abort" mode vertices persist via database.async() instead
+      // of this foreground transaction, so there is no per-row commit/rollback cycle here to protect.
+      if (skipOnError)
+        beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!settings.vertexPropertiesInclude.isEmpty() && !"*".equalsIgnoreCase(settings.vertexPropertiesInclude)) {
@@ -232,31 +411,83 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           continue;
         }
 
-        final MutableVertex v = database.newVertex(settings.vertexTypeName);
-        if (idIndex >= 0)
-          v.set(settings.typeIdProperty, row[idIndex]);
-        for (int p = 0; p < properties.size(); ++p) {
-          final AnalyzedProperty prop = properties.get(p);
-          final String value = row[prop.getIndex()];
-          if (value != null && !value.isEmpty())
-            v.set(prop.getName(), value);
+        try {
+          final MutableVertex v = database.newVertex(settings.vertexTypeName);
+          if (idIndex >= 0)
+            v.set(settings.typeIdProperty, row[idIndex]);
+          for (int p = 0; p < properties.size(); ++p) {
+            final AnalyzedProperty prop = properties.get(p);
+            final String value = row[prop.getIndex()];
+            if (value != null && !value.isEmpty())
+              v.set(prop.getName(), value);
+          }
+
+          if (skipOnError) {
+            // Each vertex commits in its own transaction; count only after commit() succeeds (see loadDocuments()).
+            v.save();
+            database.commit();
+            context.createdVertices.incrementAndGet();
+            database.begin();
+          } else
+            database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
+        } catch (final RuntimeException e) {
+          rollbackIfOwned(database, ownsTransaction);
+
+          if (!skipOnError)
+            throw e;
+
+          logSkippedRow("vertex", line, e);
+          context.errors.incrementAndGet();
+          database.begin();
         }
-        database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
       }
 
-      database.async().waitCompletion();
+      if (skipOnError) {
+        if (ownsTransaction)
+          database.commit();
+      } else {
+        database.async().waitCompletion();
+
+        // A vertex can also fail at persist time on the async worker thread (mandatory property, unique index, ...),
+        // outside the per-row try/catch above: in "abort" mode that must still fail the import.
+        if (firstAsyncError.get() != null)
+          throw new ImportException("Error on inserting vertices", firstAsyncError.get());
+      }
 
     } catch (final IOException e) {
-      throw new ImportException("Error on importing CSV", e);
+      // In "abort" mode, drain any vertices from earlier rows already queued via database.async() before this
+      // failure propagates.
+      if (!skipOnError)
+        database.async().waitCompletion();
+      rollbackIfOwned(database, ownsTransaction);
+      final ImportException importException = new ImportException("Error on importing CSV", e);
+      if (!skipOnError)
+        attachConcurrentAsyncError(importException, firstAsyncError);
+      throw importException;
+    } catch (final RuntimeException e) {
+      // A synchronous per-row failure rethrows straight out of the loop, skipping the waitCompletion() check that
+      // normally runs after it - drain here first so earlier rows' async writes aren't left in flight uncounted.
+      if (!skipOnError) {
+        database.async().waitCompletion();
+        attachConcurrentAsyncError(e, firstAsyncError);
+      }
+      rollbackIfOwned(database, ownsTransaction);
+      throw e;
     } finally {
+      // Every path above that can reach here already called database.async().waitCompletion(), so this import's own
+      // vertices have all already been through the handler (or never will be) by this point - deactivating it now
+      // can't miss one of this call's own errors, only stop it from reacting to the caller's later, unrelated work.
+      handlerActive.set(false);
+
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()
           .log(this, Level.INFO, "Importing of vertices from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
               elapsedInSecs > 0 ? context.createdVertices.get() / elapsedInSecs : context.createdVertices.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total vertices.: %d", null, context.createdVertices.get());
+      LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
 
-      csvParser.stopParsing();
+      stopParsingQuietly(csvParser);
     }
   }
 
@@ -296,6 +527,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null,
             expectedVertices, expectedEdges);
 
+    // Edges already skip-and-log unconditionally regardless of -onRowError (see below), so this is a no-op - worth a
+    // one-time notice, mirroring JSONImporterFormat.load()'s equivalent notice for a single top-level JSON object.
+    if (settings.isSkipOnRowError())
+      LogManager.instance().log(this, Level.INFO,
+          "-onRowError skip has no additional effect on edges: an unresolved from/to reference is already skipped and logged unconditionally");
+
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
@@ -326,6 +563,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "Importing the following edge properties: %s", null, properties);
 
       String[] row;
+      // No ownsTransaction/callerTransactionActiveOnEntry guard needed here, unlike loadDocuments()/loadVertices():
+      // database.begin() nests rather than reusing an already-active transaction (see LocalDatabase#begin()), so a
+      // caller's own pre-existing transaction is never touched by this method's own commits below.
       database.begin();
       int txCount = 0;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -343,6 +583,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             txCount = 0;
           }
         } catch (final Exception e) {
+          // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError: a
+          // "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
+          // imports rather than a data-corruption case.
           LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
         }
       }
@@ -365,7 +608,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "- Total linked Edges: %d", null, context.linkedEdges.get());
       LogManager.instance().log(this, Level.INFO, "- Skipped edges.....: %d", null, context.skippedEdges.get());
 
-      csvParser.stopParsing();
+      stopParsingQuietly(csvParser);
     }
   }
 

@@ -1,0 +1,7 @@
+{
+  "Foods": [
+    { "name": "Apple", "qty": 10 },
+    { "name": "Banana", "qty": 99999 },
+    { "name": "Cherry", "qty": 5 }
+  ]
+}
