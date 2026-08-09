@@ -33,10 +33,16 @@ import java.util.Set;
  * The question is asked by {@code CypherExecutionPlan} when a statement runs from a <b>seed row</b> - the body of a
  * {@code CALL { }} clause, or of an {@code EXISTS}/{@code COUNT}/{@code COLLECT} expression, handed the outer row as
  * its first input. The two count push-downs there answer from the schema and the CSR arrays and never look at the
- * incoming rows, so a body that reads one of the seeded names must not be answered by them: a body counting
- * {@code MATCH (n)-[:KNOWS]->(m)} with {@code n} already bound to one vertex would be given the count over every
- * {@code n} in the graph. A body that reads none of them keeps the fast path, because ignoring a row it never looks
- * at cannot change its answer (issue #5686).
+ * incoming rows, so a body that reads one of the seeded names must not be answered by their <b>enumerating</b> form:
+ * a body counting {@code MATCH (n)-[:KNOWS]->(m)} with {@code n} already bound to one vertex would be given the count
+ * over every {@code n} in the graph. A body that reads none of them keeps the fast path, because ignoring a row it
+ * never looks at cannot change its answer (issue #5686).
+ * <p>
+ * Which is why the names are returned rather than only a yes/no: a body that reads a seeded name at a position the
+ * chain operator can start its walk from keeps the push-down in its <b>seeded</b> form, walking from the bound RID
+ * instead of from a label's bucket set (issue #5758). Naming one variable too many still only costs the caller its
+ * optimization there - the position is looked for among the pattern's own variables, and a name that is not one of
+ * them anchors nothing.
  * <p>
  * <b>The two ways of being wrong are not equal.</b> Naming one variable too many costs a slower count. Missing one
  * gives a silently wrong count, which is the failure #5674 removed. So every shape this class does not model answers
