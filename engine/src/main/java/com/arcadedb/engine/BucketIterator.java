@@ -87,14 +87,27 @@ public class BucketIterator implements Iterator<Record> {
   }
 
   /**
-   * Number of records skipped so far because they were found corrupted on disk (see the
-   * {@link SerializationException} branch in {@link #fetchNext()}). A correctness-sensitive caller (e.g. an
-   * exact {@code COUNT}) can check this after exhausting the iterator to detect a truncated result; it is not
+   * Number of records skipped so far for a known, tolerated corruption reason - a corrupted on-disk record
+   * ({@link SerializationException}) or page-layer corruption in a raw slot/pointer read, both via
+   * {@link #logSkippedRecord(Exception)} in {@link #fetchNext()}. A correctness-sensitive caller (e.g. an exact
+   * {@code COUNT}) can check this after exhausting the iterator to detect a truncated result; it is not
    * incremented for the benign concurrent-delete race handled by {@link RecordNotFoundException}, nor for any
    * other exception, which propagates instead of being counted here (#6015).
    */
   public long getSkippedRecordCount() {
     return skippedRecords;
+  }
+
+  /**
+   * Counts and logs a record slot skipped for a known, tolerated reason: a corrupted on-disk record
+   * ({@link SerializationException}) or page-layer corruption in a raw slot/pointer read (an unchecked exception
+   * from a {@code BasePage.read*}/{@code Binary} accessor - see the two call sites in {@link #fetchNext()}).
+   */
+  private void logSkippedRecord(final Exception e) {
+    skippedRecords++;
+    final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
+        (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
+    LogManager.instance().log(this, Level.SEVERE, msg);
   }
 
   @Override
@@ -167,10 +180,7 @@ public class BucketIterator implements Iterator<Record> {
               // first) is provably page corruption, the same "bad slot" signal as the RECORD_POSITION==0 case
               // just above. Skip it like SerializationException below, scoped narrowly to just these two reads so
               // it cannot also catch a bug from database.lookupByRID()/AfterRecordReadListener (#6015).
-              skippedRecords++;
-              final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
-                  (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
-              LogManager.instance().log(this, Level.SEVERE, msg);
+              logSkippedRecord(e);
               continue;
             }
 
@@ -189,9 +199,17 @@ public class BucketIterator implements Iterator<Record> {
               final RID rid = new RID(bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
-              final Binary view = bucket.getRecordInternal(
-                  new RID(bucket.fileId,
-                      currentPage.readLong((int) (recordPositionInPage + recordSize[1]))), true);
+              final long placeholderTargetPosition;
+              try {
+                // Same page-bytes-only shape as the slot-table resolution above: no application/listener code
+                // runs in this call, so a corrupted pointer field is page corruption, not an application bug.
+                placeholderTargetPosition = currentPage.readLong((int) (recordPositionInPage + recordSize[1]));
+              } catch (final RuntimeException e) {
+                logSkippedRecord(e);
+                continue;
+              }
+
+              final Binary view = bucket.getRecordInternal(new RID(bucket.fileId, placeholderTargetPosition), true);
 
               if (view == null)
                 continue;
@@ -210,10 +228,7 @@ public class BucketIterator implements Iterator<Record> {
             // user-supplied AfterRecordReadListener/trigger - is deliberately NOT caught here and propagates
             // instead, so a real bug surfaces where it can be diagnosed or retried instead of silently looking
             // like "this bucket has fewer records" (#6015; see #5976 for a listener bug this used to hide).
-            skippedRecords++;
-            final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
-                (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
-            LogManager.instance().log(this, Level.SEVERE, msg);
+            logSkippedRecord(e);
           } finally {
             if (forwardDirection)
               currentRecordInPage++;
