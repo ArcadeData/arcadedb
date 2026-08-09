@@ -18,8 +18,10 @@
  */
 package com.arcadedb.engine.timeseries.promql;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.TimeBoundRegex;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -73,6 +75,14 @@ public class PromQLEvaluator {
 
   private final DatabaseInternal        database;
   private final long                    lookbackMs;
+  // Lazily computed, then shared for the lifetime of this evaluator instance (issue #5886 follow-up): a fresh
+  // PromQLEvaluator is created per top-level query (see SQLFunctionPromQL), never reused across executions the
+  // way RegexExpression's AST nodes are cached by CypherStatementCache, so caching this as an instance field is
+  // safe here (no stale-deadline-across-executions risk). Without it, evaluateRange()'s per-step loop - up to
+  // MAX_RANGE_STEPS = 1,000,000 steps - would let each step's evaluateVectorSelector()/evaluateMatrixSelector()
+  // compute its own fresh regexDeadline, reopening the N-times-timeout bypass one level up from the per-row
+  // sharing those methods already do within a single step's scan.
+  private Long                          regexDeadline;
   private static final int              MAX_REGEX_LENGTH   = 1024;
   private static final int              MAX_PATTERN_CACHE  = 1024;
   // Detects patterns that cause catastrophic backtracking (ReDoS):
@@ -103,6 +113,24 @@ public class PromQLEvaluator {
   public PromQLEvaluator(final DatabaseInternal database, final long lookbackMs) {
     this.database = database;
     this.lookbackMs = lookbackMs;
+  }
+
+  private long regexDeadline() {
+    if (regexDeadline == null)
+      regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+    return regexDeadline;
+  }
+
+  /**
+   * Overrides the lazily-computed {@link #regexDeadline()} with one already resolved elsewhere (issue #5886,
+   * 17th review pass). {@code SQLFunctionPromQL} constructs a fresh {@code PromQLEvaluator} on every {@code
+   * promql()} call rather than reusing one across a query, so without this, each call would fall back to its
+   * own {@code GlobalConfiguration}-derived budget instead of the {@code CommandContext}-cached deadline every
+   * other per-row SQL function in this issue shares ({@code text.regexReplace()}, {@code .normalize()}).
+   * Must be called before the first regex-bearing evaluation on this instance to have any effect.
+   */
+  public void setRegexDeadline(final long regexDeadline) {
+    this.regexDeadline = regexDeadline;
   }
 
   /**
@@ -208,11 +236,15 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
     }
 
-    // Post-filter for NEQ/RE/NRE and group by label combination
+    // Post-filter for NEQ/RE/NRE and group by label combination. One shared deadline for the whole evaluator
+    // instance (issue #5886 follow-up) - regexDeadline() computes it once and reuses it for every row of every
+    // step, not a fresh one per row or per step: matchesPostFilters() runs per row, and evaluateRange() calls
+    // this method once per step (up to MAX_RANGE_STEPS), so anything less than one shared deadline for the
+    // whole query would let a crafted =~/!~ pattern tie up the thread for rowCount * stepCount * regexTimeout.
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
       final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns))
+      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -254,12 +286,13 @@ public class PromQLEvaluator {
       return new RangeVector(List.of());
     }
 
-    // Group rows by label combination
+    // Group rows by label combination. One shared deadline for the whole evaluator instance - see
+    // evaluateVectorSelector().
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
       final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns))
+      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -492,7 +525,7 @@ public class PromQLEvaluator {
   }
 
   private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
-      final List<ColumnDefinition> columns) {
+      final List<ColumnDefinition> columns, final long regexDeadline) {
     for (final LabelMatcher m : matchers) {
       if (m.op() == MatchOp.EQ || "__name__".equals(m.name()))
         continue;
@@ -507,11 +540,11 @@ public class PromQLEvaluator {
             return false;
           break;
         case RE:
-          if (!compilePattern(m.value()).matcher(strVal).matches())
+          if (!TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline))
             return false;
           break;
         case NRE:
-          if (compilePattern(m.value()).matcher(strVal).matches())
+          if (TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline))
             return false;
           break;
         default:

@@ -22,6 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.regex.Pattern;
+
 /**
  * Splits a string using a delimiter.
  *
@@ -40,6 +42,10 @@ public class SQLMethodSplit extends AbstractSQLMethod {
     if (value == null || null == params || null == params[0])
       return value;
 
-    return value.toString().split(params[0].toString());
+    // The delimiter is a literal string, not a regex (issue #5886: matches split()/text.split()/Cypher split(),
+    // which all wrap the delimiter in Pattern.quote() for the same reason - this method was the only one of the
+    // four that passed the caller-supplied delimiter straight to String.split(regex) unescaped, exposing it to
+    // the same catastrophic-backtracking risk as every other regex entry point in that issue).
+    return value.toString().split(Pattern.quote(params[0].toString()));
   }
 }

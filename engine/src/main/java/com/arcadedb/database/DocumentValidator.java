@@ -18,10 +18,12 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.math.BigDecimal;
 import java.util.Collection;
@@ -29,6 +31,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Validates documents against constraints defined in the schema.
@@ -38,11 +41,36 @@ import java.util.Objects;
 public class DocumentValidator {
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
-    for (Property entry : document.getType().getPolymorphicProperties())
-      validateField(document, entry);
+    // One shared deadline for every REGEXP-constrained property on this document (issue #5886 follow-up): each
+    // property getting its own full regexTimeout budget would let a document with N such properties, each
+    // crafted to backtrack catastrophically, cost up to N * regexTimeout instead of one bounded validation -
+    // the same N-times-timeout shape closed everywhere else in this issue, reopened here at the property level.
+    // Computed lazily on the first REGEXP-constrained property encountered, not unconditionally: most document
+    // types have none, and this runs on every insert/update, so paying System.nanoTime() + the overflow-safe
+    // arithmetic in newDeadline() for types that never use REGEXP at all would be pure waste on that hot path.
+    long regexDeadline = 0;
+    boolean regexDeadlineComputed = false;
+    for (Property entry : document.getType().getPolymorphicProperties()) {
+      if (!regexDeadlineComputed && entry.getRegexp() != null) {
+        regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()));
+        regexDeadlineComputed = true;
+      }
+      validateField(document, entry, regexDeadline);
+    }
   }
 
+  /**
+   * Validates a single field in isolation, outside the context of a whole-document {@link #validate}. Computes
+   * its own {@code regexTimeout} deadline; callers validating multiple fields of the same document should use
+   * {@link #validateField(MutableDocument, Property, long)} with one shared deadline instead, the way
+   * {@link #validate} does, so a document with several REGEXP-constrained properties is bounded once rather
+   * than once per property.
+   */
   public static void validateField(final MutableDocument document, final Property p) throws ValidationException {
+    validateField(document, p, TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase())));
+  }
+
+  public static void validateField(final MutableDocument document, final Property p, final long regexDeadline) throws ValidationException {
     if (p.isMandatory() && !document.has(p.getName()))
       throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
 
@@ -54,8 +82,12 @@ public class DocumentValidator {
         throwValidationException(document.getType(), p, "cannot be null, record: " + document);
     } else {
       if (p.getRegexp() != null)
-        // REGEXP
-        if (!fieldValue.toString().matches(p.getRegexp()))
+        // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
+        // a validated property, reachable through any write path (REST, any wire protocol) with no query
+        // privileges needed, so an admin-defined pattern with a vulnerable shape (classic email/URL validation
+        // regexes are notorious for this) combined with an attacker-supplied field value is enough to hang a
+        // worker thread indefinitely.
+        if (!TimeBoundRegex.matchesUntil(Pattern.compile(p.getRegexp()), fieldValue.toString(), regexDeadline))
           throwValidationException(document.getType(), p,
               "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: "
                   + document);

@@ -18,11 +18,13 @@
  */
 package com.arcadedb.query.sql.method.string;
 
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLMethodNormalizeTest {
 
@@ -56,5 +58,23 @@ class SQLMethodNormalizeTest {
   void normalizeWithNFCAndPattern() {
     final Object result = method.execute("À", null, null, new Object[] { "NFC", "" });
     assertThat(result).isEqualTo("À");
+  }
+
+  @Test
+  void catastrophicPatternArgumentIsAbortedByRegexTimeout() {
+    // Issue #5886, 9th review pass: the 2nd argument is a caller-supplied regex applied via replaceAll() with
+    // no bound at all - unlike text.regexReplace(), which was fixed earlier in this issue, this call site was
+    // missed entirely. Uses the default 1000ms arcadedb.command.regexTimeout (this test has no database/context
+    // to lower it, method.execute() is called directly with a null context here, matching this file's existing
+    // convention) - still proves the abort happens near that bound rather than the tens of seconds an unbounded
+    // catastrophic match takes.
+    final String pathologicalInput = "a".repeat(40) + "!";
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> method.execute(pathologicalInput, null, null, new Object[] { "NFC", "(.*a){20}$" }))
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    assertThat(elapsedMillis).isLessThan(5000);
   }
 }

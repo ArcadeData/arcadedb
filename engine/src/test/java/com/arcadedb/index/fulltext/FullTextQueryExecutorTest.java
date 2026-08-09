@@ -18,8 +18,10 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class FullTextQueryExecutorTest extends TestHelper {
 
@@ -509,6 +512,75 @@ class FullTextQueryExecutorTest extends TestHelper {
 
       // Doc1 (java + programming) should have higher score than Doc2 (java only)
       assertThat(firstScore).isGreaterThan(secondScore);
+    });
+  }
+
+  @Test
+  void catastrophicRegexpQueryIsAbortedByRegexTimeout() {
+    // Issue #5886 follow-up: a /pattern/ regexp query is matched against every token in what is, absent a
+    // literal prefix, a full index scan - collectRegexpMatches() had no bound on that per-token
+    // Pattern.matcher(token).matches() call, so this is arguably a worse instance of the MATCHES/=~ gap this
+    // issue was originally about (one pathological pattern evaluated against every token in the index).
+    // Terminator is 'b', not '!': full-text tokenization strips punctuation, and the terminator must survive
+    // as part of the token for the reproducer to still be the same catastrophic pattern (a non-'a' tail is
+    // what forces (.*a){20}$ to exhaustively backtrack instead of matching greedily).
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "b";
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Article SET content = '" + pathological + "'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      final long begin = System.currentTimeMillis();
+      assertThatThrownBy(() -> executor.search("/(.*a){20}$/", -1)).isInstanceOf(TimeoutException.class);
+      final long elapsedMillis = System.currentTimeMillis() - begin;
+
+      // Generous upper bound: proves the scan was aborted near the configured deadline rather than merely
+      // being slow (the unbounded match takes tens of seconds).
+      assertThat(elapsedMillis).isLessThan(5000);
+    });
+  }
+
+  @Test
+  void catastrophicWildcardQueryIsAbortedByRegexTimeout() {
+    // Issue #5886 follow-up (2nd review pass): collectWildcardMatches() converts each '*' to '.*' via
+    // wildcardToRegex() - no grouping/alternation/nested quantifiers, but a sequence of several '*'s reproduces
+    // the exact same catastrophic-backtracking shape on its own, the same class of gap SQL LIKE/ILIKE turned
+    // out to have (verified separately) despite the original "structurally safe" audit conclusion for both.
+    // "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b" against a token ending in something other than 'b' forces the
+    // same exhaustive backtrack-then-fail this issue's own (.*a){20}$ reproducer relies on. A literal (not '*')
+    // leading character keeps this in the range-scan branch without needing allowLeadingWildcard=true - the
+    // leading-wildcard, full-scan branch is the same shape collectRegexpMatches already covers a test for.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "c";
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Article SET content = '" + pathological + "'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      final String wildcardPattern = "a" + "*a".repeat(19) + "*b";
+
+      final long begin = System.currentTimeMillis();
+      assertThatThrownBy(() -> executor.search(wildcardPattern, -1)).isInstanceOf(TimeoutException.class);
+      final long elapsedMillis = System.currentTimeMillis() - begin;
+
+      assertThat(elapsedMillis).isLessThan(5000);
     });
   }
 }

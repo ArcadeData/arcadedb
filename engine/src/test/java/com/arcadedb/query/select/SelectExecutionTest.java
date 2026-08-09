@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.select;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.TimeoutException;
@@ -371,6 +372,29 @@ public class SelectExecutionTest extends TestHelper {
       assertThat(list.size()).isEqualTo(100);
       list.forEach(r -> assertThat(r.getString("name").startsWith("J")).isTrue());
     }
+  }
+
+  @Test
+  void catastrophicLikeIsAbortedByRegexTimeout() {
+    // Issue #5886 follow-up: SelectOperator.like/ilike is the native query engine's independent LIKE/ILIKE
+    // evaluation path (distinct from the SQL parser's LikeOperator/ILikeOperator), so it needed its own
+    // TimeBoundRegex wiring and deserves its own regression test proving the abort, same as every other
+    // modified entry point in this issue.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    database.getSchema().createVertexType("LikePathological");
+    database.transaction(() -> database.newVertex("LikePathological").set("name", "a".repeat(41)).save());
+
+    final SelectCompiled select = database.select().fromType("LikePathological")//
+        .where().property("name").like().value("%a".repeat(20) + "c").compile();
+
+    final long begin = System.currentTimeMillis();
+    Assertions.assertThatThrownBy(() -> select.vertices().toList()).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the query was aborted near the configured deadline rather than merely
+    // being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
   }
 
   @Test

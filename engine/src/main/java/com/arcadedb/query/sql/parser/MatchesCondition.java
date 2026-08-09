@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -76,14 +77,30 @@ public class MatchesCondition extends BooleanExpression {
       context.setCachedValue(key, p);
     }
 
+    // One deadline shared by every MATCHES evaluation for the lifetime of this query - not just across the
+    // items of one multi-value evaluation, but across every row a WHERE ... MATCHES clause scans. Recomputing a
+    // fresh regexTimeout budget per row would let a table shaped so every row triggers catastrophic backtracking
+    // cost up to rowCount * regexTimeout overall; CommandContext#getOrComputeRegexDeadline caches it on the
+    // context (the same mechanism already used for the compiled Pattern above, and confirmed shared across rows
+    // by MatchesConditionTest's per-context cache tests), bounding the whole scan by one regexTimeout instead,
+    // the same principle applied to the full-text and PromQL entry points elsewhere in this issue.
+    //
+    // The key must NOT start with "MATCHES_": the pattern cache above keys on "MATCHES_" + <arbitrary,
+    // attacker-controlled regex text>, so any fixed key sharing that prefix collides for whichever regex text
+    // completes it - e.g. a first attempt at this key, "MATCHES_DEADLINE", collided with pattern text "DEADLINE"
+    // (WHERE x MATCHES 'DEADLINE'), overwriting the Pattern cache slot with a Long or vice versa and throwing
+    // ClassCastException on the very first row. A key outside the "MATCHES_" namespace entirely - this one
+    // starts with "__", not "MATCHES_" - cannot equal "MATCHES_" + anything, however the regex text reads.
+    final long deadline = context.getOrComputeRegexDeadline("__MATCHES_DEADLINE__");
+
     if (value instanceof CharSequence sequence) {
-      return p.matcher(sequence).matches();
+      return TimeBoundRegex.matchesUntil(p, sequence, deadline);
     } else if (MultiValue.isMultiValue(value)) {
       final Iterator<?> values = MultiValue.getMultiValueIterator(value);
       while (values.hasNext()) {
         final Object item = values.next();
         if (item instanceof CharSequence seq) {
-          if (p.matcher(seq).matches()) {
+          if (TimeBoundRegex.matchesUntil(p, seq, deadline)) {
             return true;
           }
         }

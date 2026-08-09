@@ -18,13 +18,16 @@
  */
 package com.arcadedb.query.sql.method.string;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.PatternConst;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.text.Normalizer;
+import java.util.regex.Pattern;
 
 /**
  * @author Johann Sorel (Geomatys)
@@ -33,6 +36,10 @@ import java.text.Normalizer;
 public class SQLMethodNormalize extends AbstractSQLMethod {
 
   public static final String NAME = "normalize";
+
+  // context.getCachedValue()/setCachedValue() key for the shared deadline - see execute() for why this needs to
+  // be shared, not recomputed per call.
+  private static final String DEADLINE_CACHE_KEY = "__NORMALIZE_DEADLINE__";
 
   public SQLMethodNormalize() {
     super(NAME, 0, 2);
@@ -50,7 +57,21 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
 
       final String normalized = Normalizer.normalize(value.toString(), form);
       if (params != null && params.length > 1) {
-        return normalized.replaceAll(FileUtils.getStringContent(params[1].toString()), "");
+        // The 2nd argument is a caller-supplied regex, not a literal (issue #5886) - bounded the same way as
+        // every other user-controlled regex entry point, and sharing one deadline across every row this method
+        // runs against within the same query (same rationale as TextRegexReplace - otherwise a pathological
+        // pattern matched against many rows could cost up to rowCount * regexTimeout overall). context is null
+        // in some direct/unit-test invocations of this method (see SQLMethodNormalizeTest);
+        // GlobalConfiguration.getValueAsLong(Database) falls back to the compiled-in default in that case, and
+        // the deadline is simply not shared across calls when there's no context to cache it on. A
+        // TimeoutException from the bound propagates as-is rather than being rewrapped (unlike TextRegexReplace,
+        // which rewraps to preserve its own pre-existing IllegalArgumentException contract for regex failures) -
+        // this method had no such prior contract, and TimeoutException is the shape
+        // MatchesCondition/RegexExpression/LIKE/full-text/PromQL all surface too.
+        final long regexDeadline = context != null ?
+            context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY) :
+            TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
+        return TimeBoundRegex.replaceAllUntil(Pattern.compile(FileUtils.getStringContent(params[1].toString())), normalized, "", regexDeadline);
       }
       return PatternConst.PATTERN_DIACRITICAL_MARKS.matcher(normalized).replaceAll("");
     }

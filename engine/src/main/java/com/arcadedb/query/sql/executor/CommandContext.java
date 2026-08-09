@@ -19,8 +19,10 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.Map;
 
@@ -52,6 +54,46 @@ public interface CommandContext {
    * Stores a value in the opaque internal cache. See {@link #getCachedValue(String)}.
    */
   CommandContext setCachedValue(String key, Object value);
+
+  /**
+   * Returns an absolute {@code arcadedb.command.regexTimeout} deadline (see {@link TimeBoundRegex#newDeadline(long)})
+   * shared for the lifetime of this context, computing and caching it on first call. Centralizes the
+   * get-cached-or-compute-and-cache pattern every regex-bounding call site in the engine needs to share one
+   * deadline across a series of related matches (issue #5886) - each call site previously hand-rolled this
+   * with its own cache key, which is exactly how a real bug shipped: two independently-chosen keys collided
+   * (a fixed {@code "MATCHES_DEADLINE"} key colliding with the pattern cache's {@code "MATCHES_" + <regex
+   * text>} keys for the literal pattern text {@code DEADLINE}). Centralizing here still requires each caller
+   * to pass a key that can't collide with anything else it puts in this same cache, but removes the need to
+   * hand-write the get-or-compute logic itself at every site.
+   *
+   * <p>The deadline is shared across every row evaluated through <em>this</em> context, but not necessarily
+   * across an entire query: {@code FetchFromTypeExecutionStep.syncPullParallel} gives each parallel bucket-scan
+   * worker its own {@link #copy()} of the context (deliberately, so workers don't race on this same cache's
+   * non-thread-safe backing map), so each worker computes its own deadline independently. A type scanned in
+   * parallel across N buckets is therefore bounded by {@code N * timeoutMillis} overall, not one shared budget.
+   * This is a much narrower gap than the one this method closes: bucket count is a schema/DDL property, not
+   * attacker-controlled the way row/item counts are.
+   *
+   * @param cacheKey      the {@link #getCachedValue(String)} key to store the deadline under - must not collide
+   *                      with any other key this context's cache holds
+   * @param timeoutMillis maximum time allowed from now, in milliseconds; a value {@code <= 0} disables the bound
+   */
+  default long getOrComputeRegexDeadline(final String cacheKey, final long timeoutMillis) {
+    Long deadline = (Long) getCachedValue(cacheKey);
+    if (deadline == null) {
+      deadline = TimeBoundRegex.newDeadline(timeoutMillis);
+      setCachedValue(cacheKey, deadline);
+    }
+    return deadline;
+  }
+
+  /**
+   * Convenience overload of {@link #getOrComputeRegexDeadline(String, long)} that resolves {@code timeoutMillis}
+   * from {@link GlobalConfiguration#COMMAND_REGEX_TIMEOUT} for this context's database.
+   */
+  default long getOrComputeRegexDeadline(final String cacheKey) {
+    return getOrComputeRegexDeadline(cacheKey, GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(getDatabase()));
+  }
 
   CommandContext incrementVariable(String getNeighbors);
 

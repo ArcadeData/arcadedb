@@ -20,9 +20,11 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryHelper;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.Iterator;
 import java.util.Locale;
@@ -41,20 +43,28 @@ public class ILikeOperator extends SimpleNode implements BinaryCompareOperator {
     if (MultiValue.isMultiValue(iRight))
       return false;
 
+    // database is null in some direct/unit-test invocations of this operator (see ILikeOperatorTest);
+    // GlobalConfiguration.getValueAsLong(Database) falls back to the compiled-in default in that case. Per-row,
+    // not per-scan, budget - see LikeOperator.execute() for why (no CommandContext available to cache on).
+    final long regexTimeout = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database);
+
     // Handle multi-value left operand (e.g., when using BY ITEM indexes on LIST properties)
     // Issue #2693: Support ILIKE operator with BY ITEM FULL_TEXT indexes
     if (MultiValue.isMultiValue(iLeft)) {
+      // One shared deadline for the whole evaluation, same rationale as MatchesCondition's multi-value case.
+      final long deadline = TimeBoundRegex.newDeadline(regexTimeout);
       Iterator<?> valueIterator = MultiValue.getMultiValueIterator(iLeft);
       while (valueIterator.hasNext()) {
         Object val = valueIterator.next();
-        if (val != null && QueryHelper.like(val.toString().toLowerCase(Locale.ENGLISH), iRight.toString().toLowerCase(Locale.ENGLISH))) {
+        if (val != null && QueryHelper.likeUntil(val.toString().toLowerCase(Locale.ENGLISH), iRight.toString().toLowerCase(Locale.ENGLISH),
+            deadline)) {
           return true;
         }
       }
       return false;
     }
 
-    return QueryHelper.like(iLeft.toString().toLowerCase(Locale.ENGLISH), iRight.toString().toLowerCase(Locale.ENGLISH));
+    return QueryHelper.like(iLeft.toString().toLowerCase(Locale.ENGLISH), iRight.toString().toLowerCase(Locale.ENGLISH), regexTimeout);
   }
 
   @Override

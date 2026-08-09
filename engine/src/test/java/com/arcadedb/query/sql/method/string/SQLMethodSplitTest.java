@@ -57,6 +57,19 @@ class SQLMethodSplitTest {
     assertThat(splitted).hasSize(2).contains("first", "second");
   }
 
+  @Test
+  void delimiterIsTreatedLiterallyNotAsRegex() {
+    // Issue #5886, 9th review pass: the delimiter is a literal string, matching split()/text.split()/Cypher
+    // split(), which all wrap it in Pattern.quote() - this was the only one of the four that passed the
+    // caller-supplied delimiter straight to String.split(regex) unescaped, exposing it both to accidental
+    // regex-metacharacter behavior (a "." delimiter split on every character instead of the literal dot) and
+    // to catastrophic backtracking for a maliciously-crafted delimiter.
+    final Object result = method.execute("a.b.c", null, null, new Object[] { "." });
+    assertThat(result).isInstanceOf(String[].class);
+    final String[] splitted = (String[]) result;
+    assertThat(splitted).containsExactly("a", "b", "c");
+  }
+
   @Disabled
   @Test
   void perfTestSystemSplitVsCodeUtils() {

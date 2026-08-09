@@ -214,6 +214,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     underlyingIndex.updateTypeName(newTypeName);
   }
 
+  public DatabaseInternal getDatabase() {
+    return underlyingIndex.getMutableIndex().getDatabase();
+  }
+
   @Override
   public IndexCursor get(final Object[] keys) {
     return get(keys, -1);
