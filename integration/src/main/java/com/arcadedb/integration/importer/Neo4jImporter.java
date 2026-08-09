@@ -99,13 +99,18 @@ public class Neo4jImporter {
   private              boolean                        error                    = false;
   private final        ImporterContext                context;
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
-  // Optional fractional seconds and zone offset, so ISO-8601 values Neo4j actually emits for
-  // LocalDateTime/OffsetDateTime/ZonedDateTime properties (e.g. "2015-06-24T12:50:35.556+01:00")
-  // parse instead of failing DateTimeFormatter's whole-string match on the trailing characters.
+  // Optional fractional seconds, zone offset and bracketed zone region id, so ISO-8601 values Neo4j
+  // actually emits for LocalDateTime/OffsetDateTime/ZonedDateTime properties (e.g.
+  // "2015-06-24T12:50:35.556+01:00" or "2015-06-24T12:50:35.556+01:00[Europe/London]") parse instead
+  // of failing DateTimeFormatter's whole-string match on the trailing characters. The region id, when
+  // present, is only consumed to satisfy the whole-string match: the numeric offset it accompanies
+  // already pins the exact instant, so the region id itself is not needed to compute it.
   final static         DateTimeFormatter              dateTimeISO8601Format    = new DateTimeFormatterBuilder()
       .appendPattern("yyyy-MM-dd'T'HH:mm:ss")
       .optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 1, 9, true).optionalEnd()
-      .optionalStart().appendOffsetId().optionalEnd()
+      .optionalStart().appendOffsetId()
+      .optionalStart().appendLiteral('[').appendZoneRegionId().appendLiteral(']').optionalEnd()
+      .optionalEnd()
       .toFormatter();
   // Allow-list for imported labels: ASCII letters, digits, underscore, hyphen and space only. Excluding '.', '/' and '\'
   // makes path-traversal sequences structurally impossible in the on-disk bucket file names derived from these labels.
