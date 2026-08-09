@@ -152,6 +152,20 @@ jobs:
         # classes, and `**/*Suite.java` dropped from the includes so the openCypher TCK moves to its own job.
         # The TCK is excluded by PATTERN and not by a tag on purpose - see the javadoc on OpenCypherTCKSuite
         # for the measurement that rules a tag out.
+        #
+        # -Dmaven.test.failure.ignore=true is what keeps coverage alive when a test fails, and it is NOT
+        # redundant with --fail-never. --fail-never only stops a failed module from failing the reactor; the
+        # module itself still halts at the phase that failed. Surefire runs at `test`, JaCoCo's report goal at
+        # `prepare-package` (see the coverage profile in the root pom), so one failing test means that module
+        # writes no jacoco.xml at all. The upload step below then matches nothing, defaults to a warning, and
+        # publishes no artifact - which the collector in coverage-report reads as "this suite covered nothing".
+        # That is how run 31308335842 lost the whole vector lane's engine coverage to four flaky timeouts.
+        # Failsafe does not have this problem, which is why the integration lanes need no such flag: it defers
+        # its failure to `verify`, well after report-integration has run at post-integration-test.
+        #
+        # This does not soften the verdict on failing tests. Maven already exited 0 under --fail-never; the
+        # "Check test results" step below reads the surefire XML off disk and is the only thing that decides
+        # the job. It still fails on exactly the same reports.
         run: |
           (
             sleep 2700
@@ -168,7 +182,7 @@ jobs:
           ) &
           watchdog=$!
           set +e
-          ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!load-tests -DexcludedGroups=slow,benchmark,vector -Dsurefire.includes=**/*Test.java
+          ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl !e2e,!load-tests -DexcludedGroups=slow,benchmark,vector -Dsurefire.includes=**/*Test.java
           status=$?
           kill "$watchdog" 2>/dev/null || true
           exit $status
@@ -206,6 +220,12 @@ jobs:
           name: unit-coverage-reports
           path: |
             **/jacoco*.xml
+          # upload-artifact's default for an empty match is `warn`: it prints a notice, publishes no
+          # artifact, and leaves the step green. That is how a lane that produced no coverage used to look
+          # exactly like one that did, with the absence only surfacing two jobs later in the collector - as
+          # a failure attributed to coverage-report rather than to the lane that lost the report. `error`
+          # puts the red on the job that actually has the Maven log explaining why.
+          if-no-files-found: error
           retention-days: 1
 
   slow-unit-tests:
@@ -242,8 +262,10 @@ jobs:
       # `-DexcludedGroups=vector` keeps the lanes a partition rather than an overlap. Both vector classes
       # that moved to the vector lane still carry a method-level @Tag("slow") from before the split, and
       # without this that one method would be selected here as well and run twice per push.
+      # -Dmaven.test.failure.ignore=true: see the unit-tests lane. Without it a failing test halts the module
+      # at `test`, JaCoCo's report goal never runs at `prepare-package`, and this lane uploads no coverage.
       - name: Run Slow Unit Tests with Coverage
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine -Dgroups=slow -DexcludedGroups=vector
+        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl engine -Dgroups=slow -DexcludedGroups=vector
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -278,6 +300,7 @@ jobs:
           name: slow-unit-coverage-reports
           path: |
             **/jacoco*.xml
+          if-no-files-found: error
           retention-days: 1
 
   # The three classes tagged `vector`. PQSearchDebugTest is a steady ~410 s on its own (10,000 x 128
@@ -318,8 +341,12 @@ jobs:
           mkdir -p ~/.m2/repository
           tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
+      # -Dmaven.test.failure.ignore=true is load-bearing HERE above all: this lane is a single module, so a
+      # failing test costs the entire artifact rather than one module's share of it, and the lane is the one
+      # known to fail intermittently (LSMVectorIndex.REBUILD_SEMAPHORE holds one JVM-wide permit, so these
+      # classes convoy and occasionally blow their await timeouts). See the unit-tests lane for the mechanism.
       - name: Run Vector Unit Tests with Coverage
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine -Dgroups=vector
+        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl engine -Dgroups=vector
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -349,6 +376,7 @@ jobs:
           name: vector-unit-coverage-reports
           path: |
             **/jacoco*.xml
+          if-no-files-found: error
           retention-days: 1
 
   # The openCypher TCK: ~3900 conformance scenarios that Surefire reports as a single class, so inside the
@@ -391,8 +419,10 @@ jobs:
       # No groups filter at all: any tag filter here would reach the scenarios, not the suite. `**/*Suite.java`
       # currently resolves to OpenCypherTCKSuite alone under `engine`; a second engine suite would join this
       # lane, which is a deliberate default so a new suite runs somewhere rather than nowhere.
+      # -Dmaven.test.failure.ignore=true: see the unit-tests lane. Single module here too, so one failing
+      # scenario out of ~3900 would otherwise cost the whole lane's engine coverage.
       - name: Run openCypher TCK with Coverage
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine -Dsurefire.includes=**/*Suite.java
+        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl engine -Dsurefire.includes=**/*Suite.java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -462,6 +492,7 @@ jobs:
           name: opencypher-tck-coverage-reports
           path: |
             **/jacoco*.xml
+          if-no-files-found: error
           retention-days: 1
 
   integration-tests:
@@ -524,6 +555,7 @@ jobs:
           name: integration-coverage-reports
           path: |
             **/jacoco*.xml
+          if-no-files-found: error
           retention-days: 1
 
   ha-integration-tests:
@@ -587,6 +619,7 @@ jobs:
           name: ha-integration-coverage-reports
           path: |
             **/jacoco*.xml
+          if-no-files-found: error
           retention-days: 1
 
   builder-tests:
