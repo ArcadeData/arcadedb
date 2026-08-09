@@ -74,6 +74,14 @@ public class PromQLEvaluator {
 
   private final DatabaseInternal        database;
   private final long                    lookbackMs;
+  // Lazily computed, then shared for the lifetime of this evaluator instance (issue #5886 follow-up): a fresh
+  // PromQLEvaluator is created per top-level query (see SQLFunctionPromQL), never reused across executions the
+  // way RegexExpression's AST nodes are cached by CypherStatementCache, so caching this as an instance field is
+  // safe here (no stale-deadline-across-executions risk). Without it, evaluateRange()'s per-step loop - up to
+  // MAX_RANGE_STEPS = 1,000,000 steps - would let each step's evaluateVectorSelector()/evaluateMatrixSelector()
+  // compute its own fresh regexDeadline, reopening the N-times-timeout bypass one level up from the per-row
+  // sharing those methods already do within a single step's scan.
+  private Long                          regexDeadline;
   private static final int              MAX_REGEX_LENGTH   = 1024;
   private static final int              MAX_PATTERN_CACHE  = 1024;
   // Detects patterns that cause catastrophic backtracking (ReDoS):
@@ -104,6 +112,12 @@ public class PromQLEvaluator {
   public PromQLEvaluator(final DatabaseInternal database, final long lookbackMs) {
     this.database = database;
     this.lookbackMs = lookbackMs;
+  }
+
+  private long regexDeadline() {
+    if (regexDeadline == null)
+      regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+    return regexDeadline;
   }
 
   /**
@@ -198,15 +212,15 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
     }
 
-    // Post-filter for NEQ/RE/NRE and group by label combination. One shared deadline for the whole scan
-    // (issue #5886 follow-up), not a fresh one per row - matchesPostFilters() runs per row, so N rows each
-    // getting their own full regexTimeout budget would let a crafted =~/!~ pattern tie up the thread for
-    // row count * regexTimeout instead of one bounded evaluation.
-    final long regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+    // Post-filter for NEQ/RE/NRE and group by label combination. One shared deadline for the whole evaluator
+    // instance (issue #5886 follow-up) - regexDeadline() computes it once and reuses it for every row of every
+    // step, not a fresh one per row or per step: matchesPostFilters() runs per row, and evaluateRange() calls
+    // this method once per step (up to MAX_RANGE_STEPS), so anything less than one shared deadline for the
+    // whole query would let a crafted =~/!~ pattern tie up the thread for rowCount * stepCount * regexTimeout.
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
       final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline))
+      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -248,13 +262,13 @@ public class PromQLEvaluator {
       return new RangeVector(List.of());
     }
 
-    // Group rows by label combination. One shared deadline for the whole scan - see evaluateInstant().
-    final long regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+    // Group rows by label combination. One shared deadline for the whole evaluator instance - see
+    // evaluateVectorSelector().
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
       final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline))
+      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);

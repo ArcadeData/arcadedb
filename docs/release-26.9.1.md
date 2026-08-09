@@ -361,16 +361,18 @@ The `.split(delimiter)` SQL method got a different fix: unlike its three sibling
 it passed the delimiter straight to `String.split(regex)` unescaped. Matched to its siblings' behavior, which
 removes the risk entirely rather than just bounding it.
 
-**Deadline sharing.** A regex evaluated once per row/token/item over a scan must not get a fresh timeout
-budget per item - a table or index shaped so every row triggers catastrophic backtracking would then cost up
-to `itemCount * regexTimeout` instead of one bounded operation. `MATCHES`/`=~` share one deadline across an
-entire query execution (cached on the `CommandContext`, the same mechanism used to cache the compiled
-`Pattern`); full-text, PromQL, and `REGEXP` validation share one deadline across the whole scan they run
-against. `LIKE`/`ILIKE` are the one exception: `BinaryCompareOperator`, the interface they implement, has no
-`CommandContext` to cache a deadline on (only a `Database`), and widening that interface across every
-comparison operator was judged out of proportion here - each row still gets its own `regexTimeout` budget, so
-a `LIKE`-heavy scan where many rows are individually catastrophic is bounded per row but not for the scan as
-a whole.
+**Deadline sharing.** A regex evaluated once per row/token/item/property over a scan must not get a fresh
+timeout budget per item - a table, index, or document shaped so every item triggers catastrophic backtracking
+would then cost up to `itemCount * regexTimeout` instead of one bounded operation. `MATCHES`, `=~`,
+`text.regexReplace()`, and `.normalize()`'s pattern argument all share one deadline across an entire query
+execution (cached on the `CommandContext`, the same mechanism used to cache `MATCHES`'s compiled `Pattern`);
+full-text and schema `REGEXP` validation share one deadline across the whole scan/document they run against;
+PromQL shares one deadline across an entire query's lifetime, including every step of a range query, not just
+the rows within one step. `LIKE`/`ILIKE` are the one exception: `BinaryCompareOperator`, the interface they
+implement, has no `CommandContext` to cache a deadline on (only a `Database`), and widening that interface
+across every comparison operator was judged out of proportion here - each row still gets its own
+`regexTimeout` budget, so a `LIKE`-heavy scan where many rows are individually catastrophic is bounded per row
+but not for the scan as a whole.
 
 **Upgrade note.** Because the deadline is shared per query/scan rather than per match, and defaults to an
 enabled 1000ms, a *legitimate, non-catastrophic* operation that previously ran slowly to completion - a

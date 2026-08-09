@@ -68,6 +68,35 @@ class TextRegexReplaceTest extends TestHelper {
   }
 
   @Test
+  void multiRowReplaceSharesOneTimeoutBudgetAcrossRows() {
+    // Issue #5886, 12th review pass: text.regexReplace() has a CommandContext available and now shares one
+    // deadline across every row it runs against within the same query (the same treatment MatchesCondition/
+    // RegexExpression get, and the same rationale as their multi-row tests) - each row getting its own full
+    // budget would let a table with many pathological rows cost up to rowCount * regexTimeout instead of one
+    // bounded query.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE RegexReplaceMultiRow");
+      for (int i = 0; i < 10; i++)
+        database.command("sql", "INSERT INTO RegexReplaceMultiRow SET name = '" + pathological + "'");
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT text.regexReplace(name, '(.*a){20}$', 'x') AS r FROM RegexReplaceMultiRow");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(IllegalArgumentException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-row budgets would take >= 2000ms; a shared deadline keeps the whole query close
+    // to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
+  @Test
   void patternExceedingMaxLengthIsStillRejected() {
     // Unrelated to the regexTimeout wiring, but this guard sits right next to the code that was touched here -
     // confirm it still fires.

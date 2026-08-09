@@ -129,7 +129,26 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the operation does not complete within {@code timeoutMillis}
    */
   public static String replaceAll(final Pattern pattern, final CharSequence input, final String replacement, final long timeoutMillis) {
-    return run(pattern, input, newDeadline(timeoutMillis), bounded -> pattern.matcher(bounded).replaceAll(replacement));
+    return replaceAllUntil(pattern, input, replacement, newDeadline(timeoutMillis));
+  }
+
+  /**
+   * Same as {@link #replaceAll(Pattern, CharSequence, String, long)}, but against an absolute deadline shared
+   * across a series of related operations (e.g. the same regex applied to every row of a query result) rather
+   * than each getting its own full timeout budget - see {@link #matchesUntil(Pattern, CharSequence, long)} for
+   * the equivalent on the matching side.
+   *
+   * @param pattern       the compiled pattern to replace matches of
+   * @param input         the input to search
+   * @param replacement   the replacement string, per {@link java.util.regex.Matcher#replaceAll(String)}
+   * @param deadlineNanos an absolute {@link System#nanoTime()} deadline, as returned by {@link #newDeadline(long)}
+   *
+   * @return {@code input} with every match of {@code pattern} replaced by {@code replacement}
+   *
+   * @throws TimeoutException if the operation does not complete before {@code deadlineNanos}
+   */
+  public static String replaceAllUntil(final Pattern pattern, final CharSequence input, final String replacement, final long deadlineNanos) {
+    return run(pattern, input, deadlineNanos, bounded -> pattern.matcher(bounded).replaceAll(replacement));
   }
 
   private static <T> T run(final Pattern pattern, final CharSequence input, final long deadlineNanos, final Function<CharSequence, T> operation) {

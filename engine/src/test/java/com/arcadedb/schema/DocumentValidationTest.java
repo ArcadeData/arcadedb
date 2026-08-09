@@ -725,6 +725,34 @@ class DocumentValidationTest extends TestHelper {
   }
 
   @Test
+  void regExpValidationSharesOneTimeoutBudgetAcrossAllPropertiesOnOneDocument() {
+    // Issue #5886, 12th review pass: DocumentValidator.validate() loops over every property of a document,
+    // calling validateField() once per property - each getting its own full regexTimeout budget would let a
+    // document with N REGEXP-constrained properties, each crafted to backtrack catastrophically, cost up to
+    // N * regexTimeout instead of one bounded validation. This is the same N-times-timeout shape closed
+    // everywhere else in this issue, reopened here at the property level - and this entry point is the one
+    // reachable with no query privileges at all, so it mattered more here than anywhere else.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("MultiPropertyCatastrophicValidation");
+    final String pathological = "a".repeat(40) + "!";
+    for (int i = 0; i < 10; i++)
+      clazz.getOrCreateProperty("field" + i, Type.STRING).setRegexp("(.*a){20}$");
+
+    final MutableDocument d = database.newDocument(clazz.getName());
+    for (int i = 0; i < 10; i++)
+      d.set("field" + i, pathological);
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(d::validate).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-property budgets would take >= 2000ms; a shared deadline keeps the whole
+    // document validation close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
+  @Test
   void regExpValidationFromSQL() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
 

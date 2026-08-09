@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.sql.method;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Additional coverage tests for SQL methods, exercised via SQL queries.
@@ -182,6 +185,34 @@ class SQLMethodAdditionalCoverageTest extends TestHelper {
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isNotNull();
     rs.close();
+  }
+
+  @Test
+  void normalizeMultiRowSharesOneTimeoutBudgetAcrossRows() {
+    // Issue #5886, 12th review pass: .normalize(form, pattern)'s pattern argument has a CommandContext
+    // available and now shares one deadline across every row it runs against within the same query, the same
+    // treatment text.regexReplace() gets and for the same reason - each row getting its own full budget would
+    // let a table with many pathological rows cost up to rowCount * regexTimeout instead of one bounded query.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE NormalizeMultiRow");
+      for (int i = 0; i < 10; i++)
+        database.command("sql", "INSERT INTO NormalizeMultiRow SET name = '" + pathological + "'");
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT name.normalize('NFC', '(.*a){20}$') AS r FROM NormalizeMultiRow");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-row budgets would take >= 2000ms; a shared deadline keeps the whole query close
+    // to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
   }
 
   @Test

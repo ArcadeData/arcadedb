@@ -41,11 +41,27 @@ import java.util.regex.Pattern;
 public class DocumentValidator {
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
+    // One shared deadline for every REGEXP-constrained property on this document (issue #5886 follow-up): each
+    // property getting its own full regexTimeout budget would let a document with N such properties, each
+    // crafted to backtrack catastrophically, cost up to N * regexTimeout instead of one bounded validation -
+    // the same N-times-timeout shape closed everywhere else in this issue, reopened here at the property level.
+    final long regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()));
     for (Property entry : document.getType().getPolymorphicProperties())
-      validateField(document, entry);
+      validateField(document, entry, regexDeadline);
   }
 
+  /**
+   * Validates a single field in isolation, outside the context of a whole-document {@link #validate}. Computes
+   * its own {@code regexTimeout} deadline; callers validating multiple fields of the same document should use
+   * {@link #validateField(MutableDocument, Property, long)} with one shared deadline instead, the way
+   * {@link #validate} does, so a document with several REGEXP-constrained properties is bounded once rather
+   * than once per property.
+   */
   public static void validateField(final MutableDocument document, final Property p) throws ValidationException {
+    validateField(document, p, TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase())));
+  }
+
+  public static void validateField(final MutableDocument document, final Property p, final long regexDeadline) throws ValidationException {
     if (p.isMandatory() && !document.has(p.getName()))
       throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
 
@@ -62,8 +78,7 @@ public class DocumentValidator {
         // privileges needed, so an admin-defined pattern with a vulnerable shape (classic email/URL validation
         // regexes are notorious for this) combined with an attacker-supplied field value is enough to hang a
         // worker thread indefinitely.
-        if (!TimeBoundRegex.matches(Pattern.compile(p.getRegexp()), fieldValue.toString(),
-            GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase())))
+        if (!TimeBoundRegex.matchesUntil(Pattern.compile(p.getRegexp()), fieldValue.toString(), regexDeadline))
           throwValidationException(document.getType(), p,
               "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: "
                   + document);

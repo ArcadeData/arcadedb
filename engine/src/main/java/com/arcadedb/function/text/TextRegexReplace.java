@@ -54,6 +54,10 @@ public class TextRegexReplace extends AbstractTextFunction {
 
   private static final int MAX_PATTERN_LENGTH = 500;
 
+  // context.getCachedValue()/setCachedValue() key for the shared deadline - see execute() for why this needs to
+  // be shared, not recomputed per call.
+  private static final String DEADLINE_CACHE_KEY = "__TEXT_REGEXREPLACE_DEADLINE__";
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
@@ -72,15 +76,28 @@ public class TextRegexReplace extends AbstractTextFunction {
           "Regex pattern exceeds maximum allowed length (" + MAX_PATTERN_LENGTH + "): " + regex.length());
     }
 
-    // Unlike a WHERE-clause condition (always evaluated with a database bound to the context), this SQL function
-    // is a lower-level entry point that unit tests across this package call directly with a bare or null context,
-    // so context/context.getDatabase() being unset here is a real, not just theoretical, case to fall back from.
-    // GlobalConfiguration.getValueAsLong(Database) falls back to the compiled-in default for a null database,
-    // keeping that usage working exactly as it did before this function read any configuration at all.
-    final long regexTimeout = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context != null ? context.getDatabase() : null);
+    // One deadline shared across every row this function runs against within the same query (issue #5886
+    // follow-up): unlike LikeOperator/ILikeOperator (no CommandContext to cache on), this function does receive
+    // one, so it gets the same treatment as MatchesCondition/RegexExpression rather than a fresh budget per
+    // call - otherwise SELECT text.regexReplace(col, :pattern, 'x') FROM LargeType with a pathological pattern
+    // could still cost up to rowCount * regexTimeout overall. context is null in some direct/unit-test
+    // invocations of this function (see TextRegexReplaceTest); GlobalConfiguration.getValueAsLong(Database)
+    // falls back to the compiled-in default in that case, and the deadline is simply not shared across calls
+    // when there's no context to cache it on.
+    final long regexDeadline;
+    if (context != null) {
+      Long cached = (Long) context.getCachedValue(DEADLINE_CACHE_KEY);
+      if (cached == null) {
+        cached = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
+        context.setCachedValue(DEADLINE_CACHE_KEY, cached);
+      }
+      regexDeadline = cached;
+    } else {
+      regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
+    }
 
     try {
-      return TimeBoundRegex.replaceAll(Pattern.compile(regex), str, replacement == null ? "" : replacement, regexTimeout);
+      return TimeBoundRegex.replaceAllUntil(Pattern.compile(regex), str, replacement == null ? "" : replacement, regexDeadline);
     } catch (final PatternSyntaxException e) {
       throw new IllegalArgumentException("Invalid regex pattern: " + e.getMessage(), e);
     } catch (final TimeoutException e) {

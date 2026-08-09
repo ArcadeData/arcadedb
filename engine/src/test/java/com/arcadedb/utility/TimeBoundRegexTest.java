@@ -89,6 +89,30 @@ class TimeBoundRegexTest {
   }
 
   @Test
+  void replaceAllUntilSharesOneDeadlineAcrossASeries() {
+    // Issue #5886, 12th review pass: TextRegexReplace/.normalize() need to share one deadline across every row
+    // of a query, the same "shared budget across a series" replaceAll() needed matches()/matchesUntil() to
+    // already have.
+    final Pattern pathological = Pattern.compile("(.*a){20}$");
+    final String input = "a".repeat(40) + "!";
+    final long deadline = TimeBoundRegex.newDeadline(200);
+
+    // First call consumes the whole 200ms budget and trips the deadline.
+    final long begin = System.nanoTime();
+    assertThatThrownBy(() -> TimeBoundRegex.replaceAllUntil(pathological, input, "x", deadline))
+        .isInstanceOf(TimeoutException.class);
+    // A second call against the same (now-expired) shared deadline must fail almost immediately, not run for
+    // another full budget - proving the deadline is a shared, absolute point in time, not a per-call timeout.
+    assertThatThrownBy(() -> TimeBoundRegex.replaceAllUntil(pathological, input, "x", deadline))
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = (System.nanoTime() - begin) / 1_000_000L;
+
+    // Two independent 200ms budgets would take >= 400ms; a shared deadline keeps both calls close to the
+    // single 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
+  @Test
   void newDeadlineDoesNotOverflowOnAnOversizedTimeout() {
     // arcadedb.command.regexTimeout is admin-configurable; a value large enough that timeoutMillis * 1_000_000L
     // (or adding System.nanoTime() to it) overflows a long must fall back to "effectively unbounded" rather than

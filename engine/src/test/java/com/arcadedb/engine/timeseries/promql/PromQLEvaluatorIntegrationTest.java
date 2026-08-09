@@ -232,6 +232,42 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
+  void rangeQuerySharesOneTimeoutBudgetAcrossAllSteps() {
+    // Issue #5886, 12th review pass: evaluateVectorSelector()/evaluateMatrixSelector() already share one
+    // deadline across every row within a single step's scan, but evaluateRange() calls evaluate() once per
+    // step (up to MAX_RANGE_STEPS = 1,000,000), and each of those calls used to compute its own fresh deadline -
+    // the same N-times-timeout shape closed at the row level, reopened here at the step level. The deadline is
+    // now cached on the PromQLEvaluator instance itself (safe here since a fresh evaluator is created per
+    // top-level query - see SQLFunctionPromQL - never reused across executions the way RegexExpression's AST
+    // nodes are).
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String typeName = "promql_range_multistep";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String pathologicalHost = "a".repeat(40); // no trailing 'c': forces the same exhaustive backtrack as
+    // unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout above. A single data point at ts=0, visible
+    // from every step's lookback window below (evalTime - lookbackMs <= 0 for every evalTime in the range), so
+    // every one of the 10 steps evaluates the same catastrophic label matcher against it.
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 0, host = '" + pathologicalHost + "', value = 1.0"));
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal(), 100_000L);
+    // Unparenthesized shape (see unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout above): REDOS_CHECK
+    // rejects parenthesized nested-quantifier patterns like (.*a){20}$ at parse time, before this ever reaches
+    // TimeBoundRegex, so the reproducer here has to be the sequential-a*-without-nesting shape instead.
+    final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"" + "a*".repeat(20) + "c\"}").parse();
+
+    final long begin = System.currentTimeMillis();
+    // startMs=1000, endMs=10000, stepMs=1000 -> 10 steps, every one of which sees the ts=0 data point.
+    assertThatThrownBy(() -> evaluator.evaluateRange(expr, 1000L, 10_000L, 1000L)).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-step budgets would take >= 2000ms; a shared deadline keeps the whole range
+    // query close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
+  @Test
   void scalarArithmetic() {
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
     final PromQLExpr expr = new PromQLParser("2 + 3 * 4").parse();
