@@ -68,9 +68,12 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
    * #5681: an {@code INSERT ... SELECT ... LIMIT} shares the same abandoned-scan risk as UPDATE/DELETE (see
    * {@link UpdateExecutionPlan#executeInternal()}) - closing here, in a {@code finally} so it also runs on the
    * exception path, releases the sub-plan's scan as soon as the statement is done instead of waiting for the caller
-   * to close the returned {@link ResultSet} or for the GC to reclaim it.
+   * to close the returned {@link ResultSet} or for the GC to reclaim it. A failure from {@code close()} itself is
+   * suppressed rather than allowed to replace an exception already in flight from the drain loop - see
+   * {@link UpdateExecutionPlan#executeInternal()} for the same pattern and its rationale.
    */
   public void executeInternal() throws CommandExecutionException {
+    RuntimeException failure = null;
     try {
       while (true) {
         final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
@@ -80,8 +83,18 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
         while (nextBlock.hasNext())
           result.add(nextBlock.next());
       }
+    } catch (final RuntimeException e) {
+      failure = e;
+      throw e;
     } finally {
-      close();
+      try {
+        close();
+      } catch (final RuntimeException closeFailure) {
+        if (failure != null)
+          failure.addSuppressed(closeFailure);
+        else
+          throw closeFailure;
+      }
     }
   }
 

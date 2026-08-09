@@ -70,8 +70,14 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
    * on the exception path - releases the abandoned scan immediately instead of leaving it for the caller to close
    * the returned {@link ResultSet} (the DML result is very commonly used only for its side effect and never closed)
    * or, failing that, for the GC to reclaim it later.
+   * <p>
+   * If the drain loop itself throws, {@code close()} still runs (in the {@code finally}) but its own failure - every
+   * current {@code close()} in these chains is a simple, exception-safe no-op/idempotent forward, but a future step
+   * could change that - is attached as a suppressed exception instead of replacing the original one, so the real
+   * cause of the failure always reaches the caller.
    */
   public void executeInternal() throws CommandExecutionException {
+    RuntimeException failure = null;
     try {
       while (true) {
         final ResultSet nextBlock = super.fetchNext(DEFAULT_FETCH_RECORDS_PER_PULL);
@@ -81,8 +87,18 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
         while (nextBlock.hasNext())
           result.add(nextBlock.next());
       }
+    } catch (final RuntimeException e) {
+      failure = e;
+      throw e;
     } finally {
-      close();
+      try {
+        close();
+      } catch (final RuntimeException closeFailure) {
+        if (failure != null)
+          failure.addSuppressed(closeFailure);
+        else
+          throw closeFailure;
+      }
     }
   }
 
