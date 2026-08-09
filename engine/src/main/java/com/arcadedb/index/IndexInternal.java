@@ -88,6 +88,15 @@ public interface IndexInternal extends Index {
   default void releaseBackgroundResources() {
   }
 
+  /**
+   * Closes the index files. The caller must guarantee that every page committed against this index has already
+   * reached disk (e.g. {@code PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database)}) before calling
+   * this: a page still queued for asynchronous flush (the default, see {@code TransactionContext.asyncFlush})
+   * finds its file closed underneath it, is left unflushed, and turns the WAL-preserving recovery that follows
+   * into a torn page instead of a clean replay (issue #5971). {@code LocalDatabase}'s own close path satisfies
+   * this by construction - it never calls this method directly, closing index files only via
+   * {@code FileManager.close()} once the database-wide flush has completed.
+   */
   void close();
 
   void drop();

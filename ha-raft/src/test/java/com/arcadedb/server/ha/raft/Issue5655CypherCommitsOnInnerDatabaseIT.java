@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -236,18 +235,8 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
         .isTrue();
   }
 
-  /**
-   * Counts through a freshly resolved database handle. A snapshot resync reinstalls the follower's database, so a
-   * handle cached before it throws {@code DatabaseIsClosed} - which reads like an infrastructure failure rather than
-   * the divergence that caused it.
-   */
-  private long countOn(final int serverIndex, final String typeName) {
-    // count(id) rather than count(*): the latter reads a cached per-bucket counter, which is the wrong tool
-    // when the question is whether the pages themselves arrived.
-    final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName).next().getProperty("cnt"))
-        .longValue();
-  }
+  // countOn()/awaitCountOn()/awaitValue() moved to BaseRaftHATest (issue #5977): this test was one of two
+  // independent reinventions of the same resolve-fresh-and-retry shape.
 
   private long markedCountOn(final int serverIndex, final String typeName) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
@@ -256,8 +245,9 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
   }
 
   /**
-   * True when the follower has both the type and an index covering {@code code}. Resolved through a fresh handle for
-   * the same reason as {@link #countOn}.
+   * True when the follower has both the type and an index covering {@code code}. Resolved through a fresh handle
+   * for the same reason as {@link BaseRaftHATest#countOn}: a stale handle cached across a snapshot-reinstall
+   * resync throws {@code DatabaseIsClosed}.
    */
   private boolean indexedPropertyExistsOn(final int serverIndex) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
@@ -281,40 +271,8 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
     return false;
   }
 
-  private long awaitCountOn(final int serverIndex, final String typeName, final long expected)
-      throws InterruptedException {
-    return await(expected, () -> countOn(serverIndex, typeName));
-  }
-
   private long awaitMarkedCountOn(final int serverIndex, final String typeName, final long expected)
       throws InterruptedException {
-    return await(expected, () -> markedCountOn(serverIndex, typeName));
-  }
-
-  /**
-   * Polls until the count reaches {@code expected} or the deadline passes, then returns whatever was last read
-   * successfully.
-   * <p>
-   * On timeout it deliberately returns that last good reading rather than a sentinel, so the assertion reports the
-   * state the follower is actually stuck in - {@code but was: 0L}, the write never arrived - instead of a
-   * {@code -1L} that says only "the helper gave up" and hides which of the two happened. {@code -1} survives to the
-   * assertion only when every single attempt threw, which is itself the distinct diagnosis: the follower never
-   * became queryable at all.
-   */
-  private long await(final long expected, final LongSupplier supplier) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + 30_000;
-    long lastRead = -1;
-    while (System.currentTimeMillis() < deadline) {
-      try {
-        lastRead = supplier.getAsLong();
-        if (lastRead == expected)
-          return lastRead;
-      } catch (final RuntimeException e) {
-        // Mid-resync the database is closed and being reinstalled; keep polling until the deadline. The previous
-        // good reading is kept: it describes the follower better than the fact that one poll hit a resync window.
-      }
-      Thread.sleep(250);
-    }
-    return lastRead;
+    return awaitValue(expected, () -> markedCountOn(serverIndex, typeName));
   }
 }

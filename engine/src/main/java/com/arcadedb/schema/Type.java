@@ -541,6 +541,12 @@ public enum Type {
           return string.isEmpty() ? 0L : Long.parseLong(string);
         else if (DateUtils.isDate(value))
           return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
+        else if (isNaN((Number) value))
+          // LONG never goes through narrowToIntegral() - there is no narrower range to check, it IS the widest
+          // integral type - so it needs its own NaN guard (issue #5970).
+          throw new IllegalArgumentException(
+              "Value '" + value + "' is NaN and cannot be converted to type LONG" //
+                  + (property != null ? " for property '" + property.getName() + "'" : ""));
         else
           return ((Number) value).longValue();
 
@@ -779,6 +785,16 @@ public enum Type {
   }
 
   /**
+   * True when {@code value} is a {@link Double} or {@link Float} holding {@code NaN}. Per the JLS narrowing-
+   * conversion rules {@code Double.NaN.longValue()}/{@code Float.NaN.longValue()} return {@code 0}, which is
+   * in-range for every integral target type, so every narrowing path (not just {@link #narrowToIntegral}) must
+   * check this explicitly instead of trusting the range check to catch it (issue #5970).
+   */
+  private static boolean isNaN(final Number value) {
+    return (value instanceof Double doubleValue && doubleValue.isNaN()) || (value instanceof Float floatValue && floatValue.isNaN());
+  }
+
+  /**
    * Range-checks {@code value} before narrowing it to a smaller integral type ({@code BYTE}, {@code SHORT} or
    * {@code INTEGER}). Narrowing with a plain {@code .intValue()}/{@code .shortValue()}/{@code .byteValue()} wraps
    * two's-complement on overflow instead of rejecting - {@code 3000000000L} silently became {@code -1294967296} -
@@ -788,9 +804,18 @@ public enum Type {
    * {@code Infinity}) is caught via the saturating conversion {@link Number#longValue()} already performs. A
    * {@link BigDecimal}/{@link BigInteger} can exceed even the long range, where {@code longValue()} truncates bits
    * instead of saturating, so those two types are range-checked directly against {@code long} bounds first.
+   * <p>
+   * {@code NaN} needs its own guard: per the JLS narrowing-conversion rules {@code Double.NaN.longValue()}/
+   * {@code Float.NaN.longValue()} return {@code 0}, which is in-range for every target type and would otherwise
+   * slip through the range check as a silent {@code 0} (issue #5970).
    */
   private static Number narrowToIntegral(final Number value, final long min, final long max, final String targetType,
       final Property property) {
+    if (isNaN(value))
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
     final long longValue;
     if (value instanceof BigDecimal bigDecimal)
       longValue = bigDecimal.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE

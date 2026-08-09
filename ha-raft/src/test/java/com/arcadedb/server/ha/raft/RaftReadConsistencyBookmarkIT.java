@@ -79,16 +79,22 @@ class RaftReadConsistencyBookmarkIT extends BaseRaftHATest {
 
     final long bookmark = leaderRaft.getLastAppliedIndex();
 
-    final Database followerDb = getServerDatabase(followerIndex, getDatabaseName());
-    try {
-      RaftReplicatedDatabase.applyReadConsistencyContext(
-          Database.READ_CONSISTENCY.READ_YOUR_WRITES, bookmark);
-      final var rs = followerDb.query("sql", "SELECT count(*) as cnt FROM ContextTest");
-      assertThat(rs.hasNext()).isTrue();
-      final long count = rs.next().getProperty("cnt");
-      assertThat(count).isEqualTo(20);
-    } finally {
-      RaftReplicatedDatabase.removeReadConsistencyContext();
-    }
+    // Resolved and retried through withResyncRetry(), not a handle cached before this point: a snapshot-
+    // reinstall resync can close and reinstall the follower's database at any time, and a stale handle then
+    // throws DatabaseIsClosedException, which reads like infrastructure noise rather than the resync it is
+    // (issue #5977).
+    final long count = withResyncRetry(followerIndex, followerDb -> {
+      try {
+        RaftReplicatedDatabase.applyReadConsistencyContext(
+            Database.READ_CONSISTENCY.READ_YOUR_WRITES, bookmark);
+        final var rs = followerDb.query("sql", "SELECT count(*) as cnt FROM ContextTest");
+        assertThat(rs.hasNext()).isTrue();
+        final long cnt = rs.next().getProperty("cnt");
+        return cnt;
+      } finally {
+        RaftReplicatedDatabase.removeReadConsistencyContext();
+      }
+    });
+    assertThat(count).isEqualTo(20);
   }
 }

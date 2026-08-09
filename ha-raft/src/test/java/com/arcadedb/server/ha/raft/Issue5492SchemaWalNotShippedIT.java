@@ -71,7 +71,6 @@ class Issue5492SchemaWalNotShippedIT extends BaseRaftHATest {
     final int followerIndex = 1 - leaderIndex;
 
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
-    final Database followerDb = getServerDatabase(followerIndex, getDatabaseName());
 
     // Create the type through the ordinary DDL path and let it replicate, so the backing files exist
     // on both nodes before the callback below writes into them. Without this the follower would drop
@@ -79,7 +78,10 @@ class Issue5492SchemaWalNotShippedIT extends BaseRaftHATest {
     leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
     leaderDb.command("sql", "INSERT INTO " + TYPE_NAME + " SET id = 0");
     waitForAllServers();
-    assertThat(countOn(followerDb)).as("baseline replicated before the callback").isEqualTo(1);
+    // Resolved through countOn(serverIndex, ...), not a handle cached before this point: a snapshot-reinstall
+    // resync can close and reinstall the follower's database at any time, and a stale handle then throws
+    // DatabaseIsClosedException, which reads like infrastructure noise rather than the resync it is (issue #5977).
+    assertThat(countOn(followerIndex, TYPE_NAME)).as("baseline replicated before the callback").isEqualTo(1);
 
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
 
@@ -94,10 +96,10 @@ class Issue5492SchemaWalNotShippedIT extends BaseRaftHATest {
       return null;
     });
 
-    assertThat(countOn(leaderDb)).as("leader applied the record written inside the callback").isEqualTo(2);
+    assertThat(countOn(leaderIndex, TYPE_NAME)).as("leader applied the record written inside the callback").isEqualTo(2);
 
     waitForAllServers();
-    assertThat(awaitCountOn(followerDb, 2))
+    assertThat(awaitCountOn(followerIndex, TYPE_NAME, 2))
         .as("WAL buffered inside recordFileChanges must reach the follower, not be discarded")
         .isEqualTo(2);
 
@@ -110,25 +112,8 @@ class Issue5492SchemaWalNotShippedIT extends BaseRaftHATest {
     assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
         .as("follower must see no WAL version gap after the callback's pages were replicated")
         .isZero();
-    assertThat(awaitCountOn(followerDb, 3))
+    assertThat(awaitCountOn(followerIndex, TYPE_NAME, 3))
         .as("follower converges with the leader after the subsequent ordinary write")
         .isEqualTo(3);
-  }
-
-  private long countOn(final Database db) {
-    // count() rather than count(*): the latter reads a cached per-bucket counter, which is the wrong
-    // tool when the question is whether the pages themselves arrived.
-    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + TYPE_NAME).next().getProperty("cnt"))
-        .longValue();
-  }
-
-  private long awaitCountOn(final Database db, final long expected) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + 30_000;
-    long count = countOn(db);
-    while (count != expected && System.currentTimeMillis() < deadline) {
-      Thread.sleep(250);
-      count = countOn(db);
-    }
-    return count;
   }
 }

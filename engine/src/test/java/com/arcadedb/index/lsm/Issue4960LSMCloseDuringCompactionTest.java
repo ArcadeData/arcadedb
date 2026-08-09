@@ -19,6 +19,7 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -54,6 +55,16 @@ class Issue4960LSMCloseDuringCompactionTest extends TestHelper {
         .orElseThrow();
 
     assertThat(lsm.scheduleCompaction()).isTrue();
+
+    // Issue #5971: the insert above commits with the default asyncFlush=true (TransactionContext), which only
+    // QUEUES the dirty pages on PageManagerFlushThread - it does not guarantee they have reached disk yet.
+    // IndexInternal.close()'s contract (see its Javadoc) is that the caller must not call it until pending pages
+    // are flushed; the real LocalDatabase close path honors this by running PageManager.waitAllPagesOfDatabaseAreFlushed()
+    // before ever closing index files. This test calls the index's close() directly and in isolation, so it must
+    // uphold that same precondition itself - otherwise the flush thread later finds the file closed under it
+    // (PageManager.flushPage() throws DatabaseMetadataException), the page is left unflushed, and the WAL-preserving
+    // recovery path that follows produces a torn index page instead of a clean one.
+    assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database)).isTrue();
 
     lsm.close();
 
