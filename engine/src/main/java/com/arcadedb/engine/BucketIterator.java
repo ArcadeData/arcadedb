@@ -22,6 +22,8 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -45,7 +47,8 @@ public class BucketIterator implements Iterator<Record> {
   int      totalPages;
   int      currentRecordInPage;
   long     browsed     = 0;
-  private int writeIndex = 0;
+  private int  writeIndex     = 0;
+  private long skippedRecords = 0;
 
   BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
     final DatabaseInternal db = bucket.getDatabase();
@@ -83,6 +86,17 @@ public class BucketIterator implements Iterator<Record> {
     recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
 
+  /**
+   * Number of records skipped so far because they were found corrupted on disk (see the
+   * {@link SerializationException} branch in {@link #fetchNext()}). A correctness-sensitive caller (e.g. an
+   * exact {@code COUNT}) can check this after exhausting the iterator to detect a truncated result; it is not
+   * incremented for the benign concurrent-delete race handled by {@link RecordNotFoundException}, nor for any
+   * other exception, which propagates instead of being counted here (#6015).
+   */
+  public long getSkippedRecordCount() {
+    return skippedRecords;
+  }
+
   @Override
   public boolean hasNext() {
     if (limit > -1 && browsed >= limit)
@@ -115,7 +129,7 @@ public class BucketIterator implements Iterator<Record> {
         if (currentPage == null) {
           if (forwardDirection) {
             // MOVE FORWARD
-            if (nextPageNumber > totalPages)
+            if (nextPageNumber >= totalPages)
               return null;
           } else {
             // MOVE BACKWARDS
@@ -169,7 +183,17 @@ public class BucketIterator implements Iterator<Record> {
                   database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid,
                   view, null);
             }
-          } catch (final Exception e) {
+          } catch (final RecordNotFoundException e) {
+            // BENIGN RACE: the record existed a moment ago when bucket.existsRecord(rid) was checked above, but
+            // was concurrently deleted before lookupByRID()/getRecordInternal() executed. Skip it silently, the
+            // same way the other "turned out to be gone" checks in this loop already do with a plain `continue`.
+          } catch (final SerializationException e) {
+            // KNOWN-CORRUPT ON-DISK RECORD: log and skip so one bad record does not abort an otherwise healthy
+            // full scan (the CHECK DATABASE-shaped case). Every OTHER exception - including one from a
+            // user-supplied AfterRecordReadListener/trigger - is deliberately NOT caught here and propagates
+            // instead, so a real bug surfaces where it can be diagnosed or retried instead of silently looking
+            // like "this bucket has fewer records" (#6015; see #5976 for a listener bug this used to hide).
+            skippedRecords++;
             final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
                 (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
             LogManager.instance().log(this, Level.SEVERE, msg);
