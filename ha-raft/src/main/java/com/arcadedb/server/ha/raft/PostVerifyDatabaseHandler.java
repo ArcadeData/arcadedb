@@ -80,6 +80,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * stop/restart cycle within one JVM does not leak the pool (issue #5890): a fresh
    * {@code PostVerifyDatabaseHandler} (and pool) is otherwise created on every restart while the
    * previous one, and any in-flight peer queries on it, are left running.
+   * <p>
+   * Not instantaneous: {@code shutdownNow()} interrupts pool threads, but a thread blocked in
+   * {@link java.net.HttpURLConnection}'s blocking socket read is not woken by {@code Thread.interrupt()},
+   * so an in-flight peer query can still linger up to {@code PEER_READ_TIMEOUT_MS} after this returns.
+   * Harmless (daemon threads, no new work accepted), just not immediate.
    */
   public void close() {
     peerQueryExecutor.shutdownNow();
