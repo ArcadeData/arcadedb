@@ -60,6 +60,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // database per plugin lifetime instead of on every (re)wrap.
   private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
 
+  // Handlers registered by registerAPI() that own a background executor. A fresh RaftHAPlugin
+  // instance (and thus fresh handler instances) is created by PluginManager on every server
+  // start, so stopService() must close the ones THIS instance created rather than relying on any
+  // static/shared state (issue #5890). Unlike raftHAServer above, plain (non-volatile) fields:
+  // registerAPI() (called from the thread that invoked ArcadeDBServer.start()) and stopService()
+  // (which can run on that same thread OR on the JVM shutdown-hook thread via stopFromShutdownHook())
+  // are never concurrent with each other, but the reason is ArcadeDBServer.lifecycleLock - a
+  // ReentrantLock wrapping startInternal()/stopInternal() - giving a happens-before edge across
+  // threads, not thread confinement. Safe only as long as that lock still wraps both paths.
+  private SnapshotHttpHandler       snapshotHttpHandler;
+  private PostVerifyDatabaseHandler postVerifyDatabaseHandler;
+
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
@@ -133,6 +145,21 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // startService() will set a fresh wrapper and call rewrapDatabases().
     if (server != null)
       server.setDatabaseWrapper(null);
+
+    // Close the handlers' background executors. The null-guards below are not just for the case
+    // where registerAPI() never ran (e.g. a discovered-but-never-wired plugin): this same
+    // stopService() is invoked TWICE on every HA-enabled shutdown - once via PluginManager.stopPlugins()
+    // (RaftHAPlugin is itself a discovered ServerPlugin) and once via ArcadeDBServer.stopInternal()'s
+    // direct haServer.stopService() call, since startService() above did server.setHA(this), making
+    // ArcadeDBServer.haServer the very same instance. The second call must be a no-op (issue #5890).
+    if (snapshotHttpHandler != null) {
+      snapshotHttpHandler.close();
+      snapshotHttpHandler = null;
+    }
+    if (postVerifyDatabaseHandler != null) {
+      postVerifyDatabaseHandler.close();
+      postVerifyDatabaseHandler = null;
+    }
   }
 
   public RaftHAServer getRaftHAServer() {
@@ -190,14 +217,25 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // so isRaftEnabled() cannot be checked here.
     routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster status endpoint registered at /api/v1/cluster");
-    routes.addPrefixPath("/api/v1/ha/snapshot/", new SnapshotHttpHandler(httpServer));
+    // Close a previous handler before replacing it: registerAPI() is expected to run once per plugin
+    // instance (a fresh RaftHAPlugin is created on every server start), but closing defensively here
+    // means a repeated call can never re-leak the executor regardless of that caller-side invariant
+    // (issue #5890).
+    if (snapshotHttpHandler != null)
+      snapshotHttpHandler.close();
+    snapshotHttpHandler = new SnapshotHttpHandler(httpServer);
+    routes.addPrefixPath("/api/v1/ha/snapshot/", snapshotHttpHandler);
     LogManager.instance().log(this, Level.INFO, "Raft snapshot endpoint registered at /api/v1/ha/snapshot/{database}");
     routes.addExactPath("/api/v1/cluster/peer", new PostAddPeerHandler(httpServer, this));
     routes.addPrefixPath("/api/v1/cluster/peer/", new DeletePeerHandler(httpServer, this));
     routes.addExactPath("/api/v1/cluster/leader", new PostTransferLeaderHandler(httpServer, this));
     routes.addExactPath("/api/v1/cluster/stepdown", new PostStepDownHandler(httpServer, this));
     routes.addExactPath("/api/v1/cluster/leave", new PostLeaveHandler(httpServer, this));
-    routes.addPrefixPath("/api/v1/cluster/verify/", new PostVerifyDatabaseHandler(httpServer, this));
+    // Same defensive close as snapshotHttpHandler above (issue #5890).
+    if (postVerifyDatabaseHandler != null)
+      postVerifyDatabaseHandler.close();
+    postVerifyDatabaseHandler = new PostVerifyDatabaseHandler(httpServer, this);
+    routes.addPrefixPath("/api/v1/cluster/verify/", postVerifyDatabaseHandler);
     routes.addPrefixPath("/api/v1/cluster/resync/", new PostResyncDatabaseHandler(httpServer, this));
     // Issue #4147: pre-bootstrap state RPC, used by the bootstrap leader at first cluster
     // formation to collect each peer's (fingerprint, lastTxId) per database.
