@@ -150,13 +150,30 @@ public class BucketIterator implements Iterator<Record> {
             (!forwardDirection && currentRecordInPage > -1)
         ) {
           try {
-            final int recordPositionInPage = (int) currentPage.readUnsignedInt(
-                LocalBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
-            if (recordPositionInPage == 0)
-              // CLEANED CORRUPTED RECORD
-              continue;
+            final int recordPositionInPage;
+            final long[] recordSize;
+            try {
+              recordPositionInPage = (int) currentPage.readUnsignedInt(
+                  LocalBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
+              if (recordPositionInPage == 0)
+                // CLEANED CORRUPTED RECORD
+                continue;
 
-            final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
+              recordSize = currentPage.readNumberAndSize(recordPositionInPage);
+            } catch (final RuntimeException e) {
+              // CORRUPTED SLOT-TABLE ENTRY OR RECORD HEADER: these two calls only ever touch raw page bytes (no
+              // application/listener code runs here), so an out-of-bounds read (IndexOutOfBoundsException /
+              // IllegalArgumentException / BufferUnderflowException depending on which Binary accessor caught it
+              // first) is provably page corruption, the same "bad slot" signal as the RECORD_POSITION==0 case
+              // just above. Skip it like SerializationException below, scoped narrowly to just these two reads so
+              // it cannot also catch a bug from database.lookupByRID()/AfterRecordReadListener (#6015).
+              skippedRecords++;
+              final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
+                  (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
+              LogManager.instance().log(this, Level.SEVERE, msg);
+              continue;
+            }
+
             if (recordSize[0] > 0 || recordSize[0] == LocalBucket.FIRST_CHUNK) {
               // NOT DELETED
               final RID rid = new RID(bucket.fileId,
