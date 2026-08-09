@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
@@ -88,11 +89,13 @@ public class BucketIterator implements Iterator<Record> {
 
   /**
    * Number of records skipped so far for a known, tolerated corruption reason - a corrupted on-disk record
-   * ({@link SerializationException}) or page-layer corruption in a raw slot/pointer read, both via
+   * ({@link SerializationException}), page-layer corruption in a raw slot/pointer read, or a multi-page record
+   * whose chunk chain {@link LocalBucket#isChunkChainBroken} confirms is structurally broken - all via
    * {@link #logSkippedRecord(Exception)} in {@link #fetchNext()}. A correctness-sensitive caller (e.g. an exact
    * {@code COUNT}) can check this after exhausting the iterator to detect a truncated result; it is not
-   * incremented for the benign concurrent-delete race handled by {@link RecordNotFoundException}, nor for any
-   * other exception, which propagates instead of being counted here (#6015).
+   * incremented for the benign concurrent-delete race handled by {@link RecordNotFoundException}, nor for a
+   * {@link ConcurrentModificationException} not confirmed as a broken chain (transient contention propagates
+   * instead so a retry can resolve it), nor for any other exception, which likewise propagates (#6015).
    */
   public long getSkippedRecordCount() {
     return skippedRecords;
@@ -100,8 +103,10 @@ public class BucketIterator implements Iterator<Record> {
 
   /**
    * Counts and logs a record slot skipped for a known, tolerated reason: a corrupted on-disk record
-   * ({@link SerializationException}) or page-layer corruption in a raw slot/pointer read (an unchecked exception
-   * from a {@code BasePage.read*}/{@code Binary} accessor - see the two call sites in {@link #fetchNext()}).
+   * ({@link SerializationException}), page-layer corruption in a raw slot/pointer read (an unchecked exception
+   * from a {@code BasePage.read*}/{@code Binary} accessor), or a confirmed structurally-broken multi-page chunk
+   * chain ({@link ConcurrentModificationException} where {@link LocalBucket#isChunkChainBroken} returns
+   * {@code true}) - see the call sites in {@link #fetchNext()}.
    */
   private void logSkippedRecord(final Exception e) {
     skippedRecords++;
@@ -192,7 +197,21 @@ public class BucketIterator implements Iterator<Record> {
               if (!bucket.existsRecord(rid))
                 continue;
 
-              nextBatch[writeIndex++] = database.lookupByRID(rid, false);
+              try {
+                nextBatch[writeIndex++] = database.lookupByRID(rid, false);
+              } catch (final ConcurrentModificationException e) {
+                if (!bucket.isChunkChainBroken(rid))
+                  // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: loadMultiPageRecord() throws this after
+                  // exhausting TX_RETRIES, but exhausted retries alone do not prove the chain is broken - its
+                  // page-version validation also fails under ordinary concurrent writes to OTHER records sharing
+                  // the chain's pages. Propagate so the caller's retry machinery (if any) re-runs, the same
+                  // disambiguation LocalDatabase.deleteRecordInternal() already applies to this exception.
+                  throw e;
+                // CONFIRMED STRUCTURALLY BROKEN CHAIN: a version-blind walk (isChunkChainBroken) found a genuinely
+                // bad continuation pointer, not just a version mismatch - this is corruption, not contention.
+                writeIndex--; // UNDO THE RESERVED SLOT: THE FAILED CALL DID NOT WRITE INTO IT
+                logSkippedRecord(e);
+              }
 
             } else if (recordSize[0] == LocalBucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
@@ -209,7 +228,18 @@ public class BucketIterator implements Iterator<Record> {
                 continue;
               }
 
-              final Binary view = bucket.getRecordInternal(new RID(bucket.fileId, placeholderTargetPosition), true);
+              final RID placeholderTargetRid = new RID(bucket.fileId, placeholderTargetPosition);
+              final Binary view;
+              try {
+                view = bucket.getRecordInternal(placeholderTargetRid, true);
+              } catch (final ConcurrentModificationException e) {
+                if (!bucket.isChunkChainBroken(placeholderTargetRid))
+                  // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: see the identical disambiguation on the
+                  // NOT-DELETED branch above.
+                  throw e;
+                logSkippedRecord(e);
+                continue;
+              }
 
               if (view == null)
                 continue;
@@ -225,9 +255,11 @@ public class BucketIterator implements Iterator<Record> {
           } catch (final SerializationException e) {
             // KNOWN-CORRUPT ON-DISK RECORD: log and skip so one bad record does not abort an otherwise healthy
             // full scan (the CHECK DATABASE-shaped case). Every OTHER exception - including one from a
-            // user-supplied AfterRecordReadListener/trigger - is deliberately NOT caught here and propagates
-            // instead, so a real bug surfaces where it can be diagnosed or retried instead of silently looking
-            // like "this bucket has fewer records" (#6015; see #5976 for a listener bug this used to hide).
+            // user-supplied AfterRecordReadListener/trigger, and a ConcurrentModificationException not confirmed
+            // as a broken chunk chain by the two dedicated catches above - is deliberately NOT caught here and
+            // propagates instead, so a real bug (or genuine contention needing a real retry) surfaces where it
+            // can be diagnosed or retried instead of silently looking like "this bucket has fewer records"
+            // (#6015; see #5976 for a listener bug this used to hide).
             logSkippedRecord(e);
           } finally {
             if (forwardDirection)
