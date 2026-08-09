@@ -178,10 +178,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             ++documentsCreatedThisFile;
         } catch (final RuntimeException e) {
-          // Only roll back if we own this transaction - an externally-managed database's pre-existing transaction
-          // is left for the caller to reconcile instead of discarding their unrelated pending work.
-          if (ownsTransaction && database.isTransactionActive())
-            database.rollback();
+          rollbackIfOwned(database, ownsTransaction);
 
           if (!skipOnError)
             throw e;
@@ -200,13 +197,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       context.createdDocuments.addAndGet(documentsCreatedThisFile);
 
     } catch (final IOException e) {
-      if (ownsTransaction && database.isTransactionActive())
-        database.rollback();
+      rollbackIfOwned(database, ownsTransaction);
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
       // A source-level failure (parseNext()) escaped the loop and never went through the per-row catch above.
-      if (ownsTransaction && database.isTransactionActive())
-        database.rollback();
+      rollbackIfOwned(database, ownsTransaction);
       throw e;
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
@@ -256,6 +251,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // Throwable-reference-equality lint) - not a "same message" comparison.
     if (asyncError != null && !asyncError.equals(target.getCause()) && !asyncError.equals(target))
       target.addSuppressed(asyncError);
+  }
+
+  /**
+   * Only roll back if we own this transaction - an externally-managed database's pre-existing transaction is left
+   * for the caller to reconcile instead of discarding their unrelated pending work.
+   */
+  private void rollbackIfOwned(final Database database, final boolean ownsTransaction) {
+    if (ownsTransaction && database.isTransactionActive())
+      database.rollback();
   }
 
   /**
@@ -427,8 +431,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
         } catch (final RuntimeException e) {
-          if (ownsTransaction && database.isTransactionActive())
-            database.rollback();
+          rollbackIfOwned(database, ownsTransaction);
 
           if (!skipOnError)
             throw e;
@@ -456,8 +459,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // failure propagates.
       if (!skipOnError)
         database.async().waitCompletion();
-      if (ownsTransaction && database.isTransactionActive())
-        database.rollback();
+      rollbackIfOwned(database, ownsTransaction);
       final ImportException importException = new ImportException("Error on importing CSV", e);
       if (!skipOnError)
         attachConcurrentAsyncError(importException, firstAsyncError);
@@ -469,8 +471,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         database.async().waitCompletion();
         attachConcurrentAsyncError(e, firstAsyncError);
       }
-      if (ownsTransaction && database.isTransactionActive())
-        database.rollback();
+      rollbackIfOwned(database, ownsTransaction);
       throw e;
     } finally {
       // Every path above that can reach here already called database.async().waitCompletion(), so this import's own

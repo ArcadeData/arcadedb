@@ -71,8 +71,10 @@ public class ImporterSettings {
   public int     commitEvery            = 5000;
   public String  mapping                = null;
   /**
-   * Governs document/vertex rows only (see {@link #isSkipOnRowError()}); edges always skip-and-log unconditionally
-   * because an unresolved from/to vertex reference is an expected outcome during graph import, not a data error.
+   * Governs document/vertex rows only (see {@link #isSkipOnRowError()}); CSV edges always skip-and-log
+   * unconditionally because an unresolved from/to vertex reference is an expected outcome during graph import, not a
+   * data error. JSON edges are unaffected by that CSV-specific rule: they're created via the same per-record path as
+   * JSON documents/vertices, so this setting still governs them the same way it governs those.
    */
   public String  onRowError             = "abort";
 
