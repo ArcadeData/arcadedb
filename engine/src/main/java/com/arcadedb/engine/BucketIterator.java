@@ -209,7 +209,10 @@ public class BucketIterator implements Iterator<Record> {
                   throw e;
                 // CONFIRMED STRUCTURALLY BROKEN CHAIN: a version-blind walk (isChunkChainBroken) found a genuinely
                 // bad continuation pointer, not just a version mismatch - this is corruption, not contention.
-                writeIndex--; // UNDO THE RESERVED SLOT: THE FAILED CALL DID NOT WRITE INTO IT
+                // UNDO THE RESERVED SLOT: per JLS 15.26.1, `nextBatch[writeIndex++] = ...` evaluates the array
+                // index (incrementing writeIndex) BEFORE the right-hand side, so the increment already happened
+                // even though lookupByRID() threw before ever writing into that slot. Do not "simplify" this away.
+                writeIndex--;
                 logSkippedRecord(e);
               }
 
