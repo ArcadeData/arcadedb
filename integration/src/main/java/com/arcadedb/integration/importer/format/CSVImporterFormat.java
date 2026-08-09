@@ -152,6 +152,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
+      // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments: if a later row fails
+      // and this method owns the transaction, the whole-file rollback below discards every row counted so far, and
+      // this local count is simply never merged in - unlike a shared AtomicLong, there's nothing to undo. "skip"
+      // mode doesn't use this at all; each row is counted directly, gated on its own commit() succeeding.
+      long documentsCreatedThisFile = 0;
+
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
@@ -178,7 +184,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             context.createdDocuments.incrementAndGet();
             database.begin();
           } else
-            context.createdDocuments.incrementAndGet();
+            ++documentsCreatedThisFile;
         } catch (final RuntimeException e) {
           // Roll back before deciding whether to rethrow, but only if we own this transaction (see ownsTransaction
           // above): in "abort" mode, when we do own it, rows 1..N-1 are already save()d but uncommitted in the
@@ -202,6 +208,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // pending work as a side effect of this import succeeding.
       if (ownsTransaction)
         database.commit();
+
+      // Merged only once the whole file has parsed and (when owned) committed successfully - see
+      // documentsCreatedThisFile above for why this isn't tracked directly in context.createdDocuments in "abort"
+      // mode.
+      context.createdDocuments.addAndGet(documentsCreatedThisFile);
 
     } catch (final IOException e) {
       if (ownsTransaction && database.isTransactionActive())

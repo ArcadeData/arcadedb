@@ -246,6 +246,12 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
           .hasRootCauseInstanceOf(IllegalArgumentException.class);
 
+      // Alice (row 1) was already save()d and had already incremented createdDocuments locally before Bob (row 2)
+      // failed and rolled back the whole transaction, including Alice: createdDocuments must not still report her
+      // as created, even though the exception path never returns context.toMap() to a normal caller - getContext()
+      // remains directly reachable, and a stale count here would misrepresent what actually persisted.
+      assertThat(importer.getContext().createdDocuments.get()).isZero();
+
       try (final Database db = databaseFactory.open()) {
         // ALICE (ROW 1) WAS ALREADY save()D BEFORE BOB (ROW 2) FAILED: THE WHOLE TRANSACTION, INCLUDING ALICE, MUST BE
         // ROLLED BACK, NOT JUST LEFT OPEN FOR closeDatabase() TO COMMIT ON THE WAY OUT.
@@ -925,7 +931,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
     final Database db = databaseFactory.create();
     try {
       final Importer importer = new Importer(db, null);
-      importer.settings.vertices = "src/test/resources/importer-vertices-outofrange-firstrow.csv";
+      importer.settings.vertices = "src/test/resources/importer-outofrange-firstrow.csv";
       importer.settings.vertexTypeName = "Node";
       importer.settings.typeIdProperty = "Id";
       importer.settings.typeIdType = "Long";
@@ -966,7 +972,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
     final Database db = databaseFactory.create();
     try {
       final Importer importer = new Importer(db, null);
-      importer.settings.documents = "src/test/resources/importer-documents-outofrange-firstrow.csv";
+      importer.settings.documents = "src/test/resources/importer-outofrange-firstrow.csv";
       importer.settings.documentTypeName = "Widget";
       importer.settings.typeIdProperty = "Id";
       importer.settings.typeIdType = "Long";
