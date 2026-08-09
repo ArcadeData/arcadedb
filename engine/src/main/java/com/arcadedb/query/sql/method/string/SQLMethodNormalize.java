@@ -18,13 +18,16 @@
  */
 package com.arcadedb.query.sql.method.string;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.PatternConst;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.text.Normalizer;
+import java.util.regex.Pattern;
 
 /**
  * @author Johann Sorel (Geomatys)
@@ -50,7 +53,12 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
 
       final String normalized = Normalizer.normalize(value.toString(), form);
       if (params != null && params.length > 1) {
-        return normalized.replaceAll(FileUtils.getStringContent(params[1].toString()), "");
+        // The 2nd argument is a caller-supplied regex, not a literal (issue #5886) - bounded the same way as
+        // every other user-controlled regex entry point. context is null in some direct/unit-test invocations
+        // of this method (see SQLMethodNormalizeTest); GlobalConfiguration.getValueAsLong(Database) falls back
+        // to the compiled-in default in that case.
+        final long regexTimeout = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context != null ? context.getDatabase() : null);
+        return TimeBoundRegex.replaceAll(Pattern.compile(FileUtils.getStringContent(params[1].toString())), normalized, "", regexTimeout);
       }
       return PatternConst.PATTERN_DIACRITICAL_MARKS.matcher(normalized).replaceAll("");
     }

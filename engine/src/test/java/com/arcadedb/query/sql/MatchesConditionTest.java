@@ -94,6 +94,27 @@ class MatchesConditionTest extends TestHelper {
   }
 
   @Test
+  void patternTextDeadlineDoesNotCollideWithTheDeadlineCacheKey() {
+    // Issue #5886, 9th review pass: the deadline shared across a query's MATCHES evaluations was originally
+    // cached under the key "MATCHES_DEADLINE" - identical to the pattern-cache key the literal pattern text
+    // "DEADLINE" produces ("MATCHES_" + "DEADLINE"). A row using that pattern threw ClassCastException
+    // (java.util.regex.Pattern cast to java.lang.Long) on the very first evaluation, since both the compiled
+    // Pattern and the shared deadline were being stored under the exact same context cache slot. The deadline
+    // key now lives entirely outside the "MATCHES_" namespace the pattern cache uses, so it cannot collide
+    // with "MATCHES_" + <any regex text>, however that text reads.
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE DeadlineCollision");
+      database.command("sql", "INSERT INTO DeadlineCollision SET name = 'DEADLINE'");
+      database.command("sql", "INSERT INTO DeadlineCollision SET name = 'other'");
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT name FROM DeadlineCollision WHERE name MATCHES 'DEADLINE'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("DEADLINE");
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
   void parameterRegexWithMultipleDotsIsAccepted() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE ParamDotted");

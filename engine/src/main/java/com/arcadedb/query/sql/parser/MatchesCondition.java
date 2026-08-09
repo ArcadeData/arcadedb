@@ -89,7 +89,14 @@ public class MatchesCondition extends BooleanExpression {
     // ever not bound to the context - practically always the case (a MatchesCondition is only ever constructed
     // by the SQL parser and evaluated with a database already bound), but free insurance against a future
     // evaluation path that isn't, same as LikeOperator/ILikeOperator/TextRegexReplace.
-    final String deadlineKey = "MATCHES_DEADLINE";
+    //
+    // The key must NOT start with "MATCHES_": the pattern cache above keys on "MATCHES_" + <arbitrary,
+    // attacker-controlled regex text>, so any fixed key sharing that prefix collides for whichever regex text
+    // completes it - e.g. a first attempt at this key, "5886_MATCHES_CONTEXT_DEADLINE", collided with pattern text
+    // "DEADLINE" (WHERE x MATCHES 'DEADLINE'), overwriting the Pattern cache slot with a Long or vice versa and
+    // throwing ClassCastException on the very first row. A key outside the "MATCHES_" namespace entirely - this
+    // one starts with "5886_", not "MATCHES_" - cannot equal "MATCHES_" + anything, however the regex text reads.
+    final String deadlineKey = "5886_MATCHES_CONTEXT_DEADLINE";
     Long deadline = (Long) context.getCachedValue(deadlineKey);
     if (deadline == null) {
       deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));

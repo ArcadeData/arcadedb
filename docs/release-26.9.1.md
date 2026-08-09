@@ -422,4 +422,21 @@ per-scan fix: `BinaryCompareOperator`, the interface `LikeOperator`/`ILikeOperat
 comparison operator was judged out of proportion for this fix - a conscious, narrower-scope tradeoff, documented
 in `LikeOperator`, not an oversight.
 
+A 7th review pass found a second regression, caught the same way: `MatchesCondition`'s query-wide deadline was
+cached under the fixed key `"MATCHES_DEADLINE"` in the same flat, string-keyed `CommandContext` cache used for
+compiled patterns (keyed `"MATCHES_" + <regex text>`). A query using the literal pattern text `DEADLINE` (e.g.
+`WHERE name MATCHES 'DEADLINE'`) produced the identical key for both, so the Pattern and the deadline overwrote
+each other's cache slot and every row threw `ClassCastException` on the very first evaluation - 100%
+reproducible, not a theoretical race. The deadline key now lives entirely outside the `"MATCHES_"` namespace, so
+it cannot collide with `"MATCHES_" + <any regex text>` regardless of what that text reads.
+
+The same pass also found two more unbounded entry points reachable from plain SQL: the `.split(delimiter)`
+method syntax (`field.split(pattern)`) passed its delimiter straight to `String.split(regex)` unescaped, unlike
+its three siblings (the `split()` function, `text.split()`, and Cypher's `split()`), which all correctly treat
+the delimiter as a literal via `Pattern.quote(...)` - now fixed to match them, which removes the risk entirely
+rather than just bounding it, since a `Pattern.quote()`d literal can never form a catastrophic shape. The
+`.normalize(form, pattern)` method's optional second argument, by contrast, is *meant* to be a real regex (it
+controls what gets stripped after Unicode normalization), so that one is bounded through `TimeBoundRegex` like
+every other intentional regex entry point, not literalized.
+
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)
