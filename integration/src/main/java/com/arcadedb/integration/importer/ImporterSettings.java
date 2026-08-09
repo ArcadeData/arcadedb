@@ -99,7 +99,10 @@ public class ImporterSettings {
    * bucket write by then, and only rolling back that one row's own transaction can undo it without also discarding
    * an unrelated, already-committed row. In short, "skip" trades import throughput - effectively a batch size of 1
    * for the whole run, not just for the failing row - for the guarantee that a bad row can never take a good one
-   * down with it, nor leave a partially-written "ghost" record behind.
+   * down with it, nor leave a partially-written "ghost" record behind. For vertices specifically, the cost is
+   * larger than just batching down to 1: dropping {@code database.async()} entirely also gives up its worker-thread
+   * parallelism, so a vertex import under this setting is fully synchronous and single-threaded regardless of
+   * {@code -commitEvery}/{@code -parallel}, which are silently inapplicable there while this is enabled.
    * <p>
    * Because of that per-row transaction ownership, "skip" requires exclusive control of the transaction and cannot
    * be used while one is already active on the target {@code Database} - e.g. inside an embedding caller's own

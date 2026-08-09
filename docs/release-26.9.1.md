@@ -292,8 +292,10 @@ bucket write whose index entry failed). CSV vertex imports, which normally persi
 batches, switch to a synchronous per-vertex save in this mode for the same reason - an async batch rollback
 would otherwise take down every other vertex queued in the same uncommitted batch. **That per-row commit is
 also the throughput cost of enabling this**: for the whole run, not just around a failing row, `-onRowError
-skip` drops effective batching to one row per transaction. Reserve it for imports where an occasional bad
-row is expected and worth tolerating, not as an always-on default.
+skip` drops effective batching to one row per transaction. For vertices the cost is larger still - dropping
+`database.async()` entirely also gives up its worker-thread parallelism, so `-commitEvery`/`-parallel` are
+silently inapplicable to vertices while this is enabled. Reserve it for imports where an occasional bad row
+is expected and worth tolerating, not as an always-on default.
 
 Skipped rows are counted in the existing `errors` field of the import summary, alongside any other
 non-fatal issue an import already reports (e.g. a nested JSON conversion failure) - there is no separate
