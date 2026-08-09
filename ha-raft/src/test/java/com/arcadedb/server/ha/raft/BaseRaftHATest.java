@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.HAServerPlugin;
@@ -30,6 +32,8 @@ import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.File;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -39,7 +43,8 @@ import java.util.logging.Level;
  */
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
-  private static final int BASE_RAFT_PORT = 2434;
+  private static final int  BASE_RAFT_PORT          = 2434;
+  private static final long RESYNC_RETRY_TIMEOUT_MS = 30_000;
 
   /**
    * Returns the peer ID for a given server index in the test cluster.
@@ -312,5 +317,88 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     // Wait for the restarted peer to catch up to the current leader's last applied index
     waitForReplicationIsCompleted(serverIndex);
     LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted and caught up", serverIndex);
+  }
+
+  /**
+   * Runs {@code operation} against a freshly resolved handle for server {@code serverIndex}'s database, retrying
+   * with another freshly resolved handle while {@code operation} throws {@link DatabaseIsClosedException} - the
+   * shape a snapshot-reinstall resync leaves when it closes and reinstalls the database out from under a handle
+   * resolved (or held) before the resync ran (issue #5977).
+   * <p>
+   * Three independent HA ITs hit this once each: two reinvented this exact resolve-and-retry shape ad hoc
+   * ({@code Issue5492TruncateBatchNotReplicatedIT}, {@code Issue5655CypherCommitsOnInnerDatabaseIT}) and a third
+   * had no defense at all ({@code Issue5492SchemaWalNotShippedIT}, {@code RaftReadConsistencyBookmarkIT}). This is
+   * the shared version, so a new HA IT that queries a follower shortly after inducing a resync gets it for free
+   * instead of needing to know the trap exists.
+   * <p>
+   * {@code operation} must resolve nothing itself but the {@code Database} handed to it - it must not close over
+   * a handle obtained outside this method, or the retry cannot help it. A simpler "wait for any in-flight resync
+   * to finish, then resolve once" helper is not enough: the resync can start in the gap between that wait check
+   * and the use that follows it, so retrying on the actual failure is the only shape that is not itself racy.
+   */
+  protected <T> T withResyncRetry(final int serverIndex, final Function<Database, T> operation) {
+    final long deadline = System.currentTimeMillis() + RESYNC_RETRY_TIMEOUT_MS;
+    while (true) {
+      final Database db = getServerDatabase(serverIndex, getDatabaseName());
+      try {
+        return operation.apply(db);
+      } catch (final DatabaseIsClosedException e) {
+        if (System.currentTimeMillis() >= deadline)
+          throw e;
+        LogManager.instance().log(this, Level.INFO,
+            "TEST: database '%s' on server %d closed mid-operation (snapshot-reinstall resync); retrying with a fresh handle",
+            getDatabaseName(), serverIndex);
+        try {
+          Thread.sleep(250);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new RuntimeException(ie);
+        }
+      }
+    }
+  }
+
+  /**
+   * Counts through a freshly resolved database handle. {@code count(id)} rather than {@code count(*)}: the
+   * latter reads a cached per-bucket counter, the wrong tool when the question is whether the pages themselves
+   * arrived. A single attempt - no retry of its own - so a {@link DatabaseIsClosedException} propagates to the
+   * caller, which is what {@link #awaitCountOn} relies on to treat a resync window as "try again shortly"
+   * rather than a hard failure.
+   */
+  protected long countOn(final int serverIndex, final String typeName) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName).next().getProperty("cnt")).longValue();
+  }
+
+  /**
+   * Polls {@code supplier} until it returns {@code expected} or the deadline passes, then returns whatever was
+   * last read successfully.
+   * <p>
+   * On timeout it deliberately returns that last good reading rather than a sentinel, so the assertion reports
+   * the state the follower is actually stuck in - {@code but was: 0L}, the write never arrived - instead of a
+   * {@code -1L} that says only "the helper gave up" and hides which of the two happened. {@code -1} survives to
+   * the assertion only when every single attempt threw, which is itself the distinct diagnosis: the follower
+   * never became queryable at all.
+   */
+  protected long awaitValue(final long expected, final LongSupplier supplier) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + RESYNC_RETRY_TIMEOUT_MS;
+    long lastRead = -1;
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        lastRead = supplier.getAsLong();
+        if (lastRead == expected)
+          return lastRead;
+      } catch (final RuntimeException e) {
+        // Mid-resync the database is closed and being reinstalled; keep polling until the deadline. The
+        // previous good reading is kept: it describes the follower better than the fact that one poll hit a
+        // resync window.
+      }
+      Thread.sleep(250);
+    }
+    return lastRead;
+  }
+
+  protected long awaitCountOn(final int serverIndex, final String typeName, final long expected) throws InterruptedException {
+    return awaitValue(expected, () -> countOn(serverIndex, typeName));
   }
 }
