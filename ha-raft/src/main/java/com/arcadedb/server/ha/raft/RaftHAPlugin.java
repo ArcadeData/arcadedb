@@ -63,7 +63,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // Handlers registered by registerAPI() that own a background executor. A fresh RaftHAPlugin
   // instance (and thus fresh handler instances) is created by PluginManager on every server
   // start, so stopService() must close the ones THIS instance created rather than relying on any
-  // static/shared state (issue #5890).
+  // static/shared state (issue #5890). Unlike raftHAServer above, plain (non-volatile) fields:
+  // registerAPI()/stopService() only ever run on the server's own sequential start/stop thread,
+  // never concurrently with each other or with one another's reads of these two fields.
   private SnapshotHttpHandler       snapshotHttpHandler;
   private PostVerifyDatabaseHandler postVerifyDatabaseHandler;
 
