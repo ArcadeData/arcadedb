@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
@@ -44,7 +45,7 @@ class PostVerifyDatabaseHandlerRejectedExecutionTest {
     final PostVerifyDatabaseHandler handler = new PostVerifyDatabaseHandler(null, new RaftHAPlugin());
     handler.close(); // shuts down peerQueryExecutor, simulating a concurrent stopService()
 
-    final RaftPeer peer = RaftPeer.newBuilder().setId("peer1").build();
+    final RaftPeer peer = RaftPeer.newBuilder().setId(RaftPeerId.valueOf("peer1")).build();
     // raftHAServer/localChecksums/user are never dereferenced: the pool rejects the submission before
     // queryPeer's lambda body ever runs, so null is safe here.
     final CompletableFuture<JSONObject> future =

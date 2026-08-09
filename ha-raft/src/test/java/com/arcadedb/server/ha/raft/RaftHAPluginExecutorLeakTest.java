@@ -82,6 +82,26 @@ class RaftHAPluginExecutorLeakTest {
   }
 
   @Test
+  void stopServiceIsIdempotentWhenCalledTwiceBackToBack() throws Exception {
+    // The real-world trigger for the null-guards: ArcadeDBServer.stopInternal() invokes stopService() on
+    // this SAME instance twice on every HA shutdown - once via PluginManager.stopPlugins() (RaftHAPlugin
+    // is itself a discovered ServerPlugin) and once directly via haServer.stopService(), since
+    // startService() aliases ArcadeDBServer.haServer to this instance via server.setHA(this) (issue #5890).
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.registerAPI(null, new PathHandler());
+    final SnapshotHttpHandler snapshotHandler = getField(plugin, "snapshotHttpHandler", SnapshotHttpHandler.class);
+    final ScheduledExecutorService watchdogExecutor = getField(snapshotHandler, "watchdogExecutor", ScheduledExecutorService.class);
+    final PostVerifyDatabaseHandler verifyHandler = getField(plugin, "postVerifyDatabaseHandler", PostVerifyDatabaseHandler.class);
+    final ExecutorService peerQueryExecutor = getField(verifyHandler, "peerQueryExecutor", ExecutorService.class);
+
+    plugin.stopService();
+    plugin.stopService(); // must be a no-op, not throw
+
+    assertThat(watchdogExecutor.isShutdown()).isTrue();
+    assertThat(peerQueryExecutor.isShutdown()).isTrue();
+  }
+
+  @Test
   void registerAPIClosesAPreviouslyRegisteredSnapshotHandlerBeforeReplacingIt() throws Exception {
     // Defensive close in registerAPI() itself: even without an intervening stopService(), a second
     // registerAPI() call must not leak the first handler's executor (issue #5890).
