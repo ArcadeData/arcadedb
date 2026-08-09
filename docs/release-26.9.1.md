@@ -401,16 +401,25 @@ A fifth review pass found the most exposed entry point of all: the schema-level 
 insert/update of that property with no bound whatsoever - `DocumentValidator.validateField`. Unlike every
 other entry point here, this needs no query privileges at all: any write path (REST, any wire protocol) into
 a validated type is enough, and admin-defined validation patterns (classic email/URL regexes, in particular)
-are a notorious source of accidentally-catastrophic shapes. Now bounded the same way as everything else.
+are a notorious source of accidentally-catastrophic shapes. Now bounded the same way as everything else - which
+means the same default-1000ms tradeoff described above for full-text/PromQL applies here too: a legitimate,
+non-catastrophic pattern validated against a very large field value that previously took over a second (however
+undesirable that already was) now fails the write with `TimeoutException` instead. Raise
+`arcadedb.command.regexTimeout` for a database with that kind of validation workload.
 
 Also fixed: `MATCHES`/`=~` shared one deadline across a multi-value evaluation (an earlier fix in this issue)
 but still gave each *row* of a table/graph scan its own fresh budget, so a table shaped so every row triggers
 catastrophic backtracking could still cost up to `rowCount * regexTimeout` overall. Both now cache one deadline
-for the lifetime of the query - `MatchesCondition` on the `CommandContext` (the same mechanism already used to
-cache the compiled `Pattern`), `RegexExpression` as an AST-node instance field (ditto) - closing the same gap
-already closed for full-text and PromQL scans. `LIKE`/`ILIKE` could not get the same fix: `BinaryCompareOperator`,
-the interface `LikeOperator`/`ILikeOperator` implement, has no `CommandContext` to cache a query-wide deadline
-on (only a `Database`), and widening that interface across every comparison operator was judged out of
-proportion for this fix - a conscious, narrower-scope tradeoff, documented in `LikeOperator`, not an oversight.
+for the lifetime of the query on the `CommandContext` - the same per-execution object `MatchesCondition` already
+used to cache the compiled `Pattern`. `RegexExpression` needed the same context-based caching, not an AST-node
+instance field: unlike a compiled `Pattern` (content-addressed, safe to reuse indefinitely), a deadline is a
+point in time, and `CypherStatementCache` caches parsed queries - this AST node included - by query text across
+repeated executions, so an instance-field deadline would go stale after the first execution and then make every
+later run of that same cached query throw a spurious `TimeoutException` on any pattern, benign or not, until
+LRU eviction; a 6th review pass caught this exact regression before it merged. `LIKE`/`ILIKE` could not get the
+per-scan fix: `BinaryCompareOperator`, the interface `LikeOperator`/`ILikeOperator` implement, has no
+`CommandContext` to cache a query-wide deadline on (only a `Database`), and widening that interface across every
+comparison operator was judged out of proportion for this fix - a conscious, narrower-scope tradeoff, documented
+in `LikeOperator`, not an oversight.
 
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)

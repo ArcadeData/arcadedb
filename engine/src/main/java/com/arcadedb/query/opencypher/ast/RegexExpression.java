@@ -32,13 +32,17 @@ import java.util.regex.PatternSyntaxException;
  * Example: n.name =~ '.*Smith', n.email =~ '.*@example\\.com'
  */
 public class RegexExpression implements BooleanExpression {
+  // Deadline caching MUST live on the CommandContext (below), never as an instance field on this class: unlike
+  // compiledPattern (content-addressed, safe to reuse across executions), a deadline is a point in time tied to
+  // one execution. CypherStatementCache caches parsed queries - including this AST node - by query text across
+  // repeated executions, so an instance-field deadline would be computed once on the first execution and then,
+  // once it lapsed (trivially within ~1s at the default regexTimeout), make every later execution of that same
+  // cached query text throw a spurious TimeoutException on any pattern, catastrophic or not.
+  private static final String DEADLINE_CACHE_KEY = "REGEX_EXPRESSION_DEADLINE";
+
   private final Expression expression;
   private final Expression pattern;
   private Pattern compiledPattern;
-  // One deadline for the lifetime of this AST node, i.e. every row a WHERE ... =~ clause scans - not
-  // recomputed per row, and not tied to compiledPattern's per-row recompilation (a row-varying pattern string
-  // must not also reset the time budget). See MatchesCondition.matches() for the equivalent SQL-side rationale.
-  private Long    deadline;
 
   public RegexExpression(final Expression expression, final Expression pattern) {
     this.expression = expression;
@@ -80,8 +84,11 @@ public class RegexExpression implements BooleanExpression {
     // with one already bound). See MatchesCondition.matches() for why context.getConfiguration() would silently
     // ignore a per-database override here.
     final String valueStr = value.toString();
-    if (deadline == null)
+    Long deadline = (Long) context.getCachedValue(DEADLINE_CACHE_KEY);
+    if (deadline == null) {
       deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
+      context.setCachedValue(DEADLINE_CACHE_KEY, deadline);
+    }
     return TimeBoundRegex.matchesUntil(compiledPattern, valueStr, deadline);
   }
 

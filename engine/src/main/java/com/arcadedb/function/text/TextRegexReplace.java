@@ -87,6 +87,12 @@ public class TextRegexReplace extends AbstractTextFunction {
       // Catastrophic backtracking (issue #5886): TimeBoundRegex already bounds this to regexTimeout instead of
       // running unbounded, but still surfaces it through this function's existing IllegalArgumentException contract.
       throw new IllegalArgumentException("Regex pattern caused catastrophic backtracking and was aborted: " + regex, e);
+    } catch (final StackOverflowError e) {
+      // TimeBoundRegex only converts a StackOverflowError into a TimeoutException when regexTimeout is active;
+      // with it explicitly disabled (arcadedb.command.regexTimeout <= 0), a stack-overflow-inducing pattern
+      // propagates as itself instead - keep this function's original, documented IllegalArgumentException
+      // contract for that combination too, not just for the bounded case.
+      throw new IllegalArgumentException("Regex pattern caused stack overflow (possible catastrophic backtracking): " + regex, e);
     }
   }
 }
