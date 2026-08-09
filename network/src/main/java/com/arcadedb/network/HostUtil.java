@@ -40,7 +40,7 @@ public class HostUtil {
         throw new IllegalArgumentException("Invalid host " + host);
 
       final String addr = host.substring(1, closeBracket);
-      if (addr.isEmpty())
+      if (addr.isEmpty() || addr.indexOf('[') >= 0 || addr.indexOf(']') >= 0)
         throw new IllegalArgumentException("Invalid host " + host);
 
       if (closeBracket == host.length() - 1)
@@ -79,6 +79,10 @@ public class HostUtil {
     throw new IllegalArgumentException("Invalid host " + host);
   }
 
+  /**
+   * Validates that {@code port} is a non-empty integer in the range 1-65535. The full original
+   * {@code host} string is only used to name the offending value in the exception message.
+   */
   private static String validatePort(final String host, final String port) {
     if (port.isEmpty())
       throw new IllegalArgumentException("Invalid host " + host);

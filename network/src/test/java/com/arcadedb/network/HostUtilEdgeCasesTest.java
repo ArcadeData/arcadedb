@@ -203,4 +203,25 @@ class HostUtilEdgeCasesTest {
     assertThat(HostUtil.parseHostAddress("host:1", HostUtil.CLIENT_DEFAULT_PORT)[1]).isEqualTo("1");
     assertThat(HostUtil.parseHostAddress("host:65535", HostUtil.CLIENT_DEFAULT_PORT)[1]).isEqualTo("65535");
   }
+
+  @Test
+  void bracketedIPv6NonNumericPortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[::1]:abc", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void bracketedIPv6NegativePortIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[::1]:-1", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
+
+  @Test
+  void embeddedBracketInAddressIsRejected() {
+    assertThatThrownBy(() -> HostUtil.parseHostAddress("[a[b]:80", HostUtil.CLIENT_DEFAULT_PORT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid host");
+  }
 }
