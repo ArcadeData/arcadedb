@@ -349,6 +349,13 @@ all regardless of configuration. `charAt()` checks the deadline every 256 calls 
 keep the check off the hot path for the overwhelming majority of well-behaved patterns that never come close
 to that many backtracking steps in the first place.
 
+A `MATCHES`/`=~` evaluation against a multi-value (list-typed) property shares one deadline across every item
+rather than giving each item its own full budget - otherwise a crafted list could still tie up the thread for
+`item count * regexTimeout`. Whichever item trips the deadline aborts the whole `WHERE` evaluation with a
+`TimeoutException`, the same as a single-value timeout: a catastrophic pattern is treated as a query failure,
+not as that one item silently failing to match, since swallowing it would let the pattern keep consuming its
+full budget on every future scan without ever surfacing.
+
 SQL `LIKE`/`ILIKE` were audited for the same gap and found not to need it: `QueryHelper.convertForRegExp`
 escapes every regex metacharacter except `%` (`.*`) and `?` (`.`), so the generated pattern can never contain
 grouping, alternation, or nested quantifiers - the shapes catastrophic backtracking requires. It stays on
