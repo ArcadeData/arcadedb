@@ -227,7 +227,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(result.get("errors")).isEqualTo(1L);
 
       try (final Database db = databaseFactory.open()) {
-        // BOB'S "99999" DOES NOT FIT A SHORT: THAT ROW IS SKIPPED, THE OTHER TWO ARE IMPORTED
+        // Bob's "99999" does not fit a SHORT: that row is skipped, the other two are imported
         assertThat(db.countType("Node", true)).isEqualTo(2);
         assertThat(db.lookupByKey("Node", "Id", 1L).next().getRecord().asVertex().getString("Name")).isEqualTo("Alice");
         assertThat(db.lookupByKey("Node", "Id", 3L).next().getRecord().asVertex().getString("Name")).isEqualTo("Carol");
@@ -267,7 +267,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(result.get("errors")).isEqualTo(1L);
 
       try (final Database db = databaseFactory.open()) {
-        // BOB'S "99999" DOES NOT FIT A SHORT: THAT ROW IS SKIPPED, THE OTHER TWO ARE IMPORTED
+        // Bob's "99999" does not fit a SHORT: that row is skipped, the other two are imported
         assertThat(db.countType("Widget", true)).isEqualTo(2);
         db.iterateType("Widget", true).forEachRemaining(record -> assertThat(record.asDocument().getString("Name"))
             .isIn("Alice", "Carol"));
@@ -310,8 +310,8 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(importer.getContext().createdDocuments.get()).isZero();
 
       try (final Database db = databaseFactory.open()) {
-        // ALICE (ROW 1) WAS ALREADY save()D BEFORE BOB (ROW 2) FAILED: THE WHOLE TRANSACTION, INCLUDING ALICE, MUST BE
-        // ROLLED BACK, NOT JUST LEFT OPEN FOR closeDatabase() TO COMMIT ON THE WAY OUT.
+        // Alice (row 1) was already save()d before Bob (row 2) failed: the whole transaction, including Alice, must
+        // be rolled back, not just left open for closeDatabase() to commit on the way out.
         assertThat(db.countType("Widget", true)).isZero();
       }
     } finally {
@@ -509,7 +509,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(result.get("errors")).isEqualTo(1L);
 
       try (final Database db = databaseFactory.open()) {
-        // BANANA'S "99999" DOES NOT FIT A SHORT: THAT RECORD IS SKIPPED, THE OTHER TWO ARE IMPORTED
+        // Banana's "99999" does not fit a SHORT: that record is skipped, the other two are imported
         assertThat(db.countType("Food", true)).isEqualTo(2);
         db.iterateType("Food", true).forEachRemaining(record -> assertThat(record.asDocument().getString("name"))
             .isIn("Apple", "Cherry"));
@@ -617,10 +617,10 @@ class Issue5968ImporterSkipOnRowErrorTest {
       assertThat(result.get("errors")).isEqualTo(1L);
 
       try (final Database db = databaseFactory.open()) {
-        // BOB IS MISSING THE MANDATORY Email PROPERTY: IT FAILS AT PERSIST TIME (DocumentValidator, NOT THE SYNCHRONOUS
-        // Type-CONVERSION PATH), THE OTHER TWO ARE IMPORTED. "skip" MODE SAVES EACH VERTEX SYNCHRONOUSLY IN ITS OWN
-        // TRANSACTION (SEE loadVertices), SO A FAILING ROW'S rollback() CAN NEVER TOUCH A PREVIOUSLY COMMITTED SIBLING -
-        // WHICH IS WHY THE SURVIVING COUNT CAN BE ASSERTED EXACTLY HERE.
+        // Bob is missing the mandatory Email property: it fails at persist time (DocumentValidator, not the
+        // synchronous Type-conversion path), the other two are imported. "skip" mode saves each vertex synchronously
+        // in its own transaction (see loadVertices), so a failing row's rollback() can never touch a previously
+        // committed sibling - which is why the surviving count can be asserted exactly here.
         assertThat(db.lookupByKey("Node", "Id", 2L).hasNext()).isFalse();
         assertThat(db.countType("Node", true)).isEqualTo(2);
         assertThat(db.lookupByKey("Node", "Id", 1L).next().getRecord().asVertex().getString("Name")).isEqualTo("Alice");
@@ -654,13 +654,13 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
       final Map<String, Object> result = importer.load();
       assertThat(result.get("errors")).isEqualTo(1L);
-      // THE DUPLICATE IS ONLY DETECTED AT commit() TIME (AFTER save() ALREADY SUCCEEDED), SO createdVertices MUST
-      // ONLY BE INCREMENTED ONCE commit() ITSELF SUCCEEDS - OTHERWISE THIS WOULD OVERCOUNT TO 4.
+      // The duplicate is only detected at commit() time (after save() already succeeded), so createdVertices must
+      // only be incremented once commit() itself succeeds - otherwise this would overcount to 4.
       assertThat(result.get("createdVertices")).isEqualTo(3L);
 
       try (final Database db = databaseFactory.open()) {
-        // BOB'S DUPLICATE Id=2 ROW MUST LEAVE NO TRACE: NEITHER A SECOND INDEX ENTRY NOR AN UNINDEXED GHOST IN THE
-        // BUCKET. IF THE GHOST-RECORD BUG WERE PRESENT, countType() WOULD REPORT 4 INSTEAD OF 3.
+        // Bob's duplicate Id=2 row must leave no trace: neither a second index entry nor an unindexed ghost in the
+        // bucket. If the ghost-record bug were present, countType() would report 4 instead of 3.
         assertThat(db.countType("Node", true)).isEqualTo(3);
         assertThat(db.lookupByKey("Node", "Id", 2L).next().getRecord().asVertex().getString("Name")).isEqualTo("Bob");
         assertThat(db.lookupByKey("Node", "Id", 1L).next().getRecord().asVertex().getString("Name")).isEqualTo("Alice");
@@ -777,19 +777,19 @@ class Issue5968ImporterSkipOnRowErrorTest {
       });
 
       final Map<String, Object> result = importer.load();
-      // THE NESTED catch SETS recordFailed BUT DOES NOT ITSELF INCREMENT context.errors: THE OUTER parseRecords()
-      // CATCH IS THE SOLE INCREMENT POINT, SO THIS MUST BE EXACTLY 1, NOT JUST NON-NULL.
+      // The nested catch sets recordFailed but does not itself increment context.errors: the outer parseRecords()
+      // catch is the sole increment point, so this must be exactly 1, not just non-null.
       assertThat(result.get("errors")).isEqualTo(1L);
-      // createRecord() COUNTS A NEW Order/Customer AS SOON AS IT IS ALLOCATED, BEFORE PROPERTIES ARE SET OR THE
-      // TRANSACTION COMMITS: BOB'S Order AND ITS NESTED Customer MUST BOTH BE EXCLUDED HERE (2 Orders + 2 Customers),
-      // NOT JUST ABSENT FROM THE DATABASE.
+      // createRecord() counts a new Order/Customer as soon as it is allocated, before properties are set or the
+      // transaction commits: Bob's Order and its nested Customer must both be excluded here (2 Orders + 2 Customers),
+      // not just absent from the database.
       assertThat(result.get("createdDocuments")).isEqualTo(4L);
 
       try (final Database db = databaseFactory.open()) {
-        // THE READER MUST NOT DESYNC AND SILENTLY DROP ORDER 3: BOB'S NESTED Customer FAILS, WHICH DISCARDS BOB'S
-        // WHOLE Order TOO (A NESTED FAILURE CAN ONLY BE UNDONE BY ROLLING BACK THE ENCLOSING TOP-LEVEL RECORD'S OWN
-        // TRANSACTION - THE NESTED Customer MAY ALREADY HAVE A BUCKET WRITE THAT NOTHING ELSE CAN SAFELY UNDO), BUT
-        // ALICE'S AND CAROL'S Orders (AND THEIR Customers) STILL GET CREATED NORMALLY.
+        // The reader must not desync and silently drop Order 3: Bob's nested Customer fails, which discards Bob's
+        // whole Order too (a nested failure can only be undone by rolling back the enclosing top-level record's own
+        // transaction - the nested Customer may already have a bucket write that nothing else can safely undo), but
+        // Alice's and Carol's Orders (and their Customers) still get created normally.
         assertThat(db.countType("Order", true)).isEqualTo(2);
         assertThat(db.countType("Customer", true)).isEqualTo(2);
       }
@@ -841,8 +841,8 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
       final Map<String, Object> result = importer.load();
       assertThat(result.get("errors")).isEqualTo(1L);
-      // BOB'S Order AND ITS NESTED Customer MUST BOTH BE EXCLUDED FROM createdVertices, NOT JUST createdDocuments
-      // (WHICH THIS MAPPING DOESN'T EVEN TOUCH) - 2 Orders + 2 Customers SURVIVE.
+      // Bob's Order and its nested Customer must both be excluded from createdVertices, not just createdDocuments
+      // (which this mapping doesn't even touch) - 2 Orders + 2 Customers survive.
       assertThat(result.get("createdVertices")).isEqualTo(4L);
       assertThat(result.get("createdDocuments")).isNull();
 
@@ -885,11 +885,11 @@ class Issue5968ImporterSkipOnRowErrorTest {
         assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
             .hasRootCauseInstanceOf(IllegalStateException.class);
 
-        // THE GUARD MUST FIRE BEFORE loadVertices()'S OWN UNIQUE-INDEX AUTO-CREATION SIDE EFFECT, NOT AFTER: THAT
-        // database.transaction(...) CALL COMMITS INDEPENDENTLY OF THIS METHOD'S OWN TRANSACTION, SO A GUARD CHECKED
-        // TOO LATE WOULD STILL LEAVE THE INDEX BEHIND EVEN THOUGH THE IMPORT ITSELF WAS REJECTED. (THE Id PROPERTY
-        // ITSELF ALREADY EXISTS REGARDLESS OF THE GUARD - Importer#loadFromSource() AUTO-CREATES IT FROM SCHEMA
-        // ANALYSIS BEFORE format.load() EVEN RUNS - SO ONLY THE INDEX IS A MEANINGFUL SIGNAL HERE.)
+        // The guard must fire before loadVertices()'s own unique-index auto-creation side effect, not after: that
+        // database.transaction(...) call commits independently of this method's own transaction, so a guard checked
+        // too late would still leave the index behind even though the import itself was rejected. (The Id property
+        // itself already exists regardless of the guard - Importer#loadFromSource() auto-creates it from schema
+        // analysis before format.load() even runs - so only the index is a meaningful signal here.)
         assertThat(db.getSchema().getType("Node").getIndexesByProperties("Id")).isEmpty();
       } finally {
         if (db.isTransactionActive())
@@ -1110,8 +1110,8 @@ class Issue5968ImporterSkipOnRowErrorTest {
       importer.settings.onRowError = "skip";
       importer.settings.parseParameter("maxPropertySize", "10");
 
-      // TextParsingException ITSELF WRAPS A LOWER-LEVEL CAUSE, SO ASSERT ON THE DIRECT CAUSE OF ImportException RATHER
-      // THAN THE ROOT ONE.
+      // TextParsingException itself wraps a lower-level cause, so assert on the direct cause of ImportException
+      // rather than the root one.
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
           .cause().isInstanceOf(TextParsingException.class);
 
@@ -1140,8 +1140,8 @@ class Issue5968ImporterSkipOnRowErrorTest {
               + " -typeIdProperty Id -typeIdType Long -forceDatabaseCreate true -maxPropertySize 10 -onRowError skip")
               .split(" "));
 
-      // TextParsingException ITSELF WRAPS A LOWER-LEVEL CAUSE, SO ASSERT ON THE DIRECT CAUSE OF ImportException RATHER
-      // THAN THE ROOT ONE.
+      // TextParsingException itself wraps a lower-level cause, so assert on the direct cause of ImportException
+      // rather than the root one.
       assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
           .cause().isInstanceOf(TextParsingException.class);
     } finally {
@@ -1163,8 +1163,9 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
     try {
       final Importer importer = new Importer(new String[] {
-          // .json.txt (NOT .json): AN INTENTIONALLY-MALFORMED JSON FIXTURE WOULD FAIL THE REPO'S check-json PRE-COMMIT
-          // HOOK OTHERWISE. THE IMPORTER DETECTS THE FORMAT FROM CONTENT (A LEADING '{'), NOT THE FILE EXTENSION.
+          // .json.txt (not .json): an intentionally-malformed JSON fixture would fail the repo's check-json
+          // pre-commit hook otherwise. The importer detects the format from content (a leading '{'), not the file
+          // extension.
           "-url", "file://src/test/resources/importer-documents-malformed.json.txt",
           "-database", databasePath,
           "-mapping", NESTED_MAPPING,
@@ -1246,8 +1247,8 @@ class Issue5968ImporterSkipOnRowErrorTest {
           WITH onRowError=skip
           """);
 
-      // BOB'S "99999" DOES NOT FIT A SHORT: THAT ROW IS SKIPPED, THE OTHER TWO ARE IMPORTED AS DOCUMENTS (THE DEFAULT
-      // ENTITY TYPE FOR THE PRIMARY -url/DATABASE SOURCE)
+      // Bob's "99999" does not fit a SHORT: that row is skipped, the other two are imported as documents (the
+      // default entity type for the primary -url/DATABASE source).
       assertThat(db.countType("Document", true)).isEqualTo(2);
     } finally {
       db.drop();

@@ -359,17 +359,21 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           "-onRowError skip saves vertices synchronously, one at a time: -commitEvery/-parallel have no effect while it's enabled");
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
-    // database.async().onError() replaces the previous handler rather than stacking, so a second registration
-    // wouldn't double-count - but it would still let an earlier, still-in-flight batch's error escape unnoticed if
-    // this were ever called a second time before the first call's own waitCompletion() below had returned. Not
-    // reachable today: Importer.load()'s entity-type selection makes settings.url-as-vertex and settings.vertices
-    // mutually exclusive, so loadVertices() runs at most once per Importer.load() call.
-    if (!skipOnError)
+    // See ImporterContext#vertexAsyncErrorHandlerRegistered: fails loudly here rather than silently replacing a
+    // handler still watching an earlier, in-flight batch, since that would lose exactly the kind of async error
+    // this feature exists to stop losing.
+    if (!skipOnError) {
+      if (context.vertexAsyncErrorHandlerRegistered)
+        throw new IllegalStateException("loadVertices() called more than once for the same import - would replace "
+            + "the database.async() error handler an earlier, possibly still in-flight call registered");
+      context.vertexAsyncErrorHandlerRegistered = true;
+
       database.async().onError(exception -> {
         LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
         context.errors.incrementAndGet();
         firstAsyncError.compareAndSet(null, exception);
       });
+    }
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
