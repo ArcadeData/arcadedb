@@ -525,8 +525,19 @@ public class TransactionContext implements Transaction {
         case READ_COMMITTED:
           break;
         case REPEATABLE_READ:
-          final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(pageId.getFileId());
-          final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
+          // #5976: the component's OWN page count (bumped synchronously at commit time, see
+          // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
+          // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
+          // page until the async flush thread actually writes it. Using the physical size here made a just-
+          // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
+          // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
+          // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
+          // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
+          // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
+          // below into a hard failure on this read path instead (code review on #6013). The cast is safe
+          // because PaginatedComponent is the only direct subclass of Component in the codebase.
+          final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
+          final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
           if (!isNewPage)
             // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
             immutablePages.put(pageId, (ImmutablePage) page);

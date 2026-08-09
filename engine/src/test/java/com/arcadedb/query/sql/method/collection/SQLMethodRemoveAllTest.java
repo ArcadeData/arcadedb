@@ -58,4 +58,10 @@ class SQLMethodRemoveAllTest {
     final List<String> result = (List<String>) method.execute(numbers, null, context, new Object[] { "$name" });
     assertThat(result).contains("two", "three");
   }
+
+  @Test
+  void syntaxDescribesVariadicParameters() {
+    // REGRESSION FOR #5972: THE SHARED DEFAULT USED TO RENDER AN EMPTY "[]" FOR maxParams == -1
+    assertThat(method.getSyntax()).isEqualTo("<field>.removeall(param1[, param2]*)");
+  }
 }

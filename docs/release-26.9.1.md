@@ -387,3 +387,74 @@ validation against a large field value - can now fail with `TimeoutException` in
 `arcadedb.command.regexTimeout` for any database with that kind of workload.
 
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)
+
+## A rare `NoSuchElementException` reading a record immediately after committing it under `REPEATABLE_READ` (#5976)
+
+`RecordEncryptionTest.encryption()` intermittently failed on CI with `NoSuchElementException` out of
+`MultiIterator.next()`, reading back a `BackAccount` vertex saved by the immediately preceding, already-committed
+transaction - single-threaded, no HA, no network. The failure was never reproduced locally, which pointed at a
+narrow timing window rather than a deterministic bug.
+
+The real error was hidden. `BucketIterator.fetchNext()` catches any exception thrown while materializing a
+record, logs it at `SEVERE`, and skips the slot - so a record that failed to load looked identical to an empty
+bucket to every caller, surfacing generically as "no records" instead of whatever actually went wrong.
+
+What actually went wrong: `TransactionContext.getPage()` decides whether a freshly loaded page is worth caching
+in its `REPEATABLE_READ` snapshot (`immutablePages`) by checking whether the page is "new" - and used
+`PaginatedComponentFile.getTotalPages()` (the physical on-disk file size) to decide. That lags a commit:
+`PageManager.writePages()` hands a committed page to the async flush thread and only bumps the in-memory
+`PaginatedComponent.pageCount` synchronously, so a just-committed, not-yet-physically-flushed page was
+(incorrectly) treated as "new" and left out of the cache. `ImmutableVertex.modify()` then used that same cache
+(via `hasPageForRecord()`) to decide whether a record needed a defensive reload - found it missing, and
+force-reloaded, which re-invokes every `AfterRecordReadListener` on the same record a second time, re-entrantly,
+before the first invocation had returned. The encryption listener decrypts a record's ciphertext in place inside
+`onAfterRead()`, starting with `record.asVertex().modify()` - not safe against being re-entered on itself: the
+inner (nested) call decrypts the ciphertext first, so the outer call then tries to Base64-decode the now-plaintext
+value and throws `IllegalArgumentException`, which `BucketIterator` swallows as described above.
+
+Fixed by having `getPage()` ask the owning `PaginatedComponent` for its own page count (bumped synchronously at
+commit, independent of flush timing) instead of the physical file size, so a committed page is cached for
+`REPEATABLE_READ` as soon as it is committed. `Issue5976AfterReadReentrancyRaceTest` reproduces the race
+deterministically by forcing the page cache to evict aggressively (`MAX_PAGE_RAM=0`) across a few thousand
+fresh single-page buckets: 500+ failures per 1000 iterations before the fix, zero after it.
+
+[#5976](https://github.com/ArcadeData/arcadedb/issues/5976)
+
+## `AbstractSQLMethod.getSyntax()` mis-rendered variadic methods (#5972)
+
+The shared default `getSyntax()` implementation built the optional-parameter suffix with a loop bounded by
+`i < maxParams`, which is never true once `maxParams` is `-1` - the sentinel every variadic SQL method
+(`removeall`, `append`, `include`, `exclude`, `remove`, `transform`) declares for "unlimited". Any variadic
+method that does not override `getSyntax()` itself - only `SQLMethodRemoveAll` in practice - therefore rendered
+a trailing `[]` regardless of how many extra parameters it actually accepts, e.g.
+`<field>.removeall(param1[])` instead of `<field>.removeall(param1[, param2]*)`. Cosmetic only (this string
+feeds documentation generation and exception messages, not parsing), but now handled explicitly for both the
+"at least one more" and "any number, including zero" shapes.
+
+[#5972](https://github.com/ArcadeData/arcadedb/issues/5972)
+
+## Redis/Bolt wire protocols: bounding the BOLT handshake/auth window (#5978)
+
+Follow-up from the #5912 fix that gave the Redis wire protocol a bounded pre-authentication read timeout (so an
+unauthenticated connection that never sends anything can't hold its thread open forever): `BoltNetworkExecutor`
+had no equivalent. `negotiateTransport()` only ever bounded the TLS-detection sub-step, then explicitly restored
+an infinite timeout before the BOLT handshake and the AUTH/HELLO-LOGON exchange even began - and for a
+plaintext-only listener (`arcadedb.bolt.ssl=DISABLED`, the default), no timeout was armed at all. A connected
+client that never completed the handshake or never authenticated could hold the connection thread open
+indefinitely, the same resource-exhaustion shape #5912 closed for Redis.
+
+Fixed by arming the same bounded `NETWORK_SOCKET_TIMEOUT` window across transport negotiation, the BOLT
+handshake and the AUTH/HELLO-LOGON phase - for both plaintext and TLS connections - lifting it to infinite only
+once authentication actually succeeds (mirroring `RedisNetworkExecutor.markAuthenticated`/`markUnauthenticated`),
+and re-arming it on `LOGOFF`. A `SocketTimeoutException` on that bounded window now closes the connection
+cleanly (matching the existing `EOFException`/`SocketException` handling) instead of surfacing as a `SEVERE`
+"BOLT connection error" log.
+
+Two other follow-ups filed alongside this one were evaluated and intentionally left as-is: an idle-timeout cap
+on already-authenticated Redis connections was judged not worth the deviation from real Redis semantics (which
+never times out an idle authenticated client) absent evidence it's a problem in practice; and the swallowed
+`SocketException` in `RedisNetworkExecutor.markUnauthenticated()` already carries a comment explaining why that
+failure mode is safe to ignore (the socket is already broken/closed) - the new `BoltNetworkExecutor` counterpart
+documents the same reasoning.
+
+[#5978](https://github.com/ArcadeData/arcadedb/issues/5978)

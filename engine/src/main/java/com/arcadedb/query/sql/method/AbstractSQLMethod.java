@@ -71,15 +71,26 @@ public abstract class AbstractSQLMethod implements SQLMethod {
       sb.append(i + 1);
     }
     if (minParams != maxParams) {
-      sb.append('[');
-      for (int i = minParams; i < maxParams; i++) {
-        if (i != 0) {
-          sb.append(", ");
+      if (maxParams == -1) {
+        // UNBOUNDED/VARIADIC: MIRRORS FunctionArity.describe()'S "AT LEAST N" PHRASING FOR THE EQUIVALENT CASE
+        if (minParams == 0) {
+          sb.append("[param1[, param2]*]");
+        } else {
+          sb.append("[, param");
+          sb.append(minParams + 1);
+          sb.append("]*");
         }
-        sb.append("param");
-        sb.append(i + 1);
+      } else {
+        sb.append('[');
+        for (int i = minParams; i < maxParams; i++) {
+          if (i != 0) {
+            sb.append(", ");
+          }
+          sb.append("param");
+          sb.append(i + 1);
+        }
+        sb.append(']');
       }
-      sb.append(']');
     }
     sb.append(')');
 
