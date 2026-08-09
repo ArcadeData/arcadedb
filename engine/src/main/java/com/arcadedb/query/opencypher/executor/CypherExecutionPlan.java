@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
@@ -415,7 +417,8 @@ public class CypherExecutionPlan {
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     final AbstractExecutionStep rootStep;
     if (clausesInOrder != null && !clausesInOrder.isEmpty())
-      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep, seedIsRead(seedRow), seedRow.getPropertyNames());
+      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep, seedCorrelationOf(seedRow),
+          seedRow.getPropertyNames());
     else
       rootStep = seedStep; // Fallback: just return the seed
 
@@ -469,7 +472,9 @@ public class CypherExecutionPlan {
       return null;
     if (statement.getSkip() != null || statement.getLimit() != null)
       return null;
-    if (seedIsRead(seedRow))
+
+    final SeedCorrelation correlation = seedCorrelationOf(seedRow);
+    if (!correlation.isSeedable())
       return null;
 
     // The outer statistics accumulator is deliberately not shared, for the reason executeWithSeedRow shares it only
@@ -481,7 +486,7 @@ public class CypherExecutionPlan {
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
 
-    final AbstractExecutionStep countStep = tryCountPushDown(context, true);
+    final AbstractExecutionStep countStep = tryCountPushDown(context, true, correlation);
     if (countStep == null)
       return null;
 
@@ -494,17 +499,21 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Whether this statement could read anything the seed row carries, i.e. whether it is correlated to the enclosing
-   * query at all.
+   * <b>Which</b> of the names the seed row carries this statement could read, and the row that bound them - what the
+   * count push-downs need in order to decide whether the correlation is one they can start from.
    * <p>
    * The question is asked because of the two count push-downs in {@link #buildExecutionStepsWithOrder}: they answer
    * from the schema and the CSR arrays and never look at the incoming rows, so they are only valid for a body that
-   * does not read one. Asking whether the seed row <b>carries</b> a variable, rather than whether the body
-   * <b>reads</b> one, was correct but coarse - an uncorrelated body written inside a correlated query lost an O(1)
-   * count for a name it never mentions, once per outer row (issue #5686).
+   * does not read one, <i>or</i> for one whose every read name is a position the operator can seed itself from.
+   * Asking whether the seed row <b>carries</b> a variable, rather than whether the body <b>reads</b> one, was correct
+   * but coarse - an uncorrelated body written inside a correlated query lost an O(1) count for a name it never
+   * mentions, once per outer row (issue #5686). Asking only <i>whether</i> a name is read, rather than <i>which</i>,
+   * was the next step of the same coarseness: a genuinely correlated body lost the count too, where a bound anchor
+   * makes it an O(degree) read of the adjacency arrays rather than a scan (issue #5758).
    * <p>
-   * {@link CypherReferencedVariables} is deliberately unsure by default, so a shape it does not model answers "read"
-   * and the push-down is skipped exactly as before.
+   * {@link CypherReferencedVariables} is deliberately unsure by default, and an incomplete answer is reported here as
+   * {@link SeedCorrelation#isSeedable()} {@code == false}: no push-down at all, exactly as before. Only a complete
+   * answer can name the positions to seed, and naming them wrongly is what would give a wrong count.
    * <p>
    * The {@code statement} read here is <b>this plan's own</b>, and this plan is only ever built around the body -
    * {@link #executeWithSeedRow} is what a {@code CALL { }} clause and the three subquery expressions call, each on a
@@ -512,14 +521,79 @@ public class CypherExecutionPlan {
    * names of whoever produced it, which every seeded row would match: the question has to be put to the statement
    * that is about to ignore the seed.
    */
-  private boolean seedIsRead(final Result seedRow) {
-    final Set<String> seedNames = seedRow.getPropertyNames();
-    // referencesAny() answers this case too. Answering it here is what keeps a body seeded with nothing - the common
-    // one, a CALL { } importing nothing - from forcing the collection over the statement at all.
-    if (seedNames.isEmpty())
-      return false;
+  private SeedCorrelation seedCorrelationOf(final Result seedRow) {
+    if (seedRow == null)
+      return SeedCorrelation.UNCORRELATED;
 
-    return statement.getReferencedVariables().referencesAny(seedNames);
+    final Set<String> seedNames = seedRow.getPropertyNames();
+    // Answering this case here is what keeps a body seeded with nothing - the common one, a CALL { } importing
+    // nothing - from forcing the collection over the statement at all.
+    if (seedNames.isEmpty())
+      return SeedCorrelation.UNCORRELATED;
+
+    final CypherReferencedVariables referenced = statement.getReferencedVariables();
+    if (!referenced.isComplete())
+      return SeedCorrelation.UNKNOWN;
+
+    // Built without a mutable set for the shape that is almost always the whole of it - one seeded name read - since
+    // this runs once per outer row, including for the correlations that end up refused.
+    Set<String> readNames = null;
+    for (final String seedName : seedNames) {
+      if (!referenced.getNames().contains(seedName))
+        continue;
+      if (readNames == null)
+        readNames = Set.of(seedName);
+      else {
+        final Set<String> more = new HashSet<>(readNames);
+        more.add(seedName);
+        readNames = more;
+      }
+    }
+
+    return readNames == null ? SeedCorrelation.UNCORRELATED : new SeedCorrelation(seedRow, readNames);
+  }
+
+  /**
+   * How a seeded body relates to the row it was handed: not correlated at all, correlated through named positions a
+   * push-down may be able to seed itself from, or correlated in a way that cannot be described.
+   * <p>
+   * The three are kept apart rather than folded into a boolean because they lead to three different plans.
+   * {@link #UNCORRELATED} keeps every push-down, {@link #UNKNOWN} keeps none, and a named correlation keeps only the
+   * ones that can start from a bound anchor.
+   */
+  private static final class SeedCorrelation {
+    /** The body reads none of the seeded names, so the seed cannot change its answer (issue #5686). */
+    static final SeedCorrelation UNCORRELATED = new SeedCorrelation(null, Set.of());
+    /** The body's shape is one {@link CypherReferencedVariables} does not model, so what it reads is not known. */
+    static final SeedCorrelation UNKNOWN      = new SeedCorrelation(null, null);
+
+    private final Result      seedRow;
+    private final Set<String> readNames;
+
+    private SeedCorrelation(final Result seedRow, final Set<String> readNames) {
+      this.seedRow = seedRow;
+      this.readNames = readNames;
+    }
+
+    /** Whether a push-down may be built at all: false only for a correlation that could not be described. */
+    boolean isSeedable() {
+      return readNames != null;
+    }
+
+    /** Whether the body reads any seeded name. An unknown correlation answers yes, as the coarse guard did. */
+    boolean isCorrelated() {
+      return readNames == null || !readNames.isEmpty();
+    }
+
+    /** The seeded names the body reads. Empty when uncorrelated; never asked when unknown. */
+    Set<String> readNames() {
+      return readNames;
+    }
+
+    /** The value the outer row bound {@code name} to. */
+    Object boundValue(final String name) {
+      return seedRow.getProperty(name);
+    }
   }
 
   private static String buildResultKey(final Result result) {
@@ -1036,7 +1110,7 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder) {
-    return buildExecutionStepsWithOrder(context, clausesInOrder, null, false, Set.of());
+    return buildExecutionStepsWithOrder(context, clausesInOrder, null, SeedCorrelation.UNCORRELATED, Set.of());
   }
 
   /**
@@ -1044,10 +1118,10 @@ public class CypherExecutionPlan {
    * When initialStep is provided (e.g., for CALL subqueries), it serves as the starting point
    * of the step chain, providing input rows to the first clause.
    *
-   * @param seedIsRead         whether this body reads anything the seed row carries, i.e. whether it is correlated
-   *                           to the enclosing query at all. A body that reads none of the seeded names is answered
-   *                           the same way with the seed as without it, which is what lets the count push-downs
-   *                           below still apply.
+   * @param correlation        which of the seeded names this body reads, and the row that bound them. A body that
+   *                           reads none of them is answered the same way with the seed as without it; a body that
+   *                           reads one at a position an operator can start its walk from is answered from that one
+   *                           anchor. Both are what let the count push-downs below still apply.
    * @param seedVariableNames  the seed row's own variable names, empty when there is no seed. Pre-populates
    *                           {@code boundVariables} the way an explicit leading {@code WITH} would: without it, a
    *                           body's first clause has no way to tell that one of its own pattern variables (a
@@ -1057,7 +1131,7 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder,
-      final AbstractExecutionStep initialStep, final boolean seedIsRead, final Set<String> seedVariableNames) {
+      final AbstractExecutionStep initialStep, final SeedCorrelation correlation, final Set<String> seedVariableNames) {
     AbstractExecutionStep currentStep = initialStep;
 
     // Get function factory from evaluator for steps that need it
@@ -1069,21 +1143,24 @@ public class CypherExecutionPlan {
     final Set<String> boundVariables = new HashSet<>(seedVariableNames);
 
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
-    // never look at the incoming rows. That makes them wrong the moment the seed row binds one of those pattern
-    // variables - a seeded body counting `MATCH (n)-[:KNOWS]->(m)` with `n` already bound to one vertex would be
-    // answered with the count over every `n` in the graph. So neither is attempted then; the ordinary pipeline, which
-    // consumes the seed, is used instead.
+    // never look at the incoming rows. That makes the enumerating form of them wrong the moment the seed row binds
+    // one of those pattern variables - a seeded body counting `MATCH (n)-[:KNOWS]->(m)` with `n` already bound to one
+    // vertex would be answered with the count over every `n` in the graph.
     //
-    // A body that READS none of the seeded names is a different case and keeps the push-downs: an uncorrelated body -
-    // `MATCH (n:P) RETURN COLLECT { MATCH (m:Big) RETURN count(m) }`, or a `CALL { }` that imports nothing - has
-    // taken no name from the enclosing query, so ignoring the seed cannot change its answer and a large type keeps
-    // its O(1) count. What is read is decided by CypherReferencedVariables, which answers "read" for every shape it
-    // does not model, so being unsure costs the optimization rather than the correctness (issue #5686).
-    if (initialStep == null || !seedIsRead) {
+    // A body that READS none of the seeded names keeps them as they are: an uncorrelated body - `MATCH (n:P) RETURN
+    // COLLECT { MATCH (m:Big) RETURN count(m) }`, or a `CALL { }` that imports nothing - has taken no name from the
+    // enclosing query, so ignoring the seed cannot change its answer and a large type keeps its O(1) count (#5686).
+    //
+    // A body that reads one keeps the chain push-down in its SEEDED form: the walk starts from the RID the outer row
+    // bound rather than from a label's bucket set, which is the same question asked of one anchor instead of all of
+    // them, and an O(degree) read rather than a scan (#5758). Which names are read is decided by
+    // CypherReferencedVariables, which answers "unknown" for every shape it does not model, and an unknown
+    // correlation takes no push-down at all - being unsure costs the optimization rather than the correctness.
+    if (correlation.isSeedable()) {
       // OPTIMIZATION: the O(1) Type.count() push-down and the CSR one for chain/star/triangle/pair-join patterns.
       // Instead of materializing all paths (O(paths) memory), counts are propagated through the CSR arrays
       // level-by-level (O(nodes) memory). Critical for large-fanout chains.
-      final AbstractExecutionStep countStep = tryCountPushDown(context, false);
+      final AbstractExecutionStep countStep = tryCountPushDown(context, false, correlation);
       if (countStep != null)
         return countStep;
     }
@@ -4201,9 +4278,24 @@ public class CypherExecutionPlan {
    *                      {@link #countPushDownAlias}.
    */
   private AbstractExecutionStep tryCountPushDown(final CommandContext context, final boolean countRowsMode) {
-    AbstractExecutionStep step = tryCreateTypeCountOptimization(context, countRowsMode);
+    return tryCountPushDown(context, countRowsMode, SeedCorrelation.UNCORRELATED);
+  }
+
+  /**
+   * @param correlation which of the names the seed row carries this body reads, and the row that bound them. Only the
+   *                    chain operator can seed itself from a bound anchor, so a correlated body reaches that one
+   *                    alone; an uncorrelated one reaches every detector, as before.
+   */
+  private AbstractExecutionStep tryCountPushDown(final CommandContext context, final boolean countRowsMode,
+      final SeedCorrelation correlation) {
+    if (!correlation.isSeedable())
+      return null;
+
+    // The O(1) type counter answers "how many vertices carry this label", which is not a question a bound anchor
+    // narrows: a seeded MATCH (q:Q) is one vertex tested against a label, not a count over the label.
+    AbstractExecutionStep step = correlation.isCorrelated() ? null : tryCreateTypeCountOptimization(context, countRowsMode);
     if (step == null)
-      step = tryOptimizeCountStar(context, countRowsMode);
+      step = tryOptimizeCountStar(context, countRowsMode, correlation);
     if (step == null)
       return null;
     return applySkipAndLimit(step, context);
@@ -4277,8 +4369,13 @@ public class CypherExecutionPlan {
    * count item. {@code RETURN *} and a projection of several non-aggregating items are both accepted here, and both
    * are outside what {@code CypherUncorrelatedSubqueryCountPushDownIssue5686Test} asserts
    * {@link CypherReferencedVariables} models - that tie is about the other entry point and does not carry over to
-   * this one. What makes the widening safe is {@link #seedIsRead}, asked before this: an <b>uncorrelated</b> body's
-   * row count is its match count whatever it projects, because no projection can add or drop a row.
+   * this one. What makes the widening safe is that no projection can add or drop a row, so the row count is the match
+   * count whatever the body names - the seed row included, since a seeded body's projection cannot change how many
+   * matches there are either.
+   * <p>
+   * {@code RETURN *} is the one of these a <b>correlated</b> body never reaches: it makes
+   * {@link CypherReferencedVariables} incomplete, which {@link #seedCorrelationOf} reports as an unknown correlation,
+   * and an unknown correlation takes no push-down at all.
    * <p>
    * An item whose expression is null is read as "does not preserve", so an unmodelled projection costs the
    * optimization rather than the answer.
@@ -4300,7 +4397,8 @@ public class CypherExecutionPlan {
   /**
    * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
    */
-  private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context, final boolean countRowsMode) {
+  private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context, final boolean countRowsMode,
+      final SeedCorrelation correlation) {
     final String alias = countPushDownAlias(countRowsMode);
     if (alias == null || !isMatchReturnOnlyStatement())
       return null;
@@ -4312,15 +4410,19 @@ public class CypherExecutionPlan {
     if (hasInlineNodePropertyOrDynamicLabel())
       return null;
 
-    CountOp op = tryDetectChainCountStar();
-    if (op == null)
+    CountOp op = tryDetectChainCountStar(context.getDatabase(), correlation);
+    // Only the chain operator can start its walk from an anchor the outer row bound. The star, triangle, pair-join
+    // and anti-join ones all derive their anchor set from a label, so a correlated body is left to the ordinary
+    // pipeline rather than answered over every vertex carrying that label (issue #5758).
+    if (op == null && !correlation.isCorrelated()) {
       op = tryDetectAntiJoinChainCountStar();
-    if (op == null)
-      op = tryDetectStarCountStar();
-    if (op == null)
-      op = tryDetectTriangleCountStar();
-    if (op == null)
-      op = tryDetectPairJoinCountStar();
+      if (op == null)
+        op = tryDetectStarCountStar();
+      if (op == null)
+        op = tryDetectTriangleCountStar();
+      if (op == null)
+        op = tryDetectPairJoinCountStar();
+    }
     if (op == null)
       return null;
 
@@ -4451,7 +4553,7 @@ public class CypherExecutionPlan {
     return false;
   }
 
-  private CountOp tryDetectChainCountStar() {
+  private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation) {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
@@ -4542,7 +4644,116 @@ public class CypherExecutionPlan {
         return null;
     }
 
-    return new PropagateChainOp(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB);
+    if (!correlation.isCorrelated())
+      return new PropagateChainOp(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB);
+
+    return seededChainOp(db, correlation, pathPattern, nodeLabels, edgeTypes, directions, inequalityVar1 != null);
+  }
+
+  /**
+   * The same chain walked from the vertex the outer row bound, or null when the correlation is not one anchor at one
+   * end of the chain.
+   * <p>
+   * The enumerating operator seeds its propagation from a label's bucket set, which is why a body reading a seeded
+   * name had to lose the push-down: {@code MATCH (q)-[:LINKS]->(x:Q) RETURN count(*)} with {@code q} bound would have
+   * been answered with the count over every {@code q} in the graph. A bound anchor does not make that count expensive
+   * though, it makes it cheaper - an O(degree) read of the adjacency arrays - so the guard narrows from "the body
+   * reads a seeded name" to "the body reads a seeded name at a position this operator cannot seed from" (issue
+   * #5758).
+   * <p>
+   * What it can seed from is <b>one</b> name, bound to <b>one</b> vertex, at <b>one</b> end of the chain:
+   * <ul>
+   * <li>Two seeded names are two anchor sets, and the propagation carries one.</li>
+   * <li>A name written at two positions - {@code (q)-[:LINKS]->(q)} - is an equality between the two ends that the
+   * propagation does not enforce; it would count every path, not the returning ones.</li>
+   * <li>A name in the middle of the chain would have to be walked outwards in both directions at once.</li>
+   * <li>A name read somewhere other than a node position - only in the projection, say - names no position at all,
+   * so {@code anchorIdx} stays -1 and the same test refuses it.</li>
+   * <li>An inequality is refused outright: its two positions are indexes into the chain, and the reversal below
+   * would have to renumber them for a case worth no complication.</li>
+   * </ul>
+   * The far end is reached by reversing the chain rather than by a second walk: {@code (a)-[:E]->(b)} counted from
+   * {@code b} is {@code (b)<-[:E]-(a)}, which is the same arrays read the other way. That is what keeps
+   * {@code COUNT { (:Person)-[:KNOWS]->(p) }} - "how many know me" - on the fast path alongside its mirror.
+   * <p>
+   * <b>The bound value is always the outer one.</b> The whole thing rests on the seeded name still meaning what the
+   * outer row bound, and what could break that is a body rebinding the name for itself. It cannot: the only clauses
+   * that bind a name to something other than a pattern position are {@code UNWIND} and {@code WITH}, and
+   * {@link #isMatchReturnOnlyStatement()} - asked by {@link #tryOptimizeCountStar} before any detector runs - admits
+   * nothing but {@code MATCH} and {@code RETURN}. A body's own {@code MATCH (q:Q)} written under an outer {@code q}
+   * is not a rebinding but the correlation itself, which is exactly what this seeds from.
+   */
+  private CountOp seededChainOp(final Database db, final SeedCorrelation correlation, final PathPattern pathPattern,
+      final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
+      final boolean hasInequality) {
+    if (!correlation.isSeedable() || hasInequality || correlation.readNames().size() != 1)
+      return null;
+
+    final String seededName = correlation.readNames().iterator().next();
+    final int hopCount = edgeTypes.length;
+
+    int anchorIdx = -1;
+    for (int i = 0; i <= hopCount; i++)
+      if (seededName.equals(pathPattern.getNode(i).getVariable())) {
+        if (anchorIdx >= 0)
+          return null;
+        anchorIdx = i;
+      }
+
+    if (anchorIdx != 0 && anchorIdx != hopCount)
+      return null;
+
+    final RID anchorRid = boundVertexRid(db, correlation.boundValue(seededName));
+    if (anchorRid == null)
+      return null;
+
+    if (anchorIdx == 0)
+      return new PropagateChainOp(nodeLabels, edgeTypes, directions, -1, -1, anchorRid);
+
+    return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions), -1, -1,
+        anchorRid);
+  }
+
+  /**
+   * The RID of a bound value that is a vertex, or null for anything else.
+   * <p>
+   * A node pattern matches only vertices, so a name bound to a scalar, to a document or to an edge matches nothing.
+   * Rather than teach the operator to answer 0 for those, they are left to the ordinary pipeline, which is the only
+   * thing here that knows what each of them means - and which is what answered them before this existed.
+   */
+  private static RID boundVertexRid(final Database db, final Object value) {
+    Object bound = value;
+    if (bound instanceof Result result)
+      bound = result.getElement().orElse(null);
+    if (!(bound instanceof Identifiable identifiable))
+      return null;
+
+    final RID rid = identifiable.getIdentity();
+    if (rid == null)
+      return null;
+    return db.getSchema().getTypeByBucketId(rid.getBucketId()) instanceof VertexType ? rid : null;
+  }
+
+  private static String[] reversed(final String[] values) {
+    final String[] out = new String[values.length];
+    for (int i = 0; i < values.length; i++)
+      out[i] = values[values.length - 1 - i];
+    return out;
+  }
+
+  /** Reverses the hop order and flips each direction, so the chain reads identically from its far end. */
+  private static Vertex.DIRECTION[] reversedDirections(final Vertex.DIRECTION[] directions) {
+    final Vertex.DIRECTION[] out = new Vertex.DIRECTION[directions.length];
+    for (int i = 0; i < directions.length; i++) {
+      final Vertex.DIRECTION direction = directions[directions.length - 1 - i];
+      if (direction == Vertex.DIRECTION.OUT)
+        out[i] = Vertex.DIRECTION.IN;
+      else if (direction == Vertex.DIRECTION.IN)
+        out[i] = Vertex.DIRECTION.OUT;
+      else
+        out[i] = Vertex.DIRECTION.BOTH;
+    }
+    return out;
   }
 
   /**

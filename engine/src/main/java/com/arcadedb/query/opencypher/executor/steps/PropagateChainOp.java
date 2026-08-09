@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
 
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidLongHashMap;
@@ -39,20 +40,34 @@ import java.util.function.Consumer;
  * using two {@code long[]} arrays indexed by dense node IDs.
  */
 public final class PropagateChainOp implements CountOp {
-  private final String[] nodeLabels;
-  private final String[] edgeTypes;
+  private final String[]           nodeLabels;
+  private final String[]           edgeTypes;
   private final Vertex.DIRECTION[] directions;
-  private final int inequalityIdxA;
-  private final int inequalityIdxB;
+  private final int                inequalityIdxA;
+  private final int                inequalityIdxB;
+  private final RID                anchorRid;
 
   public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
       final Vertex.DIRECTION[] directions,
       final int inequalityIdxA, final int inequalityIdxB) {
+    this(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, null);
+  }
+
+  /**
+   * @param anchorRid the one vertex position 0 is already bound to, or null when position 0 is a label whose buckets
+   *                  are enumerated. A seeded anchor is what keeps the push-down for a <b>correlated</b> body: the
+   *                  outer row bound the start of the chain, so the same propagation runs from that single node
+   *                  instead of from every vertex carrying a label (issue #5758).
+   */
+  public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
+      final Vertex.DIRECTION[] directions,
+      final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid) {
     this.nodeLabels = nodeLabels;
     this.edgeTypes = edgeTypes;
     this.directions = directions;
     this.inequalityIdxA = inequalityIdxA;
     this.inequalityIdxB = inequalityIdxB;
+    this.anchorRid = anchorRid;
   }
 
   @Override
@@ -60,14 +75,20 @@ public final class PropagateChainOp implements CountOp {
     return edgeTypes;
   }
 
-  /** The chain is walked from position 0, whose label is the only anchor set this operator knows how to build. */
+  /**
+   * The chain is walked from position 0, whose label is the only anchor set this operator knows how to build - unless
+   * the outer row already bound that position, which is an anchor set of exactly one and needs no label at all.
+   */
   @Override
   public boolean canEnumerateAnchors() {
-    return nodeLabels[0] != null;
+    return anchorRid != null || nodeLabels[0] != null;
   }
 
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db) {
+    if (anchorRid != null)
+      return executeFromSeededAnchor(provider, db);
+
     final int nodeCount = provider.getNodeCount();
     final int hops = edgeTypes.length;
 
@@ -117,6 +138,81 @@ public final class PropagateChainOp implements CountOp {
       total -= countSelfLoopPaths(provider, db, validBuckets);
 
     return total;
+  }
+
+  /**
+   * The chain walked from the one vertex the outer row bound to position 0.
+   * <p>
+   * Nothing here is sized by the graph: the dense {@code long[nodeCount]} arrays of the enumerating path would be
+   * allocated once per outer row, which is the cost this push-down exists to avoid. The walk is a sparse frontier
+   * instead - one entry per partial path - and the <b>last</b> hop is never expanded at all, only counted, so a
+   * one-hop body costs a degree read of the anchor's adjacency and allocates nothing per neighbour.
+   * <p>
+   * A label written on the seeded position filters the bound vertex rather than naming a set to enumerate:
+   * {@code COUNT { (n:Q)-[:LINKS]->(:Q) }} under an {@code n} of another label is 0, not the count over {@code Q}.
+   */
+  private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db) {
+    if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
+      return 0;
+
+    final int hops = edgeTypes.length;
+    // Position 0 is one known bucket, tested above without building a set for it: this runs once per outer row.
+    final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
+    for (int i = 1; i <= hops; i++)
+      validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
+
+    final int anchorId = provider.getNodeId(anchorRid);
+    if (anchorId < 0)
+      return 0;
+
+    int[] frontier = new int[] { anchorId };
+    for (int h = 0; h < hops - 1; h++) {
+      frontier = expandFrontier(provider, frontier, provider.getNeighborView(directions[h], edgeTypes[h]), h,
+          validBuckets[h + 1]);
+      if (frontier.length == 0)
+        return 0;
+    }
+
+    final int lastHop = hops - 1;
+    final IntHashSet targetBuckets = validBuckets[hops];
+    long total = 0;
+    if (targetBuckets == null || targetBuckets.isEmpty()) {
+      for (final int node : frontier)
+        total += provider.countEdges(node, directions[lastHop], edgeTypes[lastHop]);
+      return total;
+    }
+
+    final NeighborView lastView = provider.getNeighborView(directions[lastHop], edgeTypes[lastHop]);
+    if (lastView != null) {
+      final int[] nbrs = lastView.neighbors();
+      for (final int node : frontier)
+        for (int j = lastView.offset(node), end = lastView.offsetEnd(node); j < end; j++)
+          if (targetBuckets.contains(provider.getRID(nbrs[j]).getBucketId()))
+            total++;
+    } else {
+      for (final int node : frontier)
+        for (final int neighbor : provider.getNeighborIds(node, directions[lastHop], edgeTypes[lastHop]))
+          if (targetBuckets.contains(provider.getRID(neighbor).getBucketId()))
+            total++;
+    }
+    return total;
+  }
+
+  /**
+   * Whether the one bucket a seeded anchor lives in passes the label written on its position.
+   * <p>
+   * The same question {@link CSRCountUtils#buildValidBuckets} answers for a whole level, and read the same way - a
+   * null or undeclared label builds no filter there, so it filters nothing here either - but asked of a single known
+   * bucket, so it walks the supertype chain instead of allocating a bucket set. That matters because a seeded
+   * operator is built and run once per outer row, where the enumerating one is built once per query.
+   */
+  private static boolean anchorMatchesLabel(final Database db, final String label, final int bucketId) {
+    if (label == null || !db.getSchema().existsType(label))
+      return true;
+
+    // A bucket belongs to exactly one type, so "in this label's polymorphic buckets" is "of this label or below it".
+    final DocumentType type = db.getSchema().getTypeByBucketId(bucketId);
+    return type != null && type.instanceOf(label);
   }
 
   /**
@@ -553,17 +649,24 @@ public final class PropagateChainOp implements CountOp {
     // Try to find a GAV provider for accelerated neighbor lookups even in the OLTP path
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
 
-    final String anchorLabel = nodeLabels[0];
-    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
-      return 0;
-
     // BFS count propagation: each unique vertex at each level is processed once,
     // with its count capturing path multiplicity. This reduces O(paths) traversals
     // to O(unique edges), which is dramatically faster for high-fanout chains.
     // E.g., Q5 with 13.8M paths but only ~3.5M unique edges: ~4x fewer OLTP scans.
     RidLongHashMap current = new RidLongHashMap();
-    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); )
-      current.put(it.next().getIdentity(), 1L);
+    if (anchorRid != null) {
+      // A seeded anchor is an anchor set of one, and its label - if the body wrote one - filters it (issue #5758).
+      if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
+        return 0;
+      current.put(anchorRid, 1L);
+    } else {
+      final String anchorLabel = nodeLabels[0];
+      if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+        return 0;
+
+      for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); )
+        current.put(it.next().getIdentity(), 1L);
+    }
 
     for (int hop = 0; hop < edgeTypes.length; hop++) {
       final String targetLabel = nodeLabels[hop + 1];
@@ -700,6 +803,10 @@ public final class PropagateChainOp implements CountOp {
     sb.append("  ".repeat(Math.max(0, depth * indent)));
     sb.append("+ COUNT CHAIN PATHS (CSR count-push-down)\n");
     sb.append("  ".repeat(Math.max(0, depth * indent)));
+    if (anchorRid != null) {
+      sb.append("  seeded anchor: ").append(anchorRid).append('\n');
+      sb.append("  ".repeat(Math.max(0, depth * indent)));
+    }
     sb.append("  chain: ");
     for (int i = 0; i < edgeTypes.length; i++) {
       if (i > 0)
