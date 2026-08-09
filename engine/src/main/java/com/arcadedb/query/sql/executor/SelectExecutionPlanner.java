@@ -3849,7 +3849,11 @@ public class SelectExecutionPlanner {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
-          if (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator()) {
+          if (singleExp instanceof BetweenCondition
+              || (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator())) {
+            // a range-shaped condition (BETWEEN, or a single-sided comparison like >/</>=/<=) is terminal for
+            // composite-index key building: no further field can be appended as if it were still an ordered
+            // equality prefix once the key contains a range component
             rangeOp = true;
           }
           if (rangeOp && info.allowsRange()) {
