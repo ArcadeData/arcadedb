@@ -55,6 +55,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
@@ -374,11 +375,17 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           "-onRowError skip saves vertices synchronously, one at a time: -commitEvery/-parallel have no effect while it's enabled");
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
-    // database.async().onError() replaces the previous handler rather than stacking. Not a concern in practice:
-    // Importer.load()'s entity-type selection makes settings.url-as-vertex and settings.vertices mutually
-    // exclusive, so loadVertices() runs at most once per Importer.load() call.
+    // database.async().onError() replaces the previous handler rather than stacking, and there's no getter to save
+    // and restore whatever was registered before this call - so for an externally-managed Database, this handler
+    // would otherwise keep routing any of the caller's own later, unrelated database.async() failures into this
+    // call's own (by then stale) context/firstAsyncError after loadVertices() has already returned. handlerActive
+    // makes it inert once this method is done, in the finally block below, so it can linger harmlessly registered
+    // instead.
+    final AtomicBoolean handlerActive = new AtomicBoolean(true);
     if (!skipOnError)
       database.async().onError(exception -> {
+        if (!handlerActive.get())
+          return;
         LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
         context.errors.incrementAndGet();
         firstAsyncError.compareAndSet(null, exception);
@@ -509,6 +516,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         database.rollback();
       throw e;
     } finally {
+      // Every path above that can reach here already called database.async().waitCompletion(), so this import's own
+      // vertices have all already been through the handler (or never will be) by this point - deactivating it now
+      // can't miss one of this call's own errors, only stop it from reacting to the caller's later, unrelated work.
+      handlerActive.set(false);
+
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()
           .log(this, Level.INFO, "Importing of vertices from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,

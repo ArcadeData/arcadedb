@@ -1035,6 +1035,50 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
+   * {@code database.async().onError()} has no getter to save/restore whatever handler was registered before this
+   * call, and it replaces rather than stacks - so without {@code handlerActive} making it inert once
+   * {@code loadVertices} has returned, this import's own handler would keep routing a caller's later, unrelated
+   * {@code database.async()} failures (on the same, reused, externally-managed {@code Database}) into this call's
+   * own now-stale {@code ImporterContext} instead of wherever the caller's own error handling expects them.
+   */
+  @Test
+  void csvVertexImportDeactivatesAsyncErrorHandlerAfterCompletingSoLaterUnrelatedFailuresAreNotMisattributed() {
+    final String databasePath = "target/databases/test-import-5968-csv-vertex-handler-cleanup";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Email STRING (MANDATORY TRUE)");
+
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = "src/test/resources/importer-vertices-missing-mandatory.csv";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(ValidationException.class);
+
+      final long errorsAfterImport = importer.getContext().errors.get();
+      assertThat(errorsAfterImport).isGreaterThan(0);
+
+      // The caller keeps using the same Database after the import finished and triggers their own, unrelated
+      // async failure directly - the same mandatory-property violation, but on a vertex this import never touched.
+      db.async().createRecord(db.newVertex("Node"), doc -> {
+      });
+      db.async().waitCompletion();
+
+      // A leaked, still-active handler would have routed that failure into the finished import's own context too.
+      assertThat(importer.getContext().errors.get()).isEqualTo(errorsAfterImport);
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
    * Explicitly setting {@code -commitEvery}/{@code -parallel} alongside {@code -onRowError skip} has no effect on
    * vertices (skip mode saves synchronously, one at a time, never touching {@code database.async()}) - this locks
    * in that the combination is still functionally correct (no crash, no leftover async worker state, correct skip
