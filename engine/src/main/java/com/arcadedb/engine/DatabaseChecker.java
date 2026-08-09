@@ -238,11 +238,15 @@ public class DatabaseChecker {
     // raised "Bucket with id '-1' was not found", aborting the whole FIX before ANY index was repaired (issue #5780).
     // The finding still reaches the operator through corruptedIndexes/warnings, which is all this pass can honestly
     // do about it.
+    //
+    // Filtered here rather than inside the `if (fix)` loop below so that rebuiltIndexes, which is reported in BOTH
+    // modes, does not name an index no run would ever rebuild. The message is therefore phrased for both: it states
+    // what this check does not cover, not what a repair attempt failed to do.
     affectedIndexes.removeIf(index -> {
       if (index.isAutomatic())
         return false;
-      addWarning("index '" + index.getName() + "': it is a manual index, so it is not rebuilt automatically - its "
-          + "entries are not derived from any record. Drop it and repopulate it");
+      addWarning("index '" + index.getName() + "': it is a manual index, so it is outside the automatic rebuild - its "
+          + "entries are not derived from any record. Drop it and repopulate it to clear this finding");
       return true;
     });
 
