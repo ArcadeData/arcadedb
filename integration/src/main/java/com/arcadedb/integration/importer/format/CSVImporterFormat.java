@@ -91,20 +91,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
     final long beginTime = System.currentTimeMillis();
-    // context.errors is shared across the whole import, so the per-phase summary log below reports only this
-    // method's own delta, not the running total.
+    // Per-phase summary log below reports only this method's own delta, not the running total.
     final long errorsBefore = context.errors.get();
 
-    // csvParser.parseNext() is deliberately left outside the per-row try/catch below: a univocity TextParsingException
-    // (e.g. maxCharsPerColumn exceeded) leaves the parser's own position tracking compromised - verified empirically
-    // that retrying parseNext() after one can silently drop the next good row with no error. A syntax-level parse
-    // failure therefore still aborts even in "skip" mode; only row-content failures are skippable.
+    // A syntax-level parseNext() failure (outside the per-row try/catch) still aborts even in "skip" mode: it leaves
+    // the parser's own position tracking compromised, so only row-content failures are skippable.
     final boolean skipOnError = settings.isSkipOnRowError();
 
     // "skip" mode commits/rolls back per row, so it must own the transaction outright (see
-    // ImporterSettings#isSkipOnRowError()). callerTransactionActiveOnEntry (not a live isTransactionActive() check
-    // here) is what actually identifies a transaction that predates this whole import - see its Javadoc for why a
-    // live check would also misfire on a transaction this importer's own schema auto-creation left open moments ago.
+    // ImporterSettings#isSkipOnRowError()); callerTransactionActiveOnEntry is the signal for that, not a live
+    // isTransactionActive() check (see its Javadoc).
     if (skipOnError && context.callerTransactionActiveOnEntry)
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
@@ -113,8 +109,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // by default skip the first line as header
       skipEntries = 1l;
 
-    // See computeTransactionOwnership() for what these mean and why. Captured before the try below so both are also
-    // visible in the catch blocks (a variable declared inside a try isn't visible in its own catch).
+    // Captured before the try below so both are also visible in the catch blocks.
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
     final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
     final boolean ownsTransaction = ownership.ownsTransaction();
@@ -124,9 +119,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       csvParser.beginParsing(inputFileReader);
 
       // Unlike loadVertices(), called unconditionally regardless of skipOnError: loadDocuments() needs an active
-      // transaction to save() into in both modes (it never goes through database.async()), so it cannot skip this.
-      // For the common self-managed/CLI case in default "abort" mode, this does one harmless commit()+begin() cycle
-      // on AbstractImporter#openDatabase()'s empty ambient transaction before the row loop even starts.
+      // transaction to save() into in both modes (it never goes through database.async()).
       beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
@@ -149,10 +142,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
-      // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments: if a later row fails
-      // and this method owns the transaction, the whole-file rollback below discards every row counted so far, and
-      // this local count is simply never merged in - unlike a shared AtomicLong, there's nothing to undo. "skip"
-      // mode doesn't use this at all; each row is counted directly, gated on its own commit() succeeding.
+      // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, so a later row's
+      // whole-file rollback simply never merges them in. "skip" mode doesn't use this: each row is counted directly,
+      // gated on its own commit() succeeding.
       long documentsCreatedThisFile = 0;
 
       String[] row;
@@ -183,11 +175,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             ++documentsCreatedThisFile;
         } catch (final RuntimeException e) {
-          // Roll back before deciding whether to rethrow, but only if we own this transaction (see ownsTransaction
-          // above): in "abort" mode, when we do own it, rows 1..N-1 are already save()d but uncommitted in the
-          // whole-file transaction by the time row N fails, and closeDatabase() would otherwise commit them anyway
-          // on the way out. When we don't own it (an externally-managed database's pre-existing transaction), we
-          // leave it for the caller to reconcile instead of discarding their unrelated pending work.
+          // Only roll back if we own this transaction - an externally-managed database's pre-existing transaction
+          // is left for the caller to reconcile instead of discarding their unrelated pending work.
           if (ownsTransaction && database.isTransactionActive())
             database.rollback();
 
@@ -200,15 +189,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       }
 
-      // Same ownsTransaction gate as the rollback paths below: when we don't own it (an externally-managed
-      // database's pre-existing transaction), leave it open for the caller instead of committing their unrelated
-      // pending work as a side effect of this import succeeding.
+      // Same ownsTransaction gate as the rollback paths below: don't commit the caller's unrelated pending work as
+      // a side effect of this import succeeding.
       if (ownsTransaction)
         database.commit();
 
-      // Merged only once the whole file has parsed and (when owned) committed successfully - see
-      // documentsCreatedThisFile above for why this isn't tracked directly in context.createdDocuments in "abort"
-      // mode.
       context.createdDocuments.addAndGet(documentsCreatedThisFile);
 
     } catch (final IOException e) {
@@ -216,8 +201,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
-      // Either a source-level failure (parseNext()'s TextParsingException) escaped the loop, or the per-row catch
-      // above already rolled back (if it owned the transaction) and rethrew in "abort" mode - see ownsTransaction.
+      // A source-level failure (parseNext()) escaped the loop and never went through the per-row catch above.
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw e;
@@ -235,12 +219,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
-   * {@code AbstractParser#stopParsing()} can itself throw (e.g. a {@code TextParsingException} wrapping "Stream
-   * closed" if the underlying reader - a try-with-resources variable - was already closed by the time this runs in
-   * a {@code finally} block, which becomes more likely the longer the exception path leading here takes, e.g. after
-   * {@code loadVertices}' {@code database.async().waitCompletion()} on a synchronous per-row failure). Cleanup in a
-   * {@code finally} block must never replace/mask whatever exception is already propagating, so this is swallowed
-   * (logged at FINE) rather than let to escape.
+   * {@code AbstractParser#stopParsing()} can itself throw (e.g. "Stream closed" if the underlying reader was already
+   * closed by the time this runs). Cleanup in a {@code finally} block must never mask the exception already
+   * propagating, so this is swallowed (logged at FINE) rather than let to escape.
    */
   private void stopParsingQuietly(final AbstractParser<?> parser) {
     try {
@@ -262,12 +243,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   /**
    * A vertex can fail asynchronously (on the {@code database.async()} worker thread) around the same time as a
-   * synchronous or source-level failure on the calling thread - both {@code loadVertices} catch blocks reach here
-   * for their own kind of failure. Already logged at SEVERE and counted in {@code context.errors} either way; this
-   * just makes sure it isn't lost from the exception that actually propagates to the caller too, by attaching it as
-   * a suppressed exception - unless {@code target} already carries it as its own cause (the case where the only
-   * failure was the async one, and {@code target} is the {@code ImportException} constructed for it), which would
-   * otherwise duplicate the same throwable as both {@code Caused by} and {@code Suppressed}.
+   * synchronous or source-level failure on the calling thread. Attaches the async failure to {@code target} as a
+   * suppressed exception so it isn't lost, unless {@code target} already carries it as its own cause (which would
+   * otherwise duplicate the same throwable as both {@code Caused by} and {@code Suppressed}).
    */
   private void attachConcurrentAsyncError(final Throwable target, final AtomicReference<Throwable> firstAsyncError) {
     final Throwable asyncError = firstAsyncError.get();
@@ -278,22 +256,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   /**
    * Begins the transaction the per-row loop below will commit/roll back, reusing one that's already active - except
    * when this method owns the transaction (see {@link ImporterContext#callerTransactionActiveOnEntry}) and one is
-   * nonetheless already active, in which case it's committed first, then a fresh one begun. This is the common path
-   * for a self-managed database, not a rare edge case: {@code AbstractImporter#openDatabase()} always leaves its own
-   * ambient transaction active before this method ever runs, so every self-managed/CLI import hits it regardless of
-   * schema auto-creation. The other trigger - {@code updateDatabaseSchema()}'s lazy type creation leaving a
-   * transaction open on an externally-managed database that had none active before this call - is the one edge case
-   * this exists to protect: a row-1 failure in "skip" mode must not undo the type/property it just created along
-   * with it. Committing here first, in either case, means correctness doesn't depend on whether a data-transaction
-   * {@code database.rollback()} would also undo schema mutations bundled into the same transaction - it does not
+   * nonetheless already active, in which case it's committed first, then a fresh one begun. That's the routine path
+   * for a self-managed database ({@code AbstractImporter#openDatabase()} always leaves its own ambient transaction
+   * active before this method runs) and also covers the rarer case of {@code updateDatabaseSchema()}'s lazy type
+   * creation leaving a transaction open on an externally-managed database: committing it here first means a row-1
+   * failure in "skip" mode can't undo the type/property it just created
    * (see {@code Issue5968ImporterSkipOnRowErrorTest#csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor}).
    */
   private void beginRowTransaction(final Database database, final boolean transactionActiveOnEntry, final boolean ownsTransaction) {
     if (transactionActiveOnEntry) {
       if (ownsTransaction) {
-        // The only known way to reach this combination is updateDatabaseSchema()'s lazy type creation leaving its
-        // own transaction open - logged at FINE so it's traceable if some future entry point ever reaches here for
-        // a different reason, rather than silently committing whatever's active on the strength of that assumption.
         LogManager.instance()
             .log(this, Level.FINE, "Committing a transaction already active on entry before starting the per-row loop");
         database.commit();
@@ -304,11 +276,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
-   * {@code transactionActiveOnEntry}: the live transaction state where this is captured, used by
-   * {@link #beginRowTransaction} to decide whether to begin, reuse, or replace it. {@code ownsTransaction}: see
-   * {@link ImporterContext#callerTransactionActiveOnEntry}. Captured once, before either caller's own {@code try}
-   * block, so both are visible in that method's {@code catch} blocks too (declared inside a {@code try}, they
-   * wouldn't be).
+   * {@code transactionActiveOnEntry}: the live transaction state, used by {@link #beginRowTransaction} to decide
+   * whether to begin, reuse, or replace it. {@code ownsTransaction}: see
+   * {@link ImporterContext#callerTransactionActiveOnEntry}.
    */
   private record TransactionOwnership(boolean transactionActiveOnEntry, boolean ownsTransaction) {
   }
@@ -320,9 +290,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
-    // Checked first, before any schema side effect below (typeIdProperty/unique index auto-creation): "skip" mode
-    // must own the transaction outright (see ImporterSettings#isSkipOnRowError()). See the loadDocuments() comment
-    // for why callerTransactionActiveOnEntry, not a live isTransactionActive() check, is the correct signal here.
+    // Checked first, before any schema side effect below (typeIdProperty/unique index auto-creation) - see
+    // loadDocuments() for why "skip" mode must own the transaction outright.
     if (settings.isSkipOnRowError() && context.callerTransactionActiveOnEntry)
       throw ImporterSettings.newExclusiveTransactionRequiredException();
 
@@ -375,12 +344,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           "-onRowError skip saves vertices synchronously, one at a time: -commitEvery/-parallel have no effect while it's enabled");
 
     final AtomicReference<Throwable> firstAsyncError = new AtomicReference<>();
-    // database.async().onError() replaces the previous handler rather than stacking, and there's no getter to save
-    // and restore whatever was registered before this call - so for an externally-managed Database, this handler
-    // would otherwise keep routing any of the caller's own later, unrelated database.async() failures into this
-    // call's own (by then stale) context/firstAsyncError after loadVertices() has already returned. handlerActive
-    // makes it inert once this method is done, in the finally block below, so it can linger harmlessly registered
-    // instead.
+    // database.async().onError() replaces the previous handler rather than stacking, with no getter to save/restore
+    // whatever was registered before this call - handlerActive makes this handler inert once loadVertices() returns
+    // (finally block below), so an externally-managed Database's later, unrelated async() failures don't get routed
+    // into this call's stale context/firstAsyncError.
     final AtomicBoolean handlerActive = new AtomicBoolean(true);
     if (!skipOnError)
       database.async().onError(exception -> {
@@ -395,7 +362,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (settings.verticesSkipEntries == null)
       skipEntries = 1L;
 
-    // See loadDocuments()/computeTransactionOwnership() for what these mean and why.
     final TransactionOwnership ownership = computeTransactionOwnership(database, context);
     final boolean transactionActiveOnEntry = ownership.transactionActiveOnEntry();
     final boolean ownsTransaction = ownership.ownsTransaction();
@@ -404,12 +370,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
-      // Begun only after the source is successfully opened, so a failure here never leaves a transaction dangling.
       // Unlike loadDocuments(), gated on skipOnError: in "abort" mode vertices persist via database.async() instead
-      // of this foreground transaction, so there is no per-row commit/rollback cycle here to protect from a dangling
-      // schema-creation transaction - whatever's active (if anything) is left exactly as it was, same as before this
-      // PR, and gets resolved the same way it always did (closeDatabase()'s commit for a self-managed database, or
-      // left for the caller on an externally-managed one).
+      // of this foreground transaction, so there is no per-row commit/rollback cycle here to protect.
       if (skipOnError)
         beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
@@ -460,9 +422,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           } else
             database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
         } catch (final RuntimeException e) {
-          // Same reasoning as loadDocuments(). In "abort" mode this rollback is currently a no-op either way
-          // (vertices go through database.async() there, so the foreground transaction stays empty), but gating on
-          // ownsTransaction keeps both methods symmetric without relying on that as an invariant.
           if (ownsTransaction && database.isTransactionActive())
             database.rollback();
 
@@ -476,8 +435,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       }
 
       if (skipOnError) {
-        // ownsTransaction is always true here (skipOnError implies it - see the entry guard above), but checked
-        // explicitly rather than relying on that implication staying true if this method is ever refactored.
         if (ownsTransaction)
           database.commit();
       } else {
@@ -491,7 +448,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     } catch (final IOException e) {
       // In "abort" mode, drain any vertices from earlier rows already queued via database.async() before this
-      // failure propagates - see the RuntimeException catch below for why.
+      // failure propagates.
       if (!skipOnError)
         database.async().waitCompletion();
       if (ownsTransaction && database.isTransactionActive())
@@ -501,17 +458,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         attachConcurrentAsyncError(importException, firstAsyncError);
       throw importException;
     } catch (final RuntimeException e) {
-      // In "abort" mode, a synchronous per-row failure (as opposed to one caught by the async onError handler
-      // above) rethrows straight out of the per-row loop, skipping the waitCompletion()/firstAsyncError check that
-      // normally runs after it completes successfully. Without draining here first, this method would return
-      // control to the caller - and, for an externally-managed database, closeDatabase() never drains it either -
-      // while earlier rows' async writes are still in flight: uncounted in context.createdVertices, and with no
-      // signal to the caller for when they actually finish.
+      // A synchronous per-row failure rethrows straight out of the loop, skipping the waitCompletion() check that
+      // normally runs after it - drain here first so earlier rows' async writes aren't left in flight uncounted.
       if (!skipOnError) {
         database.async().waitCompletion();
         attachConcurrentAsyncError(e, firstAsyncError);
       }
-      // Same reasoning as loadDocuments(): roll back before rethrowing only if we own the transaction.
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw e;
@@ -569,9 +521,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null,
             expectedVertices, expectedEdges);
 
-    // Edges already skip-and-log unconditionally regardless of -onRowError (see the reasoning further down in this
-    // method), so explicitly setting -onRowError skip here has no visible effect - worth a one-time notice, the same
-    // way JSONImporterFormat.load() calls out the equivalent no-op on a single top-level JSON object.
+    // Edges already skip-and-log unconditionally regardless of -onRowError (see below), so this is a no-op - worth a
+    // one-time notice, mirroring JSONImporterFormat.load()'s equivalent notice for a single top-level JSON object.
     if (settings.isSkipOnRowError())
       LogManager.instance().log(this, Level.INFO,
           "-onRowError skip has no additional effect on edges: an unresolved from/to reference is already skipped and logged unconditionally");
@@ -607,11 +558,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       String[] row;
       // No ownsTransaction/callerTransactionActiveOnEntry guard needed here, unlike loadDocuments()/loadVertices():
-      // called unconditionally like JSONImporterFormat.parseRecords(), database.begin() nests rather than reusing an
-      // already-active transaction (see LocalDatabase#begin()), so a caller's own pre-existing transaction and its
-      // unrelated pending work are never touched by this method's own commits below, regardless of mode - edges are
-      // out of scope for -onRowError skip entirely (see the class-level comment above), so there's no ownership
-      // decision to make in the first place.
+      // database.begin() nests rather than reusing an already-active transaction (see LocalDatabase#begin()), so a
+      // caller's own pre-existing transaction is never touched by this method's own commits below.
       database.begin();
       int txCount = 0;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
