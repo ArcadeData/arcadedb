@@ -119,8 +119,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
-      if (!transactionActiveOnEntry)
-        database.begin();
+      beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
 
@@ -226,6 +225,26 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.FINE, "Full error on importing %s at line %d", e, what, line);
   }
 
+  /**
+   * Begins the transaction the per-row loop below will commit/roll back, reusing one that's already active - except
+   * when this method owns the transaction (see {@code ownsTransaction} at each call site) and one is nonetheless
+   * already active. That combination can only mean {@code updateDatabaseSchema()}'s schema auto-creation
+   * (see {@code AbstractImporter#getOrCreateDocumentType}/{@code #getOrCreateVertexType}) left a transaction open
+   * moments earlier in the same call - never a genuine caller transaction, since owning it implies there wasn't one
+   * (see {@link ImporterContext#callerTransactionActiveOnEntry}). Committing that first, then starting fresh, keeps
+   * a row-1 failure in "skip" mode from also undoing the type/property it just created, which would otherwise break
+   * every subsequent row instead of just skipping the first one.
+   */
+  private void beginRowTransaction(final Database database, final boolean transactionActiveOnEntry, final boolean ownsTransaction) {
+    if (transactionActiveOnEntry) {
+      if (ownsTransaction) {
+        database.commit();
+        database.begin();
+      }
+    } else
+      database.begin();
+  }
+
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
@@ -298,8 +317,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       csvParser.beginParsing(inputFileReader);
 
       // Begun only after the source is successfully opened, so a failure here never leaves a transaction dangling.
-      if (skipOnError && !transactionActiveOnEntry)
-        database.begin();
+      if (skipOnError)
+        beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!settings.vertexPropertiesInclude.isEmpty() && !"*".equalsIgnoreCase(settings.vertexPropertiesInclude)) {

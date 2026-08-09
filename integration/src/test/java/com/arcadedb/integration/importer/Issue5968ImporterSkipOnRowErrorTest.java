@@ -402,6 +402,52 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * Default "abort" mode's vertex guarantee is weaker than the document path's: vertices persist via
+   * {@code database.async()} in {@code commitEvery}-sized batches, and a persist-time failure only rolls back the
+   * batch containing the bad record (see {@code DatabaseAsyncExecutorImpl.executeTask}) - any earlier batch that
+   * already committed stays durably persisted. With {@code -commitEvery 2} and row 5 (of 6) failing, rows 1-4 (two
+   * full batches) must survive even though the import as a whole still aborts with an {@code ImportException}. This
+   * pins down and documents that "abort" here means "fail loudly", not "nothing is imported" the way it does for
+   * documents - see {@link #csvDocumentImportAbortsOnOutOfRangeValueByDefaultAndRollsBackPartialRows()} for the
+   * contrasting guarantee on the document path. {@code -parallel 1} keeps batch assignment deterministic for the
+   * assertion.
+   */
+  @Test
+  void csvVertexImportAbortsOnOutOfRangeValueByDefaultButPriorBatchesSurvive() {
+    final String databasePath = "target/databases/test-import-5968-csv-vertex-multibatch-abort";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    try (final Database db = databaseFactory.create()) {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Score SHORT");
+    }
+
+    try {
+      final Importer importer = new Importer(
+          ("-vertices src/test/resources/importer-vertices-multibatch-outofrange.csv -database " + databasePath
+              + " -typeIdProperty Id -typeIdType Long -commitEvery 2 -parallel 1").split(" "));
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      try (final Database db = databaseFactory.open()) {
+        // Rows 1-4 (batches [1,2] and [3,4]) were already committed before row 5 (batch [5,6]) failed: "abort" mode
+        // for vertices fails loudly, but does not roll back everything the way the document path does.
+        assertThat(db.countType("Node", true)).isEqualTo(4);
+        assertThat(db.lookupByKey("Node", "Id", 1L).hasNext()).isTrue();
+        assertThat(db.lookupByKey("Node", "Id", 4L).hasNext()).isTrue();
+        assertThat(db.lookupByKey("Node", "Id", 5L).hasNext()).isFalse();
+        assertThat(db.lookupByKey("Node", "Id", 6L).hasNext()).isFalse();
+      }
+    } finally {
+      databaseFactory.open().drop();
+    }
+  }
+
   @Test
   void csvVertexImportCountsPersistTimeFailureWhenOptedIn() {
     final String databasePath = "target/databases/test-import-5968-csv-async-skip";
@@ -767,6 +813,51 @@ class Issue5968ImporterSkipOnRowErrorTest {
       final Map<String, Object> result = importer.load();
       assertThat(result.get("errors")).isEqualTo(1L);
       assertThat(db.countType("Node", true)).isEqualTo(2);
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
+   * Unlike every other embedding-constructor test above, this one does NOT pre-create the vertex type: with no
+   * {@code Node} type yet, {@code Importer#loadFromSource -> updateDatabaseSchema -> getOrCreateVertexType} begins a
+   * transaction for the schema DDL and never commits it, so by the time {@code loadVertices} runs, a transaction is
+   * already active - not the caller's (there wasn't one), but this importer's own dangling schema-creation one.
+   * Traced empirically: a subsequent {@code database.rollback()} does not actually undo the type/property/index
+   * creation bundled into that same transaction (schema mutations aren't governed by the enclosing data
+   * transaction's rollback), so a first-row failure in "skip" mode was already safe here even before
+   * {@code beginRowTransaction} in {@code CSVImporterFormat} started committing that dangling transaction on its own
+   * before the per-row loop begins. This test locks in the observed behavior regardless of that underlying
+   * mechanism, and the accompanying fix removes any future dependency on it.
+   */
+  @Test
+  void csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor() {
+    final String databasePath = "target/databases/test-import-5968-csv-embed-vertex-schema-autocreate";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = "src/test/resources/importer-vertices-outofrange-firstrow.csv";
+      importer.settings.vertexTypeName = "Node";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+      importer.settings.onRowError = "skip";
+
+      final Map<String, Object> result = importer.load();
+      assertThat(result.get("errors")).isEqualTo(1L);
+
+      // The Node type must have survived (it wasn't rolled back along with row 1's own failed save()), and Bob/Carol
+      // (rows 2 and 3, both valid) must have imported normally afterward - proving the bad first row only cost
+      // itself, not the type it needed to exist.
+      assertThat(db.getSchema().existsType("Node")).isTrue();
+      assertThat(db.countType("Node", true)).isEqualTo(2);
+      assertThat(db.lookupByKey("Node", "Id", 2L).next().getRecord().asVertex().getString("Name")).isEqualTo("Bob");
+      assertThat(db.lookupByKey("Node", "Id", 3L).next().getRecord().asVertex().getString("Name")).isEqualTo("Carol");
+      assertThat(db.lookupByKey("Node", "Id", 1L).hasNext()).isFalse();
     } finally {
       db.drop();
     }
