@@ -213,7 +213,23 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "- Total documents: %d", null, context.createdDocuments.get());
       LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
 
-      csvParser.stopParsing();
+      stopParsingQuietly(csvParser);
+    }
+  }
+
+  /**
+   * {@code AbstractParser#stopParsing()} can itself throw (e.g. a {@code TextParsingException} wrapping "Stream
+   * closed" if the underlying reader - a try-with-resources variable - was already closed by the time this runs in
+   * a {@code finally} block, which becomes more likely the longer the exception path leading here takes, e.g. after
+   * {@code loadVertices}' {@code database.async().waitCompletion()} on a synchronous per-row failure). Cleanup in a
+   * {@code finally} block must never replace/mask whatever exception is already propagating, so this is swallowed
+   * (logged at FINE) rather than let to escape.
+   */
+  private void stopParsingQuietly(final AbstractParser<?> parser) {
+    try {
+      parser.stopParsing();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "Error stopping the CSV/TSV parser during cleanup", e);
     }
   }
 
@@ -427,10 +443,22 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       }
 
     } catch (final IOException e) {
+      // In "abort" mode, drain any vertices from earlier rows already queued via database.async() before this
+      // failure propagates - see the RuntimeException catch below for why.
+      if (!skipOnError)
+        database.async().waitCompletion();
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
       throw new ImportException("Error on importing CSV", e);
     } catch (final RuntimeException e) {
+      // In "abort" mode, a synchronous per-row failure (as opposed to one caught by the async onError handler
+      // above) rethrows straight out of the per-row loop, skipping the waitCompletion()/firstAsyncError check that
+      // normally runs after it completes successfully. Without draining here first, this method would return
+      // control to the caller - and, for an externally-managed database, closeDatabase() never drains it either -
+      // while earlier rows' async writes are still in flight: uncounted in context.createdVertices, and with no
+      // signal to the caller for when they actually finish.
+      if (!skipOnError)
+        database.async().waitCompletion();
       // Same reasoning as loadDocuments(): roll back before rethrowing only if we own the transaction.
       if (ownsTransaction && database.isTransactionActive())
         database.rollback();
@@ -444,7 +472,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "- Total vertices.: %d", null, context.createdVertices.get());
       LogManager.instance().log(this, Level.INFO, "- Skipped rows...: %d", null, context.errors.get() - errorsBefore);
 
-      csvParser.stopParsing();
+      stopParsingQuietly(csvParser);
     }
   }
 
@@ -556,7 +584,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "- Total linked Edges: %d", null, context.linkedEdges.get());
       LogManager.instance().log(this, Level.INFO, "- Skipped edges.....: %d", null, context.skippedEdges.get());
 
-      csvParser.stopParsing();
+      stopParsingQuietly(csvParser);
     }
   }
 

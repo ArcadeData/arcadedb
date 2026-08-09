@@ -66,6 +66,46 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * A synchronous per-row failure (e.g. {@code v.set(...)} throwing on an out-of-range value, as opposed to one only
+   * caught by the async {@code onError} handler) rethrows straight out of {@code loadVertices}' per-row loop in
+   * default "abort" mode, skipping the {@code database.async().waitCompletion()} call that normally runs right after
+   * the loop completes successfully. For a self-managed database this was masked by {@code database.close()}
+   * internally draining the async queue on the way out - but for an externally-managed one (the embedding
+   * constructor here, and critically {@code IMPORT DATABASE} over SQL/HTTP, which reuses the live server
+   * {@code Database}), {@code closeDatabase()} is a no-op, so without an explicit drain this method could return
+   * control to the caller while an earlier row's async write was still in flight and uncounted.
+   */
+  @Test
+  void csvVertexImportDrainsAsyncQueueBeforeReturningOnSynchronousFailureInExternallyManagedDatabase() {
+    final String databasePath = "target/databases/test-import-5968-csv-vertex-async-drain";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Score SHORT");
+
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = "src/test/resources/importer-vertices-outofrange.csv";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      // Alice (row 1) was already queued via database.async() before Bob (row 2) failed synchronously. By the time
+      // load() has thrown, that queued write must already be durable - not just eventually consistent - since
+      // nothing else in this call path (no closeDatabase() for an externally-managed database) will ever drain it.
+      assertThat(db.countType("Node", true)).isEqualTo(1);
+    } finally {
+      db.drop();
+    }
+  }
+
   @Test
   void csvVertexImportSkipsOutOfRangeValueWhenOptedIn() {
     final String databasePath = "target/databases/test-import-5968-csv-skip";
