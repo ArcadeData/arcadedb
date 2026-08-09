@@ -106,6 +106,50 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * Symmetric to {@link #csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction()}
+   * but for vertices: in default "abort" mode, {@code loadVertices} never touches the foreground transaction at all
+   * (vertices persist via {@code database.async()}, a separate mechanism), so a caller's own pre-existing
+   * transaction and its unrelated pending work must survive completely untouched - not just "not rolled back" the
+   * way the document path's shared-transaction case is, but never interacted with in the first place.
+   */
+  @Test
+  void csvVertexImportAbortsWithoutTouchingCallersPendingWorkInExternallyManagedTransaction() {
+    final String databasePath = "target/databases/test-import-5968-csv-vertex-abort-caller-tx";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Node");
+      db.command("sql", "CREATE PROPERTY Node.Score SHORT");
+      db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+      // The caller starts their own transaction with unrelated pending work before handing the Database to the
+      // importer, then calls it directly in default "abort" mode.
+      db.begin();
+      db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = "src/test/resources/importer-vertices-outofrange.csv";
+      importer.settings.typeIdProperty = "Id";
+      importer.settings.typeIdType = "Long";
+
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+      // The caller's own transaction must still be active, with their pre-existing pending work still in it.
+      assertThat(db.isTransactionActive()).isTrue();
+      db.commit();
+
+      assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+    } finally {
+      db.drop();
+    }
+  }
+
   @Test
   void csvVertexImportSkipsOutOfRangeValueWhenOptedIn() {
     final String databasePath = "target/databases/test-import-5968-csv-skip";

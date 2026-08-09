@@ -254,17 +254,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   /**
    * Begins the transaction the per-row loop below will commit/roll back, reusing one that's already active - except
-   * when this method owns the transaction (see {@code ownsTransaction} at each call site) and one is nonetheless
-   * already active. That combination can only mean {@code updateDatabaseSchema()}'s schema auto-creation
-   * (see {@code AbstractImporter#getOrCreateDocumentType}/{@code #getOrCreateVertexType}) left a transaction open
-   * moments earlier in the same call - never a genuine caller transaction, since owning it implies there wasn't one
-   * (see {@link ImporterContext#callerTransactionActiveOnEntry}). Committing that first, then starting fresh, keeps
-   * a row-1 failure in "skip" mode from also undoing the type/property it just created, which would otherwise break
-   * every subsequent row instead of just skipping the first one.
+   * when this method owns the transaction (see {@link ImporterContext#callerTransactionActiveOnEntry}) and one is
+   * nonetheless already active, in which case it's committed first, then a fresh one begun: that combination can
+   * only mean {@code updateDatabaseSchema()}'s lazy type creation left one open moments earlier in the same call,
+   * and a row-1 failure in "skip" mode must not undo the type/property it just created along with it.
    */
   private void beginRowTransaction(final Database database, final boolean transactionActiveOnEntry, final boolean ownsTransaction) {
     if (transactionActiveOnEntry) {
       if (ownsTransaction) {
+        // The only known way to reach this combination is updateDatabaseSchema()'s lazy type creation leaving its
+        // own transaction open - logged at FINE so it's traceable if some future entry point ever reaches here for
+        // a different reason, rather than silently committing whatever's active on the strength of that assumption.
+        LogManager.instance()
+            .log(this, Level.FINE, "Committing a transaction already active on entry before starting the per-row loop");
         database.commit();
         database.begin();
       }
@@ -273,15 +275,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
-   * {@code transactionActiveOnEntry}: the live transaction state at the point {@code loadDocuments}/{@code
-   * loadVertices} is entered, needed by {@link #beginRowTransaction} to decide whether to begin, reuse, or replace
-   * the currently active transaction. {@code ownsTransaction}: true for a self-managed database (its ambient
-   * transaction is always empty, safe to commandeer regardless of who began it - see
-   * {@code AbstractImporter#openDatabase()}), or for an externally-managed one whenever the caller's own transaction
-   * wasn't already active before this whole import began (see {@link ImporterContext#callerTransactionActiveOnEntry}
-   * for why that, not a live check, is the correct signal). Captured once here, before either method's own {@code
-   * try} block, so both values are visible in that method's {@code catch} blocks too (a variable declared inside a
-   * {@code try} isn't visible in its own {@code catch}).
+   * {@code transactionActiveOnEntry}: the live transaction state where this is captured, used by
+   * {@link #beginRowTransaction} to decide whether to begin, reuse, or replace it. {@code ownsTransaction}: see
+   * {@link ImporterContext#callerTransactionActiveOnEntry}. Captured once, before either caller's own {@code try}
+   * block, so both are visible in that method's {@code catch} blocks too (declared inside a {@code try}, they
+   * wouldn't be).
    */
   private record TransactionOwnership(boolean transactionActiveOnEntry, boolean ownsTransaction) {
   }
