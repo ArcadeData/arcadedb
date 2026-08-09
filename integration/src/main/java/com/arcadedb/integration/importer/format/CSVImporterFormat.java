@@ -266,12 +266,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   /**
    * Begins the transaction the per-row loop below will commit/roll back, reusing one that's already active - except
    * when this method owns the transaction (see {@link ImporterContext#callerTransactionActiveOnEntry}) and one is
-   * nonetheless already active, in which case it's committed first, then a fresh one begun: that combination can
-   * only mean {@code updateDatabaseSchema()}'s lazy type creation left one open moments earlier in the same call,
-   * and a row-1 failure in "skip" mode must not undo the type/property it just created along with it. Committing
-   * here first means correctness doesn't depend on whether a data-transaction {@code database.rollback()} would
-   * also undo schema mutations bundled into the same transaction - which, traced empirically rather than merely
-   * assumed, it does not - see
+   * nonetheless already active, in which case it's committed first, then a fresh one begun. This is the common path
+   * for a self-managed database, not a rare edge case: {@code AbstractImporter#openDatabase()} always leaves its own
+   * ambient transaction active before this method ever runs, so every self-managed/CLI import hits it regardless of
+   * schema auto-creation. The other trigger - {@code updateDatabaseSchema()}'s lazy type creation leaving a
+   * transaction open on an externally-managed database that had none active before this call - is the one edge case
+   * this exists to protect: a row-1 failure in "skip" mode must not undo the type/property it just created along
+   * with it. Committing here first, in either case, means correctness doesn't depend on whether a data-transaction
+   * {@code database.rollback()} would also undo schema mutations bundled into the same transaction - which, traced
+   * empirically rather than merely assumed, it does not - see
    * {@code Issue5968ImporterSkipOnRowErrorTest#csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor}.
    */
   private void beginRowTransaction(final Database database, final boolean transactionActiveOnEntry, final boolean ownsTransaction) {
@@ -582,6 +585,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "Importing the following edge properties: %s", null, properties);
 
       String[] row;
+      // No ownsTransaction/callerTransactionActiveOnEntry guard needed here, unlike loadDocuments()/loadVertices():
+      // called unconditionally like JSONImporterFormat.parseRecords(), database.begin() nests rather than reusing an
+      // already-active transaction (see LocalDatabase#begin()), so a caller's own pre-existing transaction and its
+      // unrelated pending work are never touched by this method's own commits below, regardless of mode - edges are
+      // out of scope for -onRowError skip entirely (see the class-level comment above), so there's no ownership
+      // decision to make in the first place.
       database.begin();
       int txCount = 0;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {

@@ -150,6 +150,61 @@ class Issue5968ImporterSkipOnRowErrorTest {
     }
   }
 
+  /**
+   * {@code loadEdges} is out of scope for the {@code -onRowError skip} feature itself (edges already skip-and-log
+   * unconditionally, see the class-level reasoning in {@code CSVImporterFormat}), so it has none of the
+   * {@code ownsTransaction}/{@code callerTransactionActiveOnEntry} machinery the other two paths use. It calls
+   * {@code database.begin()} unconditionally, though, exactly like {@code JSONImporterFormat.parseRecords} - since
+   * {@code LocalDatabase#begin()} nests rather than reuses an already-active transaction, this locks in that
+   * loadEdges is safe by the same mechanism, without needing any of the CSV document/vertex-style guards: a caller's
+   * own pre-existing transaction and its unrelated pending work must survive an edges import untouched, exactly like
+   * the vertex/document counterparts above.
+   */
+  @Test
+  void csvEdgeImportDoesNotTouchCallersPendingWorkInExternallyManagedTransaction() {
+    final String databasePath = "target/databases/test-import-5968-csv-edge-caller-tx";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    // Vertices imported first, in a separate self-managed run, so the edges import below only has to resolve
+    // existing from/to references, not also create the vertex type.
+    final Importer verticesImporter = new Importer(
+        ("-vertices src/test/resources/importer-vertices.csv -database " + databasePath
+            + " -typeIdProperty Id -typeIdType Long -typeIdPropertyIsUnique true -forceDatabaseCreate true").split(" "));
+    verticesImporter.load();
+
+    final Database db = databaseFactory.open();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+      // The caller starts their own transaction with unrelated pending work before handing the Database to the
+      // importer.
+      db.begin();
+      db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+      final Importer edgesImporter = new Importer(db, null);
+      edgesImporter.settings.edges = "src/test/resources/importer-edges.csv";
+      edgesImporter.settings.typeIdProperty = "Id";
+      edgesImporter.settings.typeIdType = "Long";
+      edgesImporter.settings.edgeFromField = "From";
+      edgesImporter.settings.edgeToField = "To";
+
+      edgesImporter.load();
+
+      // The caller's own transaction must still be active, with their pre-existing pending work still in it -
+      // committed here, by the caller, exactly as if the edges import had never run inside it.
+      assertThat(db.isTransactionActive()).isTrue();
+      db.commit();
+
+      assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+      assertThat(db.countType("Relationship", true)).isGreaterThan(0);
+    } finally {
+      db.drop();
+    }
+  }
+
   @Test
   void csvVertexImportSkipsOutOfRangeValueWhenOptedIn() {
     final String databasePath = "target/databases/test-import-5968-csv-skip";
@@ -186,7 +241,9 @@ class Issue5968ImporterSkipOnRowErrorTest {
   /**
    * Symmetric to {@link #csvVertexImportSkipsOutOfRangeValueWhenOptedIn()} but for {@code CSVImporterFormat.loadDocuments},
    * which is fully synchronous ({@code document.save()}, no {@code database.async()}), so unlike vertices, "skip" mode
-   * here guarantees an exact surviving count.
+   * here guarantees an exact surviving count. Deliberately reuses {@code importer-vertices-outofrange.csv} rather
+   * than a document-specific fixture with the same shape - the CSV content itself is entity-agnostic (rows/columns),
+   * only {@code -documentType Widget} below routes it through the document path instead of the vertex one.
    */
   @Test
   void csvDocumentImportSkipsOutOfRangeValueWhenOptedIn() {

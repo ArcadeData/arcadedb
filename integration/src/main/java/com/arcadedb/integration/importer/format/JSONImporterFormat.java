@@ -92,10 +92,12 @@ public class JSONImporterFormat implements FormatImporter {
 
         if (mapping == null) {
           // A single top-level object: there is no sibling record to continue with on failure, so -onRowError skip
-          // has no recovery to do here - any error still aborts the import.
+          // has no recovery to do here - any error still aborts the import. Logged at INFO, not WARNING, since this
+          // fires on every such import regardless of whether anything actually goes wrong - it's a configuration
+          // notice, not an error signal.
           if (settings.isSkipOnRowError())
             LogManager.instance()
-                .log(this, Level.WARNING,
+                .log(this, Level.INFO,
                     "-onRowError skip has no effect on a single top-level JSON object (no -mapping set): there is no "
                         + "sibling record to continue with, so any error still aborts the import");
           // The AtomicBoolean here is discarded rather than checked, unlike the top-level records in parseRecords():
