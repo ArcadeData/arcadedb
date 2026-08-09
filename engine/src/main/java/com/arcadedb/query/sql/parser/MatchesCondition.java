@@ -81,7 +81,12 @@ public class MatchesCondition extends BooleanExpression {
     // context.getDatabase().getConfiguration(), not context.getConfiguration(): the latter is a fresh, disconnected
     // ContextConfiguration for a plain SELECT/=~ evaluation (nothing wires it to the database's settings), so it
     // would silently fall back to the compiled-in default and ignore a per-database override. This mirrors how
-    // SelectExecutionPlanner reads GlobalConfiguration.COMMAND_TIMEOUT.
+    // SelectExecutionPlanner reads GlobalConfiguration.COMMAND_TIMEOUT. Unlike LikeOperator/ILikeOperator/
+    // TextRegexReplace, this call is intentionally unguarded against a null database: a MatchesCondition is only
+    // ever constructed by the SQL parser and evaluated by the query execution engine, which always binds a
+    // database to the context before any WHERE/RETURN expression runs (see SelectStatement, UpdateStatement,
+    // InsertStatement, ... all calling context.setDatabase(...)) - there is no direct-unit-test-style entry
+    // point into this class the way there is for a standalone SQL function or operator.
     final long regexTimeout = context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
     // One shared deadline for the whole evaluation: a multi-value property can hold many items, and each getting
     // its own full regexTimeout budget would let a crafted list bound the loop by N * regexTimeout instead of by

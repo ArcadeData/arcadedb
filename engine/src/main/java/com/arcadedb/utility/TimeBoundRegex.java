@@ -26,11 +26,16 @@ import java.util.regex.Pattern;
 /**
  * Bounds a {@link Pattern} operation against catastrophic backtracking. {@code java.util.regex} never polls
  * {@code Thread.interrupted()} or checks a deadline while backtracking, so a pathological pattern (e.g. nested
- * quantifiers like {@code (.*a){20}$}) keeps its calling thread busy for as long as the backtracking takes, no
- * matter what timeout the surrounding query execution enforces. What it does call, on every single backtracking
- * step, is {@link CharSequence#charAt(int)} on the input it is operating on. Wrapping that input in a sequence
- * that throws once a deadline elapses turns that call site into the interruption point {@code Matcher} does not
- * otherwise offer.
+ * quantifiers like {@code (.*a){20}$}, or several sequential {@code .*} segments like {@code (.*a){20}c} - no
+ * nesting needed for that shape) keeps its calling thread busy for as long as the backtracking takes, no matter
+ * what timeout the surrounding query execution enforces. What it does call, on every single backtracking step,
+ * is {@link CharSequence#charAt(int)} on the input it is operating on. Wrapping that input in a sequence that
+ * throws once a deadline elapses turns that call site into the interruption point {@code Matcher} does not
+ * otherwise offer. Verified empirically (not just by reading the JDK source) that both {@code matches()} and
+ * {@code replaceAll()} go through this {@code charAt()} path even for the literal-heavy patterns callers here
+ * use ({@code MATCHES}/{@code =~}'s nested-quantifier shape and {@code LIKE}/wildcard's sequential-{@code .*}
+ * shape both abort correctly) - some JDK regex fast paths read a pattern's literal prefix through a different
+ * mechanism, and this class would silently stop bounding anything that took one of those paths instead.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -75,10 +80,19 @@ public final class TimeBoundRegex {
    * @param timeoutMillis maximum time allowed from now, in milliseconds; a value {@code <= 0} disables the bound
    *
    * @return an absolute deadline for {@link #matchesUntil(Pattern, CharSequence, long)}, or a sentinel that never
-   * triggers if {@code timeoutMillis <= 0}
+   * triggers if {@code timeoutMillis <= 0} or if {@code timeoutMillis} is large enough that computing the
+   * deadline would overflow - {@code arcadedb.command.regexTimeout} is admin-configurable, and an overflowed
+   * deadline landing in the past would make every match abort immediately instead of applying the (very long)
+   * requested timeout, the opposite of what an oversized value should do
    */
   public static long newDeadline(final long timeoutMillis) {
-    return timeoutMillis <= 0 ? Long.MAX_VALUE : System.nanoTime() + (timeoutMillis * 1_000_000L);
+    if (timeoutMillis <= 0)
+      return Long.MAX_VALUE;
+    try {
+      return Math.addExact(System.nanoTime(), Math.multiplyExact(timeoutMillis, 1_000_000L));
+    } catch (final ArithmeticException e) {
+      return Long.MAX_VALUE;
+    }
   }
 
   /**

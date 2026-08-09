@@ -87,4 +87,18 @@ class TimeBoundRegexTest {
 
     assertThat(elapsedMillis).isLessThan(5000);
   }
+
+  @Test
+  void newDeadlineDoesNotOverflowOnAnOversizedTimeout() {
+    // arcadedb.command.regexTimeout is admin-configurable; a value large enough that timeoutMillis * 1_000_000L
+    // (or adding System.nanoTime() to it) overflows a long must fall back to "effectively unbounded" rather than
+    // silently wrapping into a deadline that's already in the past - which would make every match abort
+    // immediately instead of applying the (very long) requested timeout.
+    assertThat(TimeBoundRegex.newDeadline(Long.MAX_VALUE)).isEqualTo(Long.MAX_VALUE);
+    assertThat(TimeBoundRegex.newDeadline(Long.MAX_VALUE / 1_000_000L + 1)).isEqualTo(Long.MAX_VALUE);
+
+    // And an overflow-inducing timeout must still let a normal match through rather than abort it, proving the
+    // fallback really disables the bound instead of just returning a large-but-still-wrong deadline.
+    assertThat(TimeBoundRegex.matches(Pattern.compile("Aa.*"), "Aardvark", Long.MAX_VALUE)).isTrue();
+  }
 }
