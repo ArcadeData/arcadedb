@@ -117,7 +117,7 @@ public class SnapshotHttpHandler implements HttpHandler {
    * fresh {@code SnapshotHttpHandler} (and watchdog) is otherwise created on every restart while the
    * previous one is left running.
    */
-  public void close() {
+  void close() {
     watchdogExecutor.shutdownNow();
   }
 

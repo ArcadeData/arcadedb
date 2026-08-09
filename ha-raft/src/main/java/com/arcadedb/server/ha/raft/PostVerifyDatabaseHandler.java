@@ -87,7 +87,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * so an in-flight peer query can still linger up to {@code PEER_READ_TIMEOUT_MS} after this returns.
    * Harmless (daemon threads, no new work accepted), just not immediate.
    */
-  public void close() {
+  void close() {
     peerQueryExecutor.shutdownNow();
   }
 
