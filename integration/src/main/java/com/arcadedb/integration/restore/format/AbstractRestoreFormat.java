@@ -21,6 +21,7 @@ package com.arcadedb.integration.restore.format;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.RestoreSettings;
+import com.arcadedb.utility.DateUtils;
 
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -29,8 +30,7 @@ public abstract class AbstractRestoreFormat {
   protected final        RestoreSettings   settings;
   protected final        DatabaseInternal  database;
   protected final        ConsoleLogger     logger;
-  protected static final DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
-      .withZone(ZoneId.systemDefault());
+  protected static final DateTimeFormatter dateFormat = DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneId.systemDefault());
 
   protected AbstractRestoreFormat(final DatabaseInternal database, final RestoreSettings settings, final ConsoleLogger logger) {
     this.database = database;

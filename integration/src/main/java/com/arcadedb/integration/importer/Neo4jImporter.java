@@ -33,6 +33,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.Pair;
 
 import java.io.BufferedReader;
@@ -94,7 +95,7 @@ public class Neo4jImporter {
   private              boolean                        error                    = false;
   private final        ImporterContext                context;
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
-  private final static DateTimeFormatter              dateTimeISO8601Format    = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+  final static         DateTimeFormatter              dateTimeISO8601Format    = DateUtils.getFormatter("yyyy-MM-dd'T'HH:mm:ss");
   // Allow-list for imported labels: ASCII letters, digits, underscore, hyphen and space only. Excluding '.', '/' and '\'
   // makes path-traversal sequences structurally impossible in the on-disk bucket file names derived from these labels.
   private final static Pattern                        SAFE_LABEL               = Pattern.compile("[A-Za-z0-9_ -]+");
