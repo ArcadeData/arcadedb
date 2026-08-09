@@ -57,13 +57,10 @@ import static com.google.gson.stream.JsonToken.END_ARRAY;
 import static com.google.gson.stream.JsonToken.END_OBJECT;
 
 /**
- * On {@code -onRowError skip} (see {@link ImporterSettings#isSkipOnRowError()}), {@code parseRecords} always begins
- * a fresh, genuinely nested transaction per record - {@code database.begin()} pushes an independent
- * {@code TransactionContext} rather than reusing one that's already active (see {@code LocalDatabase#begin()}), so
- * this method's own commit/rollback can never affect a pre-existing caller transaction, regardless of mode.
- * Contrast {@code CSVImporterFormat}, which instead reuses whatever transaction is already active - a different
- * strategy reaching the same safety guarantee, made safe there only by first establishing that the reused
- * transaction can't be a caller's own (see that class's own Javadoc).
+ * On {@code -onRowError skip}, {@code parseRecords} always begins a fresh, genuinely nested transaction per record -
+ * {@code database.begin()} pushes an independent {@code TransactionContext} rather than reusing one that's already
+ * active (see {@code LocalDatabase#begin()}) - so its own commit/rollback can never affect a pre-existing caller
+ * transaction, regardless of mode. See {@link ImporterSettings#isSkipOnRowError()} for the full contract.
  */
 public class JSONImporterFormat implements FormatImporter {
   static class CascadingProperties {

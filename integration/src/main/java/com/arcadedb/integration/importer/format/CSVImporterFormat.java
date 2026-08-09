@@ -59,13 +59,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 /**
- * On {@code -onRowError skip} (see {@link ImporterSettings#isSkipOnRowError()}), {@code loadDocuments}/
- * {@code loadVertices} reuse whatever transaction is already active for each row's own commit/rollback rather than
- * nesting a new one - safe only because {@code ownsTransaction} (see {@code computeTransactionOwnership}) has
- * already established that transaction can only be this importer's own, never a caller's. Contrast
- * {@code JSONImporterFormat}, which always begins a fresh, genuinely nested transaction per record regardless of
- * what's already active - a different strategy reaching the same safety guarantee, not interchangeable with this
- * one without also changing the reasoning behind {@code ownsTransaction} itself (see that class's own Javadoc).
+ * On {@code -onRowError skip}, {@code loadDocuments}/{@code loadVertices} reuse whatever transaction is already
+ * active rather than nesting a new one - see {@link ImporterSettings#isSkipOnRowError()} for the full
+ * transaction-ownership contract this and {@code JSONImporterFormat} both satisfy, by different means.
  */
 public class CSVImporterFormat extends AbstractImporterFormat {
   private static final Object[] NO_PARAMS = new Object[] {};
@@ -273,9 +269,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * transaction open on an externally-managed database that had none active before this call - is the one edge case
    * this exists to protect: a row-1 failure in "skip" mode must not undo the type/property it just created along
    * with it. Committing here first, in either case, means correctness doesn't depend on whether a data-transaction
-   * {@code database.rollback()} would also undo schema mutations bundled into the same transaction - which, traced
-   * empirically rather than merely assumed, it does not - see
-   * {@code Issue5968ImporterSkipOnRowErrorTest#csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor}.
+   * {@code database.rollback()} would also undo schema mutations bundled into the same transaction - it does not
+   * (see {@code Issue5968ImporterSkipOnRowErrorTest#csvVertexImportSkipModeSurvivesFirstRowFailureWhenSchemaAutoCreatedViaEmbeddingConstructor}).
    */
   private void beginRowTransaction(final Database database, final boolean transactionActiveOnEntry, final boolean ownsTransaction) {
     if (transactionActiveOnEntry) {
@@ -496,9 +491,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         // too means it isn't lost from the exception that actually reaches the caller. If e is itself the
         // ImportException thrown below for firstAsyncError (no synchronous failure, only an async one), this adds
         // the same throwable as both Suppressed and its own Caused by - redundant in the stack trace but harmless.
+        // Throwable doesn't override equals(), so this remains an identity check.
         final Throwable asyncError = firstAsyncError.get();
-        // Throwable doesn't override equals(), so this is still an identity check - just spelled the way static
-        // analysis (Codacy/ErrorProne) expects for a non-primitive comparison.
         if (asyncError != null && !asyncError.equals(e))
           e.addSuppressed(asyncError);
       }
