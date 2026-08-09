@@ -567,6 +567,13 @@ public enum GlobalConfiguration {
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 
+  COMMAND_REGEX_TIMEOUT("arcadedb.command.regexTimeout", SCOPE.DATABASE, """
+      Maximum time in ms a single regular expression evaluation (SQL MATCHES, openCypher =~) may run before being aborted. \
+      java.util.regex backtracking does not poll interrupts or deadlines, so a pathological pattern (catastrophic backtracking) \
+      keeps its worker thread busy regardless of arcadedb.command.timeout; this dedicated bound protects against that even when \
+      arcadedb.command.timeout is disabled (0), which is the default. Set to 0 to disable (not recommended).""",
+      Long.class, 1000),
+
   COMMAND_WARNINGS_EVERY("arcadedb.command.warningsEvery", SCOPE.JVM,
       "Reduce warnings in commands to print in console only every X occurrences. Use 0 to disable warnings with commands",
       Integer.class, 100),

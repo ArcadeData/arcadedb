@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.sql;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Regression tests for the MATCHES per-context regex pattern cache. */
 class MatchesConditionTest extends TestHelper {
@@ -145,5 +148,31 @@ class MatchesConditionTest extends TestHelper {
     assertThat(second.hasNext()).isTrue();
     assertThat(second.next().<String>getProperty("name")).isEqualTo("BBking");
     assertThat(second.hasNext()).isFalse();
+  }
+
+  @Test
+  void catastrophicPatternIsAbortedByRegexTimeout() {
+    // Issue #5886: (.*a){20}$ against "a".repeat(40) + "!" triggers catastrophic backtracking in
+    // java.util.regex. Matcher.matches() never polls interrupts or a deadline while backtracking, so
+    // arcadedb.command.timeout cannot stop it (still running 30s later per the issue report); only
+    // arcadedb.command.regexTimeout, enforced inside the match itself, can.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Pathological");
+      database.command("sql", "INSERT INTO Pathological SET name = '" + "a".repeat(40) + "!'");
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM Pathological WHERE name MATCHES '(.*a){20}$'");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the query was aborted near the configured deadline rather than
+    // merely being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
   }
 }

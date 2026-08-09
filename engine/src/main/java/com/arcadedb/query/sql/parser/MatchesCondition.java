@@ -20,10 +20,12 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -76,14 +78,16 @@ public class MatchesCondition extends BooleanExpression {
       context.setCachedValue(key, p);
     }
 
+    final long regexTimeout = context.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
+
     if (value instanceof CharSequence sequence) {
-      return p.matcher(sequence).matches();
+      return TimeBoundRegex.matches(p, sequence, regexTimeout);
     } else if (MultiValue.isMultiValue(value)) {
       final Iterator<?> values = MultiValue.getMultiValueIterator(value);
       while (values.hasNext()) {
         final Object item = values.next();
         if (item instanceof CharSequence seq) {
-          if (p.matcher(seq).matches()) {
+          if (TimeBoundRegex.matches(p, seq, regexTimeout)) {
             return true;
           }
         }

@@ -31,9 +31,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -211,6 +213,27 @@ public class OpenCypherWhereClauseTest {
     final Result row = rs.next();
     assertThat(row.<Boolean>getProperty("result")).isTrue();
     assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void catastrophicPatternIsAbortedByRegexTimeout() {
+    // Issue #5886: (.*a){20}$ against "a".repeat(40) + "!" triggers catastrophic backtracking in
+    // java.util.regex. Matcher.matches() never polls interrupts or a deadline while backtracking, so
+    // arcadedb.command.timeout cannot stop it; only arcadedb.command.regexTimeout, enforced inside the
+    // match itself, can.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathologicalInput = "a".repeat(40) + "!";
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN $input =~ '(.*a){20}$' AS result",
+        Map.of("input", pathologicalInput)).next())
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the query was aborted near the configured deadline rather than
+    // merely being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
   }
 
   // Issue #5282: NOT (null =~ ...) must stay null, not become true.

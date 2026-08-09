@@ -18,8 +18,10 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -70,7 +72,7 @@ public class RegexExpression implements BooleanExpression {
 
     // Match against value
     final String valueStr = value.toString();
-    return compiledPattern.matcher(valueStr).matches();
+    return TimeBoundRegex.matches(compiledPattern, valueStr, context.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
   }
 
   @Override

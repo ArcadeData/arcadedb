@@ -326,3 +326,32 @@ so are fully atomic. `abort` mode still fails the import and stops processing fu
 only the "nothing at all was imported" guarantee differs between the two formats.
 
 [#5968](https://github.com/ArcadeData/arcadedb/issues/5968)
+
+## SQL `MATCHES` and openCypher `=~` are no longer able to pin a worker thread indefinitely on a pathological regex (#5886)
+
+A regex like `(.*a){20}$` against a 41-character string triggers catastrophic backtracking in
+`java.util.regex`: still running after 30+ seconds for a pattern and input small enough to be typed by
+hand. `arcadedb.command.timeout` did not help, because `Matcher.matches()` never polls an interrupt flag or
+checks a deadline while backtracking - the only thing it calls on every backtracking step is
+`CharSequence.charAt()` on the input being matched, and nothing in the surrounding query execution machinery
+gets a chance to run again until that call returns on its own. In a deployment where query access reaches
+low-privilege users or an application layer that forwards user-supplied patterns, a handful of such queries
+is enough to permanently tie up the HTTP worker pool.
+
+Both regex entry points - SQL `MATCHES` (`MatchesCondition`) and openCypher `=~` (`RegexExpression`) - now
+run the match through `TimeBoundRegex`, which wraps the input `CharSequence` so `charAt()` throws once a
+deadline elapses. Because `java.util.regex` calls `charAt()` on every backtracking step, this turns the one
+call site the engine cannot otherwise intercept into the interruption point `arcadedb.command.timeout` was
+supposed to provide. The deadline itself is a new, dedicated setting, `arcadedb.command.regexTimeout`
+(default 1000ms), independent of `arcadedb.command.timeout` and active even when the latter is left at its
+default of disabled (`0`) - which it is by default, so `MATCHES`/`=~` would otherwise have had no bound at
+all regardless of configuration. `charAt()` checks the deadline every 256 calls rather than every call, to
+keep the check off the hot path for the overwhelming majority of well-behaved patterns that never come close
+to that many backtracking steps in the first place.
+
+SQL `LIKE`/`ILIKE` were audited for the same gap and found not to need it: `QueryHelper.convertForRegExp`
+escapes every regex metacharacter except `%` (`.*`) and `?` (`.`), so the generated pattern can never contain
+grouping, alternation, or nested quantifiers - the shapes catastrophic backtracking requires. It stays on
+plain `String.matches()`.
+
+[#5886](https://github.com/ArcadeData/arcadedb/issues/5886)
