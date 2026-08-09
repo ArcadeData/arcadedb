@@ -45,17 +45,29 @@ public interface CountOp {
   /**
    * Whether this operator can enumerate the set of vertices it starts from.
    * <p>
-   * Every operator here anchors its walk on one labelled position of the pattern and enumerates that label's
-   * buckets - {@code MATCH (a:Person)-[:KNOWS]->(b)} starts from the {@code Person} vertices. An <b>unlabelled</b>
-   * anchor has no bucket set to enumerate, and each operator reads that missing set as an empty one and answers
-   * <b>0</b>, which for {@code MATCH (a)-[:KNOWS]->(b) RETURN count(*)} is a wrong answer rather than a slow one
-   * (issue #5715).
+   * An operator anchors its walk on one position of the pattern and enumerates the vertices that position accepts -
+   * {@code MATCH (a:Person)-[:KNOWS]->(b)} starts from the {@code Person} vertices. When that position carries no
+   * label the anchors are <b>every vertex</b>, and an operator that read the missing bucket set as an empty one
+   * answered <b>0</b> for a pattern that matches (issue #5715).
    * <p>
-   * An operator that cannot enumerate its anchors is not built at all, and the ordinary materialization pipeline -
-   * which starts from every vertex - answers the query instead.
+   * The two chain operators now enumerate the unlabelled case for what it is (issue #5757) and always answer true
+   * here. The ones that still cannot - they key a hash join or a degree product on the label itself - decline, are
+   * not built at all, and the ordinary materialization pipeline answers the query instead.
    */
   default boolean canEnumerateAnchors() {
     return true;
+  }
+
+  /**
+   * Whether this operator's anchors are <b>every vertex</b> rather than one label's, which makes it answerable off a
+   * {@link GraphTraversalProvider} only when that provider's node domain is every vertex too.
+   * <p>
+   * A view built over a subset of the vertex types is a perfectly good accelerator for a walk anchored on a label it
+   * holds, but "every vertex" is a claim about the graph rather than about the view, and a view holding some of them
+   * cannot make it. Such an operator runs against the OLTP path instead, which reads the schema (issue #5757).
+   */
+  default boolean requiresFullVertexCoverage() {
+    return false;
   }
 
   /**

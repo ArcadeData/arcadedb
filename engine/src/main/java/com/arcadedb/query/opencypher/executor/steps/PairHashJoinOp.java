@@ -96,7 +96,9 @@ public final class PairHashJoinOp implements CountOp {
     final IntHashSet[] arm1Buckets = buildValidBucketSets(db, arm1IntermediateLabels);
     final IntHashSet[] arm2Buckets = buildValidBucketSets(db, arm2IntermediateLabels);
 
-    // Identify build-start nodes via bucket filtering on CSR (avoids OLTP iterateType)
+    // Identify build-start nodes via bucket filtering on CSR (avoids OLTP iterateType). The build start always
+    // carries a label - canEnumerateAnchors() declines the operator otherwise - so a null set cannot arrive here,
+    // and an empty one is a label no record can carry.
     final IntHashSet buildBuckets = CSRCountUtils.buildValidBuckets(db, buildStartLabel);
     if (buildBuckets == null || buildBuckets.isEmpty())
       return 0;
@@ -178,7 +180,7 @@ public final class PairHashJoinOp implements CountOp {
   public long executeOLTP(final Database db) {
     final HashMap<String, Long> pairCounts = new HashMap<>();
 
-    for (final Iterator<? extends Identifiable> it = db.iterateType(buildStartLabel, true); it.hasNext(); ) {
+    for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, buildStartLabel); it.hasNext(); ) {
       final Vertex start = it.next().asVertex();
       final List<RID> ep1List = walkArmOLTP(db, start, arm1EdgeTypes, arm1Directions, arm1IntermediateLabels);
       final List<RID> ep2List = walkArmOLTP(db, start, arm2EdgeTypes, arm2Directions, arm2IntermediateLabels);
@@ -207,14 +209,8 @@ public final class PairHashJoinOp implements CountOp {
       final Vertex.DIRECTION[] directions, final String[] intermediateLabels) {
     List<RID> current = List.of(start.getIdentity());
     for (int hop = 0; hop < edgeTypes.length; hop++) {
-      final IntHashSet labelBuckets;
-      final String label = intermediateLabels != null ? intermediateLabels[hop] : null;
-      if (label != null && db.getSchema().existsType(label)) {
-        labelBuckets = new IntHashSet();
-        for (final int bid : db.getSchema().getType(label).getBucketIds(true))
-          labelBuckets.add(bid);
-      } else
-        labelBuckets = null;
+      final IntHashSet labelBuckets = CSRCountUtils.buildValidBuckets(db,
+          intermediateLabels != null ? intermediateLabels[hop] : null);
 
       final List<RID> next = new ArrayList<>();
       for (final RID rid : current) {
@@ -405,9 +401,9 @@ public final class PairHashJoinOp implements CountOp {
         for (int j = view.offset(nid), end = view.offsetEnd(nid); j < end; j++)
           next[pos++] = nbrs[j];
 
-      // Type filter using pre-computed bucketIds
-      if (intermediateBuckets != null && intermediateBuckets[hop] != null
-          && !intermediateBuckets[hop].isEmpty() && bucketIds != null) {
+      // Type filter using pre-computed bucketIds. An empty set is a label that matches nothing, so it empties the
+      // frontier rather than being read as "no filter" (issue #5757).
+      if (intermediateBuckets != null && intermediateBuckets[hop] != null && bucketIds != null) {
         int writePos = 0;
         for (int i = 0; i < pos; i++)
           if (intermediateBuckets[hop].contains(bucketIds[next[i]]))

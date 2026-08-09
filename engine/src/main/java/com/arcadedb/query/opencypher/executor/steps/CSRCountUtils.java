@@ -19,13 +19,22 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.IntHashSet;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NoSuchElementException;
 
 /**
  * Shared static utilities for CSR count-push-down operators.
@@ -74,11 +83,18 @@ public final class CSRCountUtils {
 
   /**
    * Zeros out entries in counts where the node's bucket ID is not in the valid set.
+   * <p>
+   * A {@code null} set is "no filter" and leaves every count alone; an <b>empty</b> one is "matches nothing" and
+   * zeroes all of them. See {@link #buildValidBuckets}.
    */
   public static void filterByBuckets(final GraphTraversalProvider provider, final long[] counts,
       final IntHashSet validBuckets) {
-    if (validBuckets == null || validBuckets.isEmpty())
+    if (validBuckets == null)
       return;
+    if (validBuckets.isEmpty()) {
+      Arrays.fill(counts, 0L);
+      return;
+    }
     for (int v = 0; v < counts.length; v++) {
       if (counts[v] > 0) {
         final RID rid = provider.getRID(v);
@@ -90,11 +106,18 @@ public final class CSRCountUtils {
 
   /**
    * Zeros out entries using pre-computed bucket IDs (avoids per-node getRID calls).
+   * <p>
+   * {@code bucketIds} is read only when the filter can keep something, so a caller with no label on any position may
+   * pass {@code null} for it.
    */
   public static void filterByBuckets(final int[] bucketIds, final long[] counts,
       final IntHashSet validBuckets) {
-    if (validBuckets == null || validBuckets.isEmpty())
+    if (validBuckets == null)
       return;
+    if (validBuckets.isEmpty()) {
+      Arrays.fill(counts, 0L);
+      return;
+    }
     for (int v = 0; v < counts.length; v++) {
       if (counts[v] > 0 && !validBuckets.contains(bucketIds[v]))
         counts[v] = 0;
@@ -102,17 +125,85 @@ public final class CSRCountUtils {
   }
 
   /**
-   * Pre-computes the set of valid bucket IDs for a vertex type label.
+   * Pre-computes the set of bucket IDs a vertex type label's records live in.
+   * <p>
+   * <b>The two "nothing to filter on" answers are not the same answer</b>, and issue #5757 is that they used to
+   * share one {@code null}:
+   * <ul>
+   *   <li>{@code null} - <b>no label was given</b>, so the position accepts every vertex and nothing is filtered;</li>
+   *   <li>an <b>empty</b> set - a label was given and no record can carry it, so the position accepts nothing.</li>
+   * </ul>
+   * A caller that reads the empty set as "no filter" counts an unfiltered pattern, and one that reads the {@code
+   * null} as "no vertices" answers 0 for a pattern that does match. Both were live wrong answers in issue #5715, from
+   * the two ends of this one overload. Every consumer here now branches on {@code null} alone and lets an empty set
+   * fall through to the membership test, which keeps nothing.
    *
-   * @return bucket ID set, or null if no filtering needed
+   * @return null when no label was given, otherwise the label's bucket ids - empty when it is not a declared type
    */
   public static IntHashSet buildValidBuckets(final Database db, final String label) {
-    if (label == null || !db.getSchema().existsType(label))
+    if (label == null)
       return null;
     final IntHashSet buckets = new IntHashSet();
+    if (!db.getSchema().existsType(label))
+      return buckets;
     for (final var b : db.getSchema().getType(label).getBuckets(true))
       buckets.add(b.getFileId());
     return buckets;
+  }
+
+  /**
+   * The provider the OLTP paths may use to expand one vertex's neighbors, or null when none may be used.
+   * <p>
+   * These paths walk the vertices themselves and consult a provider per vertex, falling back to the edge list for
+   * any vertex the provider does not map. That fallback covers a vertex <b>outside</b> the provider's node domain,
+   * and nothing covers a vertex inside it whose neighbors are outside: {@code getNeighborIds} answers with the
+   * adjacency the view holds, and the edges leading out of the view are simply not in it. A view built over a
+   * subset of the vertex types is therefore not usable as a per-vertex accelerator at all, however well it covers
+   * the edge types, and the count has to come off the edge lists (issue #5757).
+   */
+  public static GraphTraversalProvider findAcceleratingProvider(final Database db, final String... edgeTypes) {
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    return provider != null && provider.coversVertexType(null) ? provider : null;
+  }
+
+  /**
+   * The vertices an anchor position starts from: the label's own when one was given, <b>every vertex in the
+   * schema</b> when none was (issue #5757).
+   * <p>
+   * An unlabelled anchor is what {@code MATCH ()-[:TYPE]->() RETURN count(*)} has, and there is no cheaper question
+   * to ask a graph. It used to leave every operator with no set to enumerate; "every vertex" is the set it means.
+   * Subtypes are reached through the labelled iterator's own polymorphism and, in the unlabelled walk, by iterating
+   * each declared vertex type non-polymorphically, so no vertex is visited twice.
+   *
+   * @return an iterator over the anchor vertices, empty when the label is declared on nothing
+   */
+  public static Iterator<? extends Identifiable> iterateAnchors(final Database db, final String label) {
+    if (label != null)
+      return db.getSchema().existsType(label) ? db.iterateType(label, true) : Collections.emptyIterator();
+
+    final List<String> vertexTypes = new ArrayList<>();
+    for (final DocumentType type : db.getSchema().getTypes())
+      if (type instanceof VertexType)
+        vertexTypes.add(type.getName());
+
+    return new Iterator<Identifiable>() {
+      private int                              nextType = 0;
+      private Iterator<? extends Identifiable> current  = Collections.emptyIterator();
+
+      @Override
+      public boolean hasNext() {
+        while (!current.hasNext() && nextType < vertexTypes.size())
+          current = db.iterateType(vertexTypes.get(nextType++), false);
+        return current.hasNext();
+      }
+
+      @Override
+      public Identifiable next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        return current.next();
+      }
+    };
   }
 
   /**
@@ -150,9 +241,9 @@ public final class CSRCountUtils {
         pos += neighbors.length;
       }
 
-      // Apply intermediate node type filter if specified
-      if (intermediateValidBuckets != null && intermediateValidBuckets[hop] != null
-          && !intermediateValidBuckets[hop].isEmpty()) {
+      // Apply intermediate node type filter if specified. An empty set is a label that matches nothing, so it drops
+      // the whole frontier rather than being read as "no filter" (issue #5757).
+      if (intermediateValidBuckets != null && intermediateValidBuckets[hop] != null) {
         int writePos = 0;
         for (int i = 0; i < pos; i++) {
           final RID rid = provider.getRID(next[i]);

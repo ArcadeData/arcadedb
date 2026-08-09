@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
-import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
@@ -76,12 +75,14 @@ public final class PropagateChainOp implements CountOp {
   }
 
   /**
-   * The chain is walked from position 0, whose label is the only anchor set this operator knows how to build - unless
-   * the outer row already bound that position, which is an anchor set of exactly one and needs no label at all.
+   * The chain is walked from position 0. With no label there, the anchors are every vertex, which only a provider
+   * whose node domain <i>is</i> every vertex can enumerate (issue #5757). An unlabelled position seeded from the
+   * outer row's bound vertex (issue #5758) is still a single unlabelled anchor, so the same full-coverage
+   * requirement decides whether the seeded walk may use a CSR provider too.
    */
   @Override
-  public boolean canEnumerateAnchors() {
-    return anchorRid != null || nodeLabels[0] != null;
+  public boolean requiresFullVertexCoverage() {
+    return nodeLabels[0] == null;
   }
 
   @Override
@@ -92,7 +93,7 @@ public final class PropagateChainOp implements CountOp {
     final int nodeCount = provider.getNodeCount();
     final int hops = edgeTypes.length;
 
-    // Pre-compute valid bucket sets for type filtering at each level
+    // Pre-compute valid bucket sets for type filtering at each level. null = unlabelled, so no filter.
     final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
@@ -108,18 +109,22 @@ public final class PropagateChainOp implements CountOp {
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0
         && Math.min(inequalityIdxA, inequalityIdxB) == 0
         && hops <= 2)
-      return executePerSourceInequality(provider, db, nodeCount, validBuckets);
+      return executePerSourceInequality(provider, nodeCount, validBuckets);
 
     // Standard dense array propagation for chains without inequality
     // (or with inequality source not at position 0)
 
-    // Pre-compute bucket IDs once for all filtering operations
-    final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
+    // Pre-compute bucket IDs once for all filtering operations. A pattern that labels no position needs none of
+    // them, and the scan costs one getRID per node.
+    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount) : null;
 
-    // Initialize anchor counts via bucket filtering (avoids OLTP iterateType)
+    // Initialize anchor counts via bucket filtering (avoids OLTP iterateType). An unlabelled anchor accepts every
+    // vertex, which is the whole node domain (issue #5757).
     long[] current = new long[nodeCount];
     final IntHashSet anchorBuckets = validBuckets[0];
-    if (anchorBuckets != null) {
+    if (anchorBuckets == null)
+      Arrays.fill(current, 1L);
+    else {
       for (int v = 0; v < nodeCount; v++)
         if (anchorBuckets.contains(bucketIds[v]))
           current[v] = 1;
@@ -135,9 +140,17 @@ public final class PropagateChainOp implements CountOp {
       total += current[v];
 
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total -= countSelfLoopPaths(provider, db, validBuckets);
+      total -= countSelfLoopPaths(provider, validBuckets);
 
     return total;
+  }
+
+  /** Whether any position of the chain carries a label, i.e. whether per-node bucket ids are worth computing. */
+  private static boolean anyLabelled(final IntHashSet[] validBuckets) {
+    for (final IntHashSet buckets : validBuckets)
+      if (buckets != null)
+        return true;
+    return false;
   }
 
   /**
@@ -226,7 +239,7 @@ public final class PropagateChainOp implements CountOp {
    * For Q5 (16K tags × ~90 frontier nodes each): ~1.4M CSR ops vs ~6M for dense + self-loop.
    * For Q6 (10K persons × ~1.7K frontier nodes each): ~17M CSR ops (comparable to dense + self-loop).
    */
-  private long executePerSourceInequality(final GraphTraversalProvider provider, final Database db,
+  private long executePerSourceInequality(final GraphTraversalProvider provider,
       final int nodeCount, final IntHashSet[] validBuckets) {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
 
@@ -237,17 +250,18 @@ public final class PropagateChainOp implements CountOp {
 
     // Pre-compute bucket IDs for all nodes — eliminates per-node getRID calls during
     // frontier type filtering. One-time O(nodeCount) cost, amortized across all sources.
-    final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
+    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount) : null;
 
-    // Identify anchor nodes via bucket filtering (avoids db.iterateType OLTP reads)
-    final IntHashSet anchorBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[0]);
-    if (anchorBuckets == null || anchorBuckets.isEmpty())
+    // Identify anchor nodes via bucket filtering (avoids db.iterateType OLTP reads). null accepts every vertex,
+    // empty accepts none (issue #5757).
+    final IntHashSet anchorBuckets = validBuckets[0];
+    if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
 
     long totalCount = 0;
 
     for (int srcId = 0; srcId < nodeCount; srcId++) {
-      if (!anchorBuckets.contains(bucketIds[srcId]))
+      if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[srcId]))
         continue;
 
       // Expand from srcId through hops [0, idxB)
@@ -285,7 +299,7 @@ public final class PropagateChainOp implements CountOp {
     return totalCount;
   }
 
-  private long countSelfLoopPaths(final GraphTraversalProvider provider, final Database db,
+  private long countSelfLoopPaths(final GraphTraversalProvider provider,
       final IntHashSet[] validBuckets) {
     final int nodeCount = provider.getNodeCount();
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
@@ -307,13 +321,16 @@ public final class PropagateChainOp implements CountOp {
     for (int h = 0; h < subChainLength; h++)
       subViews[h] = provider.getNeighborView(directions[idxA + h], edgeTypes[idxA + h]);
 
-    final String anchorLabel = nodeLabels[idxA];
-    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+    // The sub-chain is walked from every vertex the inequality's earlier position accepts: the label's own when it
+    // carries one, the whole node domain when it does not (issue #5757). Enumerating them off the CSR bucket ids
+    // rather than db.iterateType also keeps the self-loop subtraction from reading records.
+    final IntHashSet anchorBuckets = validBuckets[idxA];
+    if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
+    final int[] anchorBucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount);
 
-    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
-      final int vId = provider.getNodeId(it.next().getIdentity());
-      if (vId < 0)
+    for (int vId = 0; vId < nodeCount; vId++) {
+      if (anchorBuckets != null && !anchorBuckets.contains(anchorBucketIds[vId]))
         continue;
 
       long loopCount = countLoopsFromNode(provider, vId, subViews, idxA, subChainLength, validBuckets);
@@ -385,23 +402,21 @@ public final class PropagateChainOp implements CountOp {
     final int[] e1Nbrs = viewE1.neighbors();
     final int[] cNbrs = viewC.neighbors();
 
-    // Optional: filter middle edge endpoints by type
-    final int[] bucketIds;
+    // Optional: filter middle edge endpoints by type. null is "no label, so no filter"; an empty set is a label that
+    // matches nothing, and then no path exists to subtract at all (issue #5757).
     final IntHashSet pos1Buckets = validBuckets[1];
     final IntHashSet pos2Buckets = validBuckets[2];
-    if ((pos1Buckets != null && !pos1Buckets.isEmpty()) || (pos2Buckets != null && !pos2Buckets.isEmpty())) {
-      bucketIds = precomputeBucketIds(provider, nodeCount);
-    } else {
-      bucketIds = null;
-    }
+    if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
+      return 0;
+    final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
+        ? precomputeBucketIds(provider, nodeCount) : null;
 
     long selfLoop = 0;
 
     // Scan all E1 edges by iterating pos1 nodes
     for (int b = 0; b < nodeCount; b++) {
       // Check pos1 type filter
-      if (pos1Buckets != null && !pos1Buckets.isEmpty()
-          && !pos1Buckets.contains(bucketIds[b]))
+      if (pos1Buckets != null && !pos1Buckets.contains(bucketIds[b]))
         continue;
 
       final int e1Start = viewE1.offset(b);
@@ -418,8 +433,7 @@ public final class PropagateChainOp implements CountOp {
         final int c = e1Nbrs[j];
 
         // Check pos2 type filter
-        if (pos2Buckets != null && !pos2Buckets.isEmpty()
-            && !pos2Buckets.contains(bucketIds[c]))
+        if (pos2Buckets != null && !pos2Buckets.contains(bucketIds[c]))
           continue;
 
         // Get setC = E2 neighbors of c (pos3 candidates)
@@ -467,14 +481,14 @@ public final class PropagateChainOp implements CountOp {
     for (int h = 0; h < subChainLength; h++)
       subViews[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
 
-    final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
     final IntHashSet anchorBuckets = validBuckets[0];
-    if (anchorBuckets == null || anchorBuckets.isEmpty())
+    if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
+    final int[] bucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount);
 
     long selfLoopTotal = 0;
     for (int vId = 0; vId < nodeCount; vId++) {
-      if (!anchorBuckets.contains(bucketIds[vId]))
+      if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[vId]))
         continue;
       selfLoopTotal += countLoopsFromNode(provider, vId, subViews, 0, subChainLength, validBuckets);
     }
@@ -513,7 +527,7 @@ public final class PropagateChainOp implements CountOp {
     final int lastHopIdx = startHop + subChainLength - 1;
     final IntHashSet lastBuckets = validBuckets[lastHopIdx + 1];
     // If there are type filters at the target position and vId doesn't match, no self-loops possible
-    if (lastBuckets != null && !lastBuckets.isEmpty()) {
+    if (lastBuckets != null) {
       final RID vRid = provider.getRID(vId);
       if (!lastBuckets.contains(vRid.getBucketId()))
         return 0;
@@ -575,8 +589,8 @@ public final class PropagateChainOp implements CountOp {
       }
     }
 
-    // Apply type filter if needed
-    if (targetBuckets != null && !targetBuckets.isEmpty()) {
+    // Apply type filter if needed. An empty set is a label that matches nothing, so it empties the frontier.
+    if (targetBuckets != null) {
       int writePos = 0;
       for (int i = 0; i < pos; i++) {
         final RID rid = provider.getRID(next[i]);
@@ -622,7 +636,7 @@ public final class PropagateChainOp implements CountOp {
       }
     }
 
-    if (targetBuckets != null && !targetBuckets.isEmpty()) {
+    if (targetBuckets != null) {
       int writePos = 0;
       for (int i = 0; i < pos; i++) {
         if (targetBuckets.contains(bucketIds[next[i]]))
@@ -646,13 +660,16 @@ public final class PropagateChainOp implements CountOp {
 
   @Override
   public long executeOLTP(final Database db) {
-    // Try to find a GAV provider for accelerated neighbor lookups even in the OLTP path
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    // Try to find a GAV provider for accelerated neighbor lookups even in the OLTP path. One that holds a subset of
+    // the vertex types cannot serve: it answers for the vertices it maps with the adjacency it holds, which is
+    // missing every edge that leaves the view (issue #5757).
+    final GraphTraversalProvider provider = CSRCountUtils.findAcceleratingProvider(db, edgeTypes);
 
     // BFS count propagation: each unique vertex at each level is processed once,
     // with its count capturing path multiplicity. This reduces O(paths) traversals
     // to O(unique edges), which is dramatically faster for high-fanout chains.
     // E.g., Q5 with 13.8M paths but only ~3.5M unique edges: ~4x fewer OLTP scans.
+    // An unlabelled anchor starts from every vertex in the schema (issue #5757).
     RidLongHashMap current = new RidLongHashMap();
     if (anchorRid != null) {
       // A seeded anchor is an anchor set of one, and its label - if the body wrote one - filters it (issue #5758).
@@ -660,23 +677,12 @@ public final class PropagateChainOp implements CountOp {
         return 0;
       current.put(anchorRid, 1L);
     } else {
-      final String anchorLabel = nodeLabels[0];
-      if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
-        return 0;
-
-      for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); )
+      for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); )
         current.put(it.next().getIdentity(), 1L);
     }
 
     for (int hop = 0; hop < edgeTypes.length; hop++) {
-      final String targetLabel = nodeLabels[hop + 1];
-      final IntHashSet targetBuckets;
-      if (targetLabel != null && db.getSchema().existsType(targetLabel)) {
-        targetBuckets = new IntHashSet();
-        for (final int bid : db.getSchema().getType(targetLabel).getBucketIds(true))
-          targetBuckets.add(bid);
-      } else
-        targetBuckets = null;
+      final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hop + 1]);
 
       final RidLongHashMap next = new RidLongHashMap();
       final int h = hop;
@@ -733,13 +739,14 @@ public final class PropagateChainOp implements CountOp {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
     final int subLength = idxB - idxA;
 
-    final String anchorLabel = nodeLabels[idxA];
-    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
-      return 0;
+    // One bucket set per sub-chain hop, built once rather than per anchor
+    final IntHashSet[] subChainBuckets = new IntHashSet[subLength];
+    for (int h = 0; h < subLength; h++)
+      subChainBuckets[h] = CSRCountUtils.buildValidBuckets(db, nodeLabels[idxA + h + 1]);
 
     long selfLoopTotal = 0;
 
-    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
+    for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[idxA]); it.hasNext(); ) {
       final Vertex anchor = it.next().asVertex();
       final RID anchorRid = anchor.getIdentity();
 
@@ -750,14 +757,7 @@ public final class PropagateChainOp implements CountOp {
 
       for (int h = 0; h < subLength; h++) {
         final int hopIdx = idxA + h;
-        final String targetLabel = nodeLabels[hopIdx + 1];
-        final IntHashSet targetBuckets;
-        if (targetLabel != null && db.getSchema().existsType(targetLabel)) {
-          targetBuckets = new IntHashSet();
-          for (final int bid : db.getSchema().getType(targetLabel).getBucketIds(true))
-            targetBuckets.add(bid);
-        } else
-          targetBuckets = null;
+        final IntHashSet targetBuckets = subChainBuckets[h];
 
         final RidLongHashMap next = new RidLongHashMap();
         cur.forEach((bucketId, offset, pathCount) -> {

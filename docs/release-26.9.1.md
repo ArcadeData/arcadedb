@@ -458,3 +458,35 @@ failure mode is safe to ignore (the socket is already broken/closed) - the new `
 documents the same reasoning.
 
 [#5978](https://github.com/ArcadeData/arcadedb/issues/5978)
+
+## The Cypher count push-downs can anchor on an unlabelled node (#5757)
+
+`MATCH ()-[:TYPE]->() RETURN count(*)` - "how many edges of this type are there" - is the cheapest question
+there is to ask a graph, and it was the one shape the CSR count push-downs could not serve. Every operator
+walks out from one position of the pattern and enumerates the vertices that position accepts, which it built
+from the position's label; an unlabelled anchor left it with no set, which each operator read as an empty one
+and answered **0**. Issue #5715 closed that wrong answer by declining to build the operator at all, so the
+answer became right and the fast path went away.
+
+The two chain operators now read an absent anchor label for what it means - **every vertex** - on both paths:
+the CSR one seeds the whole node domain, and the OLTP one iterates every vertex type in the schema. That
+covers the plain chain, the chain with a `<>` inequality (whose self-loop subtraction anchors the same way),
+and the anti-join chain. The pair-join and degree-product operators still decline an unlabelled anchor, since
+they key a hash join and a degree product on the label itself, and the ordinary pipeline answers those.
+
+**The root cause is separated at the source.** `CSRCountUtils.buildValidBuckets` returned `null` both for "no
+label was given, so do not filter" and for "the label is declared on nothing, so nothing matches", and its
+callers disagreed about which one they held - that single overload produced *both* wrong answers found in
+#5715, one from each end of it. `null` now means only "no filter", an **empty** set means "matches nothing",
+and every consumer branches on `null` alone so an empty set falls through to a membership test that keeps
+nothing.
+
+**A view over some of the vertex types is no longer used where it cannot answer.** "Every vertex" is a claim
+about the graph rather than about a `GraphAnalyticalView`, so an operator anchored on it runs against the OLTP
+path unless the view's node domain is every vertex. The same reasoning applies to the per-vertex accelerator
+these OLTP paths consult: a view holding a subset of the vertex types answers for the vertices it maps with
+the adjacency it holds, which is missing every edge that leaves the view, and the fallback for an unmapped
+vertex does not cover it. Those lookups now go through `CSRCountUtils.findAcceleratingProvider`, which
+declines a partial view.
+
+[#5757](https://github.com/ArcadeData/arcadedb/issues/5757)
