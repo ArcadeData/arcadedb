@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -81,14 +80,10 @@ public class MatchesCondition extends BooleanExpression {
     // One deadline shared by every MATCHES evaluation for the lifetime of this query - not just across the
     // items of one multi-value evaluation, but across every row a WHERE ... MATCHES clause scans. Recomputing a
     // fresh regexTimeout budget per row would let a table shaped so every row triggers catastrophic backtracking
-    // cost up to rowCount * regexTimeout overall; caching it on the context (the same mechanism already used for
-    // the compiled Pattern above, and confirmed shared across rows by MatchesConditionTest's per-context cache
-    // tests) bounds the whole scan by one regexTimeout instead, the same principle applied to the full-text and
-    // PromQL entry points elsewhere in this issue. GlobalConfiguration.getValueAsLong(Database) resolves
-    // context.getDatabase()'s per-database override, falling back to the compiled-in default if a database is
-    // ever not bound to the context - practically always the case (a MatchesCondition is only ever constructed
-    // by the SQL parser and evaluated with a database already bound), but free insurance against a future
-    // evaluation path that isn't, same as LikeOperator/ILikeOperator/TextRegexReplace.
+    // cost up to rowCount * regexTimeout overall; CommandContext#getOrComputeRegexDeadline caches it on the
+    // context (the same mechanism already used for the compiled Pattern above, and confirmed shared across rows
+    // by MatchesConditionTest's per-context cache tests), bounding the whole scan by one regexTimeout instead,
+    // the same principle applied to the full-text and PromQL entry points elsewhere in this issue.
     //
     // The key must NOT start with "MATCHES_": the pattern cache above keys on "MATCHES_" + <arbitrary,
     // attacker-controlled regex text>, so any fixed key sharing that prefix collides for whichever regex text
@@ -96,12 +91,7 @@ public class MatchesCondition extends BooleanExpression {
     // (WHERE x MATCHES 'DEADLINE'), overwriting the Pattern cache slot with a Long or vice versa and throwing
     // ClassCastException on the very first row. A key outside the "MATCHES_" namespace entirely - this one
     // starts with "__", not "MATCHES_" - cannot equal "MATCHES_" + anything, however the regex text reads.
-    final String deadlineKey = "__MATCHES_DEADLINE__";
-    Long deadline = (Long) context.getCachedValue(deadlineKey);
-    if (deadline == null) {
-      deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
-      context.setCachedValue(deadlineKey, deadline);
-    }
+    final long deadline = context.getOrComputeRegexDeadline("__MATCHES_DEADLINE__");
 
     if (value instanceof CharSequence sequence) {
       return TimeBoundRegex.matchesUntil(p, sequence, deadline);

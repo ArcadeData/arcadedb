@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.TimeBoundRegex;
@@ -78,18 +77,13 @@ public class RegexExpression implements BooleanExpression {
       }
     }
 
-    // Match against value. GlobalConfiguration.getValueAsLong(Database) resolves context.getDatabase()'s
-    // per-database override (falling back to the compiled-in default if a database is ever not bound to the
-    // context - RegexExpression is, in practice, only ever constructed by the openCypher parser and evaluated
-    // with one already bound). See MatchesCondition.matches() for why context.getConfiguration() would silently
-    // ignore a per-database override here.
+    // Match against value. context.getOrComputeRegexDeadline() resolves context.getDatabase()'s per-database
+    // override (falling back to the compiled-in default if a database is ever not bound to the context -
+    // RegexExpression is, in practice, only ever constructed by the openCypher parser and evaluated with one
+    // already bound). See MatchesCondition.matches() for why context.getConfiguration() would silently ignore a
+    // per-database override here.
     final String valueStr = value.toString();
-    Long deadline = (Long) context.getCachedValue(DEADLINE_CACHE_KEY);
-    if (deadline == null) {
-      deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
-      context.setCachedValue(DEADLINE_CACHE_KEY, deadline);
-    }
-    return TimeBoundRegex.matchesUntil(compiledPattern, valueStr, deadline);
+    return TimeBoundRegex.matchesUntil(compiledPattern, valueStr, context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY));
   }
 
   @Override

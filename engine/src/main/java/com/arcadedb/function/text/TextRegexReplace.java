@@ -32,6 +32,12 @@ import java.util.regex.PatternSyntaxException;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextRegexReplace extends AbstractTextFunction {
+  private static final int MAX_PATTERN_LENGTH = 500;
+
+  // context.getCachedValue()/setCachedValue() key for the shared deadline - see execute() for why this needs to
+  // be shared, not recomputed per call.
+  private static final String DEADLINE_CACHE_KEY = "__TEXT_REGEXREPLACE_DEADLINE__";
+
   @Override
   protected String getSimpleName() {
     return "regexReplace";
@@ -51,12 +57,6 @@ public class TextRegexReplace extends AbstractTextFunction {
   public String getDescription() {
     return "Replace all matches of a regular expression with replacement";
   }
-
-  private static final int MAX_PATTERN_LENGTH = 500;
-
-  // context.getCachedValue()/setCachedValue() key for the shared deadline - see execute() for why this needs to
-  // be shared, not recomputed per call.
-  private static final String DEADLINE_CACHE_KEY = "__TEXT_REGEXREPLACE_DEADLINE__";
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
@@ -84,17 +84,9 @@ public class TextRegexReplace extends AbstractTextFunction {
     // invocations of this function (see TextRegexReplaceTest); GlobalConfiguration.getValueAsLong(Database)
     // falls back to the compiled-in default in that case, and the deadline is simply not shared across calls
     // when there's no context to cache it on.
-    final long regexDeadline;
-    if (context != null) {
-      Long cached = (Long) context.getCachedValue(DEADLINE_CACHE_KEY);
-      if (cached == null) {
-        cached = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
-        context.setCachedValue(DEADLINE_CACHE_KEY, cached);
-      }
-      regexDeadline = cached;
-    } else {
-      regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
-    }
+    final long regexDeadline = context != null ?
+        context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY) :
+        TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
 
     try {
       return TimeBoundRegex.replaceAllUntil(Pattern.compile(regex), str, replacement == null ? "" : replacement, regexDeadline);

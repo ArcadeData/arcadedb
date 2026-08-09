@@ -68,17 +68,9 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
         // which rewraps to preserve its own pre-existing IllegalArgumentException contract for regex failures) -
         // this method had no such prior contract, and TimeoutException is the shape
         // MatchesCondition/RegexExpression/LIKE/full-text/PromQL all surface too.
-        final long regexDeadline;
-        if (context != null) {
-          Long cached = (Long) context.getCachedValue(DEADLINE_CACHE_KEY);
-          if (cached == null) {
-            cached = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
-            context.setCachedValue(DEADLINE_CACHE_KEY, cached);
-          }
-          regexDeadline = cached;
-        } else {
-          regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
-        }
+        final long regexDeadline = context != null ?
+            context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY) :
+            TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
         return TimeBoundRegex.replaceAllUntil(Pattern.compile(FileUtils.getStringContent(params[1].toString())), normalized, "", regexDeadline);
       }
       return PatternConst.PATTERN_DIACRITICAL_MARKS.matcher(normalized).replaceAll("");
