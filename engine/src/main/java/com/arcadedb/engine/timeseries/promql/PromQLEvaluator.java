@@ -18,8 +18,10 @@
  */
 package com.arcadedb.engine.timeseries.promql;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.TimeBoundRegex;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -196,11 +198,15 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
     }
 
-    // Post-filter for NEQ/RE/NRE and group by label combination
+    // Post-filter for NEQ/RE/NRE and group by label combination. One shared deadline for the whole scan
+    // (issue #5886 follow-up), not a fresh one per row - matchesPostFilters() runs per row, so N rows each
+    // getting their own full regexTimeout budget would let a crafted =~/!~ pattern tie up the thread for
+    // row count * regexTimeout instead of one bounded evaluation.
+    final long regexDeadline = TimeBoundRegex.newDeadline(database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
       final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns))
+      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -242,12 +248,13 @@ public class PromQLEvaluator {
       return new RangeVector(List.of());
     }
 
-    // Group rows by label combination
+    // Group rows by label combination. One shared deadline for the whole scan - see evaluateInstant().
+    final long regexDeadline = TimeBoundRegex.newDeadline(database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
       final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns))
+      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -480,7 +487,7 @@ public class PromQLEvaluator {
   }
 
   private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
-      final List<ColumnDefinition> columns) {
+      final List<ColumnDefinition> columns, final long regexDeadline) {
     for (final LabelMatcher m : matchers) {
       if (m.op() == MatchOp.EQ || "__name__".equals(m.name()))
         continue;
@@ -495,11 +502,11 @@ public class PromQLEvaluator {
             return false;
           break;
         case RE:
-          if (!compilePattern(m.value()).matcher(strVal).matches())
+          if (!TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline))
             return false;
           break;
         case NRE:
-          if (compilePattern(m.value()).matcher(strVal).matches())
+          if (TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline))
             return false;
           break;
         default:

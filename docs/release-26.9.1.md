@@ -378,4 +378,12 @@ just `a`s hangs exactly like the issue's own `(.*a){20}$` reproducer), and full-
 engine's `SelectOperator`) and full-text wildcard matching now run through `TimeBoundRegex` like every other
 entry point here, including the same shared-deadline treatment for a multi-value `LIKE`/`ILIKE` evaluation.
 
+A fourth review pass found one more: PromQL's `=~`/`!~` label matchers (`PromQLEvaluator#matchesPostFilters`)
+compile the user-supplied pattern straight into `Pattern.matcher(...).matches()`, with only a static
+`REDOS_CHECK` pre-filter that flags *parenthesized* nested-quantifier/alternation shapes (`(a+)+`, `(a|aa)+`).
+A sequence of unparenthesized quantified segments (`a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*ac`, PromQL's
+equivalent of the `LIKE`/wildcard gap above) contains no `(` for that check to catch, and reaches the same
+unbounded `.matches()` call. Now bounded the same way, with one shared deadline across the whole row scan a
+label matcher runs against - the same N-rows-times-timeout concern as every other multi-item entry point here.
+
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)

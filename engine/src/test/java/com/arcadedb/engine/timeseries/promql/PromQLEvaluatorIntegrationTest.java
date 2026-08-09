@@ -18,9 +18,11 @@
  */
 package com.arcadedb.engine.timeseries.promql;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
@@ -196,6 +198,37 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     assertThatThrownBy(() -> evaluator.evaluateInstant(expr, 6000L))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("ReDoS");
+  }
+
+  @Test
+  void unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout() {
+    // Issue #5886 follow-up: REDOS_CHECK only flags parenthesized nested-quantifier/alternation shapes
+    // ((a+)+, (a|aa)+, ...), so a sequence of unparenthesized quantified segments - the same
+    // "sequential-.*-without-nesting" shape that turned out to break SQL LIKE and full-text wildcard
+    // queries - reaches Pattern.matcher(...).matches() uncaught by that static pre-filter. Bounded now by
+    // routing =~/!~ through TimeBoundRegex, same as every other entry point this issue covers.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String typeName = "promql_redos_unparenthesized";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String pathologicalHost = "a".repeat(40);
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 1000, host = '" + pathologicalHost + "', value = 1.0"));
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    // 20 sequential "a*" quantifiers then a literal 'c' that never appears in the all-'a' host value: forces
+    // the same exhaustive backtrack-then-fail every other reproducer in this issue relies on, with no '(' in
+    // sight for REDOS_CHECK to catch.
+    final String wildcardPattern = "a*".repeat(20) + "c";
+    final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"" + wildcardPattern + "\"}").parse();
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> evaluator.evaluateInstant(expr, 6000L)).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the scan was aborted near the configured deadline rather than merely
+    // being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
   }
 
   @Test

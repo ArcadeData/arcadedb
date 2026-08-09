@@ -135,14 +135,27 @@ public final class TimeBoundRegex {
   private static <T> T run(final Pattern pattern, final CharSequence input, final long deadlineNanos, final Function<CharSequence, T> operation) {
     try {
       return operation.apply(deadlineNanos == Long.MAX_VALUE ? input : new DeadlineBoundCharSequence(input, deadlineNanos));
-    } catch (final RegexDeadlineExceeded | StackOverflowError e) {
+    } catch (final RegexDeadlineExceeded e) {
+      // Only reachable when the bound is active (deadlineNanos != Long.MAX_VALUE skips the wrapper entirely, so
+      // this can't be thrown when disabled).
+      throw timeoutException(pattern, input, e);
+    } catch (final StackOverflowError e) {
+      if (deadlineNanos == Long.MAX_VALUE)
+        // The bound is explicitly disabled (arcadedb.command.regexTimeout <= 0): this stack overflow is an
+        // unrelated JDK regex recursion-depth issue, not a timeout, so let it propagate as itself instead of
+        // mislabeling it via a setting the caller deliberately turned off.
+        throw e;
       // A sufficiently pathological pattern/input combination can blow the (recursive) backtracking stack before
       // the next CHECK_INTERVAL checkpoint is reached; treated the same as an explicit deadline trip, since both
       // are catastrophic backtracking manifesting through a different symptom.
-      throw new TimeoutException(
-          "Regular expression operation aborted (arcadedb.command.regexTimeout): pattern '" + pattern.pattern() + "' against input of length "
-              + input.length(), e);
+      throw timeoutException(pattern, input, e);
     }
+  }
+
+  private static TimeoutException timeoutException(final Pattern pattern, final CharSequence input, final Throwable cause) {
+    return new TimeoutException(
+        "Regular expression operation aborted (arcadedb.command.regexTimeout): pattern '" + pattern.pattern() + "' against input of length "
+            + input.length(), cause);
   }
 
   private static final class DeadlineBoundCharSequence implements CharSequence {
