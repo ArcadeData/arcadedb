@@ -372,7 +372,13 @@ the rows within one step. `LIKE`/`ILIKE` are the one exception: `BinaryCompareOp
 implement, has no `CommandContext` to cache a deadline on (only a `Database`), and widening that interface
 across every comparison operator was judged out of proportion here - each row still gets its own
 `regexTimeout` budget, so a `LIKE`-heavy scan where many rows are individually catastrophic is bounded per row
-but not for the scan as a whole.
+but not for the scan as a whole. A parallel bucket scan (SQL's default for a type spread across multiple
+buckets) is a second, narrower exception: each worker thread gets its own copy of the `CommandContext`
+(deliberately, so workers don't race on a shared, non-thread-safe cache), so it computes its own deadline
+independently rather than sharing the sequential-scan path's single deadline - a type scanned in parallel
+across N buckets is bounded by `N * regexTimeout` overall, not one shared budget. Unlike the row/item counts
+this issue defends against, bucket count is a schema/DDL property, not attacker-controlled, so this is a much
+narrower gap than the one this fix closes.
 
 **Upgrade note.** Because the deadline is shared per query/scan rather than per match, and defaults to an
 enabled 1000ms, a *legitimate, non-catastrophic* operation that previously ran slowly to completion - a

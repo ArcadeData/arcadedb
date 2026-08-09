@@ -66,6 +66,14 @@ public interface CommandContext {
    * to pass a key that can't collide with anything else it puts in this same cache, but removes the need to
    * hand-write the get-or-compute logic itself at every site.
    *
+   * <p>The deadline is shared across every row evaluated through <em>this</em> context, but not necessarily
+   * across an entire query: {@code FetchFromTypeExecutionStep.syncPullParallel} gives each parallel bucket-scan
+   * worker its own {@link #copy()} of the context (deliberately, so workers don't race on this same cache's
+   * non-thread-safe backing map), so each worker computes its own deadline independently. A type scanned in
+   * parallel across N buckets is therefore bounded by {@code N * timeoutMillis} overall, not one shared budget.
+   * This is a much narrower gap than the one this method closes: bucket count is a schema/DDL property, not
+   * attacker-controlled the way row/item counts are.
+   *
    * @param cacheKey      the {@link #getCachedValue(String)} key to store the deadline under - must not collide
    *                      with any other key this context's cache holds
    * @param timeoutMillis maximum time allowed from now, in milliseconds; a value {@code <= 0} disables the bound
