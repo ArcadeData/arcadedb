@@ -72,6 +72,26 @@ class JsonSerializerTest extends TestHelper {
     }
   }
 
+  /**
+   * Issue #5863: {@code map2json} used to gate {@code @props} emission on {@code includeMetadata}, so any
+   * {@code Document.toJSON(true)} caller - and, via {@code ChangeEvent}, every WebSocket subscriber - got the
+   * hint for free on a schemaless property with a lossy-through-JSON type. {@code MutableDocument#toJSON}
+   * always builds its own default {@link JsonSerializer}, so this pins the off-by-default behavior at the
+   * Document API level, mirroring {@link #propsHintOffByDefault()} for {@code serializeResult}.
+   */
+  @Test
+  void map2jsonPropsHintOffByDefaultForSchemalessLossyProperty() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Issue5863SchemalessType");
+      final MutableDocument doc = database.newDocument("Issue5863SchemalessType").set("dynamicLong", 42L).save();
+
+      final JSONObject json = doc.toJSON(true);
+      assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isFalse();
+      assertThat(json.getLong("dynamicLong")).isEqualTo(42L);
+      assertThat(json.getString("@type")).isEqualTo("Issue5863SchemalessType");
+    });
+  }
+
   @Test
   void serializeDocument() {
     database.transaction(() -> {
