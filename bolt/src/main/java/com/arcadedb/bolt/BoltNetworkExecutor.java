@@ -74,6 +74,7 @@ import java.io.SequenceInputStream;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -185,8 +186,15 @@ public class BoltNetworkExecutor extends Thread {
 
       state = State.NEGOTIATION;
 
-      // Perform handshake
-      if (!performHandshake()) {
+      // Perform handshake. Bound by the same pre-auth read timeout negotiateTransport() armed (issue #5978):
+      // a client that never completes the magic-bytes/version handshake must not hold this thread forever.
+      try {
+        if (!performHandshake())
+          return;
+      } catch (final EOFException | SocketException | SocketTimeoutException e) {
+        if (debug) {
+          LogManager.instance().log(this, Level.FINE, "BOLT connection closed during handshake: %s", e.getMessage());
+        }
         return;
       }
 
@@ -220,6 +228,15 @@ public class BoltNetworkExecutor extends Thread {
           // Client disconnected
           if (debug) {
             LogManager.instance().log(this, Level.FINE, "BOLT client disconnected: %s", e.getMessage());
+          }
+          break;
+        } catch (final SocketTimeoutException e) {
+          // No data received within the bounded pre-authentication window (issue #5978, mirroring #5912's
+          // fix for the Redis wrapper): close instead of holding the connection thread open indefinitely.
+          // Authenticated connections never reach here - their read timeout is lifted to infinite in
+          // markAuthenticated().
+          if (debug) {
+            LogManager.instance().log(this, Level.FINE, "BOLT closing idle unauthenticated connection %s", socket.getRemoteSocketAddress());
           }
           break;
         } catch (final Exception e) {
@@ -257,13 +274,15 @@ public class BoltNetworkExecutor extends Thread {
       Socket connectionSocket = socket;
       byte[] preReadBytes = null;
 
-      if (sslHelper != null && sslHelper.getTlsMode() != BoltSslHelper.TlsMode.DISABLED) {
-        // Bound transport detection and the TLS handshake with a read timeout so a stalled/hostile client
-        // cannot hold this connection thread (and its file descriptors) open forever.
-        final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
-        if (handshakeTimeout > 0)
-          socket.setSoTimeout(handshakeTimeout);
+      // Bound transport detection, the BOLT handshake and the AUTH/HELLO-LOGON phase that follows it with a
+      // read timeout (issue #5978, mirroring RedisNetworkExecutor's #5912 fix), so a stalled/hostile client
+      // cannot hold this connection thread (and its file descriptors) open forever. Lifted to infinite once
+      // authentication succeeds - see markAuthenticated() - and re-armed on LOGOFF - see markUnauthenticated().
+      final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+      if (handshakeTimeout > 0)
+        socket.setSoTimeout(handshakeTimeout);
 
+      if (sslHelper != null && sslHelper.getTlsMode() != BoltSslHelper.TlsMode.DISABLED) {
         final byte[] header = new byte[4];
         final InputStream rawIn = socket.getInputStream();
         int bytesRead = 0;
@@ -296,8 +315,11 @@ public class BoltNetworkExecutor extends Thread {
           preReadBytes = header;
         }
 
-        // Restore blocking semantics for the long-lived BOLT session.
-        connectionSocket.setSoTimeout(0);
+        // Keep the pre-auth window armed through AUTH/HELLO-LOGON: a layered SSLSocket does not reliably
+        // inherit the underlying socket's timeout, so re-apply it explicitly on whichever socket subsequent
+        // reads actually use. Lifted to infinite only once authentication succeeds (markAuthenticated()).
+        if (handshakeTimeout > 0)
+          connectionSocket.setSoTimeout(handshakeTimeout);
       }
 
       final InputStream inputStream = preReadBytes != null
@@ -541,6 +563,7 @@ public class BoltNetworkExecutor extends Thread {
    */
   private void handleLogoff() throws IOException {
     user = null;
+    markUnauthenticated();
     sendSuccess(Map.of());
     state = State.AUTHENTICATION;
   }
@@ -1728,12 +1751,48 @@ public class BoltNetworkExecutor extends Thread {
         state = State.FAILED;
         return false;
       }
+      markAuthenticated();
       return true;
     } catch (final ServerSecurityException e) {
       // Sanitize error message to avoid information disclosure
       sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication failed");
       state = State.FAILED;
       return false;
+    }
+  }
+
+  /**
+   * Lifts the pre-authentication read timeout (issue #5978, mirroring RedisNetworkExecutor.markAuthenticated
+   * from #5912): an authenticated BOLT client is expected to keep a long-lived, often idle connection open
+   * between requests, so the bounded handshake/auth window armed by {@link #negotiateTransport()} must not
+   * keep applying past a successful HELLO/LOGON.
+   */
+  private void markAuthenticated() {
+    try {
+      socket.setSoTimeout(0);
+    } catch (final SocketException e) {
+      // setSoTimeout() only throws on an already-broken/closed socket: there is nothing left to hold open in
+      // that case, so logging and moving on - rather than failing the whole authentication - is safe. The
+      // connection dies on its next read/write either way.
+      LogManager.instance().log(this, Level.FINE, "BOLT unable to lift the idle read timeout after authentication", e);
+    }
+  }
+
+  /**
+   * (Re-)arms the bounded pre-authentication read timeout (issue #5978, mirroring
+   * RedisNetworkExecutor.markUnauthenticated from #5912): a connection that authenticated once has its
+   * timeout lifted to infinite by {@link #markAuthenticated()}. If it then sends LOGOFF, {@code user} goes
+   * back to null - and without this, the infinite timeout would stay in place, breaking the invariant that
+   * "unauthenticated" always implies the bounded handshake timeout applies.
+   */
+  private void markUnauthenticated() {
+    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    try {
+      socket.setSoTimeout(Math.max(handshakeTimeout, 0));
+    } catch (final SocketException e) {
+      // As in markAuthenticated(): setSoTimeout() only throws on an already-broken/closed socket, so there is
+      // no live connection left for the un-restored timeout to matter on.
+      LogManager.instance().log(this, Level.FINE, "BOLT unable to restore the idle read timeout after LOGOFF", e);
     }
   }
 
