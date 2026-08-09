@@ -31,6 +31,7 @@ import io.micrometer.core.instrument.MultiGauge;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.MeterBinder;
 
+import java.io.Closeable;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -51,11 +52,28 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public final class HAReplicationMetrics implements MeterBinder {
+public final class HAReplicationMetrics implements MeterBinder, Closeable {
   private final ArcadeDBServer server;
+
+  private volatile ScheduledExecutorService followerMetricsScheduler;
 
   public HAReplicationMetrics(final ArcadeDBServer server) {
     this.server = server;
+  }
+
+  /**
+   * Shuts down the per-follower gauge refresh scheduler started by {@link #bindTo(MeterRegistry)}.
+   * The caller that binds this instance to a server's registry on plugin start must close it on
+   * plugin stop, the same lifecycle the sibling {@code stopService()} of the metrics plugins follow,
+   * or the daemon thread pool leaks one instance per restart.
+   */
+  @Override
+  public void close() {
+    final ScheduledExecutorService scheduler = followerMetricsScheduler;
+    if (scheduler != null) {
+      scheduler.shutdownNow();
+      followerMetricsScheduler = null;
+    }
   }
 
   @Override
@@ -155,6 +173,7 @@ public final class HAReplicationMetrics implements MeterBinder {
       return t;
     });
     scheduler.scheduleAtFixedRate(refresh, 5, 5, TimeUnit.SECONDS);
+    followerMetricsScheduler = scheduler;
   }
 
   /**

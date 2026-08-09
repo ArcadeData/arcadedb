@@ -25,7 +25,9 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -75,12 +77,14 @@ class HAReplicationMetricsTest {
         new HAReplicationStats(true, 1234L, 7L, 2))));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    new HAReplicationMetrics(server).bindTo(registry);
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.bindTo(registry);
 
-    assertThat(registry.find("arcadedb.ha.leader").gauge().value()).isEqualTo(1.0);
-    assertThat(registry.find("arcadedb.ha.follower.max_last_contact_ms").gauge().value()).isEqualTo(1234.0);
-    assertThat(registry.find("arcadedb.ha.follower.max_replication_lag").gauge().value()).isEqualTo(7.0);
-    assertThat(registry.find("arcadedb.ha.followers.tracked").gauge().value()).isEqualTo(2.0);
+      assertThat(registry.find("arcadedb.ha.leader").gauge().value()).isEqualTo(1.0);
+      assertThat(registry.find("arcadedb.ha.follower.max_last_contact_ms").gauge().value()).isEqualTo(1234.0);
+      assertThat(registry.find("arcadedb.ha.follower.max_replication_lag").gauge().value()).isEqualTo(7.0);
+      assertThat(registry.find("arcadedb.ha.followers.tracked").gauge().value()).isEqualTo(2.0);
+    }
   }
 
   @Test
@@ -89,13 +93,15 @@ class HAReplicationMetricsTest {
     when(server.getPlugins()).thenReturn(List.of());
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    new HAReplicationMetrics(server).bindTo(registry);
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.bindTo(registry);
 
-    // HA disabled: leader=0 and the follower gauges are -1 (N/A) so dashboards can filter them out.
-    assertThat(registry.find("arcadedb.ha.leader").gauge().value()).isEqualTo(0.0);
-    assertThat(registry.find("arcadedb.ha.follower.max_last_contact_ms").gauge().value()).isEqualTo(-1.0);
-    assertThat(registry.find("arcadedb.ha.follower.max_replication_lag").gauge().value()).isEqualTo(-1.0);
-    assertThat(registry.find("arcadedb.ha.followers.tracked").gauge().value()).isEqualTo(0.0);
+      // HA disabled: leader=0 and the follower gauges are -1 (N/A) so dashboards can filter them out.
+      assertThat(registry.find("arcadedb.ha.leader").gauge().value()).isEqualTo(0.0);
+      assertThat(registry.find("arcadedb.ha.follower.max_last_contact_ms").gauge().value()).isEqualTo(-1.0);
+      assertThat(registry.find("arcadedb.ha.follower.max_replication_lag").gauge().value()).isEqualTo(-1.0);
+      assertThat(registry.find("arcadedb.ha.followers.tracked").gauge().value()).isEqualTo(0.0);
+    }
   }
 
   @Test
@@ -108,17 +114,19 @@ class HAReplicationMetricsTest {
             new FollowerSample("slow", 50, 51, 4200, 900, "FALLING_BEHIND", 8000)))));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    new HAReplicationMetrics(server).bindTo(registry);
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.bindTo(registry);
 
-    // The initial refresh() runs synchronously in bindTo, so the per-peer rows exist immediately.
-    assertThat(registry.find("arcadedb.ha.follower.replication_lag").tag("peer", "slow").gauge().value())
-        .isEqualTo(4200.0);
-    assertThat(registry.find("arcadedb.ha.follower.last_contact_ms").tag("peer", "slow").gauge().value())
-        .isEqualTo(900.0);
-    assertThat(registry.find("arcadedb.ha.follower.lagging_for_ms").tag("peer", "slow").gauge().value())
-        .isEqualTo(8000.0);
-    assertThat(registry.find("arcadedb.ha.follower.replication_lag").tag("peer", "n1").gauge().value())
-        .isEqualTo(12.0);
+      // The initial refresh() runs synchronously in bindTo, so the per-peer rows exist immediately.
+      assertThat(registry.find("arcadedb.ha.follower.replication_lag").tag("peer", "slow").gauge().value())
+          .isEqualTo(4200.0);
+      assertThat(registry.find("arcadedb.ha.follower.last_contact_ms").tag("peer", "slow").gauge().value())
+          .isEqualTo(900.0);
+      assertThat(registry.find("arcadedb.ha.follower.lagging_for_ms").tag("peer", "slow").gauge().value())
+          .isEqualTo(8000.0);
+      assertThat(registry.find("arcadedb.ha.follower.replication_lag").tag("peer", "n1").gauge().value())
+          .isEqualTo(12.0);
+    }
   }
 
   @Test
@@ -128,11 +136,43 @@ class HAReplicationMetricsTest {
         new HAReplicationStats(false, -1, -1, 0))));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    new HAReplicationMetrics(server).bindTo(registry);
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.bindTo(registry);
 
-    for (final String gauge : new String[] {
-        "arcadedb.ha.leader", "arcadedb.ha.follower.max_last_contact_ms",
-        "arcadedb.ha.follower.max_replication_lag", "arcadedb.ha.followers.tracked" })
-      assertThat(registry.find(gauge).gauge().value()).as("%s must be finite", gauge).isFinite();
+      for (final String gauge : new String[] {
+          "arcadedb.ha.leader", "arcadedb.ha.follower.max_last_contact_ms",
+          "arcadedb.ha.follower.max_replication_lag", "arcadedb.ha.followers.tracked" })
+        assertThat(registry.find(gauge).gauge().value()).as("%s must be finite", gauge).isFinite();
+    }
+  }
+
+  @Test
+  void closeShutsDownTheFollowerMetricsScheduler() throws Exception {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getPlugins()).thenReturn(List.of());
+
+    final HAReplicationMetrics metrics = new HAReplicationMetrics(server);
+    metrics.bindTo(new SimpleMeterRegistry());
+
+    final ScheduledExecutorService scheduler = schedulerField(metrics);
+    assertThat(scheduler).isNotNull();
+    assertThat(scheduler.isShutdown()).isFalse();
+
+    metrics.close();
+
+    assertThat(scheduler.isShutdown()).isTrue();
+    assertThat(schedulerField(metrics)).isNull();
+  }
+
+  @Test
+  void closeIsNullSafeWhenNeverBound() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    new HAReplicationMetrics(server).close();
+  }
+
+  private static ScheduledExecutorService schedulerField(final HAReplicationMetrics metrics) throws Exception {
+    final Field field = HAReplicationMetrics.class.getDeclaredField("followerMetricsScheduler");
+    field.setAccessible(true);
+    return (ScheduledExecutorService) field.get(metrics);
   }
 }
