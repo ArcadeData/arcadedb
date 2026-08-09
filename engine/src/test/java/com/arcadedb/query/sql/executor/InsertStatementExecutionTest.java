@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.parser.InsertStatement;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -30,6 +31,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,6 +43,40 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class InsertStatementExecutionTest extends TestHelper {
   public InsertStatementExecutionTest() {
     autoStartTx = true;
+  }
+
+  @Test
+  void insertExecutionPlanRunsOnceWithPositionalParameters() {
+    assertInsertExecutionPlanRunsOnce(statement -> statement.execute(database, new Object[0], null, false));
+  }
+
+  @Test
+  void insertExecutionPlanRunsOnceWithNamedParameters() {
+    assertInsertExecutionPlanRunsOnce(statement -> statement.execute(database, Map.of(), null, false));
+  }
+
+  private void assertInsertExecutionPlanRunsOnce(final Function<InsertStatement, ResultSet> executeStatement) {
+    final AtomicInteger executions = new AtomicInteger();
+    final InsertStatement statement = new InsertStatement(-1) {
+      @Override
+      public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
+        final InsertExecutionPlan executionPlan = new InsertExecutionPlan(context);
+        executionPlan.chain(new AbstractExecutionStep(context) {
+          @Override
+          public ResultSet syncPull(final CommandContext context, final int nRecords) {
+            executions.incrementAndGet();
+            return new InternalResultSet();
+          }
+        });
+        return executionPlan;
+      }
+    };
+
+    final ResultSet result = executeStatement.apply(statement);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    assertThat(executions.get()).isEqualTo(1);
   }
 
   @Test
