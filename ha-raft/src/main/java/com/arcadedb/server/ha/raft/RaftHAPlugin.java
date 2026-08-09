@@ -64,8 +64,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // instance (and thus fresh handler instances) is created by PluginManager on every server
   // start, so stopService() must close the ones THIS instance created rather than relying on any
   // static/shared state (issue #5890). Unlike raftHAServer above, plain (non-volatile) fields:
-  // registerAPI()/stopService() only ever run on the server's own sequential start/stop thread,
-  // never concurrently with each other or with one another's reads of these two fields.
+  // registerAPI() (called from the thread that invoked ArcadeDBServer.start()) and stopService()
+  // (which can run on that same thread OR on the JVM shutdown-hook thread via stopFromShutdownHook())
+  // are never concurrent with each other, but the reason is ArcadeDBServer.lifecycleLock - a
+  // ReentrantLock wrapping startInternal()/stopInternal() - giving a happens-before edge across
+  // threads, not thread confinement. Safe only as long as that lock still wraps both paths.
   private SnapshotHttpHandler       snapshotHttpHandler;
   private PostVerifyDatabaseHandler postVerifyDatabaseHandler;
 
@@ -143,9 +146,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (server != null)
       server.setDatabaseWrapper(null);
 
-    // Close the handlers' background executors. registerAPI() runs on THIS instance before
-    // stopService() ever can (see its call sites), so both fields are already populated whenever
-    // this plugin was actually wired into the HTTP server (issue #5890).
+    // Close the handlers' background executors. The null-guards below are not just for the case
+    // where registerAPI() never ran (e.g. a discovered-but-never-wired plugin): this same
+    // stopService() is invoked TWICE on every HA-enabled shutdown - once via PluginManager.stopPlugins()
+    // (RaftHAPlugin is itself a discovered ServerPlugin) and once via ArcadeDBServer.stopInternal()'s
+    // direct haServer.stopService() call, since startService() above did server.setHA(this), making
+    // ArcadeDBServer.haServer the very same instance. The second call must be a no-op (issue #5890).
     if (snapshotHttpHandler != null) {
       snapshotHttpHandler.close();
       snapshotHttpHandler = null;
