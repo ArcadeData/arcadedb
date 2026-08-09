@@ -1,4 +1,4 @@
-# Issue #5849 — MCPToolUtils.quoteIdentifier() does not escape backslashes
+# Issue #5849: MCPToolUtils.quoteIdentifier() does not escape backslashes
 
 ## Root cause
 
@@ -38,7 +38,7 @@ identifier's value for Cypher call sites rather than merely quoting it.
 
 - `mcp/src/main/java/com/arcadedb/mcp/tools/MCPToolUtils.java`: `quoteIdentifier` also rejects a
   backslash; javadoc updated to explain why.
-- `mcp/src/test/java/com/arcadedb/mcp/MCPToolUtilsTest.java`: two new regression tests —
+- `mcp/src/test/java/com/arcadedb/mcp/MCPToolUtilsTest.java`: two new regression tests,
   `rejectsBackslashToBlockSqlEscapeAmbiguity` (the exact `X\` case from the issue) and
   `rejectsBackslashInTheMiddleOfAnIdentifier`.
 
@@ -49,3 +49,21 @@ identifier's value for Cypher call sites rather than merely quoting it.
 - Full `mcp` module test suite (`mvn -pl mcp test`): 294/294 pass, no failures or errors, no regressions.
 - `quoteIdentifier` is used only inside the `mcp` module (`SampleRecordsTool`, `UpsertRelationshipTool`,
   `MCPToolUtils` itself), so the `mcp` module test suite is the full affected surface.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6026
+
+## Review cycles
+
+- **Cycle 1** (head `e5c1a77`): `claude[bot]` posted an issue-comment review (not a `reviews`/inline-comment
+  entry) approving the change with no blocking issues. It confirmed the grammar-level claims (SQL
+  `QUOTED_IDENTIFIER` treats backslash as an escape char, Cypher `ESCAPED_SYMBOLIC_NAME` does not), confirmed
+  the reject-over-escape design tradeoff was sound for a single shared helper, and called out one nit: the
+  tracking doc's title used an em dash where sibling docs use a colon or hyphen, conflicting with the repo's
+  stated no-em-dash convention. Applied: retitled the doc and removed a second em dash found in the same
+  file. No deferred items.
+
+## Final state
+
+See PR #6026 for the outcome of the review cycle(s) following this push.
