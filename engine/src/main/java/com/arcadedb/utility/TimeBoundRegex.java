@@ -73,11 +73,18 @@ public final class TimeBoundRegex {
   private static final class DeadlineBoundCharSequence implements CharSequence {
     private final CharSequence wrapped;
     private final long         deadlineNanos;
-    private       int          calls;
+    // Shared (not copied) with every CharSequence subSequence() derives from this one, so the check cadence
+    // keeps counting from where the parent left off instead of restarting at each subSequence() call.
+    private final int[]        calls;
 
     private DeadlineBoundCharSequence(final CharSequence wrapped, final long deadlineNanos) {
+      this(wrapped, deadlineNanos, new int[1]);
+    }
+
+    private DeadlineBoundCharSequence(final CharSequence wrapped, final long deadlineNanos, final int[] calls) {
       this.wrapped = wrapped;
       this.deadlineNanos = deadlineNanos;
+      this.calls = calls;
     }
 
     @Override
@@ -87,14 +94,14 @@ public final class TimeBoundRegex {
 
     @Override
     public char charAt(final int index) {
-      if ((++calls & (CHECK_INTERVAL - 1)) == 0 && System.nanoTime() > deadlineNanos)
+      if ((++calls[0] & (CHECK_INTERVAL - 1)) == 0 && System.nanoTime() > deadlineNanos)
         throw RegexDeadlineExceeded.INSTANCE;
       return wrapped.charAt(index);
     }
 
     @Override
     public CharSequence subSequence(final int start, final int end) {
-      return new DeadlineBoundCharSequence(wrapped.subSequence(start, end), deadlineNanos);
+      return new DeadlineBoundCharSequence(wrapped.subSequence(start, end), deadlineNanos, calls);
     }
 
     @Override
