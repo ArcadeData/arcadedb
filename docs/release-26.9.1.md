@@ -327,116 +327,55 @@ only the "nothing at all was imported" guarantee differs between the two formats
 
 [#5968](https://github.com/ArcadeData/arcadedb/issues/5968)
 
-## SQL `MATCHES` and openCypher `=~` are no longer able to pin a worker thread indefinitely on a pathological regex (#5886)
+## Regex-based query and validation surfaces are no longer able to pin a worker thread indefinitely on a pathological pattern (#5886)
 
 A regex like `(.*a){20}$` against a 41-character string triggers catastrophic backtracking in
 `java.util.regex`: still running after 30+ seconds for a pattern and input small enough to be typed by
-hand. `arcadedb.command.timeout` did not help, because `Matcher.matches()` never polls an interrupt flag or
-checks a deadline while backtracking - the only thing it calls on every backtracking step is
-`CharSequence.charAt()` on the input being matched, and nothing in the surrounding query execution machinery
-gets a chance to run again until that call returns on its own. In a deployment where query access reaches
-low-privilege users or an application layer that forwards user-supplied patterns, a handful of such queries
-is enough to permanently tie up the HTTP worker pool.
+hand. `arcadedb.command.timeout` does not help, because `Matcher` never polls an interrupt flag or checks a
+deadline while backtracking - the only thing it calls on every backtracking step is `CharSequence.charAt()`
+on the input, and nothing in the surrounding query execution machinery gets a chance to run again until that
+call returns on its own. In a deployment where query access reaches low-privilege users, or an application
+layer forwards user-supplied patterns, a handful of such operations is enough to permanently tie up worker
+threads.
 
-Both regex entry points - SQL `MATCHES` (`MatchesCondition`) and openCypher `=~` (`RegexExpression`) - now
-run the match through `TimeBoundRegex`, which wraps the input `CharSequence` so `charAt()` throws once a
-deadline elapses. Because `java.util.regex` calls `charAt()` on every backtracking step, this turns the one
-call site the engine cannot otherwise intercept into the interruption point `arcadedb.command.timeout` was
-supposed to provide. The deadline itself is a new, dedicated setting, `arcadedb.command.regexTimeout`
-(default 1000ms), independent of `arcadedb.command.timeout` and active even when the latter is left at its
-default of disabled (`0`) - which it is by default, so `MATCHES`/`=~` would otherwise have had no bound at
-all regardless of configuration. `charAt()` checks the deadline every 256 calls rather than every call, to
-keep the check off the hot path for the overwhelming majority of well-behaved patterns that never come close
-to that many backtracking steps in the first place.
+A new utility, `TimeBoundRegex`, closes that gap by wrapping the matched input in a `CharSequence` that throws
+once a deadline elapses - the one interception point `java.util.regex` offers, for `matches()`, `replaceAll()`,
+and `split()` alike. The deadline comes from a new setting, `arcadedb.command.regexTimeout` (default 1000ms,
+per-database), independent of `arcadedb.command.timeout` and active even when that setting is left at its own
+default of disabled (`0`). The deadline is checked every 256 `charAt()` calls rather than every call, keeping
+the check off the hot path for the overwhelming majority of patterns that never come close to that many
+backtracking steps.
 
-A `MATCHES`/`=~` evaluation against a multi-value (list-typed) property shares one deadline across every item
-rather than giving each item its own full budget - otherwise a crafted list could still tie up the thread for
-`item count * regexTimeout`. Whichever item trips the deadline aborts the whole `WHERE` evaluation with a
-`TimeoutException`, the same as a single-value timeout: a catastrophic pattern is treated as a query failure,
-not as that one item silently failing to match, since swallowing it would let the pattern keep consuming its
-full budget on every future scan without ever surfacing.
+**Covered entry points:**
+- SQL `MATCHES` and openCypher `=~`
+- SQL `LIKE`/`ILIKE`, including the native query engine's `SelectOperator` path
+- `text.regexReplace()` and the `.normalize()` SQL method's optional pattern argument
+- Full-text search's Lucene `RegexpQuery` (`/pattern/`) and `WildcardQuery` (`*`/`?`) support
+- PromQL's `=~`/`!~` label matchers
+- Schema-level `REGEXP` property validation (`CREATE PROPERTY ... REGEXP <pattern>`) - notably reachable with
+  no query privileges at all, since it runs on every insert/update of a validated property through any write
+  path (REST, any wire protocol)
 
-A second review pass caught two more entry points the initial audit missed, both now bounded the same way:
-the `text.regexReplace(string, regex, replacement)` SQL function, whose only previous defense was a 500-char
-pattern-length cap plus a `catch (StackOverflowError)` - neither of which bounds a *time*-based catastrophic
-match, as opposed to a *stack-depth* one; and full-text search's Lucene `RegexpQuery` support (the `/pattern/`
-query syntax), arguably the worse instance of the two since a pathological pattern there is evaluated against
-every token in what is, absent a literal prefix, a full index scan. `TimeBoundRegex` gained a `replaceAll()`
-counterpart to `matches()` for the first case, and now also catches `StackOverflowError` alongside a deadline
-trip in both - a sufficiently pathological pattern can blow the (recursive) backtracking stack before the
-next 256-call checkpoint is reached, and that failure mode gets the same bound and the same `TimeoutException`
-as an explicit deadline.
+The `.split(delimiter)` SQL method got a different fix: unlike its three siblings (the `split()` function,
+`text.split()`, and Cypher's `split()`), which all treat the delimiter as a literal via `Pattern.quote(...)`,
+it passed the delimiter straight to `String.split(regex)` unescaped. Matched to its siblings' behavior, which
+removes the risk entirely rather than just bounding it.
 
-A third review pass corrected a wrong conclusion from the first: SQL `LIKE`/`ILIKE` had been audited as "safe"
-because `QueryHelper.convertForRegExp` escapes every regex metacharacter except `%` (`.*`) and `?` (`.`), so
-the generated pattern can never contain grouping, alternation, or nested quantifiers - true, but that only
-rules out *one* class of catastrophic backtracking. A sequence of several `.*` segments reproduces the same
-exponential blowup with no nesting at all (`%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%c` against a string of
-just `a`s hangs exactly like the issue's own `(.*a){20}$` reproducer), and full-text search's wildcard queries
-(`*`/`?`, the `WildcardQuery` sibling of the already-fixed `RegexpQuery` path) build the identical shape.
-`LIKE`/`ILIKE` (`QueryHelper.like`/`likeUntil`, used by `LikeOperator`, `ILikeOperator`, and the native query
-engine's `SelectOperator`) and full-text wildcard matching now run through `TimeBoundRegex` like every other
-entry point here, including the same shared-deadline treatment for a multi-value `LIKE`/`ILIKE` evaluation.
+**Deadline sharing.** A regex evaluated once per row/token/item over a scan must not get a fresh timeout
+budget per item - a table or index shaped so every row triggers catastrophic backtracking would then cost up
+to `itemCount * regexTimeout` instead of one bounded operation. `MATCHES`/`=~` share one deadline across an
+entire query execution (cached on the `CommandContext`, the same mechanism used to cache the compiled
+`Pattern`); full-text, PromQL, and `REGEXP` validation share one deadline across the whole scan they run
+against. `LIKE`/`ILIKE` are the one exception: `BinaryCompareOperator`, the interface they implement, has no
+`CommandContext` to cache a deadline on (only a `Database`), and widening that interface across every
+comparison operator was judged out of proportion here - each row still gets its own `regexTimeout` budget, so
+a `LIKE`-heavy scan where many rows are individually catastrophic is bounded per row but not for the scan as
+a whole.
 
-A fourth review pass found one more: PromQL's `=~`/`!~` label matchers (`PromQLEvaluator#matchesPostFilters`)
-compile the user-supplied pattern straight into `Pattern.matcher(...).matches()`, with only a static
-`REDOS_CHECK` pre-filter that flags *parenthesized* nested-quantifier/alternation shapes (`(a+)+`, `(a|aa)+`).
-A sequence of unparenthesized quantified segments (`a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*ac`, PromQL's
-equivalent of the `LIKE`/wildcard gap above) contains no `(` for that check to catch, and reaches the same
-unbounded `.matches()` call. Now bounded the same way, with one shared deadline across the whole row scan a
-label matcher runs against - the same N-rows-times-timeout concern as every other multi-item entry point here.
-
-**A sharper edge of the upgrade-behavior tradeoff, worth calling out on its own.** Full-text `RegexpQuery`/
-`WildcardQuery` and PromQL `=~`/`!~` each share one `regexTimeout` budget across an entire scan - every token
-in a full-text index, every row in a time-series range query - not per item, for the reasons above. That is
-correct (per-item budgets reopen the N-times-timeout bypass), but it means a large, *non-catastrophic* scan
-that legitimately takes more than the default 1000ms purely because there is a lot of data - a big full-text
-index, or a wide PromQL time range - now fails with `TimeoutException` where it previously (with
-`arcadedb.command.timeout` disabled by default) ran to completion, however slowly. If a workload does
-legitimate full-text or PromQL regex matching over a large volume of data, raise `arcadedb.command.regexTimeout`
-for that database rather than leaving it at the default.
-
-A fifth review pass found the most exposed entry point of all: the schema-level `REGEXP` property constraint
-(`CREATE PROPERTY ... REGEXP <pattern>`) validated `fieldValue.toString().matches(p.getRegexp())` on every
-insert/update of that property with no bound whatsoever - `DocumentValidator.validateField`. Unlike every
-other entry point here, this needs no query privileges at all: any write path (REST, any wire protocol) into
-a validated type is enough, and admin-defined validation patterns (classic email/URL regexes, in particular)
-are a notorious source of accidentally-catastrophic shapes. Now bounded the same way as everything else - which
-means the same default-1000ms tradeoff described above for full-text/PromQL applies here too: a legitimate,
-non-catastrophic pattern validated against a very large field value that previously took over a second (however
-undesirable that already was) now fails the write with `TimeoutException` instead. Raise
-`arcadedb.command.regexTimeout` for a database with that kind of validation workload.
-
-Also fixed: `MATCHES`/`=~` shared one deadline across a multi-value evaluation (an earlier fix in this issue)
-but still gave each *row* of a table/graph scan its own fresh budget, so a table shaped so every row triggers
-catastrophic backtracking could still cost up to `rowCount * regexTimeout` overall. Both now cache one deadline
-for the lifetime of the query on the `CommandContext` - the same per-execution object `MatchesCondition` already
-used to cache the compiled `Pattern`. `RegexExpression` needed the same context-based caching, not an AST-node
-instance field: unlike a compiled `Pattern` (content-addressed, safe to reuse indefinitely), a deadline is a
-point in time, and `CypherStatementCache` caches parsed queries - this AST node included - by query text across
-repeated executions, so an instance-field deadline would go stale after the first execution and then make every
-later run of that same cached query throw a spurious `TimeoutException` on any pattern, benign or not, until
-LRU eviction; a 6th review pass caught this exact regression before it merged. `LIKE`/`ILIKE` could not get the
-per-scan fix: `BinaryCompareOperator`, the interface `LikeOperator`/`ILikeOperator` implement, has no
-`CommandContext` to cache a query-wide deadline on (only a `Database`), and widening that interface across every
-comparison operator was judged out of proportion for this fix - a conscious, narrower-scope tradeoff, documented
-in `LikeOperator`, not an oversight.
-
-A 7th review pass found a second regression, caught the same way: `MatchesCondition`'s query-wide deadline was
-cached under the fixed key `"MATCHES_DEADLINE"` in the same flat, string-keyed `CommandContext` cache used for
-compiled patterns (keyed `"MATCHES_" + <regex text>`). A query using the literal pattern text `DEADLINE` (e.g.
-`WHERE name MATCHES 'DEADLINE'`) produced the identical key for both, so the Pattern and the deadline overwrote
-each other's cache slot and every row threw `ClassCastException` on the very first evaluation - 100%
-reproducible, not a theoretical race. The deadline key now lives entirely outside the `"MATCHES_"` namespace, so
-it cannot collide with `"MATCHES_" + <any regex text>` regardless of what that text reads.
-
-The same pass also found two more unbounded entry points reachable from plain SQL: the `.split(delimiter)`
-method syntax (`field.split(pattern)`) passed its delimiter straight to `String.split(regex)` unescaped, unlike
-its three siblings (the `split()` function, `text.split()`, and Cypher's `split()`), which all correctly treat
-the delimiter as a literal via `Pattern.quote(...)` - now fixed to match them, which removes the risk entirely
-rather than just bounding it, since a `Pattern.quote()`d literal can never form a catastrophic shape. The
-`.normalize(form, pattern)` method's optional second argument, by contrast, is *meant* to be a real regex (it
-controls what gets stripped after Unicode normalization), so that one is bounded through `TimeBoundRegex` like
-every other intentional regex entry point, not literalized.
+**Upgrade note.** Because the deadline is shared per query/scan rather than per match, and defaults to an
+enabled 1000ms, a *legitimate, non-catastrophic* operation that previously ran slowly to completion - a
+`MATCHES`/`LIKE` query over a very large table, a full-text or PromQL scan over a lot of data, or `REGEXP`
+validation against a large field value - can now fail with `TimeoutException` instead. Raise
+`arcadedb.command.regexTimeout` for any database with that kind of workload.
 
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)

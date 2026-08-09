@@ -113,7 +113,7 @@ public enum SelectOperator {
     Object eval(final Document record, final Object left, final Object right) {
       return QueryHelper.like(((String) SelectExecutor.evaluateValue(record, left)).toLowerCase(Locale.ENGLISH),
           ((String) SelectExecutor.evaluateValue(record, right)).toLowerCase(),
-          record.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+          GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(record.getDatabase()));
     }
   },
 
@@ -122,7 +122,7 @@ public enum SelectOperator {
     Object eval(final Document record, final Object left, final Object right) {
       return QueryHelper.like((String) SelectExecutor.evaluateValue(record, left),
           (String) SelectExecutor.evaluateValue(record, right),
-          record.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+          GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(record.getDatabase()));
     }
   },
 
