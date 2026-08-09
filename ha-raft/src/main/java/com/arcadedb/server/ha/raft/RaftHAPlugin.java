@@ -209,6 +209,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // so isRaftEnabled() cannot be checked here.
     routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster status endpoint registered at /api/v1/cluster");
+    // Close a previous handler before replacing it: registerAPI() is expected to run once per plugin
+    // instance (a fresh RaftHAPlugin is created on every server start), but closing defensively here
+    // means a repeated call can never re-leak the executor regardless of that caller-side invariant
+    // (issue #5890).
+    if (snapshotHttpHandler != null)
+      snapshotHttpHandler.close();
     snapshotHttpHandler = new SnapshotHttpHandler(httpServer);
     routes.addPrefixPath("/api/v1/ha/snapshot/", snapshotHttpHandler);
     LogManager.instance().log(this, Level.INFO, "Raft snapshot endpoint registered at /api/v1/ha/snapshot/{database}");
@@ -217,6 +223,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     routes.addExactPath("/api/v1/cluster/leader", new PostTransferLeaderHandler(httpServer, this));
     routes.addExactPath("/api/v1/cluster/stepdown", new PostStepDownHandler(httpServer, this));
     routes.addExactPath("/api/v1/cluster/leave", new PostLeaveHandler(httpServer, this));
+    // Same defensive close as snapshotHttpHandler above (issue #5890).
+    if (postVerifyDatabaseHandler != null)
+      postVerifyDatabaseHandler.close();
     postVerifyDatabaseHandler = new PostVerifyDatabaseHandler(httpServer, this);
     routes.addPrefixPath("/api/v1/cluster/verify/", postVerifyDatabaseHandler);
     routes.addPrefixPath("/api/v1/cluster/resync/", new PostResyncDatabaseHandler(httpServer, this));

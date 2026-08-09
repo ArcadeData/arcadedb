@@ -81,6 +81,38 @@ class RaftHAPluginExecutorLeakTest {
     plugin.stopService();
   }
 
+  @Test
+  void registerAPIClosesAPreviouslyRegisteredSnapshotHandlerBeforeReplacingIt() throws Exception {
+    // Defensive close in registerAPI() itself: even without an intervening stopService(), a second
+    // registerAPI() call must not leak the first handler's executor (issue #5890).
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.registerAPI(null, new PathHandler());
+    final SnapshotHttpHandler firstHandler = getField(plugin, "snapshotHttpHandler", SnapshotHttpHandler.class);
+    final ScheduledExecutorService firstWatchdogExecutor = getField(firstHandler, "watchdogExecutor", ScheduledExecutorService.class);
+
+    plugin.registerAPI(null, new PathHandler());
+
+    assertThat(firstWatchdogExecutor.isShutdown())
+        .as("A second registerAPI() call must close the previous SnapshotHttpHandler's watchdog executor")
+        .isTrue();
+    assertThat(getField(plugin, "snapshotHttpHandler", SnapshotHttpHandler.class)).isNotSameAs(firstHandler);
+  }
+
+  @Test
+  void registerAPIClosesAPreviouslyRegisteredVerifyHandlerBeforeReplacingIt() throws Exception {
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.registerAPI(null, new PathHandler());
+    final PostVerifyDatabaseHandler firstHandler = getField(plugin, "postVerifyDatabaseHandler", PostVerifyDatabaseHandler.class);
+    final ExecutorService firstPeerQueryExecutor = getField(firstHandler, "peerQueryExecutor", ExecutorService.class);
+
+    plugin.registerAPI(null, new PathHandler());
+
+    assertThat(firstPeerQueryExecutor.isShutdown())
+        .as("A second registerAPI() call must close the previous PostVerifyDatabaseHandler's peer-query pool")
+        .isTrue();
+    assertThat(getField(plugin, "postVerifyDatabaseHandler", PostVerifyDatabaseHandler.class)).isNotSameAs(firstHandler);
+  }
+
   @SuppressWarnings("unchecked")
   private static <T> T getField(final Object target, final String fieldName, final Class<T> type) throws Exception {
     final Field field = target.getClass().getDeclaredField(fieldName);
