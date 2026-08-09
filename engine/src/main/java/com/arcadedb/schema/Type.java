@@ -794,9 +794,18 @@ public enum Type {
    * {@code Infinity}) is caught via the saturating conversion {@link Number#longValue()} already performs. A
    * {@link BigDecimal}/{@link BigInteger} can exceed even the long range, where {@code longValue()} truncates bits
    * instead of saturating, so those two types are range-checked directly against {@code long} bounds first.
+   * <p>
+   * {@code NaN} needs its own guard: per the JLS narrowing-conversion rules {@code Double.NaN.longValue()}/
+   * {@code Float.NaN.longValue()} return {@code 0}, which is in-range for every target type and would otherwise
+   * slip through the range check as a silent {@code 0} (issue #5970).
    */
   private static Number narrowToIntegral(final Number value, final long min, final long max, final String targetType,
       final Property property) {
+    if (value instanceof Double doubleValue && doubleValue.isNaN() || value instanceof Float floatValue && floatValue.isNaN())
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
     final long longValue;
     if (value instanceof BigDecimal bigDecimal)
       longValue = bigDecimal.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE
