@@ -42,6 +42,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -590,7 +591,9 @@ public class Neo4jImporter {
               OffsetDateTime.from(parsed).toInstant() :
               LocalDateTime.from(parsed).atZone(ZoneId.systemDefault()).toInstant();
           propValue = instant.toEpochMilli();
-        } catch (final DateTimeParseException e) {
+        } catch (final DateTimeException e) {
+          // Covers both parse() (DateTimeParseException) and the from() resolution calls above,
+          // which are declared to throw the broader DateTimeException.
           log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
           context.errors.incrementAndGet();
         }
