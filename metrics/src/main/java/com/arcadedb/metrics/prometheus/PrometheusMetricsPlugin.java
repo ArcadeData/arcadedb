@@ -56,6 +56,15 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
   }
 
   @Override
+  public void stopService() {
+    if (registry != null) {
+      Metrics.removeRegistry(registry);
+      registry.close();
+      registry = null;
+    }
+  }
+
+  @Override
   public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
     if (!enabled)
       return;
