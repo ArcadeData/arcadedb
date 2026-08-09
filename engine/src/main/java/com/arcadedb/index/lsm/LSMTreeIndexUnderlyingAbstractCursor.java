@@ -24,6 +24,14 @@ import com.arcadedb.serializer.BinarySerializer;
 
 public abstract class LSMTreeIndexUnderlyingAbstractCursor {
   protected final LSMTreeIndexAbstract index;
+  /**
+   * The index's STORAGE key types ({@link LSMTreeIndexAbstract#storageKeyTypes}), because a cursor's first job is to
+   * decode page bytes. Subclasses then reuse this same array as the type argument of
+   * {@link LSMTreeIndexMutable#compareKeys}, which is only correct while {@link com.arcadedb.serializer.BinaryComparator}
+   * orders {@code TYPE_COMPRESSED_RID} and {@code TYPE_RID} identically - it does, they share one branch. Should that
+   * ever stop being true, these cursors need the declared types threaded in alongside, the way
+   * {@link LSMTreeIndexAbstract#compareKey} already keeps the two apart (#5703).
+   */
   protected final byte[]               keyTypes;
   protected final BinarySerializer     serializer;
   protected final int                  totalKeys;

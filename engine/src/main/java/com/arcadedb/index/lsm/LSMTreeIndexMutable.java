@@ -73,9 +73,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at cloning time.
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
-      final boolean unique, final String filePath, final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize,
+      final boolean unique, final String filePath, final Type[] keyTypes, final byte[] storageKeyTypes, final int pageSize,
       final int version, final LSMTreeIndexCompacted subIndex) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, binaryKeyTypes,
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, storageKeyTypes,
         pageSize, version);
     this.subIndex = subIndex;
     minPagesToScheduleACompaction = database.getConfiguration()
@@ -116,10 +116,14 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       pos += INT_SERIALIZED_SIZE;
 
+      // The header carries the STORAGE type of each key column, so this file keeps whatever encoding it was created
+      // with: one written before #5703 declares TYPE_RID and goes on reading fixed-width LINK keys.
       final int len = currentPage.readByte(pos++);
-      this.binaryKeyTypes = new byte[len];
+      this.storageKeyTypes = new byte[len];
       for (int i = 0; i < len; ++i)
-        this.binaryKeyTypes[i] = currentPage.readByte(pos++);
+        this.storageKeyTypes[i] = currentPage.readByte(pos++);
+
+      this.binaryKeyTypes = declaredKeyTypes(this.storageKeyTypes);
 
       this.keyTypes = new Type[len];
       for (int i = 0; i < len; ++i)
@@ -132,6 +136,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         subIndex = (LSMTreeIndexCompacted) database.getSchema().getFileById(subIndexFileId);
         subIndex.mainIndex = mainIndex;
         subIndex.binaryKeyTypes = binaryKeyTypes;
+        // The sub-index never reads its own header: every file of one index is created with, and keeps, the mutable's
+        // encoding (createNewForCompaction passes it on), so inheriting it here is what the pages actually hold.
+        subIndex.storageKeyTypes = storageKeyTypes;
         // The flag is not persisted in the page header: a sub-index materialised by the component factory defaults to false. It
         // must match this index, because it decides whether the tf/docLength varints trailing every posting are consumed when a
         // value is read back. A mismatch desynchronises the value stream and silently decodes the rest of the entry as garbage.
@@ -208,7 +215,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final String newName = componentName.substring(0, last_) + "_" + System.nanoTime();
 
     final LSMTreeIndexCompacted compacted = new LSMTreeIndexCompacted(mainIndex, database, newName, unique,
-        database.getDatabasePath() + File.separator + newName, keyTypes, binaryKeyTypes, pageSize);
+        database.getDatabasePath() + File.separator + newName, keyTypes, storageKeyTypes, pageSize);
     compacted.setStoreTermFrequency(isStoreTermFrequency());
     return compacted;
   }
@@ -255,7 +262,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public LSMTreeIndexUnderlyingPageCursor newPageIterator(final int pageId, final int currentEntryInPage,
       final boolean ascendingOrder) throws IOException {
     final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
-    return new LSMTreeIndexUnderlyingPageCursor(this, page, currentEntryInPage, getHeaderSize(pageId), binaryKeyTypes,
+    return new LSMTreeIndexUnderlyingPageCursor(this, page, currentEntryInPage, getHeaderSize(pageId), storageKeyTypes,
         getCount(page), ascendingOrder);
   }
 
@@ -366,9 +373,11 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (txPageCounter == 0) {
       pos += currentPage.writeInt(pos, subIndex != null ? subIndex.getFileId() : -1); // SUB-INDEX FILE ID
 
-      currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
-      for (int i = 0; i < binaryKeyTypes.length; ++i)
-        currentPage.writeByte(pos++, binaryKeyTypes[i]);
+      // Persist the STORAGE type, not the declared one: it is what the pages of THIS file are encoded with, and what
+      // onAfterLoad has to honour so a pre-#5703 file keeps reading its fixed-width LINK keys.
+      currentPage.writeByte(pos++, (byte) storageKeyTypes.length);
+      for (int i = 0; i < storageKeyTypes.length; ++i)
+        currentPage.writeByte(pos++, storageKeyTypes[i]);
     }
 
     ++currentMutablePages;

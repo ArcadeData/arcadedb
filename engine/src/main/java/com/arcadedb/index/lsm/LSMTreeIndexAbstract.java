@@ -80,7 +80,29 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected final BinarySerializer serializer;
   protected final boolean          unique;
   protected       Type[]           keyTypes;
+  /**
+   * Binary type DECLARED by the schema for each key column. This is what {@link #getBinaryKeyTypes()} reports outward,
+   * what every typed comparison and key coercion uses, and what a caller's key is narrowed to. Use
+   * {@link #storageKeyTypes} for anything that touches the bytes on a page.
+   */
   protected       byte[]           binaryKeyTypes;
+  /**
+   * Binary type actually WRITTEN on the page for each key column. It differs from {@link #binaryKeyTypes} only for
+   * LINK columns - see {@link BinaryTypes#getIndexStorageType(byte)} - and is persisted in the page-0 header, so each
+   * file keeps whatever encoding it was created with (#5703).
+   * <p>
+   * The remapping is safe for an ORDERED index because the LSM tree never compares raw key bytes: {@code compareKey}
+   * and {@code compareKeys} deserialize both operands and compare typed values, so key order is
+   * {@link RID#compareTo}'s and is unaffected by how many bytes the RID took on the page. (The one byte-level
+   * comparison, {@code comparator.compareBytes}, is the {@code TYPE_STRING} fast path, which no LINK column reaches.)
+   * <p>
+   * NOTE for anyone reading the HASH implementation alongside this one: the same two concepts are named the other
+   * way round there. {@code HashIndexBucket.binaryKeyTypes} is the ON-PAGE encoding and its {@code declaredKeyTypes}
+   * is the schema type. Here {@code binaryKeyTypes} keeps its original meaning - the schema type, which is what
+   * {@link #getBinaryKeyTypes()} has always reported - and the on-page encoding is this new field. Both classes
+   * report the schema type outward; only the field names disagree.
+   */
+  protected       byte[]           storageKeyTypes;
   protected       boolean[]        caseInsensitiveKeys;
   protected       NULL_STRATEGY    nullStrategy       = NULL_STRATEGY.SKIP;
   protected final AtomicLong       statsAdjacentSteps = new AtomicLong();
@@ -136,18 +158,23 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.keyTypes = keyTypes;
 
     this.binaryKeyTypes = new byte[keyTypes.length];
-    for (int i = 0; i < keyTypes.length; i++)
+    this.storageKeyTypes = new byte[keyTypes.length];
+    for (int i = 0; i < keyTypes.length; i++) {
       this.binaryKeyTypes[i] = keyTypes[i].getBinaryType();
+      this.storageKeyTypes[i] = BinaryTypes.getIndexStorageType(this.binaryKeyTypes[i]);
+    }
 
     this.nullStrategy = nullStrategy;
     REMOVED_ENTRY_RID = new RID(-1, -1L);
   }
 
   /**
-   * Called at cloning time.
+   * Called at cloning time. The STORAGE types are what travels between the components of one index: a new file that
+   * belongs to an index already on disk (a compacted sub-index, or the mutable a split creates) must keep encoding
+   * keys the way the existing files do, so it inherits them instead of re-deriving them from the schema.
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
-      final boolean unique, final String filePath, final String ext, final Type[] keyTypes, final byte[] binaryKeyTypes,
+      final boolean unique, final String filePath, final String ext, final Type[] keyTypes, final byte[] storageKeyTypes,
       final int pageSize, final int version) throws IOException {
     super(database, name, filePath, TEMP_EXT + ext, ComponentFile.MODE.READ_WRITE, pageSize, version);
     this.mainIndex = mainIndex;
@@ -155,7 +182,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.comparator = serializer.getComparator();
     this.unique = unique;
     this.keyTypes = keyTypes;
-    this.binaryKeyTypes = binaryKeyTypes;
+    this.storageKeyTypes = storageKeyTypes;
+    this.binaryKeyTypes = declaredKeyTypes(storageKeyTypes);
     REMOVED_ENTRY_RID = new RID(-1, -1L);
   }
 
@@ -206,6 +234,25 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   public byte[] getBinaryKeyTypes() {
     return binaryKeyTypes;
+  }
+
+  /**
+   * The binary type each key column is encoded with ON THE PAGE. Only the components of this index need it; every
+   * outward consumer wants {@link #getBinaryKeyTypes()}, which reports what the schema declared.
+   */
+  byte[] getStorageKeyTypes() {
+    return storageKeyTypes;
+  }
+
+  /**
+   * Recovers the DECLARED types from the storage types a page header persisted. A header written before #5703
+   * declares {@code TYPE_RID} and maps to itself, which is what keeps an existing index reading its fixed-width keys.
+   */
+  static byte[] declaredKeyTypes(final byte[] storageKeyTypes) {
+    final byte[] declared = new byte[storageKeyTypes.length];
+    for (int i = 0; i < storageKeyTypes.length; i++)
+      declared[i] = BinaryTypes.getIndexDeclaredType(storageKeyTypes[i]);
+    return declared;
   }
 
   public boolean isDeletedEntry(final RID rid) {
@@ -416,7 +463,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       final boolean notNull = version < 1 || buffer.getByte() == 1;
       if (notNull)
         // Keys are serialized in clear (see writeKeys): read them back without decryption.
-        serializer.deserializeValue(database, buffer, binaryKeyTypes[keyIndex], null, false);
+        serializer.deserializeValue(database, buffer, storageKeyTypes[keyIndex], null, false);
     }
 
     return buffer.position() - startsAt;
@@ -498,7 +545,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
       if (notNull)
         // Keys are serialized in clear (see writeKeys): read them back without decryption.
-        key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, binaryKeyTypes[keyIndex], null, false);
+        key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, storageKeyTypes[keyIndex], null, false);
       else
         key[keyIndex] = null;
     }
@@ -536,8 +583,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
         result = comparator.compareBytes((byte[]) key, currentPageBuffer);
       } else {
-        // Keys are serialized in clear (see writeKeys): read them back without decryption.
-        final Object keyValue = serializer.deserializeValue(database, currentPageBuffer, binaryKeyTypes[keyIndex], null, false);
+        // Keys are serialized in clear (see writeKeys): read them back without decryption. The bytes are read with the
+        // STORAGE type and the resulting value compared under the DECLARED one, which is what makes the compressed RID
+        // encoding order-preserving: only the number of bytes changes, never the value the comparator sees.
+        final Object keyValue = serializer.deserializeValue(database, currentPageBuffer, storageKeyTypes[keyIndex], null, false);
         result = comparator.compare(key, binaryKeyTypes[keyIndex], keyValue, binaryKeyTypes[keyIndex]);
       }
 
@@ -551,7 +600,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected int getHeaderSize(final int pageNum) {
     int size = INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
     if (pageNum == 0)
-      size += INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + binaryKeyTypes.length;
+      // storageKeyTypes, not binaryKeyTypes: this sizes what page 0 actually persists. The two arrays always have
+      // the same length, so this is a readability fix, not a behaviour change.
+      size += INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + storageKeyTypes.length;
 
     return size;
   }
@@ -882,7 +933,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
           result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
         } else {
           // Keys are serialized in clear (see writeKeys): read them back without decryption.
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null, false);
+          final Object key = serializer.deserializeValue(database, currentPageBuffer, storageKeyTypes[keyIndex], null, false);
           result = comparator.compare(keys[keyIndex], keyType, key, keyType);
         }
 
@@ -974,7 +1025,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         // Index keys must be deterministic (issue #5142/#4137): encryption uses a fresh random IV per call, so encrypting
         // keys would yield different ciphertext each time and break the ordered key comparison. Keys are always serialized
         // in clear; the record content they point to remains encrypted.
-        serializer.serializeValue(database, buffer, binaryKeyTypes[i], value, false);
+        serializer.serializeValue(database, buffer, storageKeyTypes[i], value, false);
       }
     }
   }

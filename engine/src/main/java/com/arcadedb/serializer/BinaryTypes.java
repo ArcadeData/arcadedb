@@ -83,6 +83,29 @@ public class BinaryTypes {
   public final static byte GEOMETRY_SUBTYPE_LINESTRING = 4; // LineString: numPoints(int), [x,y]* (n*2 doubles)
   public final static byte GEOMETRY_SUBTYPE_POLYGON   = 5; // Polygon: numPoints(int), [x,y]* (n*2 doubles)
 
+  /**
+   * Maps the binary type an index key column DECLARES (what the schema says, what the index reports outward and what
+   * a caller's key is narrowed to) to the binary type the index actually writes on its pages.
+   * <p>
+   * The only remapping is {@link #TYPE_RID} - the encoding of {@code Type.LINK}, and therefore of an edge type's
+   * {@code @out}/{@code @in} endpoints - to {@link #TYPE_COMPRESSED_RID}: the fixed {@code putInt(bucketId)} +
+   * {@code putLong(position)} form costs 12 bytes per column against the 2-7 of the varint form that indexes already
+   * use for every entry <i>value</i>. Both encodings are deterministic and injective, and both deserialize to the
+   * same {@code RID}, so neither hashing (HASH, #5677) nor ordered comparison (LSM, #5703) is affected.
+   */
+  public static byte getIndexStorageType(final byte declaredType) {
+    return declaredType == TYPE_RID ? TYPE_COMPRESSED_RID : declaredType;
+  }
+
+  /**
+   * Inverse of {@link #getIndexStorageType(byte)}, for reading back a storage type an index persisted. The mapping is
+   * unambiguous because no {@code Type} declares {@link #TYPE_COMPRESSED_RID}, so that byte can only mean "a LINK
+   * column stored compressed".
+   */
+  public static byte getIndexDeclaredType(final byte storageType) {
+    return storageType == TYPE_COMPRESSED_RID ? TYPE_RID : storageType;
+  }
+
   public static byte getTypeFromValue(final Object value, final Property propertyType) {
     final byte type;
 
