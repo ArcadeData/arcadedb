@@ -70,6 +70,13 @@ public class ImporterSettings {
   public long    parsingLimitEntries;
   public int     commitEvery            = 5000;
   public String  mapping                = null;
+  /**
+   * Governs document/vertex rows only (see {@link #isSkipOnRowError()}); CSV edges always skip-and-log
+   * unconditionally because an unresolved from/to vertex reference is an expected outcome during graph import, not a
+   * data error. JSON edges are unaffected by that CSV-specific rule: they're created via the same per-record path as
+   * JSON documents/vertices, so this setting still governs them the same way it governs those.
+   */
+  public String  onRowError             = "abort";
 
   public final Map<String, Object> options = new HashMap<>();
 
@@ -77,6 +84,49 @@ public class ImporterSettings {
     parallel = Runtime.getRuntime().availableProcessors() / 2 - 1;
     if (parallel < 1)
       parallel = 1;
+  }
+
+  /**
+   * Tells whether a single malformed/out-of-range row or property should be skipped and logged instead of aborting the
+   * whole import job. Opt-in via {@code -onRowError skip}; defaults to {@code abort} for backward compatibility.
+   * <p>
+   * For CSV vertex imports, which normally persist records asynchronously via {@code database.async()} in batches,
+   * enabling this switches to a synchronous save per vertex instead (the same way document imports already work): a
+   * batched async commit rolling back on a persist-time failure (mandatory property, unique index, ...) would otherwise
+   * take down every other vertex queued in the same uncommitted batch, not just the failing one.
+   * <p>
+   * Both CSV document and vertex imports also commit each row in its own transaction while this is enabled, rather
+   * than the single whole-file transaction (documents) / {@code commitEvery}-sized async batches (vertices) used in
+   * the default {@code abort} mode: a failure that only surfaces at index time (e.g. a duplicate key) already has a
+   * bucket write by then, and only rolling back that one row's own transaction can undo it without also discarding
+   * an unrelated, already-committed row. In short, "skip" trades import throughput - effectively a batch size of 1
+   * for the whole run, not just for the failing row - for the guarantee that a bad row can never take a good one
+   * down with it, nor leave a partially-written "ghost" record behind. For vertices specifically, the cost is
+   * larger than just batching down to 1: dropping {@code database.async()} entirely also gives up its worker-thread
+   * parallelism, so a vertex import under this setting is fully synchronous and single-threaded regardless of
+   * {@code -commitEvery}/{@code -parallel}, which are silently inapplicable there while this is enabled.
+   * <p>
+   * Because of that per-row transaction ownership, "skip" requires exclusive control of the transaction and cannot
+   * be used while one is already active on the target {@code Database} - e.g. inside an embedding caller's own
+   * transaction, or a server HTTP command executed with the default atomic/{@code autoCommit} behavior, which wraps
+   * the whole command in one transaction. Both CSV and JSON reject this combination eagerly (see
+   * {@link #newExclusiveTransactionRequiredException()}) rather than silently committing/discarding whatever the
+   * caller had pending.
+   */
+  public boolean isSkipOnRowError() {
+    return "skip".equalsIgnoreCase(onRowError);
+  }
+
+  /**
+   * Shared exception for the constraint documented on {@link #isSkipOnRowError()}: {@code -onRowError skip} commits
+   * or rolls back per row, so it must own the transaction outright. Used by both {@code CSVImporterFormat} and
+   * {@code JSONImporterFormat} so the message can't drift between them.
+   */
+  public static IllegalStateException newExclusiveTransactionRequiredException() {
+    return new IllegalStateException(
+        "-onRowError skip requires exclusive control of the transaction and cannot be used while a transaction is "
+            + "already active (e.g. inside a caller-managed transaction, or a server HTTP command executed with the "
+            + "default atomic/autoCommit behavior - retry with autoCommit=false or from a session)");
   }
 
   public <T> T getValue(final String name, final T defaultValue) {
@@ -125,6 +175,11 @@ public class ImporterSettings {
     case "parsingLimitEntries" -> parsingLimitEntries = Long.parseLong(value);
     case "mapping" -> mapping = value;
     case "probeOnly" -> probeOnly = Boolean.parseBoolean(value);
+    case "onRowError" -> {
+      if (!"abort".equalsIgnoreCase(value) && !"skip".equalsIgnoreCase(value))
+        throw new IllegalArgumentException("Invalid value '" + value + "' for -onRowError. Supported values are 'abort' and 'skip'");
+      onRowError = value;
+    }
     // DOCUMENT SETTINGS
     case "documents" -> documents = value;
     case "documentsFileType" -> documentsFileType = value;
