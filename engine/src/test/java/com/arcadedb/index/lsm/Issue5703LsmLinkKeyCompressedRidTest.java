@@ -37,9 +37,9 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;

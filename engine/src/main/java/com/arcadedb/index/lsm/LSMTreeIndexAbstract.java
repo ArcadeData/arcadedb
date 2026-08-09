@@ -88,8 +88,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected       byte[]           binaryKeyTypes;
   /**
    * Binary type actually WRITTEN on the page for each key column. It differs from {@link #binaryKeyTypes} only for
-   * LINK columns - see {@link #storageKeyType(byte)} - and is persisted in the page-0 header, so each file keeps
-   * whatever encoding it was created with (#5703).
+   * LINK columns - see {@link BinaryTypes#getIndexStorageType(byte)} - and is persisted in the page-0 header, so each
+   * file keeps whatever encoding it was created with (#5703).
+   * <p>
+   * The remapping is safe for an ORDERED index because the LSM tree never compares raw key bytes: {@code compareKey}
+   * and {@code compareKeys} deserialize both operands and compare typed values, so key order is
+   * {@link RID#compareTo}'s and is unaffected by how many bytes the RID took on the page. (The one byte-level
+   * comparison, {@code comparator.compareBytes}, is the {@code TYPE_STRING} fast path, which no LINK column reaches.)
    * <p>
    * NOTE for anyone reading the HASH implementation alongside this one: the same two concepts are named the other
    * way round there. {@code HashIndexBucket.binaryKeyTypes} is the ON-PAGE encoding and its {@code declaredKeyTypes}
@@ -156,7 +161,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.storageKeyTypes = new byte[keyTypes.length];
     for (int i = 0; i < keyTypes.length; i++) {
       this.binaryKeyTypes[i] = keyTypes[i].getBinaryType();
-      this.storageKeyTypes[i] = storageKeyType(this.binaryKeyTypes[i]);
+      this.storageKeyTypes[i] = BinaryTypes.getIndexStorageType(this.binaryKeyTypes[i]);
     }
 
     this.nullStrategy = nullStrategy;
@@ -237,19 +242,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    */
   byte[] getStorageKeyTypes() {
     return storageKeyTypes;
-  }
-
-  /**
-   * The per-column encoding this index writes on its pages, from what the schema declared.
-   * <p>
-   * The remapping ({@code TYPE_RID} -> {@code TYPE_COMPRESSED_RID}, see
-   * {@link BinaryTypes#getIndexStorageType(byte)}) is safe for an ORDERED index because the LSM tree never compares
-   * raw key bytes: {@code compareKey} and {@code compareKeys} deserialize both operands and compare typed values, so
-   * key order is {@link RID#compareTo}'s and is unaffected by how many bytes the RID took on the page. See #5703,
-   * and #5677 for the HASH sibling.
-   */
-  static byte storageKeyType(final byte declaredBinaryType) {
-    return BinaryTypes.getIndexStorageType(declaredBinaryType);
   }
 
   /**
@@ -590,7 +582,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected int getHeaderSize(final int pageNum) {
     int size = INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
     if (pageNum == 0)
-      size += INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + binaryKeyTypes.length;
+      // storageKeyTypes, not binaryKeyTypes: this sizes what page 0 actually persists. The two arrays always have
+      // the same length, so this is a readability fix, not a behaviour change.
+      size += INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + storageKeyTypes.length;
 
     return size;
   }
