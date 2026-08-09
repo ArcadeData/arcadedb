@@ -33,7 +33,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
-import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.Pair;
 
 import java.io.BufferedReader;
@@ -43,10 +42,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -95,7 +99,14 @@ public class Neo4jImporter {
   private              boolean                        error                    = false;
   private final        ImporterContext                context;
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
-  final static         DateTimeFormatter              dateTimeISO8601Format    = DateUtils.getFormatter("yyyy-MM-dd'T'HH:mm:ss");
+  // Optional fractional seconds and zone offset, so ISO-8601 values Neo4j actually emits for
+  // LocalDateTime/OffsetDateTime/ZonedDateTime properties (e.g. "2015-06-24T12:50:35.556+01:00")
+  // parse instead of failing DateTimeFormatter's whole-string match on the trailing characters.
+  final static         DateTimeFormatter              dateTimeISO8601Format    = new DateTimeFormatterBuilder()
+      .appendPattern("yyyy-MM-dd'T'HH:mm:ss")
+      .optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 1, 9, true).optionalEnd()
+      .optionalStart().appendOffsetId().optionalEnd()
+      .toFormatter();
   // Allow-list for imported labels: ASCII letters, digits, underscore, hyphen and space only. Excluding '.', '/' and '\'
   // makes path-traversal sequences structurally impossible in the on-disk bucket file names derived from these labels.
   private final static Pattern                        SAFE_LABEL               = Pattern.compile("[A-Za-z0-9_ -]+");
@@ -569,7 +580,11 @@ public class Neo4jImporter {
         propValue = array.toList();
       else if (propValue instanceof String string && typeSchema != null && typeSchema.get(propName) == Type.DATETIME) {
         try {
-          propValue = LocalDateTime.parse(string, dateTimeISO8601Format).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+          final TemporalAccessor parsed = dateTimeISO8601Format.parse(string);
+          final Instant instant = parsed.isSupported(ChronoField.OFFSET_SECONDS) ?
+              OffsetDateTime.from(parsed).toInstant() :
+              LocalDateTime.from(parsed).atZone(ZoneId.systemDefault()).toInstant();
+          propValue = instant.toEpochMilli();
         } catch (final DateTimeParseException e) {
           log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
           context.errors.incrementAndGet();

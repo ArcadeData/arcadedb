@@ -100,6 +100,47 @@ class Neo4jImporterIT {
     }
   }
 
+  /**
+   * Regression test for issue #5889: {@code dateTimeISO8601Format} must tolerate fractional seconds
+   * and a zone offset - shapes Neo4j actually emits for {@code OffsetDateTime}/{@code ZonedDateTime}
+   * properties - not just the plain {@code yyyy-MM-dd'T'HH:mm:ss} form. {@code DateTimeFormatter}
+   * requires the whole string to match (unlike the old {@code SimpleDateFormat}, which silently
+   * ignored trailing characters), so without the fix these values fail to parse entirely.
+   */
+  @Test
+  void importNeo4jDateTimeWithFractionalSecondsAndOffset() throws Exception {
+    final File databaseDirectory = new File(DATABASE_PATH);
+
+    try {
+      final String content =
+          "{\"type\":\"node\",\"id\":\"0\",\"labels\":[\"Event\"],\"properties\":{" +
+              "\"withOffset\":\"2015-06-24T12:50:35.556+01:00\"," +
+              "\"withFractionOnly\":\"2015-06-24T12:50:35.556\"}}\n";
+
+      final ByteArrayInputStream is = new ByteArrayInputStream(content.getBytes());
+      final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o").split(" "));
+      importer.run();
+
+      assertThat(importer.isError()).isFalse();
+
+      try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+        try (final Database database = factory.open()) {
+          final Vertex event = database.lookupByKey("Event", "id", "0").next().asVertex();
+
+          // The offset is explicit, so the resulting instant is deterministic regardless of the JVM's default zone.
+          assertThat(event.getLong("withOffset")).isEqualTo(1435146635556L);
+
+          // No offset: resolved against the JVM default zone, like the pre-fix behavior for naive values,
+          // but the .556 fractional part must survive instead of being silently truncated.
+          assertThat(event.getLong("withFractionOnly") % 1000).isEqualTo(556L);
+        }
+      }
+      TestHelper.checkActiveDatabases();
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
   @Test
   void importNoFile() throws Exception {
     final URL inputFile = Neo4jImporterIT.class.getClassLoader().getResource("neo4j-export-mini.jsonl");
