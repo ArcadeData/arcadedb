@@ -96,5 +96,13 @@ public interface Index {
 
   boolean supportsOrderedIterations();
 
+  /**
+   * Whether something populates this index: it is bound to a type and to the properties of it whose values become its
+   * keys, so the engine maintains it on every write and a rebuild can regenerate it from the records.
+   * <p>
+   * False only for a MANUAL index, which is bound to nothing: its entries are whatever the caller put in it and there
+   * is no record to derive them from, which is why {@code REBUILD INDEX} and {@code COMPACT INDEX} refuse a named one
+   * and skip it in their {@code *} sweep (issue #5780).
+   */
   boolean isAutomatic();
 }
