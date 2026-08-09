@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -27,6 +28,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
@@ -704,17 +706,13 @@ public class GraphEngine {
         // does; verified by deleting an edge carrying an indexed property and watching the index drop from 1
         // entry to 0.)
         //
-        // "Normally" is load-bearing: moveEdge calls the public deleteEdge(Edge) DIRECTLY, and there the
-        // precondition does NOT hold - the old edge record's index entries are never cleaned. Measured rather
-        // than assumed before writing this down, and it is benign TODAY for a reason that is an allocation
-        // coincidence rather than a guarantee: moveEdge re-creates the edge with the same properties, and the
-        // bucket hands the just-freed slot straight back, so the stale entry ends up on the new record with the
-        // same key (checked on a multi-bucket edge type - 41 records, 41 index entries, identical RID). Anything
-        // that breaks that coincidence - a different bucket, a concurrent allocation taking the slot - leaves an
-        // index entry naming a record that is gone. A new caller of the public deleteEdge(Edge) must therefore
-        // either arrive through deleteRecordNoLock or clean up after itself. Tracked as #5779, which carries the
-        // measurement above and the ways the coincidence breaks - the comment is where you are, the issue is
-        // where the fix gets scheduled.
+        // "Normally" is load-bearing, and it is a PRECONDITION on the caller rather than a description: a caller
+        // of the public deleteEdge(Edge) must either arrive through deleteRecordNoLock or do that cleanup itself.
+        // moveEdge is the one that does not arrive that way, and it discharges the obligation explicitly in
+        // cleanUpBeforePhysicalDelete (#5779). It used to skip it and stay correct only by an allocation
+        // coincidence - the bucket handed the just-freed slot straight back, so the stale entry landed on the new
+        // record with the same key - which a second bucket, a concurrent allocation taking the slot, or a UNIQUE
+        // index all break. A NEW caller inherits the same obligation.
         final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edge.getIdentity().getBucketId());
         bucket.deleteRecord(edge.getIdentity());
       } catch (final RecordNotFoundException e) {
@@ -780,6 +778,24 @@ public class GraphEngine {
     }
   }
 
+  /**
+   * Re-points {@code edge} at {@code newVertexRID} on the given side by removing the edge record and creating a
+   * replacement, then re-identifies the caller's instance onto it.
+   * <p>
+   * #5779: this is the ONE caller that reaches {@link #deleteEdge(Edge)} without coming through
+   * {@code LocalDatabase.deleteRecordNoLock}, and that method performs the PHYSICAL removal only - see the note
+   * there. Everything {@code deleteRecordNoLock} would have done before dispatching the edge is therefore this
+   * method's obligation, and {@link #cleanUpBeforePhysicalDelete} is where it is discharged. Skipping it used to
+   * look harmless because the bucket normally hands the just-freed slot straight back to the replacement, so the
+   * stale index entry ended up on a new record carrying the same key - correct by allocation coincidence, not by
+   * an invariant. Round-robin bucket selection breaks the coincidence as soon as the type has more than one
+   * bucket: the replacement lands elsewhere and the old entry names a RID that is gone, or worse a slot an
+   * unrelated edge is handed later. On a UNIQUE index the leak is not even silent - the old key stays taken and
+   * the replacement is rejected as a duplicate, which made a move impossible on such a type.
+   * <p>
+   * Delete/create events are deliberately NOT fired: a move is not a delete, and a listener that vetoed the
+   * delete would leave this method creating a second edge on top of one that was never removed.
+   */
   public void moveEdge(final MutableEdge edge, final Vertex.DIRECTION direction, final RID newVertexRID) {
     if (direction != Vertex.DIRECTION.IN && direction != Vertex.DIRECTION.OUT)
       throw new IllegalArgumentException("Unsupported direction for moveEdge: " + direction);
@@ -789,6 +805,7 @@ public class GraphEngine {
     final RID newOut = direction == Vertex.DIRECTION.OUT ? newVertexRID : edge.getOut();
     final RID newIn = direction == Vertex.DIRECTION.IN ? newVertexRID : edge.getIn();
 
+    cleanUpBeforePhysicalDelete(edge);
     deleteEdge(edge);
 
     final EdgeType edgeType = (EdgeType) database.getSchema().getType(typeName);
@@ -805,6 +822,103 @@ public class GraphEngine {
       connectIncomingEdge(toVertex, newOut, newEdge.getIdentity());
 
     edge.updateIdentity(newEdge.getIdentity(), newOut, newIn);
+  }
+
+  /**
+   * The bookkeeping {@code LocalDatabase.deleteRecordNoLock} performs on a record BEFORE handing it to the
+   * physical-only {@link #deleteEdge(Edge)}: its index entries, the EXTERNAL property values it owns, and the
+   * bucket record counter (#5779). It mirrors that method rather than calling it, because routing the move through
+   * the database would also fire the delete events - and a listener that vetoes them would abort the removal while
+   * {@link #moveEdge} went on to create the replacement anyway.
+   * <p>
+   * A LIGHTWEIGHT edge has no record to clean up after: {@link #deleteEdge(Edge)} skips the physical removal for
+   * it, so there is no index entry, no external value and no counted record, and folding a {@code -1} here would
+   * drift the cached bucket count behind {@code count(*)} - persisted in {@code statistics.json}, so it would
+   * survive a reopen.
+   * <p>
+   * Unlike {@code deleteRecordNoLock} this takes no catch around the cleanup, and needs none: by the time it runs,
+   * {@link #moveEdge} has already read the whole record through {@code propertiesAsMap()} - the source of the
+   * replacement's properties - so a buffer broken badly enough to throw has already failed the move there, which
+   * is the right answer for a move (there is nothing to copy the edge's content from) even though it is the wrong
+   * one for a delete. The remaining buffer read here, {@code findExistingExternalRids}, absorbs its own parse
+   * failures and counts them for CHECK DATABASE.
+   * <p>
+   * That leaves one BOUNDARY, measured and pinned by
+   * {@code Issue5779MoveEdgeIndexCleanupTest.movingAnEdgeWithAnUnreadablePropertyIsBestEffortLikeTheDeletePath}:
+   * corruption the reader TOLERATES - a bad length prefix on an inline value (#4420) surfaces as the property
+   * being absent, not as an exception. Nothing here can then learn the key the index holds, so that entry outlives
+   * the record. It is not a leak this method can close, and not one it introduces: {@code deleteRecordNoLock}
+   * degrades identically on the same record, and CHECK DATABASE does not detect a dangling LSM entry either.
+   */
+  private void cleanUpBeforePhysicalDelete(final MutableEdge edge) {
+    final RID edgeRID = edge.getIdentity();
+    if (edgeRID == null || edge instanceof LightEdge || edgeRID.getPosition() < 0)
+      return;
+
+    // Cascade-delete EXTERNAL property values living in the paired external bucket, while the buffer is still
+    // readable. moveEdge writes FRESH external records for the replacement, so without this the old ones are
+    // orphaned. Same transaction as the removal itself. Runs BEFORE the index cleanup because it reads the
+    // record's own buffer and restores its position, while the pre-image built below consumes that same buffer.
+    //
+    // Deliberately NOT pre-gated on hasExternalProperties() the way LocalDatabase.cascadeDeleteExternalValues is:
+    // that flag reflects the CURRENT schema and flips to false the instant setExternal(false) commits, so it would
+    // skip cleanup during the EXTERNAL -> inline migration window and leak the blobs of every record not yet
+    // re-serialised. findExistingExternalRids gates itself on hasExternalBuckets(), which stays true for the whole
+    // window and is the correct test - and it is already a couple of field reads for a type that never used the
+    // feature, so there is nothing to save by guarding it again here.
+    final Map<String, RID> externalRids = database.getSerializer().findExistingExternalRids(database, edge);
+    for (final RID externalRID : externalRids.values()) {
+      final Bucket externalBucket = database.getSchema().getBucketByIdIfExists(externalRID.getBucketId());
+      if (externalBucket != null) {
+        externalBucket.deleteRecord(externalRID);
+        database.getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
+      }
+    }
+
+    database.getIndexer().deleteDocument(indexedImageOf(edge));
+
+    // The replacement folds its own +1 when it is created, so without this the move inflates the cached record
+    // count of the type by one for every edge ever moved.
+    database.getTransaction()
+        .updateBucketRecordDelta(database.getSchema().getBucketById(edgeRID.getBucketId()).getFileId(), -1);
+  }
+
+  /**
+   * The image of {@code edge} that the INDEX was built from, which is NOT the instance the caller holds:
+   * {@code DocumentIndexer.deleteDocument} builds the keys it removes out of the LIVE property values of whatever
+   * record it is handed, and {@link #moveEdge} is entered from {@code MutableEdge.set("@in"/"@out")} - so a caller
+   * that changed an indexed property in the same session ({@code edge.set("code", "new"); edge.set("@in", v)})
+   * would have it remove a key the index never held, leaving the real entry dangling. Same resolution order
+   * {@code LocalDatabase.updateRecord} uses for the same reason (#4935):
+   * <ol>
+   *   <li>the transaction's last indexed snapshot, when an earlier {@code save()} in this transaction already
+   *   moved the index forward - the record's buffer stays frozen until commit, so it would describe a state the
+   *   index has left behind;</li>
+   *   <li>otherwise an immutable record over that frozen buffer, which is exactly the committed state the index
+   *   entries were written from;</li>
+   *   <li>otherwise the live instance, DEFENSIVE and not currently reachable from here. It would cover a record
+   *   with no committed buffer at all - one saved with {@code discardRecordAfter} (the bulk-import path through
+   *   {@code LocalBucket.createRecord}) drops the buffer although the record is persisted. Not the obvious
+   *   candidate, an edge created earlier in this same transaction: {@code newEdge()} saves it, and the save
+   *   serializes, so it reaches {@link #moveEdge} with a buffer like any other (verified by making this branch
+   *   throw and watching the whole test class still pass). Kept because the alternative on a null buffer is what
+   *   {@code LocalDatabase.getOriginalDocument} does - raise {@code IllegalStateException} - and failing a move
+   *   over a missing pre-image is worse than cleaning up from the only image there is.</li>
+   * </ol>
+   */
+  private Document indexedImageOf(final MutableEdge edge) {
+    final RID edgeRID = edge.getIdentity();
+    final Document snapshot = database.getTransaction().getLastIndexedSnapshot(edgeRID);
+    if (snapshot != null)
+      return snapshot;
+
+    final Binary committedBuffer = ((RecordInternal) edge).getBuffer();
+    if (committedBuffer == null)
+      return edge;
+
+    committedBuffer.rewind();
+    return (Document) database.getRecordFactory()
+        .newImmutableRecord(database, edge.getType(), edgeRID, committedBuffer, null);
   }
 
   public void deleteVertex(final VertexInternal vertex) {
