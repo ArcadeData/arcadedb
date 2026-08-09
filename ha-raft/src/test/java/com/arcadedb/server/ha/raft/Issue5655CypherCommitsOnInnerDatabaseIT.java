@@ -245,8 +245,9 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
   }
 
   /**
-   * True when the follower has both the type and an index covering {@code code}. Resolved through a fresh handle for
-   * the same reason as {@link #countOn}.
+   * True when the follower has both the type and an index covering {@code code}. Resolved through a fresh handle
+   * for the same reason as {@link BaseRaftHATest#countOn}: a stale handle cached across a snapshot-reinstall
+   * resync throws {@code DatabaseIsClosed}.
    */
   private boolean indexedPropertyExistsOn(final int serverIndex) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());

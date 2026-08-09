@@ -43,7 +43,8 @@ import java.util.logging.Level;
  */
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
-  private static final int BASE_RAFT_PORT = 2434;
+  private static final int  BASE_RAFT_PORT          = 2434;
+  private static final long RESYNC_RETRY_TIMEOUT_MS = 30_000;
 
   /**
    * Returns the peer ID for a given server index in the test cluster.
@@ -317,8 +318,6 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     waitForReplicationIsCompleted(serverIndex);
     LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted and caught up", serverIndex);
   }
-
-  private static final long RESYNC_RETRY_TIMEOUT_MS = 30_000;
 
   /**
    * Runs {@code operation} against a freshly resolved handle for server {@code serverIndex}'s database, retrying
