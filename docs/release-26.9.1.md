@@ -319,4 +319,10 @@ isn't full atomicity for vertices: they persist in `commitEvery`-sized batches, 
 only rolls back the batch containing the bad record, so earlier batches that already committed stay durable
 even though the import as a whole reports failure.
 
+JSON imports have a similar gap, pre-existing rather than introduced here: each top-level record commits in
+its own transaction even in default `abort` mode, so a later record's failure does not roll back earlier
+records that already imported successfully - unlike CSV documents, which use one whole-file transaction and
+so are fully atomic. `abort` mode still fails the import and stops processing further records either way;
+only the "nothing at all was imported" guarantee differs between the two formats.
+
 [#5968](https://github.com/ArcadeData/arcadedb/issues/5968)
