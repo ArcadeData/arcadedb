@@ -174,6 +174,32 @@ public class Issue5780ManualIndexIsAutomaticTest extends TestHelper {
   }
 
   /**
+   * The other side of the predicate flip: a NAMED rebuild and a NAMED compaction of an automatic index still run.
+   * <p>
+   * The sweep test above already pins that the {@code *} form keeps rebuilding the bucket sub-indexes, but both
+   * statements guard their single-index path on the same predicate, and that path takes an index the sweep never
+   * hands it - the {@code TypeIndex} wrapper, which {@code *} deliberately excludes.
+   */
+  @Test
+  void namedRebuildAndCompactStillRunOnAnAutomaticIndex() {
+    // Present in the same database, so the flip is exercised with both kinds side by side.
+    createManualIndex(MANUAL_LSM, Schema.INDEX_TYPE.LSM_TREE, false);
+
+    final Result rebuilt = database.command("sql", "rebuild index `" + typeIndexName + "`").next();
+    assertThat((List<String>) rebuilt.getProperty("indexes")).contains(typeIndexName);
+    assertThat((Object) rebuilt.getProperty("failedIndexes")).isNull();
+
+    final String bucketIndexName = ((TypeIndex) database.getSchema().getIndexByName(typeIndexName))
+        .getIndexesOnBuckets()[0].getName();
+    final Result compacted = database.command("sql", "compact index `" + bucketIndexName + "`").next();
+    assertThat((List<String>) compacted.getProperty("indexes")).contains(bucketIndexName);
+
+    // The index still resolves its records after both operations.
+    database.transaction(() -> assertThat(database.getSchema().getIndexByName(typeIndexName)
+        .get(new Object[] { "one" }).next()).isEqualTo(RID_1));
+  }
+
+  /**
    * The predicate is public API and is reported verbatim by the schema views, so an operator listing the indexes now
    * reads the truth about which ones something populates.
    */

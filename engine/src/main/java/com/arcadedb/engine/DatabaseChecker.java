@@ -245,8 +245,8 @@ public class DatabaseChecker {
     affectedIndexes.removeIf(index -> {
       if (index.isAutomatic())
         return false;
-      addWarning("index '" + index.getName() + "': it is a manual index, so it is outside the automatic rebuild - its "
-          + "entries are not derived from any record. Drop it and repopulate it to clear this finding");
+      addWarning("index '" + index.getName() + "': it is a manual index. Its entries are not derived from any record, "
+          + "so this check does not rebuild it - drop it and repopulate it to clear this finding");
       return true;
     });
 
