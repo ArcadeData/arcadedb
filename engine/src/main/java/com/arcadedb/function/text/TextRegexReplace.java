@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -75,13 +74,10 @@ public class TextRegexReplace extends AbstractTextFunction {
 
     // Unlike a WHERE-clause condition (always evaluated with a database bound to the context), this SQL function
     // is a lower-level entry point that unit tests across this package call directly with a bare or null context,
-    // so context/context.getDatabase() being unset here is a real, not just theoretical, case to fall back from -
-    // falling back to a fresh ContextConfiguration (itself just a proxy for the compiled-in default) keeps that
-    // usage working exactly as it did before this function read any configuration at all.
-    final ContextConfiguration configuration = context != null && context.getDatabase() != null
-        ? context.getDatabase().getConfiguration()
-        : new ContextConfiguration();
-    final long regexTimeout = configuration.getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
+    // so context/context.getDatabase() being unset here is a real, not just theoretical, case to fall back from.
+    // GlobalConfiguration.getValueAsLong(Database) falls back to the compiled-in default for a null database,
+    // keeping that usage working exactly as it did before this function read any configuration at all.
+    final long regexTimeout = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context != null ? context.getDatabase() : null);
 
     try {
       return TimeBoundRegex.replaceAll(Pattern.compile(regex), str, replacement == null ? "" : replacement, regexTimeout);

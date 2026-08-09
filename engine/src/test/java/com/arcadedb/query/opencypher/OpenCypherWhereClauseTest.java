@@ -236,6 +236,32 @@ public class OpenCypherWhereClauseTest {
     assertThat(elapsedMillis).isLessThan(5000);
   }
 
+  @Test
+  void regexSharesOneTimeoutBudgetAcrossAllRowsInTheScan() {
+    // Issue #5886, 6th review pass: a WHERE ... =~ clause scanning many rows must not let each row's own
+    // evaluation start a fresh regexTimeout budget - otherwise a graph shaped so every matched node triggers
+    // catastrophic backtracking could still cost up to node count * regexTimeout overall. The deadline is now
+    // cached on the RegexExpression AST node itself (the same instance-field mechanism already used to cache
+    // the compiled Pattern), computed once for the lifetime of that node across the whole scan.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.command("opencypher", "CREATE (p:PerRowPathological {name: $name})", Map.of("name", pathological));
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(
+        () -> database.query("opencypher", "MATCH (p:PerRowPathological) WHERE p.name =~ '(.*a){20}$' RETURN p.name").next())
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-row budgets would take >= 2000ms; a query-wide shared deadline keeps the whole
+    // scan close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
   // Issue #5282: NOT (null =~ ...) must stay null, not become true.
   @Test
   void regexNullPropagatesThroughNot() {

@@ -18,10 +18,12 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.math.BigDecimal;
 import java.util.Collection;
@@ -29,6 +31,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Validates documents against constraints defined in the schema.
@@ -54,8 +57,13 @@ public class DocumentValidator {
         throwValidationException(document.getType(), p, "cannot be null, record: " + document);
     } else {
       if (p.getRegexp() != null)
-        // REGEXP
-        if (!fieldValue.toString().matches(p.getRegexp()))
+        // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
+        // a validated property, reachable through any write path (REST, any wire protocol) with no query
+        // privileges needed, so an admin-defined pattern with a vulnerable shape (classic email/URL validation
+        // regexes are notorious for this) combined with an attacker-supplied field value is enough to hang a
+        // worker thread indefinitely.
+        if (!TimeBoundRegex.matches(Pattern.compile(p.getRegexp()), fieldValue.toString(),
+            GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase())))
           throwValidationException(document.getType(), p,
               "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: "
                   + document);

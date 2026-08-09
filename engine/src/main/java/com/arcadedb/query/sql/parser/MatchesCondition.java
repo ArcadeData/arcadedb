@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -79,21 +78,23 @@ public class MatchesCondition extends BooleanExpression {
       context.setCachedValue(key, p);
     }
 
-    // context.getDatabase().getConfiguration(), not context.getConfiguration(): the latter is a fresh, disconnected
-    // ContextConfiguration for a plain SELECT/=~ evaluation (nothing wires it to the database's settings), so it
-    // would silently fall back to the compiled-in default and ignore a per-database override. This mirrors how
-    // SelectExecutionPlanner reads GlobalConfiguration.COMMAND_TIMEOUT. A MatchesCondition is, in practice, only
-    // ever constructed by the SQL parser and evaluated with a database already bound to the context (every
-    // top-level statement calls context.setDatabase(...) before any WHERE/RETURN expression runs) - but falling
-    // back to a plain ContextConfiguration when that ever isn't true costs nothing and avoids turning a future
-    // refactor or an unanticipated evaluation path into a hard NPE, same as LikeOperator/ILikeOperator/
-    // TextRegexReplace already do.
-    final long regexTimeout = (context.getDatabase() != null ? context.getDatabase().getConfiguration() : new ContextConfiguration())
-        .getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT);
-    // One shared deadline for the whole evaluation: a multi-value property can hold many items, and each getting
-    // its own full regexTimeout budget would let a crafted list bound the loop by N * regexTimeout instead of by
-    // regexTimeout overall.
-    final long deadline = TimeBoundRegex.newDeadline(regexTimeout);
+    // One deadline shared by every MATCHES evaluation for the lifetime of this query - not just across the
+    // items of one multi-value evaluation, but across every row a WHERE ... MATCHES clause scans. Recomputing a
+    // fresh regexTimeout budget per row would let a table shaped so every row triggers catastrophic backtracking
+    // cost up to rowCount * regexTimeout overall; caching it on the context (the same mechanism already used for
+    // the compiled Pattern above, and confirmed shared across rows by MatchesConditionTest's per-context cache
+    // tests) bounds the whole scan by one regexTimeout instead, the same principle applied to the full-text and
+    // PromQL entry points elsewhere in this issue. GlobalConfiguration.getValueAsLong(Database) resolves
+    // context.getDatabase()'s per-database override, falling back to the compiled-in default if a database is
+    // ever not bound to the context - practically always the case (a MatchesCondition is only ever constructed
+    // by the SQL parser and evaluated with a database already bound), but free insurance against a future
+    // evaluation path that isn't, same as LikeOperator/ILikeOperator/TextRegexReplace.
+    final String deadlineKey = "MATCHES_DEADLINE";
+    Long deadline = (Long) context.getCachedValue(deadlineKey);
+    if (deadline == null) {
+      deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
+      context.setCachedValue(deadlineKey, deadline);
+    }
 
     if (value instanceof CharSequence sequence) {
       return TimeBoundRegex.matchesUntil(p, sequence, deadline);

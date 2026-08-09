@@ -396,4 +396,21 @@ index, or a wide PromQL time range - now fails with `TimeoutException` where it 
 legitimate full-text or PromQL regex matching over a large volume of data, raise `arcadedb.command.regexTimeout`
 for that database rather than leaving it at the default.
 
+A fifth review pass found the most exposed entry point of all: the schema-level `REGEXP` property constraint
+(`CREATE PROPERTY ... REGEXP <pattern>`) validated `fieldValue.toString().matches(p.getRegexp())` on every
+insert/update of that property with no bound whatsoever - `DocumentValidator.validateField`. Unlike every
+other entry point here, this needs no query privileges at all: any write path (REST, any wire protocol) into
+a validated type is enough, and admin-defined validation patterns (classic email/URL regexes, in particular)
+are a notorious source of accidentally-catastrophic shapes. Now bounded the same way as everything else.
+
+Also fixed: `MATCHES`/`=~` shared one deadline across a multi-value evaluation (an earlier fix in this issue)
+but still gave each *row* of a table/graph scan its own fresh budget, so a table shaped so every row triggers
+catastrophic backtracking could still cost up to `rowCount * regexTimeout` overall. Both now cache one deadline
+for the lifetime of the query - `MatchesCondition` on the `CommandContext` (the same mechanism already used to
+cache the compiled `Pattern`), `RegexExpression` as an AST-node instance field (ditto) - closing the same gap
+already closed for full-text and PromQL scans. `LIKE`/`ILIKE` could not get the same fix: `BinaryCompareOperator`,
+the interface `LikeOperator`/`ILikeOperator` implement, has no `CommandContext` to cache a query-wide deadline
+on (only a `Database`), and widening that interface across every comparison operator was judged out of
+proportion for this fix - a conscious, narrower-scope tradeoff, documented in `LikeOperator`, not an oversight.
+
 [#5886](https://github.com/ArcadeData/arcadedb/issues/5886)

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -36,6 +35,10 @@ public class RegexExpression implements BooleanExpression {
   private final Expression expression;
   private final Expression pattern;
   private Pattern compiledPattern;
+  // One deadline for the lifetime of this AST node, i.e. every row a WHERE ... =~ clause scans - not
+  // recomputed per row, and not tied to compiledPattern's per-row recompilation (a row-varying pattern string
+  // must not also reset the time budget). See MatchesCondition.matches() for the equivalent SQL-side rationale.
+  private Long    deadline;
 
   public RegexExpression(final Expression expression, final Expression pattern) {
     this.expression = expression;
@@ -71,14 +74,15 @@ public class RegexExpression implements BooleanExpression {
       }
     }
 
-    // Match against value. context.getDatabase().getConfiguration(), not context.getConfiguration(): see
-    // MatchesCondition.matches() for why the latter would silently ignore a per-database override here, and for
-    // why the database-null fallback below is defense-in-depth rather than a response to a known gap
-    // (RegexExpression is, in practice, only ever constructed by the openCypher parser and evaluated with a
-    // database already bound to the context).
+    // Match against value. GlobalConfiguration.getValueAsLong(Database) resolves context.getDatabase()'s
+    // per-database override (falling back to the compiled-in default if a database is ever not bound to the
+    // context - RegexExpression is, in practice, only ever constructed by the openCypher parser and evaluated
+    // with one already bound). See MatchesCondition.matches() for why context.getConfiguration() would silently
+    // ignore a per-database override here.
     final String valueStr = value.toString();
-    final ContextConfiguration configuration = context.getDatabase() != null ? context.getDatabase().getConfiguration() : new ContextConfiguration();
-    return TimeBoundRegex.matches(compiledPattern, valueStr, configuration.getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+    if (deadline == null)
+      deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(context.getDatabase()));
+    return TimeBoundRegex.matchesUntil(compiledPattern, valueStr, deadline);
   }
 
   @Override

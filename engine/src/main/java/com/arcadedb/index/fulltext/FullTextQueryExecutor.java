@@ -615,7 +615,7 @@ public class FullTextQueryExecutor {
     // A sequence of several *'s (translated to .* by wildcardToRegex, same shape as %  in SQL LIKE) reproduces
     // catastrophic backtracking without needing grouping/alternation/nested quantifiers - issue #5886 follow-up.
     // One shared deadline for the whole scan, same rationale as collectRegexpMatches.
-    final long deadline = TimeBoundRegex.newDeadline(index.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+    final long deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(index.getDatabase()));
 
     if (literalPrefix.isEmpty()) {
       // Leading wildcard: full scan, then regex match against the unprefixed token portion
@@ -680,7 +680,7 @@ public class FullTextQueryExecutor {
     // A user-supplied regexp query (/pattern/ syntax) is matched against every token in what is, absent a literal
     // prefix, a full index scan (issue #5886) - one shared deadline for the whole scan, not a fresh one per token,
     // otherwise a crafted index could still tie the thread up for token count * regexTimeout.
-    final long deadline = TimeBoundRegex.newDeadline(index.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+    final long deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(index.getDatabase()));
 
     iterateAndMatch(null, key -> {
       if (!key.startsWith(fieldPrefix))

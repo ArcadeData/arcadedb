@@ -18,6 +18,7 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
@@ -1957,6 +1958,22 @@ public enum GlobalConfiguration {
   public <T> T getValue() {
     //noinspection unchecked
     return (T) (value != nullValue && value != null ? value : defValue);
+  }
+
+  /**
+   * Resolves this {@code SCOPE.DATABASE} setting's value against {@code database}'s per-database overrides,
+   * falling back to the compiled-in default when {@code database} is {@code null}. Several call sites read a
+   * {@code SCOPE.DATABASE} setting (e.g. {@code arcadedb.command.regexTimeout}) from code that isn't guaranteed
+   * a bound database - a standalone SQL function or operator that tests, or a future caller, may invoke directly
+   * with a {@code null}/disconnected database - and repeating the same null-safe fallback at each of those call
+   * sites risks drifting out of sync; this centralizes it.
+   *
+   * @param database the database to resolve a per-database override from, or {@code null} to use the default
+   *
+   * @return the resolved value as a {@code long}
+   */
+  public long getValueAsLong(final Database database) {
+    return (database != null ? database.getConfiguration() : new ContextConfiguration()).getValueAsLong(this);
   }
 
   /**

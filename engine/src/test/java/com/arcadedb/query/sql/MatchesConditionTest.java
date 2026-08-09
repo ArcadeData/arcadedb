@@ -208,4 +208,33 @@ class MatchesConditionTest extends TestHelper {
     // close to the single configured 200ms bound instead. 1000ms leaves generous CI-runner slack on both sides.
     assertThat(elapsedMillis).isLessThan(1000);
   }
+
+  @Test
+  void matchesSharesOneTimeoutBudgetAcrossAllRowsInTheScan() {
+    // Issue #5886, 6th review pass: distinct from the multi-value-within-one-row case above, a WHERE ...
+    // MATCHES clause scanning many ROWS must not let each row's own evaluation start a fresh regexTimeout
+    // budget either - otherwise a table shaped so every row triggers catastrophic backtracking could still
+    // cost up to rowCount * regexTimeout overall. The deadline is now cached on the CommandContext (the same
+    // mechanism already used to cache the compiled Pattern), computed once for the whole query.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE PerRowPathological");
+      for (int i = 0; i < 10; i++)
+        database.command("sql", "INSERT INTO PerRowPathological SET name = '" + pathological + "'");
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM PerRowPathological WHERE name MATCHES '(.*a){20}$'");
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-row budgets would take >= 2000ms; a query-wide shared deadline keeps the whole
+    // scan close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
 }

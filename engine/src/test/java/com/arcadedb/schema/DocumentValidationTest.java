@@ -18,11 +18,13 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
@@ -696,6 +698,30 @@ class DocumentValidationTest extends TestHelper {
     d.validate();
 
     checkFieldValue(d, "string", "yaZah");
+  }
+
+  @Test
+  void catastrophicRegExpValidationIsAbortedByRegexTimeout() {
+    // Issue #5886, 6th review pass: a schema-level REGEXP property constraint runs
+    // fieldValue.toString().matches(p.getRegexp()) on every insert/update of that property, with no bound at
+    // all - and unlike MATCHES/=~/LIKE, this needs no query privileges whatsoever: any write path (REST, any
+    // wire protocol) into a validated type is enough, arguably a more exposed surface than the query-based
+    // entry points this issue otherwise covers.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("CatastrophicValidation");
+    clazz.getOrCreateProperty("string", Type.STRING).setRegexp("(.*a){20}$");
+
+    final MutableDocument d = database.newDocument(clazz.getName());
+    d.set("string", "a".repeat(40) + "!");
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(d::validate).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves validation was aborted near the configured deadline rather than merely
+    // being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
   }
 
   @Test

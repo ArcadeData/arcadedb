@@ -202,7 +202,7 @@ public class PromQLEvaluator {
     // (issue #5886 follow-up), not a fresh one per row - matchesPostFilters() runs per row, so N rows each
     // getting their own full regexTimeout budget would let a crafted =~/!~ pattern tie up the thread for
     // row count * regexTimeout instead of one bounded evaluation.
-    final long regexDeadline = TimeBoundRegex.newDeadline(database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+    final long regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
       final Object[] row = rowIter.next();
@@ -249,7 +249,7 @@ public class PromQLEvaluator {
     }
 
     // Group rows by label combination. One shared deadline for the whole scan - see evaluateInstant().
-    final long regexDeadline = TimeBoundRegex.newDeadline(database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_REGEX_TIMEOUT));
+    final long regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     while (rowIter.hasNext()) {
