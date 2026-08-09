@@ -42,6 +42,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -93,8 +94,9 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           .put("dbBuild", Constants.getBuildNumber()).put("dbTimestamp", Constants.getTimestamp()));
 
       final long now = System.currentTimeMillis();
-      writeJsonLine("db", new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(now))
-          .put("executedOnTimestamp", now));
+      writeJsonLine("db",
+          new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(Instant.ofEpochMilli(now)))
+              .put("executedOnTimestamp", now));
 
       writeJsonLine("schema", ((LocalSchema) database.getSchema()).toJSON());
 
