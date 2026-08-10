@@ -72,7 +72,8 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
    * it) plus a 60s margin, rather than a second hardcoded 300s constant (issue #6032) - see the matching note on
    * {@code LSMVectorIndexRebuildTest.REBUILD_SETTLE_TIMEOUT} for why a ceiling below the production permit
    * timeout defeats that timeout's own diagnostic WARNING, and why reading the live config value instead of a
-   * copied-in default is the more honest derivation.
+   * copied-in default is the more honest derivation. Same invariant applies here: nothing in this class may
+   * change {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS} before this static field is initialized.
    */
   private static final Duration DELTA_BUFFER_DRAIN_TIMEOUT =
       Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);

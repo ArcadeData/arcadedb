@@ -97,6 +97,10 @@ class LSMVectorIndexRebuildTest extends TestHelper {
    * never silently drift apart again the way the flat 300s did - and stays honest about what the production wait
    * will actually do even in the (currently hypothetical) case where something else in this JVM changes the
    * setting before this field initializes.
+   * <p>
+   * Invariant this relies on: nothing in this class may change {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}
+   * before this static field is initialized (i.e. before the class's first test runs) - a future test added here
+   * that does so in a static initializer would silently change this ceiling too.
    */
   private static final Duration REBUILD_SETTLE_TIMEOUT =
       Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);
