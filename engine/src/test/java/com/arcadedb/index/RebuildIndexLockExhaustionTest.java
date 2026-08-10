@@ -40,7 +40,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>Uses {@code maxAttempts = 1} so a single forced {@code LockTimeoutException} (held from a second thread via
  * {@link TestHelper.LockHoldingThread}, which wraps the same {@code DatabaseInternal.executeLockingFiles}
  * primitive the statement itself uses) immediately exhausts the budget - this is a pure lock-acquisition failure,
- * so the index must come out of it completely untouched.
+ * so the index must come out of it completely untouched. The hold time is 1s past the hardcoded 5s
+ * {@code tryLockFiles} timeout, as margin against scheduling jitter on a loaded CI runner (see
+ * {@code engine/CLAUDE.md} on that timeout being "a common source of intermittent failures in contention tests").
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,7 +61,7 @@ class RebuildIndexLockExhaustionTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<Integer> fileIds = ((IndexInternal) db.getSchema().getIndexByName("myIdx")).getFileIds();
 
-    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 5_300);
+    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 6_000);
     holder.start();
     try {
       assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))

@@ -421,7 +421,11 @@ public class RebuildIndexStatement extends DDLStatement {
         if (droppedThisAttempt[0])
           indexDropped = true;
 
-        final int budget = indexDropped ? maxAttempts * POST_DROP_ATTEMPT_MULTIPLIER : maxAttempts;
+        // maxAttempts is user-supplied (REBUILD INDEX ... WITH maxAttempts = ...), unbounded at parse time - clamp
+        // the multiplication through long arithmetic so an extreme value can't overflow budget negative, which
+        // would make the very next NeedRetryException throw immediately instead of honoring the requested attempts.
+        final int budget = indexDropped ?
+            (int) Math.min((long) maxAttempts * POST_DROP_ATTEMPT_MULTIPLIER, Integer.MAX_VALUE) : maxAttempts;
         if (attempt >= budget) {
           // #6040: exhaustion after the index has actually been dropped must not pass silently - unlike the old
           // behavior of falling off the end of this method, which left the caller believing the REBUILD succeeded
@@ -438,6 +442,9 @@ public class RebuildIndexStatement extends DDLStatement {
         try {
           Thread.sleep(200 + 200L * attempt);
         } catch (InterruptedException ex) {
+          // An interrupt is a request to stop, not contention to ride out: honor it immediately rather than
+          // trying further attempts.
+          Thread.currentThread().interrupt();
           throw e;
         }
       }

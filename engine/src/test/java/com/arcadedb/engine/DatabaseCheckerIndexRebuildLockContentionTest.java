@@ -56,9 +56,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
 
   /**
-   * Holds the lock for just over the single hardcoded 5s {@code tryLockFiles} timeout, forcing exactly one
-   * {@code LockTimeoutException} on FIX's first attempt, then releases in time for attempt 2 to acquire almost
-   * immediately and complete the rebuild - the retry-then-succeed branch #6041 asks for.
+   * Holds the lock comfortably past the single hardcoded 5s {@code tryLockFiles} timeout (1s margin over it,
+   * against scheduling jitter on a loaded CI runner - see {@code engine/CLAUDE.md} on that timeout being "a common
+   * source of intermittent failures in contention tests"), forcing exactly one {@code LockTimeoutException} on
+   * FIX's first attempt. The release still lands far short of attempt 2's own 5s window (which starts after a
+   * ~400ms backoff), so attempt 2 acquires quickly and completes the rebuild - the retry-then-succeed branch #6041
+   * asks for.
    */
   @Test
   void fixRetriesThroughTransientLockContentionAndSucceeds() throws Exception {
@@ -82,7 +85,7 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
 
     final List<Integer> fileIds = bucketSubIndexFileIds(db);
 
-    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 5_300);
+    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 6_000);
     holder.start();
     try {
       assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
