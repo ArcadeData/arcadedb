@@ -342,14 +342,21 @@ public class DatabaseChecker {
 
         // Isolated per index rather than letting the exhausted retry unwind out of check(): this loop repairs
         // potentially many indexes plus whatever checkDocuments/checkVertices/checkEdges already found and fixed,
-        // and none of that should be discarded because ONE index stayed lock-contended on a busy database. Report
-        // it (this class's "reported, never silent" convention - see the manual-index warning above) and correct
-        // the rebuiltIndexes claim instead of pretending the rebuild happened.
+        // and none of that should be discarded because retrying ONE index ran out of attempts. Report it (this
+        // class's "reported, never silent" convention - see the manual-index warning above) and correct the
+        // rebuiltIndexes claim instead of pretending the rebuild happened.
+        //
+        // The warning deliberately does not claim lock contention as the cause: exhaustion can also follow the
+        // pre-existing race documented above the loop (a NeedRetryException from deep inside a LATER attempt's
+        // create(), after an EARLIER attempt's drop already committed), in which case the index may now be
+        // missing rather than merely unrebuilt - lastRetryFailure.getMessage() is surfaced so the operator can
+        // tell which one actually happened, instead of a blanket "due to lock contention" that would be wrong
+        // for the second case.
         if (!rebuilt) {
           rebuildIndexes.remove(idx.getName());
-          addWarning("index '" + idx.getName() + "': could not be rebuilt after " + LOCK_MAX_ATTEMPTS
-              + " attempts due to lock contention (error: " + lastRetryFailure.getMessage()
-              + "). Run CHECK DATABASE FIX again once the affected index/type is quiescent");
+          addWarning("index '" + idx.getName() + "' did not finish rebuilding after " + LOCK_MAX_ATTEMPTS
+              + " attempts (error: " + lastRetryFailure.getMessage() + "). It may be missing until CHECK DATABASE "
+              + "FIX is run again; verify with `SELECT FROM schema:indexes WHERE name = '" + idx.getName() + "'`");
         }
 
         stepTick();
