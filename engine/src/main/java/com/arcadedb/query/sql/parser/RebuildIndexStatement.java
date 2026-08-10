@@ -54,7 +54,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 public class RebuildIndexStatement extends DDLStatement {
-  private static final int                         MAX_ATTEMPTS = 5;
+  private static final int                         MAX_ATTEMPTS                    = 5;
+  // Once an attempt's dropIndex() has actually committed, giving up leaves the index missing rather than merely
+  // unrebuilt (#6040): a NeedRetryException raised deep inside create()'s bucket scan on THAT attempt (as opposed
+  // to one raised by executeLockingFiles's own tryLockFiles, before anything was touched) means every subsequent
+  // attempt is retrying to recover from a self-inflicted "index currently gone" state, not merely waiting out lock
+  // contention. That state deserves a larger retry budget than the lock-acquisition case, where nothing was lost
+  // and giving up simply leaves the index exactly as it was.
+  private static final int                         POST_DROP_ATTEMPT_MULTIPLIER    = 4;
   public               boolean                     all          = false;
   public               Identifier                  name;
   public               Expression                  key;
@@ -300,7 +307,14 @@ public class RebuildIndexStatement extends DDLStatement {
           "Use synchronous execution (awaitResponse=true) or run the command directly.");
     }
 
-    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Sticky once true (#6040): sees whether ANY attempt so far got past its own dropIndex() call, so exhaustion
+    // is judged against the right budget below - extended once the index has actually been dropped, not just the
+    // lock-acquisition budget that applies while it is still safely untouched.
+    boolean indexDropped = false;
+
+    for (int attempt = 1; ; attempt++) {
+      // Effectively-final per iteration: set to true by the callback below the instant its dropIndex() commits.
+      final boolean[] droppedThisAttempt = new boolean[1];
       try {
         // Check if index is INVALID (e.g., interrupted build with WAL disabled)
         if (!((IndexInternal) idx).isValid()) {
@@ -374,6 +388,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
         ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
           database.getSchema().dropIndex(idx.getName());
+          droppedThisAttempt[0] = true;
 
           if (typeIndexRebuild) {
             // Preserve the logical index's own name (issue #5791, follow-up to #4732/#4139): without this the
@@ -403,9 +418,33 @@ public class RebuildIndexStatement extends DDLStatement {
         return;
 
       } catch (NeedRetryException e) {
+        if (droppedThisAttempt[0])
+          indexDropped = true;
+
+        // maxAttempts is user-supplied (REBUILD INDEX ... WITH maxAttempts = ...), unbounded at parse time - clamp
+        // the multiplication through long arithmetic so an extreme value can't overflow budget negative, which
+        // would make the very next NeedRetryException throw immediately instead of honoring the requested attempts.
+        final int budget = indexDropped ?
+            (int) Math.min((long) maxAttempts * POST_DROP_ATTEMPT_MULTIPLIER, Integer.MAX_VALUE) : maxAttempts;
+        if (attempt >= budget) {
+          // #6040: exhaustion after the index has actually been dropped must not pass silently - unlike the old
+          // behavior of falling off the end of this method, which left the caller believing the REBUILD succeeded
+          // while the index was actually gone. A pre-drop exhaustion (lock contention only, nothing touched) is
+          // reported the same way for a consistent contract: REBUILD INDEX either succeeds or throws.
+          final String reason = indexDropped ?
+              "the index was dropped but the rebuild could not complete (error: " + e.getMessage() + "). "
+                  + "The index is now missing - retry `REBUILD INDEX " + idx.getName() + "` once the contention clears" :
+              "the index lock could not be acquired (error: " + e.getMessage() + "). The index itself is unchanged";
+          throw new CommandExecutionException(
+              "Cannot rebuild index '" + idx.getName() + "' after " + attempt + " attempts: " + reason);
+        }
+
         try {
           Thread.sleep(200 + 200L * attempt);
         } catch (InterruptedException ex) {
+          // An interrupt is a request to stop, not contention to ride out: honor it immediately rather than
+          // trying further attempts.
+          Thread.currentThread().interrupt();
           throw e;
         }
       }

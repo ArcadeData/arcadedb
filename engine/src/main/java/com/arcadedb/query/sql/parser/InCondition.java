@@ -361,6 +361,15 @@ public class InCondition extends BooleanExpression {
       }
     }
 
+    // CI index optimization: match field.toLowerCase() IN [values] against a CI index on field
+    // (mirrors BinaryCondition/BetweenCondition's identical branch for = and BETWEEN, #6037)
+    if (info.isCaseInsensitive() && BinaryCondition.isFieldWithLowerCaseMethod(left, info.getField())) {
+      if (rightMathExpression != null)
+        return rightMathExpression.isEarlyCalculated(info.getContext());
+      else
+        return rightParam != null;
+    }
+
     // Handle inverted syntax for BY-ITEM indexes: value IN list_field
     // For "1 IN nums" or "2 IN nums.a", rightMathExpression should contain the field
     if (rightMathExpression != null && info.isIndexByItem()) {
