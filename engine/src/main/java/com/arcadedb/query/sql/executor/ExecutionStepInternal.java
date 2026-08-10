@@ -64,6 +64,15 @@ public interface ExecutionStepInternal extends ExecutionStep {
 
   void setPrevious(ExecutionStepInternal step);
 
+  /**
+   * Releases whatever resources this step is holding (open cursors, buffered pages, ...). Implementations MUST be
+   * idempotent: a second call after the step is already closed has to be a no-op, never a double-free or an
+   * exception. This is not just a defensive nicety - {@code AbstractExecutionStep.close()} propagates to {@code
+   * prev} by default, so closing any step in a chain closes the whole chain, and callers legitimately close a chain
+   * more than once (e.g. a DML plan self-closes as soon as it is done executing - see {@code
+   * UpdateExecutionPlan#executeInternal()} - and then closes again, harmlessly, if the caller also closes the
+   * returned {@code ResultSet}).
+   */
   void close();
 
   default String prettyPrint(final int depth, final int indent) {

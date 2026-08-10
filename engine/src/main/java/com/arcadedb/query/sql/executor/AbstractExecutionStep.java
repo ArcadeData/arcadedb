@@ -59,6 +59,11 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     return timedOut;
   }
 
+  /**
+   * Propagates to {@code prev}, so closing any step in a chain closes the whole chain. Subclasses that override
+   * this to release their own resources (e.g. an open cursor) must keep the override idempotent - see
+   * {@link ExecutionStepInternal#close()} - and normally call {@code super.close()} to keep the propagation intact.
+   */
   @Override
   public void close() {
     if (prev != null)

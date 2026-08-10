@@ -52,4 +52,25 @@ class MCPToolUtilsTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("backtick");
   }
+
+  /**
+   * The SQL lexer (unlike the Cypher lexer) treats a backslash as an escape character inside a
+   * backtick-quoted identifier, so a value ending in {@code \} escapes the closing backtick and lets the
+   * lexer run past the intended end of the token. Rejecting the backslash here, the same way a literal
+   * backtick is rejected, keeps {@code quoteIdentifier} safe for both dialects that share it
+   * (see issue #5849).
+   */
+  @Test
+  void rejectsBackslashToBlockSqlEscapeAmbiguity() {
+    assertThatThrownBy(() -> MCPToolUtils.quoteIdentifier("type name", "X\\"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("backslash");
+  }
+
+  @Test
+  void rejectsBackslashInTheMiddleOfAnIdentifier() {
+    assertThatThrownBy(() -> MCPToolUtils.quoteIdentifier("property key", "a\\b"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("backslash");
+  }
 }

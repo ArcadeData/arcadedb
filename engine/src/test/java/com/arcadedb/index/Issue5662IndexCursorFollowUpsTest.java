@@ -127,6 +127,15 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
    * A {@code DELETE ... WHERE} puts the index scan in a SUB-plan and the {@code LIMIT} outside it, so the scan is
    * abandoned partway. Closing the result set used to close only the outer plan's steps - {@code SubQueryStep} never
    * closed the plan it wraps - and the scan inside it was released only if it happened to run to exhaustion.
+   * <p>
+   * #5681: {@code DeleteStatement.execute()} / {@code UpdateStatement.execute()} already drain the whole plan
+   * eagerly, via {@code executeInternal()}, before ever handing the {@link ResultSet} back to the caller - so the
+   * abandoned scan is now released the moment {@code executeInternal()} finishes, not only when the caller closes
+   * the result set (which a {@code DELETE} run for its side effect - the common case - usually never does). The
+   * explicit {@code close()} below therefore observes an already-released scan; what it still pins is that closing
+   * the same {@code SubQueryStep}/sub-plan chain a second time - the shape a caller who DOES close its result set
+   * exercises - stays a harmless no-op, matching the idempotent {@code close()} contract documented on
+   * {@link LSMTreeIndexUnderlyingCompactedSeriesCursor}.
    */
   @Test
   void closingADeleteLimitedShortOfExhaustionReleasesTheScanInsideItsSubPlan() {
@@ -136,11 +145,14 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
       try (final ResultSet result = database.command("sql", "DELETE FROM " + TYPE_NAME + " WHERE value > 1 LIMIT 3")) {
         assertThat(((Number) result.next().getProperty("count")).intValue()).as("the LIMIT must cut the scan short")
             .isEqualTo(3);
-        assertThat(compacted.countActiveCursors()).as("precondition: the abandoned scan is still holding a series cursor")
-            .isPositive();
+        assertThat(compacted.countActiveCursors())
+            .as("#5681: the scan inside the sub-plan is released as soon as the DELETE is done, before the caller ever"
+                + " gets a chance to close the result set")
+            .isZero();
       }
 
-      assertThat(compacted.countActiveCursors()).as("closing the result set must reach the scan inside the sub-plan")
+      assertThat(compacted.countActiveCursors())
+          .as("closing the result set reaches the scan inside the sub-plan too - here as a harmless second close()")
           .isZero();
     });
   }
