@@ -226,7 +226,10 @@ public class HostClassLookupFilter implements Predicate<String> {
     final Class<?> resolved;
     try {
       resolved = Class.forName(className, false, HostClassLookupFilter.class.getClassLoader());
-    } catch (final Throwable ignored) {
+    } catch (final ClassNotFoundException | LinkageError ignored) {
+      // Does not resolve to a real class - the only expected failure shape for a name that already passed the
+      // by-name checks above. A broader catch would also swallow an unrelated VM error (e.g. OutOfMemoryError)
+      // as "not denied", which is not a safe default for a security check.
       return false;
     }
 
