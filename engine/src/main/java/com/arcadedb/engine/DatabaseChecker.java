@@ -278,20 +278,22 @@ public class DatabaseChecker {
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
         // Same defect class fixed in RebuildIndexStatement.buildIndex() for issue #5791/#4732: capture the owning
-        // TypeIndex's name and reconstruct type-specific metadata BEFORE the drop below, otherwise a single-bucket
-        // type (the common default) loses its explicitly-named TypeIndex wrapper and a FULL_TEXT/GEOSPATIAL index
-        // reverts to default analyzer/precision settings every time this repairs one of their bucket sub-indexes.
+        // TypeIndex's name BEFORE the drop below, otherwise a single-bucket type (the common default) loses its
+        // explicitly-named TypeIndex wrapper. Safe to read once, outside the retry loop below: it is a plain name
+        // read off idx, unaffected by how many attempts the rebuild takes.
         final TypeIndex ownerTypeIndex = ((IndexInternal) idx).getTypeIndex();
-
-        final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
-            propNames.toArray(new String[0]));
 
         // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
         // lock across both the drop and the create prevents a concurrent writer from observing the index
         // gone-then-back, and retrying survives tryLockFiles's LockTimeoutException (a NeedRetryException) on a
-        // busy database. rebuildMetadata/ownerTypeIndex are captured once, before the loop (unlike
-        // RebuildIndexStatement, which recomputes the equivalent state inside its per-attempt loop) - both read
-        // idx before ANY attempt's drop, so this is just a hoist, not a behavior change.
+        // busy database.
+        //
+        // reconstructForRebuild(...) is called PER ATTEMPT, inside the loop, matching RebuildIndexStatement -
+        // NOT hoisted above it like ownerTypeIndex. For FULL_TEXT it returns a fresh FullTextIndexMetadata with
+        // its BM25 corpus counters zeroed; buildBucketIndex().create() mutates that exact instance in place as
+        // it indexes each record. A single shared instance reused across attempts would still carry attempt N's
+        // partial counts into attempt N+1's create() call, inflating totalDocs/sumDocLength (and so skewing BM25
+        // relevance scoring) on any FULL_TEXT index whose rebuild needed more than one attempt.
         //
         // Shares a known, pre-existing race with RebuildIndexStatement's identically-shaped retry (not introduced
         // here): dropIndex() itself is safe to repeat (LocalSchema.dropIndexInternal no-ops once the name is
@@ -304,6 +306,8 @@ public class DatabaseChecker {
         NeedRetryException lastRetryFailure = null;
         for (int attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {
           try {
+            final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
+                propNames.toArray(new String[0]));
             database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
               database.getSchema().dropIndex(idx.getName());
 
