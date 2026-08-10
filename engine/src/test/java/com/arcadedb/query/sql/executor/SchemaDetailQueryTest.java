@@ -196,6 +196,38 @@ class SchemaDetailQueryTest extends TestHelper {
     assertThat((boolean) listed.getProperty("valid")).isTrue();
   }
 
+  /**
+   * Issue #6005: a manual index is bound to no type and no properties, but {@code IndexMetadata} coerces the missing property list
+   * to an empty one, so {@code getPropertyNames()} is never null. The never-null guard therefore published
+   * {@code properties: [[]]} - an empty list wrapped in a singleton list - instead of omitting the key, on both the detail and the
+   * listing query.
+   */
+  @Test
+  void manualIndexOmitsEmptyProperties() {
+    database.getSchema().buildManualIndex("manualIdx", new Type[] { Type.STRING }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false).create();
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:index:manualIdx")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result r = rs.next();
+
+      assertThat((String) r.getProperty("name")).isEqualTo("manualIdx");
+      assertThat(r.hasProperty("properties")).isFalse();
+
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:indexes WHERE name = 'manualIdx'")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result r = rs.next();
+
+      assertThat((String) r.getProperty("name")).isEqualTo("manualIdx");
+      assertThat(r.hasProperty("properties")).isFalse();
+
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
   @Test
   void selectFromSchemaBucketDetailQuoted() {
     database.transaction(() -> database.getSchema().createDocumentType("QuotedBucketTestType"));
