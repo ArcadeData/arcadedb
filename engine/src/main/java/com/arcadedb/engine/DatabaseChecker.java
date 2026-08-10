@@ -295,13 +295,21 @@ public class DatabaseChecker {
           indexMetadata = geoMeta;
         }
 
-        database.getSchema().dropIndex(idx.getName());
+        // Same file-locking coverage as RebuildIndexStatement.buildIndex(): the drop and the rebuild below touch
+        // the index's own file(s) plus, through the drop, the owning TypeIndex's bookkeeping. Without holding
+        // the lock across both steps a concurrent writer could observe the index gone-then-back with entries
+        // missing, or the commit-time lock-coverage check could throw on the newly-created file.
+        final IndexMetadata rebuildMetadata = indexMetadata;
+        database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
+          database.getSchema().dropIndex(idx.getName());
 
-        database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
-            .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
-            .withMetadata(indexMetadata)
-            .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
-            .create();
+          database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
+              .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+              .withMetadata(rebuildMetadata)
+              .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
+              .create();
+          return null;
+        });
 
         stepTick();
       }
