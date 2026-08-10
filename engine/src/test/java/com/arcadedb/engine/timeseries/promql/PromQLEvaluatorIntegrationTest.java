@@ -18,9 +18,11 @@
  */
 package com.arcadedb.engine.timeseries.promql;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
@@ -199,6 +201,73 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
+  void unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout() {
+    // Issue #5886 follow-up: REDOS_CHECK only flags parenthesized nested-quantifier/alternation shapes
+    // ((a+)+, (a|aa)+, ...), so a sequence of unparenthesized quantified segments - the same
+    // "sequential-.*-without-nesting" shape that turned out to break SQL LIKE and full-text wildcard
+    // queries - reaches Pattern.matcher(...).matches() uncaught by that static pre-filter. Bounded now by
+    // routing =~/!~ through TimeBoundRegex, same as every other entry point this issue covers.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String typeName = "promql_redos_unparenthesized";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String pathologicalHost = "a".repeat(40);
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 1000, host = '" + pathologicalHost + "', value = 1.0"));
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    // 20 sequential "a*" quantifiers then a literal 'c' that never appears in the all-'a' host value: forces
+    // the same exhaustive backtrack-then-fail every other reproducer in this issue relies on, with no '(' in
+    // sight for REDOS_CHECK to catch.
+    final String wildcardPattern = "a*".repeat(20) + "c";
+    final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"" + wildcardPattern + "\"}").parse();
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> evaluator.evaluateInstant(expr, 6000L)).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the scan was aborted near the configured deadline rather than merely
+    // being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
+  }
+
+  @Test
+  void rangeQuerySharesOneTimeoutBudgetAcrossAllSteps() {
+    // Issue #5886, 12th review pass: evaluateVectorSelector()/evaluateMatrixSelector() already share one
+    // deadline across every row within a single step's scan, but evaluateRange() calls evaluate() once per
+    // step (up to MAX_RANGE_STEPS = 1,000,000), and each of those calls used to compute its own fresh deadline -
+    // the same N-times-timeout shape closed at the row level, reopened here at the step level. The deadline is
+    // now cached on the PromQLEvaluator instance itself (safe here since a fresh evaluator is created per
+    // top-level query - see SQLFunctionPromQL - never reused across executions the way RegexExpression's AST
+    // nodes are).
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String typeName = "promql_range_multistep";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String pathologicalHost = "a".repeat(40); // no trailing 'c': forces the same exhaustive backtrack as
+    // unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout above. A single data point at ts=0, visible
+    // from every step's lookback window below (evalTime - lookbackMs <= 0 for every evalTime in the range), so
+    // every one of the 10 steps evaluates the same catastrophic label matcher against it.
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 0, host = '" + pathologicalHost + "', value = 1.0"));
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal(), 100_000L);
+    // Unparenthesized shape (see unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout above): REDOS_CHECK
+    // rejects parenthesized nested-quantifier patterns like (.*a){20}$ at parse time, before this ever reaches
+    // TimeBoundRegex, so the reproducer here has to be the sequential-a*-without-nesting shape instead.
+    final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"" + "a*".repeat(20) + "c\"}").parse();
+
+    final long begin = System.currentTimeMillis();
+    // startMs=1000, endMs=10000, stepMs=1000 -> 10 steps, every one of which sees the ts=0 data point.
+    assertThatThrownBy(() -> evaluator.evaluateRange(expr, 1000L, 10_000L, 1000L)).isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-step budgets would take >= 2000ms; a shared deadline keeps the whole range
+    // query close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
+  @Test
   void scalarArithmetic() {
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
     final PromQLExpr expr = new PromQLParser("2 + 3 * 4").parse();
@@ -272,6 +341,58 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
       final Object sampleValue = rs.next().getProperty("__value__");
       assertThat(sampleValue).isNotNull().isInstanceOf(Double.class);
     }
+  }
+
+  @Test
+  void setRegexDeadlineOverridesTheLazilyComputedDefault() {
+    // Issue #5886, 17th review pass: SQLFunctionPromQL creates a fresh PromQLEvaluator per promql() call (never
+    // reused across executions the way rangeQuerySharesOneTimeoutBudgetAcrossAllSteps above relies on), so
+    // without a way to inject an externally-resolved deadline it would always fall back to its own
+    // GlobalConfiguration-derived budget rather than the CommandContext-cached one every other per-row SQL
+    // function in this issue shares. Verify setRegexDeadline() is actually honored - not silently ignored - by
+    // forcing an already-elapsed deadline and confirming it aborts an otherwise-trivial, non-catastrophic match
+    // that would normally complete instantly. The host value must be long enough to force more than
+    // TimeBoundRegex's CHECK_INTERVAL (256) charAt() calls - too short an input completes before the first
+    // deadline checkpoint is ever reached, regardless of whether the deadline is already expired.
+    final String typeName = "promql_setregexdeadline_metric";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String longHost = "a".repeat(256); // tag dictionary caps values at 256 bytes
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 1000, host = '" + longHost + "', value = 1.0"));
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    evaluator.setRegexDeadline(System.nanoTime() - 1_000_000_000L); // 1s in the past: already expired
+
+    final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"a*\"}").parse();
+
+    assertThatThrownBy(() -> evaluator.evaluateInstant(expr, 6000L)).isInstanceOf(TimeoutException.class);
+  }
+
+  @Test
+  void promQLSqlFunctionAbortsOnCatastrophicPattern() {
+    // End-to-end coverage for the promql() SQL function path specifically (as opposed to calling
+    // PromQLEvaluator.evaluateInstant directly, as unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout
+    // above does) - proves the context.getOrComputeRegexDeadline() -> evaluator.setRegexDeadline() wiring in
+    // SQLFunctionPromQL actually bounds a catastrophic =~ label matcher reached through SELECT promql(...).
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String typeName = "promql_function_redos";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    final String pathologicalHost = "a".repeat(40); // no trailing 'c': forces exhaustive backtrack-then-fail
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO " + typeName + " SET ts = 0, host = '" + pathologicalHost + "', value = 1.0"));
+
+    final String wildcardPattern = "a*".repeat(20) + "c";
+    final String promqlExpr = typeName + "{host=~\"" + wildcardPattern + "\"}";
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> database.command("sql", "RETURN promql('" + promqlExpr + "', 6000)").close())
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the call was aborted near the configured deadline rather than merely being
+    // slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
   }
 
   @Test

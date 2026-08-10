@@ -42,8 +42,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
+import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -92,7 +100,19 @@ public class Neo4jImporter {
   private              boolean                        error                    = false;
   private final        ImporterContext                context;
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
-  private final static SimpleDateFormat               dateTimeISO8601Format    = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+  // Optional fractional seconds, zone offset and bracketed zone region id, so ISO-8601 values Neo4j
+  // actually emits for LocalDateTime/OffsetDateTime/ZonedDateTime properties (e.g.
+  // "2015-06-24T12:50:35.556+01:00" or "2015-06-24T12:50:35.556+01:00[Europe/London]") parse instead
+  // of failing DateTimeFormatter's whole-string match on the trailing characters. The region id, when
+  // present, is only consumed to satisfy the whole-string match: the numeric offset it accompanies
+  // already pins the exact instant, so the region id itself is not needed to compute it.
+  final static         DateTimeFormatter              dateTimeISO8601Format    = new DateTimeFormatterBuilder()
+      .appendPattern("yyyy-MM-dd'T'HH:mm:ss")
+      .optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 1, 9, true).optionalEnd()
+      .optionalStart().appendOffsetId()
+      .optionalStart().appendLiteral('[').appendZoneRegionId().appendLiteral(']').optionalEnd()
+      .optionalEnd()
+      .toFormatter();
   // Allow-list for imported labels: ASCII letters, digits, underscore, hyphen and space only. Excluding '.', '/' and '\'
   // makes path-traversal sequences structurally impossible in the on-disk bucket file names derived from these labels.
   private final static Pattern                        SAFE_LABEL               = Pattern.compile("[A-Za-z0-9_ -]+");
@@ -275,7 +295,7 @@ public class Neo4jImporter {
             try {
               dateTimeISO8601Format.parse(string);
               currentType = Type.DATETIME;
-            } catch (final ParseException e) {
+            } catch (final DateTimeParseException e) {
               currentType = Type.STRING;
             }
           } else {
@@ -566,8 +586,14 @@ public class Neo4jImporter {
         propValue = array.toList();
       else if (propValue instanceof String string && typeSchema != null && typeSchema.get(propName) == Type.DATETIME) {
         try {
-          propValue = dateTimeISO8601Format.parse(string).getTime();
-        } catch (final ParseException e) {
+          final TemporalAccessor parsed = dateTimeISO8601Format.parse(string);
+          final Instant instant = parsed.isSupported(ChronoField.OFFSET_SECONDS) ?
+              OffsetDateTime.from(parsed).toInstant() :
+              LocalDateTime.from(parsed).atZone(ZoneId.systemDefault()).toInstant();
+          propValue = instant.toEpochMilli();
+        } catch (final DateTimeException e) {
+          // Covers both parse() (DateTimeParseException) and the from() resolution calls above,
+          // which are declared to throw the broader DateTimeException.
           log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
           context.errors.incrementAndGet();
         }

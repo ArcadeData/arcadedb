@@ -31,9 +31,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -211,6 +213,89 @@ public class OpenCypherWhereClauseTest {
     final Result row = rs.next();
     assertThat(row.<Boolean>getProperty("result")).isTrue();
     assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void catastrophicPatternIsAbortedByRegexTimeout() {
+    // Issue #5886: (.*a){20}$ against "a".repeat(40) + "!" triggers catastrophic backtracking in
+    // java.util.regex. Matcher.matches() never polls interrupts or a deadline while backtracking, so
+    // arcadedb.command.timeout cannot stop it; only arcadedb.command.regexTimeout, enforced inside the
+    // match itself, can.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathologicalInput = "a".repeat(40) + "!";
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN $input =~ '(.*a){20}$' AS result",
+        Map.of("input", pathologicalInput)).next())
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // Generous upper bound: proves the query was aborted near the configured deadline rather than
+    // merely being slow (the unbounded match takes tens of seconds).
+    assertThat(elapsedMillis).isLessThan(5000);
+  }
+
+  @Test
+  void regexSharesOneTimeoutBudgetAcrossAllRowsInTheScan() {
+    // Issue #5886, 6th review pass: a WHERE ... =~ clause scanning many rows must not let each row's own
+    // evaluation start a fresh regexTimeout budget - otherwise a graph shaped so every matched node triggers
+    // catastrophic backtracking could still cost up to node count * regexTimeout overall. The deadline is
+    // cached on the per-execution CommandContext (the same mechanism MatchesCondition uses on the SQL side),
+    // computed once for the lifetime of the query execution across the whole scan - not as an instance field
+    // on the RegexExpression AST node itself, which a later review pass (regexDeadlineDoesNotLeakAcrossCached
+    // QueryExecutions below) found would go stale across repeated executions of a cached query.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String pathological = "a".repeat(40) + "!";
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.command("opencypher", "CREATE (p:PerRowPathological {name: $name})", Map.of("name", pathological));
+    });
+
+    final long begin = System.currentTimeMillis();
+    assertThatThrownBy(
+        () -> database.query("opencypher", "MATCH (p:PerRowPathological) WHERE p.name =~ '(.*a){20}$' RETURN p.name").next())
+        .isInstanceOf(TimeoutException.class);
+    final long elapsedMillis = System.currentTimeMillis() - begin;
+
+    // 10 independent 200ms-per-row budgets would take >= 2000ms; a query-wide shared deadline keeps the whole
+    // scan close to the single configured 200ms bound instead.
+    assertThat(elapsedMillis).isLessThan(1000);
+  }
+
+  @Test
+  void regexDeadlineDoesNotLeakAcrossCachedQueryExecutions() {
+    // Issue #5886, 8th review pass (CRITICAL, caught before merge): RegexExpression instances are parsed once
+    // and reused across every execution of that same query text via CypherStatementCache (keyed by normalized
+    // query string, confirmed by RegexExpression having no copy() unlike SQL's MatchesCondition.copy()).
+    // Caching the deadline as an instance field (mirroring compiledPattern's existing instance-field caching)
+    // is correct for compiledPattern - content-addressed, never goes stale - but wrong for a deadline, which is
+    // a point in time: once it lapses, every LATER execution of that same cached query would throw a spurious
+    // TimeoutException on a completely benign, non-catastrophic match. Fixed by caching on the per-execution
+    // CommandContext instead (see regexSharesOneTimeoutBudgetAcrossAllRowsInTheScan above).
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 300L);
+
+    // Long enough that matching needs >= 256 charAt() calls (TimeBoundRegex's deadline-check interval), so a
+    // stale cached deadline would actually be observed rather than the match finishing before the first check.
+    database.transaction(() -> database.command("opencypher", "CREATE (n:RegexCacheReuse {name: $n})", Map.of("n", "b".repeat(300))));
+
+    final String query = "MATCH (n:RegexCacheReuse) WHERE n.name =~ 'b+' RETURN n.name";
+
+    // First execution: parses (and caches) the query; before the fix, this also cached a since-expired deadline
+    // as an instance field on the shared RegexExpression AST node.
+    assertThat(database.query("opencypher", query).hasNext()).isTrue();
+
+    try {
+      Thread.sleep(400); // let the first execution's deadline lapse
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+
+    // Second execution of the exact same query text reuses the cached AST (the same RegexExpression instance)
+    // but must get its own fresh deadline - not throw TimeoutException on this ordinary, non-catastrophic match
+    // just because the first execution's deadline already lapsed.
+    assertThat(database.query("opencypher", query).hasNext()).isTrue();
   }
 
   // Issue #5282: NOT (null =~ ...) must stay null, not become true.

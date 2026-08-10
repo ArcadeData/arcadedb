@@ -214,6 +214,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     underlyingIndex.updateTypeName(newTypeName);
   }
 
+  public DatabaseInternal getDatabase() {
+    return underlyingIndex.getMutableIndex().getDatabase();
+  }
+
   @Override
   public IndexCursor get(final Object[] keys) {
     return get(keys, -1);
@@ -1236,7 +1240,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   @Override
   public boolean isAutomatic() {
-    return underlyingIndex.getPropertyNames() != null;
+    // Delegated rather than re-derived from getPropertyNames(): the list is never null (IndexMetadata coerces a
+    // missing one to empty), so the local test was the same always-true answer issue #5780 removed.
+    return underlyingIndex.isAutomatic();
   }
 
   @Override

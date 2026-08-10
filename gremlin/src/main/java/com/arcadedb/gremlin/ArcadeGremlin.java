@@ -47,6 +47,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropert
 
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
+import java.io.InvalidClassException;
 import java.util.*;
 import java.util.logging.Level;
 
@@ -150,6 +151,10 @@ public class ArcadeGremlin extends ArcadeQuery {
       final Throwable root = getRootCause(e);
       final String reason = root.getMessage() != null ? root.getMessage() : root.getClass().getName();
       throw new CommandExecutionException("Error on executing gremlin query: " + reason, e);
+    } catch (final CommandParsingException | CommandExecutionException e) {
+      // Already classified by translateAntlrAtnMismatch() (or a nested call), including the actionable
+      // ATN-mismatch message: rethrow as-is instead of burying it under a second, generic wrapper.
+      throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }
@@ -177,6 +182,50 @@ public class ArcadeGremlin extends ArcadeQuery {
     while (root.getCause() != null && root.getCause() != root)
       root = root.getCause();
     return root;
+  }
+
+  /**
+   * Recognizes the ANTLR "v3 ATN" vs "v4 ATN" deserialization mismatch (see the caller) by walking the cause chain
+   * for a {@link InvalidClassException} naming ANTLR's {@code atn.ATN} class, and turns it into an actionable
+   * {@link CommandExecutionException}. Any other {@link LinkageError} is rethrown unchanged: this must not mask an
+   * unrelated classloading failure under a misleading Gremlin-specific message.
+   * <p>
+   * Matched by suffix, not full equality against the unshaded {@code org.antlr.v4.runtime.atn.ATN} name: this very
+   * source file ships inside the {@code :shaded} artifact too, and the shade plugin's relocation rewrites string
+   * constants that look like a relocated class's FQCN - including this literal - to
+   * {@code com.arcadedb.gremlin.shaded.org.antlr.v4.runtime.atn.ATN} in that build. A full-equality match would
+   * silently stop matching in the shaded jar; matching {@code *.runtime.atn.ATN} survives either prefix, which is
+   * also how {@code AntlrAtnMismatchTranslationTest} in {@code gremlin-it} exercises this method (that module only
+   * has the shaded jar on its classpath - see the module-wide Surefire skip explained in {@code gremlin/pom.xml}).
+   * <p>
+   * Walks via {@link ExceptionInInitializerError#getException()}, not {@link Throwable#getCause()}: this is the
+   * exact shape the JVM raises when a static initializer throws (as {@code GremlinLexer.<clinit>} does here), and
+   * {@code ExceptionInInitializerError} predates the standard cause-chaining API - its constructor calls
+   * {@code super((Throwable) null)}, so the inherited {@code getCause()} always answers {@code null} and silently
+   * ends the walk one hop too early.
+   */
+  private static CommandExecutionException translateAntlrAtnMismatch(final LinkageError error) {
+    for (Throwable c = error; c != null; ) {
+      if (c instanceof final InvalidClassException ice
+          && ice.classname != null && ice.classname.endsWith(".runtime.atn.ATN")) {
+        return new CommandExecutionException(
+            "Cannot execute a textual Gremlin query: the ANTLR runtime on the classpath cannot deserialize "
+                + "TinkerPop's precompiled Gremlin grammar (mismatched ATN serialization format). This happens "
+                + "when the plain 'com.arcadedb:arcadedb-gremlin' Maven coordinate is used on a classpath that "
+                + "also carries ArcadeDB's own ANTLR runtime (e.g. via arcadedb-engine), which is a newer, "
+                + "incompatible version. Depend on the 'com.arcadedb:arcadedb-gremlin:shaded' classifier instead, "
+                + "which bundles a relocated, matching ANTLR runtime for TinkerPop's grammar. The fluent Java "
+                + "Traversal API (ArcadeGraph.open(db).traversal()...) is unaffected; only textual/string Gremlin "
+                + "queries need the shaded classifier. See issue #5937 for details.", error);
+      }
+      final Throwable next = c instanceof final ExceptionInInitializerError eiie ? eiie.getException() : c.getCause();
+      // Reference-identity cycle guard (a throwable can be its own cause/exception): Objects.equals(), not ==,
+      // to satisfy static analysis - Throwable does not override equals(), so the two are behaviorally identical.
+      if (Objects.equals(next, c))
+        break;
+      c = next;
+    }
+    throw error;
   }
 
   public static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
@@ -243,6 +292,10 @@ public class ArcadeGremlin extends ArcadeQuery {
           return operationTypes;
         }
       };
+    } catch (final CommandParsingException | CommandExecutionException e) {
+      // Already classified by translateAntlrAtnMismatch() (or a nested call): rethrow as-is rather than
+      // relabeling a deployment/execution error (e.g. the ATN-mismatch message) as a parsing error.
+      throw e;
     } catch (Exception e) {
       throw new CommandParsingException("Error on parsing command", e);
     }
@@ -264,6 +317,12 @@ public class ArcadeGremlin extends ArcadeQuery {
 
     if ("auto".equals(gremlinEngine) || "java".equals(gremlinEngine)) {
       // TRY THE NATIVE JAVA ENGINE FIRST
+      // NOTE: this catch only sees ScriptException. An ATN-mismatch CommandExecutionException from
+      // translateAntlrAtnMismatch() (issue #5937) is unchecked and propagates straight past it, so 'auto' mode
+      // fails fast on that classpath defect too instead of silently falling back to the insecure Groovy engine
+      // below - intentional, not an oversight: the defect is a deployment/packaging problem, not a query the
+      // Java engine merely can't parse, and papering over it with Groovy would undermine the point of failing
+      // clearly in the first place.
       try {
         return executeStatement("java", analysis);
       } catch (ScriptException e) {
@@ -299,7 +358,18 @@ public class ArcadeGremlin extends ArcadeQuery {
       if (parameters != null)
         bindings.putAll(parameters);
 
-      result = gremlinEngineImpl.eval(query, bindings);
+      try {
+        result = gremlinEngineImpl.eval(query, bindings);
+      } catch (final LinkageError error) {
+        // TinkerPop's gremlin-language grammar classes (GremlinLexer/GremlinQueryParser) are precompiled with
+        // ANTLR 4.9.1 ("v3 ATN" serialization). The plain (unshaded) arcadedb-gremlin Maven coordinate puts them
+        // on the same classpath as the engine's own ANTLR 4.13.2 runtime ("v4 ATN"), which cannot deserialize
+        // them: their static initializer throws ExceptionInInitializerError (LinkageError, so none of the
+        // Exception catches below would ever see it) the first time this branch runs, then NoClassDefFoundError
+        // on every retry. Detect that specific shape and fail with an actionable message instead of leaking a
+        // raw ATNDeserializer stack trace (issue #5937).
+        throw translateAntlrAtnMismatch(error);
+      }
 
     } else if ("groovy".equals(gremlinEngine)) {
       // GROOVY ENGINE - INSECURE, LOG WARNING

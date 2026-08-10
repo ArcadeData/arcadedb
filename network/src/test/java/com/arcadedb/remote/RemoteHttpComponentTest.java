@@ -43,6 +43,7 @@ import java.lang.reflect.Method;
 import java.net.ConnectException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
@@ -1003,6 +1004,82 @@ class RemoteHttpComponentTest {
         c.close();
       }
     });
+  }
+
+  // Regression tests for issue #5847: sendWithWatchdog() multiplied the millisecond
+  // NETWORK_SOCKET_TIMEOUT by 1000, turning the intended watchdog into ~1000x its configured value
+  // (default 30s became 8h20m).
+
+  @Test
+  void computeWatchdogMsTreatsTimeoutAsMilliseconds() {
+    // The default NETWORK_SOCKET_TIMEOUT (30000 ms) must yield a 30 second watchdog, not 30000
+    // seconds (8h20m).
+    assertThat(RemoteHttpComponent.computeWatchdogMs(30_000)).isEqualTo(30_000L);
+  }
+
+  @Test
+  void computeWatchdogMsPreservesLargerConfiguredTimeout() {
+    // A caller-raised timeout (e.g. 120000 ms / 2 minutes) must not be scaled to ~1.4 days.
+    assertThat(RemoteHttpComponent.computeWatchdogMs(120_000)).isEqualTo(120_000L);
+  }
+
+  @Test
+  void computeWatchdogMsAppliesThirtySecondFloor() {
+    // A configured timeout below the floor (or unset) still gets a usable watchdog.
+    assertThat(RemoteHttpComponent.computeWatchdogMs(100)).isEqualTo(30_000L);
+    assertThat(RemoteHttpComponent.computeWatchdogMs(0)).isEqualTo(30_000L);
+  }
+
+  /**
+   * A server that accepts the connection, reads the request, and never responds exercises the case
+   * the watchdog exists for (the per-request {@code HttpRequest} timeout does not cover it once
+   * headers are pending indefinitely). With the fix, {@code sendWithWatchdog} is given an explicit,
+   * short watchdog budget and must give up within that window - not 1000x it.
+   */
+  @Test
+  void sendWithWatchdogFiresWithinConfiguredWindowNotAThousandTimesLonger() throws Exception {
+    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+      final int port = serverSocket.getLocalPort();
+
+      final Thread serverThread = new Thread(() -> {
+        try (final Socket client = serverSocket.accept()) {
+          final InputStream in = client.getInputStream();
+          final byte[] buf = new byte[8192];
+          int total = 0;
+          while (total < buf.length) {
+            final int n = in.read(buf, total, buf.length - total);
+            if (n < 0)
+              break;
+            total += n;
+            if (new String(buf, 0, total, StandardCharsets.ISO_8859_1).contains("\r\n\r\n"))
+              break;
+          }
+          // Never write a response: the client must give up on its own via the watchdog.
+          Thread.sleep(10_000);
+        } catch (final Exception ignored) {
+          // best-effort: the test assertions cover the client side
+        }
+      });
+      serverThread.setDaemon(true);
+      serverThread.start();
+
+      final TestableRemoteHttpComponent c = new TestableRemoteHttpComponent("127.0.0.1", port, "root", "test");
+      try {
+        final HttpRequest request = c.createRequestBuilder("GET", c.getUrl("server")).GET().build();
+
+        final long start = System.nanoTime();
+        assertThatThrownBy(() -> c.sendWithWatchdog(request, 200))
+            .isInstanceOf(java.io.IOException.class)
+            .hasMessageContaining("watchdog timeout after 200ms");
+        final long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+        // Bounded by the explicit 200ms watchdog window (generous margin for scheduling jitter),
+        // nowhere near the pre-fix 1000x scaling (which would have meant no timeout at all here).
+        assertThat(elapsedMs).isLessThan(5_000L);
+      } finally {
+        c.close();
+      }
+    }
   }
 
   private record StubResponse(int statusCode, String body) {

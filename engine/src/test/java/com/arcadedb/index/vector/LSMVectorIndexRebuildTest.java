@@ -33,11 +33,21 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -577,6 +587,207 @@ class LSMVectorIndexRebuildTest extends TestHelper {
 
     results = lsmIndex.findNeighborsFromVector(queryVector, 10);
     assertThat(results).isNotEmpty();
+  }
+
+  /**
+   * Regression test: {@code REBUILD_SEMAPHORE} is JVM-wide with a single permit by default, and an async rebuild
+   * used to wait on it with a plain, unbounded {@code acquire()}. If some other rebuild anywhere in the process
+   * never returns its permit (its background thread outliving that index's {@code close()} because JVector's
+   * {@code GraphIndexBuilder} does not always respond to interruption - see
+   * {@code LSMVectorIndex#releaseBackgroundResources()}), every other vector index's rebuild would then block
+   * forever, process-wide, until restart. {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS} bounds that wait: this
+   * index's rebuild must give up the cycle rather than hang once the permit isn't available in time.
+   */
+  @Test
+  void asyncRebuildGivesUpAfterPermitTimeoutInsteadOfBlockingForever() throws Exception {
+    final int threshold = 5;
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, threshold);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
+    // Shrink the permit-wait ceiling from its 10-minute production default so the test doesn't have to wait for it.
+    GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.setValue(300);
+
+    try {
+      database.transaction(() -> {
+        database.getSchema().createVertexType("Embedding");
+        database.getSchema().getType("Embedding").createProperty("vector", Type.ARRAY_OF_FLOATS);
+
+        database.command("sql", """
+            CREATE INDEX ON Embedding (vector) LSM_VECTOR
+            METADATA {
+                "dimensions": %d,
+                "similarity": "EUCLIDEAN"
+            }""".formatted(EMBEDDING_DIM));
+      });
+
+      final Random random = new Random(42);
+
+      // Insert enough vectors for a "large" graph (>= 1000 to use async path)
+      database.transaction(() -> {
+        for (int i = 0; i < LARGE_INDEX_VECTORS; i++)
+          database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
+      });
+
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Embedding[vector]");
+      final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+      final float[] queryVector = generateRandomVector(random);
+      // Initial synchronous build
+      assertThat(lsmIndex.findNeighborsFromVector(queryVector, 10)).isNotEmpty();
+
+      final Field semaphoreField = LSMVectorIndex.class.getDeclaredField("REBUILD_SEMAPHORE");
+      semaphoreField.setAccessible(true);
+      final Semaphore semaphore = (Semaphore) semaphoreField.get(null);
+      final String expectedIndexName = indexName(lsmIndex);
+
+      // Simulate another vector index elsewhere in the JVM already holding the sole rebuild permit and never
+      // giving it back - the scenario VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS exists to bound.
+      assertThat(semaphore.tryAcquire())
+          .as("test setup requires the sole JVM-wide rebuild permit to be free at the start")
+          .isTrue();
+      try {
+        final CapturingHandler handler = new CapturingHandler();
+        handler.setLevel(Level.ALL);
+        final Logger logger = Logger.getLogger(LSMVectorIndex.class.getName());
+        logger.addHandler(handler);
+        final Level prevLevel = logger.getLevel();
+        logger.setLevel(Level.ALL);
+        try {
+          // Exceed the mutation threshold, then search to trigger the async rebuild attempt.
+          database.transaction(() -> {
+            for (int i = 0; i < threshold; i++)
+              database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
+          });
+          assertThat(lsmIndex.findNeighborsFromVector(queryVector, 10)).isNotEmpty();
+
+          Awaitility.await("async rebuild gives up after the permit-wait timeout instead of hanging")
+              .atMost(Duration.ofSeconds(10))
+              .pollInterval(Duration.ofMillis(20))
+              .untilAsserted(() -> {
+                assertThat(lsmIndex.getStats().get("asyncRebuildInProgress"))
+                    .as("A rebuild that could not get a permit must not be left flagged in-progress forever")
+                    .isEqualTo(0L);
+                assertThat(handler.snapshot())
+                    .as("The timeout must be logged so a starved rebuild elsewhere is diagnosable")
+                    .anyMatch(m -> m.contains("Timed out") && m.contains(expectedIndexName));
+              });
+        } finally {
+          logger.removeHandler(handler);
+          logger.setLevel(prevLevel);
+        }
+      } finally {
+        semaphore.release();
+      }
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.reset();
+    }
+  }
+
+  /**
+   * Regression test: {@code close()}/{@code releaseBackgroundResources()} gives an in-progress async rebuild
+   * thread only a best-effort 5s to stop (interrupt + {@code join(5000)}) before moving on unconditionally. If
+   * JVector's {@code GraphIndexBuilder} does not observe that interrupt (see the class-level note on
+   * {@code getOrCreateGraphBuildPool()}), the thread outlives close() silently and keeps holding the JVM-wide
+   * {@code REBUILD_SEMAPHORE} permit - the exact scenario {@code asyncRebuildGivesUpAfterPermitTimeoutInsteadOf
+   * BlockingForever} bounds from the other side. This must be logged, not silent, so the two symptoms (a rebuild
+   * thread outliving close() here, a later rebuild elsewhere timing out waiting for the permit) are connectable.
+   */
+  @Test
+  void releaseBackgroundResourcesLogsWhenRebuildThreadOutlivesCloseTimeout() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("StuckRebuildEmbedding");
+      database.getSchema().getType("StuckRebuildEmbedding").createProperty("vector", Type.ARRAY_OF_FLOATS);
+      database.command("sql", """
+          CREATE INDEX ON StuckRebuildEmbedding (vector) LSM_VECTOR
+          METADATA {
+              "dimensions": %d,
+              "similarity": "EUCLIDEAN"
+          }""".formatted(EMBEDDING_DIM));
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("StuckRebuildEmbedding[vector]");
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+
+    // A thread that deliberately swallows interruption, standing in for JVector's GraphIndexBuilder not
+    // observing Thread.interrupt() inside a tight compute loop.
+    final CountDownLatch stop = new CountDownLatch(1);
+    final Thread stuckThread = new Thread(() -> {
+      while (stop.getCount() > 0) {
+        try {
+          stop.await(50, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException ignored) {
+          // Deliberately swallow: this is standing in for JVector code that does not check interruption.
+        }
+      }
+    }, "test-stuck-rebuild-thread");
+    stuckThread.setDaemon(true);
+    stuckThread.start();
+
+    final Field threadField = LSMVectorIndex.class.getDeclaredField("asyncRebuildThread");
+    threadField.setAccessible(true);
+    threadField.set(lsmIndex, stuckThread);
+    final Field inProgressField = LSMVectorIndex.class.getDeclaredField("asyncRebuildInProgress");
+    inProgressField.setAccessible(true);
+    inProgressField.setBoolean(lsmIndex, true);
+
+    final String expectedIndexName = indexName(lsmIndex);
+
+    final CapturingHandler handler = new CapturingHandler();
+    handler.setLevel(Level.ALL);
+    final Logger logger = Logger.getLogger(LSMVectorIndex.class.getName());
+    logger.addHandler(handler);
+    final Level prevLevel = logger.getLevel();
+    logger.setLevel(Level.ALL);
+    try {
+      lsmIndex.releaseBackgroundResources();
+
+      assertThat(handler.snapshot())
+          .as("close() must surface that the background rebuild thread outlived the shutdown timeout, since it "
+              + "may still hold the JVM-wide REBUILD_SEMAPHORE permit")
+          .anyMatch(m -> m.contains("did not terminate") && m.contains(expectedIndexName));
+    } finally {
+      logger.removeHandler(handler);
+      logger.setLevel(prevLevel);
+      stop.countDown();
+      stuckThread.interrupt();
+      stuckThread.join(2000);
+    }
+  }
+
+  private static String indexName(final LSMVectorIndex index) throws Exception {
+    final Field field = LSMVectorIndex.class.getDeclaredField("indexName");
+    field.setAccessible(true);
+    return (String) field.get(index);
+  }
+
+  private static final class CapturingHandler extends Handler {
+    private final List<String> records = new CopyOnWriteArrayList<>();
+
+    @Override
+    public void publish(final LogRecord record) {
+      if (record == null || record.getLevel().intValue() < Level.WARNING.intValue())
+        return;
+      String msg = record.getMessage();
+      if (msg != null && record.getParameters() != null && record.getParameters().length > 0) {
+        try {
+          msg = msg.formatted(record.getParameters());
+        } catch (final Exception ignored) {
+        }
+      }
+      if (msg != null)
+        records.add(msg);
+    }
+
+    @Override
+    public void flush() {
+    }
+
+    @Override
+    public void close() throws SecurityException {
+    }
+
+    List<String> snapshot() {
+      return new ArrayList<>(records);
+    }
   }
 
   // Issue #3737: buffered vectors below the rebuild threshold are flushed and the graph rebuilt after the inactivity timeout fires.

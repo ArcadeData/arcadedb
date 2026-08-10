@@ -173,34 +173,6 @@ class Issue5492TruncateBatchNotReplicatedIT extends BaseRaftHATest {
         .as("batch commits must replicate on the analyzed-query path too, not only through command()")
         .isZero();
   }
-
-  /**
-   * Counts through a freshly resolved database handle. A snapshot resync reinstalls the follower's database, so a
-   * handle cached before it throws {@code DatabaseIsClosed} - which reads like an infrastructure failure rather than
-   * the divergence that caused it.
-   */
-  private long countOn(final int serverIndex, final String typeName) {
-    // count(id) rather than count(*): the latter reads a cached per-bucket counter, which is the wrong tool
-    // when the question is whether the pages themselves arrived.
-    final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName).next().getProperty("cnt"))
-        .longValue();
-  }
-
-  private long awaitCountOn(final int serverIndex, final String typeName, final long expected) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + 30_000;
-    long count = -1;
-    while (System.currentTimeMillis() < deadline) {
-      try {
-        count = countOn(serverIndex, typeName);
-        if (count == expected)
-          return count;
-      } catch (final RuntimeException e) {
-        // Mid-resync the database is closed and being reinstalled; keep polling until the deadline.
-        count = -1;
-      }
-      Thread.sleep(250);
-    }
-    return count;
-  }
+  // countOn()/awaitCountOn() moved to BaseRaftHATest (issue #5977): this test was one of two independent
+  // reinventions of the same resolve-fresh-and-retry shape.
 }

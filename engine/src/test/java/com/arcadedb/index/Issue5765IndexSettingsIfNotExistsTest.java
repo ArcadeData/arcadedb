@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Schema;
@@ -169,6 +170,85 @@ public class Issue5765IndexSettingsIfNotExistsTest extends TestHelper {
         .hasMessageContaining("LSM_TREE")
         .hasMessageContaining("FULL_TEXT")
         .hasMessageNotContaining("analyzer=");
+  }
+
+  /**
+   * The same comparison asked through the OTHER entry point (issue #5781). Every case above writes the statement in
+   * the auto-derived-name form, so {@code CreateIndexStatement} answers from its {@code existsIndex(name)} shortcut and
+   * never reaches {@link com.arcadedb.schema.TypeIndexBuilder#create()}. Naming the index explicitly is what gets past
+   * that shortcut: {@code myVectorIdx} does not exist, so the statement builds a builder, and the builder is the one
+   * that finds the existing index BY PROPERTIES and compares the settings the clause named.
+   */
+  @Test
+  void namedGuardedVectorDimensionsMismatchIsReportedByTheBuilder() {
+    createVectorIndex(384, "COSINE");
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX myVectorIdx IF NOT EXISTS ON Doc (embedding) LSM_VECTOR METADATA {\"dimensions\": 768}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("dimensions=384")
+        .hasMessageContaining("768");
+
+    assertThat(dimensionsOf("Doc[embedding]")).isEqualTo(384);
+    assertThat(database.getSchema().existsIndex("myVectorIdx")).isFalse();
+  }
+
+  /**
+   * Not a vector-only rule: the builder half is shared by every index type that keeps settings of its own, so a named
+   * guarded full-text create over an existing auto-named index is compared on its analyzer the same way.
+   */
+  @Test
+  void namedGuardedFullTextAnalyzerMismatchIsReportedByTheBuilder() {
+    database.command("sql", "CREATE INDEX ON Doc (title) FULL_TEXT METADATA "
+        + "{\"analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}");
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX myTitleIdx IF NOT EXISTS ON Doc (title) FULL_TEXT "
+        + "METADATA {\"analyzer\": \"org.apache.lucene.analysis.standard.StandardAnalyzer\"}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("analyzer=org.apache.lucene.analysis.core.KeywordAnalyzer");
+
+    assertThat(database.getSchema().existsIndex("Doc[title]")).isTrue();
+    assertThat(database.getSchema().existsIndex("myTitleIdx")).isFalse();
+  }
+
+  /**
+   * The other direction of the builder half: settings that match make the guarded statement the no-op it asks to be.
+   * The answer names the index that actually satisfied the request - not the name the statement asked for, which
+   * nothing was created under - and reports {@code created: false} so a caller cannot read success as "my name is
+   * now on an index".
+   */
+  @Test
+  void namedGuardedMatchingSettingsStayANoOp() {
+    createVectorIndex(384, "COSINE");
+
+    final ResultSet rs = database.command("sql", "CREATE INDEX myVectorIdx IF NOT EXISTS ON Doc (embedding) LSM_VECTOR "
+        + "METADATA {\"dimensions\": 384, \"similarity\": \"COSINE\"}");
+    final Result result = rs.next();
+    assertThat(result.<Boolean>getProperty("created")).isFalse();
+    assertThat(result.<String>getProperty("name")).isEqualTo("Doc[embedding]");
+    assertThat(result.<Long>getProperty("totalIndexed")).isEqualTo(0L);
+
+    assertThat(dimensionsOf("Doc[embedding]")).isEqualTo(384);
+    assertThat(database.getSchema().existsIndex("myVectorIdx")).isFalse();
+  }
+
+  /**
+   * Same no-op, on the non-vector builder: a named guarded full-text create whose analyzer matches leaves the existing
+   * index alone and reports it under its own name.
+   */
+  @Test
+  void namedGuardedMatchingFullTextSettingsStayANoOp() {
+    database.command("sql", "CREATE INDEX ON Doc (title) FULL_TEXT METADATA "
+        + "{\"analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}");
+
+    final ResultSet rs = database.command("sql", "CREATE INDEX myTitleIdx IF NOT EXISTS ON Doc (title) FULL_TEXT "
+        + "METADATA {\"analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}");
+    final Result result = rs.next();
+    assertThat(result.<Boolean>getProperty("created")).isFalse();
+    assertThat(result.<String>getProperty("name")).isEqualTo("Doc[title]");
+
+    assertThat(database.getSchema().existsIndex("Doc[title]")).isTrue();
+    assertThat(database.getSchema().existsIndex("myTitleIdx")).isFalse();
   }
 
   private void createVectorIndex(final int dimensions, final String similarity) {

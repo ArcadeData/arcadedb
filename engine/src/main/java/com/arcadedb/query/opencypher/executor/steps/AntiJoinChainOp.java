@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
-import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.IntHashSet;
@@ -103,10 +102,13 @@ public final class AntiJoinChainOp implements CountOp {
     return types.toArray(new String[0]);
   }
 
-  /** Every path here is enumerated from chain position 0, so an unlabelled first node leaves nothing to start from. */
+  /**
+   * Every path here is enumerated from chain position 0. With no label there the anchors are every vertex, which
+   * only a provider whose node domain <i>is</i> every vertex can enumerate (issue #5757).
+   */
   @Override
-  public boolean canEnumerateAnchors() {
-    return nodeLabels[0] != null;
+  public boolean requiresFullVertexCoverage() {
+    return nodeLabels[0] == null;
   }
 
   @Override
@@ -114,7 +116,7 @@ public final class AntiJoinChainOp implements CountOp {
     final int nodeCount = provider.getNodeCount();
     final int hops = edgeTypes.length;
 
-    // Pre-compute valid bucket sets for type filtering
+    // Pre-compute valid bucket sets for type filtering. null = unlabelled, so no filter.
     final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
@@ -152,9 +154,9 @@ public final class AntiJoinChainOp implements CountOp {
         return result;
     }
 
-    // Per-source iteration from anchor (position 0)
-    final String anchorLabel = nodeLabels[0];
-    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+    // Per-source iteration from anchor (position 0). null accepts every vertex, empty accepts none (issue #5757).
+    final IntHashSet anchorBuckets = validBuckets[0];
+    if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
 
     final boolean anchorIsSource = antiJoinSourceIdx == 0;
@@ -164,18 +166,14 @@ public final class AntiJoinChainOp implements CountOp {
     for (int h = 0; h < laterIdx; h++)
       hopViews[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
 
-    // Pre-compute bucket IDs for CSR-based anchor iteration and frontier filtering
-    final int[] bucketIds = new int[nodeCount];
-    for (int v = 0; v < nodeCount; v++)
-      bucketIds[v] = provider.getRID(v).getBucketId();
-    final IntHashSet anchorBuckets = CSRCountUtils.buildValidBuckets(db, anchorLabel);
-    if (anchorBuckets == null || anchorBuckets.isEmpty())
-      return 0;
+    // Pre-compute bucket IDs for CSR-based anchor iteration and frontier filtering. A pattern that labels no
+    // position needs none of them.
+    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount) : null;
 
     long totalCount = 0;
 
     for (int anchorId = 0; anchorId < nodeCount; anchorId++) {
-      if (!anchorBuckets.contains(bucketIds[anchorId]))
+      if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[anchorId]))
         continue;
 
       // Pre-compute anti-join neighbors for Case A (anchor is the anti-join source)
@@ -221,24 +219,19 @@ public final class AntiJoinChainOp implements CountOp {
     final int[] e1Nbrs = viewE1.neighbors();
     final int[] cNbrs = viewC.neighbors();
 
-    // Optional type filtering
-    final int[] bucketIds;
+    // Optional type filtering. null is "no label, so no filter"; an empty set is a label that matches nothing.
     final IntHashSet pos1Buckets = validBuckets[1];
     final IntHashSet pos2Buckets = validBuckets[2];
-    if ((pos1Buckets != null && !pos1Buckets.isEmpty()) || (pos2Buckets != null && !pos2Buckets.isEmpty())) {
-      bucketIds = new int[nodeCount];
-      for (int v = 0; v < nodeCount; v++)
-        bucketIds[v] = provider.getRID(v).getBucketId();
-    } else {
-      bucketIds = null;
-    }
+    if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
+      return 0;
+    final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
+        ? precomputeBucketIds(provider, nodeCount) : null;
 
     long total = 0;
 
     // Scan all E1 (middle) edges by iterating pos1 nodes
     for (int b = 0; b < nodeCount; b++) {
-      if (pos1Buckets != null && !pos1Buckets.isEmpty()
-          && !pos1Buckets.contains(bucketIds[b]))
+      if (pos1Buckets != null && !pos1Buckets.contains(bucketIds[b]))
         continue;
 
       final int e1Start = viewE1.offset(b);
@@ -255,8 +248,7 @@ public final class AntiJoinChainOp implements CountOp {
       for (int j = e1Start; j < e1End; j++) {
         final int c = e1Nbrs[j];
 
-        if (pos2Buckets != null && !pos2Buckets.isEmpty()
-            && !pos2Buckets.contains(bucketIds[c]))
+        if (pos2Buckets != null && !pos2Buckets.contains(bucketIds[c]))
           continue;
 
         // Get setC = E2 neighbors of c (tags of comment c)
@@ -274,6 +266,22 @@ public final class AntiJoinChainOp implements CountOp {
       }
     }
     return total;
+  }
+
+  /** Whether any position of the chain carries a label, i.e. whether per-node bucket ids are worth computing. */
+  private static boolean anyLabelled(final IntHashSet[] validBuckets) {
+    for (final IntHashSet buckets : validBuckets)
+      if (buckets != null)
+        return true;
+    return false;
+  }
+
+  /** Pre-computes bucket IDs for all CSR nodes. One-time O(nodeCount) cost, amortized across all anchors. */
+  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount) {
+    final int[] bucketIds = new int[nodeCount];
+    for (int v = 0; v < nodeCount; v++)
+      bucketIds[v] = provider.getRID(v).getBucketId();
+    return bucketIds;
   }
 
   private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd,
@@ -344,9 +352,10 @@ public final class AntiJoinChainOp implements CountOp {
         }
       }
 
-      // Apply type filter using pre-computed bucket IDs
+      // Apply type filter using pre-computed bucket IDs. An empty set is a label that matches nothing, so it
+      // empties the frontier rather than being read as "no filter" (issue #5757).
       final IntHashSet midBuckets = validBuckets[h + 1];
-      if (midBuckets != null && !midBuckets.isEmpty()) {
+      if (midBuckets != null) {
         int writePos = 0;
         for (int i = 0; i < pos; i++) {
           if (midBuckets.contains(bucketIds[nextFrontier[i]]))
@@ -443,14 +452,12 @@ public final class AntiJoinChainOp implements CountOp {
   @Override
   public long executeOLTP(final Database db) {
     final String anchorLabel = nodeLabels[0];
-    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
-      return 0;
-
     final int hops = edgeTypes.length;
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
     final boolean anchorIsSource = antiJoinSourceIdx == 0;
 
-    // Verify all labels up to checkPos are defined (needed for map construction)
+    // Verify all labels up to checkPos are defined (needed for map construction). An unlabelled position - the
+    // anchor's included, since issue #5757 - is walked by the recursive path, which needs no per-label map.
     for (int i = 0; i <= checkPos; i++) {
       if (nodeLabels[i] == null || !db.getSchema().existsType(nodeLabels[i]))
         return executeOLTPRecursive(db);
@@ -458,14 +465,8 @@ public final class AntiJoinChainOp implements CountOp {
 
     // Pre-compute valid bucket IDs for type filtering at each position
     final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
-    for (int i = 0; i <= hops; i++) {
-      if (nodeLabels[i] != null && db.getSchema().existsType(nodeLabels[i])) {
-        final IntHashSet s = new IntHashSet();
-        for (final int bid : db.getSchema().getType(nodeLabels[i]).getBucketIds(true))
-          s.add(bid);
-        validBuckets[i] = s;
-      }
-    }
+    for (int i = 0; i <= hops; i++)
+      validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
     // Phase 1: Build neighbor RID maps for hops 0..checkPos-1.
     // Each map: vertex RID → RID[] of neighbors (filtered by target label buckets).
@@ -577,8 +578,9 @@ public final class AntiJoinChainOp implements CountOp {
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return map;
 
-    // Try GAV provider for accelerated neighbor lookups
-    final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, edgeType);
+    // Try GAV provider for accelerated neighbor lookups. One holding a subset of the vertex types is missing every
+    // edge that leaves the view, so it cannot answer for the vertices it does map (issue #5757).
+    final GraphTraversalProvider gavProvider = CSRCountUtils.findAcceleratingProvider(db, edgeType);
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
       final RID vertexRid = it.next().getIdentity();
@@ -617,8 +619,9 @@ public final class AntiJoinChainOp implements CountOp {
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return counts;
 
-    // Try GAV provider for accelerated degree counting
-    final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    // Try GAV provider for accelerated degree counting. See findAcceleratingProvider: a partial view undercounts
+    // the degree of every vertex it does map (issue #5757).
+    final GraphTraversalProvider gavProvider = CSRCountUtils.findAcceleratingProvider(db, edgeTypes);
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
       final RID vertexRid = it.next().getIdentity();
@@ -648,12 +651,9 @@ public final class AntiJoinChainOp implements CountOp {
    * Includes tail count optimization to avoid loading vertices at the last hops.
    */
   private long executeOLTPRecursive(final Database db) {
-    final String anchorLabel = nodeLabels[0];
-    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
-      return 0;
-
+    // An unlabelled anchor starts from every vertex in the schema (issue #5757).
     long total = 0;
-    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
+    for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
       final Vertex anchor = it.next().asVertex();
       final Set<RID> antiJoinSet = new HashSet<>();
       for (final RID rid : anchor.getConnectedVertexRIDs(antiJoinDirection, antiJoinEdgeType))
@@ -683,14 +683,7 @@ public final class AntiJoinChainOp implements CountOp {
       return tailCount;
     }
 
-    final String targetLabel = nodeLabels[hopIndex + 1];
-    final IntHashSet targetBuckets;
-    if (targetLabel != null && db.getSchema().existsType(targetLabel)) {
-      targetBuckets = new IntHashSet();
-      for (final int bid : db.getSchema().getType(targetLabel).getBucketIds(true))
-        targetBuckets.add(bid);
-    } else
-      targetBuckets = null;
+    final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hopIndex + 1]);
 
     long count = 0;
     for (final RID neighborRid : vertex.getConnectedVertexRIDs(directions[hopIndex], edgeTypes[hopIndex])) {

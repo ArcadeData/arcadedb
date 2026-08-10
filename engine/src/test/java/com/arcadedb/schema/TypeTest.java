@@ -555,6 +555,40 @@ class TypeTest extends TestHelper {
     assertThat(Type.convert(database, BigInteger.valueOf(42), Integer.class)).isEqualTo(42);
   }
 
+  /**
+   * Issue #5970: {@code Double.NaN.longValue()}/{@code Float.NaN.longValue()} return {@code 0} per the JLS
+   * narrowing-conversion rules, which is in-range for BYTE/SHORT/INTEGER, so the range check in
+   * {@code narrowToIntegral()} let a NaN through as a silent {@code 0} instead of rejecting it. Infinity was
+   * already caught (it saturates to {@code Long.MAX_VALUE}/{@code MIN_VALUE}, which is out of range); NaN needs
+   * its own guard. LONG never goes through {@code narrowToIntegral()} (no narrower range to check) but has the
+   * identical {@code longValue()}-returns-0 gap, caught by a review round on the fix for this issue's first pass.
+   */
+  @Test
+  void convertNaNToIntegralRejected() {
+    assertThatThrownBy(() -> Type.convert(database, Double.NaN, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Float.NaN, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Double.NaN, Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Float.NaN, Short.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Double.NaN, Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Float.NaN, Byte.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Double.NaN, Long.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Float.NaN, Long.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // INFINITY WAS ALREADY REJECTED BEFORE #5970 (IT SATURATES TO A LONG BOUNDARY, WHICH IS OUT OF RANGE) - COVERED
+    // HERE TOO SO A REGRESSION IN THE NEW NaN GUARD IS CAUGHT ALONGSIDE IT
+    assertThatThrownBy(() -> Type.convert(database, Double.POSITIVE_INFINITY, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, Double.NEGATIVE_INFINITY, Integer.class))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
   @Test
   void convertToLong() {
     assertThat(Type.convert(database, 1L, Long.class)).isEqualTo(1L);

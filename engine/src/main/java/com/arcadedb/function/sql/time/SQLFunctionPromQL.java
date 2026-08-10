@@ -80,6 +80,10 @@ public class SQLFunctionPromQL extends SQLFunctionConfigurableAbstract {
 
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final PromQLEvaluator evaluator = new PromQLEvaluator(database);
+    // issue #5886, 17th review pass: a fresh evaluator per call would otherwise resolve its own regexTimeout
+    // budget from GlobalConfiguration in isolation instead of the CommandContext-cached deadline every other
+    // per-row SQL function in this issue shares - see PromQLEvaluator.setRegexDeadline().
+    evaluator.setRegexDeadline(context.getOrComputeRegexDeadline("__PROMQL_FUNCTION_DEADLINE__"));
     final PromQLResult result = evaluator.evaluateInstant(new PromQLParser(expr).parse(), evalTimeMs);
     return toList(result);
   }

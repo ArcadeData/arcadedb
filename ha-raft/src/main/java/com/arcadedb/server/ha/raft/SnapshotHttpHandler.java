@@ -53,6 +53,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
@@ -108,6 +109,16 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   public SnapshotHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
+  }
+
+  /**
+   * Shuts down the stall watchdog scheduler. Called by {@link RaftHAPlugin#stopService()} so that
+   * a server stop/restart cycle within one JVM does not leak the watchdog thread (issue #5890): a
+   * fresh {@code SnapshotHttpHandler} (and watchdog) is otherwise created on every restart while the
+   * previous one is left running.
+   */
+  void close() {
+    watchdogExecutor.shutdownNow();
   }
 
   @Override
@@ -314,8 +325,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     // Poll a few times within the timeout window so a stall is detected (and the semaphore slot freed)
     // promptly once progress halts, without spinning. Floored at 1s for very small configured timeouts.
     final long pollIntervalMs = Math.max(1_000L, writeTimeoutMs / 4);
-    final ScheduledFuture<?> watchdog = scheduleStallWatchdog(watchdogExecutor, completed, lastProgressMs,
-        writeTimeoutMs, pollIntervalMs, databaseName, () -> {
+    final ScheduledFuture<?> watchdog = scheduleWatchdogOrSkip(completed, lastProgressMs, writeTimeoutMs, pollIntervalMs,
+        databaseName, () -> {
           try {
             exchange.getConnection().close();
           } catch (final Exception ignored) {
@@ -387,7 +398,8 @@ public class SnapshotHttpHandler implements HttpHandler {
       }
     } finally {
       completed.set(true);
-      watchdog.cancel(false);
+      if (watchdog != null)
+        watchdog.cancel(false);
     }
   }
 
@@ -493,6 +505,30 @@ public class SnapshotHttpHandler implements HttpHandler {
         onStall.run();
       }
     }, pollIntervalMs, pollIntervalMs, TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Calls {@link #scheduleStallWatchdog}, degrading to an unmonitored transfer (returns {@code null})
+   * instead of propagating {@link RejectedExecutionException} when {@code watchdogExecutor} has already
+   * been shut down. {@code ArcadeDBServer.stopInternal()} stops plugins - which shuts down this handler's
+   * executor via {@code close()} - before it stops the HTTP server, so a request already in flight, or one
+   * accepted in that window, can reach this call after the executor is shut down; the raw
+   * {@code scheduleWithFixedDelay} call throws synchronously in that case, before this method's caller's
+   * try block is even entered (issue #5890 follow-up; same fix shape as
+   * {@code PostVerifyDatabaseHandler#submitPeerQuery}). {@code close()} only fires during shutdown, so
+   * losing the stall watchdog for the rest of this one transfer is an acceptable tradeoff. Package-private
+   * for unit testing.
+   */
+  ScheduledFuture<?> scheduleWatchdogOrSkip(final AtomicBoolean completed, final AtomicLong lastProgressMs,
+      final long writeTimeoutMs, final long pollIntervalMs, final String databaseName, final Runnable onStall) {
+    try {
+      return scheduleStallWatchdog(watchdogExecutor, completed, lastProgressMs, writeTimeoutMs, pollIntervalMs,
+          databaseName, onStall);
+    } catch (final RejectedExecutionException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Snapshot watchdog rejected for '%s': the handler is shutting down, transfer proceeds unmonitored", databaseName);
+      return null;
+    }
   }
 
   /**

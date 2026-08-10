@@ -65,6 +65,8 @@ public class FetchFromSchemaIndexDetailStep extends AbstractExecutionStep {
       r.setProperty("indexType", index.getType());
       r.setProperty("typeName", index.getTypeName());
 
+      // A manual index is bound to no type and no properties, and IndexMetadata coerces the missing list to an empty one, so the
+      // key must be omitted on emptiness - a null check is never false (issue #6005).
       if (!index.getPropertyNames().isEmpty())
         r.setProperty("properties", Collections.singletonList(index.getPropertyNames()));
 

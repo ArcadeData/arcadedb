@@ -84,7 +84,7 @@ jobs:
       # "Prerequisites". If you bump native.graalvm.version in native/pom.xml, bump this
       # java-version to match in the SAME change.
       - name: Set up GraalVM (Community, JDK 25.0.2)
-        uses: graalvm/setup-graalvm@0def53c0fd8534bc13416c9469f5be45265824fd # v1.6.1
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.1
         with:
           java-version: "25.0.2"
           distribution: "graalvm-community"

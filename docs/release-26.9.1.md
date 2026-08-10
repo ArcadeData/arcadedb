@@ -326,3 +326,167 @@ so are fully atomic. `abort` mode still fails the import and stops processing fu
 only the "nothing at all was imported" guarantee differs between the two formats.
 
 [#5968](https://github.com/ArcadeData/arcadedb/issues/5968)
+
+## Regex-based query and validation surfaces are no longer able to pin a worker thread indefinitely on a pathological pattern (#5886)
+
+A regex like `(.*a){20}$` against a 41-character string triggers catastrophic backtracking in
+`java.util.regex`: still running after 30+ seconds for a pattern and input small enough to be typed by
+hand. `arcadedb.command.timeout` does not help, because `Matcher` never polls an interrupt flag or checks a
+deadline while backtracking - the only thing it calls on every backtracking step is `CharSequence.charAt()`
+on the input, and nothing in the surrounding query execution machinery gets a chance to run again until that
+call returns on its own. In a deployment where query access reaches low-privilege users, or an application
+layer forwards user-supplied patterns, a handful of such operations is enough to permanently tie up worker
+threads.
+
+A new utility, `TimeBoundRegex`, closes that gap by wrapping the matched input in a `CharSequence` that throws
+once a deadline elapses - the one interception point `java.util.regex` offers, for `matches()`, `replaceAll()`,
+and `split()` alike. The deadline comes from a new setting, `arcadedb.command.regexTimeout` (default 1000ms,
+per-database), independent of `arcadedb.command.timeout` and active even when that setting is left at its own
+default of disabled (`0`). The deadline is checked every 256 `charAt()` calls rather than every call, keeping
+the check off the hot path for the overwhelming majority of patterns that never come close to that many
+backtracking steps.
+
+**Covered entry points:**
+- SQL `MATCHES` and openCypher `=~`
+- SQL `LIKE`/`ILIKE`, including the native query engine's `SelectOperator` path
+- `text.regexReplace()` and the `.normalize()` SQL method's optional pattern argument
+- Full-text search's Lucene `RegexpQuery` (`/pattern/`) and `WildcardQuery` (`*`/`?`) support
+- PromQL's `=~`/`!~` label matchers
+- Schema-level `REGEXP` property validation (`CREATE PROPERTY ... REGEXP <pattern>`) - notably reachable with
+  no query privileges at all, since it runs on every insert/update of a validated property through any write
+  path (REST, any wire protocol)
+
+The `.split(delimiter)` SQL method got a different fix: unlike its three siblings (the `split()` function,
+`text.split()`, and Cypher's `split()`), which all treat the delimiter as a literal via `Pattern.quote(...)`,
+it passed the delimiter straight to `String.split(regex)` unescaped. Matched to its siblings' behavior, which
+removes the risk entirely rather than just bounding it.
+
+**Deadline sharing.** A regex evaluated once per row/token/item/property over a scan must not get a fresh
+timeout budget per item - a table, index, or document shaped so every item triggers catastrophic backtracking
+would then cost up to `itemCount * regexTimeout` instead of one bounded operation. `MATCHES`, `=~`,
+`text.regexReplace()`, and `.normalize()`'s pattern argument all share one deadline across an entire query
+execution (cached on the `CommandContext`, the same mechanism used to cache `MATCHES`'s compiled `Pattern`);
+full-text and schema `REGEXP` validation share one deadline across the whole scan/document they run against;
+PromQL shares one deadline across an entire query's lifetime, including every step of a range query, not just
+the rows within one step. `LIKE`/`ILIKE` are the one exception: `BinaryCompareOperator`, the interface they
+implement, has no `CommandContext` to cache a deadline on (only a `Database`), and widening that interface
+across every comparison operator was judged out of proportion here - each row still gets its own
+`regexTimeout` budget, so a `LIKE`-heavy scan where many rows are individually catastrophic is bounded per row
+but not for the scan as a whole. A parallel bucket scan (SQL's default for a type spread across multiple
+buckets) is a second, narrower exception: each worker thread gets its own copy of the `CommandContext`
+(deliberately, so workers don't race on a shared, non-thread-safe cache), so it computes its own deadline
+independently rather than sharing the sequential-scan path's single deadline - a type scanned in parallel
+across N buckets is bounded by `N * regexTimeout` overall, not one shared budget. Unlike the row/item counts
+this issue defends against, bucket count is a schema/DDL property, not attacker-controlled, so this is a much
+narrower gap than the one this fix closes.
+
+**Upgrade note.** Because the deadline is shared per query/scan rather than per match, and defaults to an
+enabled 1000ms, a *legitimate, non-catastrophic* operation that previously ran slowly to completion - a
+`MATCHES`/`LIKE` query over a very large table, a full-text or PromQL scan over a lot of data, or `REGEXP`
+validation against a large field value - can now fail with `TimeoutException` instead. Raise
+`arcadedb.command.regexTimeout` for any database with that kind of workload.
+
+[#5886](https://github.com/ArcadeData/arcadedb/issues/5886)
+
+## A rare `NoSuchElementException` reading a record immediately after committing it under `REPEATABLE_READ` (#5976)
+
+`RecordEncryptionTest.encryption()` intermittently failed on CI with `NoSuchElementException` out of
+`MultiIterator.next()`, reading back a `BackAccount` vertex saved by the immediately preceding, already-committed
+transaction - single-threaded, no HA, no network. The failure was never reproduced locally, which pointed at a
+narrow timing window rather than a deterministic bug.
+
+The real error was hidden. `BucketIterator.fetchNext()` catches any exception thrown while materializing a
+record, logs it at `SEVERE`, and skips the slot - so a record that failed to load looked identical to an empty
+bucket to every caller, surfacing generically as "no records" instead of whatever actually went wrong.
+
+What actually went wrong: `TransactionContext.getPage()` decides whether a freshly loaded page is worth caching
+in its `REPEATABLE_READ` snapshot (`immutablePages`) by checking whether the page is "new" - and used
+`PaginatedComponentFile.getTotalPages()` (the physical on-disk file size) to decide. That lags a commit:
+`PageManager.writePages()` hands a committed page to the async flush thread and only bumps the in-memory
+`PaginatedComponent.pageCount` synchronously, so a just-committed, not-yet-physically-flushed page was
+(incorrectly) treated as "new" and left out of the cache. `ImmutableVertex.modify()` then used that same cache
+(via `hasPageForRecord()`) to decide whether a record needed a defensive reload - found it missing, and
+force-reloaded, which re-invokes every `AfterRecordReadListener` on the same record a second time, re-entrantly,
+before the first invocation had returned. The encryption listener decrypts a record's ciphertext in place inside
+`onAfterRead()`, starting with `record.asVertex().modify()` - not safe against being re-entered on itself: the
+inner (nested) call decrypts the ciphertext first, so the outer call then tries to Base64-decode the now-plaintext
+value and throws `IllegalArgumentException`, which `BucketIterator` swallows as described above.
+
+Fixed by having `getPage()` ask the owning `PaginatedComponent` for its own page count (bumped synchronously at
+commit, independent of flush timing) instead of the physical file size, so a committed page is cached for
+`REPEATABLE_READ` as soon as it is committed. `Issue5976AfterReadReentrancyRaceTest` reproduces the race
+deterministically by forcing the page cache to evict aggressively (`MAX_PAGE_RAM=0`) across a few thousand
+fresh single-page buckets: 500+ failures per 1000 iterations before the fix, zero after it.
+
+[#5976](https://github.com/ArcadeData/arcadedb/issues/5976)
+
+## `AbstractSQLMethod.getSyntax()` mis-rendered variadic methods (#5972)
+
+The shared default `getSyntax()` implementation built the optional-parameter suffix with a loop bounded by
+`i < maxParams`, which is never true once `maxParams` is `-1` - the sentinel every variadic SQL method
+(`removeall`, `append`, `include`, `exclude`, `remove`, `transform`) declares for "unlimited". Any variadic
+method that does not override `getSyntax()` itself - only `SQLMethodRemoveAll` in practice - therefore rendered
+a trailing `[]` regardless of how many extra parameters it actually accepts, e.g.
+`<field>.removeall(param1[])` instead of `<field>.removeall(param1[, param2]*)`. Cosmetic only (this string
+feeds documentation generation and exception messages, not parsing), but now handled explicitly for both the
+"at least one more" and "any number, including zero" shapes.
+
+[#5972](https://github.com/ArcadeData/arcadedb/issues/5972)
+
+## Redis/Bolt wire protocols: bounding the BOLT handshake/auth window (#5978)
+
+Follow-up from the #5912 fix that gave the Redis wire protocol a bounded pre-authentication read timeout (so an
+unauthenticated connection that never sends anything can't hold its thread open forever): `BoltNetworkExecutor`
+had no equivalent. `negotiateTransport()` only ever bounded the TLS-detection sub-step, then explicitly restored
+an infinite timeout before the BOLT handshake and the AUTH/HELLO-LOGON exchange even began - and for a
+plaintext-only listener (`arcadedb.bolt.ssl=DISABLED`, the default), no timeout was armed at all. A connected
+client that never completed the handshake or never authenticated could hold the connection thread open
+indefinitely, the same resource-exhaustion shape #5912 closed for Redis.
+
+Fixed by arming the same bounded `NETWORK_SOCKET_TIMEOUT` window across transport negotiation, the BOLT
+handshake and the AUTH/HELLO-LOGON phase - for both plaintext and TLS connections - lifting it to infinite only
+once authentication actually succeeds (mirroring `RedisNetworkExecutor.markAuthenticated`/`markUnauthenticated`),
+and re-arming it on `LOGOFF`. A `SocketTimeoutException` on that bounded window now closes the connection
+cleanly (matching the existing `EOFException`/`SocketException` handling) instead of surfacing as a `SEVERE`
+"BOLT connection error" log.
+
+Two other follow-ups filed alongside this one were evaluated and intentionally left as-is: an idle-timeout cap
+on already-authenticated Redis connections was judged not worth the deviation from real Redis semantics (which
+never times out an idle authenticated client) absent evidence it's a problem in practice; and the swallowed
+`SocketException` in `RedisNetworkExecutor.markUnauthenticated()` already carries a comment explaining why that
+failure mode is safe to ignore (the socket is already broken/closed) - the new `BoltNetworkExecutor` counterpart
+documents the same reasoning.
+
+[#5978](https://github.com/ArcadeData/arcadedb/issues/5978)
+
+## The Cypher count push-downs can anchor on an unlabelled node (#5757)
+
+`MATCH ()-[:TYPE]->() RETURN count(*)` - "how many edges of this type are there" - is the cheapest question
+there is to ask a graph, and it was the one shape the CSR count push-downs could not serve. Every operator
+walks out from one position of the pattern and enumerates the vertices that position accepts, which it built
+from the position's label; an unlabelled anchor left it with no set, which each operator read as an empty one
+and answered **0**. Issue #5715 closed that wrong answer by declining to build the operator at all, so the
+answer became right and the fast path went away.
+
+The two chain operators now read an absent anchor label for what it means - **every vertex** - on both paths:
+the CSR one seeds the whole node domain, and the OLTP one iterates every vertex type in the schema. That
+covers the plain chain, the chain with a `<>` inequality (whose self-loop subtraction anchors the same way),
+and the anti-join chain. The pair-join and degree-product operators still decline an unlabelled anchor, since
+they key a hash join and a degree product on the label itself, and the ordinary pipeline answers those.
+
+**The root cause is separated at the source.** `CSRCountUtils.buildValidBuckets` returned `null` both for "no
+label was given, so do not filter" and for "the label is declared on nothing, so nothing matches", and its
+callers disagreed about which one they held - that single overload produced *both* wrong answers found in
+#5715, one from each end of it. `null` now means only "no filter", an **empty** set means "matches nothing",
+and every consumer branches on `null` alone so an empty set falls through to a membership test that keeps
+nothing.
+
+**A view over some of the vertex types is no longer used where it cannot answer.** "Every vertex" is a claim
+about the graph rather than about a `GraphAnalyticalView`, so an operator anchored on it runs against the OLTP
+path unless the view's node domain is every vertex. The same reasoning applies to the per-vertex accelerator
+these OLTP paths consult: a view holding a subset of the vertex types answers for the vertices it maps with
+the adjacency it holds, which is missing every edge that leaves the view, and the fallback for an unmapped
+vertex does not cover it. Those lookups now go through `CSRCountUtils.findAcceleratingProvider`, which
+declines a partial view.
+
+[#5757](https://github.com/ArcadeData/arcadedb/issues/5757)

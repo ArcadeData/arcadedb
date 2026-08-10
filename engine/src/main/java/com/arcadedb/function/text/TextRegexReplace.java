@@ -18,7 +18,10 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -29,6 +32,12 @@ import java.util.regex.PatternSyntaxException;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextRegexReplace extends AbstractTextFunction {
+  private static final int MAX_PATTERN_LENGTH = 500;
+
+  // context.getCachedValue()/setCachedValue() key for the shared deadline - see execute() for why this needs to
+  // be shared, not recomputed per call.
+  private static final String DEADLINE_CACHE_KEY = "__TEXT_REGEXREPLACE_DEADLINE__";
+
   @Override
   protected String getSimpleName() {
     return "regexReplace";
@@ -49,8 +58,6 @@ public class TextRegexReplace extends AbstractTextFunction {
     return "Replace all matches of a regular expression with replacement";
   }
 
-  private static final int MAX_PATTERN_LENGTH = 500;
-
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
@@ -69,14 +76,32 @@ public class TextRegexReplace extends AbstractTextFunction {
           "Regex pattern exceeds maximum allowed length (" + MAX_PATTERN_LENGTH + "): " + regex.length());
     }
 
+    // One deadline shared across every row this function runs against within the same query (issue #5886
+    // follow-up): unlike LikeOperator/ILikeOperator (no CommandContext to cache on), this function does receive
+    // one, so it gets the same treatment as MatchesCondition/RegexExpression rather than a fresh budget per
+    // call - otherwise SELECT text.regexReplace(col, :pattern, 'x') FROM LargeType with a pathological pattern
+    // could still cost up to rowCount * regexTimeout overall. context is null in some direct/unit-test
+    // invocations of this function (see TextRegexReplaceTest); GlobalConfiguration.getValueAsLong(Database)
+    // falls back to the compiled-in default in that case, and the deadline is simply not shared across calls
+    // when there's no context to cache it on.
+    final long regexDeadline = context != null ?
+        context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY) :
+        TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
+
     try {
-      return Pattern.compile(regex).matcher(str).replaceAll(replacement == null ? "" : replacement);
+      return TimeBoundRegex.replaceAllUntil(Pattern.compile(regex), str, replacement == null ? "" : replacement, regexDeadline);
     } catch (final PatternSyntaxException e) {
       throw new IllegalArgumentException("Invalid regex pattern: " + e.getMessage(), e);
+    } catch (final TimeoutException e) {
+      // Catastrophic backtracking (issue #5886): TimeBoundRegex already bounds this to regexTimeout instead of
+      // running unbounded, but still surfaces it through this function's existing IllegalArgumentException contract.
+      throw new IllegalArgumentException("Regex pattern caused catastrophic backtracking and was aborted: " + regex, e);
     } catch (final StackOverflowError e) {
-      // Catastrophic backtracking can cause stack overflow
-      throw new IllegalArgumentException(
-          "Regex pattern caused stack overflow (possible catastrophic backtracking): " + regex, e);
+      // TimeBoundRegex only converts a StackOverflowError into a TimeoutException when regexTimeout is active;
+      // with it explicitly disabled (arcadedb.command.regexTimeout <= 0), a stack-overflow-inducing pattern
+      // propagates as itself instead - keep this function's original, documented IllegalArgumentException
+      // contract for that combination too, not just for the bounded case.
+      throw new IllegalArgumentException("Regex pattern caused stack overflow (possible catastrophic backtracking): " + regex, e);
     }
   }
 }

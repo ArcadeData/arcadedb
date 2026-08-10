@@ -22,4 +22,8 @@ public class QueryNotIdempotentException extends ArcadeDBException {
   public QueryNotIdempotentException(final String message) {
     super(message);
   }
+
+  public QueryNotIdempotentException(final String message, final Throwable cause) {
+    super(message, cause);
+  }
 }

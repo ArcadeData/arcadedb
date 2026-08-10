@@ -18,11 +18,35 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.utility.TimeBoundRegex;
+
+import java.util.regex.Pattern;
+
 public class QueryHelper {
   protected static final char WILDCARD_ANYCHAR = '?';
   protected static final char WILDCARD_ANY     = '%';
 
-  public static boolean like(String currentValue, String value) {
+  /**
+   * A sequence of several {@code %}/{@code ?} wildcards (translated to {@code .*}/{@code .} by {@link
+   * #convertForRegExp(String)}) reproduces the same catastrophic-backtracking shape as the issue #5886
+   * reproducer even without grouping, alternation, or nested quantifiers - a pattern like {@code %a%a%a%a%a%}
+   * against input that does not fully match it hangs exactly like {@code (.*a){20}$} does. Bounded the same
+   * way as {@code MATCHES}/{@code =~}: see {@link TimeBoundRegex}.
+   *
+   * @param timeoutMillis maximum time allowed for the match, in milliseconds; a value {@code <= 0} disables the
+   *                      bound
+   */
+  public static boolean like(final String currentValue, final String value, final long timeoutMillis) {
+    return likeUntil(currentValue, value, TimeBoundRegex.newDeadline(timeoutMillis));
+  }
+
+  /**
+   * Same as {@link #like(String, String, long)}, but against an absolute deadline shared across a series of
+   * related matches (e.g. every item of a multi-value property matched against the same pattern) rather than
+   * each getting its own full timeout budget - see {@link TimeBoundRegex#matchesUntil(Pattern, CharSequence,
+   * long)}.
+   */
+  public static boolean likeUntil(String currentValue, String value, final long deadlineNanos) {
     if (currentValue == null || value == null || (currentValue.isEmpty() ^ value.isEmpty()))
       // EMPTY/NULL PARAMETERS
       return false;
@@ -30,7 +54,7 @@ public class QueryHelper {
       return true;
 
     value = convertForRegExp(value);
-    return currentValue.matches(value);
+    return TimeBoundRegex.matchesUntil(Pattern.compile(value), currentValue, deadlineNanos);
   }
 
   public static String convertForRegExp(String value) {

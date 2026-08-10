@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -294,6 +295,22 @@ public class IndexMetadata {
   }
 
   /**
+   * Whether this definition carries the indications of WHAT to index - a type and the properties of it whose values
+   * populate the index - which is what {@link com.arcadedb.index.Index#isAutomatic()} answers.
+   * <p>
+   * The empty check is the whole point and cannot be dropped for a plain null check: the constructor above coerces a
+   * null property list to {@link List#of()}, so {@code propertyNames} is never null and a manual index - the one kind
+   * built with {@code new IndexMetadata(null, null, -1)} and never bound to a type - used to report itself as
+   * automatic. {@code REBUILD INDEX *} and {@code COMPACT INDEX *} both select their targets on that answer, so every
+   * manual index entered a sweep that could only fail on it (issue #5780).
+   *
+   * @return true when the index is derived from records, false when its entries are whatever the caller put in it
+   */
+  public boolean hasIndexedProperties() {
+    return propertyNames != null && !propertyNames.isEmpty();
+  }
+
+  /**
    * Returns true if the property at the given index has case-insensitive collation.
    */
   public boolean isCaseInsensitive(final int propertyIndex) {
@@ -311,5 +328,40 @@ public class IndexMetadata {
       if (COLLATION_CI.equals(c))
         return true;
     return false;
+  }
+
+  /**
+   * Reconstructs the metadata an index rebuild should carry over, for the two index types whose configuration
+   * {@link com.arcadedb.index.IndexInternal#getMetadata()} does not capture. {@code FULL_TEXT} and {@code GEOSPATIAL}
+   * keep their type-specific settings (analyzer, BM25 parameters, GeoHash precision) in a subtype the generic
+   * {@code IndexMetadata} does not carry, so a rebuild that passed {@code getMetadata()} straight through silently
+   * reset them to defaults (issue #4732). Reconstructing from the index's persisted JSON recovers them. FULL_TEXT's
+   * BM25 corpus counters are reset to zero so the re-index pass recomputes them from scratch instead of doubling the
+   * persisted totals; GEOSPATIAL's tokenization is reset to {@link GeoIndexMetadata#DEFAULT_TOKENIZATION}, which is
+   * also the one safe moment (a full re-read of every record) to publish the compact FRONTIER layout on an index
+   * created before 26.8.1 (#5478).
+   * <p>
+   * Shared by {@code RebuildIndexStatement.buildIndex()} and {@code DatabaseChecker}'s auto-fix rebuild path, which
+   * both drop and recreate a corrupted or explicitly-rebuilt index the same way (issue #5934).
+   *
+   * @param idx           the index being rebuilt, read before it is dropped
+   * @param typeName      the type name the rebuilt index will be created against
+   * @param propertyNames the property names the rebuilt index will be created against
+   */
+  public static IndexMetadata reconstructForRebuild(final IndexInternal idx, final String typeName,
+      final String[] propertyNames) {
+    final Schema.INDEX_TYPE type = idx.getType();
+    if (type == Schema.INDEX_TYPE.FULL_TEXT) {
+      final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, propertyNames, -1);
+      ftMeta.fromJSON(idx.toJSON());
+      ftMeta.setCounters(0L, 0L);
+      return ftMeta;
+    } else if (type == Schema.INDEX_TYPE.GEOSPATIAL) {
+      final GeoIndexMetadata geoMeta = new GeoIndexMetadata(typeName, propertyNames, -1);
+      geoMeta.fromJSON(idx.toJSON());
+      geoMeta.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
+      return geoMeta;
+    }
+    return idx.getMetadata();
   }
 }

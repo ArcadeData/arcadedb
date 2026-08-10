@@ -17,6 +17,7 @@ package com.arcadedb.query.select;/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.serializer.BinaryComparator;
@@ -111,7 +112,8 @@ public enum SelectOperator {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return QueryHelper.like(((String) SelectExecutor.evaluateValue(record, left)).toLowerCase(Locale.ENGLISH),
-          ((String) SelectExecutor.evaluateValue(record, right)).toLowerCase());
+          ((String) SelectExecutor.evaluateValue(record, right)).toLowerCase(),
+          GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(record.getDatabase()));
     }
   },
 
@@ -119,7 +121,8 @@ public enum SelectOperator {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return QueryHelper.like((String) SelectExecutor.evaluateValue(record, left),
-          (String) SelectExecutor.evaluateValue(record, right));
+          (String) SelectExecutor.evaluateValue(record, right),
+          GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(record.getDatabase()));
     }
   },
 

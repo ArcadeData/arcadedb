@@ -18,6 +18,7 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
@@ -25,6 +26,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IPAddressBlocklist;
 import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.ByteArrayOutputStream;
@@ -551,9 +553,7 @@ public enum GlobalConfiguration {
       resolved IP address of the target host and re-checked on every redirect hop to prevent Server-Side Request Forgery (SSRF). \
       Defaults to loopback, private (RFC 1918), link-local (including the cloud metadata address 169.254.169.254), carrier-grade \
       NAT, multicast and reserved ranges. Set to an empty string to disable IP filtering (not recommended).""",
-      String.class,
-      "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,0.0.0.0/8,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,"
-          + "224.0.0.0/4,240.0.0.0/4,255.255.255.255/32,::1/128,::/128,fe80::/10,fc00::/7,ff00::/8"),
+      String.class, IPAddressBlocklist.DEFAULT_RESERVED_RANGES),
 
   OPENCYPHER_ID_BUCKET_BITS("arcadedb.opencypher.idBucketBits", SCOPE.JVM,
       """
@@ -566,6 +566,19 @@ public enum GlobalConfiguration {
 
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
+
+  COMMAND_REGEX_TIMEOUT("arcadedb.command.regexTimeout", SCOPE.DATABASE, """
+      Maximum time in ms a single regular expression evaluation may run before being aborted (an entire scan, for a \
+      MATCHES/=~/LIKE/ILIKE/full-text/PromQL query - see below). Covers SQL MATCHES, openCypher =~, SQL LIKE/ILIKE, the \
+      text.regexReplace() and .normalize() functions, full-text search's RegexpQuery/WildcardQuery, PromQL's =~/!~ label \
+      matchers, and schema-level REGEXP property validation. java.util.regex backtracking does not poll interrupts or \
+      deadlines, so a pathological pattern (catastrophic backtracking) keeps its worker thread busy regardless of \
+      arcadedb.command.timeout; this dedicated bound protects against that even when arcadedb.command.timeout is disabled \
+      (0), which is the default. MATCHES/=~ share one deadline across an entire query execution (not per row), and \
+      full-text/PromQL/REGEXP-validation share one deadline across an entire scan (not per item) - a large, legitimately \
+      slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more than 1s. Set to \
+      0 to disable (not recommended).""",
+      Long.class, 1000),
 
   COMMAND_WARNINGS_EVERY("arcadedb.command.warningsEvery", SCOPE.JVM,
       "Reduce warnings in commands to print in console only every X occurrences. Use 0 to disable warnings with commands",
@@ -659,6 +672,20 @@ public enum GlobalConfiguration {
       error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
       more than a handful of levels, so the default is deliberately generous while staying far below the point \
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
+      Integer.class, 200),
+
+  // GRAPHQL
+  GRAPHQL_MAX_NESTING_DEPTH("arcadedb.graphql.maxNestingDepth", SCOPE.DATABASE,
+      """
+      Maximum nesting depth allowed for '{' ... '}' or '[' ... ']' in a single GraphQL document - selection \
+      sets (fields nested inside one another), object/interface/input type bodies, and list values/types all \
+      use one of these two delimiter pairs and count toward the same limit. The JavaCC-generated parser \
+      re-enters its SelectionSet/Field grammar rules, or the mutually-recursive Value/ListValue rules, once per \
+      nesting level, so a few thousand levels is enough to exhaust the default JVM thread stack with a payload \
+      of only a few KB; a document past this limit is rejected as a normal parse error instead of crashing the \
+      worker thread with a StackOverflowError. Real-world documents rarely nest more than a handful of levels, \
+      so the default is deliberately generous while staying far below the point where the stack is at risk. \
+      Raise it only if a legitimate, deeply-nested or very long generated document needs it.""",
       Integer.class, 200),
 
   // INDEXES
@@ -846,6 +873,15 @@ public enum GlobalConfiguration {
       Concurrent rebuilds are memory-intensive; running too many in parallel can cause OOM kills. \
       Set to 1 to serialize all rebuilds (safest for memory). Higher values trade memory for throughput.""",
       Integer.class, 1),
+
+  VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS("arcadedb.vectorIndex.rebuildPermitTimeoutMs", SCOPE.JVM,
+      """
+      Maximum time in milliseconds an async vector index rebuild waits to acquire a JVM-wide rebuild permit \
+      (see arcadedb.vectorIndex.maxConcurrentRebuilds) before giving up on that rebuild cycle. Without this \
+      bound, a single rebuild that never returns its permit (e.g. one whose worker threads do not respond to \
+      interruption) would starve every other vector index's rebuild across the whole process indefinitely. \
+      A skipped cycle is not lost: the next mutation-threshold or inactivity trigger retries it.""",
+      Integer.class, 600_000),
 
   // NETWORK
   NETWORK_SAME_SERVER_ERROR_RETRIES("arcadedb.network.sameServerErrorRetry", SCOPE.SERVER,
@@ -1950,6 +1986,22 @@ public enum GlobalConfiguration {
   public <T> T getValue() {
     //noinspection unchecked
     return (T) (value != nullValue && value != null ? value : defValue);
+  }
+
+  /**
+   * Resolves this {@code SCOPE.DATABASE} setting's value against {@code database}'s per-database overrides,
+   * falling back to the compiled-in default when {@code database} is {@code null}. Several call sites read a
+   * {@code SCOPE.DATABASE} setting (e.g. {@code arcadedb.command.regexTimeout}) from code that isn't guaranteed
+   * a bound database - a standalone SQL function or operator that tests, or a future caller, may invoke directly
+   * with a {@code null}/disconnected database - and repeating the same null-safe fallback at each of those call
+   * sites risks drifting out of sync; this centralizes it.
+   *
+   * @param database the database to resolve a per-database override from, or {@code null} to use the default
+   *
+   * @return the resolved value as a {@code long}
+   */
+  public long getValueAsLong(final Database database) {
+    return (database != null ? database.getConfiguration() : new ContextConfiguration()).getValueAsLong(this);
   }
 
   /**
