@@ -32,8 +32,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.FullTextIndexMetadata;
-import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -282,24 +280,13 @@ public class DatabaseChecker {
         // reverts to default analyzer/precision settings every time this repairs one of their bucket sub-indexes.
         final TypeIndex ownerTypeIndex = ((IndexInternal) idx).getTypeIndex();
 
-        IndexMetadata indexMetadata = ((IndexInternal) idx).getMetadata();
-        if (indexType == Schema.INDEX_TYPE.FULL_TEXT) {
-          final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, propNames.toArray(new String[0]), -1);
-          ftMeta.fromJSON(((IndexInternal) idx).toJSON());
-          ftMeta.setCounters(0L, 0L);
-          indexMetadata = ftMeta;
-        } else if (indexType == Schema.INDEX_TYPE.GEOSPATIAL) {
-          final GeoIndexMetadata geoMeta = new GeoIndexMetadata(typeName, propNames.toArray(new String[0]), -1);
-          geoMeta.fromJSON(((IndexInternal) idx).toJSON());
-          geoMeta.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
-          indexMetadata = geoMeta;
-        }
+        final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
+            propNames.toArray(new String[0]));
 
         // Same file-locking coverage as RebuildIndexStatement.buildIndex(): the drop and the rebuild below touch
         // the index's own file(s) plus, through the drop, the owning TypeIndex's bookkeeping. Without holding
         // the lock across both steps a concurrent writer could observe the index gone-then-back with entries
         // missing, or the commit-time lock-coverage check could throw on the newly-created file.
-        final IndexMetadata rebuildMetadata = indexMetadata;
         database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
           database.getSchema().dropIndex(idx.getName());
 
