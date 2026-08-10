@@ -317,6 +317,12 @@ public class ArcadeGremlin extends ArcadeQuery {
 
     if ("auto".equals(gremlinEngine) || "java".equals(gremlinEngine)) {
       // TRY THE NATIVE JAVA ENGINE FIRST
+      // NOTE: this catch only sees ScriptException. An ATN-mismatch CommandExecutionException from
+      // translateAntlrAtnMismatch() (issue #5937) is unchecked and propagates straight past it, so 'auto' mode
+      // fails fast on that classpath defect too instead of silently falling back to the insecure Groovy engine
+      // below - intentional, not an oversight: the defect is a deployment/packaging problem, not a query the
+      // Java engine merely can't parse, and papering over it with Groovy would undermine the point of failing
+      // clearly in the first place.
       try {
         return executeStatement("java", analysis);
       } catch (ScriptException e) {
