@@ -141,16 +141,22 @@ public class HostClassLookupFilter implements Predicate<String> {
   };
 
   /**
-   * Ancestors the hierarchy walk in {@link #inheritsADeniedType(String)} must never reject on, even though they are
-   * only reachable through a package-wildcard {@code DENIED} entry ({@code java.io.**} / {@code java.lang.**}-shaped
-   * families). Each is a marker or structural interface: it grants no capability of its own (no I/O, no reflection,
-   * no process/thread control), it is merely ubiquitous - implemented by most collection and value classes - so
-   * checking it would rediscover the exact false-positive the original wildcard exclusion was written to avoid
-   * (issue #6045). {@code java.io.Closeable} is here alongside {@code AutoCloseable} for the same reason: it lives
-   * inside the now-fully-checked {@code java.io.**} family, extends {@code AutoCloseable}, and is exactly as inert
-   * (its one method just signals "release a resource" - it does not itself grant one). Keep this list to interfaces
-   * that are provably inert; anything with a method that could do real work (e.g. {@code java.util.EventListener})
-   * does not belong here.
+   * Ancestors the hierarchy walk in {@link #inheritsADeniedType(String)} must never reject on. Each is a marker or
+   * structural interface: it grants no capability of its own (no I/O, no reflection, no process/thread control), it
+   * is merely ubiquitous - implemented by most collection and value classes - so checking it would rediscover the
+   * exact false-positive the original wildcard exclusion was written to avoid (issue #6045).
+   * <p>
+   * {@code Serializable} and {@code Closeable} are the two that are actually reachable through a wildcard match
+   * today, both living inside the fully-checked {@code java.io.**} family - {@code Closeable} extends
+   * {@code AutoCloseable} and is exactly as inert (its one method just signals "release a resource" - it does not
+   * itself grant one). {@code Cloneable}, {@code Comparable} and {@code AutoCloseable} live in {@code java.lang},
+   * which {@link #DENIED} has no full-package wildcard for today (only precise entries naming individual
+   * {@code java.lang} classes) - so none of the three can currently be hit by a wildcard match at all. They are
+   * listed anyway, defensively: {@code DENIED} gaining a {@code java.lang.**}-shaped entry, or a caller supplying
+   * one of these three as an {@code extraDeniedPatterns} wildcard via the public constructor, would otherwise
+   * reintroduce the exact false positive this list exists to prevent. Keep this list to interfaces that are
+   * provably inert; anything with a method that could do real work (e.g. {@code java.util.EventListener}) does not
+   * belong here.
    */
   private static final Set<String> SAFE_MARKER_ANCESTORS = Set.of( //
       "java.io.Serializable",                            //

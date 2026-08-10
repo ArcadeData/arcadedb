@@ -596,8 +596,8 @@ stuck rebuild would be traceable instead of hanging silently. But `LSMVectorInde
 `LSMVectorIndexRecoveryTest`'s own Awaitility ceiling was a flat 300s - half the production timeout - so their
 assertion always gave up and failed *before* the production wait could reach its own timeout and log anything.
 Reconfirmed three times (PR #5960, #5980, #6019) with no permit-timeout warning ever appearing in any of the
-failing runs. Both test ceilings are now derived from the production setting's default plus a 60s margin instead
-of a second, independently-drifting hardcoded constant.
+failing runs. Both test ceilings are now derived from the production setting's own live value plus a 60s margin
+instead of a second, independently-drifting hardcoded constant.
 
 [#6032](https://github.com/ArcadeData/arcadedb/issues/6032)
 

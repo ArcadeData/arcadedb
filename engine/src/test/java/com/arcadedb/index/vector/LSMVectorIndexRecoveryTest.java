@@ -68,10 +68,11 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
   /**
    * Ceiling for {@link #awaitEmptyDeltaBuffer(LSMVectorIndex)}. Derived from
-   * {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}'s default (600s) plus a 60s margin rather than a second
-   * hardcoded 300s constant (issue #6032) - see the matching note on
+   * {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}'s effective value (600s unless something in this JVM overrode
+   * it) plus a 60s margin, rather than a second hardcoded 300s constant (issue #6032) - see the matching note on
    * {@code LSMVectorIndexRebuildTest.REBUILD_SETTLE_TIMEOUT} for why a ceiling below the production permit
-   * timeout defeats that timeout's own diagnostic WARNING.
+   * timeout defeats that timeout's own diagnostic WARNING, and why reading the live config value instead of a
+   * copied-in default is the more honest derivation.
    */
   private static final Duration DELTA_BUFFER_DRAIN_TIMEOUT =
       Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);
