@@ -52,6 +52,11 @@ import java.util.stream.Collectors;
 public class DatabaseChecker {
   // Matches RebuildIndexStatement.MAX_ATTEMPTS: the lock-contention retry bound for the index-rebuild file lock.
   private static final int          LOCK_MAX_ATTEMPTS = 5;
+  // Matches RebuildIndexStatement.POST_DROP_ATTEMPT_MULTIPLIER (#6040): once an attempt's dropIndex() has actually
+  // committed, exhausting the retry budget leaves the index missing rather than merely unrebuilt, so that state
+  // gets a larger budget than a plain lock-acquisition timeout, where nothing was touched and giving up simply
+  // leaves the index exactly as it was.
+  private static final int          LOCK_POST_DROP_ATTEMPT_MULTIPLIER = 4;
   private final DatabaseInternal    database;
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
@@ -300,26 +305,39 @@ public class DatabaseChecker {
         // partial counts into attempt N+1's create() call, inflating totalDocs/sumDocLength (and so skewing BM25
         // relevance scoring) on any FULL_TEXT index whose rebuild needed more than one attempt.
         //
-        // Shares a known, pre-existing race with RebuildIndexStatement's identically-shaped retry (not introduced
-        // here): dropIndex() itself is safe to repeat (LocalSchema.dropIndexInternal no-ops once the name is
-        // already gone), but a NeedRetryException raised deep inside create()'s bucket scan - AFTER a prior
-        // attempt's drop already committed - means the next attempt's create() runs a second time following that
-        // same drop, rather than resuming from the point create() actually failed. A proper fix (clean up a
-        // partially-built index before retrying, or scope the retry to lock acquisition only) belongs in both
-        // call sites together, not this one in isolation.
+        // #6040: dropIndex() itself is safe to repeat (LocalSchema.dropIndexInternal no-ops once the name is
+        // already gone), but a NeedRetryException raised deep inside create()'s bucket scan - AFTER this same
+        // attempt's drop already committed - left every subsequent attempt retrying to recover from a
+        // self-inflicted "index currently gone" state, not merely waiting out lock contention, while being
+        // charged against the very same LOCK_MAX_ATTEMPTS budget as a lock timeout that touched nothing at all.
+        // indexDropped (sticky once true) tracks that distinction; once set, the exhaustion check below applies
+        // the larger LOCK_POST_DROP_ATTEMPT_MULTIPLIER budget instead of giving up at LOCK_MAX_ATTEMPTS.
         boolean rebuilt = false;
+        boolean indexDropped = false;
         NeedRetryException lastRetryFailure = null;
-        for (int attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {
+        int attemptsUsed = 0;
+        for (int attempt = 1; ; attempt++) {
+          attemptsUsed = attempt;
+          // Effectively-final per iteration: set to true by the callback the instant its dropIndex() commits.
+          final boolean[] droppedThisAttempt = new boolean[1];
           try {
             final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
                 propNames.toArray(new String[0]));
             database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
               database.getSchema().dropIndex(idx.getName());
+              droppedThisAttempt[0] = true;
 
+              // Was missing entirely before #6040 (default maxAttempts=1, effectively no inner retry at all), unlike
+              // RebuildIndexStatement's identically-shaped call. This lets create()'s own bucket-scan contention
+              // resolve WITHOUT re-entering this outer loop, while the outer file lock from executeLockingFiles is
+              // still held - so a single outer attempt can now take noticeably longer than before (up to
+              // LOCK_MAX_ATTEMPTS internal retries with their own backoff) before it either succeeds or falls
+              // through to the outer catch below.
               database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
                   .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
                   .withMetadata(rebuildMetadata)
                   .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
+                  .withMaxAttempts(LOCK_MAX_ATTEMPTS)
                   .create();
               return null;
             });
@@ -327,7 +345,11 @@ public class DatabaseChecker {
             break;
           } catch (final NeedRetryException e) {
             lastRetryFailure = e;
-            if (attempt == LOCK_MAX_ATTEMPTS)
+            if (droppedThisAttempt[0])
+              indexDropped = true;
+
+            final int budget = indexDropped ? LOCK_MAX_ATTEMPTS * LOCK_POST_DROP_ATTEMPT_MULTIPLIER : LOCK_MAX_ATTEMPTS;
+            if (attempt >= budget)
               break;
             try {
               Thread.sleep(200 + 200L * attempt);
@@ -346,17 +368,17 @@ public class DatabaseChecker {
         // class's "reported, never silent" convention - see the manual-index warning above) and correct the
         // rebuiltIndexes claim instead of pretending the rebuild happened.
         //
-        // The warning deliberately does not claim lock contention as the cause: exhaustion can also follow the
-        // pre-existing race documented above the loop (a NeedRetryException from deep inside a LATER attempt's
-        // create(), after an EARLIER attempt's drop already committed), in which case the index may now be
-        // missing rather than merely unrebuilt - lastRetryFailure.getMessage() is surfaced so the operator can
-        // tell which one actually happened, instead of a blanket "due to lock contention" that would be wrong
-        // for the second case.
+        // The warning's phrasing follows indexDropped (#6040): lock-acquisition exhaustion leaves the index
+        // exactly as it was, while post-drop exhaustion means the index is actually gone, not merely unrebuilt -
+        // lastRetryFailure.getMessage() is also surfaced so the operator can see the underlying cause either way.
         if (!rebuilt) {
           rebuildIndexes.remove(idx.getName());
-          addWarning("index '" + idx.getName() + "' did not finish rebuilding after " + LOCK_MAX_ATTEMPTS
-              + " attempts (error: " + lastRetryFailure.getMessage() + "). It may be missing until CHECK DATABASE "
-              + "FIX is run again; verify with `SELECT FROM schema:indexes WHERE name = '" + idx.getName() + "'`");
+          final String status = indexDropped ?
+              "the index was dropped but the rebuild could not complete; it is now missing" :
+              "the index lock could not be acquired; the index itself is unchanged";
+          addWarning("index '" + idx.getName() + "' did not finish rebuilding after " + attemptsUsed + " attempts (" + status
+              + ", error: " + lastRetryFailure.getMessage() + "). Verify with `SELECT FROM schema:indexes WHERE name = '"
+              + idx.getName() + "'` and run CHECK DATABASE FIX again if it is missing");
         }
 
         stepTick();

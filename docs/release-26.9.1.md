@@ -494,3 +494,32 @@ vertex does not cover it. Those lookups now go through `CSRCountUtils.findAccele
 declines a partial view.
 
 [#5757](https://github.com/ArcadeData/arcadedb/issues/5757)
+
+## `CHECK DATABASE FIX` and `REBUILD INDEX` no longer silently lose an index under sustained lock contention (#6040, #6041)
+
+Both `RebuildIndexStatement.buildIndex()` and `DatabaseChecker`'s auto-fix index-rebuild path retry a
+`dropIndex()` + `create()` body as one unit when the index's file lock is contended. That retry loop charged a
+lock-acquisition failure - the lock timed out before the body ever ran, so nothing was touched - and a failure
+raised *after* that same attempt's `dropIndex()` had already committed - the index is now gone - against the
+identical, small attempt budget. Exhausting retries while in the second state left the index permanently
+missing, discoverable only by noticing it was gone.
+
+Both call sites now track whether the drop actually ran on any attempt and switch to a larger retry budget
+(4x) once it has, favoring "never silently lose an index" over a bounded worst-case runtime. Under sustained
+contention, `REBUILD INDEX` and `CHECK DATABASE FIX` can now take several minutes per index rather than the
+previous ~28 seconds before giving up - `CHECK DATABASE FIX` in particular repeats this per affected index, so
+a fix run against a database with several contended indexes can take noticeably longer under load than before
+this change. `RebuildIndexStatement.buildIndex()` also now throws on exhaustion instead of silently returning
+as if the rebuild had succeeded; `DatabaseChecker`'s warning states which of the two cases occurred instead of
+a blanket "lock contention" message that was misleading for the second case.
+
+[#6040](https://github.com/ArcadeData/arcadedb/issues/6040), [#6041](https://github.com/ArcadeData/arcadedb/issues/6041)
+
+## `field.toLowerCase() IN [...]` now uses a `COLLATE CI` index (#6037)
+
+`field.toLowerCase() = 'value'` and `field.toLowerCase() BETWEEN a AND b` already recognized a case-insensitive
+index and used it instead of a full scan; the equally common `IN` shape did not, and fell back to a bucket
+scan even when a `COLLATE CI` index existed. `InCondition.isIndexAware()` gained the same recognition,
+reusing the existing field-pattern check `BinaryCondition`/`BetweenCondition` already share.
+
+[#6037](https://github.com/ArcadeData/arcadedb/issues/6037)
