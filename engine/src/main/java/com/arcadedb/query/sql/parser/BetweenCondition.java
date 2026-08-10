@@ -180,8 +180,15 @@ public class BetweenCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     if (!info.allowsRange())
       return false;
-    if (!first.isBaseIdentifier() || !info.getField().equals(first.getDefaultAlias().getStringValue()))
+
+    final boolean matchesField = first.isBaseIdentifier() && info.getField().equals(first.getDefaultAlias().getStringValue());
+    // CI index optimization: match field.toLowerCase() BETWEEN a AND b against a CI index on field
+    final boolean matchesLowerCaseField = !matchesField
+        && info.isCaseInsensitive()
+        && BinaryCondition.isFieldWithLowerCaseMethod(first, info.getField());
+    if (!matchesField && !matchesLowerCaseField)
       return false;
+
     return second.isEarlyCalculated(info.getContext()) && third.isEarlyCalculated(info.getContext());
   }
 
