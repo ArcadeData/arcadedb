@@ -30,6 +30,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.utility.InterleavedIterator;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -54,6 +55,22 @@ import java.util.logging.Level;
  * Each stripe chain is itself a classic {@link EdgeLinkedList}, so all per-chain behaviour (iteration,
  * filtering, removal relinking, the commutative append merge) is reused as-is; this class only routes
  * operations to the right chain(s) and maintains the directory.
+ * <h2>Iteration order (#6044)</h2>
+ * Promotion is a transparent write-throughput optimisation, so the read walks aim to keep the classic layout's
+ * newest-first order rather than expose the physical split. What they actually guarantee is:
+ * <ul>
+ * <li><b>EXACTLY</b> newest-first within a stripe chain, and within a generation - generations are walked
+ *     newest first and hold disjoint entries, so every edge of a newer era precedes every edge of an older one;</li>
+ * <li>the <b>NEWEST</b> edge of the list is always inside the first {@code stripes} entries: it is the head of
+ *     its own chain and the rotation emits every chain's head in the first turn;</li>
+ * <li><b>APPROXIMATELY</b> newest-first globally, with the deviation of an edge's returned position from its true
+ *     recency rank {@code r} bounded by a small multiple of {@code r} - independent of the vertex degree.</li>
+ * </ul>
+ * It is NOT an ordering guarantee: an application that needs an exact order must sort, or read through an index
+ * on a timestamp property. That was true of the classic layout too - reverse-insertion order was never part of
+ * the contract - but the classic layout happened to be exact, so this is written down rather than left to be
+ * inferred. The maintenance walks (removal, counting, the integrity checker, export) deliberately keep plain
+ * concatenation: order means nothing to them and one cursor beats {@code stripes} of them.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -308,10 +325,7 @@ public class StripedEdgeList extends EdgeLinkedList {
 
   @Override
   public Iterator<Edge> edgeIterator(final String... edgeTypes) {
-    final MultiIterator<Edge> iterator = new MultiIterator<>();
-    for (final EdgeLinkedList chain : allChains(false))
-      iterator.addIterator(chain.edgeIterator(edgeTypes));
-    return iterator;
+    return interleaved(chain -> chain.edgeIterator(edgeTypes));
   }
 
   /**
@@ -357,18 +371,14 @@ public class StripedEdgeList extends EdgeLinkedList {
 
   @Override
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
-    final MultiIterator<Vertex> iterator = new MultiIterator<>();
-    for (final EdgeLinkedList chain : allChains(false))
-      iterator.addIterator(chain.vertexIterator(edgeTypes));
-    return iterator;
+    return interleaved(chain -> chain.vertexIterator(edgeTypes));
   }
 
   @Override
   public Iterator<RID> ridIterator(final String... edgeTypes) {
-    final MultiIterator<RID> iterator = new MultiIterator<>();
-    for (final EdgeLinkedList chain : allChains(false))
-      iterator.addIterator(chain.ridIterator(edgeTypes));
-    return iterator;
+    // Interleaved like vertexIterator: this is the same walk with the vertex records left unloaded
+    // (GraphEngine.getConnectedVertexRIDs), so swapping one for the other must not change the order.
+    return interleaved(chain -> chain.ridIterator(edgeTypes));
   }
 
   @Override
@@ -459,11 +469,61 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   /**
+   * The READ walks ({@link #edgeIterator}, {@link #vertexIterator}, {@link #ridIterator}): one ROUND-ROBIN group
+   * per generation, the groups concatenated newest-generation-first.
+   * <p>
+   * #6044: concatenating the stripe chains made the global order a function of {@code hash(neighbour RID)} - the
+   * whole of stripe 0, then the whole of stripe 1 - so the distance between an edge's true recency rank and the
+   * position it is returned at grew with the vertex DEGREE, i.e. it was worst on exactly the vertices promotion
+   * targets. Interleaving fixes the rank instead: each chain is newest-first and the hash spreads entries
+   * uniformly, so depth {@code k} in a chain is global rank {@code ~k x stripes}, and taking one entry per chain
+   * per turn puts an edge of rank {@code r} back at a position of order {@code r}, independently of the degree.
+   * See {@link InterleavedIterator}.
+   * <p>
+   * The rotation is PER GENERATION, not across all of them: generation 0 is the pre-promotion chain and holds the
+   * OLDEST edges, so folding it into the same rotation would hand out ancient entries in the first positions -
+   * strictly worse than what it replaces. Generations hold disjoint entries and are walked newest first, so
+   * concatenating the groups keeps the eras in order.
+   * <p>
+   * A generation contributing a single chain is passed through unwrapped: the rotation would be a no-op and the
+   * plain chain iterator keeps its identity (e.g. {@code ResettableIterator} specialisations) and its locality.
+   */
+  private <T> Iterator<T> interleaved(final ChainIteratorFactory<T> factory) {
+    final MultiIterator<T> iterator = new MultiIterator<>();
+    final List<EdgeLinkedList> chains = new ArrayList<>();
+    for (int g = directory.getGenerationCount() - 1; g >= 0; g--) {
+      chains.clear();
+      for (int s = 0; s < directory.getStripes(g); s++)
+        // NOT strict: a read tolerates a chain whose head is not visible yet, see addChain.
+        addChain(chains, directory.getHead(g, s), false);
+
+      final int size = chains.size();
+      if (size == 0)
+        continue;
+      if (size == 1) {
+        iterator.addIterator(factory.create(chains.getFirst()));
+        continue;
+      }
+
+      @SuppressWarnings("unchecked") final Iterator<T>[] cursors = new Iterator[size];
+      for (int i = 0; i < size; i++)
+        cursors[i] = factory.create(chains.get(i));
+      iterator.addIterator(new InterleavedIterator<>(cursors));
+    }
+    return iterator;
+  }
+
+  /** Builds the per-chain iterator a read walk composes; lets {@link #interleaved} be written once. */
+  @FunctionalInterface
+  private interface ChainIteratorFactory<T> {
+    Iterator<T> create(EdgeLinkedList chain);
+  }
+
+  /**
    * Every non-null chain across all generations, NEWEST generation first. Generations hold disjoint entries: no
-   * deduplication needed. NOTE: within one generation the stripes have no cross-stripe insertion order, so a
-   * promoted super-node does NOT preserve the classic reverse-insertion iteration order (#689) - only a rough
-   * newest-era-first approximation (newest generation's stripes, then older generations, each chain itself
-   * newest-first).
+   * deduplication needed. Used by the walks whose ORDER IS IRRELEVANT - counting, removal, the integrity checker,
+   * export - which are better off with plain concatenation: one live cursor and one resident chunk page at a
+   * time instead of one per stripe. The ordered read walks go through {@link #interleaved} instead.
    */
   private List<EdgeLinkedList> allChains(final boolean strict) {
     final List<EdgeLinkedList> chains = new ArrayList<>(directory.getChainCount());

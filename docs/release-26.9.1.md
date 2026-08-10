@@ -523,3 +523,56 @@ scan even when a `COLLATE CI` index existed. `InCondition.isIndexAware()` gained
 reusing the existing field-pattern check `BinaryCondition`/`BetweenCondition` already share.
 
 [#6037](https://github.com/ArcadeData/arcadedb/issues/6037)
+
+## Super-node promotion no longer silently reorders a vertex's edges (#6044)
+
+Once a vertex crosses `arcadedb.graph.supernodeThreshold` (default 4096 edges per direction) its edge list is
+promoted to the striped layout (#5156): N chains, one per stripe, chosen by `hash(neighbour RID)`. Each chain is
+still exactly newest-first internally, but `StripedEdgeList` composed them by **concatenation** - the whole of
+stripe 0, then the whole of stripe 1, and so on - so the global iteration order became a function of the hash.
+
+That is a behaviour change no reader opts into and none can detect. The classic layout iterates exactly
+newest-first, and "the first N edges are the N most recent" is the only thing it ever did; after promotion, an
+edge's returned position drifts from its true recency rank by an amount proportional to the vertex **degree** -
+worst on precisely the vertices promotion targets, and worse as the graph grows. The reported symptom was a
+listing paging the newest 100 chats attached to a location vertex quietly dropping newly created ones once the
+location passed the threshold. No exception, no log line.
+
+The read walks - `edgeIterator()`, `vertexIterator()` and `ridIterator()` - now **interleave** the chains
+round-robin (new `InterleavedIterator`): one entry from each chain per turn, a chain leaving the rotation when
+it is drained. Since each chain is newest-first and the hash spreads entries uniformly, depth *k* in a chain is
+global rank *≈ k × stripes*, so the rotation reconstructs an approximate newest-first order whose error is
+proportional to the **rank asked for** rather than to the degree. Simulated with the real
+`StripeDirectory.stripeOf` hash over sequential neighbour RIDs, 16 stripes, asking for the newest 100:
+
+| degree | order | newest edge at position | of the true newest 100, how many are in the first 100 | worst-placed of those 100 |
+|---|---|---|---|---|
+| 5,000 | concatenated (before) | 3773 | 4 | 4722 |
+| 5,000 | interleaved (now) | 12 | 88 | 140 |
+| 20,000 | concatenated (before) | 7516 | 8 | 18782 |
+| 20,000 | interleaved (now) | 6 | 82 | 155 |
+
+The last two columns barely move between degree 5,000 and degree 20,000 for the interleaved order and degrade
+without bound for the concatenated one. That is the whole point of the change.
+
+**The rotation is per generation, not across all of them.** Generation 0 of the stripe directory is the
+pre-promotion chain and holds the *oldest* edges; folding it into the same rotation would hand out ancient
+entries in the first positions, which is strictly worse than what it replaces. Generations hold disjoint entries
+and are walked newest first, so their groups stay concatenated and every edge of a newer era still precedes every
+edge of an older one. A generation contributing a single chain is passed through unwrapped.
+
+**The maintenance walks deliberately keep plain concatenation** - removal, counting, `CHECK DATABASE`'s integrity
+walk, export. They consume the whole list, order means nothing to them, and one live cursor with one resident
+chunk page beats `stripes` of them. Paging the first N edges is where the locality cost of the rotation is
+negligible and the ordering benefit is everything.
+
+Read-side only: no on-disk format change, no `HASH_VERSION` bump, no migration, and a database promoted by an
+earlier build gets the new order the moment it is read by this one.
+
+What is now written down rather than inferred: the striped layout guarantees **exactly** newest-first *within* a
+stripe chain and within a generation, that the **newest** edge is always inside the first `supernodeStripes`
+entries (it is the head of its own chain, and the first turn emits every chain's head), and **approximately**
+newest-first globally. It is not an ordering guarantee - it never was, on either layout. An application that
+needs an exact order must sort or read through an index on a timestamp property.
+
+[#6044](https://github.com/ArcadeData/arcadedb/issues/6044)
