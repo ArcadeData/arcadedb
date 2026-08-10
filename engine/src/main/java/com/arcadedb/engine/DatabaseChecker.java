@@ -28,9 +28,13 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphDatabaseChecker;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.GeoIndexMetadata;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -272,10 +276,32 @@ public class DatabaseChecker {
         final int pageSize = ((IndexInternal) idx).getPageSizeForNewFile();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
+        // Same defect class fixed in RebuildIndexStatement.buildIndex() for issue #5791/#4732: capture the owning
+        // TypeIndex's name and reconstruct type-specific metadata BEFORE the drop below, otherwise a single-bucket
+        // type (the common default) loses its explicitly-named TypeIndex wrapper and a FULL_TEXT/GEOSPATIAL index
+        // reverts to default analyzer/precision settings every time this repairs one of their bucket sub-indexes.
+        final TypeIndex ownerTypeIndex = ((IndexInternal) idx).getTypeIndex();
+
+        IndexMetadata indexMetadata = ((IndexInternal) idx).getMetadata();
+        if (indexType == Schema.INDEX_TYPE.FULL_TEXT) {
+          final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, propNames.toArray(new String[0]), -1);
+          ftMeta.fromJSON(((IndexInternal) idx).toJSON());
+          ftMeta.setCounters(0L, 0L);
+          indexMetadata = ftMeta;
+        } else if (indexType == Schema.INDEX_TYPE.GEOSPATIAL) {
+          final GeoIndexMetadata geoMeta = new GeoIndexMetadata(typeName, propNames.toArray(new String[0]), -1);
+          geoMeta.fromJSON(((IndexInternal) idx).toJSON());
+          geoMeta.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
+          indexMetadata = geoMeta;
+        }
+
         database.getSchema().dropIndex(idx.getName());
 
         database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
-            .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
+            .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+            .withMetadata(indexMetadata)
+            .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
+            .create();
 
         stepTick();
       }

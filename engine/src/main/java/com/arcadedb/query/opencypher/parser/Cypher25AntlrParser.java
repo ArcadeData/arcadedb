@@ -81,6 +81,16 @@ public class Cypher25AntlrParser {
 
     try {
       final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
+
+      // Custom error handling. Attached BEFORE checkDeprecatedSyntax below, which calls tokens.fill() and so
+      // eagerly lexes the whole input up front: without a listener here, a lexer-level error (an unterminated
+      // string, a malformed escape sequence, an unrecognized character) is handled by ANTLR's default
+      // ConsoleErrorListener - prints to stderr, never throws - and default lexer recovery drops the offending
+      // token and carries on, which can silently produce a different CypherStatement instead of a clear syntax
+      // error (issue #5958, same failure class fixed for the SQL engine in #5957/#5951).
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(new CypherErrorListener());
+
       final CommonTokenStream tokens = new CommonTokenStream(lexer);
 
       // Reject deprecated/legacy Cypher syntax with an actionable hint before the generic ANTLR parse,
