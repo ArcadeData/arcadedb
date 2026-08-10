@@ -266,6 +266,11 @@ public class DatabaseChecker {
 
     if (fix)
       for (final Index idx : affectedIndexes) {
+        // bucketName/indexType/unique/propNames/typeName/pageSize/nullStrategy are all read once here, before the
+        // retry loop below, rather than recomputed per attempt the way RebuildIndexStatement.buildIndex() does.
+        // That is safe: every one of them is a plain, idempotent read off idx/schema state fixed before the first
+        // drop, with no mutable accumulator behind it - unlike rebuildMetadata just below, which for FULL_TEXT
+        // wraps a live BM25 counter and for that reason IS recomputed per attempt.
         final String bucketName = database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName();
         final Schema.INDEX_TYPE indexType = idx.getType();
         final boolean unique = idx.isUnique();
