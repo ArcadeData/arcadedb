@@ -289,13 +289,17 @@ public class DatabaseChecker {
         // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
         // lock across both the drop and the create prevents a concurrent writer from observing the index
         // gone-then-back, and retrying survives tryLockFiles's LockTimeoutException (a NeedRetryException) on a
-        // busy database.
+        // busy database. rebuildMetadata/ownerTypeIndex are captured once, before the loop (unlike
+        // RebuildIndexStatement, which recomputes the equivalent state inside its per-attempt loop) - both read
+        // idx before ANY attempt's drop, so this is just a hoist, not a behavior change.
         //
         // Shares a known, pre-existing race with RebuildIndexStatement's identically-shaped retry (not introduced
-        // here): retrying re-enters the whole drop+create body, so a NeedRetryException raised deep inside
-        // create()'s bucket scan - after the drop already committed - restarts from a dropped index rather than
-        // from the point of failure. A proper fix (skip the drop on retry, or scope the retry to lock acquisition
-        // only) belongs in both call sites together, not this one in isolation.
+        // here): dropIndex() itself is safe to repeat (LocalSchema.dropIndexInternal no-ops once the name is
+        // already gone), but a NeedRetryException raised deep inside create()'s bucket scan - AFTER a prior
+        // attempt's drop already committed - means the next attempt's create() runs a second time following that
+        // same drop, rather than resuming from the point create() actually failed. A proper fix (clean up a
+        // partially-built index before retrying, or scope the retry to lock acquisition only) belongs in both
+        // call sites together, not this one in isolation.
         boolean rebuilt = false;
         NeedRetryException lastRetryFailure = null;
         for (int attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {

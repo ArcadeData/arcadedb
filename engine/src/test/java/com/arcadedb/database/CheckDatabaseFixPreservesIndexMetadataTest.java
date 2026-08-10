@@ -108,6 +108,36 @@ class CheckDatabaseFixPreservesIndexMetadataTest extends TestHelper {
   }
 
   /**
+   * Rounds out {@link #fixPreservesNameAndAnalyzerOnFullTextIndex}/{@link #fixPreservesNameAndPrecisionOnGeospatialIndex}
+   * with the plain (non-FULL_TEXT/non-GEOSPATIAL) case: {@code RebuildIndexPreservesNameTest} covers this shape for
+   * {@code REBUILD INDEX}, but {@code CHECK DATABASE FIX}'s rebuild path had no equivalent coverage of its own for
+   * the {@code TypeIndex}-name-loss half of #5934 in isolation from the metadata-loss half.
+   */
+  @Test
+  void fixPreservesExplicitNameOnPlainIndex() {
+    final AtomicReference<RID> victim = new AtomicReference<>();
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      final Result inserted = database.command("sql", "INSERT INTO Doc SET name = 'alpha'").next();
+      database.command("sql", "CREATE INDEX myNamedIdx ON Doc (name) NOTUNIQUE");
+      victim.set(inserted.toElement().getIdentity());
+    });
+
+    corruptRecordTypeByte(victim.get());
+
+    final ResultSet result = database.command("sql", "check database fix");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<Long>getProperty("autoFix") > 0L).isTrue();
+
+    database.transaction(() -> {
+      assertThat(database.getSchema().existsIndex("myNamedIdx")).isTrue();
+      assertThat(database.getSchema().existsIndex("Doc[name]")).isFalse();
+      assertThat(database.getSchema().getIndexByName("myNamedIdx").getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
+    });
+  }
+
+  /**
    * Overwrites the record-type byte of {@code rid} with a value no {@code RecordFactory} branch knows, so the record
    * still occupies its slot and still has a valid size but cannot be materialised - the precise, page-layout-agnostic
    * corruption shape used by {@code CheckDatabaseRecordScopeTest.corruptRecordTypeByte}.
