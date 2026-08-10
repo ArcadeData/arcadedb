@@ -138,11 +138,18 @@ public class MCPToolUtils {
   }
 
   /**
-   * Quotes an identifier (type name, relationship type, or property key) for safe inclusion in a Cypher
-   * statement. Cypher cannot bind identifiers as parameters, so they are backtick-quoted here. An identifier
-   * that is null, blank, or itself contains a backtick is rejected, which guarantees the quoting cannot be
-   * escaped and no clause can be injected through an identifier. Values are never routed through this method;
-   * they are always bound as parameters.
+   * Quotes an identifier (type name, relationship type, or property key) for safe inclusion in a Cypher or
+   * SQL statement. Neither dialect can bind identifiers as parameters, so they are backtick-quoted here. An
+   * identifier that is null, blank, or itself contains a backtick is rejected, which guarantees the quoting
+   * cannot be escaped and no clause can be injected through an identifier. Values are never routed through
+   * this method; they are always bound as parameters.
+   * <p>
+   * A backslash is rejected as well, even though it is not special to the Cypher lexer. The SQL lexer
+   * ({@code QUOTED_IDENTIFIER}) treats a backslash as an escape character inside a backtick-quoted token, so
+   * an identifier ending in {@code \} would escape the closing backtick and let the lexer run past the
+   * intended end of the token, absorbing whatever SQL follows it into the identifier (issue #5849). This
+   * helper is shared by both dialects and cannot tell which one a given call site targets, so it rejects the
+   * character unconditionally rather than escaping it per dialect.
    *
    * @param kind human-readable label for the identifier, used only in the rejection message
    * @param raw  the identifier as supplied by the caller
@@ -151,8 +158,8 @@ public class MCPToolUtils {
   public static String quoteIdentifier(final String kind, final String raw) {
     if (raw == null || raw.isBlank())
       throw new IllegalArgumentException("The " + kind + " must not be null or blank");
-    if (raw.indexOf('`') >= 0)
-      throw new IllegalArgumentException("The " + kind + " contains a backtick, which is not supported");
+    if (raw.indexOf('`') >= 0 || raw.indexOf('\\') >= 0)
+      throw new IllegalArgumentException("The " + kind + " contains a backtick or backslash, which is not supported");
     return "`" + raw + "`";
   }
 
