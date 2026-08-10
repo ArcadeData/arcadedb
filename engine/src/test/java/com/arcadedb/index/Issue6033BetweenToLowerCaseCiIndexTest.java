@@ -129,6 +129,61 @@ class Issue6033BetweenToLowerCaseCiIndexTest {
   }
 
   @Test
+  void betweenOnLowerCaseWrappedFieldWithoutCiIndexFallsBackToScan() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Product");
+      database.command("sql", "CREATE PROPERTY Product.name STRING");
+      // plain index, no COLLATE CI: the CI-lowercase branch must not kick in
+      database.command("sql", "CREATE INDEX ON Product (name) NOTUNIQUE");
+
+      database.command("sql", "INSERT INTO Product SET name = 'Apple'");
+      database.command("sql", "INSERT INTO Product SET name = 'BANANA'");
+      database.command("sql", "INSERT INTO Product SET name = 'cherry'");
+    });
+
+    database.transaction(() -> {
+      final String planString = plan("EXPLAIN SELECT name FROM Product WHERE name.toLowerCase() BETWEEN 'a' AND 'c'");
+      assertThat(planString).contains("SCAN WITH FILTER");
+      assertThat(planString).doesNotContain("FETCH FROM INDEX");
+
+      final List<String> names = new ArrayList<>();
+      final ResultSet rs = database.query("sql", "SELECT name FROM Product WHERE name.toLowerCase() BETWEEN 'a' AND 'c'");
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+
+      assertThat(names).containsExactlyInAnyOrder("Apple", "BANANA");
+    });
+  }
+
+  @Test
+  void betweenOnChainedModifierAfterToLowerCaseOnCiIndexFallsBackToScan() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Product");
+      database.command("sql", "CREATE PROPERTY Product.name STRING");
+      database.command("sql", "CREATE INDEX ON Product (name COLLATE CI) NOTUNIQUE");
+
+      database.command("sql", "INSERT INTO Product SET name = ' Apple '");
+      database.command("sql", "INSERT INTO Product SET name = ' BANANA '");
+      database.command("sql", "INSERT INTO Product SET name = ' cherry '");
+    });
+
+    database.transaction(() -> {
+      // an extra modifier after toLowerCase() breaks the "field.toLowerCase()" pattern isFieldWithLowerCaseMethod()
+      // matches, so this must still fall back to a full scan rather than (incorrectly) using the CI index
+      final String planString = plan("EXPLAIN SELECT name FROM Product WHERE name.toLowerCase().trim() BETWEEN 'a' AND 'c'");
+      assertThat(planString).contains("SCAN WITH FILTER");
+      assertThat(planString).doesNotContain("FETCH FROM INDEX");
+
+      final List<String> names = new ArrayList<>();
+      final ResultSet rs = database.query("sql", "SELECT name FROM Product WHERE name.toLowerCase().trim() BETWEEN 'a' AND 'c'");
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+
+      assertThat(names).containsExactlyInAnyOrder(" Apple ", " BANANA ");
+    });
+  }
+
+  @Test
   void plainLowerFunctionSyntaxFromTheIssueIsNotSupportedByArcadeDbSql() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Product");
