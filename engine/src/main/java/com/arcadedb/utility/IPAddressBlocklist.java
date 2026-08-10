@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -27,12 +28,29 @@ import java.util.List;
  * to non-public or otherwise restricted IP addresses (loopback, RFC 1918 private ranges, link-local/cloud-metadata,
  * carrier-grade NAT, multicast, reserved, ...) as a defense against Server-Side Request Forgery (SSRF).
  * <p>
- * IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are normalized to their embedded IPv4 form before matching so an
- * attacker cannot bypass an IPv4 range by expressing the same address in IPv6 notation.
+ * An IPv6 address that merely encodes an IPv4 address is normalized to that plain IPv4 form before matching, so an
+ * attacker cannot bypass an IPv4 range by expressing the same address through an IPv6 transition mechanism. Four
+ * encodings are recognised: IPv4-mapped ({@code ::ffff:a.b.c.d}, RFC 4291 2.5.5.2), NAT64
+ * ({@code 64:ff9b::/96}, RFC 6052), 6to4 ({@code 2002::/16}, RFC 3056) and Teredo
+ * ({@code 2001::/32}, RFC 4380 - the embedded IPv4 is bitwise-inverted). This closes the bypass in
+ * GHSA-67m7-7w7g-mpmh, where none of those encodings tripped the flag-based checks a caller ran instead of this class.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class IPAddressBlocklist {
+  /**
+   * The reserved/private ranges every SSRF guard in the codebase blocks by default: loopback, RFC 1918 private,
+   * link-local (including the cloud metadata address 169.254.169.254), carrier-grade NAT, IETF protocol assignments,
+   * benchmarking, multicast, reserved and broadcast, for both IPv4 and IPv6.
+   */
+  public static final String DEFAULT_RESERVED_RANGES =
+      "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,0.0.0.0/8,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,"
+          + "224.0.0.0/4,240.0.0.0/4,255.255.255.255/32,::1/128,::/128,fe80::/10,fc00::/7,ff00::/8";
+
+  private static final Cidr NAT64_PREFIX       = parseCidr("64:ff9b::/96");
+  private static final Cidr SIX_TO_FOUR_PREFIX = parseCidr("2002::/16");
+  private static final Cidr TEREDO_PREFIX      = parseCidr("2001::/32");
+
   private final List<Cidr> ranges;
 
   private record Cidr(byte[] network, int prefixBits) {
@@ -74,6 +92,14 @@ public class IPAddressBlocklist {
       }
     }
     return new IPAddressBlocklist(ranges);
+  }
+
+  /**
+   * Returns a freshly-parsed block-list of {@link #DEFAULT_RESERVED_RANGES}. Callers that check many addresses
+   * should parse once and reuse the instance rather than calling this per address.
+   */
+  public static IPAddressBlocklist defaultReservedRanges() {
+    return parse(DEFAULT_RESERVED_RANGES);
   }
 
   private static Cidr parseCidr(final String entry) {
@@ -120,14 +146,32 @@ public class IPAddressBlocklist {
   }
 
   /**
-   * Collapses an IPv4-mapped IPv6 address (::ffff:a.b.c.d) to its 4-byte IPv4 form so IPv4 ranges still apply.
+   * Collapses an IPv6 address that merely encodes an IPv4 address (IPv4-mapped, NAT64, 6to4 or Teredo) to that
+   * 4-byte IPv4 form, so an IPv4 range still applies to the same address expressed through IPv6.
    */
   private static byte[] normalize(final byte[] addr) {
-    if (addr.length == 16 && isIPv4Mapped(addr)) {
+    if (addr.length != 16)
+      return addr;
+
+    if (isIPv4Mapped(addr))
+      return Arrays.copyOfRange(addr, 12, 16);
+
+    // NAT64 Well-Known Prefix 64:ff9b::/96 (RFC 6052): IPv4 at bytes 12-15.
+    if (NAT64_PREFIX.matches(addr))
+      return Arrays.copyOfRange(addr, 12, 16);
+
+    // 6to4 2002::/16 (RFC 3056): IPv4 at bytes 2-5.
+    if (SIX_TO_FOUR_PREFIX.matches(addr))
+      return Arrays.copyOfRange(addr, 2, 6);
+
+    // Teredo 2001::/32 (RFC 4380): IPv4 at bytes 12-15, bitwise-inverted.
+    if (TEREDO_PREFIX.matches(addr)) {
       final byte[] v4 = new byte[4];
-      System.arraycopy(addr, 12, v4, 0, 4);
+      for (int i = 0; i < 4; i++)
+        v4[i] = (byte) (~addr[12 + i] & 0xff);
       return v4;
     }
+
     return addr;
   }
 

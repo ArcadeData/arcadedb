@@ -31,9 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class IPAddressBlocklistTest {
 
-  private static final String DEFAULT =
-      "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,0.0.0.0/8,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,"
-          + "224.0.0.0/4,240.0.0.0/4,255.255.255.255/32,::1/128,::/128,fe80::/10,fc00::/7,ff00::/8";
+  private static final String DEFAULT = IPAddressBlocklist.DEFAULT_RESERVED_RANGES;
 
   private static InetAddress ip(final String literal) throws UnknownHostException {
     return InetAddress.getByName(literal);
@@ -78,6 +76,47 @@ class IPAddressBlocklistTest {
     assertThat(bl.isBlocked(ip("::ffff:127.0.0.1"))).isTrue();
     assertThat(bl.isBlocked(ip("::ffff:169.254.169.254"))).isTrue();
     assertThat(bl.isBlocked(ip("::ffff:8.8.8.8"))).isFalse();
+  }
+
+  /**
+   * GHSA-67m7-7w7g-mpmh: IPv6 transition mechanisms (NAT64, 6to4, Teredo) each embed an IPv4 address inside an
+   * IPv6 literal through a different, non-{@code ::ffff:}-prefixed encoding. None of these tripped
+   * {@code isIPv4Mapped}, so a private/loopback/link-local IPv4 payload smuggled through one of them reached the
+   * SSRF guard unblocked. Addresses below reuse the exact examples from the advisory.
+   */
+  @Test
+  void blocksIPv6TransitionAddressBypass() throws Exception {
+    final IPAddressBlocklist bl = IPAddressBlocklist.parse(DEFAULT);
+
+    // NAT64 (RFC 6052), 64:ff9b::/96, IPv4 at bytes 12-15.
+    assertThat(bl.isBlocked(ip("64:ff9b::c0a8:0101"))).isTrue();  // embeds 192.168.1.1
+    assertThat(bl.isBlocked(ip("64:ff9b::a9fe:a9fe"))).isTrue();  // embeds 169.254.169.254 (cloud metadata)
+    assertThat(bl.isBlocked(ip("64:ff9b::7f00:1"))).isTrue();     // embeds 127.0.0.1
+
+    // 6to4 (RFC 3056), 2002::/16, IPv4 at bytes 2-5.
+    assertThat(bl.isBlocked(ip("2002:c0a8:0101::1"))).isTrue();   // embeds 192.168.1.1
+    assertThat(bl.isBlocked(ip("2002:a9fe:a9fe::1"))).isTrue();   // embeds 169.254.169.254
+
+    // Teredo (RFC 4380), 2001::/32, IPv4 at bytes 12-15, bitwise-inverted.
+    assertThat(bl.isBlocked(ip("2001:0000:4136:e378:8000:63bf:3f57:fefe"))).isTrue(); // embeds 192.168.1.1
+  }
+
+  @Test
+  void allowsIPv6TransitionAddressesEmbeddingPublicIPv4() throws Exception {
+    final IPAddressBlocklist bl = IPAddressBlocklist.parse(DEFAULT);
+
+    assertThat(bl.isBlocked(ip("64:ff9b::808:808"))).isFalse();    // NAT64 for 8.8.8.8
+    assertThat(bl.isBlocked(ip("2002:0808:0808::1"))).isFalse();   // 6to4 for 8.8.8.8
+    // Teredo for 8.8.8.8: embedded bytes are ~8,~8,~8,~8 = f7f7f7f7
+    assertThat(bl.isBlocked(ip("2001:0000:0000:0000:0000:0000:f7f7:f7f7"))).isFalse();
+  }
+
+  @Test
+  void defaultReservedRangesFactoryMatchesConstant() throws Exception {
+    final IPAddressBlocklist bl = IPAddressBlocklist.defaultReservedRanges();
+    assertThat(bl.isBlocked(ip("169.254.169.254"))).isTrue();
+    assertThat(bl.isBlocked(ip("64:ff9b::a9fe:a9fe"))).isTrue();
+    assertThat(bl.isBlocked(ip("8.8.8.8"))).isFalse();
   }
 
   @Test

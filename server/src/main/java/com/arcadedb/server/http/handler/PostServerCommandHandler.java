@@ -40,6 +40,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IPAddressBlocklist;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -94,6 +95,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String RESTORE_DATABASE     = "restore database";
   private static final String IMPORT_DATABASE      = "import database";
   private static final String PROFILER             = "profiler";
+
+  private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -535,25 +538,16 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * resolves to a mix of public and private addresses is still rejected. An unresolvable host is
    * treated as blocked.
    * <p>
-   * The blocked-range logic mirrors {@code ImportSecurityValidator.isBlockedAddress} in the
-   * (test-scoped, reflectively-loaded) integration module; keep the two in sync when adding ranges.
+   * Delegates to {@link IPAddressBlocklist#defaultReservedRanges()}, the single shared implementation also used
+   * by {@code ImportSecurityValidator.isBlockedAddress} in the integration module and by {@code LOAD CSV}. A
+   * previous version duplicated this logic ad-hoc; see {@code ImportSecurityValidator.isBlockedAddress} for why
+   * that was the root cause of GHSA-67m7-7w7g-mpmh. Package-private for direct unit testing.
    */
-  private static boolean isBlockedHost(final String host) {
+  static boolean isBlockedHost(final String host) {
     try {
-      for (final InetAddress addr : InetAddress.getAllByName(host)) {
-        if (addr.isLoopbackAddress() || addr.isAnyLocalAddress() || addr.isLinkLocalAddress()
-            || addr.isSiteLocalAddress() || addr.isMulticastAddress())
+      for (final InetAddress addr : InetAddress.getAllByName(host))
+        if (RESERVED_ADDRESSES.isBlocked(addr))
           return true;
-
-        // InetAddress flags miss two modern private ranges, so check the raw bytes explicitly.
-        final byte[] bytes = addr.getAddress();
-        // IPv6 Unique Local Addresses (ULA) fc00::/7 (RFC 4193).
-        if (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc)
-          return true;
-        // IPv4 Carrier-Grade NAT (CGNAT) 100.64.0.0/10 (RFC 6598).
-        if (bytes.length == 4 && (bytes[0] & 0xff) == 100 && (bytes[1] & 0xc0) == 64)
-          return true;
-      }
       return false;
     } catch (final UnknownHostException e) {
       return true;
