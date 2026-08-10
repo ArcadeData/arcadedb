@@ -21,12 +21,14 @@ package com.arcadedb.graphql;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * {@code GraphQLQueryEngine.analyze()} used to classify any query it could not parse as {@code READ} /
@@ -125,6 +127,27 @@ class GraphQLAnalyzeClassificationTest extends AbstractGraphQLTest {
       final String query = "{ " + "a { ".repeat(maxDepth + 1) + "b" + " }".repeat(maxDepth + 1) + " }";
 
       assertThatThrownBy(() -> database.query("graphql", query).close()).isInstanceOf(QueryNotIdempotentException.class);
+
+      return null;
+    });
+  }
+
+  @Test
+  void aPlainMalformedReadQueryFailsAsQueryNotIdempotentCarryingTheRealParseFailureAsCause() {
+    // A non-nested syntax error reaches query()'s read-only gate the same way the pathological-nesting case
+    // does - detectGraphQLOperationTypes/classify() assumes the worst on ANY ParseException, not just ones
+    // from the depth guard - so it is rejected as QueryNotIdempotentException before command() ever runs.
+    // Unlike the nesting case, that exception must still carry the real parse failure as its cause so a
+    // caller isn't left with only "not idempotent" for what is actually a syntax error.
+    executeTest(database -> {
+      defineTypes(database);
+
+      final String query = "{{{ this is not graphql";
+
+      final Throwable error = catchThrowable(() -> database.query("graphql", query).close());
+
+      assertThat(error).isInstanceOf(QueryNotIdempotentException.class);
+      assertThat(error.getCause()).isInstanceOf(ParseException.class);
 
       return null;
     });
