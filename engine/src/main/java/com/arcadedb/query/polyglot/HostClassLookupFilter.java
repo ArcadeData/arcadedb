@@ -288,9 +288,16 @@ public class HostClassLookupFilter implements Predicate<String> {
       toVisit.add(iface);
   }
 
-  /** A package-wildcard entry ({@code pkg.*} or {@code pkg.**}), as opposed to one pinning a single named type. */
-  private static boolean isWildcardPattern(final String pattern) {
-    return pattern.endsWith("*");
+  /**
+   * A package-wildcard entry ({@code pkg.*} or {@code pkg.**}), as opposed to one pinning a single named type. A
+   * {@code Type$*} nested-type entry (e.g. {@code ProcessBuilder$*}) also ends with {@code *} but pins every
+   * nested type of one specific enclosing class, not a package - it is precise, not a wildcard (issue #6045
+   * review: without this exclusion, a future {@code Type$*} entry naming a {@link #SAFE_MARKER_ANCESTORS} type's
+   * enclosing class would be incorrectly treated as a wildcard and get the safe-marker exception it should not
+   * have). Package-private, like {@link #matches(String, String)}, so it can be unit-tested directly.
+   */
+  static boolean isWildcardPattern(final String pattern) {
+    return pattern.endsWith("*") && !pattern.endsWith("$*");
   }
 
   /**

@@ -56,6 +56,21 @@ class HostClassLookupFilterTest {
     assertThat(HostClassLookupFilter.matches("java.math.BigInteger", "java.math.BigDecimal")).isFalse();
   }
 
+  /**
+   * Issue #6045 code review: a {@code Type$*} nested-type entry ends with {@code *} like a package wildcard, but
+   * pins every nested type of one specific enclosing class rather than a package - it is precise, not a wildcard,
+   * and must not be classified as one (only a wildcard match can be defeated by
+   * {@link HostClassLookupFilter#SAFE_MARKER_ANCESTORS}).
+   */
+  @Test
+  void wildcardPatternExcludesNestedTypePatterns() {
+    assertThat(HostClassLookupFilter.isWildcardPattern("java.io.**")).isTrue();
+    assertThat(HostClassLookupFilter.isWildcardPattern("java.util.*")).isTrue();
+    assertThat(HostClassLookupFilter.isWildcardPattern("java.lang.ProcessBuilder$*")).isFalse();
+    assertThat(HostClassLookupFilter.isWildcardPattern("java.util.ServiceLoader$*")).isFalse();
+    assertThat(HostClassLookupFilter.isWildcardPattern("java.math.BigDecimal")).isFalse();
+  }
+
   @Test
   void dotsAreLiteralAndNotRegexWildcards() {
     // "java.util.*" as a regex matched java<any char>util<anything>; literally it must not.
