@@ -144,4 +144,42 @@ class HostClassLookupFilterTest {
     assertThat(filter.test("java.lang.Runtime")).isFalse();
     assertThat(filter.test("java.io.File")).isFalse();
   }
+
+  /**
+   * GHSA-j57p-qmrh-v7xv: {@code java.util.ResourceBundle} is a bare (non-wildcard) entry in {@link HostClassLookupFilter#DENIED},
+   * so name-equality matching alone does not cover its two public JDK subclasses, both of which live directly in the
+   * allow-listed {@code java.util} package and inherit the denied static {@code getBundle(String)} factory.
+   */
+  @Test
+  void subclassesOfADeniedTypeAreRejectedEvenWhenAdmittedByName() {
+    final HostClassLookupFilter filter = new HostClassLookupFilter(ScriptTriggerExecutor.ALLOWED_PACKAGES, null);
+
+    assertThat(filter.test("java.util.ResourceBundle")).isFalse();
+    assertThat(filter.test("java.util.PropertyResourceBundle")).isFalse();
+    assertThat(filter.test("java.util.ListResourceBundle")).isFalse();
+  }
+
+  @Test
+  void hierarchyCheckDoesNotFalsePositiveOnCommonMarkerInterfaces() {
+    // Serializable/Cloneable/Comparable live in denied-by-wildcard packages (java.io.**) or are otherwise ubiquitous;
+    // an over-broad hierarchy walk must not reject every collection/value class that happens to implement them.
+    final HostClassLookupFilter filter = new HostClassLookupFilter(ScriptTriggerExecutor.ALLOWED_PACKAGES, null);
+
+    assertThat(filter.test("java.util.ArrayList")).isTrue();
+    assertThat(filter.test("java.util.HashMap")).isTrue();
+    assertThat(filter.test("java.util.UUID")).isTrue();
+    assertThat(filter.test("java.math.BigDecimal")).isTrue();
+    assertThat(filter.test("java.time.LocalDate")).isTrue();
+  }
+
+  @Test
+  void callerSuppliedRestrictionAlsoRejectsItsSubclasses() {
+    // A subclass of a caller-supplied (extra) denied type must be rejected too, not just the JDK built-in deny-list.
+    // java.util.Hashtable extends java.util.Dictionary; java.util.HashMap does not and must stay admitted.
+    final HostClassLookupFilter filter = new HostClassLookupFilter(List.of("java.util.*"), List.of("java.util.Dictionary"));
+
+    assertThat(filter.test("java.util.Dictionary")).isFalse();
+    assertThat(filter.test("java.util.Hashtable")).isFalse();
+    assertThat(filter.test("java.util.HashMap")).isTrue();
+  }
 }
