@@ -131,14 +131,25 @@ public class IPAddressBlocklist {
 
   /**
    * Returns true if the given address falls inside any configured range. An empty block-list never blocks.
+   * <p>
+   * The raw address is matched first, before any transition-encoding unwrap: a range list can legitimately contain
+   * a literal 16-byte IPv6 entry (e.g. {@code ::1/128}, or a whole transition prefix like {@code 2002::/16}) that
+   * targets the address as written, and {@link Cidr#matches} rejects on a byte-length mismatch alone, so unwrapping
+   * unconditionally before matching would let the 4-byte normalized form silently shadow that entry. The unwrapped
+   * form is tried only as a fallback, once the raw address didn't match anything.
    */
   public boolean isBlocked(final InetAddress address) {
     if (address == null)
       return false;
-    final byte[] addr = normalize(address.getAddress());
+    final byte[] raw = address.getAddress();
     for (final Cidr range : ranges)
-      if (range.matches(addr))
+      if (range.matches(raw))
         return true;
+    final byte[] normalized = normalize(raw);
+    if (normalized != raw)
+      for (final Cidr range : ranges)
+        if (range.matches(normalized))
+          return true;
     return false;
   }
 

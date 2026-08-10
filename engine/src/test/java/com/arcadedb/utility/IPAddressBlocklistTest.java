@@ -92,6 +92,26 @@ class IPAddressBlocklistTest {
   }
 
   /**
+   * Code review on the transition-encoding unwrap found that normalizing the probe address unconditionally, before
+   * matching, lets the unwrap silently pre-empt a literal 16-byte IPv6 CIDR entry: {@code isBlocked} converts
+   * {@code ::1} to the 4-byte form {@code 0.0.0.1} before the loop runs, and {@code Cidr.matches} rejects a 4-byte
+   * probe against a 16-byte network on the length check alone, so a custom block-list of just {@code ::1/128}
+   * (with no {@code 0.0.0.0/8} entry to catch the unwrapped fallback) never matches {@code ::1}. This only stayed
+   * invisible for {@link #DEFAULT} because {@code 0.0.0.0/8} happens to be present there too. A custom, narrower
+   * list - exactly what {@code OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES} is designed to accept - has no such safety net.
+   */
+  @Test
+  void literalIPv6CidrEntryIsNotShadowedByTheUnwrap() throws Exception {
+    assertThat(IPAddressBlocklist.parse("::1/128").isBlocked(ip("::1"))).isTrue();
+    assertThat(IPAddressBlocklist.parse("::/128").isBlocked(ip("::"))).isTrue();
+    assertThat(IPAddressBlocklist.parse("64:ff9b::/96").isBlocked(ip("64:ff9b::c0a8:0101"))).isTrue();
+    assertThat(IPAddressBlocklist.parse("2002::/16").isBlocked(ip("2002:c0a8:0101::1"))).isTrue();
+    assertThat(IPAddressBlocklist.parse("2001::/32").isBlocked(ip("2001:0000:4136:e378:8000:63bf:3f57:fefe"))).isTrue();
+    // A literal range for a different transition prefix must still not match an address outside it.
+    assertThat(IPAddressBlocklist.parse("2002::/16").isBlocked(ip("64:ff9b::c0a8:0101"))).isFalse();
+  }
+
+  /**
    * GHSA-67m7-7w7g-mpmh: IPv6 transition mechanisms (NAT64, 6to4, Teredo) each embed an IPv4 address inside an
    * IPv6 literal through a different, non-{@code ::ffff:}-prefixed encoding. None of these tripped
    * {@code isIPv4Mapped}, so a private/loopback/link-local IPv4 payload smuggled through one of them reached the
