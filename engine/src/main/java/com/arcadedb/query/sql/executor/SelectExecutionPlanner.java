@@ -3458,7 +3458,7 @@ public class SelectExecutionPlanner {
             .mapToInt(i -> i).boxed().toList();
 
       subPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
-      if (requiresMultipleIndexLookups((AndBlock) desc.keyCondition)) {
+      if (desc.requiresMultipleIndexLookups()) {
         subPlan.chain(new DistinctExecutionStep(context));
       }
       if (desc.remainingCondition != null && !desc.remainingCondition.isEmpty()) {
@@ -3467,22 +3467,6 @@ public class SelectExecutionPlanner {
       subPlans.add(subPlan);
     }
     return new ParallelExecStep(subPlans, context);
-  }
-
-  /**
-   * checks whether the condition has CONTAINSANY or similar expressions, that require multiple index evaluations
-   *
-   * @param keyCondition
-   *
-   * @return
-   */
-  private boolean requiresMultipleIndexLookups(final AndBlock keyCondition) {
-    for (final BooleanExpression oBooleanExpression : keyCondition.getSubBlocks()) {
-      if (!(oBooleanExpression instanceof BinaryCondition)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private WhereClause createWhereFrom(final BooleanExpression remainingCondition) {
@@ -3849,7 +3833,11 @@ public class SelectExecutionPlanner {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
-          if (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator()) {
+          if (singleExp instanceof BetweenCondition
+              || (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator())) {
+            // a range-shaped condition (BETWEEN, or a single-sided comparison like >/</>=/<=) is terminal for
+            // composite-index key building: no further field can be appended as if it were still an ordered
+            // equality prefix once the key contains a range component
             rangeOp = true;
           }
           if (rangeOp && info.allowsRange()) {

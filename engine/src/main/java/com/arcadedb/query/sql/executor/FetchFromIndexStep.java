@@ -234,6 +234,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (lastOp instanceof BinaryCondition binaryCondition) {
         final BinaryCompareOperator op = binaryCondition.getOperator();
         range = op.isRangeOperator();
+      } else if (lastOp instanceof BetweenCondition) {
+        range = true;
       }
     } else if (condition instanceof InCondition) {
       size = 1;

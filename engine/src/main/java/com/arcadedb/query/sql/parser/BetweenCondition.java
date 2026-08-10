@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 
@@ -173,6 +174,15 @@ public class BetweenCondition extends BooleanExpression {
   @Override
   protected Expression[] getCacheableElements() {
     return new Expression[] { first, second, third };
+  }
+
+  @Override
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (!info.allowsRange())
+      return false;
+    if (!first.isBaseIdentifier() || !info.getField().equals(first.getDefaultAlias().getStringValue()))
+      return false;
+    return second.isEarlyCalculated(info.getContext()) && third.isEarlyCalculated(info.getContext());
   }
 
   public Expression resolveKeyFrom(final BinaryCondition additional) {

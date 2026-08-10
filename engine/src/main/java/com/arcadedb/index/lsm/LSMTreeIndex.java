@@ -51,7 +51,6 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.BinaryComparator;
-import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.RWLockContext;
@@ -63,7 +62,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -981,21 +979,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   private Object[] convertKeys(final Object[] keys) {
-    if (keys != null) {
-      final byte[] keyTypes = mutable.binaryKeyTypes;
-      final boolean[] ciKeys = mutable.caseInsensitiveKeys;
-      final Object[] convertedKeys = new Object[keys.length];
-      for (int i = 0; i < keys.length; ++i) {
-        if (keys[i] == null)
-          continue;
-        convertedKeys[i] = Type.convert(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
-        // Apply case-insensitive collation
-        if (convertedKeys[i] instanceof String s && ciKeys != null && i < ciKeys.length && ciKeys[i])
-          convertedKeys[i] = s.toLowerCase(Locale.ROOT);
-      }
-      return convertedKeys;
-    }
-    return null;
+    // Delegates to the query-side declared-type narrowing (insert side and query side of the exact comparison
+    // #5932 was about must never drift apart again, see #5966).
+    final LSMTreeIndexMutable m = mutable;
+    return m.convertKeysToDeclaredTypes(keys, m.binaryKeyTypes);
   }
 
   /**
