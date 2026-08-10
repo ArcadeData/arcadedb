@@ -204,6 +204,33 @@ class Issue5966BetweenUsesIndexTest {
     });
   }
 
+  // #6033: the supported field.toLowerCase() form must retain BETWEEN's case-insensitive index optimization.
+  @Test
+  void toLowerCaseWrappedBetweenOnCaseInsensitiveIndexedColumnUsesIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Product");
+      database.command("sql", "CREATE PROPERTY Product.name STRING");
+      database.command("sql", "CREATE INDEX ON Product (name COLLATE CI) NOTUNIQUE");
+
+      database.command("sql", "INSERT INTO Product SET name = 'Apple'");
+      database.command("sql", "INSERT INTO Product SET name = 'BANANA'");
+      database.command("sql", "INSERT INTO Product SET name = 'cherry'");
+      database.command("sql", "INSERT INTO Product SET name = 'Watermelon'");
+    });
+
+    database.transaction(() -> {
+      final String query = "SELECT name FROM Product WHERE name.toLowerCase() BETWEEN 'a' AND 'c'";
+      assertThat(plan("EXPLAIN " + query)).contains("FETCH FROM INDEX").doesNotContain("SCAN WITH FILTER");
+
+      final List<String> names = new ArrayList<>();
+      try (ResultSet rs = database.query("sql", query)) {
+        while (rs.hasNext())
+          names.add(rs.next().getProperty("name"));
+      }
+      assertThat(names).containsExactlyInAnyOrder("Apple", "BANANA");
+    });
+  }
+
   // #5966: BETWEEN as the FIRST field of a composite UNIQUE index, followed by a further equality field, must
   // also stop key-building at the range field and return correct results. UNIQUE inserts go through
   // LSMTreeIndex.convertKeys() for the constraint check, so this also exercises the refactored delegate on the

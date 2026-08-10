@@ -180,9 +180,11 @@ public class BetweenCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     if (!info.allowsRange())
       return false;
-    if (!first.isBaseIdentifier() || !info.getField().equals(first.getDefaultAlias().getStringValue()))
+    if (!second.isEarlyCalculated(info.getContext()) || !third.isEarlyCalculated(info.getContext()))
       return false;
-    return second.isEarlyCalculated(info.getContext()) && third.isEarlyCalculated(info.getContext());
+    if (first.isBaseIdentifier() && info.getField().equals(first.getDefaultAlias().getStringValue()))
+      return true;
+    return info.isCaseInsensitive() && BinaryCondition.isFieldWithLowerCaseMethod(first, info.getField());
   }
 
   public Expression resolveKeyFrom(final BinaryCondition additional) {
