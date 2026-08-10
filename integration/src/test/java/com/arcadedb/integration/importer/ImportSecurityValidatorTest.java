@@ -61,6 +61,34 @@ class ImportSecurityValidatorTest {
         .isInstanceOf(SecurityException.class);
   }
 
+  /**
+   * GHSA-67m7-7w7g-mpmh: an IPv6 literal that merely encodes a blocked IPv4 address through a transition mechanism
+   * (NAT64, 6to4, Teredo) must be rejected exactly like the plain IPv4 form. These reuse the advisory's own PoC
+   * addresses, which embed the AWS/GCP/Azure metadata address 169.254.169.254 and the private address 192.168.1.1.
+   */
+  @Test
+  void blocksIPv6TransitionAddressEncodingBlockedIPv4() {
+    // NAT64 (RFC 6052) for 169.254.169.254
+    assertThatThrownBy(() -> ImportSecurityValidator.validateRemoteURL("http://[64:ff9b::a9fe:a9fe]/latest/meta-data/"))
+        .isInstanceOf(SecurityException.class);
+    // NAT64 (RFC 6052) for 192.168.1.1
+    assertThatThrownBy(() -> ImportSecurityValidator.validateRemoteURL("http://[64:ff9b::c0a8:0101]/x"))
+        .isInstanceOf(SecurityException.class);
+    // 6to4 (RFC 3056) for 192.168.1.1
+    assertThatThrownBy(() -> ImportSecurityValidator.validateRemoteURL("http://[2002:c0a8:0101::1]/x"))
+        .isInstanceOf(SecurityException.class);
+    // Teredo (RFC 4380) for 192.168.1.1
+    assertThatThrownBy(
+        () -> ImportSecurityValidator.validateRemoteURL("http://[2001:0000:4136:e378:8000:63bf:3f57:fefe]/x"))
+        .isInstanceOf(SecurityException.class);
+  }
+
+  @Test
+  void allowsIPv6TransitionAddressEncodingPublicIPv4() {
+    // NAT64 for the public address 8.8.8.8 must not be blocked.
+    assertThatNoException().isThrownBy(() -> ImportSecurityValidator.validateRemoteURL("http://[64:ff9b::808:808]/x"));
+  }
+
   @Test
   void allowsPublicAddress() {
     // A public literal IP does not require DNS resolution and must be allowed

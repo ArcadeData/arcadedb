@@ -19,6 +19,7 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.IPAddressBlocklist;
 import com.arcadedb.utility.SafeHttpFetcher;
 
 import java.io.File;
@@ -47,9 +48,10 @@ import java.nio.file.Path;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ImportSecurityValidator {
-  private static final String RESOURCE_SEPARATOR = ":::";
-  private static final String FILE_PREFIX        = "file://";
-  private static final String CLASSPATH_PREFIX   = "classpath://";
+  private static final String             RESOURCE_SEPARATOR = ":::";
+  private static final String             FILE_PREFIX        = "file://";
+  private static final String             CLASSPATH_PREFIX   = "classpath://";
+  private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
   private ImportSecurityValidator() {
   }
@@ -157,26 +159,16 @@ public class ImportSecurityValidator {
 
   /**
    * Returns {@code true} if the address belongs to a network range that must not be reachable through
-   * {@code IMPORT DATABASE} (loopback, link-local, site-local/private, wildcard, multicast, IPv6 ULA
-   * or IPv4 CGNAT).
+   * {@code IMPORT DATABASE} (loopback, link-local, site-local/private, wildcard, multicast, IPv6 ULA,
+   * IPv4 CGNAT, or an IPv6 transition encoding - IPv4-mapped, NAT64, 6to4, Teredo - of any of the above).
    * <p>
-   * The blocked-range logic mirrors {@code PostServerCommandHandler.isBlockedHost} in the server
-   * module; keep the two in sync when adding ranges.
+   * Delegates to {@link IPAddressBlocklist#defaultReservedRanges()}, the single shared implementation also used
+   * by {@code PostServerCommandHandler.isBlockedHost} in the server module and by {@code LOAD CSV}. A previous
+   * version duplicated this logic ad-hoc in each caller, which is how GHSA-67m7-7w7g-mpmh happened: the IPv6
+   * transition encodings were added to fix that GHSA in {@link IPAddressBlocklist} but a duplicate copy would
+   * have needed the exact same fix applied twice, by hand, forever.
    */
   static boolean isBlockedAddress(final InetAddress address) {
-    if (address.isLoopbackAddress()         // 127.0.0.0/8, ::1
-        || address.isLinkLocalAddress()     // 169.254.0.0/16 (cloud metadata), fe80::/10
-        || address.isSiteLocalAddress()     // 10/8, 172.16/12, 192.168/16
-        || address.isAnyLocalAddress()      // 0.0.0.0, ::
-        || address.isMulticastAddress())    // 224.0.0.0/4, ff00::/8
-      return true;
-
-    // InetAddress flags miss two modern private ranges, so check the raw bytes explicitly.
-    final byte[] bytes = address.getAddress();
-    // IPv6 Unique Local Addresses (ULA) fc00::/7 (RFC 4193).
-    if (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc)
-      return true;
-    // IPv4 Carrier-Grade NAT (CGNAT) 100.64.0.0/10 (RFC 6598).
-    return bytes.length == 4 && (bytes[0] & 0xff) == 100 && (bytes[1] & 0xc0) == 64;
+    return RESERVED_ADDRESSES.isBlocked(address);
   }
 }

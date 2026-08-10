@@ -26,6 +26,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IPAddressBlocklist;
 import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.ByteArrayOutputStream;
@@ -552,9 +553,7 @@ public enum GlobalConfiguration {
       resolved IP address of the target host and re-checked on every redirect hop to prevent Server-Side Request Forgery (SSRF). \
       Defaults to loopback, private (RFC 1918), link-local (including the cloud metadata address 169.254.169.254), carrier-grade \
       NAT, multicast and reserved ranges. Set to an empty string to disable IP filtering (not recommended).""",
-      String.class,
-      "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,0.0.0.0/8,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,"
-          + "224.0.0.0/4,240.0.0.0/4,255.255.255.255/32,::1/128,::/128,fe80::/10,fc00::/7,ff00::/8"),
+      String.class, IPAddressBlocklist.DEFAULT_RESERVED_RANGES),
 
   OPENCYPHER_ID_BUCKET_BITS("arcadedb.opencypher.idBucketBits", SCOPE.JVM,
       """
