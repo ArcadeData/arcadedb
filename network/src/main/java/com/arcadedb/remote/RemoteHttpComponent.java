@@ -51,6 +51,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
@@ -141,11 +142,31 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
-    final long watchdogMs = Math.max(timeout * 1000L, 30_000L);
+    return sendWithWatchdog(request, computeWatchdogMs(timeout));
+  }
+
+  /**
+   * Computes the watchdog budget, in milliseconds, for a single HTTP exchange. {@code timeoutMs} is
+   * already expressed in milliseconds (see {@link GlobalConfiguration#NETWORK_SOCKET_TIMEOUT}) and
+   * must not be re-scaled here; a 30 second floor keeps the watchdog usable even when the configured
+   * timeout is unset or unreasonably small (see issue #5847).
+   */
+  static long computeWatchdogMs(final int timeoutMs) {
+    return Math.max(timeoutMs, 30_000L);
+  }
+
+  /**
+   * Package-private overload that accepts an explicit watchdog budget, used by tests to exercise the
+   * watchdog without waiting on the 30 second floor computed by {@link #computeWatchdogMs(int)}.
+   */
+  HttpResponse<String> sendWithWatchdog(final HttpRequest request, final long watchdogMs) throws IOException, InterruptedException {
+    final CompletableFuture<HttpResponse<String>> future = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
     try {
-      return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-          .get(watchdogMs, TimeUnit.MILLISECONDS);
+      return future.get(watchdogMs, TimeUnit.MILLISECONDS);
     } catch (final java.util.concurrent.TimeoutException e) {
+      // The exchange is not just abandoned: cancel it so the connection and its buffers are released
+      // instead of draining unbounded in the background (see issue #5847).
+      future.cancel(true);
       throw new IOException("HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri(), e);
     } catch (final ExecutionException e) {
       final Throwable cause = e.getCause();
