@@ -18,15 +18,17 @@
  */
 package com.arcadedb.query.polyglot;
 
+import com.arcadedb.utility.LRUCache;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 /**
@@ -134,12 +136,20 @@ public class HostClassLookupFilter implements Predicate<String> {
       "com.oracle.truffle.**",                           //
   };
 
+  /**
+   * Bound on {@link #hierarchyDenialCache}. A {@code HostClassLookupFilter} instance is not short-lived - one is
+   * cached for the lifetime of a reusable {@code PolyglotQueryEngine}/{@code GraalPolyglotEngine} - so an
+   * unbounded cache keyed by attacker-suppliable class-name strings (including names that fail to resolve, which
+   * are cached too) would let a script exhaust memory by probing many distinct names in an allow-listed package.
+   */
+  private static final int HIERARCHY_CACHE_SIZE = 256;
+
   private final String[] allowed;
   private final String[] denied;
   /** Subset of {@link #denied} that pins a single type (bare class name or {@code Type$*}), used for the hierarchy walk. */
   private final String[] preciseDenied;
-  /** Per-instance cache of {@link #inheritsAPreciselyDeniedType(String)}, keyed by class name. */
-  private final Map<String, Boolean> hierarchyDenialCache = new ConcurrentHashMap<>();
+  /** Per-instance, size-bounded cache of {@link #inheritsAPreciselyDeniedType(String)}, keyed by class name. */
+  private final Map<String, Boolean> hierarchyDenialCache = Collections.synchronizedMap(new LRUCache<>(HIERARCHY_CACHE_SIZE));
 
   public HostClassLookupFilter(final Collection<String> allowedPatterns, final Collection<String> extraDeniedPatterns) {
     this.allowed = allowedPatterns == null || allowedPatterns.isEmpty() ?
@@ -184,7 +194,12 @@ public class HostClassLookupFilter implements Predicate<String> {
 
     // The class is admitted by name, but it may still inherit a capability from a denied ancestor it does not share
     // a name with (GHSA-j57p-qmrh-v7xv).
-    return !hierarchyDenialCache.computeIfAbsent(className, this::inheritsAPreciselyDeniedType);
+    Boolean deniedByHierarchy = hierarchyDenialCache.get(className);
+    if (deniedByHierarchy == null) {
+      deniedByHierarchy = inheritsAPreciselyDeniedType(className);
+      hierarchyDenialCache.put(className, deniedByHierarchy);
+    }
+    return !deniedByHierarchy;
   }
 
   /**
@@ -201,6 +216,11 @@ public class HostClassLookupFilter implements Predicate<String> {
    * (excluding the class itself, already checked by name), looking for an ancestor whose name matches one of
    * {@link #preciseDenied}. An unresolvable class name (already rejected by every other host-class-lookup surface,
    * since GraalVM cannot load it either) is not treated as inheriting anything denied.
+   * <p>
+   * This relies on GraalVM resolving {@code Java.type(...)} through the same classloader used here: neither
+   * {@code GraalPolyglotEngine} nor its {@code Context.Builder} ever calls {@code hostClassLoader(...)}, so the
+   * engine falls back to the embedding application's classloader, matching what is used below. If that ever
+   * changes, an unresolvable name would need to fail closed instead of being treated as non-denied.
    */
   private boolean inheritsAPreciselyDeniedType(final String className) {
     final Class<?> resolved;
