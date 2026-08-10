@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphDatabaseChecker;
 import com.arcadedb.index.Index;
@@ -49,6 +50,8 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class DatabaseChecker {
+  // Matches RebuildIndexStatement.MAX_ATTEMPTS: the lock-contention retry bound for the index-rebuild file lock.
+  private static final int          LOCK_MAX_ATTEMPTS = 5;
   private final DatabaseInternal    database;
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
@@ -287,16 +290,37 @@ public class DatabaseChecker {
         // the index's own file(s) plus, through the drop, the owning TypeIndex's bookkeeping. Without holding
         // the lock across both steps a concurrent writer could observe the index gone-then-back with entries
         // missing, or the commit-time lock-coverage check could throw on the newly-created file.
-        database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
-          database.getSchema().dropIndex(idx.getName());
+        //
+        // Retried like RebuildIndexStatement.buildIndex() retries the same lock: TransactionManager.tryLockFiles
+        // throws LockTimeoutException (a NeedRetryException) on contention, and widening the locked section to
+        // cover both the drop and the create - the whole point of this fix - widens the window a concurrent
+        // writer can contend on. Unlike RebuildIndexStatement, which silently returns once maxAttempts is
+        // exhausted, this rethrows: CHECK DATABASE FIX should fail loudly rather than quietly leave the index
+        // unrepaired and still report success.
+        for (int attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {
+          try {
+            database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
+              database.getSchema().dropIndex(idx.getName());
 
-          database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
-              .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
-              .withMetadata(rebuildMetadata)
-              .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
-              .create();
-          return null;
-        });
+              database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
+                  .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+                  .withMetadata(rebuildMetadata)
+                  .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
+                  .create();
+              return null;
+            });
+            break;
+          } catch (final NeedRetryException e) {
+            if (attempt == LOCK_MAX_ATTEMPTS)
+              throw e;
+            try {
+              Thread.sleep(200 + 200L * attempt);
+            } catch (final InterruptedException ie) {
+              Thread.currentThread().interrupt();
+              throw e;
+            }
+          }
+        }
 
         stepTick();
       }
