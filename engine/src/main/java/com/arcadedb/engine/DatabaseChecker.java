@@ -24,13 +24,16 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphDatabaseChecker;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -47,6 +50,8 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class DatabaseChecker {
+  // Matches RebuildIndexStatement.MAX_ATTEMPTS: the lock-contention retry bound for the index-rebuild file lock.
+  private static final int          LOCK_MAX_ATTEMPTS = 5;
   private final DatabaseInternal    database;
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
@@ -261,6 +266,11 @@ public class DatabaseChecker {
 
     if (fix)
       for (final Index idx : affectedIndexes) {
+        // bucketName/indexType/unique/propNames/typeName/pageSize/nullStrategy are all read once here, before the
+        // retry loop below, rather than recomputed per attempt the way RebuildIndexStatement.buildIndex() does.
+        // That is safe: every one of them is a plain, idempotent read off idx/schema state fixed before the first
+        // drop, with no mutable accumulator behind it - unlike rebuildMetadata just below, which for FULL_TEXT
+        // wraps a live BM25 counter and for that reason IS recomputed per attempt.
         final String bucketName = database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName();
         final Schema.INDEX_TYPE indexType = idx.getType();
         final boolean unique = idx.isUnique();
@@ -272,10 +282,82 @@ public class DatabaseChecker {
         final int pageSize = ((IndexInternal) idx).getPageSizeForNewFile();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
-        database.getSchema().dropIndex(idx.getName());
+        // Same defect class fixed in RebuildIndexStatement.buildIndex() for issue #5791/#4732: capture the owning
+        // TypeIndex's name BEFORE the drop below, otherwise a single-bucket type (the common default) loses its
+        // explicitly-named TypeIndex wrapper. Safe to read once, outside the retry loop below: it is a plain name
+        // read off idx, unaffected by how many attempts the rebuild takes.
+        final TypeIndex ownerTypeIndex = ((IndexInternal) idx).getTypeIndex();
 
-        database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
-            .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
+        // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
+        // lock across both the drop and the create prevents a concurrent writer from observing the index
+        // gone-then-back, and retrying survives tryLockFiles's LockTimeoutException (a NeedRetryException) on a
+        // busy database.
+        //
+        // reconstructForRebuild(...) is called PER ATTEMPT, inside the loop, matching RebuildIndexStatement -
+        // NOT hoisted above it like ownerTypeIndex. For FULL_TEXT it returns a fresh FullTextIndexMetadata with
+        // its BM25 corpus counters zeroed; buildBucketIndex().create() mutates that exact instance in place as
+        // it indexes each record. A single shared instance reused across attempts would still carry attempt N's
+        // partial counts into attempt N+1's create() call, inflating totalDocs/sumDocLength (and so skewing BM25
+        // relevance scoring) on any FULL_TEXT index whose rebuild needed more than one attempt.
+        //
+        // Shares a known, pre-existing race with RebuildIndexStatement's identically-shaped retry (not introduced
+        // here): dropIndex() itself is safe to repeat (LocalSchema.dropIndexInternal no-ops once the name is
+        // already gone), but a NeedRetryException raised deep inside create()'s bucket scan - AFTER a prior
+        // attempt's drop already committed - means the next attempt's create() runs a second time following that
+        // same drop, rather than resuming from the point create() actually failed. A proper fix (clean up a
+        // partially-built index before retrying, or scope the retry to lock acquisition only) belongs in both
+        // call sites together, not this one in isolation.
+        boolean rebuilt = false;
+        NeedRetryException lastRetryFailure = null;
+        for (int attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {
+          try {
+            final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
+                propNames.toArray(new String[0]));
+            database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
+              database.getSchema().dropIndex(idx.getName());
+
+              database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
+                  .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
+                  .withMetadata(rebuildMetadata)
+                  .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
+                  .create();
+              return null;
+            });
+            rebuilt = true;
+            break;
+          } catch (final NeedRetryException e) {
+            lastRetryFailure = e;
+            if (attempt == LOCK_MAX_ATTEMPTS)
+              break;
+            try {
+              Thread.sleep(200 + 200L * attempt);
+            } catch (final InterruptedException ie) {
+              // An interrupt is a request to stop, not contention to ride out: honor it immediately rather than
+              // trying the remaining indexes.
+              Thread.currentThread().interrupt();
+              throw e;
+            }
+          }
+        }
+
+        // Isolated per index rather than letting the exhausted retry unwind out of check(): this loop repairs
+        // potentially many indexes plus whatever checkDocuments/checkVertices/checkEdges already found and fixed,
+        // and none of that should be discarded because retrying ONE index ran out of attempts. Report it (this
+        // class's "reported, never silent" convention - see the manual-index warning above) and correct the
+        // rebuiltIndexes claim instead of pretending the rebuild happened.
+        //
+        // The warning deliberately does not claim lock contention as the cause: exhaustion can also follow the
+        // pre-existing race documented above the loop (a NeedRetryException from deep inside a LATER attempt's
+        // create(), after an EARLIER attempt's drop already committed), in which case the index may now be
+        // missing rather than merely unrebuilt - lastRetryFailure.getMessage() is surfaced so the operator can
+        // tell which one actually happened, instead of a blanket "due to lock contention" that would be wrong
+        // for the second case.
+        if (!rebuilt) {
+          rebuildIndexes.remove(idx.getName());
+          addWarning("index '" + idx.getName() + "' did not finish rebuilding after " + LOCK_MAX_ATTEMPTS
+              + " attempts (error: " + lastRetryFailure.getMessage() + "). It may be missing until CHECK DATABASE "
+              + "FIX is run again; verify with `SELECT FROM schema:indexes WHERE name = '" + idx.getName() + "'`");
+        }
 
         stepTick();
       }

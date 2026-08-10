@@ -42,8 +42,6 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.FullTextIndexMetadata;
-import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
@@ -324,29 +322,12 @@ public class RebuildIndexStatement extends DDLStatement {
         // answers the current page size unless it is not legal to create with, in which case it repairs it.
         final int pageSize = ((IndexInternal) idx).getPageSizeForNewFile();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
-        // Get index metadata (includes vector-specific settings like dimensions, similarity, etc.)
-        IndexMetadata indexMetadata = ((IndexInternal) idx).getMetadata();
-
-        // FULL_TEXT indexes carry their configuration (analyzers, similarity, BM25 parameters) in a FullTextIndexMetadata
-        // subtype, but getMetadata() returns the generic base IndexMetadata. Reconstruct the full-text metadata from the index's
-        // persisted JSON so the rebuilt index preserves its settings; the builder rejects a plain IndexMetadata for FULL_TEXT
-        // (issue #4732, which otherwise crashed AFTER the old index had already been dropped, leaving it gone). Reset the BM25
-        // corpus counters to zero so the re-index pass recomputes them from scratch instead of doubling the persisted totals.
-        if (type == Schema.INDEX_TYPE.FULL_TEXT) {
-          final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, propertyNames.toArray(new String[0]), -1);
-          ftMeta.fromJSON(((IndexInternal) idx).toJSON());
-          ftMeta.setCounters(0L, 0L);
-          indexMetadata = ftMeta;
-        } else if (type == Schema.INDEX_TYPE.GEOSPATIAL) {
-          // Same defect as #4732 for FULL_TEXT: the generic IndexMetadata carries no `precision`, so a rebuild silently
-          // reset a non-default GeoHash resolution. Rebuilding also re-reads every record, which is the one safe moment
-          // to publish the compact FRONTIER layout on an index created before 26.8.1 (#5478).
-          final GeoIndexMetadata geoMeta = new GeoIndexMetadata(typeName, propertyNames.toArray(new String[0]), -1);
-          geoMeta.fromJSON(((IndexInternal) idx).toJSON());
-          geoMeta.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
-          indexMetadata = geoMeta;
-        }
-        final IndexMetadata rebuildMetadata = indexMetadata;
+        // Get index metadata (includes vector-specific settings like dimensions, similarity, etc.), reconstructing
+        // FULL_TEXT/GEOSPATIAL from the index's persisted JSON so the rebuild preserves their type-specific
+        // settings (issue #4732/#5478) instead of the generic IndexMetadata getMetadata() would otherwise return.
+        // Shared with DatabaseChecker's auto-fix rebuild path (issue #5934).
+        final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
+            propertyNames.toArray(new String[0]));
 
         final boolean typeIndexRebuild = typeName != null && idx instanceof TypeIndex;
 
