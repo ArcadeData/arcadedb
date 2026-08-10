@@ -109,4 +109,25 @@ class GraalPolyglotEngineHostClassLookupTest {
       assertThatThrownBy(() -> engine.eval("Java.type('java.util.Random');")).hasMessageContaining("java.util.Random");
     }
   }
+
+  /**
+   * GHSA-j57p-qmrh-v7xv, end-to-end on a real polyglot context: {@link HostClassLookupFilter}'s subclass-hierarchy
+   * check relies on GraalVM resolving {@code Java.type(...)} through the same classloader the filter uses to walk
+   * ancestors. The unit tests in {@code HostClassLookupFilterTest} exercise the filter directly; this exercises the
+   * actual bypass through a real {@code Context.eval(...)} call, so a future change to the engine's classloader
+   * wiring (e.g. an added {@code hostClassLoader(...)}) would surface here even if the filter's own tests still pass.
+   */
+  @Test
+  void aResourceBundleSubclassIsDeniedThroughARealContext() throws IOException {
+    try (final GraalPolyglotEngine engine = GraalPolyglotEngine.newBuilder(null,
+        PolyglotEngineManager.getInstance().getSharedEngine())//
+        .setLanguage("js")//
+        .setAllowedPackages(List.of("java.util.*"))//
+        .build()) {
+
+      assertThatThrownBy(() -> engine.eval("Java.type('java.util.ResourceBundle');")).hasMessageContaining("java.util.ResourceBundle");
+      assertThatThrownBy(() -> engine.eval("Java.type('java.util.PropertyResourceBundle');")).hasMessageContaining("java.util.PropertyResourceBundle");
+      assertThatThrownBy(() -> engine.eval("Java.type('java.util.ListResourceBundle');")).hasMessageContaining("java.util.ListResourceBundle");
+    }
+  }
 }
