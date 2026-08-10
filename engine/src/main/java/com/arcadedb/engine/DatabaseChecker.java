@@ -327,6 +327,12 @@ public class DatabaseChecker {
               database.getSchema().dropIndex(idx.getName());
               droppedThisAttempt[0] = true;
 
+              // Was missing entirely before #6040 (default maxAttempts=1, effectively no inner retry at all), unlike
+              // RebuildIndexStatement's identically-shaped call. This lets create()'s own bucket-scan contention
+              // resolve WITHOUT re-entering this outer loop, while the outer file lock from executeLockingFiles is
+              // still held - so a single outer attempt can now take noticeably longer than before (up to
+              // LOCK_MAX_ATTEMPTS internal retries with their own backoff) before it either succeeds or falls
+              // through to the outer catch below.
               database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
                   .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
                   .withMetadata(rebuildMetadata)

@@ -18,10 +18,16 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -34,8 +40,11 @@ import org.junit.jupiter.api.BeforeEach;
 
 import java.io.File;
 import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -236,5 +245,69 @@ public abstract class TestHelper {
       db.close();
 
     assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
+  }
+
+  /**
+   * Overwrites the record-type byte of {@code rid} with a value no {@code RecordFactory} branch knows, so the
+   * record still occupies its slot and still has a valid size but cannot be materialised - a corruption shape
+   * shared by tests that need a record {@code CHECK DATABASE} can find but not load (e.g. an index-rebuild
+   * trigger), as opposed to a missing or truncated one.
+   */
+  protected static void corruptRecordTypeByte(final DatabaseInternal db, final RID rid) {
+    final int fileId = rid.getBucketId();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(fileId);
+    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
+    final int maxRecordsInPage = bucket.getMaxRecordsInPage();
+
+    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
+    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+
+    db.transaction(() -> {
+      try {
+        final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, fileId, pageId), pageSize, false);
+        final int slotOffset = Binary.SHORT_SERIALIZED_SIZE + (positionInPage * Binary.INT_SERIALIZED_SIZE);
+        final int recordOffset = (int) page.readUnsignedInt(slotOffset);
+        assertThat(recordOffset).as("the record must still occupy its slot").isGreaterThan(0);
+        final long[] recordSize = page.readNumberAndSize(recordOffset);
+        page.writeByte((int) (recordOffset + recordSize[1]), (byte) 99);
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
+  }
+
+  /**
+   * Holds {@code fileIds} locked for {@code holdMillis} via {@code DatabaseInternal.executeLockingFiles} - the same
+   * primitive production lock-contention retry paths (e.g. index rebuild) use - on a requester (this thread)
+   * distinct from whichever thread started it, to deterministically force a {@code LockTimeoutException} there.
+   */
+  public static final class LockHoldingThread extends Thread {
+    private final DatabaseInternal            db;
+    private final List<Integer>               fileIds;
+    private final long                        holdMillis;
+    public final  CountDownLatch              lockAcquired = new CountDownLatch(1);
+    public final  AtomicReference<Throwable>  error        = new AtomicReference<>();
+
+    public LockHoldingThread(final DatabaseInternal db, final List<Integer> fileIds, final long holdMillis) {
+      super("lock-holder");
+      this.db = db;
+      this.fileIds = fileIds;
+      this.holdMillis = holdMillis;
+      setDaemon(true);
+    }
+
+    @Override
+    public void run() {
+      try {
+        db.executeLockingFiles(fileIds, () -> {
+          lockAcquired.countDown();
+          Thread.sleep(holdMillis);
+          return null;
+        });
+      } catch (final Throwable t) {
+        error.set(t);
+        lockAcquired.countDown();
+      }
+    }
   }
 }

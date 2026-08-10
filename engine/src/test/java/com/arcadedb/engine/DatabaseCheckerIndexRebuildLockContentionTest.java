@@ -19,7 +19,6 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexInternal;
@@ -31,7 +30,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -46,11 +44,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * uncontended happy path.
  *
  * <p>Contention is induced deterministically by holding the target bucket sub-index's file lock from a second
- * thread via the same {@code DatabaseInternal.executeLockingFiles} primitive {@code DatabaseChecker} itself uses -
- * exactly the mechanism suggested in the issue. {@code LocalDatabase.executeLockingFiles} waits a hardcoded 5
- * seconds per attempt before raising a {@code LockTimeoutException} (a {@code NeedRetryException}), which is what
- * makes both tests here multi-second: {@code @Tag("slow")} routes them to the slow lane rather than the regular
- * unit-test one.
+ * thread via {@link TestHelper.LockHoldingThread}, which wraps the same {@code DatabaseInternal.executeLockingFiles}
+ * primitive {@code DatabaseChecker} itself uses - exactly the mechanism suggested in the issue.
+ * {@code LocalDatabase.executeLockingFiles} waits a hardcoded 5 seconds per attempt before raising a
+ * {@code LockTimeoutException} (a {@code NeedRetryException}), which is what makes both tests here multi-second:
+ * {@code @Tag("slow")} routes them to the slow lane rather than the regular unit-test one.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -79,12 +77,12 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
       victim.set(inserted.toElement().getIdentity());
     });
 
-    corruptRecordTypeByte(victim.get());
-
     final DatabaseInternal db = (DatabaseInternal) database;
+    corruptRecordTypeByte(db, victim.get());
+
     final List<Integer> fileIds = bucketSubIndexFileIds(db);
 
-    final HoldingThread holder = new HoldingThread(db, fileIds, 5_300);
+    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 5_300);
     holder.start();
     try {
       assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
@@ -134,13 +132,13 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
       victim.set(inserted.toElement().getIdentity());
     });
 
-    corruptRecordTypeByte(victim.get());
-
     final DatabaseInternal db = (DatabaseInternal) database;
+    corruptRecordTypeByte(db, victim.get());
+
     final List<Integer> fileIds = bucketSubIndexFileIds(db);
 
     // Worst case for 5 attempts: 5 * 5000ms wait + (400+600+800+1000)ms backoff = 27800ms. Held comfortably past it.
-    final HoldingThread holder = new HoldingThread(db, fileIds, 29_000);
+    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 29_000);
     holder.start();
     try {
       assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
@@ -187,69 +185,5 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
     final List<IndexInternal> subIndexes = typeIdx.getSubIndexes();
     assertThat(subIndexes).as("single-bucket type: exactly one bucket sub-index").hasSize(1);
     return subIndexes.get(0).getFileIds();
-  }
-
-  /**
-   * Holds {@code fileIds} locked for {@code holdMillis} via the same {@code executeLockingFiles} primitive
-   * {@code DatabaseChecker} uses, on a requester (this thread) distinct from the test's main thread that runs FIX.
-   */
-  private static final class HoldingThread extends Thread {
-    private final DatabaseInternal            db;
-    private final List<Integer>               fileIds;
-    private final long                        holdMillis;
-    final          CountDownLatch             lockAcquired = new CountDownLatch(1);
-    final          AtomicReference<Throwable> error        = new AtomicReference<>();
-
-    HoldingThread(final DatabaseInternal db, final List<Integer> fileIds, final long holdMillis) {
-      super("lock-holder");
-      this.db = db;
-      this.fileIds = fileIds;
-      this.holdMillis = holdMillis;
-      setDaemon(true);
-    }
-
-    @Override
-    public void run() {
-      try {
-        db.executeLockingFiles(fileIds, () -> {
-          lockAcquired.countDown();
-          Thread.sleep(holdMillis);
-          return null;
-        });
-      } catch (final Throwable t) {
-        error.set(t);
-        lockAcquired.countDown();
-      }
-    }
-  }
-
-  /**
-   * Overwrites the record-type byte of {@code rid} with a value no {@code RecordFactory} branch knows, so the record
-   * still occupies its slot and still has a valid size but cannot be materialised - the precise, page-layout-agnostic
-   * corruption shape used by {@code CheckDatabaseRecordScopeTest.corruptRecordTypeByte} and
-   * {@code CheckDatabaseFixPreservesIndexMetadataTest.corruptRecordTypeByte}.
-   */
-  private void corruptRecordTypeByte(final RID rid) {
-    final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = rid.getBucketId();
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(fileId);
-    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
-    final int maxRecordsInPage = bucket.getMaxRecordsInPage();
-
-    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
-    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-
-    db.transaction(() -> {
-      try {
-        final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, fileId, pageId), pageSize, false);
-        final int slotOffset = Binary.SHORT_SERIALIZED_SIZE + (positionInPage * Binary.INT_SERIALIZED_SIZE);
-        final int recordOffset = (int) page.readUnsignedInt(slotOffset);
-        assertThat(recordOffset).as("the record must still occupy its slot").isGreaterThan(0);
-        final long[] recordSize = page.readNumberAndSize(recordOffset);
-        page.writeByte((int) (recordOffset + recordSize[1]), (byte) 99);
-      } catch (final Exception e) {
-        throw new RuntimeException(e);
-      }
-    });
   }
 }

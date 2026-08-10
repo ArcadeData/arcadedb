@@ -19,10 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.engine.MutablePage;
-import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -62,7 +58,7 @@ class CheckDatabaseFixPreservesIndexMetadataTest extends TestHelper {
       victim.set(inserted.toElement().getIdentity());
     });
 
-    corruptRecordTypeByte(victim.get());
+    corruptRecordTypeByte((DatabaseInternal) database, victim.get());
 
     final ResultSet result = database.command("sql", "check database fix");
     assertThat(result.hasNext()).isTrue();
@@ -90,7 +86,7 @@ class CheckDatabaseFixPreservesIndexMetadataTest extends TestHelper {
       victim.set(inserted.toElement().getIdentity());
     });
 
-    corruptRecordTypeByte(victim.get());
+    corruptRecordTypeByte((DatabaseInternal) database, victim.get());
 
     final ResultSet result = database.command("sql", "check database fix");
     assertThat(result.hasNext()).isTrue();
@@ -124,7 +120,7 @@ class CheckDatabaseFixPreservesIndexMetadataTest extends TestHelper {
       victim.set(inserted.toElement().getIdentity());
     });
 
-    corruptRecordTypeByte(victim.get());
+    corruptRecordTypeByte((DatabaseInternal) database, victim.get());
 
     final ResultSet result = database.command("sql", "check database fix");
     assertThat(result.hasNext()).isTrue();
@@ -134,35 +130,6 @@ class CheckDatabaseFixPreservesIndexMetadataTest extends TestHelper {
       assertThat(database.getSchema().existsIndex("myNamedIdx")).isTrue();
       assertThat(database.getSchema().existsIndex("Doc[name]")).isFalse();
       assertThat(database.getSchema().getIndexByName("myNamedIdx").getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
-    });
-  }
-
-  /**
-   * Overwrites the record-type byte of {@code rid} with a value no {@code RecordFactory} branch knows, so the record
-   * still occupies its slot and still has a valid size but cannot be materialised - the precise, page-layout-agnostic
-   * corruption shape used by {@code CheckDatabaseRecordScopeTest.corruptRecordTypeByte}.
-   */
-  private void corruptRecordTypeByte(final RID rid) {
-    final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = rid.getBucketId();
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(fileId);
-    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
-    final int maxRecordsInPage = bucket.getMaxRecordsInPage();
-
-    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
-    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-
-    db.transaction(() -> {
-      try {
-        final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, fileId, pageId), pageSize, false);
-        final int slotOffset = Binary.SHORT_SERIALIZED_SIZE + (positionInPage * Binary.INT_SERIALIZED_SIZE);
-        final int recordOffset = (int) page.readUnsignedInt(slotOffset);
-        assertThat(recordOffset).as("the record must still occupy its slot").isGreaterThan(0);
-        final long[] recordSize = page.readNumberAndSize(recordOffset);
-        page.writeByte((int) (recordOffset + recordSize[1]), (byte) 99);
-      } catch (final Exception e) {
-        throw new RuntimeException(e);
-      }
     });
   }
 }

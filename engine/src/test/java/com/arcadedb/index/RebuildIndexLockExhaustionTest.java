@@ -26,9 +26,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,8 +38,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * command that either succeeds or reports why it didn't.
  *
  * <p>Uses {@code maxAttempts = 1} so a single forced {@code LockTimeoutException} (held from a second thread via
- * the same {@code DatabaseInternal.executeLockingFiles} primitive the statement itself uses) immediately exhausts
- * the budget - this is a pure lock-acquisition failure, so the index must come out of it completely untouched.
+ * {@link TestHelper.LockHoldingThread}, which wraps the same {@code DatabaseInternal.executeLockingFiles}
+ * primitive the statement itself uses) immediately exhausts the budget - this is a pure lock-acquisition failure,
+ * so the index must come out of it completely untouched.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -60,7 +59,7 @@ class RebuildIndexLockExhaustionTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<Integer> fileIds = ((IndexInternal) db.getSchema().getIndexByName("myIdx")).getFileIds();
 
-    final HoldingThread holder = new HoldingThread(db, fileIds, 5_300);
+    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 5_300);
     holder.start();
     try {
       assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
@@ -85,39 +84,5 @@ class RebuildIndexLockExhaustionTest extends TestHelper {
       final ResultSet rs = database.query("sql", "SELECT FROM Doc WHERE name = 'alpha'");
       assertThat(rs.hasNext()).isTrue();
     });
-  }
-
-  /**
-   * Holds {@code fileIds} locked for {@code holdMillis} via the same {@code executeLockingFiles} primitive
-   * {@code RebuildIndexStatement} uses, on a requester (this thread) distinct from the test's main thread.
-   */
-  private static final class HoldingThread extends Thread {
-    private final DatabaseInternal            db;
-    private final List<Integer>               fileIds;
-    private final long                        holdMillis;
-    final          CountDownLatch             lockAcquired = new CountDownLatch(1);
-    final          AtomicReference<Throwable> error        = new AtomicReference<>();
-
-    HoldingThread(final DatabaseInternal db, final List<Integer> fileIds, final long holdMillis) {
-      super("lock-holder");
-      this.db = db;
-      this.fileIds = fileIds;
-      this.holdMillis = holdMillis;
-      setDaemon(true);
-    }
-
-    @Override
-    public void run() {
-      try {
-        db.executeLockingFiles(fileIds, () -> {
-          lockAcquired.countDown();
-          Thread.sleep(holdMillis);
-          return null;
-        });
-      } catch (final Throwable t) {
-        error.set(t);
-        lockAcquired.countDown();
-      }
-    }
   }
 }

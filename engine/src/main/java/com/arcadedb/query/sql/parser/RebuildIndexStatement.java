@@ -429,7 +429,7 @@ public class RebuildIndexStatement extends DDLStatement {
           // reported the same way for a consistent contract: REBUILD INDEX either succeeds or throws.
           final String reason = indexDropped ?
               "the index was dropped but the rebuild could not complete (error: " + e.getMessage() + "). "
-                  + "The index is now missing - retry `REBUILD INDEX `" + idx.getName() + "`` once the contention clears" :
+                  + "The index is now missing - retry `REBUILD INDEX " + idx.getName() + "` once the contention clears" :
               "the index lock could not be acquired (error: " + e.getMessage() + "). The index itself is unchanged";
           throw new CommandExecutionException(
               "Cannot rebuild index '" + idx.getName() + "' after " + attempt + " attempts: " + reason);
