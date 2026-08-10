@@ -22,6 +22,9 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -45,7 +48,8 @@ public class BucketIterator implements Iterator<Record> {
   int      totalPages;
   int      currentRecordInPage;
   long     browsed     = 0;
-  private int writeIndex = 0;
+  private int  writeIndex     = 0;
+  private long skippedRecords = 0;
 
   BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
     final DatabaseInternal db = bucket.getDatabase();
@@ -83,6 +87,34 @@ public class BucketIterator implements Iterator<Record> {
     recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
 
+  /**
+   * Number of records skipped so far for a known, tolerated corruption reason - a corrupted on-disk record
+   * ({@link SerializationException}), page-layer corruption in a raw slot/pointer read, or a multi-page record
+   * whose chunk chain {@link LocalBucket#isChunkChainBroken} confirms is structurally broken - all via
+   * {@link #logSkippedRecord(Exception)} in {@link #fetchNext()}. A correctness-sensitive caller (e.g. an exact
+   * {@code COUNT}) can check this after exhausting the iterator to detect a truncated result; it is not
+   * incremented for the benign concurrent-delete race handled by {@link RecordNotFoundException}, nor for a
+   * {@link ConcurrentModificationException} not confirmed as a broken chain (transient contention propagates
+   * instead so a retry can resolve it), nor for any other exception, which likewise propagates (#6015).
+   */
+  public long getSkippedRecordCount() {
+    return skippedRecords;
+  }
+
+  /**
+   * Counts and logs a record slot skipped for a known, tolerated reason: a corrupted on-disk record
+   * ({@link SerializationException}), page-layer corruption in a raw slot/pointer read (an unchecked exception
+   * from a {@code BasePage.read*}/{@code Binary} accessor), or a confirmed structurally-broken multi-page chunk
+   * chain ({@link ConcurrentModificationException} where {@link LocalBucket#isChunkChainBroken} returns
+   * {@code true}) - see the call sites in {@link #fetchNext()}.
+   */
+  private void logSkippedRecord(final Exception e) {
+    skippedRecords++;
+    final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
+        (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
+    LogManager.instance().log(this, Level.SEVERE, msg);
+  }
+
   @Override
   public boolean hasNext() {
     if (limit > -1 && browsed >= limit)
@@ -115,7 +147,7 @@ public class BucketIterator implements Iterator<Record> {
         if (currentPage == null) {
           if (forwardDirection) {
             // MOVE FORWARD
-            if (nextPageNumber > totalPages)
+            if (nextPageNumber >= totalPages)
               return null;
           } else {
             // MOVE BACKWARDS
@@ -136,13 +168,27 @@ public class BucketIterator implements Iterator<Record> {
             (!forwardDirection && currentRecordInPage > -1)
         ) {
           try {
-            final int recordPositionInPage = (int) currentPage.readUnsignedInt(
-                LocalBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
-            if (recordPositionInPage == 0)
-              // CLEANED CORRUPTED RECORD
-              continue;
+            final int recordPositionInPage;
+            final long[] recordSize;
+            try {
+              recordPositionInPage = (int) currentPage.readUnsignedInt(
+                  LocalBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
+              if (recordPositionInPage == 0)
+                // CLEANED CORRUPTED RECORD
+                continue;
 
-            final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
+              recordSize = currentPage.readNumberAndSize(recordPositionInPage);
+            } catch (final RuntimeException e) {
+              // CORRUPTED SLOT-TABLE ENTRY OR RECORD HEADER: these two calls only ever touch raw page bytes (no
+              // application/listener code runs here), so an out-of-bounds read (IndexOutOfBoundsException /
+              // IllegalArgumentException / BufferUnderflowException depending on which Binary accessor caught it
+              // first) is provably page corruption, the same "bad slot" signal as the RECORD_POSITION==0 case
+              // just above. Skip it like SerializationException below, scoped narrowly to just these two reads so
+              // it cannot also catch a bug from database.lookupByRID()/AfterRecordReadListener (#6015).
+              logSkippedRecord(e);
+              continue;
+            }
+
             if (recordSize[0] > 0 || recordSize[0] == LocalBucket.FIRST_CHUNK) {
               // NOT DELETED
               final RID rid = new RID(bucket.fileId,
@@ -151,16 +197,52 @@ public class BucketIterator implements Iterator<Record> {
               if (!bucket.existsRecord(rid))
                 continue;
 
-              nextBatch[writeIndex++] = database.lookupByRID(rid, false);
+              try {
+                nextBatch[writeIndex++] = database.lookupByRID(rid, false);
+              } catch (final ConcurrentModificationException e) {
+                if (!bucket.isChunkChainBroken(rid))
+                  // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: loadMultiPageRecord() throws this after
+                  // exhausting TX_RETRIES, but exhausted retries alone do not prove the chain is broken - its
+                  // page-version validation also fails under ordinary concurrent writes to OTHER records sharing
+                  // the chain's pages. Propagate so the caller's retry machinery (if any) re-runs, the same
+                  // disambiguation LocalDatabase.deleteRecordInternal() already applies to this exception.
+                  throw e;
+                // CONFIRMED STRUCTURALLY BROKEN CHAIN: a version-blind walk (isChunkChainBroken) found a genuinely
+                // bad continuation pointer, not just a version mismatch - this is corruption, not contention.
+                // UNDO THE RESERVED SLOT: per JLS 15.26.1, `nextBatch[writeIndex++] = ...` evaluates the array
+                // index (incrementing writeIndex) BEFORE the right-hand side, so the increment already happened
+                // even though lookupByRID() threw before ever writing into that slot. Do not "simplify" this away.
+                writeIndex--;
+                logSkippedRecord(e);
+              }
 
             } else if (recordSize[0] == LocalBucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
               final RID rid = new RID(bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
-              final Binary view = bucket.getRecordInternal(
-                  new RID(bucket.fileId,
-                      currentPage.readLong((int) (recordPositionInPage + recordSize[1]))), true);
+              final long placeholderTargetPosition;
+              try {
+                // Same page-bytes-only shape as the slot-table resolution above: no application/listener code
+                // runs in this call, so a corrupted pointer field is page corruption, not an application bug.
+                placeholderTargetPosition = currentPage.readLong((int) (recordPositionInPage + recordSize[1]));
+              } catch (final RuntimeException e) {
+                logSkippedRecord(e);
+                continue;
+              }
+
+              final RID placeholderTargetRid = new RID(bucket.fileId, placeholderTargetPosition);
+              final Binary view;
+              try {
+                view = bucket.getRecordInternal(placeholderTargetRid, true);
+              } catch (final ConcurrentModificationException e) {
+                if (!bucket.isChunkChainBroken(placeholderTargetRid))
+                  // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: see the identical disambiguation on the
+                  // NOT-DELETED branch above.
+                  throw e;
+                logSkippedRecord(e);
+                continue;
+              }
 
               if (view == null)
                 continue;
@@ -169,10 +251,19 @@ public class BucketIterator implements Iterator<Record> {
                   database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid,
                   view, null);
             }
-          } catch (final Exception e) {
-            final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
-                (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
-            LogManager.instance().log(this, Level.SEVERE, msg);
+          } catch (final RecordNotFoundException e) {
+            // BENIGN RACE: the record existed a moment ago when bucket.existsRecord(rid) was checked above, but
+            // was concurrently deleted before lookupByRID()/getRecordInternal() executed. Skip it silently, the
+            // same way the other "turned out to be gone" checks in this loop already do with a plain `continue`.
+          } catch (final SerializationException e) {
+            // KNOWN-CORRUPT ON-DISK RECORD: log and skip so one bad record does not abort an otherwise healthy
+            // full scan (the CHECK DATABASE-shaped case). Every OTHER exception - including one from a
+            // user-supplied AfterRecordReadListener/trigger, and a ConcurrentModificationException not confirmed
+            // as a broken chunk chain by the two dedicated catches above - is deliberately NOT caught here and
+            // propagates instead, so a real bug (or genuine contention needing a real retry) surfaces where it
+            // can be diagnosed or retried instead of silently looking like "this bucket has fewer records"
+            // (#6015; see #5976 for a listener bug this used to hide).
+            logSkippedRecord(e);
           } finally {
             if (forwardDirection)
               currentRecordInPage++;
