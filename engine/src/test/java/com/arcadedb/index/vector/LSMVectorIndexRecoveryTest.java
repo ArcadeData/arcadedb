@@ -66,6 +66,16 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
   private static final int EMBEDDING_DIM = 32;
 
+  /**
+   * Ceiling for {@link #awaitEmptyDeltaBuffer(LSMVectorIndex)}. Derived from
+   * {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}'s default (600s) plus a 60s margin rather than a second
+   * hardcoded 300s constant (issue #6032) - see the matching note on
+   * {@code LSMVectorIndexRebuildTest.REBUILD_SETTLE_TIMEOUT} for why a ceiling below the production permit
+   * timeout defeats that timeout's own diagnostic WARNING.
+   */
+  private static final Duration DELTA_BUFFER_DRAIN_TIMEOUT =
+      Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);
+
   // Issue #3715: vectorNeighbors must not NPE when the HNSW graph still references ordinals of deleted vectors.
   @Test
   void vectorSearchAfterDeleteShouldNotThrowNPE() {
@@ -1703,7 +1713,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
    */
   private void awaitEmptyDeltaBuffer(final LSMVectorIndex index) {
     Awaitility.await("the inactivity rebuild drains the delta buffer")
-        .atMost(Duration.ofSeconds(300))
+        .atMost(DELTA_BUFFER_DRAIN_TIMEOUT)
         .pollInterval(Duration.ofMillis(200))
         .untilAsserted(() -> assertThat(index.getStats().get("deltaVectorsCount"))
             .as("Delta buffer should be empty after inactivity rebuild")

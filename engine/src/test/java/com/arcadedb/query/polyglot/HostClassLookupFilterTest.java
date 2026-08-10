@@ -172,6 +172,23 @@ class HostClassLookupFilterTest {
     assertThat(filter.test("java.time.LocalDate")).isTrue();
   }
 
+  /**
+   * Issue #6045: a first version of the hierarchy walk excluded every package-wildcard {@code DENIED} entry (e.g.
+   * {@code java.security.**}), on the reasoning that it already matches every class in that namespace by name, so
+   * checking it during the walk would only add false positives from marker interfaces. That also let a
+   * capability-bearing wildcard-only-denied ancestor slip through undetected if reached via an allow-listed
+   * subclass. {@code java.util.PropertyPermission} - admitted by name under {@code java.util.*} - extends
+   * {@code java.security.BasicPermission} extends {@code java.security.Permission}, both wildcard-denied by
+   * {@code java.security.**} and not pinned by any precise entry, so it was the concrete instance of the audited
+   * gap in the JDK classpath reachable from {@link ScriptTriggerExecutor#ALLOWED_PACKAGES}.
+   */
+  @Test
+  void hierarchyCheckAlsoCatchesAWildcardOnlyDeniedAncestor() {
+    final HostClassLookupFilter filter = new HostClassLookupFilter(ScriptTriggerExecutor.ALLOWED_PACKAGES, null);
+
+    assertThat(filter.test("java.util.PropertyPermission")).isFalse();
+  }
+
   @Test
   void callerSuppliedRestrictionAlsoRejectsItsSubclasses() {
     // A subclass of a caller-supplied (extra) denied type must be rejected too, not just the JDK built-in deny-list.

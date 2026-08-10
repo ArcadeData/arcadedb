@@ -455,17 +455,17 @@ public enum Type {
       } else if (targetClass.equals(int[].class) && value instanceof long[] src) {
         final int[] array = new int[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (int) src[i];
+          array[i] = narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
         return array;
       } else if (targetClass.equals(int[].class) && value instanceof double[] src) {
         final int[] array = new int[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (int) src[i];
+          array[i] = narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
         return array;
       } else if (targetClass.equals(int[].class) && value instanceof float[] src) {
         final int[] array = new int[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (int) src[i];
+          array[i] = narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to long[]
@@ -475,14 +475,15 @@ public enum Type {
           array[i++] = ((Number) item).longValue();
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof double[] src) {
+        // LONG is the widest integral type, so only the NaN guard applies (no narrower range to check - see narrowToIntegral()).
         final long[] array = new long[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (long) src[i];
+          array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property).longValue();
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof float[] src) {
         final long[] array = new long[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (long) src[i];
+          array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property).longValue();
         return array;
       } else if (targetClass.equals(short[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to short[]
@@ -494,17 +495,17 @@ public enum Type {
       } else if (targetClass.equals(short[].class) && value instanceof long[] src) {
         final short[] array = new short[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (short) src[i];
+          array[i] = narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
         return array;
       } else if (targetClass.equals(short[].class) && value instanceof double[] src) {
         final short[] array = new short[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (short) src[i];
+          array[i] = narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
         return array;
       } else if (targetClass.equals(short[].class) && value instanceof float[] src) {
         final short[] array = new short[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (short) src[i];
+          array[i] = narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
         return array;
       } else if (targetClass.isEnum()) {
         if (value instanceof Number number)

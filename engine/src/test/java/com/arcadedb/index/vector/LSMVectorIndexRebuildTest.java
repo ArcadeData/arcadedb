@@ -84,8 +84,19 @@ class LSMVectorIndexRebuildTest extends TestHelper {
    * case. {@code REBUILD_SEMAPHORE} (JVM-wide, one permit) is shared by every vector index in the whole Surefire
    * fork, so a slow rebuild left over from an unrelated, already-finished test class can still be holding the
    * permit when this class's own tests start.
+   * <p>
+   * Raised again, from a flat 300s to {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}'s default (600s) plus a 60s
+   * margin (issue #6032): a same-day fix (commit {@code e1aa64203}) bounded {@code startAsyncGraphRebuild()}'s
+   * semaphore acquire at 600s with a diagnostic WARNING on timeout, specifically so a stuck rebuild would be
+   * diagnosable in a future recurrence. But this class's own 300s ceiling - half the production timeout - meant
+   * the Awaitility assertion always gave up and failed 300s *before* the production wait could even reach its own
+   * timeout and log anything, so the fix's diagnostic benefit could never fire for exactly the tests it was meant
+   * to help diagnose (confirmed 3 times: PR #5960, #5980, #6019 - no permit-timeout WARNING ever appeared in any
+   * of those failing runs). Deriving the bound from the production config instead of a second hardcoded constant
+   * also means the two can never silently drift apart again the way the flat 300s did.
    */
-  private static final Duration REBUILD_SETTLE_TIMEOUT = Duration.ofSeconds(300);
+  private static final Duration REBUILD_SETTLE_TIMEOUT =
+      Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);
 
   // Issue #3147: REBUILD INDEX preserves vector metadata (dimensions, similarity, maxConnections, beamWidth, idPropertyName) instead of recreating with dimensions=0.
   @Test

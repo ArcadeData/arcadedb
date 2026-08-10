@@ -21,12 +21,10 @@ package com.arcadedb.query.polyglot;
 import com.arcadedb.utility.LRUCache;
 
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -59,12 +57,18 @@ import java.util.function.Predicate;
  * {@code java.util.ListResourceBundle} both extend the denied {@code java.util.ResourceBundle} and inherit its
  * classpath-reading {@code getBundle(String)} factory, yet neither name matches the {@code "java.util.ResourceBundle"}
  * pattern (GHSA-j57p-qmrh-v7xv). To close that gap, a class admitted by name is additionally checked by walking its
- * resolved superclass and interface hierarchy: if any ancestor's name matches a <i>precise</i> deny entry - one that
- * pins a single type, i.e. a bare class name or a {@code Type$*} nested-type pattern - the class is rejected too. A
- * package-wildcard entry ({@code pkg.*} or {@code pkg.**}) is deliberately excluded from this walk: it already
- * matches every class in that namespace by name regardless of hierarchy, and applying it during the walk would also
- * catch unrelated marker interfaces that merely happen to live in a denied package (e.g. {@code java.io.Serializable},
- * implemented by most collection classes) and reject classes that were never meant to be denied.
+ * resolved superclass and interface hierarchy: if any ancestor's name matches <b>any</b> {@code DENIED} entry -
+ * precise or package-wildcard alike - the class is rejected too.
+ * <p>
+ * A first version of this walk excluded package-wildcard entries entirely, on the reasoning that a wildcard like
+ * {@code java.io.**} already matches every class in that namespace by name, so applying it during the walk would
+ * only add false positives - chiefly the handful of marker interfaces that happen to live in a denied package (e.g.
+ * {@code java.io.Serializable}, implemented by most collection classes) but grant no capability of their own. That
+ * reasoning has a hole: a class admitted by name that extends/implements a <i>capability-bearing</i> ancestor which
+ * is reachable only through a wildcard entry - not also pinned by a precise one - would slip through undetected
+ * (issue #6045). Excluding wildcards wholesale threw out the capability-bearing case to avoid the marker-interface
+ * case. Instead, {@link #SAFE_MARKER_ANCESTORS} names the specific handful of capability-free ancestors the walk
+ * must not reject on, and every other ancestor - wildcard-denied or precisely-denied - is checked.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -137,6 +141,22 @@ public class HostClassLookupFilter implements Predicate<String> {
   };
 
   /**
+   * Ancestors the hierarchy walk in {@link #inheritsADeniedType(String)} must never reject on, even though they are
+   * only reachable through a package-wildcard {@code DENIED} entry ({@code java.io.**} / {@code java.lang.**}-shaped
+   * families). Each is a marker or structural interface: it grants no capability of its own (no I/O, no reflection,
+   * no process/thread control), it is merely ubiquitous - implemented by most collection and value classes - so
+   * checking it would rediscover the exact false-positive the original wildcard exclusion was written to avoid
+   * (issue #6045). Keep this list to interfaces that are provably inert; anything with a method that could do real
+   * work (e.g. {@code java.util.EventListener}) does not belong here.
+   */
+  private static final Set<String> SAFE_MARKER_ANCESTORS = Set.of( //
+      "java.io.Serializable",                            //
+      "java.lang.Cloneable",                              //
+      "java.lang.Comparable",                             //
+      "java.lang.AutoCloseable"                           //
+  );
+
+  /**
    * Bound on {@link #hierarchyDenialCache}. A {@code HostClassLookupFilter} instance is not short-lived - one is
    * cached for the lifetime of a reusable {@code PolyglotQueryEngine}/{@code GraalPolyglotEngine} - so an
    * unbounded cache keyed by attacker-suppliable class-name strings (including names that fail to resolve, which
@@ -146,9 +166,7 @@ public class HostClassLookupFilter implements Predicate<String> {
 
   private final String[] allowed;
   private final String[] denied;
-  /** Subset of {@link #denied} that pins a single type (bare class name or {@code Type$*}), used for the hierarchy walk. */
-  private final String[] preciseDenied;
-  /** Per-instance, size-bounded cache of {@link #inheritsAPreciselyDeniedType(String)}, keyed by class name. */
+  /** Per-instance, size-bounded cache of {@link #inheritsADeniedType(String)}, keyed by class name. */
   private final Map<String, Boolean> hierarchyDenialCache = Collections.synchronizedMap(new LRUCache<>(HIERARCHY_CACHE_SIZE));
 
   public HostClassLookupFilter(final Collection<String> allowedPatterns, final Collection<String> extraDeniedPatterns) {
@@ -165,12 +183,6 @@ public class HostClassLookupFilter implements Predicate<String> {
       for (final String pattern : extraDeniedPatterns)
         this.denied[i++] = pattern;
     }
-
-    final List<String> precise = new ArrayList<>();
-    for (final String pattern : this.denied)
-      if (isPreciseTypePattern(pattern))
-        precise.add(pattern);
-    this.preciseDenied = precise.toArray(new String[precise.size()]);
   }
 
   @Override
@@ -193,36 +205,28 @@ public class HostClassLookupFilter implements Predicate<String> {
       return false;
 
     // The class is admitted by name, but it may still inherit a capability from a denied ancestor it does not share
-    // a name with (GHSA-j57p-qmrh-v7xv).
+    // a name with (GHSA-j57p-qmrh-v7xv, and the wildcard-ancestor completeness fix from issue #6045).
     Boolean deniedByHierarchy = hierarchyDenialCache.get(className);
     if (deniedByHierarchy == null) {
-      deniedByHierarchy = inheritsAPreciselyDeniedType(className);
+      deniedByHierarchy = inheritsADeniedType(className);
       hierarchyDenialCache.put(className, deniedByHierarchy);
     }
     return !deniedByHierarchy;
   }
 
   /**
-   * A pattern that pins a single named type: a bare class name (no trailing wildcard) or a {@code Type$*} nested-type
-   * entry. Package wildcards ({@code pkg.*}, {@code pkg.**}) are excluded because they already match every class in
-   * that namespace by name, independently of type hierarchy.
-   */
-  private static boolean isPreciseTypePattern(final String pattern) {
-    return !pattern.endsWith("*") || pattern.endsWith("$*");
-  }
-
-  /**
    * Resolves {@code className} through this filter's classloader and walks its superclass and interface hierarchy
-   * (excluding the class itself, already checked by name), looking for an ancestor whose name matches one of
-   * {@link #preciseDenied}. An unresolvable class name (already rejected by every other host-class-lookup surface,
-   * since GraalVM cannot load it either) is not treated as inheriting anything denied.
+   * (excluding the class itself, already checked by name), looking for an ancestor whose name matches any entry in
+   * {@link #denied} - precise or package-wildcard alike - other than one of the inert {@link #SAFE_MARKER_ANCESTORS}.
+   * An unresolvable class name (already rejected by every other host-class-lookup surface, since GraalVM cannot load
+   * it either) is not treated as inheriting anything denied.
    * <p>
    * This relies on GraalVM resolving {@code Java.type(...)} through the same classloader used here: neither
    * {@code GraalPolyglotEngine} nor its {@code Context.Builder} ever calls {@code hostClassLoader(...)}, so the
    * engine falls back to the embedding application's classloader, matching what is used below. If that ever
    * changes, an unresolvable name would need to fail closed instead of being treated as non-denied.
    */
-  private boolean inheritsAPreciselyDeniedType(final String className) {
+  private boolean inheritsADeniedType(final String className) {
     final Class<?> resolved;
     try {
       resolved = Class.forName(className, false, HostClassLookupFilter.class.getClassLoader());
@@ -243,9 +247,10 @@ public class HostClassLookupFilter implements Predicate<String> {
         continue;
 
       final String ancestorName = ancestor.getName();
-      for (final String pattern : preciseDenied)
-        if (matches(ancestorName, pattern))
-          return true;
+      if (!SAFE_MARKER_ANCESTORS.contains(ancestorName))
+        for (final String pattern : denied)
+          if (matches(ancestorName, pattern))
+            return true;
 
       addAncestors(toVisit, ancestor);
     }
