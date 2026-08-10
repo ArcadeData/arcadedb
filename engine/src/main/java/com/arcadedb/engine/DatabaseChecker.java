@@ -289,14 +289,15 @@ public class DatabaseChecker {
         // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
         // lock across both the drop and the create prevents a concurrent writer from observing the index
         // gone-then-back, and retrying survives tryLockFiles's LockTimeoutException (a NeedRetryException) on a
-        // busy database. Unlike RebuildIndexStatement, which silently returns once attempts are exhausted, this
-        // rethrows so CHECK DATABASE FIX fails loudly instead of quietly leaving the index unrepaired.
+        // busy database.
         //
         // Shares a known, pre-existing race with RebuildIndexStatement's identically-shaped retry (not introduced
         // here): retrying re-enters the whole drop+create body, so a NeedRetryException raised deep inside
         // create()'s bucket scan - after the drop already committed - restarts from a dropped index rather than
         // from the point of failure. A proper fix (skip the drop on retry, or scope the retry to lock acquisition
         // only) belongs in both call sites together, not this one in isolation.
+        boolean rebuilt = false;
+        NeedRetryException lastRetryFailure = null;
         for (int attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {
           try {
             database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
@@ -309,17 +310,33 @@ public class DatabaseChecker {
                   .create();
               return null;
             });
+            rebuilt = true;
             break;
           } catch (final NeedRetryException e) {
+            lastRetryFailure = e;
             if (attempt == LOCK_MAX_ATTEMPTS)
-              throw e;
+              break;
             try {
               Thread.sleep(200 + 200L * attempt);
             } catch (final InterruptedException ie) {
+              // An interrupt is a request to stop, not contention to ride out: honor it immediately rather than
+              // trying the remaining indexes.
               Thread.currentThread().interrupt();
               throw e;
             }
           }
+        }
+
+        // Isolated per index rather than letting the exhausted retry unwind out of check(): this loop repairs
+        // potentially many indexes plus whatever checkDocuments/checkVertices/checkEdges already found and fixed,
+        // and none of that should be discarded because ONE index stayed lock-contended on a busy database. Report
+        // it (this class's "reported, never silent" convention - see the manual-index warning above) and correct
+        // the rebuiltIndexes claim instead of pretending the rebuild happened.
+        if (!rebuilt) {
+          rebuildIndexes.remove(idx.getName());
+          addWarning("index '" + idx.getName() + "': could not be rebuilt after " + LOCK_MAX_ATTEMPTS
+              + " attempts due to lock contention (error: " + lastRetryFailure.getMessage()
+              + "). Run CHECK DATABASE FIX again once the affected index/type is quiescent");
         }
 
         stepTick();
