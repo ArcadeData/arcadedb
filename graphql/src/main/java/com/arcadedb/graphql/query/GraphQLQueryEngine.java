@@ -27,6 +27,7 @@ import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
+import com.arcadedb.graphql.parser.TokenMgrException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
@@ -53,7 +54,7 @@ public class GraphQLQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
-    final Set<OperationType> ops = detectGraphQLOperationTypes(query);
+    final Set<OperationType> ops = classify(query).ops();
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -72,30 +73,55 @@ public class GraphQLQueryEngine implements QueryEngine {
     };
   }
 
-  private static Set<OperationType> detectGraphQLOperationTypes(final String query) {
+  /**
+   * The operation-type classification, plus - when classification fell back to "assume the worst" because the
+   * document could not be parsed/lexed - the exception that caused it, so a caller can report the real syntax
+   * error instead of just "not idempotent". {@code parseFailure} is {@code null} whenever classification
+   * completed normally, including the case where a genuine mutation was recognized.
+   */
+  private record Classification(Set<OperationType> ops, Exception parseFailure) {
+  }
+
+  private static Classification classify(final String query) {
     try {
       final Document doc = GraphQLParser.parse(query);
       for (final Definition def : doc.getDefinitions())
         if (def instanceof OperationDefinition op && !op.isQuery())
-          return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
-    } catch (final ParseException e) {
-      // Fall through to default READ — execution will report the parse error
+          return new Classification(Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE), null);
+    } catch (final ParseException | TokenMgrException e) {
+      // Cannot classify: assume the worst so an idempotency gate denies rather than admits. Execution
+      // still re-parses and reports the real syntax error; this only changes the answer given to a
+      // caller asking "is this read-only?" before execution runs. TokenMgrException (unchecked) is the
+      // lexical-error counterpart to ParseException: the nesting-depth pre-scan in GraphQLParser.parse()
+      // drives the generated token manager directly and a malformed token (e.g. an unterminated string
+      // literal) surfaces there as a TokenMgrException rather than a ParseException. See issue #5853.
+      return new Classification(Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE), e);
     }
-    return CollectionUtils.singletonSet(OperationType.READ);
+    return new Classification(CollectionUtils.singletonSet(OperationType.READ), null);
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    if (!analyze(query).isIdempotent())
-      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
+    assertIdempotent(query);
     return command(query, null, parameters);
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
-    if (!analyze(query).isIdempotent())
-      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
+    assertIdempotent(query);
     return command(query, null, parameters);
+  }
+
+  private static void assertIdempotent(final String query) {
+    final Classification c = classify(query);
+    if (c.ops().size() == 1 && c.ops().contains(OperationType.READ))
+      return;
+    if (c.parseFailure() != null)
+      // The document could not be parsed/lexed at all - surface the real cause rather than just "not
+      // idempotent", since this is reached for any malformed query submitted through the read-only entry
+      // point, not only the pathological-nesting case the depth guard exists for. See issue #5853.
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent: " + c.parseFailure().getMessage(), c.parseFailure());
+    throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
   }
 
   @Override
