@@ -141,10 +141,12 @@ public class HostClassLookupFilter implements Predicate<String> {
   };
 
   /**
-   * Ancestors the hierarchy walk in {@link #inheritsADeniedType(String)} must never reject on. Each is a marker or
-   * structural interface: it grants no capability of its own (no I/O, no reflection, no process/thread control), it
-   * is merely ubiquitous - implemented by most collection and value classes - so checking it would rediscover the
-   * exact false-positive the original wildcard exclusion was written to avoid (issue #6045).
+   * Ancestors the hierarchy walk in {@link #inheritsADeniedType(String)} must never reject on through a
+   * <i>wildcard</i> {@code DENIED} match (a precise entry naming one of these directly still applies - see that
+   * method's javadoc). Each is a marker or structural interface: it grants no capability of its own (no I/O, no
+   * reflection, no process/thread control), it is merely ubiquitous - implemented by most collection and value
+   * classes - so checking it against a wildcard would rediscover the exact false-positive the original wildcard
+   * exclusion was written to avoid (issue #6045).
    * <p>
    * {@code Serializable} and {@code Closeable} are the two that are actually reachable through a wildcard match
    * today, both living inside the fully-checked {@code java.io.**} family - {@code Closeable} extends
@@ -227,9 +229,14 @@ public class HostClassLookupFilter implements Predicate<String> {
   /**
    * Resolves {@code className} through this filter's classloader and walks its superclass and interface hierarchy
    * (excluding the class itself, already checked by name), looking for an ancestor whose name matches any entry in
-   * {@link #denied} - precise or package-wildcard alike - other than one of the inert {@link #SAFE_MARKER_ANCESTORS}.
-   * An unresolvable class name (already rejected by every other host-class-lookup surface, since GraalVM cannot load
-   * it either) is not treated as inheriting anything denied.
+   * {@link #denied} - precise or package-wildcard alike. A {@link #SAFE_MARKER_ANCESTORS} ancestor only defeats a
+   * <i>wildcard</i> match: it exists to stop a package-wildcard entry from catching a marker interface that merely
+   * happens to live in that package, not to make the ancestor immune to an entry that names it directly. If a
+   * {@code DENIED} entry (built-in or caller-supplied via {@code extraDeniedPatterns}) ever pins one of these five
+   * interfaces precisely - a deliberate choice by whoever configured it - that precise entry still wins.
+   * <p>
+   * An unresolvable class name (already rejected by every other host-class-lookup surface, since GraalVM cannot
+   * load it either) is not treated as inheriting anything denied.
    * <p>
    * This relies on GraalVM resolving {@code Java.type(...)} through the same classloader used here: neither
    * {@code GraalPolyglotEngine} nor its {@code Context.Builder} ever calls {@code hostClassLoader(...)}, so the
@@ -257,10 +264,16 @@ public class HostClassLookupFilter implements Predicate<String> {
         continue;
 
       final String ancestorName = ancestor.getName();
-      if (!SAFE_MARKER_ANCESTORS.contains(ancestorName))
-        for (final String pattern : denied)
-          if (matches(ancestorName, pattern))
-            return true;
+      final boolean isSafeMarker = SAFE_MARKER_ANCESTORS.contains(ancestorName);
+      for (final String pattern : denied) {
+        if (!matches(ancestorName, pattern))
+          continue;
+        if (isSafeMarker && isWildcardPattern(pattern))
+          // The safe-marker exception only ever defeats a wildcard match - a precise entry naming this ancestor
+          // directly was a deliberate choice and still applies.
+          continue;
+        return true;
+      }
 
       addAncestors(toVisit, ancestor);
     }
@@ -273,6 +286,11 @@ public class HostClassLookupFilter implements Predicate<String> {
       toVisit.add(superclass);
     for (final Class<?> iface : type.getInterfaces())
       toVisit.add(iface);
+  }
+
+  /** A package-wildcard entry ({@code pkg.*} or {@code pkg.**}), as opposed to one pinning a single named type. */
+  private static boolean isWildcardPattern(final String pattern) {
+    return pattern.endsWith("*");
   }
 
   /**

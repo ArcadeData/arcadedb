@@ -98,9 +98,13 @@ class LSMVectorIndexRebuildTest extends TestHelper {
    * will actually do even in the (currently hypothetical) case where something else in this JVM changes the
    * setting before this field initializes.
    * <p>
-   * Invariant this relies on: nothing in this class may change {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}
-   * before this static field is initialized (i.e. before the class's first test runs) - a future test added here
-   * that does so in a static initializer would silently change this ceiling too.
+   * Invariant this relies on: nothing may change {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS} before this static
+   * field is initialized (i.e. before this class's first test runs). The setting is {@code SCOPE.JVM}, so this is
+   * not only about this class's own tests - any other test class in the same Surefire fork that changes it and
+   * does not reset it before this class loads could also shrink this ceiling. Not currently violated by anything
+   * in this class (or observed from another class in this codebase), but a future test added anywhere that sets
+   * this value in a static initializer, or a {@code @BeforeAll} that runs before this class loads, would silently
+   * change it too.
    */
   private static final Duration REBUILD_SETTLE_TIMEOUT =
       Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);

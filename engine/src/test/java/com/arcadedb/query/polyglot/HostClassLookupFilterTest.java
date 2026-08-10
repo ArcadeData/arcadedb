@@ -194,6 +194,23 @@ class HostClassLookupFilterTest {
   }
 
   /**
+   * Issue #6045 code review: {@link HostClassLookupFilter#SAFE_MARKER_ANCESTORS} must only ever defeat a
+   * <i>wildcard</i> {@code DENIED} match - it exists to stop a package wildcard from catching a marker interface
+   * that merely happens to live in that package, not to make the interface immune to deny-listing altogether. A
+   * caller who deliberately, precisely denies {@code java.io.Serializable} itself (e.g. via
+   * {@code extraDeniedPatterns}) must still have every {@code Serializable}-implementing class rejected through
+   * the hierarchy walk, exactly like any other precisely-denied ancestor.
+   */
+  @Test
+  void safeMarkerExceptionDoesNotOverrideAPreciseDenyEntryNamingIt() {
+    final HostClassLookupFilter filter = new HostClassLookupFilter(ScriptTriggerExecutor.ALLOWED_PACKAGES, List.of("java.io.Serializable"));
+
+    assertThat(filter.test("java.util.UUID")).isFalse();
+    // A class NOT implementing Serializable must be unaffected by the caller's precise deny entry.
+    assertThat(filter.test("java.util.function.Function")).isTrue();
+  }
+
+  /**
    * Issue #6045: a first version of the hierarchy walk excluded every package-wildcard {@code DENIED} entry (e.g.
    * {@code java.security.**}), on the reasoning that it already matches every class in that namespace by name, so
    * checking it during the walk would only add false positives from marker interfaces. That also let a
