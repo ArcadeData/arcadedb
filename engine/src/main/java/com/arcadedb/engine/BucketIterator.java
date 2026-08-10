@@ -95,7 +95,11 @@ public class BucketIterator implements Iterator<Record> {
    * {@code COUNT}) can check this after exhausting the iterator to detect a truncated result; it is not
    * incremented for the benign concurrent-delete race handled by {@link RecordNotFoundException}, nor for a
    * {@link ConcurrentModificationException} not confirmed as a broken chain (transient contention propagates
-   * instead so a retry can resolve it), nor for any other exception, which likewise propagates (#6015).
+   * instead so a retry can resolve it), nor for any other exception, which likewise propagates (#6015). It is
+   * also, deliberately, not incremented for a slot whose position resolves to 0: since 24.1.1 that is a plain
+   * deleted record (the delete zeroes the slot), not corruption, so it is skipped the same way
+   * {@link RecordNotFoundException} is - this counter tracks skipped-due-to-corruption, not every reason a scan
+   * can return fewer records than the bucket's raw slot count.
    */
   public long getSkippedRecordCount() {
     return skippedRecords;
@@ -174,7 +178,10 @@ public class BucketIterator implements Iterator<Record> {
               recordPositionInPage = (int) currentPage.readUnsignedInt(
                   LocalBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
               if (recordPositionInPage == 0)
-                // CLEANED CORRUPTED RECORD
+                // DELETED RECORD (>= 24.1.1; it was "cleaned corrupted record" before), not corruption - a plain
+                // delete zeroes the slot. Skip it silently like RecordNotFoundException below, not counted by
+                // getSkippedRecordCount() (see its javadoc): matches LocalBucket's own treatment of the same
+                // check (e.g. deleteRecordInternal's recordPositionInPage < 1 throws RecordNotFoundException).
                 continue;
 
               recordSize = currentPage.readNumberAndSize(recordPositionInPage);

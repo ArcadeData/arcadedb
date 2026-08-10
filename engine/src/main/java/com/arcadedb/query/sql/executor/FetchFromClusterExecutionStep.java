@@ -20,12 +20,15 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.BucketIterator;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.log.LogManager;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -39,6 +42,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   private final       Set<String>       projectedProperties;
   private             Object            order;
   private             long              totalFetched = 0L;
+  private             boolean           warnedAboutSkippedRecords;
 
   private Iterator<Record> iterator;
 
@@ -90,7 +94,10 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //            if (ORDER_DESC == order) {
 //              return iterator.hasPrevious();
 //            } else {
-            return iterator.hasNext();
+            final boolean hasNext = iterator.hasNext();
+            if (!hasNext)
+              warnIfRecordsSkipped();
+            return hasNext;
 //            }
           } finally {
             if (context.isProfiling()) {
@@ -200,6 +207,24 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //
 //    return minValue == Long.MAX_VALUE ? -1 : minValue;
 //  }
+
+  /**
+   * Surfaces #6015's {@link BucketIterator#getSkippedRecordCount()} to a real caller: once the scan is exhausted,
+   * log a one-time warning if any record was skipped as corrupted or a confirmed-broken multi-page chain, so a
+   * truncated result does not silently look like "the bucket just has fewer records".
+   */
+  private void warnIfRecordsSkipped() {
+    if (warnedAboutSkippedRecords || !(iterator instanceof final BucketIterator bucketIterator))
+      return;
+
+    final long skipped = bucketIterator.getSkippedRecordCount();
+    if (skipped > 0) {
+      warnedAboutSkippedRecords = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Scan of bucket %d skipped %d record(s) that could not be read (corrupted or a broken multi-page chain); "
+              + "the result may be incomplete, run CHECK DATABASE to investigate", bucketId, skipped);
+    }
+  }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {

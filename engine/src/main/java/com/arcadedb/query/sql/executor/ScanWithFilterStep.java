@@ -20,13 +20,16 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.BucketIterator;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * A combined scan + filter step that evaluates the WHERE predicate immediately after loading each record,
@@ -48,6 +51,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
   private       Object      order;
   private       long        totalFetched  = 0L;
   private       long        totalFiltered = 0L;
+  private       boolean     warnedAboutSkippedRecords;
 
   private Iterator<Record> iterator;
 
@@ -119,6 +123,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
                 cost += System.nanoTime() - filterBegin;
             }
           }
+          warnIfRecordsSkipped();
         }
 
         @Override
@@ -148,6 +153,24 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
+    }
+  }
+
+  /**
+   * Surfaces #6015's {@link BucketIterator#getSkippedRecordCount()} to a real caller: once the scan is exhausted,
+   * log a one-time warning if any record was skipped as corrupted or a confirmed-broken multi-page chain, so a
+   * truncated result does not silently look like "the bucket just has fewer records".
+   */
+  private void warnIfRecordsSkipped() {
+    if (warnedAboutSkippedRecords || !(iterator instanceof final BucketIterator bucketIterator))
+      return;
+
+    final long skipped = bucketIterator.getSkippedRecordCount();
+    if (skipped > 0) {
+      warnedAboutSkippedRecords = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Scan of bucket %d skipped %d record(s) that could not be read (corrupted or a broken multi-page chain); "
+              + "the result may be incomplete, run CHECK DATABASE to investigate", bucketId, skipped);
     }
   }
 
