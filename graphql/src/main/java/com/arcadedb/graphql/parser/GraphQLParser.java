@@ -24,12 +24,45 @@ import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.arcadedb.GlobalConfiguration;
+
 public class GraphQLParser/*@bgen(jjtree)*/implements GraphQLParserTreeConstants, GraphQLParserConstants {/*@bgen(jjtree)*/
   protected JJTGraphQLParserState jjtree = new JJTGraphQLParserState();private int tokenId = 0;
 
 
     public static Document parse(String query) throws ParseException {
+      checkNestingDepth(query);
       return new GraphQLParser(new SimpleCharStream(new StringReader(query))).Document();
+    }
+
+    /**
+     * Bounds how deeply '{' ... '}' or '[' ... ']' can nest in the document - selection sets, object/
+     * interface/input type bodies, and list values/types all use one of these two delimiter pairs -
+     * before the recursive-descent parser runs. Every level of nesting re-enters the SelectionSet/Field
+     * grammar rules, or the mutually-recursive Value/ListValue (and ValueWithVariable/ListValueWithVariable,
+     * Type/ListType) rules, at least once, so a document with enough nesting exhausts the calling thread's
+     * native stack with a StackOverflowError instead of a normal parse error: 3085 levels does it with an
+     * ~18 KB payload on a default JVM stack, and the same is true of an equally deep chain of nested list
+     * literals even though it never contains a single brace. Counting combined brace/bracket depth on the
+     * token stream is a precise, allocation-cheap proxy for that recursion and runs before any parse tree
+     * is built, using a dedicated token manager so the real parse below still starts from a fresh,
+     * unconsumed char stream. GraphQL string literals and '#' comments are each lexed as a single token, so
+     * a brace or bracket inside either one is never counted here. See issue #5853.
+     */
+    private static void checkNestingDepth(final String query) throws ParseException {
+      final int maxDepth = GlobalConfiguration.GRAPHQL_MAX_NESTING_DEPTH.getValueAsInteger();
+      final GraphQLParserTokenManager tokenManager = new GraphQLParserTokenManager(new SimpleCharStream(new StringReader(query)));
+      int depth = 0;
+      for (Token token = tokenManager.getNextToken(); token.kind != EOF; token = tokenManager.getNextToken()) {
+        if (token.kind == OCBR || token.kind == OBRA) {
+          if (++depth > maxDepth)
+            throw new ParseException("GraphQL document nesting exceeds the maximum allowed depth of " + maxDepth
+                + " ('{' or '[' nested inside one another). This protects the server against a stack overflow from a "
+                + "pathologically nested query; raise 'arcadedb.graphql.maxNestingDepth' if this is a legitimate query.");
+        } else if ((token.kind == CCBR || token.kind == CBRA) && depth > 0) {
+          --depth;
+        }
+      }
     }
 
 
