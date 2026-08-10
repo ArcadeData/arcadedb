@@ -475,6 +475,12 @@ class TypeTest extends TestHelper {
    * issue text only reproduces it via double[]/float[] - {@code (int) 3_000_000_000L} wraps to {@code -1294967296}
    * via plain two's-complement bit truncation (long->int is not saturating, unlike double->int/long) - so it is
    * covered here too.
+   * <p>
+   * A {@code Collection} source (e.g. a {@code List<Double>} - the shape JSON deserialization typically produces)
+   * has the same defect for the {@code int[]}/{@code long[]}/{@code short[]} targets, found in code review of the
+   * first pass of this fix, which only routed the primitive-array-source branches through
+   * {@code narrowToIntegral()} and left the sibling {@code Collection}-source branches on a raw
+   * {@code .intValue()}/{@code .longValue()}/{@code .shortValue()} cast.
    */
   @Test
   void convertArrayNarrowingNaNAndOverflowRejected() {
@@ -513,7 +519,21 @@ class TypeTest extends TestHelper {
     assertThatThrownBy(() -> Type.convert(database, new long[] { 40_000L }, short[].class))
         .isInstanceOf(IllegalArgumentException.class);
 
-    // AN IN-RANGE VALUE IN A MULTI-ELEMENT ARRAY MUST STILL CONVERT, EVEN WHEN A LATER ELEMENT WOULD BE REJECTED
+    // Collection -> int[]/long[]/short[]: the sibling branches next to the primitive-array ones above had the
+    // identical raw-cast gap (caught in code review of this fix's first pass)
+    assertThatThrownBy(() -> Type.convert(database, List.of(Double.NaN), int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(3_000_000_000.0), int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(Double.NaN), long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(Double.NaN), short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(3_000_000_000.0), short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // A SINGLE BAD ELEMENT REJECTS THE WHOLE ARRAY, EVEN WHEN SURROUNDED BY OTHERWISE IN-RANGE VALUES - THERE IS NO
+    // PARTIAL/BEST-EFFORT CONVERSION THAT WOULD SILENTLY DROP OR ZERO OUT JUST THE OFFENDING ELEMENT
     assertThatThrownBy(() -> Type.convert(database, new double[] { 1.0, Double.NaN, 3.0 }, int[].class))
         .isInstanceOf(IllegalArgumentException.class);
   }

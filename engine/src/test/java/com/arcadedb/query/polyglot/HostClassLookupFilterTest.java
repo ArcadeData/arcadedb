@@ -172,6 +172,27 @@ class HostClassLookupFilterTest {
     assertThat(filter.test("java.time.LocalDate")).isTrue();
   }
 
+  /** Marker type used only by {@link #hierarchyCheckDoesNotFalsePositiveOnCloseable()}. */
+  private static final class ResourceHandle implements java.io.Closeable {
+    @Override
+    public void close() {
+      // Nothing to release - this type exists only to be resolved through Class.forName() by the test below.
+    }
+  }
+
+  /**
+   * {@code java.io.Closeable} lives inside the now-fully-checked {@code java.io.**} wildcard family (issue #6045
+   * code review) and extends {@code AutoCloseable}, so it needs the same explicit safe-marker treatment: its one
+   * method just signals "release a resource", it does not itself grant one. Without that entry, any allow-listed
+   * class implementing it for ordinary resource-management reasons would be newly, incorrectly rejected.
+   */
+  @Test
+  void hierarchyCheckDoesNotFalsePositiveOnCloseable() {
+    final HostClassLookupFilter filter = new HostClassLookupFilter(List.of("com.arcadedb.query.polyglot.**"), null);
+
+    assertThat(filter.test(ResourceHandle.class.getName())).isTrue();
+  }
+
   /**
    * Issue #6045: a first version of the hierarchy walk excluded every package-wildcard {@code DENIED} entry (e.g.
    * {@code java.security.**}), on the reasoning that it already matches every class in that namespace by name, so

@@ -450,7 +450,7 @@ public enum Type {
         final int[] array = new int[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = ((Number) item).intValue();
+          array[i++] = narrowToIntegral((Number) item, Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
         return array;
       } else if (targetClass.equals(int[].class) && value instanceof long[] src) {
         final int[] array = new int[src.length];
@@ -468,11 +468,12 @@ public enum Type {
           array[i] = narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof Collection<?> collection) {
-        // Convert Collection to long[]
+        // Convert Collection to long[]. LONG is the widest integral type, so only the NaN guard applies (no
+        // narrower range to check - see narrowToIntegral()).
         final long[] array = new long[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = ((Number) item).longValue();
+          array[i++] = narrowToIntegral((Number) item, Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property).longValue();
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof double[] src) {
         // LONG is the widest integral type, so only the NaN guard applies (no narrower range to check - see narrowToIntegral()).
@@ -490,7 +491,7 @@ public enum Type {
         final short[] array = new short[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = ((Number) item).shortValue();
+          array[i++] = narrowToIntegral((Number) item, Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
         return array;
       } else if (targetClass.equals(short[].class) && value instanceof long[] src) {
         final short[] array = new short[src.length];

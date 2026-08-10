@@ -146,11 +146,15 @@ public class HostClassLookupFilter implements Predicate<String> {
    * families). Each is a marker or structural interface: it grants no capability of its own (no I/O, no reflection,
    * no process/thread control), it is merely ubiquitous - implemented by most collection and value classes - so
    * checking it would rediscover the exact false-positive the original wildcard exclusion was written to avoid
-   * (issue #6045). Keep this list to interfaces that are provably inert; anything with a method that could do real
-   * work (e.g. {@code java.util.EventListener}) does not belong here.
+   * (issue #6045). {@code java.io.Closeable} is here alongside {@code AutoCloseable} for the same reason: it lives
+   * inside the now-fully-checked {@code java.io.**} family, extends {@code AutoCloseable}, and is exactly as inert
+   * (its one method just signals "release a resource" - it does not itself grant one). Keep this list to interfaces
+   * that are provably inert; anything with a method that could do real work (e.g. {@code java.util.EventListener})
+   * does not belong here.
    */
   private static final Set<String> SAFE_MARKER_ANCESTORS = Set.of( //
       "java.io.Serializable",                            //
+      "java.io.Closeable",                                //
       "java.lang.Cloneable",                              //
       "java.lang.Comparable",                             //
       "java.lang.AutoCloseable"                           //

@@ -573,7 +573,7 @@ needs an exact order must sort or read through an index on a timestamp property.
 
 [#6044](https://github.com/ArcadeData/arcadedb/issues/6044)
 
-## `Type.convert()`: narrowing an array of `double`/`float`/`long` to a smaller integral array no longer silently corrupts values (#6020)
+## `Type.convert()`: narrowing an array or Collection of `double`/`float`/`long` to a smaller integral array no longer silently corrupts values (#6020)
 
 The scalar narrowing path (`Byte`/`Short`/`Integer`/`Long`) already rejects `NaN` and an out-of-range value
 instead of wrapping it (#5905, #5970), but the array-narrowing branches - `double[]`/`float[]`/`long[]` source
@@ -581,6 +581,10 @@ to `int[]`/`long[]`/`short[]` target - did a raw element-wise cast with neither 
 `Type.convert(db, new double[]{Double.NaN}, int[].class)` returned `{0}`, and narrowing a `long[]` value like
 `3_000_000_000L` to `short[]` wrapped via plain two's-complement truncation to a wrong in-range value, both with
 no error. Every element now goes through the same `narrowToIntegral()` the scalar path uses.
+
+Code review on the fix caught the same bug one branch over: the sibling `Collection` (e.g. `List<Double>` - the
+shape JSON deserialization typically produces) -> `int[]`/`long[]`/`short[]` branches had the identical raw
+`.intValue()`/`.longValue()`/`.shortValue()` cast and were left out of the first pass entirely. Fixed the same way.
 
 [#6020](https://github.com/ArcadeData/arcadedb/issues/6020)
 
@@ -609,9 +613,9 @@ the concrete instance: `java.util.PropertyPermission` - admitted by name under `
 and pinned by no precise entry.
 
 The walk now checks an ancestor against every `DENIED` entry, wildcard or precise, except a short, explicit list
-of inert marker interfaces (`Serializable`, `Cloneable`, `Comparable`, `AutoCloseable`) that grant no capability
-of their own - closing the gap without reintroducing the collateral-damage false positives the original exclusion
-guarded against. Not a known exploitable bypass in the current built-in allow-lists; a completeness fix for any
-embedder configuring a broader one via `HostClassLookupFilter`'s public constructor.
+of inert marker interfaces (`Serializable`, `Closeable`, `Cloneable`, `Comparable`, `AutoCloseable`) that grant no
+capability of their own - closing the gap without reintroducing the collateral-damage false positives the original
+exclusion guarded against. Not a known exploitable bypass in the current built-in allow-lists; a completeness fix
+for any embedder configuring a broader one via `HostClassLookupFilter`'s public constructor.
 
 [#6045](https://github.com/ArcadeData/arcadedb/issues/6045)
