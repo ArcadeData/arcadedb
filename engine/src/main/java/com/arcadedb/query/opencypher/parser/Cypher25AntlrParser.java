@@ -82,14 +82,16 @@ public class Cypher25AntlrParser {
     try {
       final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
 
-      // Custom error handling. Attached BEFORE checkDeprecatedSyntax below, which calls tokens.fill() and so
-      // eagerly lexes the whole input up front: without a listener here, a lexer-level error (an unterminated
-      // string, a malformed escape sequence, an unrecognized character) is handled by ANTLR's default
-      // ConsoleErrorListener - prints to stderr, never throws - and default lexer recovery drops the offending
-      // token and carries on, which can silently produce a different CypherStatement instead of a clear syntax
-      // error (issue #5958, same failure class fixed for the SQL engine in #5957/#5951).
+      // Custom error handling, shared by lexer and parser (CypherErrorListener is stateless). Attached to the
+      // lexer BEFORE checkDeprecatedSyntax below, which calls tokens.fill() and so eagerly lexes the whole input
+      // up front: without a listener here, a lexer-level error (an unterminated string, a malformed escape
+      // sequence, an unrecognized character) is handled by ANTLR's default ConsoleErrorListener - prints to
+      // stderr, never throws - and default lexer recovery drops the offending token and carries on, which can
+      // silently produce a different CypherStatement instead of a clear syntax error (issue #5958, same failure
+      // class fixed for the SQL engine in #5957/#5951).
+      final CypherErrorListener errorListener = new CypherErrorListener();
       lexer.removeErrorListeners();
-      lexer.addErrorListener(new CypherErrorListener());
+      lexer.addErrorListener(errorListener);
 
       final CommonTokenStream tokens = new CommonTokenStream(lexer);
 
@@ -102,7 +104,7 @@ public class Cypher25AntlrParser {
 
       // Custom error handling
       parser.removeErrorListeners();
-      parser.addErrorListener(new CypherErrorListener());
+      parser.addErrorListener(errorListener);
 
       // Bound expression nesting depth so a pathologically nested/long query fails with a normal parse
       // error instead of a StackOverflowError (issue #5851)

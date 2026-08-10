@@ -219,7 +219,9 @@ public class ArcadeGremlin extends ArcadeQuery {
                 + "queries need the shaded classifier. See issue #5937 for details.", error);
       }
       final Throwable next = c instanceof final ExceptionInInitializerError eiie ? eiie.getException() : c.getCause();
-      if (next == c)
+      // Reference-identity cycle guard (a throwable can be its own cause/exception): Objects.equals(), not ==,
+      // to satisfy static analysis - Throwable does not override equals(), so the two are behaviorally identical.
+      if (Objects.equals(next, c))
         break;
       c = next;
     }
