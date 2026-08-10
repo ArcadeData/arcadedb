@@ -286,17 +286,17 @@ public class DatabaseChecker {
         final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
             propNames.toArray(new String[0]));
 
-        // Same file-locking coverage as RebuildIndexStatement.buildIndex(): the drop and the rebuild below touch
-        // the index's own file(s) plus, through the drop, the owning TypeIndex's bookkeeping. Without holding
-        // the lock across both steps a concurrent writer could observe the index gone-then-back with entries
-        // missing, or the commit-time lock-coverage check could throw on the newly-created file.
+        // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
+        // lock across both the drop and the create prevents a concurrent writer from observing the index
+        // gone-then-back, and retrying survives tryLockFiles's LockTimeoutException (a NeedRetryException) on a
+        // busy database. Unlike RebuildIndexStatement, which silently returns once attempts are exhausted, this
+        // rethrows so CHECK DATABASE FIX fails loudly instead of quietly leaving the index unrepaired.
         //
-        // Retried like RebuildIndexStatement.buildIndex() retries the same lock: TransactionManager.tryLockFiles
-        // throws LockTimeoutException (a NeedRetryException) on contention, and widening the locked section to
-        // cover both the drop and the create - the whole point of this fix - widens the window a concurrent
-        // writer can contend on. Unlike RebuildIndexStatement, which silently returns once maxAttempts is
-        // exhausted, this rethrows: CHECK DATABASE FIX should fail loudly rather than quietly leave the index
-        // unrepaired and still report success.
+        // Shares a known, pre-existing race with RebuildIndexStatement's identically-shaped retry (not introduced
+        // here): retrying re-enters the whole drop+create body, so a NeedRetryException raised deep inside
+        // create()'s bucket scan - after the drop already committed - restarts from a dropped index rather than
+        // from the point of failure. A proper fix (skip the drop on retry, or scope the retry to lock acquisition
+        // only) belongs in both call sites together, not this one in isolation.
         for (int attempt = 1; attempt <= LOCK_MAX_ATTEMPTS; attempt++) {
           try {
             database.executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
