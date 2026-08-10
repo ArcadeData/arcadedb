@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
@@ -144,6 +145,18 @@ public class ComparisonExpression implements BooleanExpression {
       final long leftEncoded = IdFunction.encodeRidAsLong(new RID(leftStr));
       final long rightEncoded = rightNum.longValue();
       return numericCompare(leftEncoded, rightEncoded);
+    }
+
+    // Graph entities compare by record identity even when different implementations represent them.
+    // This is common when a Graph Analytical View vertex is compared with a regular OLTP vertex (#6010).
+    if (left instanceof Identifiable leftIdentifiable
+        && right instanceof Identifiable rightIdentifiable) {
+      final boolean equal = leftIdentifiable.getIdentity().equals(rightIdentifiable.getIdentity());
+      if (operator == Operator.EQUALS)
+        return equal;
+      if (operator == Operator.NOT_EQUALS)
+        return !equal;
+      return null;
     }
 
     // Temporal comparison. Coerce native java.time / java.util.Date operands into Cypher temporal

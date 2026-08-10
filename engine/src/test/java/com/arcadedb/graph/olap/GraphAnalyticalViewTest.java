@@ -1167,6 +1167,64 @@ class GraphAnalyticalViewTest extends TestHelper {
     gav.drop();
   }
 
+  @Test
+  void cypherGAVPreservesNodeInequalityBetweenChainVariables() {
+    database.getSchema().createVertexType("Hub");
+    database.getSchema().createVertexType("Leaf");
+    database.getSchema().createEdgeType("LINKS");
+    database.getSchema().createEdgeType("BOND");
+
+    database.begin();
+    final MutableVertex h1 = database.newVertex("Hub").set("k", "h1").save();
+    final MutableVertex h2 = database.newVertex("Hub").set("k", "h2").save();
+    final MutableVertex l1 = database.newVertex("Leaf").set("k", "l1").save();
+    final MutableVertex l2 = database.newVertex("Leaf").set("k", "l2").save();
+    final MutableVertex l3 = database.newVertex("Leaf").set("k", "l3").save();
+
+    h1.newEdge("LINKS", l1).save();
+    h1.newEdge("LINKS", l2).save();
+    h2.newEdge("LINKS", l1).save();
+    l1.newEdge("LINKS", h2).save();
+    l3.newEdge("LINKS", h1).save();
+
+    l1.newEdge("BOND", h1).save();
+    l2.newEdge("BOND", h2).save();
+    h2.newEdge("BOND", l3).save();
+    database.commit();
+
+    final String query =
+        "MATCH (a:Hub)-[:LINKS]->(b)-[:BOND]->(c) WHERE a <> c " +
+            "RETURN a.k AS x, c.k AS y ORDER BY x, y";
+
+    final List<String> baseline = new ArrayList<>();
+    try (ResultSet resultSet = database.command("cypher", query)) {
+      while (resultSet.hasNext()) {
+        final var result = resultSet.next();
+        baseline.add(result.getProperty("x") + "->" + result.getProperty("y"));
+      }
+    }
+    assertThat(baseline).containsExactly("h1->h2", "h2->h1");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("nodeInequality")
+        .withVertexTypes("Hub", "Leaf")
+        .withEdgeTypes("LINKS", "BOND")
+        .build();
+
+    final List<String> accelerated = new ArrayList<>();
+    try (ResultSet resultSet = database.command("cypher", "PROFILE " + query)) {
+      while (resultSet.hasNext()) {
+        final var result = resultSet.next();
+        accelerated.add(result.getProperty("x") + "->" + result.getProperty("y"));
+      }
+      assertThat(resultSet.getExecutionPlan()).isPresent();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).contains("provider=nodeInequality");
+    }
+    assertThat(accelerated).containsExactlyElementsOf(baseline);
+
+    gav.drop();
+  }
+
   // --- Columnar storage tests ---
 
   @Test
