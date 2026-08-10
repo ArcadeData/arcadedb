@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Regression test for #6033: {@code BETWEEN} on a case-insensitive ({@code COLLATE CI}) indexed column already
@@ -136,9 +138,8 @@ class Issue6033BetweenToLowerCaseCiIndexTest {
     });
 
     database.transaction(() -> assertThat(
-        org.assertj.core.api.Assertions.catchThrowable(
-            () -> database.query("sql", "SELECT * FROM Product WHERE LOWER(name) BETWEEN 'a' AND 'c'").hasNext()))
-        .isInstanceOf(com.arcadedb.exception.CommandExecutionException.class)
+        catchThrowable(() -> database.query("sql", "SELECT * FROM Product WHERE LOWER(name) BETWEEN 'a' AND 'c'").hasNext()))
+        .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("Unknown function name 'LOWER'"));
   }
 }
