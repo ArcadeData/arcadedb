@@ -152,6 +152,16 @@ class IPAddressBlocklistTest {
     assertThat(bl.isBlocked(ip("8.8.8.8"))).isFalse();
   }
 
+  /**
+   * Review suggestion: memoize {@code defaultReservedRanges()} as a true singleton (the block-list is immutable)
+   * instead of relying on every caller remembering to cache it, so a future caller can't accidentally reparse per
+   * request without noticing.
+   */
+  @Test
+  void defaultReservedRangesIsMemoizedAsASingleton() {
+    assertThat(IPAddressBlocklist.defaultReservedRanges()).isSameAs(IPAddressBlocklist.defaultReservedRanges());
+  }
+
   @Test
   void emptyBlocklistNeverBlocks() throws Exception {
     assertThat(IPAddressBlocklist.parse("").isEmpty()).isTrue();

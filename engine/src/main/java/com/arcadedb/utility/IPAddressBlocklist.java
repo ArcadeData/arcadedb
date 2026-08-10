@@ -52,6 +52,9 @@ public class IPAddressBlocklist {
   private static final Cidr SIX_TO_FOUR_PREFIX = parseCidr("2002::/16");
   private static final Cidr TEREDO_PREFIX      = parseCidr("2001::/32");
 
+  // The block-list is immutable, so parse DEFAULT_RESERVED_RANGES exactly once and hand out the same instance.
+  private static final IPAddressBlocklist DEFAULT_RESERVED_RANGES_INSTANCE = parse(DEFAULT_RESERVED_RANGES);
+
   private final List<Cidr> ranges;
 
   private record Cidr(byte[] network, int prefixBits) {
@@ -96,11 +99,11 @@ public class IPAddressBlocklist {
   }
 
   /**
-   * Returns a freshly-parsed block-list of {@link #DEFAULT_RESERVED_RANGES}. Callers that check many addresses
-   * should parse once and reuse the instance rather than calling this per address.
+   * Returns the shared, immutable block-list of {@link #DEFAULT_RESERVED_RANGES}, parsed once at class-init.
+   * Safe to call per address: every caller gets the same instance, so there is no reparse cost to guard against.
    */
   public static IPAddressBlocklist defaultReservedRanges() {
-    return parse(DEFAULT_RESERVED_RANGES);
+    return DEFAULT_RESERVED_RANGES_INSTANCE;
   }
 
   private static Cidr parseCidr(final String entry) {
