@@ -146,7 +146,7 @@ public class IPAddressBlocklist {
       if (range.matches(raw))
         return true;
     final byte[] normalized = normalize(raw);
-    if (normalized != raw)
+    if (normalized != null)
       for (final Cidr range : ranges)
         if (range.matches(normalized))
           return true;
@@ -160,11 +160,12 @@ public class IPAddressBlocklist {
   /**
    * Collapses an IPv6 address that merely encodes an IPv4 address (IPv4-mapped, the deprecated IPv4-compatible
    * form, NAT64, 6to4 or Teredo) to that 4-byte IPv4 form, so an IPv4 range still applies to the same address
-   * expressed through IPv6.
+   * expressed through IPv6. Returns {@code null}, not the input array, when none of those encodings apply: the
+   * caller uses that to skip re-matching a form identical to the one already checked.
    */
   private static byte[] normalize(final byte[] addr) {
     if (addr.length != 16)
-      return addr;
+      return null;
 
     if (isIPv4Mapped(addr) || isIPv4Compatible(addr))
       return Arrays.copyOfRange(addr, 12, 16);
@@ -185,7 +186,7 @@ public class IPAddressBlocklist {
       return v4;
     }
 
-    return addr;
+    return null;
   }
 
   private static boolean isIPv4Mapped(final byte[] b) {
