@@ -324,8 +324,10 @@ public class BinaryCondition extends BooleanExpression {
   /**
    * Checks if an expression matches the pattern: field.toLowerCase() — a base identifier
    * followed by a single toLowerCase() method call with no further chaining.
+   * <p>
+   * Package-private so {@link BetweenCondition} can reuse it for the same CI-index optimization on ranges.
    */
-  private static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
+  static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
     if (expr == null || expr.getMathExpression() == null)
       return false;
     if (!(expr.getMathExpression() instanceof final BaseExpression base))
