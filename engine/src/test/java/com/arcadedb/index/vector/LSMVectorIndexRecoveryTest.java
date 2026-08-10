@@ -77,7 +77,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
    * to just this class's own tests.
    */
   private static final Duration DELTA_BUFFER_DRAIN_TIMEOUT =
-      Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);
+      Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong() + 60_000L);
 
   // Issue #3715: vectorNeighbors must not NPE when the HNSW graph still references ordinals of deleted vectors.
   @Test

@@ -107,7 +107,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
    * change it too.
    */
   private static final Duration REBUILD_SETTLE_TIMEOUT =
-      Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsInteger() + 60_000);
+      Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong() + 60_000L);
 
   // Issue #3147: REBUILD INDEX preserves vector metadata (dimensions, similarity, maxConnections, beamWidth, idPropertyName) instead of recreating with dimensions=0.
   @Test
