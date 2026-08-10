@@ -79,6 +79,19 @@ class IPAddressBlocklistTest {
   }
 
   /**
+   * The deprecated "IPv4-compatible IPv6 address" form (RFC 4291 2.5.5.1, {@code ::a.b.c.d}) has no {@code ffff}
+   * marker, so it is a distinct case from the still-current IPv4-mapped form above. Flagged by code review on the
+   * original GHSA-67m7-7w7g-mpmh fix as a residual gap in the same encoding family.
+   */
+  @Test
+  void blocksDeprecatedIPv4CompatibleBypass() throws Exception {
+    final IPAddressBlocklist bl = IPAddressBlocklist.parse(DEFAULT);
+    assertThat(bl.isBlocked(ip("::127.0.0.1"))).isTrue();
+    assertThat(bl.isBlocked(ip("::169.254.169.254"))).isTrue();
+    assertThat(bl.isBlocked(ip("::8.8.8.8"))).isFalse();
+  }
+
+  /**
    * GHSA-67m7-7w7g-mpmh: IPv6 transition mechanisms (NAT64, 6to4, Teredo) each embed an IPv4 address inside an
    * IPv6 literal through a different, non-{@code ::ffff:}-prefixed encoding. None of these tripped
    * {@code isIPv4Mapped}, so a private/loopback/link-local IPv4 payload smuggled through one of them reached the

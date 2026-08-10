@@ -29,11 +29,12 @@ import java.util.List;
  * carrier-grade NAT, multicast, reserved, ...) as a defense against Server-Side Request Forgery (SSRF).
  * <p>
  * An IPv6 address that merely encodes an IPv4 address is normalized to that plain IPv4 form before matching, so an
- * attacker cannot bypass an IPv4 range by expressing the same address through an IPv6 transition mechanism. Four
- * encodings are recognised: IPv4-mapped ({@code ::ffff:a.b.c.d}, RFC 4291 2.5.5.2), NAT64
- * ({@code 64:ff9b::/96}, RFC 6052), 6to4 ({@code 2002::/16}, RFC 3056) and Teredo
- * ({@code 2001::/32}, RFC 4380 - the embedded IPv4 is bitwise-inverted). This closes the bypass in
- * GHSA-67m7-7w7g-mpmh, where none of those encodings tripped the flag-based checks a caller ran instead of this class.
+ * attacker cannot bypass an IPv4 range by expressing the same address through an IPv6 transition mechanism. Five
+ * encodings are recognised: IPv4-mapped ({@code ::ffff:a.b.c.d}, RFC 4291 2.5.5.2), the deprecated IPv4-compatible
+ * form ({@code ::a.b.c.d}, RFC 4291 2.5.5.1), NAT64 ({@code 64:ff9b::/96}, RFC 6052), 6to4 ({@code 2002::/16},
+ * RFC 3056) and Teredo ({@code 2001::/32}, RFC 4380 - the embedded IPv4 is bitwise-inverted). This closes the
+ * bypass in GHSA-67m7-7w7g-mpmh, where none of those encodings tripped the flag-based checks a caller ran instead
+ * of this class.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -146,14 +147,15 @@ public class IPAddressBlocklist {
   }
 
   /**
-   * Collapses an IPv6 address that merely encodes an IPv4 address (IPv4-mapped, NAT64, 6to4 or Teredo) to that
-   * 4-byte IPv4 form, so an IPv4 range still applies to the same address expressed through IPv6.
+   * Collapses an IPv6 address that merely encodes an IPv4 address (IPv4-mapped, the deprecated IPv4-compatible
+   * form, NAT64, 6to4 or Teredo) to that 4-byte IPv4 form, so an IPv4 range still applies to the same address
+   * expressed through IPv6.
    */
   private static byte[] normalize(final byte[] addr) {
     if (addr.length != 16)
       return addr;
 
-    if (isIPv4Mapped(addr))
+    if (isIPv4Mapped(addr) || isIPv4Compatible(addr))
       return Arrays.copyOfRange(addr, 12, 16);
 
     // NAT64 Well-Known Prefix 64:ff9b::/96 (RFC 6052): IPv4 at bytes 12-15.
@@ -180,6 +182,19 @@ public class IPAddressBlocklist {
       if (b[i] != 0)
         return false;
     return (b[10] & 0xFF) == 0xFF && (b[11] & 0xFF) == 0xFF;
+  }
+
+  /**
+   * The deprecated "IPv4-compatible IPv6 address" form (RFC 4291 2.5.5.1: {@code ::a.b.c.d}, no {@code ffff}
+   * marker in bytes 10-11, unlike the still-current IPv4-mapped form). No real allocated global-unicast range
+   * starts with 96 zero bits (those all begin {@code 2000::/3}), so treating any such address as an embedded
+   * IPv4 payload cannot misclassify legitimate public IPv6 traffic.
+   */
+  private static boolean isIPv4Compatible(final byte[] b) {
+    for (int i = 0; i < 12; i++)
+      if (b[i] != 0)
+        return false;
+    return true;
   }
 
   private static boolean isNumericAddress(final String host) {
