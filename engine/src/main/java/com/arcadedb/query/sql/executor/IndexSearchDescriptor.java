@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
@@ -66,7 +67,7 @@ public class IndexSearchDescriptor {
    */
   public boolean requiresMultipleIndexLookups() {
     for (BooleanExpression oBooleanExpression : getSubBlocks()) {
-      if (!(oBooleanExpression instanceof BinaryCondition))
+      if (!(oBooleanExpression instanceof BinaryCondition) && !(oBooleanExpression instanceof BetweenCondition))
         return true;
     }
     return false;
@@ -82,6 +83,8 @@ public class IndexSearchDescriptor {
     if (lastOp instanceof BinaryCondition condition) {
       final BinaryCompareOperator op = condition.getOperator();
       range = op.isRangeOperator();
+    } else if (lastOp instanceof BetweenCondition) {
+      range = true;
     }
 
     final long val = stats.getIndexStats(indexName, size, range, additionalRangeCondition != null);
