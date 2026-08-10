@@ -2499,7 +2499,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private int getRecordPositionInPage(final BasePage page, final int positionInPage) throws IOException {
     final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
     if (recordPositionInPage != 0 && recordPositionInPage < contentHeaderSize)
-      throw new IOException("Invalid record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage + positionInPage));
+      throw new IOException(
+          "Invalid record #" + fileId + ":" + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage));
     return recordPositionInPage;
   }
 
