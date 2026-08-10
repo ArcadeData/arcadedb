@@ -46,6 +46,32 @@ class GraphQLParserTest {
   }
 
   @Test
+  void deeplyNestedListLiteralIsRejectedAsAParseErrorNotAStackOverflow() {
+    // Regression test for issue #5853's follow-up finding: the depth guard originally counted only '{'/'}'
+    // (selection sets), but a chain of nested list literals - '[' ... ']' via the mutually-recursive
+    // Value/ListValue grammar rules - drives the exact same unbounded recursive-descent stack growth and
+    // never contains a single brace, so it slipped past the guard entirely.
+    final int maxDepth = GlobalConfiguration.GRAPHQL_MAX_NESTING_DEPTH.getValueAsInteger();
+    final String query = "{ field(arg: " + "[".repeat(maxDepth + 1) + "]".repeat(maxDepth + 1) + ") }";
+
+    final Throwable error = catchThrowable(() -> GraphQLParser.parse(query));
+
+    assertThat(error).isInstanceOf(ParseException.class);
+    assertThat(error).isNotInstanceOf(StackOverflowError.class);
+    assertThat(error.getMessage()).contains("maxNestingDepth");
+  }
+
+  @Test
+  void listNestingAtExactlyTheConfiguredLimitStillParses() throws Exception {
+    final int maxDepth = GlobalConfiguration.GRAPHQL_MAX_NESTING_DEPTH.getValueAsInteger();
+    final String query = "{ field(arg: " + "[".repeat(maxDepth - 1) + "]".repeat(maxDepth - 1) + ") }";
+
+    final Document ast = GraphQLParser.parse(query);
+
+    assertThat(ast.children.length > 0).isTrue();
+  }
+
+  @Test
   void nestingAtExactlyTheConfiguredLimitStillParses() throws Exception {
     // The guard must not reject legitimate queries that stay within the configured bound.
     final int maxDepth = GlobalConfiguration.GRAPHQL_MAX_NESTING_DEPTH.getValueAsInteger();

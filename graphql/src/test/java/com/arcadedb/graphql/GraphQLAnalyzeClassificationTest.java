@@ -81,6 +81,24 @@ class GraphQLAnalyzeClassificationTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void aLexicallyMalformedQueryIsClassifiedAsNonIdempotentNotRead() {
+    // Regression test for issue #5853's follow-up finding: an unterminated string literal makes the
+    // depth-guard's own pre-scan hit EOF mid-token and throw the unchecked TokenMgrException (the lexical-
+    // error counterpart to ParseException), which used to propagate out of analyze() uncaught instead of
+    // driving the same fail-closed classification a syntax error already gets.
+    executeTest(database -> {
+      defineTypes(database);
+
+      final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("graphql").analyze("{ field(arg: \"unterminated) }");
+
+      assertThat(analyzed.isIdempotent()).isFalse();
+      assertThat(analyzed.getOperationTypes()).containsExactlyInAnyOrder(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+
+      return null;
+    });
+  }
+
+  @Test
   void analyzeOfAPathologicallyNestedQueryDoesNotThrowAStackOverflow() {
     executeTest(database -> {
       defineTypes(database);

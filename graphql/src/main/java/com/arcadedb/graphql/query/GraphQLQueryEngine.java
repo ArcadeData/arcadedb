@@ -27,6 +27,7 @@ import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
+import com.arcadedb.graphql.parser.TokenMgrException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
@@ -78,10 +79,13 @@ public class GraphQLQueryEngine implements QueryEngine {
       for (final Definition def : doc.getDefinitions())
         if (def instanceof OperationDefinition op && !op.isQuery())
           return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
-    } catch (final ParseException e) {
+    } catch (final ParseException | TokenMgrException e) {
       // Cannot classify: assume the worst so an idempotency gate denies rather than admits. Execution
       // still re-parses and reports the real syntax error; this only changes the answer given to a
-      // caller asking "is this read-only?" before execution runs. See issue #5853.
+      // caller asking "is this read-only?" before execution runs. TokenMgrException (unchecked) is the
+      // lexical-error counterpart to ParseException: the nesting-depth pre-scan in GraphQLParser.parse()
+      // drives the generated token manager directly and a malformed token (e.g. an unterminated string
+      // literal) surfaces there as a TokenMgrException rather than a ParseException. See issue #5853.
       return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
     }
     return CollectionUtils.singletonSet(OperationType.READ);
