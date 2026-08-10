@@ -175,6 +175,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     return null;
   }
 
+  /**
+   * #5682: {@code condition} is built by {@code DeleteExecutionPlanner.getKeyCondition()}, the only caller that
+   * constructs a {@link DeleteFromIndexStep}. That method always returns one flattened sub-block of an
+   * {@code AndBlock}, never the {@code AndBlock} itself, so an {@code AndBlock} can never reach here through SQL.
+   * It falls through to the same "not supported yet" rejection as any other condition shape this step doesn't
+   * handle, rather than getting a dedicated branch that no test could ever exercise.
+   */
   private void init(final BooleanExpression condition) throws IOException {
     if (condition == null) {
       processFlatIteration();
@@ -182,47 +189,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       processBinaryCondition();
     } else if (condition instanceof BetweenCondition) {
       processBetweenCondition();
-    } else if (condition instanceof AndBlock) {
-      processAndBlock();
     } else {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
   }
 
-  /**
-   * it's not key = [...] but a real condition on field names, already ordered (field names will be ignored)
-   */
-  private void processAndBlock() {
-    final PCollection fromKey = indexKeyFrom((AndBlock) condition, additional);
-    final PCollection toKey = indexKeyTo((AndBlock) condition, additional);
-    final boolean fromKeyIncluded = indexKeyFromIncluded((AndBlock) condition, additional);
-    final boolean toKeyIncluded = indexKeyToIncluded((AndBlock) condition, additional);
-    init(fromKey, fromKeyIncluded, toKey, toKeyIncluded);
-  }
-
   private void processFlatIteration() {
     cursor = index.iterator(isOrderAsc());
-  }
-
-  private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
-                    final boolean toKeyIncluded) {
-    final Object secondValue = fromKey.execute((Result) null, context);
-    final Object thirdValue = toKey.execute((Result) null, context);
-
-    if (index.supportsOrderedIterations()) {
-      if (isOrderAsc())
-        cursor = index.range(true, new Object[]{secondValue}, fromKeyIncluded, new Object[]{thirdValue}, toKeyIncluded);
-      else
-        cursor = index.range(false, new Object[]{thirdValue}, fromKeyIncluded, new Object[]{secondValue},
-            toKeyIncluded);
-    } else {
-      // #5662: an index without ordered iterations used to get a branch of its own here, which opened a range() cursor
-      // and then overwrote it with an iterator() one on the very next line. It could never have worked: the only
-      // RangeIndex that answers false to supportsOrderedIterations() is a TypeIndex over a non-ordered bucket index,
-      // and BOTH of those calls raise UnsupportedOperationException on one. Removing it costs nothing and lets the
-      // error below say which condition could not be evaluated, instead of only that the index is not ordered.
-      throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
-    }
   }
 
   private void processBetweenCondition() {
@@ -270,92 +243,6 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
   protected boolean isOrderAsc() {
     return orderAsc;
-  }
-
-  private PCollection indexKeyFrom(final AndBlock keyCondition, final BinaryCondition additional) {
-    final PCollection result = new PCollection(-1);
-    for (final BooleanExpression exp : keyCondition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition binaryCondition) {
-        final BinaryCompareOperator operator = binaryCondition.getOperator();
-        if ((operator instanceof EqualsCompareOperator) || (operator instanceof GtOperator) || (operator instanceof GeOperator)) {
-          result.add(binaryCondition.getRight());
-        } else if (additional != null) {
-          result.add(additional.getRight());
-        }
-      } else {
-        throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-      }
-    }
-    return result;
-  }
-
-  private PCollection indexKeyTo(final AndBlock keyCondition, final BinaryCondition additional) {
-    final PCollection result = new PCollection(-1);
-    for (final BooleanExpression exp : keyCondition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition binaryCondition) {
-        final BinaryCondition binaryCond = binaryCondition;
-        final BinaryCompareOperator operator = binaryCond.getOperator();
-        if ((operator instanceof EqualsCompareOperator) || (operator instanceof LtOperator) || (operator instanceof LeOperator)) {
-          result.add(binaryCond.getRight());
-        } else if (additional != null) {
-          result.add(additional.getRight());
-        }
-      } else {
-        throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-      }
-    }
-    return result;
-  }
-
-  private boolean indexKeyFromIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
-
-    List<BooleanExpression> subBlocks = keyCondition.getSubBlocks();
-    final BooleanExpression exp = subBlocks.get(subBlocks.size() - 1);
-    if (exp instanceof BinaryCondition binaryCondition) {
-      final BinaryCompareOperator operator = binaryCondition.getOperator();
-      final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
-      if (isGreaterOperator(operator)) {
-        return isIncludeOperator(operator);
-      } else
-        return additionalOperator == null || (isIncludeOperator(additionalOperator) && isGreaterOperator(additionalOperator));
-    } else {
-      throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-    }
-  }
-
-  private boolean isGreaterOperator(final BinaryCompareOperator operator) {
-    if (operator == null) {
-      return false;
-    }
-    return operator instanceof GeOperator || operator instanceof GtOperator;
-  }
-
-  private boolean isLessOperator(final BinaryCompareOperator operator) {
-    if (operator == null) {
-      return false;
-    }
-    return operator instanceof LeOperator || operator instanceof LtOperator;
-  }
-
-  private boolean isIncludeOperator(final BinaryCompareOperator operator) {
-    if (operator == null) {
-      return false;
-    }
-    return operator instanceof GeOperator || operator instanceof LeOperator;
-  }
-
-  private boolean indexKeyToIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
-    final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
-    if (exp instanceof BinaryCondition binaryCondition) {
-      final BinaryCompareOperator operator = binaryCondition.getOperator();
-      final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
-      if (isLessOperator(operator)) {
-        return isIncludeOperator(operator);
-      } else
-        return additionalOperator == null || (isIncludeOperator(additionalOperator) && isLessOperator(additionalOperator));
-    } else {
-      throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-    }
   }
 
   @Override
