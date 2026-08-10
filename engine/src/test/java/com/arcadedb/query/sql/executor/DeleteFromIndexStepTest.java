@@ -19,10 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.RangeIndex;
+import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for DeleteFromIndexStep.
@@ -392,5 +396,32 @@ class DeleteFromIndexStepTest extends TestHelper {
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest15");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(9L); // 15 - 6 (5 to 10 inclusive)
     result.close();
+  }
+
+  /**
+   * #5682: {@code DeleteExecutionPlanner.getKeyCondition()} - the only place that builds a
+   * {@code DeleteFromIndexStep} - always hands it one flattened {@code BooleanExpression} sub-block,
+   * never the {@code AndBlock} that wraps them, so an {@code AndBlock} condition can never reach the step
+   * through SQL. This constructs the step directly with one to pin down what must happen if that
+   * invariant is ever violated: the same "not supported yet" rejection every other unhandled condition
+   * shape already gets, not a silent dead-code path with no test behind it.
+   */
+  @Test
+  void andBlockConditionIsRejectedAsUnsupported() {
+    database.getSchema().createDocumentType("DeleteTest16");
+    database.command("sql", "CREATE PROPERTY DeleteTest16.value INTEGER");
+    final RangeIndex index = (RangeIndex) database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "DeleteTest16", "value");
+
+    database.transaction(() -> {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+
+      final DeleteFromIndexStep step = new DeleteFromIndexStep(index, new AndBlock(-1), null, null, context);
+
+      assertThatThrownBy(() -> step.syncPull(context, 1))
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("not supported yet");
+    });
   }
 }
