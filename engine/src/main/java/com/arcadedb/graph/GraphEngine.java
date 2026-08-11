@@ -441,6 +441,10 @@ public class GraphEngine {
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(targetRid.getBucketId());
     final MutableVertex shell = database.newVertex(typeName);
     bucket.restoreRecordAtPosition(targetRid.getPosition(), shell);
+    // #6069: restoreRecordAtPosition only does the physical page write, same as bucket create/delete; the caller
+    // owns folding the transaction's cached bucket record-count delta by the same +1 a normal create applies (see
+    // LocalDatabase.createRecord / RestoreStatementSupport.restoreRecordAndUpdateCount for the SQL-statement path).
+    database.getTransaction().updateBucketRecordDelta(bucket.getFileId(), +1);
 
     final Set<RID> asSet = Set.of(targetRid);
     final long[] counts = reconnectEdgesFromSurvivors(asSet, asSet);

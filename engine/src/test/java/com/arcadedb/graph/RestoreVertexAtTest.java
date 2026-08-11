@@ -118,6 +118,27 @@ class RestoreVertexAtTest extends TestHelper {
     });
   }
 
+  @Test
+  void restoreVertexAtUpdatesBucketRecordCount() {
+    // #6069: GraphEngine.restoreVertexAt shares LocalBucket.restoreRecordAtPosition with the SQL RESTORE
+    // statements and had the same missing +1 on the bucket's cached record-count delta.
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final RID[] vertex = new RID[3];
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        vertex[i] = database.newVertex(VERTEX_TYPE).set("name", "v" + i).save().getIdentity();
+    });
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(vertex[1].getBucketId());
+    database.transaction(() -> database.command("sql", "DELETE FROM " + vertex[1]));
+    assertThat(bucket.count()).isEqualTo(2);
+
+    database.transaction(() -> db.getGraphEngine().restoreVertexAt(vertex[1], VERTEX_TYPE));
+
+    assertThat(bucket.count()).isEqualTo(3);
+  }
+
   private static int count(final Iterable<Edge> edges) {
     int n = 0;
     for (final Edge ignored : edges)
