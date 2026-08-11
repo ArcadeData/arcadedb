@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.number;
 
-import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.text.DecimalFormat;
@@ -57,14 +57,14 @@ public class NumberFormat extends AbstractNumberFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args[0] == null)
+    checkArity(args);
+    final Number number = CypherFunctionHelper.requireNumberArgument(args[0], getName());
+    if (number == null)
       return null;
-    if (!(args[0] instanceof Number))
-      throw new CommandSemanticException(getName() + "() expects a number but got " + args[0].getClass().getSimpleName());
 
     final String pattern = args.length > 1 && args[1] != null ? args[1].toString() : DEFAULT_PATTERN;
 
     final DecimalFormat format = new DecimalFormat(pattern, DecimalFormatSymbols.getInstance(Locale.ROOT));
-    return format.format(((Number) args[0]).doubleValue());
+    return format.format(number.doubleValue());
   }
 }

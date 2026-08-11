@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.Function;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
@@ -592,6 +593,12 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final ResultSet rs = database.query("opencypher", "RETURN apoc.number.format(1000000, '#,###') AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("1,000,000");
+  }
+
+  @Test
+  void numberFormatWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN number.format() AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ===================== DATE FUNCTION TESTS =====================

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.assertj.core.data.Offset;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for missing Cypher functions reported in GitHub issue #3420.
@@ -242,6 +244,31 @@ class CypherMissingFunctionsTest {
     assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(0.0);
   }
 
+  @Test
+  void collSumWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.sum() AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collSumNonNumericElement() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.sum([1, 2, 'x']) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  // ========== coll.avg ==========
+  @Test
+  void collAvgWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.avg() AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collAvgNonNumericElement() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.avg([1, 2, 'x']) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
   // ========== coll.union ==========
   @Test
   void collUnion() {
@@ -254,6 +281,23 @@ class CypherMissingFunctionsTest {
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
     assertThat(((Number) result.get(3)).longValue()).isEqualTo(4L);
+  }
+
+  @Test
+  void collUnionWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.union([1, 2]) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collUnionDedupsByTypeAndValue() {
+    // Dedup is by object equality, so an integer and a float of the same numeric value are NOT collapsed -
+    // e.g. coll.union([1], [1.0]) keeps both. Documented here since it's an easy surprise coming from Neo4j.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.union([1], [1.0]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(2);
   }
 
   // ========== coll.unionAll ==========
@@ -271,6 +315,12 @@ class CypherMissingFunctionsTest {
     assertThat(((Number) result.get(3)).longValue()).isEqualTo(2L);
     assertThat(((Number) result.get(4)).longValue()).isEqualTo(3L);
     assertThat(((Number) result.get(5)).longValue()).isEqualTo(4L);
+  }
+
+  @Test
+  void collUnionAllWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.unionAll([1, 2]) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ========== elementId ==========

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.coll;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
@@ -48,6 +49,7 @@ public class CollAvg extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
@@ -55,8 +57,9 @@ public class CollAvg extends AbstractCollFunction {
     double sum = 0.0;
     int count = 0;
     for (final Object item : list) {
-      if (item instanceof Number) {
-        sum += ((Number) item).doubleValue();
+      final Number number = CypherFunctionHelper.requireNumberArgument(item, getName());
+      if (number != null) {
+        sum += number.doubleValue();
         count++;
       }
     }

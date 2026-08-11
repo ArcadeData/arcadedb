@@ -49,6 +49,7 @@ public class CollUnionAll extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    checkArity(args);
     final List<Object> list1 = asList(args[0]);
     final List<Object> list2 = asList(args[1]);
 
