@@ -793,6 +793,11 @@ The same statement's `copy()` also dropped the settings map, so a copy taken fro
 them again. Both are fixed and covered by a test that proves the archive is genuinely encrypted, by asserting
 a restore without the key fails.
 
+An unrecognised setting name is now an error rather than being ignored, which closes the same hole by a
+second route: `WITH encryptionkey = '...'`, one wrong character, would otherwise still look like a request
+for an encrypted archive and produce a cleartext one. Nothing that worked stops working - until the fix
+above, every setting was ignored, so no statement can have depended on one being accepted.
+
 A backup that failed halfway still reported success. `PageManager.suspendFlushAndExecute` runs its callback
 through `CodeUtils.executeIgnoringExceptions`, which logs and swallows, so an I/O error mid-backup left the
 archive to be finalized with a valid central directory over a truncated set of entries - a backup that looks

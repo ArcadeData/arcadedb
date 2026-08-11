@@ -237,6 +237,22 @@ class BackupCompressionIT {
     TestHelper.checkActiveDatabases();
   }
 
+  /**
+   * A setting name that is not recognised must be refused, not ignored. Silently dropping it is the same failure mode
+   * as the {@code Expression.toString()} bug: {@code WITH encryptionkey = '...'} - one wrong character - would look
+   * like a request for an encrypted archive and produce a cleartext one.
+   */
+  @Test
+  void sqlRejectsAnUnknownSetting() {
+    try (final Database database = createDatabase()) {
+      assertThatThrownBy(
+          () -> database.command("sql", "backup database file://typo.zip with encryptionkey = 'SuperSecretKey'"))
+          .hasMessageContaining("encryptionkey");
+      assertThat(new File("typo.zip")).doesNotExist();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
   @Test
   void sqlRejectsANonNumericSetting() {
     try (final Database database = createDatabase()) {

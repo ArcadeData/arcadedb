@@ -102,7 +102,8 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
           // encryptionKey, WHICH MEANT A BACKUP ASKED TO BE ENCRYPTED WAS WRITTEN IN CLEAR. READ THE RAW VALUE, AS
           // ExportDatabaseStatement ALREADY DOES
           final Object rawKey = entry.getKey().value;
-          switch (rawKey != null ? rawKey.toString() : entry.getKey().toString()) {
+          final String settingName = rawKey != null ? rawKey.toString() : entry.getKey().toString();
+          switch (settingName) {
           case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)
               .invoke(backup, stringValue);
           case "encryptionKey" -> clazz.getMethod("setEncryptionKey", String.class)
@@ -113,6 +114,13 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
               .invoke(backup, parseIntSetting("compressionThreads", stringValue));
           case "maxMBPerSecond" -> clazz.getMethod("setMaxMBPerSecond", Integer.TYPE)
               .invoke(backup, parseIntSetting("maxMBPerSecond", stringValue));
+          // AN UNRECOGNISED NAME USED TO BE DROPPED IN SILENCE, WHICH IS THE SAME FAILURE MODE AS THE toString() BUG
+          // ABOVE AND JUST AS DANGEROUS: 'WITH encryptionkey = ...' (WRONG CASE, OR ANY TYPO) WOULD HAVE WRITTEN A
+          // CLEARTEXT ARCHIVE WHILE LOOKING LIKE IT ASKED FOR AN ENCRYPTED ONE. NOTHING IS LOST BY REFUSING: UNTIL
+          // THE FIX ABOVE, EVERY SETTING WAS IGNORED, SO NO WORKING STATEMENT DEPENDS ON ONE BEING ACCEPTED
+          default -> throw new CommandExecutionException(
+              "Unsupported backup setting '%s'. Supported settings are: compressionLevel, compressionThreads, encryptionAlgorithm, encryptionKey, maxMBPerSecond".formatted(
+                  settingName));
           }
         }
       }

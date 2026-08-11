@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.management.ManagementFactory;
+import java.lang.management.OperatingSystemMXBean;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -324,9 +325,11 @@ class BackupCompressionBenchmark {
   }
 
   private static long processCpuNanos() {
-    final java.lang.management.OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
-    if (bean instanceof com.sun.management.OperatingSystemMXBean sun)
-      return sun.getProcessCpuTime();
+    final OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
+    // THE PROCESS CPU TIME IS ONLY ON THE HOTSPOT-SPECIFIC SUBINTERFACE, SO A NON-HOTSPOT JVM REPORTS 0 RATHER THAN
+    // FAILING THE BENCHMARK - THE WALL-CLOCK AND ARCHIVE-SIZE COLUMNS ARE THE ONES THE DECISION RESTS ON
+    if (bean instanceof com.sun.management.OperatingSystemMXBean hotspot)
+      return hotspot.getProcessCpuTime();
     return 0;
   }
 
