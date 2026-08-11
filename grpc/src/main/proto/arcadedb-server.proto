@@ -534,6 +534,22 @@ message GraphBatchOptions {
   optional bool   bidirectional            = 7;  // default true (unset = true)
   int32  commit_every             = 8;  // default 50000
   int32  expected_edge_count      = 9;  // default 0
+  // Vertices accumulated before they are created and committed in a single transaction (default 10000).
+  // On a replicated database that transaction ships as one Raft entry, so lower it when the server warns
+  // that a replicated entry approaches the maximum entry size. Mirrors the HTTP 'vertexBatchSize' parameter.
+  int32  vertex_batch_size        = 10; // default 10000
+  // Optional, unlike the sizing fields above, because zero is a meaningful setting for both and not the same
+  // thing as leaving them alone: no retries at all (fail on the first error) and no back-off before the first
+  // retry. A plain int32 could not tell that apart from unset.
+  optional int32 commit_retries        = 11; // default 10; 0 disables retrying
+  optional int64 commit_retry_delay_ms = 12; // default 1000
+  // Whether the server echoes the temp_id -> RID mapping back in GraphBatchResult. Unset means AUTO: the
+  // mapping is returned only while it stays under the server-side cap, past which it is dropped and
+  // reported through id_mapping_omitted / id_mapping_size. Set it to false when the caller does not need
+  // the RIDs back: the server resolves temp IDs itself for the whole stream, so a single-stream loader
+  // never needs the mapping and dropping it removes the message-size ceiling entirely. Set it to true to
+  // demand the mapping whatever its size, accepting that a large one may exceed maxInboundMessageSize.
+  optional bool return_id_mapping = 13;
 }
 
 message GraphBatchRecord {
@@ -559,10 +575,25 @@ message GraphBatchResult {
   int64 vertices_created         = 1;
   int64 edges_created            = 2;
   int64 elapsed_ms               = 3;
-  map<string, string> id_mapping = 4;  // temp_id → RID string
-  // Note: for very large batches with many temp IDs, the id_mapping may exceed the default
-  // gRPC message size limit (4 MB). Callers importing millions of vertices with temp IDs should
-  // increase maxInboundMessageSize or avoid temp IDs when RID mapping is not needed.
+  // temp_id -> RID string. Subject to GraphBatchOptions.return_id_mapping: an omitted mapping is not an
+  // empty one, so read id_mapping_omitted before concluding that no temp IDs were used. Left unset rather
+  // than silently truncated, because a partial mapping would resolve some edge references and drop the rest.
+  map<string, string> id_mapping = 4;
+  // The mapping is not in this message. On a successful load that means it exceeded the server-side cap while
+  // return_id_mapping was left unset; on the failure trailer described below it is always set, because a
+  // trailer is bounded far below a message and never carries the mapping at all. It is never set when the
+  // caller asked for no mapping: nothing was dropped that they wanted.
+  bool  id_mapping_omitted       = 5;
+  int64 id_mapping_size          = 6;  // number of temp IDs mapped, reported whether or not the mapping travels
+  // A load that failed part-way still committed everything the batch had already flushed: GraphBatch commits
+  // incrementally (commit_every / vertex_batch_size), so an error is not a rollback. The server reports the
+  // counts durable at the point of failure in the 'arcadedb-graph-batch-result-bin' trailer of the failed
+  // call, with this flag set, so a caller can reconcile instead of blindly re-sending the whole load.
+  // On that trailer edges_created counts only edges whose flush committed: an edge is buffered when its record
+  // is received and reaches the database later, so counting received edges would overstate what survived and
+  // lead a caller to re-send too little. vertices_created needs no such distinction - a vertex is counted once
+  // its own commit has returned.
+  bool  partial_commit           = 7;
 }
 
 // -----------------------------------------------------------------------------
