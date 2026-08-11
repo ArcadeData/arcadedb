@@ -579,12 +579,20 @@ message GraphBatchResult {
   // empty one, so read id_mapping_omitted before concluding that no temp IDs were used. Left unset rather
   // than silently truncated, because a partial mapping would resolve some edge references and drop the rest.
   map<string, string> id_mapping = 4;
-  bool  id_mapping_omitted       = 5;  // the mapping was dropped: it exceeded the server-side cap
+  // The mapping is not in this message. On a successful load that means it exceeded the server-side cap while
+  // return_id_mapping was left unset; on the failure trailer described below it is always set, because a
+  // trailer is bounded far below a message and never carries the mapping at all. It is never set when the
+  // caller asked for no mapping: nothing was dropped that they wanted.
+  bool  id_mapping_omitted       = 5;
   int64 id_mapping_size          = 6;  // number of temp IDs mapped, reported whether or not the mapping travels
   // A load that failed part-way still committed everything the batch had already flushed: GraphBatch commits
   // incrementally (commit_every / vertex_batch_size), so an error is not a rollback. The server reports the
   // counts durable at the point of failure in the 'arcadedb-graph-batch-result-bin' trailer of the failed
   // call, with this flag set, so a caller can reconcile instead of blindly re-sending the whole load.
+  // On that trailer edges_created counts only edges whose flush committed: an edge is buffered when its record
+  // is received and reaches the database later, so counting received edges would overstate what survived and
+  // lead a caller to re-send too little. vertices_created needs no such distinction - a vertex is counted once
+  // its own commit has returned.
   bool  partial_commit           = 7;
 }
 

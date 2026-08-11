@@ -703,7 +703,13 @@ already had to solve:
 - **A failed load now reports what it had already committed.** The batch commits incrementally, so an error is
   not a rollback, but a gRPC status carries no message body. The counters ride the trailers of the failed call
   and reach the caller through `getResult()`, which is readable after catching the failure - re-sending a load
-  blindly would double everything that did get through.
+  blindly would double everything that did get through. On that trailer the edge count is what the batch
+  *flushed*, not what it received: an edge is buffered when its record arrives and reaches the database in a
+  later `commitEvery`-sized flush, with the incoming direction connected at close, so counting received edges
+  would claim ones that never landed and lead a caller to re-send too little and lose them. The counter
+  advances a flush at a time, so a load that dies mid-flush under-reports rather than over-reports - a
+  duplicate on re-send is recoverable, a silently missing edge is not. Vertices need no such distinction,
+  being counted once their own commit returns.
 - **`vertex_batch_size` is configurable.** It was hardcoded at 10,000 with no option to change it, which a
   replicated database needs, one buffer being one Raft entry.
 - **The commit-retry knobs are reachable from the Java client.** `PostBatchHandler` had read `commitRetries` and

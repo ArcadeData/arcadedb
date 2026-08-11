@@ -19,6 +19,8 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -267,6 +269,77 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
     assertThat(countOf("Issue6070Node")).isEqualTo(3);
   }
 
+  /**
+   * The counters must not claim an edge that never reached the database. An edge is buffered when its record
+   * arrives and is written in {@code commitEvery}-sized flushes, with the incoming direction connected at
+   * {@code close()}, so a load that dies at either point is still holding edges that did not land. Counting
+   * received edges rather than flushed ones would report those as committed, and a caller reconciling against
+   * that number re-sends too little and loses them - the exact failure the trailer exists to prevent.
+   * <p>
+   * The failure is arranged where the previous test cannot reach: past the vertex phase, on the edge flush that
+   * {@code close()} performs, by pointing an edge at a bucket that does not exist. The vertices are committed
+   * by then, so the trailer has to report some of the load as durable and none of the edges.
+   */
+  @Test
+  void countsOnlyFlushedEdgesOnTheTrailerOfALoadThatFailsClosing() throws Exception {
+    final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+    final CountDownLatch done = new CountDownLatch(1);
+
+    final StreamObserver<GraphBatchChunk> observer = asyncAuthenticatedStub.graphBatchLoad(
+        observer(null, errorRef, done));
+
+    final GraphBatchChunk.Builder chunk = GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setOptions(GraphBatchOptions.newBuilder().setVertexBatchSize(2).build());
+    for (int i = 0; i < 4; i++)
+      chunk.addRecords(vertex("e" + i));
+
+    // Both edges are buffered and neither is flushed before close(). The second originates from a bucket that
+    // does not exist, and the outgoing side is written into the source vertex's own record, so the flush that
+    // close() runs fails there and takes the first edge of the same flush with it. (A bad destination would
+    // not do: the outgoing flush commits regardless and only the incoming connect fails afterwards, at which
+    // point those edges genuinely are created and counting them is right.)
+    chunk.addRecords(GraphBatchRecord.newBuilder()
+        .setKind(GraphBatchRecord.Kind.EDGE)
+        .setTypeName("Issue6070Link")
+        .setFromRef("e0")
+        .setToRef("e1"));
+    chunk.addRecords(GraphBatchRecord.newBuilder()
+        .setKind(GraphBatchRecord.Kind.EDGE)
+        .setTypeName("Issue6070Link")
+        .setFromRef("#31212:0")
+        .setToRef("e2"));
+
+    observer.onNext(chunk.build());
+    observer.onCompleted();
+
+    assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(errorRef.get()).as("an edge pointing at a bucket that does not exist must fail the load")
+        .isInstanceOf(StatusRuntimeException.class);
+
+    final Metadata trailers = ((StatusRuntimeException) errorRef.get()).getTrailers();
+    assertThat(trailers).isNotNull();
+    final GraphBatchResult partial = trailers.get(GraphBatchProtocol.RESULT_TRAILER);
+    assertThat(partial).as("a failed load must carry its counters").isNotNull();
+
+    assertThat(partial.getVerticesCreated()).as("the vertex buffers committed before the edges were flushed")
+        .isEqualTo(4);
+    assertThat(partial.getPartialCommit()).as("vertices are durable, so this is a partial commit").isTrue();
+
+    assertThat(countOf("Issue6070Node")).isEqualTo(4);
+
+    // The invariant that matters, and the one this counter exists to keep: never claim an edge the graph does
+    // not hold. The flush died part-way, so one of the two edges had in fact been written by then, while the
+    // counter advances a whole flush at a time and so reports none. Under-reporting costs a caller a duplicate
+    // on an edge it re-sends; over-reporting costs it the edge, silently - and counting received records
+    // instead of flushed ones did exactly that here, claiming both.
+    final long connected = connectedEdgeCount();
+    assertThat(partial.getEdgesCreated())
+        .as("the trailer must never report more edges than the graph actually holds")
+        .isLessThanOrEqualTo(connected);
+    assertThat(partial.getEdgesCreated()).as("no edge flush completed, so no edge is counted").isZero();
+  }
+
   private GraphBatchResult loadWithIdMappingPreference(final Boolean returnIdMapping, final int vertices)
       throws Exception {
     final GraphBatchOptions.Builder options = GraphBatchOptions.newBuilder();
@@ -326,6 +399,15 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
         done.countDown();
       }
     };
+  }
+
+  /** Edges actually reachable from the vertices, as opposed to edge records the failed flush left orphaned. */
+  private long connectedEdgeCount() {
+    final long[] connected = { 0 };
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.transaction(() -> db.iterateType("Issue6070Node", true)
+        .forEachRemaining(r -> connected[0] += r.asVertex().countEdges(Vertex.DIRECTION.OUT, "Issue6070Link")));
+    return connected[0];
   }
 
   private long countOf(final String typeName) {

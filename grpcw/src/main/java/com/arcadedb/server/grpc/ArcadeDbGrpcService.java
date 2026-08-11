@@ -139,6 +139,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private static final int GRAPH_BATCH_MAX_ID_MAPPING = 10_000;
 
+  /**
+   * Ceiling on the vertex buffer a caller may ask for. The buffer is a caller-supplied list length held for the
+   * whole stream, so without a bound a single request could name a size large enough to exhaust the server's
+   * heap before sending a second chunk. The cap is far above any legitimate setting: the reason to touch this
+   * option at all is to make the buffer smaller than the 10,000 default, not larger, one buffer being one Raft
+   * entry on a replicated database.
+   */
+  private static final int GRAPH_BATCH_MAX_VERTEX_BUFFER = 1_000_000;
+
   // Transaction management - now stores TransactionContext with executor for thread affinity
   private final Map<String, TransactionContext> activeTransactions = new ConcurrentHashMap<>();
 
@@ -2625,8 +2634,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Map<String, RID> tempIdMap = new HashMap<>();
 
     // Vertex accumulation state
-    final List<Object[]> vertexPropsBatch = new ArrayList<>();
-    final List<String> vertexTempIds = new ArrayList<>();
+    final ArrayList<Object[]> vertexPropsBatch = new ArrayList<>();
+    final ArrayList<String> vertexTempIds = new ArrayList<>();
     final String[] currentType = { null };
     final long[] counts = new long[2]; // [0]=vertices, [1]=edges
     final boolean[] inEdgePhase = { false };
@@ -2682,10 +2691,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             final GraphBatchOptions options = chunk.hasOptions() ? chunk.getOptions() : null;
             if (options != null) {
               if (options.getVertexBatchSize() > 0)
-                vertexBatchSize[0] = options.getVertexBatchSize();
+                vertexBatchSize[0] = Math.min(options.getVertexBatchSize(), GRAPH_BATCH_MAX_VERTEX_BUFFER);
               if (options.hasReturnIdMapping())
                 returnIdMapping[0] = options.getReturnIdMapping();
             }
+            // Sized once the buffer is known, rather than at the default, so a load that asked for a different
+            // one does not spend the start of the stream growing two lists it keeps for the whole load.
+            vertexPropsBatch.ensureCapacity(vertexBatchSize[0]);
+            vertexTempIds.ensureCapacity(vertexBatchSize[0]);
             final GraphBatch.Builder builder = db.batch();
             configureGraphBatchOptions(builder, options);
             try {
@@ -2739,9 +2752,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (abandoned != null)
             abandoned.abandon();
           // What the batch already flushed is committed and stays committed: report it on the trailers so the
-          // caller can reconcile instead of re-sending a load that is partly in the database already.
+          // caller can reconcile instead of re-sending a load that is partly in the database already. The
+          // abandoned batch is still the one holding the flushed-edge count, and abandon() drops what was
+          // buffered without touching what it had already committed.
           out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage())
-              .asException(partialCommitTrailer(counts, tempIdMap, startedAt)));
+              .asException(partialCommitTrailer(abandoned, counts, tempIdMap, startedAt)));
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -2796,8 +2811,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             out.onCompleted();
           }
         } catch (final Exception e) {
+          // close() is where the deferred incoming edges are connected, so a failure here can leave edges
+          // buffered that the counters must not claim: the batch is asked what it actually flushed.
           out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage())
-              .asException(partialCommitTrailer(counts, tempIdMap, startedAt)));
+              .asException(partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt)));
           closeQuietly(batchRef.get());
         }
       }
@@ -2805,20 +2822,37 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * Builds the trailers that carry a failed load's partial-commit counters. The id mapping itself is never
-   * attached: trailers are bounded far below a message, and a caller reconciling a failed load re-reads the
-   * database rather than trusting a mapping the failure may have cut short.
+   * Builds the trailers that carry a failed load's partial-commit counters. The whole point of them is that a
+   * caller can reconcile instead of re-sending, so they have to count what is durable and nothing more.
+   * <p>
+   * That makes the edge count a different number from the one the success path reports. {@code counts[1]} is
+   * incremented when an edge record is <i>buffered</i>, and a buffered edge is not a created one: outgoing
+   * edges reach the database in {@code commitEvery}-sized flushes, and the incoming direction is connected at
+   * {@link GraphBatch#close()}. A load that dies before or during either still holds buffered edges that never
+   * landed, and reporting those as committed would make a caller re-send too little and lose them silently -
+   * exactly the failure these counters exist to prevent. The batch's own {@code totalEdgesCreated} advances
+   * only after a flush has committed, so it is what gets reported here. Vertices need no such care:
+   * {@code counts[0]} is only advanced by {@code createVertices}, which returns after its commit.
+   * <p>
+   * The id mapping itself is never attached - trailers are bounded far below a message, and a caller
+   * reconciling a failed load re-reads the database rather than trusting a mapping the failure may have cut
+   * short - so {@code id_mapping_omitted} is always set here, and means "not in this message" rather than the
+   * success path's narrower "dropped because it exceeded the cap".
+   *
+   * @param batch the batch the load was running on, or null if it never got one or has already been abandoned
    */
-  private static Metadata partialCommitTrailer(final long[] counts, final Map<String, RID> tempIdMap,
-      final long startedAt) {
+  private static Metadata partialCommitTrailer(final GraphBatch batch, final long[] counts,
+      final Map<String, RID> tempIdMap, final long startedAt) {
+    final long edgesCommitted = batch != null ? batch.getTotalEdgesCreated() : 0;
+
     final Metadata trailers = new Metadata();
     trailers.put(GraphBatchProtocol.RESULT_TRAILER, GraphBatchResult.newBuilder()
         .setVerticesCreated(counts[0])
-        .setEdgesCreated(counts[1])
+        .setEdgesCreated(edgesCommitted)
         .setElapsedMs(System.currentTimeMillis() - startedAt)
         .setIdMappingSize(tempIdMap.size())
         .setIdMappingOmitted(true)
-        .setPartialCommit(counts[0] > 0 || counts[1] > 0)
+        .setPartialCommit(counts[0] > 0 || edgesCommitted > 0)
         .build());
     return trailers;
   }
