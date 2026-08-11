@@ -47,10 +47,14 @@
         -->
         <graalvm.version>25.2.4</graalvm.version>
         <!--
-            Bumping this requires re-checking two things LSMVectorIndex relies on that jvector does not
+            Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
             contractually guarantee across versions:
             - GraphIndexBuilder.build() is unrolled by hand in buildGraphFromScratchExclusively() (see the
               MAINTENANCE comment at that unroll) to make the insertion/cleanup phase boundary observable.
+            - GraphIndexBuilder.cleanup() is wrapped in its own tracked submit()/join() the same way, because
+              cleanup() does the identical external-join shape internally (see the MAINTENANCE comment at that
+              wrapper) - re-check its two internal parallelExecutor.submit(...).join() calls are still there
+              and in the same order.
             - buildGraphFromScratchExclusively()'s CancellationException handler (issue #5872) skips
               GraphIndexBuilder.close() on the fallback path where releaseBackgroundResources() forces an
               in-flight build's join() to unblock while a pool worker may still be running. That is safe only

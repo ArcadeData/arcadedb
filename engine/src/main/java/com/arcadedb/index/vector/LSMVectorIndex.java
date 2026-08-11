@@ -256,13 +256,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // long-running build operations that would otherwise block server shutdown.
   private volatile ForkJoinPool graphBuildPool;
 
-  // The in-flight parallel-insertion task submitted to graphBuildPool, if any. shutdownNow() alone does not
-  // reliably unblock a caller parked in ForkJoinTask.join() on this task: an external (non-pool) joiner ignores
-  // Thread.interrupt() and keeps waiting on the task's own completion status, which shutdownNow() only sets for
-  // tasks it cancels before they start (issue #5872). releaseBackgroundResources() cancels this handle directly
-  // as a last resort, only once shutdownNow() + awaitTermination() has failed to drain the pool naturally -
-  // see the comment there for why cancelling it unconditionally would trade the hang for a narrower race.
-  private volatile ForkJoinTask<?> graphBuildInsertionTask;
+  // The in-flight task currently submitted to graphBuildPool, if any - the insertion phase's, then the cleanup
+  // phase's (JVector's own cleanup() does the identical submit-and-join shape internally, see the MAINTENANCE
+  // comment where it is called). shutdownNow() alone does not reliably unblock a caller parked in
+  // ForkJoinTask.join() on either: an external (non-pool) joiner ignores Thread.interrupt() and keeps waiting on
+  // the task's own completion status, which shutdownNow() only sets for tasks it cancels before they start
+  // (issue #5872). releaseBackgroundResources() cancels this handle directly as a last resort, only once
+  // shutdownNow() + awaitTermination() has failed to drain the pool naturally - see the comment there for why
+  // cancelling it unconditionally would trade the hang for a narrower race.
+  private volatile ForkJoinTask<?> graphBuildActiveTask;
 
   /** {@link ForkJoinPool} rejects anything above this, so a configured graph-build width is clamped to it. */
   private static final int MAX_GRAPH_BUILD_PARALLELISM = 0x7fff;
@@ -2237,11 +2239,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
             builder.addGraphNode(node, vectorSupplier.get().getVector(node));
             insertedNodes.incrementAndGet();
           }));
-          graphBuildInsertionTask = insertionTask;
+          graphBuildActiveTask = insertionTask;
           try {
             insertionTask.join();
           } finally {
-            graphBuildInsertionTask = null;
+            graphBuildActiveTask = null;
           }
           final long insertElapsed = System.currentTimeMillis() - insertStart;
 
@@ -2259,7 +2261,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
               indexName, totalNodes, insertElapsed, buildPool.getParallelism());
 
           final long cleanupStart = System.currentTimeMillis();
-          builder.cleanup();
+          // MAINTENANCE: as of jvector 4.0.0-rc.9, GraphIndexBuilder.cleanup() does its own
+          // parallelExecutor.submit(...).join() internally (twice: connection refinement, then degree
+          // enforcement) - the identical external-join shape the insertion phase above has its own protection
+          // for. Wrapping the call the same way, instead of invoking builder.cleanup() directly, is what lets
+          // releaseBackgroundResources()'s fallback reach a close() that races the cleanup phase too, not just
+          // insertion (issue #5872 review round 4): without this wrapper, cleanup()'s internal join()s are
+          // jvector-owned tasks this engine has no handle to and could hang exactly as the original bug did,
+          // just one phase later. Re-check this shape when bumping jvector.version.
+          final ForkJoinTask<?> cleanupTask = buildPool.submit(builder::cleanup);
+          graphBuildActiveTask = cleanupTask;
+          try {
+            cleanupTask.join();
+          } finally {
+            graphBuildActiveTask = null;
+          }
           builtGraph = builder.getGraph();
 
           reportProgress.onGraphBuildProgress("optimizing", totalNodes, totalNodes, totalNodes);
@@ -5502,8 +5518,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Shut down the dedicated graph build pool to cancel any in-progress build operations.
     // This interrupts ForkJoinPool workers inside jvector's GraphIndexBuilder.build(),
     // which otherwise would not respond to Thread.interrupt() on the parent thread.
-    final ForkJoinTask<?> insertionTask = graphBuildInsertionTask;
-    final ForkJoinPool    pool          = graphBuildPool;
+    final ForkJoinTask<?> activeTask = graphBuildActiveTask;
+    final ForkJoinPool    pool       = graphBuildPool;
     if (pool != null && !pool.isShutdown()) {
       pool.shutdownNow();
       boolean terminated = false;
@@ -5528,10 +5544,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // #5872). cancel() sets that status directly and wakes the joiner regardless, at the cost of the same
       // narrow close()-vs-straggler-worker race shutdownNow() alone could not avoid either, now bounded to
       // this already-exceptional path instead of every cancelled build.
-      if (!terminated && insertionTask != null)
-        // false, not true: ForkJoinTask's own javadoc says mayInterruptIfRunning "has no effect... interrupts
-        // are not used to control cancellation" - true here would imply an interruption that never happens.
-        insertionTask.cancel(false);
+      if (!terminated) {
+        if (activeTask != null)
+          // false, not true: ForkJoinTask's own javadoc says mayInterruptIfRunning "has no effect... interrupts
+          // are not used to control cancellation" - true here would imply an interruption that never happens.
+          activeTask.cancel(false);
+        // cancel() above (when it ran) unblocks a joiner parked on activeTask; it does not stop the pool
+        // worker(s) actually executing JVector compute, which is exactly why shutdownNow() alone was not
+        // enough to reach here. Give operators the same visibility the async-rebuild-thread branch below
+        // already gives them: this pool (and whatever it is still running) may keep going in the background
+        // after close() returns.
+        LogManager.instance().log(this, Level.WARNING,
+            "Graph build pool for index %s did not terminate within 5s of close(); a worker may keep running "
+                + "in the background after close() returned", indexName);
+      }
     }
 
     // Cancel any in-progress async graph rebuild

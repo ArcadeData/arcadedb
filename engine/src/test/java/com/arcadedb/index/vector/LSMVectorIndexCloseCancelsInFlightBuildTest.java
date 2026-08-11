@@ -140,7 +140,7 @@ class LSMVectorIndexCloseCancelsInFlightBuildTest {
    * This test drives that fallback directly: a worker that deliberately swallows interruption (standing in for
    * JVector's {@code GraphIndexBuilder} not observing it, see {@code getOrCreateGraphBuildPool()}'s javadoc)
    * never lets the pool terminate, so {@code awaitTermination(5, SECONDS)} times out and
-   * {@code releaseBackgroundResources()} must fall back to cancelling {@code graphBuildInsertionTask} directly.
+   * {@code releaseBackgroundResources()} must fall back to cancelling {@code graphBuildActiveTask} directly.
    * Injecting the pool/task fields directly keeps this deterministic and fast to set up, instead of depending on
    * a real JVector build timing out in a way this test cannot control.
    */
@@ -177,7 +177,7 @@ class LSMVectorIndexCloseCancelsInFlightBuildTest {
           final Field poolField = LSMVectorIndex.class.getDeclaredField("graphBuildPool");
           poolField.setAccessible(true);
           poolField.set(index, pool);
-          final Field taskField = LSMVectorIndex.class.getDeclaredField("graphBuildInsertionTask");
+          final Field taskField = LSMVectorIndex.class.getDeclaredField("graphBuildActiveTask");
           taskField.setAccessible(true);
           taskField.set(index, stuckTask);
 
