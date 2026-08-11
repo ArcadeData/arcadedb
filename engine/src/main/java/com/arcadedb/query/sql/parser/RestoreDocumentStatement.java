@@ -64,7 +64,7 @@ public class RestoreDocumentStatement extends SimpleExecStatement {
     RestoreStatementSupport.applyBody(doc, insertBody, context);
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
-    final RID restoredRid = bucket.restoreRecordAtPosition(rid.getPosition(), doc);
+    final RID restoredRid = RestoreStatementSupport.restoreRecordAndUpdateCount(database, bucket, rid.getPosition(), doc);
 
     final ResultInternal result = new ResultInternal(database);
     result.setProperty("operation", "restore document");
