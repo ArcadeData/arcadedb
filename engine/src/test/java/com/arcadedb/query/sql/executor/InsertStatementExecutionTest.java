@@ -55,20 +55,27 @@ public class InsertStatementExecutionTest extends TestHelper {
     assertInsertExecutionPlanRunsOnce(statement -> statement.execute(database, Map.of(), null, false));
   }
 
+  @Test
+  void insertExecutionPlanRunsOnceAfterReset() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final AtomicInteger executions = new AtomicInteger();
+    final InsertExecutionPlan executionPlan = countingExecutionPlan(context, executions);
+
+    executionPlan.reset(context);
+    final ResultSet result = executionPlan.fetchNext(1);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    assertThat(executions.get()).isEqualTo(1);
+  }
+
   private void assertInsertExecutionPlanRunsOnce(final Function<InsertStatement, ResultSet> executeStatement) {
     final AtomicInteger executions = new AtomicInteger();
     final InsertStatement statement = new InsertStatement(-1) {
       @Override
       public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
-        final InsertExecutionPlan executionPlan = new InsertExecutionPlan(context);
-        executionPlan.chain(new AbstractExecutionStep(context) {
-          @Override
-          public ResultSet syncPull(final CommandContext context, final int nRecords) {
-            executions.incrementAndGet();
-            return new InternalResultSet();
-          }
-        });
-        return executionPlan;
+        return countingExecutionPlan(context, executions);
       }
     };
 
@@ -77,6 +84,18 @@ public class InsertStatementExecutionTest extends TestHelper {
     result.close();
 
     assertThat(executions.get()).isEqualTo(1);
+  }
+
+  private InsertExecutionPlan countingExecutionPlan(final CommandContext context, final AtomicInteger executions) {
+    final InsertExecutionPlan executionPlan = new InsertExecutionPlan(context);
+    executionPlan.chain(new AbstractExecutionStep(context) {
+      @Override
+      public ResultSet syncPull(final CommandContext context, final int nRecords) {
+        executions.incrementAndGet();
+        return new InternalResultSet();
+      }
+    });
+    return executionPlan;
   }
 
   @Test

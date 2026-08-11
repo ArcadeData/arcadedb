@@ -71,7 +71,7 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
    * to close the returned {@link ResultSet} or for the GC to reclaim it. A failure from {@code close()} itself is
    * suppressed rather than allowed to replace an exception already in flight from the drain loop - see
    * {@link UpdateExecutionPlan#executeInternal()} for the same pattern and its rationale.
-  */
+   */
   public void executeInternal() throws CommandExecutionException {
     executed = true;
     RuntimeException failure = null;
