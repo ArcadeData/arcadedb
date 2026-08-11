@@ -54,6 +54,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
@@ -69,6 +70,7 @@ import com.google.gson.JsonPrimitive;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -126,6 +128,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       .setUseCollectionSizeForEdges(false).setUseCollectionSize(false);
 
   private static final int GRAPH_BATCH_VERTEX_BUFFER = 10_000;
+
+  /**
+   * Past this many temp IDs the mapping is dropped from {@link GraphBatchResult} instead of travelling with it,
+   * and the caller is told so through {@code id_mapping_omitted} / {@code id_mapping_size}. Mirrors the HTTP
+   * endpoint's {@code MAX_ID_MAPPING_IN_RESPONSE}: a mapping of a few million vertices is both larger than the
+   * default 4 MB gRPC message limit (which would fail the whole load at the very end, after everything was
+   * committed) and larger than any caller can usefully consume in one response. Callers that need it regardless
+   * set {@code return_id_mapping=true}; callers that never need it set false and lift the ceiling entirely.
+   */
+  private static final int GRAPH_BATCH_MAX_ID_MAPPING = 10_000;
 
   // Transaction management - now stores TransactionContext with executor for thread affinity
   private final Map<String, TransactionContext> activeTransactions = new ConcurrentHashMap<>();
@@ -2613,11 +2625,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Map<String, RID> tempIdMap = new HashMap<>();
 
     // Vertex accumulation state
-    final List<Object[]> vertexPropsBatch = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
-    final List<String> vertexTempIds = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
+    final List<Object[]> vertexPropsBatch = new ArrayList<>();
+    final List<String> vertexTempIds = new ArrayList<>();
     final String[] currentType = { null };
     final long[] counts = new long[2]; // [0]=vertices, [1]=edges
     final boolean[] inEdgePhase = { false };
+    // Resolved from the first chunk's options, then fixed for the whole stream.
+    final int[] vertexBatchSize = { GRAPH_BATCH_VERTEX_BUFFER };
+    final Boolean[] returnIdMapping = { null };
 
     call.setOnCancelHandler(() -> {
       cancelled.set(true);
@@ -2637,10 +2652,38 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // First chunk: initialize
             if (chunk.getDatabase().isEmpty())
               throw new IllegalArgumentException("First chunk must contain the database name");
+
+            // On a follower of a replicated database the load must not run here: the bulk path mutates shared
+            // state (schema dictionary, type metadata) that only the leader can serialize, and running it on a
+            // follower hits the race in Dictionary.getIdByName as the local state-machine apply runs
+            // concurrently with this thread (issue #4122). The HTTP endpoint relays the payload to the leader;
+            // this stream cannot, because the HA plugin exposes the leader's HTTP address only and relaying a
+            // bulk load through a follower would double the traffic of the transport chosen to avoid exactly
+            // that. It is refused before a single record is written, so the caller can redirect and retry
+            // without having to reconcile a partial load.
+            final HAServerPlugin ha = arcadeServer != null ? arcadeServer.getHA() : null;
+            if (ha != null && !ha.isLeader()) {
+              final String leader = ha.getLeaderAddress();
+              errorSent[0] = true;
+              out.onError(Status.FAILED_PRECONDITION.withDescription(
+                  "graphBatchLoad: this server is not the cluster leader and a graph batch load must run on the leader. "
+                      + (leader != null && !leader.isBlank() ?
+                      "Reconnect to the leader at '" + leader + "' (HTTP address; use its gRPC port) and retry" :
+                      "The leader is currently unknown, retry once the election has settled")).asException());
+              return;
+            }
+
             final Database db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
             dbRef.set(db);
+            final GraphBatchOptions options = chunk.hasOptions() ? chunk.getOptions() : null;
+            if (options != null) {
+              if (options.getVertexBatchSize() > 0)
+                vertexBatchSize[0] = options.getVertexBatchSize();
+              if (options.hasReturnIdMapping())
+                returnIdMapping[0] = options.getReturnIdMapping();
+            }
             final GraphBatch.Builder builder = db.batch();
-            configureGraphBatchOptions(builder, chunk.hasOptions() ? chunk.getOptions() : null);
+            configureGraphBatchOptions(builder, options);
             try {
               batch = builder.build();
             } catch (final DatabaseOperationException e) {
@@ -2679,7 +2722,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               vertexPropsBatch.add(props);
               vertexTempIds.add(rec.getTempId().isEmpty() ? null : rec.getTempId());
 
-              if (vertexPropsBatch.size() >= GRAPH_BATCH_VERTEX_BUFFER)
+              if (vertexPropsBatch.size() >= vertexBatchSize[0])
                 counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
             }
           }
@@ -2691,7 +2734,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           final GraphBatch abandoned = batchRef.getAndSet(null);
           if (abandoned != null)
             abandoned.abandon();
-          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          // What the batch already flushed is committed and stays committed: report it on the trailers so the
+          // caller can reconcile instead of re-sending a load that is partly in the database already.
+          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage())
+              .asException(partialCommitTrailer(counts, tempIdMap, startedAt)));
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -2727,21 +2773,50 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           final GraphBatchResult.Builder result = GraphBatchResult.newBuilder()
               .setVerticesCreated(counts[0])
               .setEdgesCreated(counts[1])
-              .setElapsedMs(System.currentTimeMillis() - startedAt);
+              .setElapsedMs(System.currentTimeMillis() - startedAt)
+              .setIdMappingSize(tempIdMap.size());
 
-          for (final Map.Entry<String, RID> entry : tempIdMap.entrySet())
-            result.putIdMapping(entry.getKey(), entry.getValue().toString());
+          // AUTO (unset) returns the mapping only while it stays consumable; explicit true demands it whatever
+          // its size; explicit false never sends it. The mapping is all-or-nothing: a truncated one would
+          // resolve some of the caller's references and silently drop the rest.
+          if (returnIdMapping[0] == null ?
+              tempIdMap.size() <= GRAPH_BATCH_MAX_ID_MAPPING :
+              returnIdMapping[0]) {
+            for (final Map.Entry<String, RID> entry : tempIdMap.entrySet())
+              result.putIdMapping(entry.getKey(), entry.getValue().toString());
+          } else if (returnIdMapping[0] == null)
+            result.setIdMappingOmitted(true);
 
           if (!cancelled.get()) {
             out.onNext(result.build());
             out.onCompleted();
           }
         } catch (final Exception e) {
-          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage())
+              .asException(partialCommitTrailer(counts, tempIdMap, startedAt)));
           closeQuietly(batchRef.get());
         }
       }
     };
+  }
+
+  /**
+   * Builds the trailers that carry a failed load's partial-commit counters. The id mapping itself is never
+   * attached: trailers are bounded far below a message, and a caller reconciling a failed load re-reads the
+   * database rather than trusting a mapping the failure may have cut short.
+   */
+  private static Metadata partialCommitTrailer(final long[] counts, final Map<String, RID> tempIdMap,
+      final long startedAt) {
+    final Metadata trailers = new Metadata();
+    trailers.put(GraphBatchProtocol.RESULT_TRAILER, GraphBatchResult.newBuilder()
+        .setVerticesCreated(counts[0])
+        .setEdgesCreated(counts[1])
+        .setElapsedMs(System.currentTimeMillis() - startedAt)
+        .setIdMappingSize(tempIdMap.size())
+        .setIdMappingOmitted(true)
+        .setPartialCommit(counts[0] > 0 || counts[1] > 0)
+        .build());
+    return trailers;
   }
 
   private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {
@@ -2818,6 +2893,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       builder.withCommitEvery(opts.getCommitEvery());
     if (opts.getExpectedEdgeCount() > 0)
       builder.withExpectedEdgeCount(opts.getExpectedEdgeCount());
+    if (opts.getCommitRetries() > 0)
+      builder.withCommitRetries(opts.getCommitRetries());
+    if (opts.getCommitRetryDelayMs() > 0)
+      builder.withCommitRetryDelay(opts.getCommitRetryDelayMs());
   }
 
   private void closeQuietly(final GraphBatch batch) {

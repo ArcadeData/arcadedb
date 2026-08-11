@@ -665,3 +665,47 @@ every joiner waiting on it, which `shutdownNow()` cannot do for a task already u
 rather than surfacing as a SEVERE "Error building graph from scratch" wrapped in an opaque `IndexException`.
 
 [#5872](https://github.com/ArcadeData/arcadedb/issues/5872)
+
+## `batch()` on a gRPC connection now uses the gRPC streaming RPC instead of JSONL over HTTP (#6070)
+
+`RemoteGrpcDatabase.batch()` inherited `RemoteDatabase`'s implementation and returned a loader that posted its
+payload as JSONL to `POST /api/v1/batch`, over plain HTTP, whatever protocol the connection spoke. A caller who
+opened a gRPC connection got the HTTP transport silently, and nothing on the API surface said so. Meanwhile the
+`GraphBatchLoad` client-streaming RPC had been defined in the proto and implemented in `ArcadeDbGrpcService`
+since the gRPC module landed, with no client anywhere in the codebase calling it.
+
+`RemoteGrpcDatabase.batch()` now returns `RemoteGrpcGraphBatch`, which carries the load over that RPC. The public
+API is unchanged - same methods, same builder options, same results - so the switch is transparent to anything
+that only uses `batch()`. What changes underneath is where temporary ids are resolved. Over HTTP each flush is an
+independent request the server does not remember, so the loader has to ask for the id mapping back and rewrite
+the references of later edges itself; over one stream the server holds the mapping for the whole load, so a
+temporary id crosses a chunk boundary untouched. That removes the per-flush round trip, the client-side mapping
+arrays, and the ceiling `flushEvery` had on the HTTP path past which the server stops echoing a mapping too large
+to consume. The new loader adds `withTimeout()` for the deadline of the whole stream, and applies backpressure
+rather than handing gRPC chunks faster than the transport drains them.
+
+Wiring a real client onto the RPC surfaced the gaps that had gone unnoticed while it had none, each of which
+only shows on a load big enough to be worth a streaming transport, and each of which the HTTP endpoint had
+already had to solve:
+
+- **A load aimed at a follower is now refused instead of taken.** The bulk path mutates state only the leader can
+  serialize - the schema dictionary above all - so running it on a follower races the local state-machine apply
+  in `Dictionary.getIdByName`, which is the corruption #4122 was about and the reason `PostBatchHandler` relays
+  the payload to the leader. `GraphBatchLoad` had no such guard. It cannot relay the way HTTP does, because the
+  HA plugin exposes the leader's HTTP address only and relaying a bulk load through a follower would double the
+  traffic of the transport chosen to avoid exactly that, so it fails with `FAILED_PRECONDITION` naming the
+  leader - before writing anything, so there is nothing to reconcile.
+- **The temporary-id mapping is no longer always echoed back in full.** A load of a few million vertices built a
+  response past the default 4 MB message limit and failed at the very end, with everything already committed. The
+  new `return_id_mapping` option is a tri-state mirroring the HTTP `idMapping` parameter: unset caps it and
+  reports `id_mapping_omitted` / `id_mapping_size` past the cap, `true` demands it whatever the size, `false`
+  never sends it. The streaming loader sets `false`, having no use for a mapping the server resolves itself.
+- **A failed load now reports what it had already committed.** The batch commits incrementally, so an error is
+  not a rollback, but a gRPC status carries no message body. The counters ride the trailers of the failed call
+  and reach the caller through `getResult()`, which is readable after catching the failure - re-sending a load
+  blindly would double everything that did get through.
+- **`vertex_batch_size` is configurable.** It was hardcoded at 10,000 with no option to change it, which a
+  replicated database needs, one buffer being one Raft entry. `commit_retries` and `commit_retry_delay_ms` were
+  added alongside it for parity with the HTTP endpoint's builder.
+
+[#6070](https://github.com/ArcadeData/arcadedb/issues/6070)
