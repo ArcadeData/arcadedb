@@ -241,6 +241,32 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
     assertThat(countOf("Issue6070Node")).isEqualTo(4);
   }
 
+  /**
+   * Zero commit retries means "fail on the first error", not "no preference", so the two retry fields are
+   * {@code optional} on the wire. A plain proto3 int32 defaults to 0 when unset, so a server reading it with
+   * the usual {@code > 0} guard would silently ignore the one caller who explicitly asked not to retry - the
+   * caller with the strongest opinion about it. The HTTP endpoint gets this right (a query parameter is
+   * present or it is not), so the RPC has to as well.
+   */
+  @Test
+  void distinguishesZeroCommitRetriesFromUnset() throws Exception {
+    assertThat(GraphBatchOptions.newBuilder().build().hasCommitRetries())
+        .as("an untouched options message must not claim a retry setting").isFalse();
+    assertThat(GraphBatchOptions.newBuilder().setCommitRetries(0).build().hasCommitRetries())
+        .as("asking for zero retries must be distinguishable from asking for nothing").isTrue();
+    assertThat(GraphBatchOptions.newBuilder().setCommitRetryDelayMs(0).build().hasCommitRetryDelayMs())
+        .as("asking for no back-off must be distinguishable from asking for nothing").isTrue();
+
+    // And a load carrying them still runs.
+    final GraphBatchResult result = load(GraphBatchOptions.newBuilder()
+        .setCommitRetries(0)
+        .setCommitRetryDelayMs(0)
+        .build(), 3);
+
+    assertThat(result.getVerticesCreated()).isEqualTo(3);
+    assertThat(countOf("Issue6070Node")).isEqualTo(3);
+  }
+
   private GraphBatchResult loadWithIdMappingPreference(final Boolean returnIdMapping, final int vertices)
       throws Exception {
     final GraphBatchOptions.Builder options = GraphBatchOptions.newBuilder();

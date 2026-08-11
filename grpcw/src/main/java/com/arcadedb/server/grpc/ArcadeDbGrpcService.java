@@ -2653,6 +2653,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             if (chunk.getDatabase().isEmpty())
               throw new IllegalArgumentException("First chunk must contain the database name");
 
+            // Authenticate first, exactly as every other RPC on this service does. The leadership check below
+            // answers with the cluster's topology, which is not something to hand to a caller that has not
+            // shown it may talk to this database at all.
+            final Database db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
+
             // On a follower of a replicated database the load must not run here: the bulk path mutates shared
             // state (schema dictionary, type metadata) that only the leader can serialize, and running it on a
             // follower hits the race in Dictionary.getIdByName as the local state-machine apply runs
@@ -2673,7 +2678,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               return;
             }
 
-            final Database db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
             dbRef.set(db);
             final GraphBatchOptions options = chunk.hasOptions() ? chunk.getOptions() : null;
             if (options != null) {
@@ -2893,9 +2897,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       builder.withCommitEvery(opts.getCommitEvery());
     if (opts.getExpectedEdgeCount() > 0)
       builder.withExpectedEdgeCount(opts.getExpectedEdgeCount());
-    if (opts.getCommitRetries() > 0)
+    // Zero is a setting here, not an absence: no retries, and no back-off before the first one.
+    if (opts.hasCommitRetries())
       builder.withCommitRetries(opts.getCommitRetries());
-    if (opts.getCommitRetryDelayMs() > 0)
+    if (opts.hasCommitRetryDelayMs())
       builder.withCommitRetryDelay(opts.getCommitRetryDelayMs());
   }
 

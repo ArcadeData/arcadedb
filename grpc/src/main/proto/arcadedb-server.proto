@@ -538,8 +538,11 @@ message GraphBatchOptions {
   // On a replicated database that transaction ships as one Raft entry, so lower it when the server warns
   // that a replicated entry approaches the maximum entry size. Mirrors the HTTP 'vertexBatchSize' parameter.
   int32  vertex_batch_size        = 10; // default 10000
-  int32  commit_retries           = 11; // default: engine default
-  int64  commit_retry_delay_ms    = 12; // default: engine default
+  // Optional, unlike the sizing fields above, because zero is a meaningful setting for both and not the same
+  // thing as leaving them alone: no retries at all (fail on the first error) and no back-off before the first
+  // retry. A plain int32 could not tell that apart from unset.
+  optional int32 commit_retries        = 11; // default 10; 0 disables retrying
+  optional int64 commit_retry_delay_ms = 12; // default 1000
   // Whether the server echoes the temp_id -> RID mapping back in GraphBatchResult. Unset means AUTO: the
   // mapping is returned only while it stays under the server-side cap, past which it is dropped and
   // reported through id_mapping_omitted / id_mapping_size. Set it to false when the caller does not need

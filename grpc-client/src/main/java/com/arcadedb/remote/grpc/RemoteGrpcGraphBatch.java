@@ -129,9 +129,16 @@ public class RemoteGrpcGraphBatch extends RemoteGraphBatch {
       firstChunkSent = true;
     }
 
-    stream.send(chunk.build());
+    // The buffer is handed over before the send rather than after it, so a send that fails leaves nothing
+    // behind for a later flush to send a second time. An interior auto-flush raises its failure from inside
+    // createVertex()/createEdge(), and the close() that follows - from a try-with-resources, which runs whether
+    // or not the body threw - would otherwise re-send this very chunk on a stream the failure had already
+    // terminated.
+    final GraphBatchChunk pending = chunk.build();
     chunk = null;
     recordsInChunk = 0;
+
+    stream.send(pending);
   }
 
   /**
@@ -281,6 +288,18 @@ public class RemoteGrpcGraphBatch extends RemoteGraphBatch {
       return this;
     }
 
+    @Override
+    public Builder withCommitRetries(final int commitRetries) {
+      super.withCommitRetries(commitRetries);
+      return this;
+    }
+
+    @Override
+    public Builder withCommitRetryDelay(final long commitRetryDelayMs) {
+      super.withCommitRetryDelay(commitRetryDelayMs);
+      return this;
+    }
+
     /**
      * Deadline for the whole load, from the first chunk to the server's answer, in milliseconds. Default: 6
      * hours. It bounds the stream rather than any single chunk, so it has to cover the entire import.
@@ -315,6 +334,10 @@ public class RemoteGrpcGraphBatch extends RemoteGraphBatch {
         options.setPreAllocateEdgeChunks(preAllocateEdgeChunks);
       if (parallelFlush != null)
         options.setParallelFlush(parallelFlush);
+      if (commitRetries != null)
+        options.setCommitRetries(commitRetries);
+      if (commitRetryDelayMs != null)
+        options.setCommitRetryDelayMs(commitRetryDelayMs);
       // The server resolves temporary ids for the whole stream, so this loader never reads the mapping back.
       // Saying so keeps a load of millions of vertices from building a response too large to send, which would
       // fail the call at the very end with everything already committed.

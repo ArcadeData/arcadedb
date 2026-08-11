@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -227,6 +228,25 @@ public class Issue6070GrpcGraphBatchIT extends BaseGraphServerTest {
     assertThat(countOf(PERSON)).isEqualTo(1);
   }
 
+  /**
+   * The commit-retry knobs reach the server. Zero is the interesting value: it means "do not retry, fail on the
+   * first error", which is a setting and not an absence, so the two fields are {@code optional} on the wire -
+   * a plain proto3 int could not tell a caller who asked for no retries from one who asked for nothing.
+   */
+  @Test
+  void carriesTheCommitRetryOptionsIncludingZero() {
+    try (final RemoteGraphBatch batch = grpc.batch().withCommitRetries(0).withCommitRetryDelay(0).build()) {
+      batch.createVertex(PERSON, "name", "NoRetries");
+    }
+
+    assertThat(countOf(PERSON)).isEqualTo(1);
+
+    assertThatThrownBy(() -> grpc.batch().withCommitRetries(-1))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> grpc.batch().withCommitRetryDelay(-1))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
   @Test
   void rejectsAVertexAddedAfterAnEdge() {
     try (final RemoteGraphBatch batch = grpc.batch().build()) {
@@ -283,6 +303,56 @@ public class Issue6070GrpcGraphBatchIT extends BaseGraphServerTest {
         .as("the counters must say how much of the load is durable, not zero")
         .isEqualTo(8);
     assertThat(countOf(PERSON)).as("and what they claim is durable really is").isEqualTo(8);
+  }
+
+  /**
+   * The failure above arrives on the single flush that {@code close()} performs. This one arrives on an
+   * interior auto-flush, which is the shape a real bulk load has: the exception comes out of
+   * {@code createVertex()} in the middle of the body, and the {@code close()} that a try-with-resources runs
+   * afterwards must neither re-send the chunk that just failed nor bury the real failure under gRPC's own "call
+   * already closed".
+   * <p>
+   * The loader is written not to depend on which of those happens - it hands the buffer over before the send,
+   * and does not half-close a call the server has already failed - but this test does not distinguish the two
+   * implementations on its own: current grpc-java reports {@code isReady() == false} on a terminated call, so
+   * the readiness wait raises the real failure before a re-send could reach the wire either way. What it pins
+   * is the contract a caller sees, which must hold however grpc-java resolves that internally: the committed
+   * buffer survives exactly once, and {@code close()} adds no second, misleading failure.
+   */
+  @Test
+  void aFailureOnAnInteriorFlushIsNotResentByClose() {
+    grpc.command("sql", "CREATE PROPERTY `" + PERSON + "`.tag IF NOT EXISTS STRING (MANDATORY TRUE)");
+
+    final AtomicReference<Throwable> fromBody = new AtomicReference<>();
+
+    // Chunk and server-side buffer both 2, so the first two vertices are committed as a whole buffer before the
+    // buffer holding the bad one fails. The 400 that follow make sure the failure is observed by a later send
+    // in the body rather than only at close(), which is what puts an already-sent chunk at risk of a re-send.
+    try (final RemoteGraphBatch batch = grpc.batch().withFlushEvery(2).withVertexBatchSize(2).build()) {
+      try {
+        batch.createVertex(PERSON, "tag", "ok0");
+        batch.createVertex(PERSON, "tag", "ok1");
+        batch.createVertex(PERSON, "tag", "ok2");
+        batch.createVertex(PERSON); // no 'tag': the server fails the load on this buffer
+        for (int i = 0; i < 400; i++)
+          batch.createVertex(PERSON, "tag", "after" + i);
+      } catch (final RuntimeException e) {
+        fromBody.set(e);
+      }
+    } catch (final RuntimeException fromClose) {
+      // close() may re-raise the same failure; what it must not do is raise a different, misleading one on top
+      // of it, which is what half-closing or re-sending on a call the server already terminated produces.
+      assertThat(fromClose).as("close() must not invent a failure of its own on top of the real one")
+          .hasMessageNotContaining("call already closed")
+          .hasMessageNotContaining("already half-closed")
+          .hasMessageNotContaining("Stream is already completed");
+    }
+
+    assertThat(fromBody.get()).as("the load violates the schema, so it must fail during the body").isNotNull();
+
+    // The buffer that completed before the failure is durable, and exactly once: a chunk handed to a terminated
+    // stream and then sent again by close() would show up here as a duplicate.
+    assertThat(countOf(PERSON)).as("the committed buffer survives, and is not loaded twice").isEqualTo(2);
   }
 
   private long countOf(final String typeName) {

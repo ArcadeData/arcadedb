@@ -160,10 +160,44 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
   }
 
   /**
+   * The refusal names the leader, which is a fact about the cluster's layout. It must therefore come after the
+   * caller has been resolved against the database it asked for, the way every other RPC on this service starts.
+   * A follower asked to load into a database that cannot be reached has to answer about that database, not
+   * volunteer where the leader lives - and the difference is only observable on a follower, because that is the
+   * only place the leadership branch is reached at all.
+   */
+  @Test
+  void aFollowerResolvesTheDatabaseBeforeNamingTheLeader() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    int followerIndex = -1;
+    for (int i = 0; i < getServerCount(); i++)
+      if (i != leaderIndex) {
+        followerIndex = i;
+        break;
+      }
+    assertThat(followerIndex).as("At least one follower must exist").isGreaterThanOrEqualTo(0);
+
+    final Throwable refusal = loadOneVertexInto(followerIndex, "unauthorized", "Issue6070NoSuchDatabase");
+
+    assertThat(refusal).as("a load naming a database that cannot be reached must be refused").isNotNull();
+    assertThat(refusal.getMessage())
+        .as("the refusal must be about the database, not about where the leader is")
+        .doesNotContain("not the cluster leader")
+        .doesNotContain("Reconnect to the leader");
+  }
+
+  /**
    * Runs a one-vertex load against the given server and returns the failure it ended with, or null if it
    * succeeded.
    */
   private Throwable loadOneVertex(final int serverIndex, final String tempId) throws Exception {
+    return loadOneVertexInto(serverIndex, tempId, getDatabaseName());
+  }
+
+  private Throwable loadOneVertexInto(final int serverIndex, final String tempId, final String databaseName)
+      throws Exception {
     channel = ManagedChannelBuilder.forAddress("localhost", BASE_GRPC_PORT + serverIndex).usePlaintext().build();
     try {
       final Channel authenticated = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
@@ -190,7 +224,7 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
           });
 
       observer.onNext(GraphBatchChunk.newBuilder()
-          .setDatabase(getDatabaseName())
+          .setDatabase(databaseName)
           .setCredentials(DatabaseCredentials.newBuilder()
               .setUsername("root")
               .setPassword(DEFAULT_PASSWORD_FOR_TESTS)

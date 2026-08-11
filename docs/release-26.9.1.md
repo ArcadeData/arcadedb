@@ -705,7 +705,16 @@ already had to solve:
   and reach the caller through `getResult()`, which is readable after catching the failure - re-sending a load
   blindly would double everything that did get through.
 - **`vertex_batch_size` is configurable.** It was hardcoded at 10,000 with no option to change it, which a
-  replicated database needs, one buffer being one Raft entry. `commit_retries` and `commit_retry_delay_ms` were
-  added alongside it for parity with the HTTP endpoint's builder.
+  replicated database needs, one buffer being one Raft entry.
+- **The commit-retry knobs are reachable from the Java client.** `PostBatchHandler` had read `commitRetries` and
+  `commitRetryDelayMs` as query parameters since they were introduced, but `RemoteGraphBatch.Builder` never
+  exposed them, so no Java caller on either transport could set them. `withCommitRetries()` and
+  `withCommitRetryDelay()` were added to the shared builder, which closes the gap for HTTP as well. Both are
+  `optional` on the wire, because zero is a setting for each of them - no retries at all, and no back-off before
+  the first one - and not the same as leaving them alone, which a plain proto3 integer cannot express.
+
+The follower refusal runs *after* the caller has been resolved against the database it named, the way every
+other RPC on this service starts. Naming the leader is a fact about the cluster's layout, so a request that
+cannot reach the database it asked for is answered about that database rather than told where the leader lives.
 
 [#6070](https://github.com/ArcadeData/arcadedb/issues/6070)

@@ -531,6 +531,8 @@ public class RemoteGraphBatch implements AutoCloseable {
     protected Boolean useWAL;
     protected Boolean preAllocateEdgeChunks;
     protected Boolean parallelFlush;
+    protected Integer commitRetries;
+    protected Long    commitRetryDelayMs;
 
     /** Not for direct use: a builder comes from {@link RemoteDatabase#batch()}, which picks the right one for its transport. */
     protected Builder(final RemoteDatabase database) {
@@ -620,6 +622,29 @@ public class RemoteGraphBatch implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Number of times a vertex-creation commit is retried when it fails with a transient error, such as a
+     * quorum lost to a leader re-election on a replicated database. Default: 10. Set to 0 to fail on the first
+     * error instead of retrying.
+     */
+    public Builder withCommitRetries(final int commitRetries) {
+      if (commitRetries < 0)
+        throw new IllegalArgumentException("commitRetries must be >= 0");
+      this.commitRetries = commitRetries;
+      return this;
+    }
+
+    /**
+     * Initial back-off in milliseconds before the first vertex-commit retry; later retries back off
+     * exponentially from it. Default: 1000.
+     */
+    public Builder withCommitRetryDelay(final long commitRetryDelayMs) {
+      if (commitRetryDelayMs < 0)
+        throw new IllegalArgumentException("commitRetryDelayMs must be >= 0");
+      this.commitRetryDelayMs = commitRetryDelayMs;
+      return this;
+    }
+
     /** Renders the options chosen by the caller as the query-string parameters of {@code POST /api/v1/batch}. */
     protected Map<String, String> toQueryParams() {
       final Map<String, String> queryParams = new HashMap<>();
@@ -633,6 +658,8 @@ public class RemoteGraphBatch implements AutoCloseable {
       putIfSet(queryParams, "wal", useWAL);
       putIfSet(queryParams, "preAllocateEdgeChunks", preAllocateEdgeChunks);
       putIfSet(queryParams, "parallelFlush", parallelFlush);
+      putIfSet(queryParams, "commitRetries", commitRetries);
+      putIfSet(queryParams, "commitRetryDelayMs", commitRetryDelayMs);
       return queryParams;
     }
 

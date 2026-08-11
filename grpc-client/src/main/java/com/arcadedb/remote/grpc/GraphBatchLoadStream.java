@@ -177,6 +177,10 @@ class GraphBatchLoadStream {
    * Ends the stream and waits for the server's totals.
    */
   GraphBatchResult complete() {
+    // A call the server has already failed is done: half-closing it would raise gRPC's own "call already
+    // closed" on top of the real failure and bury it. Report the failure the load actually died of instead.
+    failIfTerminated();
+
     request.onCompleted();
 
     final boolean finished;
