@@ -215,4 +215,43 @@ class RemoteGraphBatchTest {
 
     assertThat(sb.toString()).isEqualTo("[1,2,3]");
   }
+
+  // Code review follow-up: boxed numeric arrays (Integer[], not int[]) are not covered by the
+  // typed primitive fast paths, so they must still round-trip correctly through the generic
+  // reflective appendJsonArray() fallback.
+  @Test
+  void appendJsonValueSerializesBoxedIntegerArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new Integer[] { 1, 2, 3 });
+
+    assertThat(sb.toString()).isEqualTo("[1,2,3]");
+  }
+
+  // Code review follow-up: a vertex plausibly carries both a vector-embedding property and a
+  // metadata map/list in the same batch call, so a primitive array nested inside a Map value
+  // must be encoded correctly by the recursive appendJsonValue() dispatch, not just at the top level.
+  @Test
+  void appendJsonValueSerializesFloatArrayNestedInMap() {
+    final StringBuilder sb = new StringBuilder();
+    final Map<String, Object> map = new LinkedHashMap<>();
+    map.put("embedding", new float[] { 0.1f, 0.2f });
+    map.put("label", "a");
+
+    RemoteGraphBatch.appendJsonValue(sb, map);
+
+    assertThat(sb.toString()).isEqualTo("{\"embedding\":[0.1,0.2],\"label\":\"a\"}");
+  }
+
+  // Code review follow-up: locks in that NaN/Infinity elements in a numeric array (plausible in
+  // embedding data after a zero-norm normalization) are emitted as bare (unquoted) tokens, matching
+  // what the server's lenient JSON parser (Gson Strictness.LENIENT) accepts on the way back in.
+  @Test
+  void appendJsonValueSerializesNaNAndInfinityInFloatArrayAsBareTokens() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new float[] { Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY });
+
+    assertThat(sb.toString()).isEqualTo("[NaN,Infinity,-Infinity]");
+  }
 }

@@ -317,6 +317,10 @@ public class RemoteGraphBatch implements AutoCloseable {
   // MAP-typed properties must be sent as a real JSON object (not `value.toString()`, which
   // produces a plain string like "{1=1, 2=2}") or DocumentValidator rejects the value on
   // the server as an incompatible type for the declared MAP property - see issue #6061.
+  // Keys are stringified with String.valueOf(), assuming the caller uses one consistent key
+  // type (ArcadeDB MAP properties are conventionally String-keyed): a map mixing key types that
+  // collide once stringified (e.g. Integer 1 and Long 1L) would silently lose an entry to
+  // last-write-wins, the same as any JSON object with a duplicate key.
   static void appendJsonMap(final StringBuilder sb, final Map<?, ?> map) {
     sb.append('{');
     boolean first = true;
