@@ -53,8 +53,10 @@ import java.util.stream.Stream;
  * <p>
  * Both phases are best-effort per item, never aborting the whole call: a node that fails to clone gets
  * its own {@code (input, null, error)} row and is excluded from the second, edge-cloning phase, and an
- * edge that fails to clone (e.g. a unique-index conflict on the new edge) is skipped rather than losing
- * the yield rows already produced for the nodes that did clone successfully.
+ * edge that fails to clone (e.g. a mandatory-property violation on the new edge) is skipped rather than
+ * losing the yield rows already produced for the nodes that did clone successfully. Note this covers
+ * failures raised synchronously on {@code save()} - a UNIQUE index violation is NOT one of them, since
+ * ArcadeDB defers uniqueness checking to commit time, so it still fails the whole transaction.
  * </p>
  * <p>
  * {@code config.skipProperties}, when given, is a list of property names excluded from the clone.
@@ -143,8 +145,8 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
         try {
           cloneEdge(edge, cloneOf);
         } catch (final Exception e) {
-          // best-effort: one bad edge (e.g. a unique-index conflict on the new edge) must not cost
-          // the rows already produced for the nodes that cloned successfully
+          // best-effort: one bad edge (e.g. a mandatory-property violation on the new edge) must not
+          // cost the rows already produced for the nodes that cloned successfully
           LogManager.instance().log(this, Level.WARNING, "Error cloning edge %s while executing %s()", e, edge.getIdentity(), getName());
         }
       }

@@ -42,6 +42,13 @@ import java.util.stream.Stream;
  * read and write sub-queries work without the caller having to say which.
  * </p>
  * <p>
+ * {@code condition} must be a literal {@code Boolean} - unlike real APOC, which coerces other
+ * truthy/falsy values. Cypher boolean expressions (comparisons, {@code AND}/{@code OR}, {@code IS
+ * NULL}, ...) already evaluate to {@code Boolean}, so this only rejects a caller passing something
+ * else entirely (a string, a number, a list), which is intentional: a coerced non-boolean would
+ * silently pick a branch rather than surfacing the caller's mistake.
+ * </p>
+ * <p>
  * Example:
  * <pre>
  * CALL apoc.do.when(size($list) > 0, 'RETURN $list[0] AS first', 'RETURN null AS first', {list: $list})
@@ -91,7 +98,7 @@ public class DoWhen implements CypherProcedure {
 
     final boolean condition = extractBoolean(args[0]);
     final String ifQuery = extractString(args[1], "ifQuery");
-    final String elseQuery = args[2] == null ? "" : args[2].toString();
+    final String elseQuery = args[2] == null ? "" : extractString(args[2], "elseQuery");
     final Map<String, Object> params = extractMap(args[3]);
 
     final String query = condition ? ifQuery : elseQuery;
@@ -125,9 +132,10 @@ public class DoWhen implements CypherProcedure {
   }
 
   private String extractString(final Object arg, final String paramName) {
-    if (arg == null)
-      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-    return arg.toString();
+    if (!(arg instanceof String s))
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " must be a string, got " +
+          (arg == null ? "null" : arg.getClass().getSimpleName()));
+    return s;
   }
 
   @SuppressWarnings("unchecked")

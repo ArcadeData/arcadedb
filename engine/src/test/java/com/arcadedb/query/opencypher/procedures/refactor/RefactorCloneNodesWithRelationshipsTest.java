@@ -175,4 +175,100 @@ class RefactorCloneNodesWithRelationshipsTest {
         "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a], 'not-a-map') YIELD output RETURN output").hasNext())
         .hasCauseInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void skipPropertiesExcludesGivenPropertyFromTheClone() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("secret", "s3cr3t").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) "
+            + "CALL apoc.refactor.cloneNodesWithRelationships([a], {skipProperties: ['secret']}) YIELD output RETURN output");
+    final Vertex output = rs.next().getProperty("output");
+    database.commit();
+
+    assertThat(output.getString("name")).isEqualTo("A");
+    assertThat(output.getPropertyNames()).doesNotContain("secret");
+  }
+
+  @Test
+  void nodeCloneFailureProducesPopulatedErrorFieldWithoutLosingOtherRows() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").set("requiredTag", "present").save();
+    database.newVertex("Person").set("name", "B").save();
+    database.commit();
+
+    // A mandatory-property constraint is validated synchronously on save() (LocalDatabase.createRecordNoLock
+    // calls MutableDocument.validate() before the record is written), unlike a UNIQUE index violation, which
+    // ArcadeDB defers to commit time - so this is the reliable way to force RefactorCloneNodesWithRelationships
+    // .execute()'s per-node try/catch to actually fire. Both 'A' and 'B' predate the constraint, so it is only
+    // enforced against the NEW record the clone creates: 'A' copies a value for it and clones fine, 'B' never
+    // had one set and fails clone validation.
+    database.getSchema().getType("Person").createProperty("requiredTag", String.class).setMandatory(true);
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.cloneNodesWithRelationships([a,b], {}) YIELD input, output, error RETURN input, output, error");
+    final List<Result> rows = new ArrayList<>();
+    while (rs.hasNext())
+      rows.add(rs.next());
+    database.commit();
+
+    assertThat(rows).hasSize(2);
+    Result rowForA = null;
+    Result rowForB = null;
+    for (final Result row : rows) {
+      final Vertex input = row.getProperty("input");
+      if (a.getIdentity().equals(input.getIdentity()))
+        rowForA = row;
+      else
+        rowForB = row;
+    }
+
+    final Object errorForA = rowForA.getProperty("error");
+    final Vertex outputForA = rowForA.getProperty("output");
+    assertThat(errorForA).isNull();
+    assertThat(outputForA).isNotNull();
+
+    final Object outputForB = rowForB.getProperty("output");
+    final String errorForB = rowForB.getProperty("error");
+    assertThat(outputForB).isNull();
+    assertThat(errorForB).isNotBlank();
+  }
+
+  @Test
+  void edgeCloneFailureIsSkippedWithoutLosingTheNodeYieldRow() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex external = database.newVertex("Person").set("name", "External").save();
+    a.newEdge("KNOWS", external, (Object[]) null).save();
+    database.commit();
+
+    // Same mandatory-property mechanism as nodeCloneFailureProducesPopulatedErrorFieldWithoutLosingOtherRows
+    // above, applied to the edge-clone phase: the original edge predates the constraint and never set the
+    // property, so cloning it (which only copies properties the original actually has) creates a new edge
+    // missing a now-mandatory property, failing validation synchronously in cloneEdge()'s try/catch.
+    database.getSchema().getType("KNOWS").createProperty("requiredCode", String.class).setMandatory(true);
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a], {}) "
+            + "YIELD input, output, error RETURN input, output, error");
+    final Result result = rs.next();
+    final Object error = result.getProperty("error");
+    final Vertex output = result.getProperty("output");
+    database.commit();
+
+    // the node row survives even though its only edge failed to clone
+    assertThat(error).isNull();
+    assertThat(output).isNotNull();
+
+    final ResultSet clonedEdges = database.query("opencypher",
+        "MATCH (c:Person)-[r:KNOWS]->(e:Person {name:'External'}) WHERE id(c) = $cloneId RETURN r",
+        java.util.Map.of("cloneId", output.getIdentity().toString()));
+    assertThat(clonedEdges.hasNext()).isFalse();
+  }
 }
