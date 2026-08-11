@@ -786,6 +786,16 @@ public class GraphDatabaseChecker {
                 report.corrupt(edgeRID);
                 removeEntry = true;
                 ++report.invalidLinks;
+              } catch (final ClassCastException e) {
+                // The RID resolves to a record that is NOT an edge (e.g. a vertex wrongly linked into this
+                // adjacency list by an older build): the record loaded fine, only the (Edge) cast failed.
+                // Drop just the dangling LIST entry and NEVER schedule the pointed-to record for deletion:
+                // fix mode raw-deletes every corruptedRecords RID with bucket.deleteRecord, which would
+                // destroy that valid record and bypass graph-aware cleanup (a deleted vertex would leave its
+                // OWN edges dangling, cascading the damage). Report it and repair the list, nothing else.
+                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
+                removeEntry = true;
+                ++report.invalidLinks;
               } catch (final Exception e) {
                 // UNKNOWN ERROR ON LOADING
                 report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
@@ -1020,6 +1030,16 @@ public class GraphDatabaseChecker {
               } catch (final RecordNotFoundException e) {
                 report.warn("edge " + edgeRID + " not found");
                 report.corrupt(edgeRID);
+                removeEntry = true;
+                ++report.invalidLinks;
+              } catch (final ClassCastException e) {
+                // The RID resolves to a record that is NOT an edge (e.g. a vertex wrongly linked into this
+                // adjacency list by an older build): the record loaded fine, only the (Edge) cast failed.
+                // Drop just the dangling LIST entry and NEVER schedule the pointed-to record for deletion:
+                // fix mode raw-deletes every corruptedRecords RID with bucket.deleteRecord, which would
+                // destroy that valid record and bypass graph-aware cleanup (a deleted vertex would leave its
+                // OWN edges dangling, cascading the damage). Report it and repair the list, nothing else.
+                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
                 removeEntry = true;
                 ++report.invalidLinks;
               } catch (final Exception e) {
