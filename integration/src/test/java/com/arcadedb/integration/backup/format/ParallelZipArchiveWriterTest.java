@@ -24,6 +24,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -38,6 +39,7 @@ import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -230,8 +232,15 @@ class ParallelZipArchiveWriterTest {
    * directory. It is the riskiest branch of the writer and the one no small fixture can reach, so it gets its own test
    * - deliberately left in the normal lane rather than tagged slow, because the slow lane only covers the engine
    * module and a ZIP64 bug that never runs in CI is a ZIP64 bug nobody finds.
+   * <p>
+   * It is cheap despite the size: the source is a sparse file of zeros, so it costs no disk and no real read, and
+   * zeros deflate at multiple GB/s, so the archive is ~19 MB and the whole test is a couple of seconds on a developer
+   * machine. The explicit timeout is what keeps that a fact rather than an assumption - the unit lane caps the whole
+   * job at 60 minutes, and a test moving 4 GB is exactly the shape that could quietly eat that budget on a degraded
+   * runner. Ten minutes is two orders of magnitude of headroom and still fails fast and legibly if it is ever wrong.
    */
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void entryLargerThan4GBUsesZip64() throws Exception {
     final long size = 4L * 1024 * 1024 * 1024 + 1024;
 

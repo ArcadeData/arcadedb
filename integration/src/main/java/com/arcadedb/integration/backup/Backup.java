@@ -114,7 +114,8 @@ public class Backup {
    * {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_THREADS}.
    */
   public Backup setCompressionThreads(final int compressionThreads) {
-    settings.compressionThreads = BackupSettings.checkIntSetting("compressionThreads", compressionThreads, -1, 1024);
+    settings.compressionThreads = BackupSettings.checkIntSetting("compressionThreads", compressionThreads, -1,
+        BackupSettings.MAX_COMPRESSION_THREADS);
     return this;
   }
 

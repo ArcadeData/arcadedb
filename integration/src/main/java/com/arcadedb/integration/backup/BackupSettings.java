@@ -26,6 +26,14 @@ import java.util.Locale;
 import java.util.Map;
 
 public class BackupSettings {
+  /**
+   * Upper bound on the compression thread count, matching the allowed-value set of
+   * {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_THREADS} so the CLI, the API, SQL and the global
+   * configuration all reject the same values. Far above any core count that makes sense; the point is to bound the
+   * pool, not to be a useful setting up there.
+   */
+  public static final int MAX_COMPRESSION_THREADS = 256;
+
   public       String              format              = "full";
   public       String              databaseURL;
   public       String              directory;
@@ -86,7 +94,7 @@ public class BackupSettings {
     case "encryptionAlgorithm" -> encryptionAlgorithm = value;
     case "encryptionKey" -> encryptionKey = value;
     case "compressionLevel" -> compressionLevel = parseIntSetting(name, value, 0, 9);
-    case "compressionThreads" -> compressionThreads = parseIntSetting(name, value, -1, 1024);
+    case "compressionThreads" -> compressionThreads = parseIntSetting(name, value, -1, MAX_COMPRESSION_THREADS);
     case "maxMBPerSecond" -> maxMBPerSecond = parseIntSetting(name, value, 0, Integer.MAX_VALUE);
     case "format" -> {
       if (value != null)

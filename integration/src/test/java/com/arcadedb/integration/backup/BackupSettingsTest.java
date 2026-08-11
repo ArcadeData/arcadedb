@@ -18,6 +18,8 @@
  */
 package com.arcadedb.integration.backup;
 
+import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,6 +87,36 @@ class BackupSettingsTest {
     assertThat(backup.settings.compressionLevel).isEqualTo(6);
     assertThat(backup.settings.compressionThreads).isEqualTo(2);
     assertThat(backup.settings.maxMBPerSecond).isEqualTo(20);
+  }
+
+  /**
+   * The CLI, the API and SQL all validate, but a value can also arrive straight from a system property, a
+   * configuration file or {@code setValue}. Those bypass every one of those paths, so the bound has to live on the
+   * setting itself - otherwise an out-of-range level first surfaces as an opaque {@code IllegalArgumentException} out
+   * of the JDK's {@code Deflater}, far from where it was set.
+   */
+  @Test
+  void globalConfigurationRejectsOutOfRangeValues() {
+    final int oldLevel = GlobalConfiguration.BACKUP_COMPRESSION_LEVEL.getValueAsInteger();
+    final int oldThreads = GlobalConfiguration.BACKUP_COMPRESSION_THREADS.getValueAsInteger();
+    try {
+      assertThatThrownBy(() -> GlobalConfiguration.BACKUP_COMPRESSION_LEVEL.setValue(10))
+          .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("arcadedb.backup.compressionLevel");
+      assertThatThrownBy(() -> GlobalConfiguration.BACKUP_COMPRESSION_THREADS.setValue(-2))
+          .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("arcadedb.backup.compressionThreads");
+
+      // A REJECTED VALUE MUST NOT BE LEFT BEHIND
+      assertThat(GlobalConfiguration.BACKUP_COMPRESSION_LEVEL.getValueAsInteger()).isEqualTo(oldLevel);
+      assertThat(GlobalConfiguration.BACKUP_COMPRESSION_THREADS.getValueAsInteger()).isEqualTo(oldThreads);
+
+      GlobalConfiguration.BACKUP_COMPRESSION_LEVEL.setValue(9);
+      assertThat(GlobalConfiguration.BACKUP_COMPRESSION_LEVEL.getValueAsInteger()).isEqualTo(9);
+      GlobalConfiguration.BACKUP_COMPRESSION_THREADS.setValue(0);
+      assertThat(GlobalConfiguration.BACKUP_COMPRESSION_THREADS.getValueAsInteger()).isZero();
+    } finally {
+      GlobalConfiguration.BACKUP_COMPRESSION_LEVEL.setValue(oldLevel);
+      GlobalConfiguration.BACKUP_COMPRESSION_THREADS.setValue(oldThreads);
+    }
   }
 
   @Test

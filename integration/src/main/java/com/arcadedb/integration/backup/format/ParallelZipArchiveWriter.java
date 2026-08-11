@@ -250,9 +250,21 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
     release();
   }
 
-  /** Gives back the pool threads and the native memory the deflaters hold. Never throws. */
+  /**
+   * Gives back the pool threads and the native memory the deflaters hold. Never throws.
+   * <p>
+   * The wait matters on the abort path: a worker interrupted mid-chunk still returns its {@link Deflater} to the pool
+   * in its own {@code finally}, so draining the pool without waiting would race with that and leave one deflater for
+   * the JDK's cleaner to reclaim instead of freeing it here. Chunks are at most a megabyte, so termination is prompt;
+   * the timeout only exists so a pathological case degrades to deferred reclamation rather than a hang.
+   */
   private void release() {
     executor.shutdownNow();
+    try {
+      executor.awaitTermination(10, TimeUnit.SECONDS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
     for (Deflater deflater = deflaterPool.poll(); deflater != null; deflater = deflaterPool.poll())
       deflater.end();
   }

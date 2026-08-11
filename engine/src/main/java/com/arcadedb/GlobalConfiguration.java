@@ -509,7 +509,7 @@ public enum GlobalConfiguration {
       (323 MB at level 9, 348 MB at level 1). Raise it when the archive size matters more than both the backup \
       duration and its impact on concurrent writers - level 6 is a good middle, roughly half the cost of 9 at the \
       same ratio.""",
-      Integer.class, 1),
+      Integer.class, 1, integerRangeAsStrings(0, 9)),
 
   BACKUP_COMPRESSION_THREADS("arcadedb.backup.compressionThreads", SCOPE.DATABASE,
       """
@@ -520,7 +520,7 @@ public enum GlobalConfiguration {
       single-threaded java.util.zip.ZipOutputStream writer, kept as an escape hatch. The archive is an ordinary ZIP \
       whichever value is used: old backups restore and new backups restore with the unchanged restore path. Peak \
       heap for the parallel path is about 2 chunk buffers per thread (~4 MB each), so ~32 MB at 8 threads.""",
-      Integer.class, -1),
+      Integer.class, -1, integerRangeAsStrings(-1, 256)),
 
   BACKUP_MAX_MB_PER_SECOND("arcadedb.backup.maxMBPerSecond", SCOPE.DATABASE,
       """
@@ -529,7 +529,9 @@ public enum GlobalConfiguration {
       live workload, while the archive is smaller and normally written to another device. 0 (the default) means no \
       limit. Note the trade-off with the flush suspension: throttling makes the backup last longer, and writers are \
       throttled for the whole of it, so this is for deployments where read I/O, not commit latency, is the scarce \
-      resource.""",
+      resource. Unlike the other two backup settings this one carries no allowed-value set, because it needs none: \
+      the range is open-ended upwards, and any non-positive value simply disables the throttle rather than being \
+      invalid.""",
       Integer.class, 0),
 
   // SQL
