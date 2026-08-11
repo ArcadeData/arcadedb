@@ -2125,7 +2125,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Use a dedicated pool so we can cancel building on shutdown via shutdownNow()
       final ForkJoinPool buildPool = getOrCreateGraphBuildPool();
       final ImmutableGraphIndex builtGraph;
-      try (final GraphIndexBuilder builder = new GraphIndexBuilder(
+      // Not a try-with-resources: releaseBackgroundResources()'s fallback (issue #5872) can force the
+      // insertionTask.join() below to unblock with a CancellationException while a straggler worker is still
+      // legitimately inside builder.addGraphNode() - a try-with-resources would still call builder.close() on
+      // its way out in that case, which is exactly the close()-vs-in-flight-worker race that fallback exists
+      // alongside. close() is called explicitly on every other exit below, and deliberately skipped on that one.
+      final GraphIndexBuilder builder = new GraphIndexBuilder(
           scoreProvider,
           metadata.dimensions,
           metadata.maxConnections,  // M parameter (graph degree)
@@ -2135,7 +2140,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metadata.addHierarchy,
           true,            // enable concurrent updates
           buildPool,       // simdExecutor - dedicated pool for cancellation support
-          buildPool)) {    // parallelExecutor
+          buildPool);      // parallelExecutor
+      try {
 
         final int totalNodes = vectors.size();
 
@@ -2276,11 +2282,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
+      } catch (final CancellationException e) {
+        // Do not close(): see the comment where builder is constructed above. Verified against jvector
+        // 4.0.0-rc.9 that every GraphIndexBuilder this engine constructs backs onto OnHeapGraphIndex, whose
+        // View.close() is a documented no-op ("No resources to close"), so this leaks nothing beyond ordinary
+        // heap objects (a handful of per-thread GraphSearcher entries) that GC reclaims once unreferenced - not
+        // a file handle or native/off-heap resource. Skip regardless of today's implementation detail: it is a
+        // defensive choice this engine cannot rely on jvector to preserve across versions.
+        throw e;
       } catch (final AssertionError e) {
         LogManager.instance().log(this, Level.SEVERE, "JVector assertion failed during graph build (dimensions=%d, vectors=%d): %s",
             metadata.dimensions, vectors.size(), e.getMessage());
+        closeGraphBuilderQuietly(builder);
         throw e;
+      } catch (final Throwable t) {
+        closeGraphBuilderQuietly(builder);
+        throw t;
       }
+      closeGraphBuilderQuietly(builder);
 
       // The build occasionally leaves a node with a full out-degree and no in-edges, which no beam search can reach
       // at any efSearch (issue #5615). Collect those vectors here, before the write lock, so neither the O(V+E)
@@ -2490,6 +2509,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
       throw new IndexException("Error building graph from scratch", e);
+    }
+  }
+
+  /**
+   * Best-effort {@link GraphIndexBuilder#close()}, matching the existing {@code liveBuilder.close()} handling
+   * above: a close failure here must not mask whatever primary exception (if any) is already propagating.
+   */
+  private void closeGraphBuilderQuietly(final GraphIndexBuilder builder) {
+    try {
+      builder.close();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Error closing graph builder for index %s: %s", indexName, e.getMessage());
     }
   }
 
