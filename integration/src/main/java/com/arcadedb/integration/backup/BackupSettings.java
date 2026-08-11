@@ -26,6 +26,18 @@ import java.util.Locale;
 import java.util.Map;
 
 public class BackupSettings {
+  /**
+   * Upper bound on the compression thread count, matching the allowed-value set of
+   * {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_THREADS} so the CLI, the API, SQL and the global
+   * configuration all reject the same values. Far above any core count that makes sense; the point is to bound the
+   * pool, not to be a useful setting up there.
+   * <p>
+   * The engine module cannot depend on this one, so {@code BACKUP_COMPRESSION_THREADS} repeats the literal instead of
+   * referencing this constant. Change one and change the other; {@code backupThreadBoundMatchesTheGlobalConfiguration}
+   * fails if they drift.
+   */
+  public static final int MAX_COMPRESSION_THREADS = 256;
+
   public       String              format              = "full";
   public       String              databaseURL;
   public       String              directory;
@@ -36,6 +48,20 @@ public class BackupSettings {
   public       String              encryptionKey;
   public final Map<String, String> options             = new HashMap<>();
   public       String              databaseName;
+  /**
+   * Deflate level, 0 (store) to 9 (smallest). {@code null} defers to {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_LEVEL}.
+   */
+  public       Integer             compressionLevel;
+  /**
+   * Compression threads: -1 automatic, 0 legacy single-threaded writer, N a pool of N. {@code null} defers to
+   * {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_THREADS}.
+   */
+  public       Integer             compressionThreads;
+  /**
+   * Read-side rate cap in MB/s, 0 for unlimited. {@code null} defers to
+   * {@link com.arcadedb.GlobalConfiguration#BACKUP_MAX_MB_PER_SECOND}.
+   */
+  public       Integer             maxMBPerSecond;
 
   protected void parseParameters(final String[] args) {
     if (args != null)
@@ -71,6 +97,9 @@ public class BackupSettings {
     switch (name) {
     case "encryptionAlgorithm" -> encryptionAlgorithm = value;
     case "encryptionKey" -> encryptionKey = value;
+    case "compressionLevel" -> compressionLevel = parseIntSetting(name, value, 0, 9);
+    case "compressionThreads" -> compressionThreads = parseIntSetting(name, value, -1, MAX_COMPRESSION_THREADS);
+    case "maxMBPerSecond" -> maxMBPerSecond = parseIntSetting(name, value, 0, Integer.MAX_VALUE);
     case "format" -> {
       if (value != null)
         format = value.toLowerCase(Locale.ENGLISH);
@@ -96,5 +125,26 @@ public class BackupSettings {
     default -> options.put(name, value);
     }
     return 2;
+  }
+
+  /**
+   * Rejects an out-of-range or non-numeric value at parse time instead of letting it reach the compressor, where an
+   * invalid deflate level would surface as an opaque {@code IllegalArgumentException} from the JDK.
+   */
+  public static int parseIntSetting(final String name, final String value, final int min, final int max) {
+    final int parsed;
+    try {
+      parsed = Integer.parseInt(value != null ? value.trim() : null);
+    } catch (final NumberFormatException e) {
+      throw new IllegalArgumentException("Backup setting '%s' requires an integer, found '%s'".formatted(name, value), e);
+    }
+    return checkIntSetting(name, parsed, min, max);
+  }
+
+  public static int checkIntSetting(final String name, final int value, final int min, final int max) {
+    if (value < min || value > max)
+      throw new IllegalArgumentException(
+          "Backup setting '%s' must be between %d and %d, found %d".formatted(name, min, max, value));
+    return value;
   }
 }

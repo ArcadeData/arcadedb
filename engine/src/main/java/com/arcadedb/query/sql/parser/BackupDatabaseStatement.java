@@ -97,11 +97,46 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
           final String stringValue = entry.getValue().execute((Identifiable) null, context).toString();
 
-          switch (entry.getKey().toString()) {
-          case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)
-              .invoke(backup, stringValue);
-          case "encryptionKey" -> clazz.getMethod("setEncryptionKey", String.class)
-              .invoke(backup, stringValue);
+          // THE KEY IS A STRING HELD IN Expression.value, AND Expression.toString() RENDERS A STRING QUOTED, SO
+          // MATCHING ON toString() SILENTLY MATCHED NOTHING AND EVERY 'WITH ...' SETTING WAS DROPPED - INCLUDING
+          // encryptionKey, WHICH MEANT A BACKUP ASKED TO BE ENCRYPTED WAS WRITTEN IN CLEAR. READ THE RAW VALUE, AS
+          // ExportDatabaseStatement ALREADY DOES
+          final Object rawKey = entry.getKey().value;
+          if (rawKey == null)
+            // NO FALLBACK TO Expression.toString() HERE ON PURPOSE. THAT IS THE BUGGY MATCH THIS BLOCK EXISTS TO FIX,
+            // AND FALLING BACK TO IT WOULD MEAN A FUTURE PARSER CHANGE THAT STOPPED POPULATING value SILENTLY
+            // RESURRECTED THE CLEARTEXT-ARCHIVE DEFECT INSTEAD OF FAILING
+            throw new CommandExecutionException(
+                "Cannot read the name of a backup setting from the parsed statement: " + entry.getKey());
+
+          final String settingName = rawKey.toString();
+          try {
+            switch (settingName) {
+            case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)
+                .invoke(backup, stringValue);
+            case "encryptionKey" -> clazz.getMethod("setEncryptionKey", String.class)
+                .invoke(backup, stringValue);
+            case "compressionLevel" -> clazz.getMethod("setCompressionLevel", Integer.TYPE)
+                .invoke(backup, parseIntSetting("compressionLevel", stringValue));
+            case "compressionThreads" -> clazz.getMethod("setCompressionThreads", Integer.TYPE)
+                .invoke(backup, parseIntSetting("compressionThreads", stringValue));
+            case "maxMBPerSecond" -> clazz.getMethod("setMaxMBPerSecond", Integer.TYPE)
+                .invoke(backup, parseIntSetting("maxMBPerSecond", stringValue));
+            // AN UNRECOGNISED NAME USED TO BE DROPPED IN SILENCE, WHICH IS THE SAME FAILURE MODE AS THE toString() BUG
+            // ABOVE AND JUST AS DANGEROUS: 'WITH encryptionkey = ...' (WRONG CASE, OR ANY TYPO) WOULD HAVE WRITTEN A
+            // CLEARTEXT ARCHIVE WHILE LOOKING LIKE IT ASKED FOR AN ENCRYPTED ONE. NOTHING IS LOST BY REFUSING: UNTIL
+            // THE FIX ABOVE, EVERY SETTING WAS IGNORED, SO NO WORKING STATEMENT DEPENDS ON ONE BEING ACCEPTED
+            default -> throw new CommandExecutionException(
+                "Unsupported backup setting '%s'. Supported settings are: compressionLevel, compressionThreads, encryptionAlgorithm, encryptionKey, maxMBPerSecond".formatted(
+                    settingName));
+            }
+          } catch (final InvocationTargetException e) {
+            // A SETTER REJECTING ITS VALUE IS A MISTAKE IN THE STATEMENT, SO SAY WHAT IT WAS. WITHOUT THIS THE OUTER
+            // HANDLER REPORTS THE USELESS 'Error on backing up database' AND BURIES THE REASON IN THE CAUSE CHAIN
+            final String reason = e.getTargetException().getMessage();
+            throw new CommandExecutionException(
+                reason != null ? reason : "Invalid value for backup setting '%s'".formatted(settingName),
+                e.getTargetException());
           }
         }
       }
@@ -134,6 +169,19 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
     }
   }
 
+  /**
+   * A non-numeric value here is a client mistake in the statement, so it must surface as a plain
+   * {@link CommandExecutionException} rather than as an opaque reflection failure from the integration module.
+   */
+  private static int parseIntSetting(final String name, final String value) {
+    try {
+      return Integer.parseInt(value.trim());
+    } catch (final NumberFormatException e) {
+      throw new CommandExecutionException(
+          "Backup setting '%s' requires an integer, found '%s'".formatted(name, value), e);
+    }
+  }
+
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("BACKUP DATABASE");
@@ -145,13 +193,15 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { url };
+    return new Object[] { url, settings };
   }
 
   @Override
   public Statement copy() {
     final BackupDatabaseStatement result = new BackupDatabaseStatement(-1);
     result.url = this.url;
+    // WITHOUT THIS, A COPY TAKEN FROM THE STATEMENT CACHE SILENTLY DROPS EVERY 'WITH ...' SETTING
+    result.settings.putAll(this.settings);
     return result;
   }
 }

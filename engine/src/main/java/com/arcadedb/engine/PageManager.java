@@ -263,6 +263,19 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Bytes of dirty pages currently held in memory because flushing is suspended on some database (a full backup, an HA
+   * snapshot ship, an HA verify). Once this crosses {@link com.arcadedb.GlobalConfiguration#FLUSH_SUSPEND_MAX_DEFERRED_RAM}
+   * the flush thread stops draining its queue and committing threads are throttled instead, so this is the direct
+   * measure of how much a long suspension is costing writers.
+   *
+   * @return 0 when no suspension is in progress, or when the page manager is closed.
+   */
+  public long getDeferredRAMBytes() {
+    final PageManagerFlushThread thread = flushThread;
+    return thread != null ? thread.deferredRAMBytes.get() : 0L;
+  }
+
+  /**
    * Test only API.
    */
   public void simulateKillOfDatabase(final Database database) {
