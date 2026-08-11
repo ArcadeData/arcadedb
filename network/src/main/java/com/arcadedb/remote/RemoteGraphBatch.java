@@ -298,6 +298,16 @@ public class RemoteGraphBatch implements AutoCloseable {
       appendJsonMap(sb, map);
     else if (value instanceof Collection<?> collection)
       appendJsonCollection(sb, collection);
+    else if (value instanceof float[] floats)
+      appendJsonFloatArray(sb, floats);
+    else if (value instanceof double[] doubles)
+      appendJsonDoubleArray(sb, doubles);
+    else if (value instanceof int[] ints)
+      appendJsonIntArray(sb, ints);
+    else if (value instanceof long[] longs)
+      appendJsonLongArray(sb, longs);
+    else if (value instanceof short[] shorts)
+      appendJsonShortArray(sb, shorts);
     else if (value.getClass().isArray())
       appendJsonArray(sb, value);
     else
@@ -334,13 +344,69 @@ public class RemoteGraphBatch implements AutoCloseable {
     sb.append(']');
   }
 
-  // Primitive/object array properties (float[], double[], int[], ... - ArcadeDB's ARRAY_OF_FLOATS,
-  // ARRAY_OF_DOUBLES etc., used for vector embeddings) hit the same bug as Map/List: a plain array is
-  // not a Collection, so without this branch it would fall through to value.toString() (e.g. "[F@6b95977c").
-  // java.lang.reflect.Array iterates any array type generically, mirroring JSONObject.put()'s handling of
-  // the same case. The server-side Type.convert() already knows how to narrow a JSON array (parsed as a
-  // List of Numbers) back to the schema-declared primitive array type, so emitting a plain JSON array here
-  // is sufficient - no further client-side type-specific handling is needed.
+  // Typed fast paths for the primitive numeric array kinds ArcadeDB uses for vector-embedding
+  // properties (ARRAY_OF_FLOATS/_DOUBLES/_INTEGERS/_LONGS/_SHORTS). These avoid the boxing that
+  // java.lang.reflect.Array.get() forces in the generic appendJsonArray() fallback below: an
+  // embedding property routinely carries hundreds/thousands of dimensions across up to
+  // flushEvery (default 50,000) vertices per flush, and this file is documented as
+  // "zero-allocation per-record" for exactly this kind of hot path.
+  static void appendJsonFloatArray(final StringBuilder sb, final float[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonDoubleArray(final StringBuilder sb, final double[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonIntArray(final StringBuilder sb, final int[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonLongArray(final StringBuilder sb, final long[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonShortArray(final StringBuilder sb, final short[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  // Remaining array kinds (byte[], Object[]/String[]/..., boxed Float[]/Double[]/..., boolean[],
+  // char[]) fall back to reflection - they hit the same bug as Map/List: a plain array is not a
+  // Collection, so without this branch it would fall through to value.toString() (e.g. "[F@6b95977c").
+  // java.lang.reflect.Array iterates any array type generically, mirroring JSONObject.put()'s handling
+  // of the same case. The server-side Type.convert() already knows how to narrow a JSON array (parsed
+  // as a List) back to the schema-declared array type, so emitting a plain JSON array here is
+  // sufficient - no further client-side type-specific handling is needed.
   static void appendJsonArray(final StringBuilder sb, final Object array) {
     sb.append('[');
     final int length = Array.getLength(array);

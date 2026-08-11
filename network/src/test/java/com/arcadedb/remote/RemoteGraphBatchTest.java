@@ -131,6 +131,22 @@ class RemoteGraphBatchTest {
     assertThat(sb.toString()).isEqualTo(",\"map\":{\"1\":\"1\",\"2\":\"2\"}");
   }
 
+  // Code review follow-up on #6061: the original report's error message ("{1=1, 2=2, 3=3, 4=4, 5=5}")
+  // is exactly what a Map<Integer, Integer> (not just Map<String, String>) produces via toString(),
+  // so pin down that non-String keys are stringified into valid JSON object keys too.
+  @Test
+  void appendJsonValueSerializesIntegerKeyedMapAsJsonObject() {
+    final StringBuilder sb = new StringBuilder();
+    final Map<Integer, Integer> map = new LinkedHashMap<>();
+    map.put(1, 1);
+    map.put(2, 2);
+    map.put(3, 3);
+
+    RemoteGraphBatch.appendJsonValue(sb, map);
+
+    assertThat(sb.toString()).isEqualTo("{\"1\":1,\"2\":2,\"3\":3}");
+  }
+
   // Code review follow-up on #6061: a primitive array (e.g. float[] for a vector-embedding
   // property) is not a Collection either, so it hit the exact same value.toString() bug
   // ("[F@6b95977c...") unless appendJsonValue special-cases arrays too.
@@ -168,5 +184,35 @@ class RemoteGraphBatchTest {
     RemoteGraphBatch.appendJsonValue(sb, new float[0]);
 
     assertThat(sb.toString()).isEqualTo("[]");
+  }
+
+  // Code review follow-up: typed fast paths added to avoid reflect.Array boxing on the numeric
+  // array kinds ArcadeDB uses for vector embeddings (ARRAY_OF_DOUBLES/_INTEGERS/_LONGS/_SHORTS).
+  // Pin their output down explicitly rather than relying on the generic reflective path.
+  @Test
+  void appendJsonValueSerializesDoubleArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new double[] { 1.5, 2.5, 3.0 });
+
+    assertThat(sb.toString()).isEqualTo("[1.5,2.5,3.0]");
+  }
+
+  @Test
+  void appendJsonValueSerializesLongArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new long[] { 1L, 2L, 3L });
+
+    assertThat(sb.toString()).isEqualTo("[1,2,3]");
+  }
+
+  @Test
+  void appendJsonValueSerializesShortArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new short[] { 1, 2, 3 });
+
+    assertThat(sb.toString()).isEqualTo("[1,2,3]");
   }
 }
