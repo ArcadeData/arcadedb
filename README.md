@@ -283,18 +283,20 @@ mvn test
 Some tests are tagged to indicate their cost:
 
 - `slow` - functional tests that take noticeably long (large batches, multi-second elapsed time, big payloads)
-- `benchmark` - microbenchmarks not intended for regular CI runs
+- `benchmark` - microbenchmarks not intended for regular CI runs; excluded by default (see below)
 
-To skip these and run only the fast tests:
+`benchmark`-tagged tests are excluded by default, so a plain `mvn test` already skips them. To also skip
+`slow` tests and run only the fast ones:
 
 ```bash
 mvn test -DexcludedGroups="slow,benchmark"
 ```
 
-To run only a specific tag (e.g. benchmark tests in isolation):
+To run only a specific tag (e.g. benchmark tests in isolation), clear the default exclusion or it
+cancels out the selection and nothing runs:
 
 ```bash
-mvn test -Dgroups="benchmark"
+mvn test -Dgroups="benchmark" -DexcludedGroups=
 ```
 
 #### Running Integration Tests:
