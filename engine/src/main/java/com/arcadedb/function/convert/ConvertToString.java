@@ -49,6 +49,9 @@ public class ConvertToString extends AbstractConvertFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // Checked here, not left to the delegate: ToStringFunction.checkArity would use its own getName() ("toString"),
+    // naming the wrong function in the error message for a call made as convert.toString()/apoc.convert.toString().
+    checkArity(args);
     return delegate.execute(args, context);
   }
 }

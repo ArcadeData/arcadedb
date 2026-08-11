@@ -49,6 +49,9 @@ public class MathRound extends AbstractMathFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // Checked here, not left to the delegate: RoundFunction.checkArity would use its own getName() ("round"),
+    // naming the wrong function in the error message for a call made as math.round()/apoc.math.round().
+    checkArity(args);
     return delegate.execute(args, context);
   }
 }

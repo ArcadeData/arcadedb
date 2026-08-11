@@ -256,6 +256,22 @@ class CypherMissingFunctionsTest {
         .isInstanceOf(CommandSemanticException.class);
   }
 
+  @Test
+  void collSumNullElementIsSkipped() {
+    // requireNumberArgument propagates null for a null element rather than treating it as a type error,
+    // so a null in the list is skipped, not rejected - documented explicitly, not just an inferred side effect.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.sum([1, 2, null]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(3.0);
+  }
+
+  @Test
+  void collSumApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.sum([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(10.0);
+  }
+
   // ========== coll.avg ==========
   @Test
   void collAvgWrongArity() {
@@ -267,6 +283,22 @@ class CypherMissingFunctionsTest {
   void collAvgNonNumericElement() {
     assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.avg([1, 2, 'x']) AS result").hasNext())
         .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collAvgNullElementIsSkipped() {
+    // Same null-propagation as coll.sum: a null element is skipped rather than counted or rejected, so
+    // coll.avg([1, 2, null]) averages over the 2 non-null elements, not 3.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.avg([1, 2, null]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(1.5);
+  }
+
+  @Test
+  void collAvgApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.avg([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(2.5);
   }
 
   // ========== coll.union ==========
@@ -300,6 +332,15 @@ class CypherMissingFunctionsTest {
     assertThat(result).hasSize(2);
   }
 
+  @Test
+  void collUnionApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.union([1, 2], [2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(3);
+  }
+
   // ========== coll.unionAll ==========
   @Test
   void collUnionAll() {
@@ -321,6 +362,17 @@ class CypherMissingFunctionsTest {
   void collUnionAllWrongArity() {
     assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.unionAll([1, 2]) AS result").hasNext())
         .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collUnionAllApocPrefix() {
+    // A 3-segment name post-strip (apoc.coll.unionAll -> coll.unionAll) exercises more of the dotted-name
+    // grammar than the 2-segment coll.* spellings, so this is worth its own round-trip check.
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.unionAll([1, 2], [2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(4);
   }
 
   // ========== elementId ==========

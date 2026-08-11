@@ -490,6 +490,14 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(3.5);
   }
 
+  @Test
+  void mathRoundWrongArityErrorNamesMathRound() {
+    // MathRound delegates to RoundFunction; the arity error must name "math.round", not the delegate's own "round".
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN math.round(1, 2, 3, 4) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("math.round");
+  }
+
   // ===================== CONVERT FUNCTION TESTS =====================
 
   @Test
@@ -574,6 +582,14 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("42");
   }
 
+  @Test
+  void convertToStringWrongArityErrorNamesConvertToString() {
+    // ConvertToString delegates to ToStringFunction; the arity error must name "convert.toString", not "toString".
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN convert.toString(1, 2) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("convert.toString");
+  }
+
   // ===================== NUMBER FUNCTION TESTS =====================
 
   @Test
@@ -599,6 +615,14 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   void numberFormatWrongArity() {
     assertThatThrownBy(() -> database.query("opencypher", "RETURN number.format() AS result").hasNext())
         .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void numberFormatExplicitNullPatternPropagates() {
+    // An explicitly-written null pattern propagates to null, same convention round()'s mode argument follows -
+    // distinct from the pattern being omitted entirely, which falls back to the default pattern.
+    final StatelessFunction fn = CypherFunctionRegistry.get("number.format");
+    assertThat(fn.execute(new Object[] { 1234.5, null }, null)).isNull();
   }
 
   // ===================== DATE FUNCTION TESTS =====================

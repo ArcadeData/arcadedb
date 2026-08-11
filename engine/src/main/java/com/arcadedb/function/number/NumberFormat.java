@@ -59,7 +59,10 @@ public class NumberFormat extends AbstractNumberFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
     final Number number = CypherFunctionHelper.requireNumberArgument(args[0], getName());
-    if (number == null)
+    // An explicitly-written null pattern propagates, same convention round()'s mode argument follows: only an
+    // omitted pattern selects the default, an explicit null is not distinguishable from "the caller wants no result".
+    final boolean nullPattern = CypherFunctionHelper.isExplicitNull(args, 1);
+    if (number == null || nullPattern)
       return null;
 
     final String pattern = args.length > 1 && args[1] != null ? args[1].toString() : DEFAULT_PATTERN;
