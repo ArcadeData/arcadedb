@@ -27,6 +27,19 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.ParallelScanProducerPool;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BetweenCondition;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.InCondition;
+import com.arcadedb.query.sql.parser.IsDefinedCondition;
+import com.arcadedb.query.sql.parser.IsNotDefinedCondition;
+import com.arcadedb.query.sql.parser.IsNotNullCondition;
+import com.arcadedb.query.sql.parser.IsNullCondition;
+import com.arcadedb.query.sql.parser.NotBlock;
+import com.arcadedb.query.sql.parser.OrBlock;
+import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 
@@ -133,10 +146,19 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     if (WARNINGS_EVERY > 0) {
       if (typeFileSize > 100_000_000) {
         final Integer counter = WARNINGS.compute(typeName + ".scan", (k, v) -> v == null ? 1 : v + 1);
-        if (counter % WARNINGS_EVERY == 1)
-          LogManager.instance().log(this, Level.WARNING,
-              "Attempt to scan type '%s' in database '%s' of total size %s %d times. This operation is very expensive, consider using an index",
-              typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter);
+        if (counter % WARNINGS_EVERY == 1) {
+          final Set<String> filteredProperties = planningInfo != null ?
+              extractFilteredProperties(planningInfo.whereClause) : Collections.emptySet();
+          if (filteredProperties.isEmpty())
+            LogManager.instance().log(this, Level.WARNING,
+                "Attempt to scan type '%s' in database '%s' of total size %s %d times. This operation is very expensive, consider using an index",
+                typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter);
+          else
+            LogManager.instance().log(this, Level.WARNING,
+                "Attempt to scan type '%s' in database '%s' of total size %s %d times, filtering on propert%s %s. This operation is very expensive, consider creating an index",
+                typeName, context.getDatabase().getName(), FileUtils.getSizeAsString(typeFileSize), counter,
+                filteredProperties.size() == 1 ? "y" : "ies", String.join(", ", filteredProperties));
+        }
       }
     }
 
@@ -169,6 +191,53 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         // reintroducing the #4948 deadlock shape.
         && !(Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread)
         && !db.isTransactionActive();
+  }
+
+  /**
+   * Best-effort extraction of the property names referenced by a WHERE clause, so the slow-scan warning
+   * above can tell the operator what to index instead of just how big the type is. Walks the common
+   * boolean-tree and comparison shapes (AND/OR/NOT, =/&lt;/&gt;/etc., IN, BETWEEN, IS [NOT] NULL/DEFINED);
+   * anything else (function calls, CONTAINS*, nested subqueries) is silently skipped rather than guessed at.
+   */
+  static Set<String> extractFilteredProperties(final WhereClause whereClause) {
+    if (whereClause == null || whereClause.baseExpression == null)
+      return Collections.emptySet();
+
+    final Set<String> properties = new LinkedHashSet<>();
+    collectFilteredProperties(whereClause.baseExpression, properties);
+    return properties;
+  }
+
+  private static void collectFilteredProperties(final BooleanExpression expression, final Set<String> properties) {
+    if (expression instanceof final AndBlock block) {
+      for (final BooleanExpression sub : block.getSubBlocks())
+        collectFilteredProperties(sub, properties);
+    } else if (expression instanceof final OrBlock block) {
+      for (final BooleanExpression sub : block.getSubBlocks())
+        collectFilteredProperties(sub, properties);
+    } else if (expression instanceof final NotBlock block) {
+      collectFilteredProperties(block.getSub(), properties);
+    } else if (expression instanceof final BinaryCondition condition) {
+      addIfProperty(condition.left, properties);
+      addIfProperty(condition.right, properties);
+    } else if (expression instanceof final InCondition condition) {
+      addIfProperty(condition.getLeft(), properties);
+    } else if (expression instanceof final BetweenCondition condition) {
+      addIfProperty(condition.first, properties);
+    } else if (expression instanceof final IsNullCondition condition) {
+      addIfProperty(condition.expression, properties);
+    } else if (expression instanceof final IsNotNullCondition condition) {
+      addIfProperty(condition.expression, properties);
+    } else if (expression instanceof final IsDefinedCondition condition) {
+      addIfProperty(condition.expression, properties);
+    } else if (expression instanceof final IsNotDefinedCondition condition) {
+      addIfProperty(condition.expression, properties);
+    }
+  }
+
+  private static void addIfProperty(final Expression expression, final Set<String> properties) {
+    if (expression != null && expression.isBaseIdentifier())
+      properties.add(expression.toString());
   }
 
   private void sortBuckets(final int[] bucketIds) {
