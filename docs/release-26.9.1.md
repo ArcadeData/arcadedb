@@ -575,7 +575,16 @@ entries (it is the head of its own chain, and the first turn emits every chain's
 newest-first globally. It is not an ordering guarantee - it never was, on either layout. An application that
 needs an exact order must sort or read through an index on a timestamp property.
 
-[#6044](https://github.com/ArcadeData/arcadedb/issues/6044)
+**The guarantee is scoped to the OLTP read walks and does not reach a `GraphAnalyticalView`** (#6049). A view
+returns neighbours sorted ascending by internal dense node ID, further permuted by `CSRBuilder`'s BFS/RCM
+locality pass, which carries no relationship to recency at all - and the Cypher optimizer substitutes
+`GAVExpandAll` whenever the edge variable is not captured and a provider exists for the edge types, without
+consulting `ORDER BY` or `LIMIT`. So on a promoted super-node with a ready view, `MATCH (h)-[:LINK]->(x) RETURN x
+LIMIT 100` returns 100 neighbours with no recency property whatsoever, even though the OLTP walk above would
+approximate newest-first. This is documented in `GraphAnalyticalView`'s and `StripedEdgeList`'s javadoc, and in
+`GRAPH_SUPERNODE_THRESHOLD`'s setting description, rather than qualified only here.
+
+[#6044](https://github.com/ArcadeData/arcadedb/issues/6044), [#6049](https://github.com/ArcadeData/arcadedb/issues/6049)
 
 ## `Type.convert()`: narrowing an array or Collection of `double`/`float`/`long` to a smaller integral array no longer silently corrupts values (#6020)
 
