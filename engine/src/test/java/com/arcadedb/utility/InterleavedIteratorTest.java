@@ -145,6 +145,60 @@ class InterleavedIteratorTest {
     assertThat(out).isEqualTo(ranked);
   }
 
+  /**
+   * #6048: past the threshold, the rotation must stop paying the "resident source per stripe" locality cost -
+   * i.e. it drains the source that currently has the turn to exhaustion rather than taking one entry per round.
+   */
+  @Test
+  void degradesToConcatenationOfTheRemainderPastTheThreshold() {
+    final InterleavedIterator<String> it = new InterleavedIterator<>(sources(of("a1", "a2", "a3"), of("b1", "b2", "b3"),
+        of("c1", "c2", "c3")), 2);
+    // First 2 entries: still round-robin.
+    assertThat(it.next()).isEqualTo("a1");
+    assertThat(it.next()).isEqualTo("b1");
+    // Threshold reached (browsed == 2): 'turn' stops advancing, so source b is drained to exhaustion before c
+    // gets a second turn.
+    assertThat(drainRest(it)).containsExactly("b2", "b3", "c1", "c2", "c3", "a2", "a3");
+  }
+
+  /** Nothing lost or duplicated regardless of where the threshold falls, including mid-round and past the end. */
+  @Test
+  void degradeLosesNothingAtAnyThreshold() {
+    for (long threshold = 0; threshold <= 20; threshold++) {
+      final InterleavedIterator<String> it = new InterleavedIterator<>(
+          sources(of("a1", "a2", "a3", "a4"), of("b1", "b2"), of("c1", "c2", "c3", "c4", "c5")), threshold);
+      assertThat(drainRest(it)).containsExactlyInAnyOrder("a1", "a2", "a3", "a4", "b1", "b2", "c1", "c2", "c3", "c4", "c5");
+    }
+  }
+
+  /** A threshold of 0 degrades from the very first entry: equivalent to plain concatenation of the sources. */
+  @Test
+  void zeroThresholdIsPlainConcatenation() {
+    final InterleavedIterator<String> it = new InterleavedIterator<>(sources(of("a1", "a2"), of("b1", "b2"), of("c1")), 0);
+    assertThat(drainRest(it)).containsExactly("a1", "a2", "b1", "b2", "c1");
+  }
+
+  /** The default (no-threshold) constructor never degrades, whatever the length of the walk. */
+  @Test
+  void defaultConstructorNeverDegrades() {
+    assertThat(drain(of("a1", "a2", "a3"), of("b1", "b2", "b3"), of("c1", "c2", "c3")))
+        .containsExactly("a1", "b1", "c1", "a2", "b2", "c2", "a3", "b3", "c3");
+  }
+
+  /** reset() re-arms the degrade: browsed goes back to 0, so a replay gets the same threshold again. */
+  @Test
+  void resetReArmsTheDegradeThreshold() {
+    final ResettableList<String> a = new ResettableList<>(List.of("a1", "a2", "a3"));
+    final ResettableList<String> b = new ResettableList<>(List.of("b1", "b2", "b3"));
+    final ResettableList<String> c = new ResettableList<>(List.of("c1", "c2", "c3"));
+    final InterleavedIterator<String> it = new InterleavedIterator<>(sources(a, b, c), 2);
+
+    final List<String> first = drainRest(it);
+    it.reset();
+    assertThat(it.getBrowsed()).isZero();
+    assertThat(drainRest(it)).isEqualTo(first);
+  }
+
   private static Iterator<String> of(final String... values) {
     return List.of(values).iterator();
   }
