@@ -346,9 +346,38 @@ class ParallelZipArchiveWriterTest {
       final ZipEntry entry = zip.getEntry("huge.bin");
       assertThat(entry).isNotNull();
       assertThat(entry.getSize()).isEqualTo(size);
+      assertThat(entry.getCompressedSize()).isEqualTo(stats.compressedSize());
     }
 
+    // ONLY THE FIELD THAT ACTUALLY OVERFLOWED GOES INTO THE ZIP64 EXTRA FIELD. HERE THAT IS THE UNCOMPRESSED SIZE
+    // ALONE - THE ENTRY COMPRESSES TO A FEW MB AND SITS AT OFFSET 0 - SO THE EXTRA FIELD HOLDS ONE 8-BYTE VALUE, NOT
+    // THREE. THE SAME ARCHIVE WRITTEN BY java.util.zip IS THE REFERENCE, SO THE TWO CANNOT DRIFT
+    final File jdkArchive = new File(workDirectory, "huge-jdk.zip");
+    try (final FileOutputStream out = new FileOutputStream(jdkArchive);
+        final BackupArchiveWriter writer = new ZipStreamArchiveWriter(out, 1, new IoThrottler(0))) {
+      writer.addFile(source);
+    }
+    assertThat(zip64ExtraFieldLength(archive, "huge.bin")).isEqualTo(zip64ExtraFieldLength(jdkArchive, "huge.bin"))
+        .isEqualTo(8);
+
     source.delete();
+  }
+
+  /** Length in bytes of the ZIP64 extended-information extra field the central directory holds for an entry. */
+  private static int zip64ExtraFieldLength(final File archive, final String entryName) throws IOException {
+    try (final ZipFile zip = new ZipFile(archive)) {
+      final byte[] extra = zip.getEntry(entryName).getExtra();
+      if (extra == null)
+        return 0;
+      for (int i = 0; i + 4 <= extra.length; ) {
+        final int id = (extra[i] & 0xFF) | ((extra[i + 1] & 0xFF) << 8);
+        final int length = (extra[i + 2] & 0xFF) | ((extra[i + 3] & 0xFF) << 8);
+        if (id == 0x0001)
+          return length;
+        i += 4 + length;
+      }
+      return 0;
+    }
   }
 
   // ------------------------------------------------------------------------------------------------------- HELPERS

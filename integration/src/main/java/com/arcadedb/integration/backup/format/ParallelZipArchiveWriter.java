@@ -128,6 +128,11 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
   private final int                             maxChunksInFlight;
   private final IoThrottler                     throttler;
   private final ThreadPoolExecutor              executor;
+  // THREAD CONFINEMENT, AND THE REASON THE TWO KINDS OF POOL ARE DIFFERENT TYPES: THE BUFFER POOLS ARE TOUCHED ONLY BY
+  // THE SINGLE THREAD THAT CALLS addFile - IT TAKES A BUFFER BEFORE SUBMITTING A CHUNK AND PUTS IT BACK IN drainChunk,
+  // NEVER FROM A WORKER - SO A PLAIN ArrayDeque IS CORRECT AND CHEAPER. THE DEFLATERS ARE THE OPPOSITE: WORKERS TAKE
+  // AND RETURN THEM, SO THAT ONE HAS TO BE CONCURRENT. DO NOT "FIX" THE ArrayDeques INTO CONCURRENT COLLECTIONS, AND
+  // DO NOT START TOUCHING THEM FROM A WORKER - THE CONFINEMENT IS THE INVARIANT, NOT THE COLLECTION TYPE
   private final ConcurrentLinkedQueue<Deflater> deflaterPool     = new ConcurrentLinkedQueue<>();
   private final ArrayDeque<byte[]>              inputBufferPool  = new ArrayDeque<>();
   private final ArrayDeque<byte[]>              outputBufferPool = new ArrayDeque<>();
@@ -410,24 +415,35 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
     writeShort(METHOD_DEFLATED);
     writeInt(entry.dosTime() & 0xFFFFFFFFL);
     writeInt(entry.crc());
-    writeInt(zip64 ? ZIP64_MAGICVAL : entry.compressedSize());
-    writeInt(zip64 ? ZIP64_MAGICVAL : entry.uncompressedSize());
+    // EACH FIELD IS REPLACED BY ITS SENTINEL ONLY IF IT INDIVIDUALLY OVERFLOWS, AND THE EXTRA FIELD THEN CARRIES
+    // EXACTLY THOSE, IN THE ORDER THE SPECIFICATION FIXES - WHICH IS WHAT THE SPECIFICATION REQUIRES ("the fields MUST
+    // only appear if the corresponding record field is set to 0xFFFFFFFF") AND WHAT ZipOutputStream.writeCEN DOES.
+    // AN ENTRY PAST 4GB IN A SMALL ARCHIVE THEREFORE CARRIES ONE 8-BYTE VALUE, NOT THREE
+    final boolean size64 = entry.uncompressedSize() >= ZIP64_MAGICVAL;
+    final boolean compressedSize64 = entry.compressedSize() >= ZIP64_MAGICVAL;
+    final boolean offset64 = entry.localHeaderOffset() >= ZIP64_MAGICVAL;
+    final int zip64Fields = (size64 ? 1 : 0) + (compressedSize64 ? 1 : 0) + (offset64 ? 1 : 0);
+
+    writeInt(compressedSize64 ? ZIP64_MAGICVAL : entry.compressedSize());
+    writeInt(size64 ? ZIP64_MAGICVAL : entry.uncompressedSize());
     writeShort(entry.name().length);
-    writeShort(zip64 ? 4 + 8 * 3 : 0);
+    writeShort(zip64 ? 4 + 8 * zip64Fields : 0);
     writeShort(0);
     writeShort(0);
     writeShort(0);
     writeInt(0);
-    writeInt(zip64 ? ZIP64_MAGICVAL : entry.localHeaderOffset());
+    writeInt(offset64 ? ZIP64_MAGICVAL : entry.localHeaderOffset());
     writeRaw(entry.name());
 
     if (zip64) {
-      // ZIP64 EXTENDED INFORMATION EXTRA FIELD: THE THREE OVERFLOWED VALUES, IN THE ORDER THE SPEC FIXES
       writeShort(0x0001);
-      writeShort(8 * 3);
-      writeLong(entry.uncompressedSize());
-      writeLong(entry.compressedSize());
-      writeLong(entry.localHeaderOffset());
+      writeShort(8 * zip64Fields);
+      if (size64)
+        writeLong(entry.uncompressedSize());
+      if (compressedSize64)
+        writeLong(entry.compressedSize());
+      if (offset64)
+        writeLong(entry.localHeaderOffset());
     }
   }
 
