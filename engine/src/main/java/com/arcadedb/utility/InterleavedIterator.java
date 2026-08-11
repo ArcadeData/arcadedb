@@ -98,6 +98,13 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     return value;
   }
 
+  /**
+   * Rewinds the rotation and every source that can be rewound. A source that is a plain {@link Iterator} cannot
+   * be, so it silently keeps its position and this iterator replays only what is left of it - the same limitation
+   * {@link MultiIterator#reset()} has. Every source the engine passes here is a {@code ResettableIterator}
+   * ({@code EdgeIterator}, {@code VertexIterator}, {@code RIDIterator} and their filtering variants all extend
+   * {@code ResettableIteratorBase}), so a full replay is what actually happens on every real call site.
+   */
   @Override
   public void reset() {
     for (final Iterator<T> source : sources)
