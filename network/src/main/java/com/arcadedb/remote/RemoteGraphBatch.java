@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.lang.reflect.Array;
@@ -295,9 +296,19 @@ public class RemoteGraphBatch implements AutoCloseable {
     else if (value instanceof Number || value instanceof Boolean)
       sb.append(value);
     else if (value instanceof Map<?, ?> map)
+      // JSONObject implements Map<String, Object>, so it (and any nested JSONObject reached
+      // through recursion) is already covered here.
       appendJsonMap(sb, map);
     else if (value instanceof Collection<?> collection)
       appendJsonCollection(sb, collection);
+    else if (value instanceof JSONArray jsonArray)
+      // JSONArray is Iterable<Object> but deliberately not a java.util.Collection (issue #5091),
+      // so without this branch it would fall through to value.toString() and get re-quoted as a
+      // JSON string instead of emitted as a JSON array - the same bug class this fix addresses for
+      // java.util.Map/Collection, just for ArcadeDB's own JSON wrapper type. toList() recursively
+      // normalizes any nested JSONObject/JSONArray to Map/List, so the existing
+      // appendJsonCollection -> appendJsonValue recursion handles the rest correctly.
+      appendJsonCollection(sb, jsonArray.toList());
     else if (value instanceof float[] floats)
       appendJsonFloatArray(sb, floats);
     else if (value instanceof double[] doubles)

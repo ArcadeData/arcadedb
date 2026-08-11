@@ -18,6 +18,8 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -253,5 +255,34 @@ class RemoteGraphBatchTest {
     RemoteGraphBatch.appendJsonValue(sb, new float[] { Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY });
 
     assertThat(sb.toString()).isEqualTo("[NaN,Infinity,-Infinity]");
+  }
+
+  // Code review follow-up: com.arcadedb.serializer.json.JSONArray is Iterable<Object> but
+  // deliberately not a java.util.Collection (issue #5091), so a caller building a property from
+  // ArcadeDB's own JSON wrapper type (e.g. from a database.query() result) hit the same
+  // value.toString() bug this PR fixes for java.util.List, just for JSONArray.
+  @Test
+  void appendJsonValueSerializesJSONArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new JSONArray(List.of(1, 2, 3)));
+
+    assertThat(sb.toString()).isEqualTo("[1,2,3]");
+  }
+
+  // Code review follow-up: JSONObject.entrySet() (used by appendJsonMap() since JSONObject
+  // implements Map<String, Object>) returns nested array fields as JSONArray, not List, so a
+  // JSONObject property with a nested array field must not get double-encoded (the outer object
+  // correctly emitted as JSON, but the nested array stringified into a quoted blob).
+  @Test
+  void appendJsonValueSerializesJSONObjectWithNestedJSONArrayField() {
+    final StringBuilder sb = new StringBuilder();
+    final JSONObject json = new JSONObject();
+    json.put("embedding", new JSONArray(List.of(0.1, 0.2)));
+    json.put("label", "a");
+
+    RemoteGraphBatch.appendJsonValue(sb, json);
+
+    assertThat(sb.toString()).isEqualTo("{\"embedding\":[0.1,0.2],\"label\":\"a\"}");
   }
 }
