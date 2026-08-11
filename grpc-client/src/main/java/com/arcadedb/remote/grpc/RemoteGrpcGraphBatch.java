@@ -38,7 +38,10 @@ import com.arcadedb.server.grpc.GraphBatchResult;
  * references it. That removes the per-flush round trip, the client-side mapping arrays, and the ceiling the
  * HTTP loader has on {@code flushEvery} (past which the server stops echoing a mapping too large to consume).
  * The mapping is not requested at all, which is also what keeps a load of millions of vertices from failing at
- * the very end on the 4 MB default message limit, with everything already committed.
+ * the very end on the 4 MB default message limit, with everything already committed. Nothing is lost by not
+ * asking: {@link com.arcadedb.remote.RemoteBatchResult} carries counters and elapsed time on either transport
+ * and has never exposed the mapping, so a caller wanting temporary ids resolved to RIDs queries the vertices
+ * back or calls the {@code GraphBatchLoad} RPC directly with {@code return_id_mapping} set.
  * <p>
  * {@code flushEvery} therefore means chunk size here: the number of records per {@code GraphBatchChunk} pushed
  * onto the open stream, not a round trip. {@link #flush()} closes the current chunk and sends it; the result is
@@ -305,6 +308,12 @@ public class RemoteGrpcGraphBatch extends RemoteGraphBatch {
     /**
      * Deadline for the whole load, from the first chunk to the server's answer, in milliseconds. Default: 6
      * hours. It bounds the stream rather than any single chunk, so it has to cover the entire import.
+     * <p>
+     * It is not the only limit in play, and raising it does not lift the other one: a single chunk also has a
+     * fixed five-minute ceiling on how long it may wait for the transport to drain before the load is given up
+     * on. That ceiling is deliberately not settable - it exists to tell a connection that died without saying
+     * so from one that is merely busy, and no legitimate load spends five minutes on one chunk's backpressure -
+     * but it does mean a link slow enough to breach it fails the load however much of this budget is left.
      */
     public Builder withTimeout(final long timeoutMs) {
       if (timeoutMs < 1)
