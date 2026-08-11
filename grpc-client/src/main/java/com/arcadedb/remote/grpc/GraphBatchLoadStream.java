@@ -61,6 +61,8 @@ class GraphBatchLoadStream {
   private static final long READY_WAIT_TIMEOUT_MS = 5 * 60 * 1000L;
 
   private final long timeoutMs;
+  /** Same as {@link #READY_WAIT_TIMEOUT_MS}, kept per-instance so a test can wait a plausible moment instead of five minutes. */
+  private final long readyWaitTimeoutMs;
 
   private final CountDownLatch                    done             = new CountDownLatch(1);
   private final AtomicReference<GraphBatchResult> resultRef        = new AtomicReference<>();
@@ -75,7 +77,12 @@ class GraphBatchLoadStream {
   private StreamObserver<GraphBatchChunk> request;
 
   GraphBatchLoadStream(final long timeoutMs) {
+    this(timeoutMs, READY_WAIT_TIMEOUT_MS);
+  }
+
+  GraphBatchLoadStream(final long timeoutMs, final long readyWaitTimeoutMs) {
     this.timeoutMs = timeoutMs;
+    this.readyWaitTimeoutMs = readyWaitTimeoutMs;
   }
 
   /**
@@ -139,7 +146,7 @@ class GraphBatchLoadStream {
       // never coming.
       return;
 
-    final long deadline = System.currentTimeMillis() + READY_WAIT_TIMEOUT_MS;
+    final long deadline = System.currentTimeMillis() + readyWaitTimeoutMs;
     synchronized (readyLock) {
       while (!stream.isReady()) {
         failIfTerminated();
@@ -147,7 +154,7 @@ class GraphBatchLoadStream {
         final long remaining = deadline - System.currentTimeMillis();
         if (remaining <= 0)
           throw new TimeoutException(
-              "Graph batch load timed out after " + READY_WAIT_TIMEOUT_MS + "ms waiting for the server to consume "
+              "Graph batch load timed out after " + readyWaitTimeoutMs + "ms waiting for the server to consume "
                   + "the records already sent");
         try {
           readyLock.wait(remaining);

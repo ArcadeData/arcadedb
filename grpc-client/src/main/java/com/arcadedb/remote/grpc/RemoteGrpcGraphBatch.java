@@ -120,25 +120,27 @@ public class RemoteGrpcGraphBatch extends RemoteGraphBatch {
     if (recordsInChunk == 0)
       return;
 
-    if (stream == null)
-      stream = database.openGraphBatchLoadStream(timeoutMs);
-
-    if (!firstChunkSent) {
+    if (!firstChunkSent)
       // Database and options are read from the first chunk and ignored on the ones that follow.
       chunk.setDatabase(database.getName()).setCredentials(database.buildCredentials()).setOptions(options);
-      firstChunkSent = true;
-    }
 
-    // The buffer is handed over before the send rather than after it, so a send that fails leaves nothing
+    // The buffer is handed over before anything that can fail, so nothing this method throws leaves records
     // behind for a later flush to send a second time. An interior auto-flush raises its failure from inside
     // createVertex()/createEdge(), and the close() that follows - from a try-with-resources, which runs whether
-    // or not the body threw - would otherwise re-send this very chunk on a stream the failure had already
-    // terminated.
+    // or not the body threw - would otherwise repeat the whole attempt and answer with a second failure on top
+    // of the real one. Both of the things below can throw: opening the call, and sending on it.
     final GraphBatchChunk pending = chunk.build();
     chunk = null;
     recordsInChunk = 0;
 
+    if (stream == null)
+      stream = database.openGraphBatchLoadStream(timeoutMs);
+
     stream.send(pending);
+
+    // Only once a chunk is actually on the wire has the server been told the database and the options, so this
+    // stays false if the send above threw and the next attempt stamps them again.
+    firstChunkSent = true;
   }
 
   /**
