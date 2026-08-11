@@ -63,6 +63,19 @@ import java.util.logging.Level;
  *   <li>Optional auto-update on transaction commit</li>
  * </ul>
  * <p>
+ * <b>Neighbor order is unrelated to OLTP order.</b> {@link #getVertices}, {@link #getNeighborView} and
+ * {@link #scanNeighbors} always return a node's neighbors sorted ascending by internal dense node ID -
+ * further permuted by a one-time cache-locality renumbering at build time ({@code CSRBuilder}'s BFS/RCM
+ * pass) - never in edge-insertion or OLTP-recency order. This holds for every vertex, promoted
+ * super-node or not: it is what lets {@link #isConnectedTo}, {@link #countEdgesBetween},
+ * {@link #getMeanEdgesPerConnectedPair} and triangle counting binary-search or merge-join the adjacency
+ * arrays instead of scanning them. A query the planner can answer from either the OLTP edge list or a
+ * ready GAV (see {@code GAVExpandAll}/{@code GAVExpandInto}) may therefore return its rows in a different
+ * order depending on which path was chosen - by design, not as an artifact of the OLTP layout underneath
+ * (classic or striped/promoted - see {@link com.arcadedb.graph.StripedEdgeList}). An application that
+ * needs a specific result order must request it explicitly (e.g. {@code ORDER BY}) rather than relying on
+ * either path's default.
+ * <p>
  * Usage:
  * <pre>
  *   // Via builder (recommended)
