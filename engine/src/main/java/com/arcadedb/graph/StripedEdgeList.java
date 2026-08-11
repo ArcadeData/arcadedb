@@ -71,6 +71,12 @@ import java.util.logging.Level;
  * the contract - but the classic layout happened to be exact, so this is written down rather than left to be
  * inferred. The maintenance walks (removal, counting, the integrity checker, export) deliberately keep plain
  * concatenation: order means nothing to them and one cursor beats {@code stripes} of them.
+ * <p>
+ * This guarantee is specific to these OLTP read walks. A {@link com.arcadedb.graph.olap.GraphAnalyticalView}
+ * (GAV) answering the same query goes through none of it: {@code CSRBuilder} sorts every vertex's neighbors
+ * ascending by dense node ID at build time regardless of how they were consumed from the OLTP list - promoted
+ * or not - so a GAV-backed read carries no relationship to this newest-first approximation. See
+ * {@link com.arcadedb.graph.olap.GraphAnalyticalView}'s class Javadoc.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

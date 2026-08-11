@@ -52,7 +52,12 @@ import java.util.logging.Level;
  *   <li>Detects property types and extracts property values into per-bucket {@link ColumnStore}</li>
  * </ul>
  * <b>Pass 2</b> (single scan): Iterates vertices again to fill CSR neighbor arrays
- * using prefix sums computed from Pass 1 degree counts.
+ * using prefix sums computed from Pass 1 degree counts. Each vertex's out-edges are read via
+ * {@code outList.entryIterator()}, which walks a promoted (striped) super-node's stripe chains
+ * concatenated rather than in any OLTP recency order - but that walk order never reaches a query:
+ * every node's neighbor slice is unconditionally sorted ascending by dense node ID in Phase C below,
+ * then permuted again by the BFS/RCM reordering in Phase D. The consumption order only affects how
+ * warm the OLTP pages are while this scan runs, never what a reader of the finished CSR sees.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
