@@ -444,6 +444,101 @@ class TypeTest extends TestHelper {
   }
 
   @Test
+  void convertDoubleArrayToIntArray() {
+    final Object result = Type.convert(database, new double[] { 1.0, 2.0, 3.0 }, int[].class);
+    assertThat(result).isInstanceOf(int[].class);
+    assertThat((int[]) result).containsExactly(1, 2, 3);
+  }
+
+  @Test
+  void convertFloatArrayToShortArray() {
+    final Object result = Type.convert(database, new float[] { 1.0f, 2.0f, 3.0f }, short[].class);
+    assertThat(result).isInstanceOf(short[].class);
+    assertThat((short[]) result).containsExactly((short) 1, (short) 2, (short) 3);
+  }
+
+  @Test
+  void convertDoubleArrayToLongArray() {
+    final Object result = Type.convert(database, new double[] { 1.0, 2.0, 3.0 }, long[].class);
+    assertThat(result).isInstanceOf(long[].class);
+    assertThat((long[]) result).containsExactly(1L, 2L, 3L);
+  }
+
+  /**
+   * Issue #6020: the array-narrowing branches of {@code Type.convert()} (double[]/float[]/long[] source ->
+   * int[]/long[]/short[] target) did a raw element-wise cast with no NaN or range check, unlike the scalar path
+   * fixed by #5905/#5970. {@code (short) 3_000_000_000.0} silently wrapped to a wrong in-range value, and
+   * {@code (int) Double.NaN} silently became {@code 0} - both would corrupt a stored value with no error. The
+   * fix routes every element through the same {@code narrowToIntegral()} used by the scalar branches.
+   * <p>
+   * A {@code long[]} source has the identical unguarded-wrap defect for int[]/short[] targets even though the
+   * issue text only reproduces it via double[]/float[] - {@code (int) 3_000_000_000L} wraps to {@code -1294967296}
+   * via plain two's-complement bit truncation (long->int is not saturating, unlike double->int/long) - so it is
+   * covered here too.
+   * <p>
+   * A {@code Collection} source (e.g. a {@code List<Double>} - the shape JSON deserialization typically produces)
+   * has the same defect for the {@code int[]}/{@code long[]}/{@code short[]} targets, found in code review of the
+   * first pass of this fix, which only routed the primitive-array-source branches through
+   * {@code narrowToIntegral()} and left the sibling {@code Collection}-source branches on a raw
+   * {@code .intValue()}/{@code .longValue()}/{@code .shortValue()} cast.
+   */
+  @Test
+  void convertArrayNarrowingNaNAndOverflowRejected() {
+    // double[]/float[] -> int[]: NaN
+    assertThatThrownBy(() -> Type.convert(database, new double[] { Double.NaN }, int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new float[] { Float.NaN }, int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // double[]/float[] -> int[]: out of range (Java's double->int narrowing saturates instead of wrapping, but
+    // a typed column must reject it, not silently clip it, to match scalar INTEGER conversion behavior)
+    assertThatThrownBy(() -> Type.convert(database, new double[] { 3_000_000_000.0 }, int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new float[] { 3_000_000_000.0f }, int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // double[]/float[] -> short[]: NaN and out-of-range (two-step double->int->short DOES wrap:
+    // (short) 3_000_000_000.0 == -1, a wrong in-range value with no error)
+    assertThatThrownBy(() -> Type.convert(database, new double[] { Double.NaN }, short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new float[] { Float.NaN }, short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new double[] { 3_000_000_000.0 }, short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new float[] { 3_000_000_000.0f }, short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // double[]/float[] -> long[]: NaN only (LONG is the widest integral type, no narrower range to check)
+    assertThatThrownBy(() -> Type.convert(database, new double[] { Double.NaN }, long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new float[] { Float.NaN }, long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // long[] -> int[]/short[]: out of range wraps via plain bit truncation, not saturation
+    assertThatThrownBy(() -> Type.convert(database, new long[] { 3_000_000_000L }, int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new long[] { 40_000L }, short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // Collection -> int[]/long[]/short[]: the sibling branches next to the primitive-array ones above had the
+    // identical raw-cast gap (caught in code review of this fix's first pass)
+    assertThatThrownBy(() -> Type.convert(database, List.of(Double.NaN), int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(3_000_000_000.0), int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(Double.NaN), long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(Double.NaN), short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(3_000_000_000.0), short[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // A SINGLE BAD ELEMENT REJECTS THE WHOLE ARRAY, EVEN WHEN SURROUNDED BY OTHERWISE IN-RANGE VALUES - THERE IS NO
+    // PARTIAL/BEST-EFFORT CONVERSION THAT WOULD SILENTLY DROP OR ZERO OUT JUST THE OFFENDING ELEMENT
+    assertThatThrownBy(() -> Type.convert(database, new double[] { 1.0, Double.NaN, 3.0 }, int[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void convertToEnum() {
     assertThat(Type.convert(database, "STRING", Type.class)).isEqualTo(Type.STRING);
     assertThat(Type.convert(database, 0, Type.class)).isEqualTo(Type.BOOLEAN);

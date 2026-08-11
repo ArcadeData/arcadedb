@@ -84,8 +84,30 @@ class LSMVectorIndexRebuildTest extends TestHelper {
    * case. {@code REBUILD_SEMAPHORE} (JVM-wide, one permit) is shared by every vector index in the whole Surefire
    * fork, so a slow rebuild left over from an unrelated, already-finished test class can still be holding the
    * permit when this class's own tests start.
+   * <p>
+   * Raised again, from a flat 300s to {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}'s effective value (600s
+   * unless something in this JVM overrode it) plus a 60s margin (issue #6032): a same-day fix (commit
+   * {@code e1aa64203}) bounded {@code startAsyncGraphRebuild()}'s semaphore acquire at 600s with a diagnostic
+   * WARNING on timeout, specifically so a stuck rebuild would be diagnosable in a future recurrence. But this
+   * class's own 300s ceiling - half the production timeout - meant the Awaitility assertion always gave up and
+   * failed 300s *before* the production wait could even reach its own timeout and log anything, so the fix's
+   * diagnostic benefit could never fire for exactly the tests it was meant to help diagnose (confirmed 3 times:
+   * PR #5960, #5980, #6019 - no permit-timeout WARNING ever appeared in any of those failing runs). Deriving the
+   * bound from the production config's own live value, instead of a second hardcoded constant, means the two can
+   * never silently drift apart again the way the flat 300s did - and stays honest about what the production wait
+   * will actually do even in the (currently hypothetical) case where something else in this JVM changes the
+   * setting before this field initializes.
+   * <p>
+   * Invariant this relies on: nothing may change {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS} before this static
+   * field is initialized (i.e. before this class's first test runs). The setting is {@code SCOPE.JVM}, so this is
+   * not only about this class's own tests - any other test class in the same Surefire fork that changes it and
+   * does not reset it before this class loads could also shrink this ceiling. Not currently violated by anything
+   * in this class (or observed from another class in this codebase), but a future test added anywhere that sets
+   * this value in a static initializer, or a {@code @BeforeAll} that runs before this class loads, would silently
+   * change it too.
    */
-  private static final Duration REBUILD_SETTLE_TIMEOUT = Duration.ofSeconds(300);
+  private static final Duration REBUILD_SETTLE_TIMEOUT =
+      Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong() + 60_000L);
 
   // Issue #3147: REBUILD INDEX preserves vector metadata (dimensions, similarity, maxConnections, beamWidth, idPropertyName) instead of recreating with dimensions=0.
   @Test
