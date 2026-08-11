@@ -576,3 +576,50 @@ newest-first globally. It is not an ordering guarantee - it never was, on either
 needs an exact order must sort or read through an index on a timestamp property.
 
 [#6044](https://github.com/ArcadeData/arcadedb/issues/6044)
+
+## `Type.convert()`: narrowing an array or Collection of `double`/`float`/`long` to a smaller integral array no longer silently corrupts values (#6020)
+
+The scalar narrowing path (`Byte`/`Short`/`Integer`/`Long`) already rejects `NaN` and an out-of-range value
+instead of wrapping it (#5905, #5970), but the array-narrowing branches - `double[]`/`float[]`/`long[]` source
+to `int[]`/`long[]`/`short[]` target - did a raw element-wise cast with neither check.
+`Type.convert(db, new double[]{Double.NaN}, int[].class)` returned `{0}`, and narrowing a `long[]` value like
+`3_000_000_000L` to `short[]` wrapped via plain two's-complement truncation to a wrong in-range value, both with
+no error. Every element now goes through the same `narrowToIntegral()` the scalar path uses.
+
+Code review on the fix caught the same bug one branch over: the sibling `Collection` (e.g. `List<Double>` - the
+shape JSON deserialization typically produces) -> `int[]`/`long[]`/`short[]` branches had the identical raw
+`.intValue()`/`.longValue()`/`.shortValue()` cast and were left out of the first pass entirely. Fixed the same way.
+
+[#6020](https://github.com/ArcadeData/arcadedb/issues/6020)
+
+## Vector index test suite: a diagnostic timeout added for a stuck rebuild couldn't fire in the tests it was meant to help diagnose (#6032)
+
+A same-day fix bounded `startAsyncGraphRebuild()`'s semaphore acquire at
+`arcadedb.vectorIndex.rebuildPermitTimeoutMs` (default 600s) with a diagnostic `WARNING` on timeout, so a future
+stuck rebuild would be traceable instead of hanging silently. But `LSMVectorIndexRebuildTest` and
+`LSMVectorIndexRecoveryTest`'s own Awaitility ceiling was a flat 300s - half the production timeout - so their
+assertion always gave up and failed *before* the production wait could reach its own timeout and log anything.
+Reconfirmed three times (PR #5960, #5980, #6019) with no permit-timeout warning ever appearing in any of the
+failing runs. Both test ceilings are now derived from the production setting's own live value plus a 60s margin
+instead of a second, independently-drifting hardcoded constant.
+
+[#6032](https://github.com/ArcadeData/arcadedb/issues/6032)
+
+## Polyglot host-class deny-list: the hierarchy check now covers wildcard-only-denied ancestors too (#6045)
+
+Follow-up hardening from #6042. `HostClassLookupFilter`'s ancestor-hierarchy walk (closing GHSA-j57p-qmrh-v7xv)
+originally excluded every package-wildcard `DENIED` entry (e.g. `java.security.**`) to avoid false-positiving on
+marker interfaces that merely happen to live in a denied package, such as `java.io.Serializable`. That also let a
+*capability-bearing* ancestor reachable only through a wildcard entry slip through undetected if inherited by an
+allow-listed subclass. Auditing the JDK classpath reachable from `ScriptTriggerExecutor.ALLOWED_PACKAGES` found
+the concrete instance: `java.util.PropertyPermission` - admitted by name under `java.util.*` - extends
+`java.security.BasicPermission` extends `java.security.Permission`, both wildcard-denied by `java.security.**`
+and pinned by no precise entry.
+
+The walk now checks an ancestor against every `DENIED` entry, wildcard or precise, except a short, explicit list
+of inert marker interfaces (`Serializable`, `Closeable`, `Cloneable`, `Comparable`, `AutoCloseable`) that grant no
+capability of their own - closing the gap without reintroducing the collateral-damage false positives the original
+exclusion guarded against. Not a known exploitable bypass in the current built-in allow-lists; a completeness fix
+for any embedder configuring a broader one via `HostClassLookupFilter`'s public constructor.
+
+[#6045](https://github.com/ArcadeData/arcadedb/issues/6045)
