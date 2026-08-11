@@ -22,9 +22,11 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Code review follow-up on <a href="https://github.com/ArcadeData/arcadedb/issues/6061">issue #6061</a>:
@@ -70,5 +72,26 @@ public class Issue6061BinaryPropertyListConversionTest extends TestHelper {
     final Object converted = Type.convert(database, List.of(), byte[].class);
     assertThat(converted).isInstanceOf(byte[].class);
     assertThat((byte[]) converted).isEmpty();
+  }
+
+  // Code review follow-up: a null element in the source List/Collection previously NPE'd deep
+  // inside narrowToIntegral()/the float/double narrowing branches instead of raising a clean
+  // validation error. Not specific to byte[] - the same null guard now covers every
+  // Collection -> primitive-array narrowing branch in Type.convert() (byte[]/short[]/int[]/long[]
+  // via narrowToIntegral(), float[]/double[] via the new requireNonNullNumber() helper).
+  @Test
+  void typeConvertListWithNullElementToByteArrayThrowsCleanly() {
+    final List<Integer> withNull = Arrays.asList(1, null, 3);
+    assertThatThrownBy(() -> Type.convert(database, withNull, byte[].class))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("null element");
+  }
+
+  @Test
+  void typeConvertListWithNullElementToFloatArrayThrowsCleanly() {
+    final List<Double> withNull = Arrays.asList(1.0, null, 3.0);
+    assertThatThrownBy(() -> Type.convert(database, withNull, float[].class))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("null element");
   }
 }
