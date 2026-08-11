@@ -124,9 +124,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
           });
           return null;
         }));
-
-      if (failure.get() != null)
-        throw failure.get();
+      // NO SECOND CHECK OF failure HERE: writeArchive RETHROWS IT FROM INSIDE ITS OWN CALLBACK, WHICH IT HAS TO DO SO
+      // THE STREAM-CLOSING THERE KNOWS THE BACKUP FAILED. A CHECK AT THIS POINT WOULD BE UNREACHABLE, AND UNREACHABLE
+      // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
     } catch (final Exception e) {
       // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
       backupFile.delete();

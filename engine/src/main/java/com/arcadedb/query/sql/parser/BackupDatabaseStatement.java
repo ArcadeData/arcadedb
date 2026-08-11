@@ -102,7 +102,14 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
           // encryptionKey, WHICH MEANT A BACKUP ASKED TO BE ENCRYPTED WAS WRITTEN IN CLEAR. READ THE RAW VALUE, AS
           // ExportDatabaseStatement ALREADY DOES
           final Object rawKey = entry.getKey().value;
-          final String settingName = rawKey != null ? rawKey.toString() : entry.getKey().toString();
+          if (rawKey == null)
+            // NO FALLBACK TO Expression.toString() HERE ON PURPOSE. THAT IS THE BUGGY MATCH THIS BLOCK EXISTS TO FIX,
+            // AND FALLING BACK TO IT WOULD MEAN A FUTURE PARSER CHANGE THAT STOPPED POPULATING value SILENTLY
+            // RESURRECTED THE CLEARTEXT-ARCHIVE DEFECT INSTEAD OF FAILING
+            throw new CommandExecutionException(
+                "Cannot read the name of a backup setting from the parsed statement: " + entry.getKey());
+
+          final String settingName = rawKey.toString();
           try {
             switch (settingName) {
             case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)

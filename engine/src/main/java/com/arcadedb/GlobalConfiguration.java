@@ -518,8 +518,9 @@ public enum GlobalConfiguration {
       dominant file still scales. -1 (the default) sizes the pool automatically at half the available processors, \
       capped at 8, leaving room for the live workload the backup is running alongside; 0 selects the legacy \
       single-threaded java.util.zip.ZipOutputStream writer, kept as an escape hatch. The archive is an ordinary ZIP \
-      whichever value is used: old backups restore and new backups restore with the unchanged restore path. Peak \
-      heap for the parallel path is about 2 chunk buffers per thread (~4 MB each), so ~32 MB at 8 threads.""",
+      whichever value is used: old backups restore and new backups restore with the unchanged restore path. Peak heap \
+      for the parallel path is bounded by construction at two chunks in flight per thread, each holding one input and \
+      one output buffer of about the 1 MB chunk size - so roughly 4 MB per thread, ~32 MB at 8 threads.""",
       // THE 256 IS THE SAME BOUND AS BackupSettings.MAX_COMPRESSION_THREADS, WHICH THE CLI, THE Backup API AND SQL
       // VALIDATE AGAINST. IT HAS TO BE REPEATED HERE RATHER THAN REFERENCED BECAUSE THE ENGINE CANNOT DEPEND ON THE
       // INTEGRATION MODULE: CHANGE ONE AND CHANGE THE OTHER
