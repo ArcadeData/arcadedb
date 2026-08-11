@@ -94,7 +94,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
 
     final int iterations = config != null && config.get("iterations") instanceof Number num ?
-        num.intValue() : 20;
+        extractInt(num, "iterations") : 20;
     final double threshold = config != null && config.get("threshold") instanceof Number num ?
         num.doubleValue() : 0.1;
     final long seedVal = config != null && config.get("seed") instanceof Number num ?

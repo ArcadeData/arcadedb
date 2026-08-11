@@ -103,7 +103,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double dampingFactor = config != null && config.get("dampingFactor") instanceof Number n ?
         n.doubleValue() : 0.85;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
-        n.intValue() : 20;
+        extractInt(n, "maxIterations") : 20;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;

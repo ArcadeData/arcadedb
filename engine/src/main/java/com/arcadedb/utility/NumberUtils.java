@@ -75,4 +75,30 @@ public class NumberUtils {
       return Integer.MIN_VALUE;
     return (int) longValue;
   }
+
+  /**
+   * Narrows a numeric value to an int, throwing {@link ArithmeticException} if it does not fit -
+   * the strict counterpart to {@link #saturateToInt(Number)}. Use this for parameters where an
+   * out-of-range value should fail loudly rather than saturate or wrap, because a saturated/wrapped
+   * value would still look plausible and silently drive a degenerate computation (e.g. an iteration
+   * count, embedding dimension, or cluster count) instead of an obviously-bounded result (e.g. LIMIT).
+   * `BigInteger`/`BigDecimal` are compared by magnitude directly for the same reason as
+   * {@link #saturateToInt(Number)}: `Number.longValue()` on one of those far outside the `Long` range
+   * is documented as lossy in an unspecified way.
+   */
+  public static int toIntExact(final Number value) {
+    if (value instanceof BigInteger bigInteger) {
+      if (bigInteger.compareTo(BIGINTEGER_MAX_INT) > 0 || bigInteger.compareTo(BIGINTEGER_MIN_INT) < 0)
+        throw new ArithmeticException("integer overflow: " + bigInteger);
+      return bigInteger.intValue();
+    }
+
+    if (value instanceof BigDecimal bigDecimal) {
+      if (bigDecimal.compareTo(BIGDECIMAL_MAX_INT) > 0 || bigDecimal.compareTo(BIGDECIMAL_MIN_INT) < 0)
+        throw new ArithmeticException("integer overflow: " + bigDecimal);
+      return bigDecimal.intValue();
+    }
+
+    return Math.toIntExact(value.longValue());
+  }
 }

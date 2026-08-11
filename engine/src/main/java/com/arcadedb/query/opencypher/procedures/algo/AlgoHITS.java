@@ -80,7 +80,7 @@ public class AlgoHITS extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int maxIterations    = args.length > 1 ? ((Number) args[1]).intValue() : 20;
+    final int maxIterations    = args.length > 1 ? extractInt((Number) args[1], "maxIterations") : 20;
     final double tolerance     = args.length > 2 ? ((Number) args[2]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();

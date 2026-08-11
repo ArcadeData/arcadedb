@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -90,7 +91,7 @@ public class AlgoKNN extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final int k                = args.length > 0 && args[0] instanceof Number num ? num.intValue() : 10;
+    final int rawK             = args.length > 0 && args[0] instanceof Number num ? NumberUtils.saturateToInt(num) : 10;
     final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1]) : null;
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
 
@@ -102,6 +103,10 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    // Clamp to the graph size: there can never be more than n-1 neighbours, and sizing the
+    // per-node top-k arrays directly off an unclamped rawK risks a multi-GB allocation attempt
+    // for a huge k (e.g. algo.knn(2147483648)).
+    final int k = Math.min(rawK, n);
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     // Build BitSets for O(1) intersection

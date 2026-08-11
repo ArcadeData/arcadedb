@@ -97,8 +97,8 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
-    final int dimensions = config != null && config.get("dimensions") instanceof Number n ? n.intValue() : 128;
-    final int iterations = config != null && config.get("iterations") instanceof Number n ? n.intValue() : 4;
+    final int dimensions = config != null && config.get("dimensions") instanceof Number n ? extractInt(n, "dimensions") : 128;
+    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 4;
     final double normStrength = config != null && config.get("normalization") instanceof Number n ? n.doubleValue() : 0.0;
     final double selfInfluence = config != null && config.get("selfInfluence") instanceof Number n ? n.doubleValue() : 0.0;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;

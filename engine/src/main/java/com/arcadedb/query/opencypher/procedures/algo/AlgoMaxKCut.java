@@ -101,13 +101,13 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final int k = args[0] instanceof Number kn ? kn.intValue() : 2;
+    final int k = args[0] instanceof Number kn ? extractInt(kn, "k") : 2;
     if (k < 2)
       throw new IllegalArgumentException(getName() + "(): k must be ≥ 2, got " + k);
 
     final Map<String, Object> config = args.length > 1 ? extractMap(args[1], "config") : null;
-    final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? n.intValue() : 100;
-    final int restarts = config != null && config.get("restarts") instanceof Number n ? n.intValue() : 3;
+    final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? extractInt(n, "maxIterations") : 100;
+    final int restarts = config != null && config.get("restarts") instanceof Number n ? extractInt(n, "restarts") : 3;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;

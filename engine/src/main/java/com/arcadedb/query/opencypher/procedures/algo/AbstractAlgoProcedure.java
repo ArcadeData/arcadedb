@@ -30,6 +30,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -154,6 +155,21 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
     throw new IllegalArgumentException(
         getName() + "(): " + paramName + " must be a map, got " + arg.getClass().getSimpleName());
+  }
+
+  /**
+   * Narrows a config/argument {@link Number} to {@code int}, failing loudly instead of silently
+   * saturating or wrapping when the value is out of range. Use for algorithm tuning knobs (iteration
+   * counts, embedding dimensions, cluster/degree thresholds, ...) where an out-of-range value should
+   * be rejected rather than reinterpreted - unlike a result-count bound (e.g. top-k, maxDepth), there
+   * is no sensible "as many as possible" reading for these.
+   */
+  protected int extractInt(final Number value, final String paramName) {
+    try {
+      return NumberUtils.toIntExact(value);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " is out of range for an int: " + value, e);
+    }
   }
 
   /** @see GraphEngine#getAllVertices(Database, String[]) */

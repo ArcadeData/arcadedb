@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -99,7 +100,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String[] relTypes = extractRelTypes(args[2]);
-    final int maxDepth = ((Number) args[3]).intValue();
+    final int maxDepth = NumberUtils.saturateToInt((Number) args[3]);
     final Map<String, Object> options = args.length > 4 ? extractMap(args[4], "options") : null;
     final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes");
     final Set<String> skipVertexTypes = extractSkipTypes(options, "skipVertexTypes");

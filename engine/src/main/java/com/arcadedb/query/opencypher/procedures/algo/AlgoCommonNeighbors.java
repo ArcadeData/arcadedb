@@ -84,7 +84,7 @@ public class AlgoCommonNeighbors extends AbstractAlgoProcedure {
     final Vertex sourceVertex  = extractVertex(args[0], "node");
     final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1]) : null;
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
-    final int cutoff           = args.length > 3 ? ((Number) args[3]).intValue() : 1;
+    final int cutoff           = args.length > 3 ? extractInt((Number) args[3], "cutoff") : 1;
 
     final Database db = context.getDatabase();
 

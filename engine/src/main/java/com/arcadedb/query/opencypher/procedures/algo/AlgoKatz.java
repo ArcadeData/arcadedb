@@ -85,7 +85,7 @@ public class AlgoKatz extends AbstractAlgoProcedure {
 
     final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
     final double alpha         = args.length > 1 ? ((Number) args[1]).doubleValue() : 0.005;
-    final int maxIterations    = args.length > 2 ? ((Number) args[2]).intValue() : 100;
+    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations") : 100;
     final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();

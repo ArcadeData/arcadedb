@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -89,7 +90,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
     final Vertex startNode        = extractVertex(args[0], "startNode");
     final Vertex endNode          = extractVertex(args[1], "endNode");
-    final int k                   = ((Number) args[2]).intValue();
+    final int k                   = NumberUtils.saturateToInt((Number) args[2]);
     final String[] relTypes       = args.length > 3 ? extractRelTypes(args[3]) : null;
     final String weightProperty   = args.length > 4 ? extractString(args[4], "weightProperty") : null;
 
@@ -139,9 +140,13 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       }
     }
 
-    // Yen's k-shortest paths
-    final List<int[]> kPaths     = new ArrayList<>(k);
-    final List<Double> kWeights  = new ArrayList<>(k);
+    // Yen's k-shortest paths. The loop below (`for (int ki = 1; ki < k; ki++)`) terminates as soon
+    // as no more candidate paths exist, so k itself is safe to leave unbounded (saturating a huge k
+    // to "as many k-shortest-paths as exist" is the right reading here) - but it must not be used
+    // directly as an eager ArrayList capacity, since that risks a multi-GB allocation attempt for a
+    // huge k (e.g. algo.kShortestPaths(a, b, 2147483648)) that will never be filled.
+    final List<int[]> kPaths     = new ArrayList<>(Math.min(k, n));
+    final List<Double> kWeights  = new ArrayList<>(Math.min(k, n));
 
     // Find first shortest path with Dijkstra
     final int[] firstPath = dijkstra(weightMatrix, n, startIdx, endIdx, null);

@@ -99,12 +99,12 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
-    final int dim = config != null && config.get("embeddingDimension") instanceof Number n ? n.intValue() : 128;
-    final int walkLen = config != null && config.get("walkLength") instanceof Number n ? n.intValue() : 80;
-    final int walksPerNode = config != null && config.get("walksPerNode") instanceof Number n ? n.intValue() : 10;
-    final int epochs = config != null && config.get("iterations") instanceof Number n ? n.intValue() : 1;
-    final int window = config != null && config.get("windowSize") instanceof Number n ? n.intValue() : 10;
-    final int negSamples = config != null && config.get("negSamples") instanceof Number n ? n.intValue() : 5;
+    final int dim = config != null && config.get("embeddingDimension") instanceof Number n ? extractInt(n, "embeddingDimension") : 128;
+    final int walkLen = config != null && config.get("walkLength") instanceof Number n ? extractInt(n, "walkLength") : 80;
+    final int walksPerNode = config != null && config.get("walksPerNode") instanceof Number n ? extractInt(n, "walksPerNode") : 10;
+    final int epochs = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 1;
+    final int window = config != null && config.get("windowSize") instanceof Number n ? extractInt(n, "windowSize") : 10;
+    final int negSamples = config != null && config.get("negSamples") instanceof Number n ? extractInt(n, "negSamples") : 5;
     final double lr0 = config != null && config.get("learningRate") instanceof Number n ? n.doubleValue() : 0.025;
     final double p = config != null && config.get("p") instanceof Number n ? n.doubleValue() : 1.0;
     final double q = config != null && config.get("q") instanceof Number n ? n.doubleValue() : 1.0;

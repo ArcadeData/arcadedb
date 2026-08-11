@@ -81,7 +81,7 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int maxIterations = args.length > 1 && args[1] instanceof Number n ? n.intValue() : 10;
+    final int maxIterations = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "maxIterations") : 10;
     final double resolution = args.length > 2 && args[2] instanceof Number n ? n.doubleValue() : 1.0;
 
     final Database db = context.getDatabase();

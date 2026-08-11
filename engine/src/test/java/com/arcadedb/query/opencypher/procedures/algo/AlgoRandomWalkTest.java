@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the algo.randomWalk Cypher procedure.
@@ -92,6 +93,25 @@ class AlgoRandomWalkTest {
     final List<Object> nodes = (List<Object>) path.get("nodes");
     // start node + 5 steps = 6 nodes in the path
     assertThat(nodes).hasSize(6);
+  }
+
+  @Test
+  void randomWalkStepsAboveIntRangeThrows() {
+    // Issue #5924: steps used to narrow via .intValue() straight into `new int[steps + 1]`. A Long
+    // above Integer.MAX_VALUE (e.g. 2147483648) wrapped to Integer.MIN_VALUE, which then threw a
+    // confusing NegativeArraySizeException from deep inside the walk instead of a clear, immediate
+    // rejection of the out-of-range argument.
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (a:Node {name: 'A'}) \
+          CALL algo.randomWalk(a, $steps) \
+          YIELD path, steps \
+          RETURN path, steps""",
+          Map.of("steps", 2147483648L));
+      while (rs.hasNext())
+        rs.next();
+    }).hasStackTraceContaining("steps");
   }
 
   @Test
