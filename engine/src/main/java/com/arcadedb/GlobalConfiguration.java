@@ -499,6 +499,39 @@ public enum GlobalConfiguration {
       "Allow a database to be backup. Disabling backup gives a huge boost in performance because no lock will be used for every operations",
       Boolean.class, true),
 
+  BACKUP_COMPRESSION_LEVEL("arcadedb.backup.compressionLevel", SCOPE.DATABASE,
+      """
+      Deflate level (0 = store, 1 = fastest, 9 = smallest) used to compress a full backup. The backup is CPU bound, \
+      not I/O bound, so this is the single most effective knob on its duration - and the backup's duration is also \
+      the window during which page flushing is suspended and committing threads are throttled \
+      (FLUSH_SUSPEND_MAX_DEFERRED_RAM), so a shorter backup is a shorter stall for writers. The default was lowered \
+      from 9 to 1 on measurement, not intuition: on a 1.25 GB database it is 3.1x faster for a 7.5% bigger archive \
+      (323 MB at level 9, 348 MB at level 1). Raise it when the archive size matters more than both the backup \
+      duration and its impact on concurrent writers - level 6 is a good middle, roughly half the cost of 9 at the \
+      same ratio.""",
+      Integer.class, 1),
+
+  BACKUP_COMPRESSION_THREADS("arcadedb.backup.compressionThreads", SCOPE.DATABASE,
+      """
+      Number of threads used to compress a full backup. Each entry is cut into chunks that are deflated in parallel \
+      and concatenated back in order, so the parallelism applies WITHIN a file too and a database made of one \
+      dominant file still scales. -1 (the default) sizes the pool automatically at half the available processors, \
+      capped at 8, leaving room for the live workload the backup is running alongside; 0 selects the legacy \
+      single-threaded java.util.zip.ZipOutputStream writer, kept as an escape hatch. The archive is an ordinary ZIP \
+      whichever value is used: old backups restore and new backups restore with the unchanged restore path. Peak \
+      heap for the parallel path is about 2 chunk buffers per thread (~4 MB each), so ~32 MB at 8 threads.""",
+      Integer.class, -1),
+
+  BACKUP_MAX_MB_PER_SECOND("arcadedb.backup.maxMBPerSecond", SCOPE.DATABASE,
+      """
+      Optional cap, in MB/s, on the rate at which a full backup reads the database files, so a backup cannot \
+      saturate the production disk. It is deliberately applied to the read side: that is the I/O competing with the \
+      live workload, while the archive is smaller and normally written to another device. 0 (the default) means no \
+      limit. Note the trade-off with the flush suspension: throttling makes the backup last longer, and writers are \
+      throttled for the whole of it, so this is for deployments where read I/O, not commit latency, is the scarce \
+      resource.""",
+      Integer.class, 0),
+
   // SQL
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),

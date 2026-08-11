@@ -18,11 +18,13 @@
  */
 package com.arcadedb.integration.backup.format;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
+import com.arcadedb.integration.backup.IoThrottler;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
@@ -36,20 +38,19 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.io.OutputStream;
 import java.security.SecureRandom;
 import java.security.spec.KeySpec;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class FullBackupFormat extends AbstractBackupFormat {
   private interface BackupCallback {
-    void backup(ZipOutputStream zipFile) throws Exception;
+    void backup(BackupArchiveWriter archive) throws Exception;
   }
 
   public FullBackupFormat(final DatabaseInternal database, final BackupSettings settings, final ConsoleLogger logger) {
@@ -82,54 +83,71 @@ public class FullBackupFormat extends AbstractBackupFormat {
     if (database.isTransactionActive() && database.getTransaction().hasChanges())
       throw new BackupException("Transaction in progress found");
 
-    logger.logLine(0, "Executing full backup of database to '%s'...", backupFile);
+    final int compressionLevel = resolveSetting(settings.compressionLevel, GlobalConfiguration.BACKUP_COMPRESSION_LEVEL);
+    final int compressionThreads = resolveThreads();
+    final int maxMBPerSecond = resolveSetting(settings.maxMBPerSecond, GlobalConfiguration.BACKUP_MAX_MB_PER_SECOND);
 
-    encryptFile(backupFile, zipFile ->
-      // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
-      database.executeInReadLock(() -> {
-        // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
-        database.getPageManager().suspendFlushAndExecute(database, () -> {
+    logger.logLine(0, "Executing full backup of database to '%s' (compression level %d, %s%s)...", backupFile,
+        compressionLevel, compressionThreads > 0 ? compressionThreads + " threads" : "single threaded",
+        maxMBPerSecond > 0 ? ", throttled at " + maxMBPerSecond + "MB/s" : "");
 
-          final long beginTime = System.currentTimeMillis();
+    final long beginTime = System.currentTimeMillis();
+    final AtomicLong databaseOrigSize = new AtomicLong();
+    // PageManager.suspendFlushAndExecute RUNS ITS CALLBACK THROUGH CodeUtils.executeIgnoringExceptions, WHICH LOGS AND
+    // SWALLOWS. WITHOUT CARRYING THE FAILURE OUT BY HAND, A BACKUP THAT DIED HALFWAY WOULD STILL GET ITS CENTRAL
+    // DIRECTORY WRITTEN AND BE REPORTED AS SUCCESSFUL - A TRUNCATED ARCHIVE THAT LOOKS VALID IS THE WORST POSSIBLE
+    // FAILURE MODE FOR A BACKUP
+    final AtomicReference<Exception> failure = new AtomicReference<>();
 
-          long databaseOrigSize = 0L;
-          databaseOrigSize += compressFile(zipFile, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
-          databaseOrigSize += compressFile(zipFile, ((LocalSchema) database.getSchema()).getConfigurationFile());
+    try {
+      writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, archive ->
+        // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
+        database.executeInReadLock(() -> {
+          // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
+          database.getPageManager().suspendFlushAndExecute(database, () -> {
+            try {
+              long origSize = 0L;
+              origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
+              origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
 
-          final Collection<ComponentFile> files = database.getFileManager().getFiles();
+              final Collection<ComponentFile> files = database.getFileManager().getFiles();
 
-          for (final ComponentFile file : new ArrayList<>(files))
-            if (file != null)
-              databaseOrigSize += compressFile(zipFile, file.getOSFile());
+              for (final ComponentFile file : new ArrayList<>(files))
+                if (file != null)
+                  origSize += compressFile(archive, file.getOSFile());
 
-          zipFile.close();
+              databaseOrigSize.set(origSize);
+            } catch (final Exception e) {
+              failure.set(e);
+              throw e;
+            }
+          });
+          return null;
+        }));
 
-          final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
+      if (failure.get() != null)
+        throw failure.get();
+    } catch (final Exception e) {
+      // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
+      backupFile.delete();
+      throw e;
+    }
 
-          final long databaseCompressedSize = backupFile.length();
+    final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
+    final long origSize = databaseOrigSize.get();
+    final long databaseCompressedSize = backupFile.length();
 
-          logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs,
-              FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString(databaseCompressedSize),
-              databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
-        });
-        return null;
-      }));
+    logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs,
+        FileUtils.getSizeAsString(origSize), FileUtils.getSizeAsString(databaseCompressedSize),
+        origSize > 0 ? (origSize - databaseCompressedSize) * 100 / origSize : 0);
   }
 
-  private long compressFile(final ZipOutputStream zipFile, final File inputFile) throws IOException {
+  private long compressFile(final BackupArchiveWriter archive, final File inputFile) throws IOException {
     logger.log(2, "- File '%s'...", inputFile.getName());
     if (inputFile.exists()) {
-      final long origSize = inputFile.length();
-
-      final ZipEntry zipEntry = new ZipEntry(inputFile.getName());
-      zipFile.putNextEntry(zipEntry);
-
-      try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
-        fileIn.transferTo(zipFile);
-      }
-      zipFile.closeEntry();
-
-      final long compressedSize = zipEntry.getCompressedSize();
+      final BackupArchiveWriter.EntryStats stats = archive.addFile(inputFile);
+      final long origSize = stats.uncompressedSize();
+      final long compressedSize = stats.compressedSize();
 
       logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
           FileUtils.getSizeAsString(compressedSize), origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
@@ -140,9 +158,40 @@ public class FullBackupFormat extends AbstractBackupFormat {
     return 0;
   }
 
-  private void encryptFile(final File backupFile, final BackupCallback callback) throws Exception {
+  private int resolveSetting(final Integer explicitValue, final GlobalConfiguration fallback) {
+    return explicitValue != null ? explicitValue : database.getConfiguration().getValueAsInteger(fallback);
+  }
+
+  /**
+   * Resolves the automatic thread count to half the available processors capped at 8: a backup runs alongside the live
+   * workload it is throttling, so claiming every core would trade the writers' CPU for the backup's own speed.
+   */
+  private int resolveThreads() {
+    final int configured = resolveSetting(settings.compressionThreads, GlobalConfiguration.BACKUP_COMPRESSION_THREADS);
+    if (configured >= 0)
+      return configured;
+    return Math.max(1, Math.min(Runtime.getRuntime().availableProcessors() / 2, 8));
+  }
+
+  private void writeArchive(final File backupFile, final int compressionLevel, final int compressionThreads,
+      final int maxMBPerSecond, final BackupCallback callback) throws Exception {
+    encryptFile(backupFile, out -> {
+      final IoThrottler throttler = new IoThrottler(maxMBPerSecond);
+      try (final BackupArchiveWriter archive = compressionThreads > 0 ?
+          new ParallelZipArchiveWriter(out, compressionLevel, compressionThreads, throttler) :
+          new ZipStreamArchiveWriter(out, compressionLevel, throttler)) {
+        callback.backup(archive);
+      }
+    });
+  }
+
+  private interface StreamCallback {
+    void write(OutputStream out) throws Exception;
+  }
+
+  private void encryptFile(final File backupFile, final StreamCallback callback) throws Exception {
     try (final FileOutputStream fos = new FileOutputStream(backupFile)) {
-      final ZipOutputStream zipFile;
+      final OutputStream archiveStream;
       if (settings.encryptionKey != null) {
         // Generate a random salt (e.g., 16 bytes)
         final byte[] salt = new byte[16];
@@ -170,16 +219,16 @@ public class FullBackupFormat extends AbstractBackupFormat {
         fos.write(iv);
 
         // Wrap the output stream with CipherOutputStream
-        final CipherOutputStream cos = new CipherOutputStream(fos, cipher);
-        zipFile = new ZipOutputStream(cos, StandardCharsets.UTF_8);
+        archiveStream = new CipherOutputStream(fos, cipher);
       } else
-        zipFile = new ZipOutputStream(fos, StandardCharsets.UTF_8);
+        archiveStream = fos;
 
-      zipFile.setLevel(9);
       try {
-        callback.backup(zipFile);
+        callback.write(archiveStream);
       } finally {
-        zipFile.close();
+        // ON THE ENCRYPTED PATH THIS FINALISES THE CIPHER; ON THE PLAIN ONE IT IS THE SAME STREAM THE try-WITH-RESOURCES
+        // ALREADY OWNS, AND CLOSING A FileOutputStream TWICE IS A NO-OP
+        archiveStream.close();
       }
     }
   }

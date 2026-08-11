@@ -1,0 +1,77 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.integration.backup;
+
+import java.util.concurrent.locks.LockSupport;
+
+/**
+ * Optional read-side rate limiter for the backup, so a backup of a large database cannot saturate the production disk.
+ * The cap is expressed in MB/s and applies to the bytes read from the database files, which is the I/O that competes
+ * with the live workload (the archive is normally written to a different device, and it is anyway much smaller).
+ * <p>
+ * Implemented as an absolute-deadline limiter rather than a per-window token bucket: the deadline for the n-th byte is
+ * {@code start + n / rate}, so the average rate over the whole backup is exactly the configured one and there is no
+ * drift accumulated by rounding a window. A backup that fell behind (slow disk, contention) is allowed to catch up for
+ * at most one second's worth of credit, which keeps the limiter from turning a transient stall into an unbounded burst.
+ * <p>
+ * Not thread safe by design: the backup reads its source files from a single thread and only the compression is
+ * parallel, so the limiter is touched by that one reader.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class IoThrottler {
+  private static final long ONE_SECOND_NANOS = 1_000_000_000L;
+
+  private final long bytesPerSecond;
+  private       long startNanos = -1;
+  private       long totalBytes = 0L;
+
+  /**
+   * @param maxMBPerSecond maximum read rate in MB/s. Values &lt;= 0 disable throttling entirely.
+   */
+  public IoThrottler(final int maxMBPerSecond) {
+    this.bytesPerSecond = maxMBPerSecond > 0 ? maxMBPerSecond * 1024L * 1024L : 0L;
+  }
+
+  public boolean isEnabled() {
+    return bytesPerSecond > 0;
+  }
+
+  /**
+   * Accounts for {@code bytes} just read and parks the calling thread for as long as it takes to stay under the cap.
+   */
+  public void throttle(final long bytes) {
+    if (bytesPerSecond <= 0)
+      return;
+
+    final long now = System.nanoTime();
+    if (startNanos < 0)
+      startNanos = now;
+
+    totalBytes += bytes;
+
+    final long deadline = startNanos + (long) (totalBytes / (double) bytesPerSecond * ONE_SECOND_NANOS);
+    final long delay = deadline - now;
+    if (delay > 0)
+      LockSupport.parkNanos(delay);
+    else if (-delay > ONE_SECOND_NANOS)
+      // FELL MORE THAN ONE SECOND BEHIND: FORGET THE EXCESS CREDIT INSTEAD OF LETTING IT BE SPENT AS AN UNBOUNDED BURST
+      startNanos += -delay - ONE_SECOND_NANOS;
+  }
+}
