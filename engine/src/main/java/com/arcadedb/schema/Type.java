@@ -455,17 +455,17 @@ public enum Type {
       } else if (targetClass.equals(int[].class) && value instanceof long[] src) {
         final int[] array = new int[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
+          array[i] = (int) narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property);
         return array;
       } else if (targetClass.equals(int[].class) && value instanceof double[] src) {
         final int[] array = new int[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
+          array[i] = (int) narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property);
         return array;
       } else if (targetClass.equals(int[].class) && value instanceof float[] src) {
         final int[] array = new int[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
+          array[i] = (int) narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property);
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to long[]. LONG is the widest integral type, so only the NaN guard applies (no
@@ -479,12 +479,12 @@ public enum Type {
         // LONG is the widest integral type, so only the NaN guard applies (no narrower range to check - see narrowToIntegral()).
         final long[] array = new long[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property).longValue();
+          array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property);
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof float[] src) {
         final long[] array = new long[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property).longValue();
+          array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property);
         return array;
       } else if (targetClass.equals(short[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to short[]
@@ -496,17 +496,17 @@ public enum Type {
       } else if (targetClass.equals(short[].class) && value instanceof long[] src) {
         final short[] array = new short[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
+          array[i] = (short) narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property);
         return array;
       } else if (targetClass.equals(short[].class) && value instanceof double[] src) {
         final short[] array = new short[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
+          array[i] = (short) narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property);
         return array;
       } else if (targetClass.equals(short[].class) && value instanceof float[] src) {
         final short[] array = new short[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
+          array[i] = (short) narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property);
         return array;
       } else if (targetClass.isEnum()) {
         if (value instanceof Number number)
@@ -834,6 +834,57 @@ public enum Type {
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
     return longValue;
+  }
+
+  /**
+   * Primitive-typed sibling of {@link #narrowToIntegral(Number, long, long, String, Property)}, used by the
+   * {@code double[]}/{@code float[]}/{@code long[]} array-narrowing branches of {@link #convert} so a large
+   * source array is range/NaN-checked without boxing every element into a {@link Double}/{@link Float}/{@link Long}
+   * just to unbox it back out again. {@code BigDecimal}/{@code BigInteger} cannot appear in a primitive array, so
+   * unlike the {@code Number} overload this needs no special-casing for either.
+   */
+  private static long narrowToIntegral(final double value, final long min, final long max, final String targetType, final Property property) {
+    if (Double.isNaN(value))
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    final long longValue = (long) value;
+    if (longValue < min || longValue > max)
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    return longValue;
+  }
+
+  /** See {@link #narrowToIntegral(double, long, long, String, Property)}. */
+  private static long narrowToIntegral(final float value, final long min, final long max, final String targetType, final Property property) {
+    if (Float.isNaN(value))
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    final long longValue = (long) value;
+    if (longValue < min || longValue > max)
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    return longValue;
+  }
+
+  /**
+   * See {@link #narrowToIntegral(double, long, long, String, Property)}. No NaN check: a {@code long} cannot hold
+   * one.
+   */
+  private static long narrowToIntegral(final long value, final long min, final long max, final String targetType, final Property property) {
+    if (value < min || value > max)
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    return value;
   }
 
   public static Number increment(final Number a, final Number b) {
