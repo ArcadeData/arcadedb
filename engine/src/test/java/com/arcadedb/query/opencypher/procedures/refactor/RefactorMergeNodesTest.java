@@ -192,4 +192,67 @@ class RefactorMergeNodesTest {
         "MATCH (a:Person {name:'A'}) CALL apoc.refactor.mergeNodes([a], {}) YIELD node RETURN node").hasNext())
         .isInstanceOf(CommandSemanticException.class);
   }
+
+  @Test
+  void duplicateAbsorbedNodeInTheListIsDeduplicatedNotCrashed() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    database.commit();
+    final String aId = a.getIdentity().toString();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) CALL apoc.refactor.mergeNodes([a,b,b], {}) YIELD node RETURN node");
+    final String survivorId = rs.next().getVertex().get().getIdentity().toString();
+    database.commit();
+
+    assertThat(survivorId).isEqualTo(aId);
+    assertThatThrownBy(() -> database.lookupByRID(b.getIdentity(), true))
+        .isInstanceOf(RecordNotFoundException.class);
+  }
+
+  @Test
+  void nodesCollapsingToFewerThanTwoAfterDeduplicationThrows() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.commit();
+
+    assertThatThrownBy(() -> database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.mergeNodes([a,a], {}) YIELD node RETURN node").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void threeWayMergeRewiresEdgesFromEveryAbsorbedNode() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Person").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Person").set("name", "D").save();
+    b.newEdge("KNOWS", d, "since", 2020L).save();
+    c.newEdge("KNOWS", d, "since", 2021L).save();
+    database.commit();
+
+    // properties: 'discard' keeps the survivor's own 'name' - see edgesFromAbsorbedNodeAreRewiredToSurvivor
+    // above for why the default 'overwrite' policy would otherwise break the post-merge MATCH {name:'A'}.
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}), (c:Person {name:'C'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b,c], {properties: 'discard'}) YIELD node RETURN node");
+    final String survivorId = rs.next().getVertex().get().getIdentity().toString();
+    database.commit();
+
+    assertThat(survivorId).isEqualTo(a.getIdentity().toString());
+    assertThatThrownBy(() -> database.lookupByRID(b.getIdentity(), true)).isInstanceOf(RecordNotFoundException.class);
+    assertThatThrownBy(() -> database.lookupByRID(c.getIdentity(), true)).isInstanceOf(RecordNotFoundException.class);
+
+    final ResultSet rewiredEdges = database.query("opencypher",
+        "MATCH (a:Person {name:'A'})-[r:KNOWS]->(d:Person {name:'D'}) RETURN r.since AS since ORDER BY r.since");
+    assertThat(rewiredEdges.hasNext()).isTrue();
+    assertThat(rewiredEdges.next().<Long>getProperty("since")).isEqualTo(2020L);
+    assertThat(rewiredEdges.hasNext()).isTrue();
+    assertThat(rewiredEdges.next().<Long>getProperty("since")).isEqualTo(2021L);
+    assertThat(rewiredEdges.hasNext()).isFalse();
+  }
 }

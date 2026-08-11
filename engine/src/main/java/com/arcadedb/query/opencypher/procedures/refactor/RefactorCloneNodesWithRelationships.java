@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -37,6 +38,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.stream.Stream;
 
 /**
@@ -47,6 +49,12 @@ import java.util.stream.Stream;
  * cloned reconnects the two clones rather than the originals; a relationship to a node outside the given
  * list reconnects the clone to that same original node. The source nodes and their relationships are
  * left untouched.
+ * </p>
+ * <p>
+ * Both phases are best-effort per item, never aborting the whole call: a node that fails to clone gets
+ * its own {@code (input, null, error)} row and is excluded from the second, edge-cloning phase, and an
+ * edge that fails to clone (e.g. a unique-index conflict on the new edge) is skipped rather than losing
+ * the yield rows already produced for the nodes that did clone successfully.
  * </p>
  * <p>
  * {@code config.skipProperties}, when given, is a list of property names excluded from the clone.
@@ -100,8 +108,9 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final List<Vertex> nodes = extractVertices(args[0]);
-    final Set<String> skipProperties = extractSkipProperties(args[1]);
+    final List<Vertex> nodes = RefactorProcedureArgs.extractVertices(getName(), args[0]);
+    final Map<String, Object> config = RefactorProcedureArgs.extractConfig(getName(), args[1]);
+    final Set<String> skipProperties = extractSkipProperties(config);
     final Database database = context.getDatabase();
 
     final Map<RID, Vertex> cloneOf = new LinkedHashMap<>();
@@ -131,7 +140,13 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
       for (final Edge edge : original.getEdges()) {
         if (!processedEdges.add(edge.getIdentity()))
           continue;
-        cloneEdge(edge, cloneOf);
+        try {
+          cloneEdge(edge, cloneOf);
+        } catch (final Exception e) {
+          // best-effort: one bad edge (e.g. a unique-index conflict on the new edge) must not cost
+          // the rows already produced for the nodes that cloned successfully
+          LogManager.instance().log(this, Level.WARNING, "Error cloning edge %s while executing %s()", e, edge.getIdentity(), getName());
+        }
       }
     }
 
@@ -160,27 +175,8 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
     return result;
   }
 
-  private List<Vertex> extractVertices(final Object arg) {
-    if (!(arg instanceof List<?> list))
-      throw new IllegalArgumentException(getName() + "(): nodes must be a list, got " +
-          (arg == null ? "null" : arg.getClass().getSimpleName()));
-
-    final List<Vertex> vertices = new ArrayList<>();
-    for (final Object item : list) {
-      if (!(item instanceof Vertex vertex))
-        throw new IllegalArgumentException(getName() + "(): every element of nodes must be a node, got " +
-            (item == null ? "null" : item.getClass().getSimpleName()));
-      vertices.add(vertex);
-    }
-    return vertices;
-  }
-
-  @SuppressWarnings("unchecked")
-  private Set<String> extractSkipProperties(final Object configArg) {
-    if (!(configArg instanceof Map))
-      return Collections.emptySet();
-
-    final Object skip = ((Map<String, Object>) configArg).get("skipProperties");
+  private Set<String> extractSkipProperties(final Map<String, Object> config) {
+    final Object skip = config.get("skipProperties");
     if (!(skip instanceof List))
       return Collections.emptySet();
 

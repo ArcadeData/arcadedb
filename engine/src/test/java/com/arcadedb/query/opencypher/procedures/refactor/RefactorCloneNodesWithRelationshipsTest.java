@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the apoc.refactor.cloneNodesWithRelationships Cypher procedure
@@ -162,5 +163,16 @@ class RefactorCloneNodesWithRelationshipsTest {
     final ResultSet originalEdges = database.query("opencypher",
         "MATCH (a:Person {name:'A'})-[r:KNOWS]->(b:Person {name:'B'}) RETURN r");
     assertThat(originalEdges.hasNext()).isTrue();
+  }
+
+  @Test
+  void nonMapConfigThrows() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.commit();
+
+    assertThatThrownBy(() -> database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a], 'not-a-map') YIELD output RETURN output").hasNext())
+        .hasCauseInstanceOf(IllegalArgumentException.class);
   }
 }

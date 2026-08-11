@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.refactor;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
@@ -29,7 +30,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -100,20 +101,18 @@ public class RefactorMergeNodes implements CypherProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final List<Vertex> nodes = extractVertices(args[0]);
+    final List<Vertex> nodes = deduplicateByIdentity(RefactorProcedureArgs.extractVertices(getName(), args[0]));
     if (nodes.size() < 2)
-      throw new CommandSemanticException(getName() + "(): at least two nodes are required to merge");
+      throw new CommandSemanticException(getName() + "(): at least two distinct nodes are required to merge");
 
-    final Map<String, Object> config = extractMap(args[1]);
+    final Map<String, Object> config = RefactorProcedureArgs.extractConfig(getName(), args[1]);
     final String globalPolicy = extractPropertiesPolicy(config);
 
     final Vertex survivor = nodes.get(0);
-    MutableVertex survivorMutable = survivor.modify();
+    final MutableVertex survivorMutable = survivor.modify();
 
     for (int i = 1; i < nodes.size(); i++) {
       final Vertex absorbed = nodes.get(i);
-      if (absorbed.getIdentity().equals(survivorMutable.getIdentity()))
-        continue;
 
       mergeProperties(survivorMutable, absorbed, globalPolicy);
       survivorMutable.save();
@@ -124,6 +123,20 @@ public class RefactorMergeNodes implements CypherProcedure {
     }
 
     return createResultStream(survivorMutable);
+  }
+
+  /**
+   * Collapses repeated identities to their first occurrence, keeping insertion order. Without this, a
+   * node listed twice among the absorbed ones (e.g. {@code mergeNodes([a, b, b], {})}) would be
+   * processed a second time after already being merged away, and {@code absorbed.modify()} would raise
+   * an uncaught {@link com.arcadedb.exception.RecordNotFoundException} instead of a clean validation
+   * error - or, if it reappears as the survivor's own identity, a redundant no-op self-merge.
+   */
+  private List<Vertex> deduplicateByIdentity(final List<Vertex> nodes) {
+    final Map<RID, Vertex> byIdentity = new LinkedHashMap<>();
+    for (final Vertex node : nodes)
+      byIdentity.putIfAbsent(node.getIdentity(), node);
+    return new ArrayList<>(byIdentity.values());
   }
 
   private void mergeProperties(final MutableVertex survivor, final Vertex absorbed, final String policy) {
@@ -176,30 +189,6 @@ public class RefactorMergeNodes implements CypherProcedure {
     final ResultInternal result = new ResultInternal();
     result.setProperty("node", node);
     return Stream.of(result);
-  }
-
-  private List<Vertex> extractVertices(final Object arg) {
-    if (!(arg instanceof List<?> list))
-      throw new IllegalArgumentException(getName() + "(): nodes must be a list, got " +
-          (arg == null ? "null" : arg.getClass().getSimpleName()));
-
-    final List<Vertex> vertices = new ArrayList<>();
-    for (final Object item : list) {
-      if (!(item instanceof Vertex vertex))
-        throw new IllegalArgumentException(getName() + "(): every element of nodes must be a node, got " +
-            (item == null ? "null" : item.getClass().getSimpleName()));
-      vertices.add(vertex);
-    }
-    return vertices;
-  }
-
-  @SuppressWarnings("unchecked")
-  private Map<String, Object> extractMap(final Object arg) {
-    if (arg == null)
-      return Collections.emptyMap();
-    if (!(arg instanceof Map))
-      throw new IllegalArgumentException(getName() + "(): config must be a map, got " + arg.getClass().getSimpleName());
-    return (Map<String, Object>) arg;
   }
 
   private String extractPropertiesPolicy(final Map<String, Object> config) {

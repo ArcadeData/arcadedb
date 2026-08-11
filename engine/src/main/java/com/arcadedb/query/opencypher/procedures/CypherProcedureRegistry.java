@@ -99,11 +99,11 @@ import com.arcadedb.query.opencypher.procedures.meta.MetaSchema;
 import com.arcadedb.query.opencypher.procedures.meta.MetaStats;
 import com.arcadedb.query.opencypher.procedures.path.PathExpand;
 import com.arcadedb.query.opencypher.procedures.path.PathExpandConfig;
-import com.arcadedb.query.opencypher.procedures.refactor.RefactorCloneNodesWithRelationships;
-import com.arcadedb.query.opencypher.procedures.refactor.RefactorMergeNodes;
 import com.arcadedb.query.opencypher.procedures.path.PathSpanningTree;
 import com.arcadedb.query.opencypher.procedures.path.PathSubgraphAll;
 import com.arcadedb.query.opencypher.procedures.path.PathSubgraphNodes;
+import com.arcadedb.query.opencypher.procedures.refactor.RefactorCloneNodesWithRelationships;
+import com.arcadedb.query.opencypher.procedures.refactor.RefactorMergeNodes;
 
 import java.util.Collection;
 import java.util.Collections;

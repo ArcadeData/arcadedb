@@ -102,18 +102,17 @@ public class DoWhen implements CypherProcedure {
     final QueryEngine queryEngine = database.getQueryEngine("opencypher");
     final boolean idempotent = queryEngine.analyze(query).isIdempotent();
 
-    final ResultSet resultSet = idempotent ?
-        database.query("opencypher", query, params) :
-        database.command("opencypher", query, params);
-
     final List<Result> rows = new ArrayList<>();
-    while (resultSet.hasNext()) {
-      final Result row = resultSet.next();
-      final ResultInternal wrapped = new ResultInternal();
-      wrapped.setProperty("value", row.toMap());
-      rows.add(wrapped);
+    try (final ResultSet resultSet = idempotent ?
+        database.query("opencypher", query, params) :
+        database.command("opencypher", query, params)) {
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        final ResultInternal wrapped = new ResultInternal();
+        wrapped.setProperty("value", row.toMap());
+        rows.add(wrapped);
+      }
     }
-    resultSet.close();
 
     return rows.stream();
   }
