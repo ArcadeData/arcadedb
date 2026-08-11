@@ -253,6 +253,24 @@ class BackupCompressionIT {
     TestHelper.checkActiveDatabases();
   }
 
+  /**
+   * The out-of-range case takes a different route from the non-numeric one: it parses cleanly in the statement and is
+   * only refused further in, inside {@code Backup.setCompressionLevel}, which reaches the caller wrapped in an
+   * {@code InvocationTargetException} from the reflective boundary. Worth its own test precisely because the two look
+   * like the same check and are not.
+   */
+  @Test
+  void sqlRejectsAnOutOfRangeSetting() {
+    try (final Database database = createDatabase()) {
+      assertThatThrownBy(() -> database.command("sql", "backup database file://range.zip with compressionLevel = 20"))
+          .hasMessageContaining("compressionLevel");
+      assertThatThrownBy(() -> database.command("sql", "backup database file://range.zip with compressionThreads = -2"))
+          .hasMessageContaining("compressionThreads");
+      assertThat(new File("range.zip")).doesNotExist();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
   @Test
   void sqlRejectsANonNumericSetting() {
     try (final Database database = createDatabase()) {

@@ -520,6 +520,9 @@ public enum GlobalConfiguration {
       single-threaded java.util.zip.ZipOutputStream writer, kept as an escape hatch. The archive is an ordinary ZIP \
       whichever value is used: old backups restore and new backups restore with the unchanged restore path. Peak \
       heap for the parallel path is about 2 chunk buffers per thread (~4 MB each), so ~32 MB at 8 threads.""",
+      // THE 256 IS THE SAME BOUND AS BackupSettings.MAX_COMPRESSION_THREADS, WHICH THE CLI, THE Backup API AND SQL
+      // VALIDATE AGAINST. IT HAS TO BE REPEATED HERE RATHER THAN REFERENCED BECAUSE THE ENGINE CANNOT DEPEND ON THE
+      // INTEGRATION MODULE: CHANGE ONE AND CHANGE THE OTHER
       Integer.class, -1, integerRangeAsStrings(-1, 256)),
 
   BACKUP_MAX_MB_PER_SECOND("arcadedb.backup.maxMBPerSecond", SCOPE.DATABASE,

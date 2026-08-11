@@ -119,6 +119,27 @@ class BackupSettingsTest {
     }
   }
 
+  /**
+   * The thread bound exists twice - {@link BackupSettings#MAX_COMPRESSION_THREADS} for the CLI, the API and SQL, and a
+   * repeated literal in {@code GlobalConfiguration} because the engine module cannot depend on this one. A comment
+   * asking the next editor to change both is not enforcement; this is. It fails the moment they drift.
+   */
+  @Test
+  void backupThreadBoundMatchesTheGlobalConfiguration() {
+    final int oldThreads = GlobalConfiguration.BACKUP_COMPRESSION_THREADS.getValueAsInteger();
+    try {
+      GlobalConfiguration.BACKUP_COMPRESSION_THREADS.setValue(BackupSettings.MAX_COMPRESSION_THREADS);
+      assertThat(GlobalConfiguration.BACKUP_COMPRESSION_THREADS.getValueAsInteger())
+          .isEqualTo(BackupSettings.MAX_COMPRESSION_THREADS);
+
+      assertThatThrownBy(
+          () -> GlobalConfiguration.BACKUP_COMPRESSION_THREADS.setValue(BackupSettings.MAX_COMPRESSION_THREADS + 1))
+          .isInstanceOf(IllegalArgumentException.class);
+    } finally {
+      GlobalConfiguration.BACKUP_COMPRESSION_THREADS.setValue(oldThreads);
+    }
+  }
+
   @Test
   void throttlerIsDisabledForNonPositiveRates() {
     assertThat(new IoThrottler(0).isEnabled()).isFalse();

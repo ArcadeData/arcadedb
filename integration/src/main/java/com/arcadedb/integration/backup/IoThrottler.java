@@ -71,7 +71,7 @@ public class IoThrottler {
     final long deadline = startNanos + totalBytes * ONE_SECOND_NANOS / bytesPerSecond;
     final long delay = deadline - now;
     if (delay > 0)
-      LockSupport.parkNanos(delay);
+      parkUntil(deadline);
     else if (-delay > ONE_SECOND_NANOS)
       // FELL MORE THAN ONE SECOND BEHIND: FORGET THE EXCESS CREDIT INSTEAD OF LETTING IT BE SPENT AS AN UNBOUNDED BURST
       startNanos += -delay - ONE_SECOND_NANOS;
@@ -82,6 +82,23 @@ public class IoThrottler {
       // AND BECAUSE THE NEW BASELINE IS THE EXACT OLD DEADLINE RATHER THAN 'now', NO ROUNDING DRIFT ACCUMULATES
       startNanos = deadline;
       totalBytes = 0L;
+    }
+  }
+
+  /**
+   * {@link LockSupport#parkNanos} is allowed to return early for no reason at all, so a single call would let a read
+   * through ahead of its deadline. The absolute-deadline arithmetic would absorb that on the next call, but looping is
+   * cheap and makes the cap hold exactly rather than on average.
+   * <p>
+   * An interrupt breaks the loop instead of being spun through: the flag stays set for the caller (the backup's reader
+   * thread) to act on, which is the opposite of what ignoring it and parking again would do.
+   */
+  private static void parkUntil(final long deadlineNanos) {
+    while (!Thread.currentThread().isInterrupted()) {
+      final long remaining = deadlineNanos - System.nanoTime();
+      if (remaining <= 0)
+        return;
+      LockSupport.parkNanos(remaining);
     }
   }
 }

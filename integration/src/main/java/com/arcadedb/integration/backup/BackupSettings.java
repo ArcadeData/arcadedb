@@ -31,6 +31,10 @@ public class BackupSettings {
    * {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_THREADS} so the CLI, the API, SQL and the global
    * configuration all reject the same values. Far above any core count that makes sense; the point is to bound the
    * pool, not to be a useful setting up there.
+   * <p>
+   * The engine module cannot depend on this one, so {@code BACKUP_COMPRESSION_THREADS} repeats the literal instead of
+   * referencing this constant. Change one and change the other; {@code backupThreadBoundMatchesTheGlobalConfiguration}
+   * fails if they drift.
    */
   public static final int MAX_COMPRESSION_THREADS = 256;
 
