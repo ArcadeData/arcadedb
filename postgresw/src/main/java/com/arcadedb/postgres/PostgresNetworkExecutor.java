@@ -1315,6 +1315,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
           final byte[] paramValue = new byte[(int) paramSize];
           channel.readBytes(paramValue);
+          // The length prefix and value bytes for this parameter are now fully consumed off the wire,
+          // regardless of whether deserialize() below succeeds. Advance paramsConsumed here (rather than
+          // after a successful deserialize()) so the catch block's drain/recovery loop always restarts at
+          // the correct wire offset if deserialize() throws.
+          paramsConsumed = i + 1;
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().getId());
 
@@ -1340,7 +1345,6 @@ public class PostgresNetworkExecutor extends Thread {
             LogManager.instance().log(this, Level.INFO, "PSQL: bind deserializing param %d typeCode=%d formatCode=%d (thread=%s)",
                 i, typeCode, formatCode, Thread.currentThread().getId());
           portal.parameterValues.add(PostgresType.deserialize(typeCode, formatCode, paramValue));
-          paramsConsumed = i + 1;
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d deserialized (thread=%s)", i, Thread.currentThread().getId());
         }
