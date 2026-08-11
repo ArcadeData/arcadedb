@@ -460,8 +460,12 @@ public enum GlobalConfiguration {
   TX_RETRIES("arcadedb.txRetries", SCOPE.DATABASE, "Number of retries in case of MVCC exception", Integer.class, 3),
 
   TX_RETRY_DELAY("arcadedb.txRetryDelay", SCOPE.DATABASE,
-      "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
+      "Cap in milliseconds on the random wait before the next transaction retry (issue #5587: exponential backoff with full jitter, min(this cap, TX_RETRY_DELAY_BASE * 2^attempt)). Helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket). Set to 0 to disable the delay entirely",
       Integer.class, 100),
+
+  TX_RETRY_DELAY_BASE("arcadedb.txRetryDelayBase", SCOPE.DATABASE,
+      "Starting size in milliseconds of the transaction retry backoff window, before doubling on each further attempt up to the TX_RETRY_DELAY cap (issue #5587). Kept small by default so light contention (which resolves in a handful of attempts) sees a shorter wait than before, while a long-running retry loop still saturates at the same worst-case cap as a single flat TX_RETRY_DELAY window",
+      Integer.class, 2),
 
   DELETE_TOLERATE_BROKEN_CHAIN("arcadedb.deleteTolerateBrokenChain", SCOPE.DATABASE,
       "When deleting a record whose own multi-page chunk chain is structurally broken, complete the deletion anyway instead of failing (for a vertex, this also disconnects its edges best-effort, which can leave dangling edges if some cannot be reached). Disabled by default: such a delete fails loudly instead, requiring an explicit CHECK DATABASE FIX to repair or remove the broken record deliberately - CHECK DATABASE FIX itself is unaffected by this setting either way, so the record is never permanently stuck (issues #4420/#4432). Enable only to restore the older behavior of a normal DELETE silently forcing through instead",
