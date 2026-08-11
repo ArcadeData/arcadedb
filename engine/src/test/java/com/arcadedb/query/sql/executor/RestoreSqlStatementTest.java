@@ -192,6 +192,52 @@ class RestoreSqlStatementTest extends TestHelper {
   }
 
   @Test
+  void restoreDocumentUpdatesBucketRecordCount() {
+    // #6069: RESTORE DOCUMENT put the record back but never folded the bucket's cached-count delta the way a
+    // normal INSERT does, so count(*) kept reporting one fewer than a full scan - and the drift is persisted in
+    // statistics.json, so it survives a reopen too. A normal SQL DELETE (unlike the raw bucket.deleteRecord() the
+    // other tests in this class use to simulate an out-of-band delete) DOES fold its -1 correctly, so this test
+    // isolates RESTORE's own missing +1 rather than conflating it with delete-path bookkeeping.
+    final RID[] rid = new RID[3];
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        rid[i] = database.newDocument(DOC_TYPE).set("i", i).save().getIdentity();
+    });
+
+    database.transaction(() -> database.command("sql", "DELETE FROM " + rid[1]));
+    assertThat(countByQuery()).isEqualTo(2);
+    assertThat(countByScan()).isEqualTo(2);
+
+    database.transaction(
+        () -> database.command("sql", "RESTORE DOCUMENT " + DOC_TYPE + " RID " + rid[1] + " SET i = 1"));
+
+    assertThat(countByScan()).isEqualTo(3);
+    assertThat(countByQuery()).isEqualTo(3);
+
+    reopenDatabase();
+
+    assertThat(countByScan()).isEqualTo(3);
+    assertThat(countByQuery()).isEqualTo(3);
+  }
+
+  private long countByQuery() {
+    try (ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + DOC_TYPE)) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  private long countByScan() {
+    long scanned = 0;
+    try (ResultSet rs = database.query("sql", "SELECT FROM " + DOC_TYPE)) {
+      while (rs.hasNext()) {
+        rs.next();
+        scanned++;
+      }
+    }
+    return scanned;
+  }
+
+  @Test
   void restoreRefusesAnOccupiedSlotViaSql() {
     final DatabaseInternal db = (DatabaseInternal) database;
     final RID[] rid = new RID[1];
