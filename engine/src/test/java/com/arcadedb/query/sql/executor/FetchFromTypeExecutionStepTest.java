@@ -19,7 +19,12 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.WhereClause;
 import org.junit.jupiter.api.Test;
+
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -244,5 +249,33 @@ class FetchFromTypeExecutionStepTest extends TestHelper {
 
     assertThat(count).isEqualTo(2); // C and D
     result.close();
+  }
+
+  /**
+   * Regression test: the slow-scan WARNING log must name the properties a filtered query is scanning on,
+   * so an operator reading the log knows what to index instead of just how big the type is.
+   */
+  @Test
+  void shouldExtractFilteredPropertiesFromWhereClause() throws Exception {
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE age = 30")).containsExactlyInAnyOrder("age");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE 30 < age")).containsExactlyInAnyOrder("age");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE age > 30 AND name = 'Bob'"))
+        .containsExactlyInAnyOrder("age", "name");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE age > 30 OR name = 'Bob'"))
+        .containsExactlyInAnyOrder("age", "name");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE status IN ['A', 'B']"))
+        .containsExactlyInAnyOrder("status");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE age BETWEEN 10 AND 20"))
+        .containsExactlyInAnyOrder("age");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE email IS NULL")).containsExactlyInAnyOrder("email");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE email IS NOT NULL")).containsExactlyInAnyOrder("email");
+    assertThat(extractFilteredProperties("SELECT * FROM X WHERE NOT (age > 30)")).containsExactlyInAnyOrder("age");
+    assertThat(extractFilteredProperties("SELECT * FROM X")).isEmpty();
+  }
+
+  private Set<String> extractFilteredProperties(final String sql) throws Exception {
+    final SelectStatement select = (SelectStatement) new SQLAntlrParser(null).parse(sql);
+    final WhereClause whereClause = select.getWhereClause();
+    return FetchFromTypeExecutionStep.extractFilteredProperties(whereClause);
   }
 }
