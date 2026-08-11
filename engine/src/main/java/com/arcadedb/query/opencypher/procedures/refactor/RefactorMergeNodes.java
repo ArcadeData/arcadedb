@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.procedures.refactor;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
@@ -30,7 +29,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -101,7 +99,7 @@ public class RefactorMergeNodes implements CypherProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final List<Vertex> nodes = deduplicateByIdentity(RefactorProcedureArgs.extractVertices(getName(), args[0]));
+    final List<Vertex> nodes = RefactorProcedureArgs.extractVertices(getName(), args[0]);
     if (nodes.size() < 2)
       throw new CommandSemanticException(getName() + "(): at least two distinct nodes are required to merge");
 
@@ -123,20 +121,6 @@ public class RefactorMergeNodes implements CypherProcedure {
     }
 
     return createResultStream(survivorMutable);
-  }
-
-  /**
-   * Collapses repeated identities to their first occurrence, keeping insertion order. Without this, a
-   * node listed twice among the absorbed ones (e.g. {@code mergeNodes([a, b, b], {})}) would be
-   * processed a second time after already being merged away, and {@code absorbed.modify()} would raise
-   * an uncaught {@link com.arcadedb.exception.RecordNotFoundException} instead of a clean validation
-   * error - or, if it reappears as the survivor's own identity, a redundant no-op self-merge.
-   */
-  private List<Vertex> deduplicateByIdentity(final List<Vertex> nodes) {
-    final Map<RID, Vertex> byIdentity = new LinkedHashMap<>();
-    for (final Vertex node : nodes)
-      byIdentity.putIfAbsent(node.getIdentity(), node);
-    return new ArrayList<>(byIdentity.values());
   }
 
   private void mergeProperties(final MutableVertex survivor, final Vertex absorbed, final String policy) {
@@ -166,6 +150,9 @@ public class RefactorMergeNodes implements CypherProcedure {
             combined.add(absorbedValue);
           survivor.set(propertyName, combined);
         }
+        // unreachable in practice - extractPropertiesPolicy validates policy against VALID_POLICIES
+        // before mergeProperties is ever called; kept as a defensive fallback against the two drifting
+        // apart under a future edit, e.g. a new call site that skips extractPropertiesPolicy
         default -> throw new CommandSemanticException(getName() + "(): unknown properties policy '" + policy + "'");
       }
     }

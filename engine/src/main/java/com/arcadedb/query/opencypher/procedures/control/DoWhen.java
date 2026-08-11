@@ -49,6 +49,19 @@ import java.util.stream.Stream;
  * silently pick a branch rather than surfacing the caller's mistake.
  * </p>
  * <p>
+ * {@code ifQuery} is type-checked unconditionally, even on a call where {@code condition} is false and
+ * {@code ifQuery} never runs - a malformed call fails the same way regardless of which branch is taken,
+ * rather than only failing once someone happens to trigger the true branch. {@code elseQuery} differs
+ * only in that {@code null} is accepted, meaning "no else branch": the call yields zero rows rather than
+ * running anything.
+ * </p>
+ * <p>
+ * {@code ifQuery}/{@code elseQuery} run as Cypher against this database with whatever privileges the
+ * caller already has - same as real APOC's {@code apoc.do.when}/{@code apoc.cypher.doIt}, and no more
+ * of a new risk than any other place in the engine that runs a caller-supplied command string. As with
+ * those, never build either argument by concatenating untrusted input.
+ * </p>
+ * <p>
  * Example:
  * <pre>
  * CALL apoc.do.when(size($list) > 0, 'RETURN $list[0] AS first', 'RETURN null AS first', {list: $list})

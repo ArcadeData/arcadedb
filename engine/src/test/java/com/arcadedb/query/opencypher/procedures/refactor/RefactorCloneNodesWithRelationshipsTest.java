@@ -166,6 +166,36 @@ class RefactorCloneNodesWithRelationshipsTest {
   }
 
   @Test
+  void duplicateNodeInTheListProducesOneCloneWithAllItsEdges() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex external = database.newVertex("Person").set("name", "External").save();
+    a.newEdge("KNOWS", external, "since", 2020L).save();
+    database.commit();
+
+    // Before nodes were deduplicated, [a,a] created TWO clones but cloneOf (keyed by the original's
+    // identity) only remembered the second, so the edge phase wired every one of 'a's edges onto that
+    // second clone while the first clone - still yielded with error=null - silently got none.
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a,a], {}) "
+            + "YIELD input, output, error RETURN input, output, error");
+    final List<Result> rows = new ArrayList<>();
+    while (rs.hasNext())
+      rows.add(rs.next());
+    database.commit();
+
+    assertThat(rows).hasSize(1);
+    final Vertex output = rows.get(0).getProperty("output");
+
+    final ResultSet clonedEdges = database.query("opencypher",
+        "MATCH (c:Person)-[r:KNOWS]->(e:Person {name:'External'}) WHERE id(c) = $cloneId RETURN r.since AS since",
+        java.util.Map.of("cloneId", output.getIdentity().toString()));
+    assertThat(clonedEdges.hasNext()).isTrue();
+    assertThat(clonedEdges.next().<Long>getProperty("since")).isEqualTo(2020L);
+  }
+
+  @Test
   void nonMapConfigThrows() {
     database.begin();
     database.newVertex("Person").set("name", "A").save();

@@ -114,4 +114,32 @@ class DoWhenTest {
     assertThatThrownBy(() -> database.query("opencypher", "CALL apoc.do.when(true, 'RETURN 1') YIELD value RETURN value").hasNext())
         .isInstanceOf(CommandSemanticException.class);
   }
+
+  @Test
+  void nonBooleanConditionThrows() {
+    assertThatThrownBy(() -> database.query("opencypher",
+        "CALL apoc.do.when(1, 'RETURN 1 AS x', '', {}) YIELD value RETURN value").hasNext())
+        .hasCauseInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void nonStringIfQueryThrows() {
+    assertThatThrownBy(() -> database.query("opencypher",
+        "CALL apoc.do.when(true, 1, '', {}) YIELD value RETURN value").hasNext())
+        .hasCauseInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void nonStringElseQueryThrows() {
+    assertThatThrownBy(() -> database.query("opencypher",
+        "CALL apoc.do.when(false, 'RETURN 1 AS x', 1, {}) YIELD value RETURN value").hasNext())
+        .hasCauseInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void nonMapParamsThrows() {
+    assertThatThrownBy(() -> database.query("opencypher",
+        "CALL apoc.do.when(true, 'RETURN 1 AS x', '', 'not-a-map') YIELD value RETURN value").hasNext())
+        .hasCauseInstanceOf(IllegalArgumentException.class);
+  }
 }

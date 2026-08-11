@@ -141,6 +141,37 @@ class RefactorMergeNodesTest {
   }
 
   @Test
+  void unknownPropertiesPolicyThrows() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.newVertex("Person").set("name", "B").save();
+    database.commit();
+
+    assertThatThrownBy(() -> database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'bogus'}) YIELD node RETURN node").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void combinePolicyAccumulatesAcrossMultipleAbsorbedNodes() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", "x").save();
+    database.newVertex("Person").set("name", "B").set("tag", "y").save();
+    database.newVertex("Person").set("name", "C").set("tag", "z").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}), (c:Person {name:'C'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b,c], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(java.util.List.of("x", "y", "z"));
+  }
+
+  @Test
   void edgesFromAbsorbedNodeAreRewiredToSurvivor() {
     database.begin();
     final MutableVertex b = database.newVertex("Person").set("name", "B").save();

@@ -18,10 +18,12 @@
  */
 package com.arcadedb.query.opencypher.procedures.refactor;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -33,19 +35,28 @@ final class RefactorProcedureArgs {
   private RefactorProcedureArgs() {
   }
 
+  /**
+   * Parses {@code arg} into a list of distinct nodes, collapsing a repeated identity to its first
+   * occurrence (keeping insertion order). Neither {@code mergeNodes} nor {@code cloneNodesWithRelationships}
+   * has a sound way to handle the same node appearing twice - {@code mergeNodes} would re-absorb an
+   * already-deleted record, and {@code cloneNodesWithRelationships} would silently orphan one of the two
+   * resulting clones (its edges all land on whichever clone {@code cloneOf} was overwritten with last) -
+   * so both are better served by treating the list as a set of nodes than by either crashing or producing
+   * an output the caller has no way to detect is incomplete.
+   */
   static List<Vertex> extractVertices(final String procedureName, final Object arg) {
     if (!(arg instanceof List<?> list))
       throw new IllegalArgumentException(procedureName + "(): nodes must be a list, got " +
           (arg == null ? "null" : arg.getClass().getSimpleName()));
 
-    final List<Vertex> vertices = new ArrayList<>();
+    final Map<RID, Vertex> byIdentity = new LinkedHashMap<>();
     for (final Object item : list) {
       if (!(item instanceof Vertex vertex))
         throw new IllegalArgumentException(procedureName + "(): every element of nodes must be a node, got " +
             (item == null ? "null" : item.getClass().getSimpleName()));
-      vertices.add(vertex);
+      byIdentity.putIfAbsent(vertex.getIdentity(), vertex);
     }
-    return vertices;
+    return new ArrayList<>(byIdentity.values());
   }
 
   @SuppressWarnings("unchecked")
