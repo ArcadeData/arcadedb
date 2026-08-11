@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.assertj.core.data.Offset;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for missing Cypher functions reported in GitHub issue #3420.
@@ -49,6 +51,21 @@ class CypherMissingFunctionsTest {
   void teardown() {
     if (database != null)
       database.drop();
+  }
+
+  // ========== coll.avg ==========
+  @Test
+  void collAvg() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.avg([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(2.5);
+  }
+
+  @Test
+  void collAvgEmpty() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.avg([]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Object) rs.next().getProperty("result")).isNull();
   }
 
   // ========== coll.distinct ==========
@@ -210,6 +227,152 @@ class CypherMissingFunctionsTest {
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
     assertThat(((Number) result.get(3)).longValue()).isEqualTo(4L);
     assertThat(((Number) result.get(4)).longValue()).isEqualTo(5L);
+  }
+
+  // ========== coll.sum ==========
+  @Test
+  void collSum() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.sum([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(10.0);
+  }
+
+  @Test
+  void collSumEmpty() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.sum([]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(0.0);
+  }
+
+  @Test
+  void collSumWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.sum() AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collSumNonNumericElement() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.sum([1, 2, 'x']) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collSumNullElementIsSkipped() {
+    // requireNumberArgument propagates null for a null element rather than treating it as a type error,
+    // so a null in the list is skipped, not rejected - documented explicitly, not just an inferred side effect.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.sum([1, 2, null]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(3.0);
+  }
+
+  @Test
+  void collSumApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.sum([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(10.0);
+  }
+
+  // ========== coll.avg ==========
+  @Test
+  void collAvgWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.avg() AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collAvgNonNumericElement() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.avg([1, 2, 'x']) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collAvgNullElementIsSkipped() {
+    // Same null-propagation as coll.sum: a null element is skipped rather than counted or rejected, so
+    // coll.avg([1, 2, null]) averages over the 2 non-null elements, not 3.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.avg([1, 2, null]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(1.5);
+  }
+
+  @Test
+  void collAvgApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.avg([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(2.5);
+  }
+
+  // ========== coll.union ==========
+  @Test
+  void collUnion() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.union([1, 2, 3], [2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(4);
+    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
+    assertThat(((Number) result.get(3)).longValue()).isEqualTo(4L);
+  }
+
+  @Test
+  void collUnionWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.union([1, 2]) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collUnionDedupsByTypeAndValue() {
+    // Dedup is by object equality, so an integer and a float of the same numeric value are NOT collapsed -
+    // e.g. coll.union([1], [1.0]) keeps both. Documented here since it's an easy surprise coming from Neo4j.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.union([1], [1.0]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(2);
+  }
+
+  @Test
+  void collUnionApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.union([1, 2], [2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(3);
+  }
+
+  // ========== coll.unionAll ==========
+  @Test
+  void collUnionAll() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.unionAll([1, 2, 3], [2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    // Unlike coll.union, duplicates across the two lists are preserved
+    assertThat(result).hasSize(6);
+    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
+    assertThat(((Number) result.get(3)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(4)).longValue()).isEqualTo(3L);
+    assertThat(((Number) result.get(5)).longValue()).isEqualTo(4L);
+  }
+
+  @Test
+  void collUnionAllWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.unionAll([1, 2]) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collUnionAllApocPrefix() {
+    // A 3-segment name post-strip (apoc.coll.unionAll -> coll.unionAll) exercises more of the dotted-name
+    // grammar than the 2-segment coll.* spellings, so this is worth its own round-trip check.
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.unionAll([1, 2], [2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(4);
   }
 
   // ========== elementId ==========
