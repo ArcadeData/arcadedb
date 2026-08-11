@@ -162,15 +162,24 @@ public class FullBackupFormat extends AbstractBackupFormat {
     return explicitValue != null ? explicitValue : database.getConfiguration().getValueAsInteger(fallback);
   }
 
-  /**
-   * Resolves the automatic thread count to half the available processors capped at 8: a backup runs alongside the live
-   * workload it is throttling, so claiming every core would trade the writers' CPU for the backup's own speed.
-   */
   private int resolveThreads() {
     final int configured = resolveSetting(settings.compressionThreads, GlobalConfiguration.BACKUP_COMPRESSION_THREADS);
     if (configured >= 0)
       return configured;
-    return Math.max(1, Math.min(Runtime.getRuntime().availableProcessors() / 2, 8));
+    return autoCompressionThreads(Runtime.getRuntime().availableProcessors());
+  }
+
+  /**
+   * The automatic thread count: half the available processors, capped at 8, never below 1. A backup runs alongside the
+   * live workload it is already throttling through the flush suspension, so claiming every core would buy the backup's
+   * own speed with the writers' CPU. The cap matters because scaling is close to linear - without it a 64-core machine
+   * would put 32 threads on a job that saturates the disk long before that.
+   * <p>
+   * Package-private and taking the core count as an argument so the boundaries can be pinned by a test rather than
+   * depending on whatever the machine running the suite happens to have.
+   */
+  static int autoCompressionThreads(final int availableProcessors) {
+    return Math.max(1, Math.min(availableProcessors / 2, 8));
   }
 
   private void writeArchive(final File backupFile, final int compressionLevel, final int compressionThreads,

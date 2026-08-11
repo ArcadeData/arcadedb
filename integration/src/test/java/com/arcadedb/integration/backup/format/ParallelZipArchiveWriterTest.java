@@ -32,14 +32,17 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -276,6 +279,34 @@ class ParallelZipArchiveWriterTest {
     source.delete();
   }
 
+  /**
+   * Both JDK readers share one implementation of the format, so agreeing with them is weaker evidence than it looks.
+   * Info-ZIP is a genuinely independent one, and {@code unzip -t} inflates and CRC-checks rather than just listing.
+   * Skipped where the binary is not on PATH, which is why it complements rather than replaces the JDK-based tests.
+   * <p>
+   * Runs on the ordinary fixture rather than on a multi-GB archive: what is unusual here is the streaming data
+   * descriptor, and every entry carries one, so a small archive exercises the interop risk just as well.
+   */
+  @Test
+  void archiveIsAcceptedByAnIndependentUnzipImplementation() throws Exception {
+    final File unzip = Stream.of("/usr/bin/unzip", "/bin/unzip", "/usr/local/bin/unzip").map(File::new)
+        .filter(File::canExecute).findFirst().orElse(null);
+    assumeTrue(unzip != null, "Info-ZIP unzip not available on this machine");
+
+    final Map<String, byte[]> sources = buildFixture();
+    final File archive = writeArchive("interop.zip", sources, 6, 4, SMALL_CHUNK);
+
+    final Process process = new ProcessBuilder(unzip.getAbsolutePath(), "-t", archive.getAbsolutePath())
+        .redirectErrorStream(true).start();
+    final String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    assertThat(process.waitFor(2, TimeUnit.MINUTES)).as("unzip -t did not finish").isTrue();
+
+    assertThat(process.exitValue()).as(output).isZero();
+    assertThat(output).contains("No errors detected");
+    for (final String name : sources.keySet())
+      assertThat(output).contains(name);
+  }
+
   @Test
   void rejectsInvalidConfiguration() {
     assertThatThrownBy(() -> new ParallelZipArchiveWriter(OutputStream.nullOutputStream(), 6, 0, new IoThrottler(0)))
@@ -360,7 +391,21 @@ class ParallelZipArchiveWriterTest {
     assertThat(zip64ExtraFieldLength(archive, "huge.bin")).isEqualTo(zip64ExtraFieldLength(jdkArchive, "huge.bin"))
         .isEqualTo(8);
 
+    // THE LOCAL HEADER'S "VERSION NEEDED TO EXTRACT" STAYS 2.0 EVEN THOUGH THE ENTRY NEEDS ZIP64, AND THAT IS NOT AN
+    // OVERSIGHT: WITH A DATA DESCRIPTOR THE SIZES ARE NOT KNOWN WHEN THAT HEADER IS WRITTEN, SO THERE IS NOTHING TO
+    // BASE AN UPGRADE ON - ZipOutputStream.writeLOC TAKES THE SAME BRANCH AND WRITES version(e) FOR A STREAMED ENTRY.
+    // ASSERTED AGAINST THE JDK'S OWN BYTES SO NOBODY HAS TO TAKE EITHER READING OF APPNOTE ON TRUST
+    assertThat(localHeaderVersionNeeded(archive)).isEqualTo(localHeaderVersionNeeded(jdkArchive)).isEqualTo(20);
+
     source.delete();
+  }
+
+  /** The "version needed to extract" field of the first local file header, at offset 4. */
+  private static int localHeaderVersionNeeded(final File archive) throws IOException {
+    try (final InputStream in = Files.newInputStream(archive.toPath())) {
+      final byte[] header = in.readNBytes(6);
+      return (header[4] & 0xFF) | ((header[5] & 0xFF) << 8);
+    }
   }
 
   /** Length in bytes of the ZIP64 extended-information extra field the central directory holds for an entry. */
