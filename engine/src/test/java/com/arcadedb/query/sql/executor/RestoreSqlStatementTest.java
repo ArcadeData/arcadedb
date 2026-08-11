@@ -192,6 +192,35 @@ class RestoreSqlStatementTest extends TestHelper {
   }
 
   @Test
+  void restoreEdgeUpdatesBucketRecordCount() {
+    // #6069: the same missing +1 as RESTORE DOCUMENT/VERTEX, exercised on RESTORE EDGE's own bucket - flagged as
+    // untested by the PR #6082 code review even though the fix is the identical one-line change routed through the
+    // same RestoreStatementSupport.restoreRecordAndUpdateCount() helper as RestoreDocumentStatement.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID[] v1 = new RID[1];
+    final RID[] v2 = new RID[1];
+    final RID[] edgeRid = new RID[3];
+
+    database.transaction(() -> {
+      final var a = database.newVertex(VERTEX_TYPE).set("name", "a").save();
+      final var b = database.newVertex(VERTEX_TYPE).set("name", "b").save();
+      v1[0] = a.getIdentity();
+      v2[0] = b.getIdentity();
+      for (int i = 0; i < 3; i++)
+        edgeRid[i] = a.newEdge(EDGE_TYPE, b).set("i", i).save().getIdentity();
+    });
+
+    final LocalBucket edgeBucket = (LocalBucket) db.getSchema().getBucketById(edgeRid[1].getBucketId());
+    database.transaction(() -> database.command("sql", "DELETE FROM " + edgeRid[1]));
+    assertThat(edgeBucket.count()).isEqualTo(2);
+
+    database.transaction(() -> database.command("sql",
+        "RESTORE EDGE " + EDGE_TYPE + " RID " + edgeRid[1] + " FROM " + v1[0] + " TO " + v2[0] + " SET i = 1"));
+
+    assertThat(edgeBucket.count()).isEqualTo(3);
+  }
+
+  @Test
   void restoreDocumentUpdatesBucketRecordCount() {
     // #6069: RESTORE DOCUMENT put the record back but never folded the bucket's cached-count delta the way a
     // normal INSERT does, so count(*) kept reporting one fewer than a full scan - and the drift is persisted in
