@@ -757,7 +757,10 @@ often a handful of very large files and sometimes one dominant one, so the split
 reader cuts every file into 1 MB chunks, each chunk is deflated by its own `Deflater` and terminated with
 `SYNC_FLUSH`, and the compressed chunks are concatenated back in order. Deflate streams ended that way
 concatenate into one valid stream, which is the same construction pigz uses for parallel gzip; the only cost
-is that each chunk starts from an empty dictionary, measured at well under 1% of ratio at that chunk size.
+is that each chunk starts from an empty dictionary, measured at well under 1% of ratio at that chunk size. Peak heap
+for the parallel path is bounded by construction at two chunks in flight per thread, each holding a ~1 MB input and a
+~1 MB output buffer: ~32 MB of buffers at 8 threads, which is the ~45 MB the benchmark measures minus the ~12 MB
+baseline the process uses anyway.
 Scaling is close to linear: on the same 1.25 GB database, level 1 takes 6.2 s single-threaded, 2.5 s on 2
 threads, 1.3 s on 4 and 0.7 s on 8, against 18.9 s for the old default - **27x end to end**. Peak heap for the
 parallel path is bounded by construction at two chunk buffers per thread, measured at 33 MB above baseline on

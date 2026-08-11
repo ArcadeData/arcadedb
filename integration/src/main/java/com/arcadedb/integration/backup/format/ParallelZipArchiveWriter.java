@@ -84,7 +84,8 @@ import java.util.zip.Deflater;
  * operation, so a permanently resident pool would hold idle threads for the 99.99% of the time no backup is running,
  * and there is no steady-state pool for {@code PoolMetrics} to report on. Saturation is handled by construction rather
  * than by a rejection policy: the reader keeps at most {@code threads * 2} chunks in flight, which both bounds peak
- * heap (that many input plus output buffers, ~32 MB at 8 threads) and applies backpressure to the reader, so the queue
+ * heap (that many input plus output buffers, ~32 MB of buffers at 8 threads - the benchmark's ~45 MB figure is the
+ * process heap, this on top of its baseline) and applies backpressure to the reader, so the queue
  * cannot fill and the caller-runs policy installed as a backstop never has to fire.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

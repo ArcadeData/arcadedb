@@ -520,7 +520,9 @@ public enum GlobalConfiguration {
       single-threaded java.util.zip.ZipOutputStream writer, kept as an escape hatch. The archive is an ordinary ZIP \
       whichever value is used: old backups restore and new backups restore with the unchanged restore path. Peak heap \
       for the parallel path is bounded by construction at two chunks in flight per thread, each holding one input and \
-      one output buffer of about the 1 MB chunk size - so roughly 4 MB per thread, ~32 MB at 8 threads.""",
+      one output buffer of about the 1 MB chunk size - so roughly 4 MB per thread, ~32 MB of buffers at 8 threads. That \
+      is the compressor's own footprint, not the process total: measured heap during an 8-thread backup is ~45 MB, the \
+      ~32 MB of buffers on top of a ~12 MB baseline.""",
       // THE 256 IS THE SAME BOUND AS BackupSettings.MAX_COMPRESSION_THREADS, WHICH THE CLI, THE Backup API AND SQL
       // VALIDATE AGAINST. IT HAS TO BE REPEATED HERE RATHER THAN REFERENCED BECAUSE THE ENGINE CANNOT DEPEND ON THE
       // INTEGRATION MODULE: CHANGE ONE AND CHANGE THE OTHER
