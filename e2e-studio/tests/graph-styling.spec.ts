@@ -115,7 +115,7 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
     });
     await page.locator('[data-testid="execute-query-button"]').click();
 
-    await expect(page.getByText('Returned')).toBeVisible();
+    await expect(page.locator('.result-stats').getByText('Returned')).toBeVisible();
     await page.waitForLoadState('networkidle');
 
     // Switch to Graph tab - results default to Table view
