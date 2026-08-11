@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,6 +114,23 @@ class AlgoBFSTest {
     assertThat(results).hasSize(2);
     for (final Result r : results)
       assertThat(((Number) r.getProperty("depth")).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void bfsMaxDepthAboveIntRangeIsTreatedAsUnbounded() {
+    // Issue #5924: maxDepth used to narrow via .intValue(), so a Long above Integer.MAX_VALUE
+    // wrapped to a negative int and every node failed the "depth >= maxDepth" cutoff check
+    // immediately, silently returning 0 reachable nodes instead of the whole graph.
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (start:Node {name: 'A'}) CALL algo.bfs(start, null, 'OUT', $maxDepth) YIELD node, depth RETURN node.name AS name, depth",
+        Map.of("maxDepth", 2147483648L));
+
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    // All 4 reachable nodes, same as the unbounded (default) case
+    assertThat(results).hasSize(4);
   }
 
   @Test

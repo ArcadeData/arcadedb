@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -79,7 +80,7 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int topK          = args.length > 1 ? ((Number) args[1]).intValue() : Integer.MAX_VALUE;
+    final int topK          = args.length > 1 ? NumberUtils.saturateToInt((Number) args[1]) : Integer.MAX_VALUE;
 
     final Database db = context.getDatabase();
 

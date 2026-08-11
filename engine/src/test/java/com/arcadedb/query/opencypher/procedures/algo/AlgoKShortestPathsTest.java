@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -134,5 +135,26 @@ class AlgoKShortestPathsTest {
     final Result result = rs.next();
     final Object val = result.getProperty("rank");
     assertThat(((Number) val).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void kShortestPathsKAboveIntRangeDoesNotAttemptHugeAllocation() {
+    // Issue #5924 code review: k used to size the kPaths/kWeights ArrayLists' initial capacity
+    // directly (`new ArrayList<>(k)`). A Long above Integer.MAX_VALUE saturates via
+    // NumberUtils.saturateToInt() to Integer.MAX_VALUE, which - used as a raw capacity hint - would
+    // attempt a multi-GB allocation instead of returning "as many shortest paths as exist" (the
+    // Yen's-algorithm loop terminates on its own once no more candidate paths remain).
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:City {name:'A'}), (d:City {name:'D'}) \
+        CALL algo.kShortestPaths(a, d, $k, 'ROAD', 'dist') YIELD path, weight, rank \
+        RETURN path, weight, rank ORDER BY rank ASC""",
+        Map.of("k", 2147483648L));
+
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    assertThat(results).isNotEmpty();
   }
 }

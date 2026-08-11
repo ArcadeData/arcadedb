@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -158,5 +159,23 @@ class AlgoInfluenceMaximizationTest {
     // Can't return more seeds than there are nodes
     assertThat(count).isLessThanOrEqualTo(6);
     assertThat(count).isGreaterThanOrEqualTo(1);
+  }
+
+  @Test
+  void influenceMaximizationKAboveIntRangeReturnsAllNodes() {
+    // Issue #5924 code review: k is clamped via Math.min(k, n) right after computation (same as
+    // AlgoKNN/AlgoVoteRank's top-k parameters), so a Long above Integer.MAX_VALUE can safely saturate
+    // to "as many seed nodes as the graph has" instead of throwing - consistent with the other
+    // top-k-shaped parameters in this package rather than the structural-knob bucket.
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.influenceMaximization($k) YIELD nodeId, rank, marginalGain RETURN nodeId, rank, marginalGain",
+        Map.of("k", 2147483648L));
+
+    int count = 0;
+    while (rs.hasNext()) {
+      rs.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(6);
   }
 }

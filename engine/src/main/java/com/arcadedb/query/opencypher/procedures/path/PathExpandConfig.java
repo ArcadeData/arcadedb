@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
@@ -97,10 +98,10 @@ public class PathExpandConfig extends AbstractPathProcedure {
     // Extract configuration options
     final String[] relTypes = extractRelTypes(config.get("relationshipFilter"));
     final String[] labelFilter = extractLabels(config.get("labelFilter"));
-    final int minLevel = config.containsKey("minLevel") ? ((Number) config.get("minLevel")).intValue() : 0;
-    final int maxLevel = config.containsKey("maxLevel") ? ((Number) config.get("maxLevel")).intValue() : Integer.MAX_VALUE;
+    final int minLevel = config.containsKey("minLevel") ? NumberUtils.saturateToInt((Number) config.get("minLevel")) : 0;
+    final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
     final boolean bfs = config.containsKey("bfs") ? (Boolean) config.get("bfs") : true;
-    final int limit = config.containsKey("limit") ? ((Number) config.get("limit")).intValue() : Integer.MAX_VALUE;
+    final int limit = config.containsKey("limit") ? NumberUtils.saturateToInt((Number) config.get("limit")) : Integer.MAX_VALUE;
 
     // Expand paths
     final List<List<Object>> allPaths = new ArrayList<>();

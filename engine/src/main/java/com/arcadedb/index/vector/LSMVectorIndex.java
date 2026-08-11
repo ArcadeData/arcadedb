@@ -3868,7 +3868,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @return List of pairs containing RID and similarity score
    */
-  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final int efSearch,
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, int k, final int efSearch,
       final Set<RID> allowedRIDs) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
@@ -3892,6 +3892,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Issue #3679: rebuild graph if needed (sync for first build or small graphs, async for large graphs)
       rebuildGraphBeforeSearch();
+
+      // Issue #5924: clamp k against the total addressable candidate count (persisted + delta) instead
+      // of trusting the caller's raw value. Several call sites below treat k as an eager allocation size
+      // - the ArrayList results buffers, and mergeWithDeltaScan's own `new PriorityQueue<>(k, ...)` - so a
+      // caller-controlled k near Integer.MAX_VALUE (reachable once an overflowing Cypher/SQL argument
+      // saturates instead of wrapping) would otherwise attempt a multi-GB allocation. A stale read of
+      // vectorIndex.size()/deltaVectors.size() here only makes the clamp slightly conservative, never
+      // unsafe, so it deliberately isn't taken under the read lock below.
+      k = Math.min(k, Math.max(vectorIndex.size(), 0) + deltaVectors.size());
 
       boolean readLockHeld = false;
       lock.readLock().lock();
@@ -4347,7 +4356,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @return List of pairs containing RID and approximate similarity score
    */
-  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k,
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k,
       final Set<RID> allowedRIDs) {
     // Check if PQ is available
     if (pqVectors == null || productQuantization == null) {
@@ -4376,6 +4385,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Ensure graph is available (lazy-load from disk if needed)
       ensureGraphAvailable();
+
+      // Issue #5924: see findNeighborsFromVector's matching clamp - k drives the same eager
+      // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound.
+      k = Math.min(k, Math.max(vectorIndex.size(), 0) + deltaVectors.size());
 
       lock.readLock().lock();
       try {

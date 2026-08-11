@@ -87,7 +87,7 @@ public class AlgoClique extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int minSize       = args.length > 1 ? ((Number) args[1]).intValue() : 3;
+    final int minSize       = args.length > 1 ? extractInt((Number) args[1], "minSize") : 3;
 
     final Database db = context.getDatabase();
 

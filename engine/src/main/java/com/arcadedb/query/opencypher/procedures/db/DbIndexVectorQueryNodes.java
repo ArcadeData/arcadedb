@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
@@ -98,7 +99,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     validateArgs(args);
 
     final String indexSpec = args[0].toString();
-    final int limit = args[1] instanceof Number n ? n.intValue() : Integer.parseInt(args[1].toString());
+    final int limit = args[1] instanceof Number n ? NumberUtils.saturateToInt(n) : Integer.parseInt(args[1].toString());
 
     Object key = args[2];
     if (key == null)

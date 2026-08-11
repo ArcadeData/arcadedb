@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -85,8 +86,8 @@ public class PathExpand extends AbstractPathProcedure {
     final Vertex startNode = extractVertex(args[0], "startNode");
     final String[] relTypes = extractRelTypes(args[1]);
     final String[] labelFilter = extractLabels(args[2]);
-    final int minDepth = ((Number) args[3]).intValue();
-    final int maxDepth = ((Number) args[4]).intValue();
+    final int minDepth = NumberUtils.saturateToInt((Number) args[3]);
+    final int maxDepth = NumberUtils.saturateToInt((Number) args[4]);
 
     if (minDepth < 0) {
       throw new IllegalArgumentException(getName() + "(): minDepth must be non-negative");

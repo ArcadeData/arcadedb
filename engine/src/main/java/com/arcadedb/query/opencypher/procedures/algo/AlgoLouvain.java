@@ -98,7 +98,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
-        n.intValue() : 10;
+        extractInt(n, "maxIterations") : 10;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;

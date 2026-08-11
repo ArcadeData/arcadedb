@@ -168,6 +168,29 @@ class CypherCallVectorNeighborsTest extends TestHelper {
   }
 
   @Test
+  void queryNodesKAboveIntRangeDoesNotAttemptHugeAllocation() {
+    // Issue #5924 code review: the Cypher-supplied `k` (limit) used to narrow via .intValue(), so a
+    // Long above Integer.MAX_VALUE wrapped to a small/negative int and failed fast. After the fix it
+    // saturates to Integer.MAX_VALUE, which LSMVectorIndex.findNeighborsFromVector now clamps against
+    // the index's actual vector count before using it to size result buffers - otherwise this would
+    // attempt a multi-GB allocation instead of returning the 5 available neighbours.
+    final Map<String, Object> params = new HashMap<>();
+    params.put("vec", new float[]{0.0f, 0.0f, 1.0f});
+    params.put("k", 2147483648L);
+
+    try (ResultSet results = database.query("opencypher",
+        "CALL db.index.vector.queryNodes('Doc[embedding]', $k, $vec) YIELD node, score RETURN node.name AS name, score",
+        params)) {
+
+      final List<String> names = new ArrayList<>();
+      while (results.hasNext())
+        names.add(results.next().getProperty("name"));
+
+      assertThat(names).hasSize(5);
+    }
+  }
+
+  @Test
   void queryNodesWithReturnPattern() {
     // Exact Neo4j pattern from the user's benchmark query
     final Map<String, Object> params = new HashMap<>();
