@@ -25,6 +25,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -420,6 +424,99 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM zone_device")) {
       assertThat(((Number) rs.nextIfAvailable().getProperty("cnt")).longValue()).isOne();
+    }
+
+    database.close();
+  }
+
+  /**
+   * Issue #6061: a MAP-typed vertex property sent through {@link RemoteGraphBatch} must survive
+   * the JSONL round trip as a real map, not be stringified into {@code java.util.Map.toString()}
+   * form (e.g. "{1=1, 2=2}"), which the server-side schema validator rejects as an incompatible
+   * type for a declared MAP property.
+   */
+  @Test
+  void mapAndListPropertiesRoundTrip() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE MapTest IF NOT EXISTS");
+    database.command("sql", "CREATE PROPERTY MapTest.map IF NOT EXISTS MAP");
+    database.command("sql", "CREATE PROPERTY MapTest.tags IF NOT EXISTS LIST");
+
+    final Map<String, String> map = new HashMap<>();
+    map.put("1", "1");
+    map.put("2", "2");
+    map.put("3", "3");
+    map.put("4", "4");
+    map.put("5", "5");
+
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      batch.createVertex("MapTest", "map", map, "tags", List.of("a", "b", "c"));
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT map, tags FROM MapTest")) {
+      final Result r = rs.nextIfAvailable();
+      assertThat(r.<Map<String, Object>>getProperty("map")).containsExactlyInAnyOrderEntriesOf(map);
+      assertThat(r.<List<Object>>getProperty("tags")).containsExactly("a", "b", "c");
+    }
+
+    database.close();
+  }
+
+  /**
+   * Code review follow-up on #6061: an ARRAY_OF_FLOATS property (used for vector embeddings) hits
+   * the same bug shape as MAP/LIST - a plain array is not a {@link java.util.Collection}, so it
+   * must also be special-cased or it falls through to {@code value.toString()} (e.g. "[F@...").
+   */
+  @Test
+  void floatArrayPropertyRoundTrip() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE Embedding IF NOT EXISTS");
+    database.command("sql", "CREATE PROPERTY Embedding.vector IF NOT EXISTS ARRAY_OF_FLOATS");
+
+    final float[] vector = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
+
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      batch.createVertex("Embedding", "vector", vector);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT vector FROM Embedding")) {
+      final Result r = rs.nextIfAvailable();
+      final float[] stored = r.getProperty("vector");
+      assertThat(stored).containsExactly(vector);
+    }
+
+    database.close();
+  }
+
+  /**
+   * Code review follow-up on #6061: a BINARY property hits the same bug shape as MAP/LIST/ARRAY_OF_*,
+   * but closing it required both halves of the fix - the client-side JSON array encoding (this file)
+   * and a missing server-side {@code Collection -> byte[]} narrowing branch in
+   * {@link com.arcadedb.schema.Type#convert}, which previously left the parsed JSON array as an
+   * untyped {@code List} instead of converting it to {@code byte[]}.
+   */
+  @Test
+  void binaryPropertyRoundTrip() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE Blob IF NOT EXISTS");
+    database.command("sql", "CREATE PROPERTY Blob.data IF NOT EXISTS BINARY");
+
+    final byte[] data = new byte[] { 1, 2, 3, 4 };
+
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      batch.createVertex("Blob", "data", data);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT data FROM Blob")) {
+      final Result r = rs.nextIfAvailable();
+      final byte[] stored = r.getProperty("data");
+      assertThat(stored).containsExactly(data);
     }
 
     database.close();

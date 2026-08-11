@@ -19,9 +19,12 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.lang.reflect.Array;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -269,7 +272,11 @@ public class RemoteGraphBatch implements AutoCloseable {
     resolvedPositions = Arrays.copyOf(resolvedPositions, newSize);
   }
 
-  // --- JSON serialization helpers (zero-allocation per-record) ---
+  // --- JSON serialization helpers ---
+  // Scalars and the typed primitive-array fast paths (appendJsonFloatArray and siblings) are
+  // zero-allocation. Map/Collection/JSONArray/boxed-array values are not (iterators, toList(),
+  // Array.get() boxing), but those are comparatively rare property shapes, not the per-record
+  // scalar hot path this was originally written for.
 
   static void appendProperties(final StringBuilder sb, final Object[] properties) {
     if (properties == null || properties.length == 0)
@@ -292,8 +299,160 @@ public class RemoteGraphBatch implements AutoCloseable {
       appendJsonString(sb, (String) value);
     else if (value instanceof Number || value instanceof Boolean)
       sb.append(value);
+    else if (value instanceof Map<?, ?> map)
+      // JSONObject implements Map<String, Object>, so it (and any nested JSONObject reached
+      // through recursion) is already covered here.
+      appendJsonMap(sb, map);
+    else if (value instanceof Collection<?> collection)
+      appendJsonCollection(sb, collection);
+    else if (value instanceof JSONArray jsonArray)
+      // JSONArray is Iterable<Object> but deliberately not a java.util.Collection (issue #5091),
+      // so without this branch it would fall through to value.toString() and get re-quoted as a
+      // JSON string instead of emitted as a JSON array - the same bug class this fix addresses for
+      // java.util.Map/Collection, just for ArcadeDB's own JSON wrapper type. toList() recursively
+      // normalizes any nested JSONObject/JSONArray to Map/List, so the existing
+      // appendJsonCollection -> appendJsonValue recursion handles the rest correctly.
+      appendJsonCollection(sb, jsonArray.toList());
+    else if (value instanceof float[] floats)
+      appendJsonFloatArray(sb, floats);
+    else if (value instanceof double[] doubles)
+      appendJsonDoubleArray(sb, doubles);
+    else if (value instanceof int[] ints)
+      appendJsonIntArray(sb, ints);
+    else if (value instanceof long[] longs)
+      appendJsonLongArray(sb, longs);
+    else if (value instanceof short[] shorts)
+      appendJsonShortArray(sb, shorts);
+    else if (value instanceof byte[] bytes)
+      appendJsonByteArray(sb, bytes);
+    else if (value.getClass().isArray())
+      appendJsonArray(sb, value);
     else
       appendJsonString(sb, value.toString());
+  }
+
+  // MAP-typed properties must be sent as a real JSON object (not `value.toString()`, which
+  // produces a plain string like "{1=1, 2=2}") or DocumentValidator rejects the value on
+  // the server as an incompatible type for the declared MAP property - see issue #6061.
+  // Keys are stringified with String.valueOf(), assuming the caller uses one consistent key
+  // type (ArcadeDB MAP properties are conventionally String-keyed): a map mixing key types that
+  // collide once stringified (e.g. Integer 1 and Long 1L) would silently lose an entry to
+  // last-write-wins, the same as any JSON object with a duplicate key.
+  static void appendJsonMap(final StringBuilder sb, final Map<?, ?> map) {
+    sb.append('{');
+    boolean first = true;
+    for (final Map.Entry<?, ?> entry : map.entrySet()) {
+      if (!first)
+        sb.append(',');
+      first = false;
+      appendJsonString(sb, String.valueOf(entry.getKey()));
+      sb.append(':');
+      appendJsonValue(sb, entry.getValue());
+    }
+    sb.append('}');
+  }
+
+  // Same rationale as appendJsonMap(), for LIST-typed properties.
+  static void appendJsonCollection(final StringBuilder sb, final Collection<?> collection) {
+    sb.append('[');
+    boolean first = true;
+    for (final Object item : collection) {
+      if (!first)
+        sb.append(',');
+      first = false;
+      appendJsonValue(sb, item);
+    }
+    sb.append(']');
+  }
+
+  // Typed fast paths for the primitive numeric array kinds ArcadeDB uses for vector-embedding
+  // properties (ARRAY_OF_FLOATS/_DOUBLES/_INTEGERS/_LONGS/_SHORTS). These avoid the boxing that
+  // java.lang.reflect.Array.get() forces in the generic appendJsonArray() fallback below: an
+  // embedding property routinely carries hundreds/thousands of dimensions across up to
+  // flushEvery (default 50,000) vertices per flush, and this file is documented as
+  // "zero-allocation per-record" for exactly this kind of hot path.
+  static void appendJsonFloatArray(final StringBuilder sb, final float[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonDoubleArray(final StringBuilder sb, final double[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonIntArray(final StringBuilder sb, final int[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonLongArray(final StringBuilder sb, final long[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  static void appendJsonShortArray(final StringBuilder sb, final short[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  // byte[] (ArcadeDB's BINARY property type) gets the same typed fast path as the numeric array
+  // kinds above. Unlike those, the server needed a matching addition: Type.convert() had narrowing
+  // branches for float[]/double[]/int[]/long[]/short[] but not byte[], so a JSON array parsed into a
+  // List<Number> was left unconverted and silently stored as an untyped List instead of a byte[]
+  // (issue #6061 code review follow-up) - see the Collection -> byte[] branch added to Type.convert().
+  static void appendJsonByteArray(final StringBuilder sb, final byte[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  // Remaining array kinds (Object[]/String[]/..., boxed Float[]/Double[]/..., boolean[], char[])
+  // fall back to reflection - they hit the same bug as Map/List: a plain array is not a Collection,
+  // so without this branch it would fall through to value.toString() (e.g. "[F@6b95977c").
+  // java.lang.reflect.Array iterates any array type generically, mirroring JSONObject.put()'s handling
+  // of the same case. The server-side Type.convert() already knows how to narrow a JSON array (parsed
+  // as a List) back to the schema-declared array type for every array kind ArcadeDB defines a
+  // property type for, so emitting a plain JSON array here is sufficient - no further client-side
+  // type-specific handling is needed.
+  static void appendJsonArray(final StringBuilder sb, final Object array) {
+    sb.append('[');
+    final int length = Array.getLength(array);
+    for (int i = 0; i < length; i++) {
+      if (i > 0)
+        sb.append(',');
+      appendJsonValue(sb, Array.get(array, i));
+    }
+    sb.append(']');
   }
 
   static void appendJsonString(final StringBuilder sb, final String s) {
