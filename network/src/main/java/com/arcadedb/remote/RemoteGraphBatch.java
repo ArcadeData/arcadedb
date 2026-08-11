@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.RID;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.lang.reflect.Array;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -297,6 +298,8 @@ public class RemoteGraphBatch implements AutoCloseable {
       appendJsonMap(sb, map);
     else if (value instanceof Collection<?> collection)
       appendJsonCollection(sb, collection);
+    else if (value.getClass().isArray())
+      appendJsonArray(sb, value);
     else
       appendJsonString(sb, value.toString());
   }
@@ -327,6 +330,24 @@ public class RemoteGraphBatch implements AutoCloseable {
         sb.append(',');
       first = false;
       appendJsonValue(sb, item);
+    }
+    sb.append(']');
+  }
+
+  // Primitive/object array properties (float[], double[], int[], ... - ArcadeDB's ARRAY_OF_FLOATS,
+  // ARRAY_OF_DOUBLES etc., used for vector embeddings) hit the same bug as Map/List: a plain array is
+  // not a Collection, so without this branch it would fall through to value.toString() (e.g. "[F@6b95977c").
+  // java.lang.reflect.Array iterates any array type generically, mirroring JSONObject.put()'s handling of
+  // the same case. The server-side Type.convert() already knows how to narrow a JSON array (parsed as a
+  // List of Numbers) back to the schema-declared primitive array type, so emitting a plain JSON array here
+  // is sufficient - no further client-side type-specific handling is needed.
+  static void appendJsonArray(final StringBuilder sb, final Object array) {
+    sb.append('[');
+    final int length = Array.getLength(array);
+    for (int i = 0; i < length; i++) {
+      if (i > 0)
+        sb.append(',');
+      appendJsonValue(sb, Array.get(array, i));
     }
     sb.append(']');
   }

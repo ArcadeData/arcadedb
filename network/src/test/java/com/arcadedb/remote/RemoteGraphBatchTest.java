@@ -130,4 +130,43 @@ class RemoteGraphBatchTest {
 
     assertThat(sb.toString()).isEqualTo(",\"map\":{\"1\":\"1\",\"2\":\"2\"}");
   }
+
+  // Code review follow-up on #6061: a primitive array (e.g. float[] for a vector-embedding
+  // property) is not a Collection either, so it hit the exact same value.toString() bug
+  // ("[F@6b95977c...") unless appendJsonValue special-cases arrays too.
+  @Test
+  void appendJsonValueSerializesFloatArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new float[] { 1.5f, 2.5f, 3.0f });
+
+    assertThat(sb.toString()).isEqualTo("[1.5,2.5,3.0]");
+  }
+
+  @Test
+  void appendJsonValueSerializesIntArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new int[] { 1, 2, 3 });
+
+    assertThat(sb.toString()).isEqualTo("[1,2,3]");
+  }
+
+  @Test
+  void appendJsonValueSerializesObjectArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new String[] { "a", "b" });
+
+    assertThat(sb.toString()).isEqualTo("[\"a\",\"b\"]");
+  }
+
+  @Test
+  void appendJsonValueSerializesEmptyArrayAsEmptyJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new float[0]);
+
+    assertThat(sb.toString()).isEqualTo("[]");
+  }
 }

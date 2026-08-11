@@ -463,4 +463,32 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
     database.close();
   }
+
+  /**
+   * Code review follow-up on #6061: an ARRAY_OF_FLOATS property (used for vector embeddings) hits
+   * the same bug shape as MAP/LIST - a plain array is not a {@link java.util.Collection}, so it
+   * must also be special-cased or it falls through to {@code value.toString()} (e.g. "[F@...").
+   */
+  @Test
+  void floatArrayPropertyRoundTrip() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE Embedding IF NOT EXISTS");
+    database.command("sql", "CREATE PROPERTY Embedding.vector IF NOT EXISTS ARRAY_OF_FLOATS");
+
+    final float[] vector = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
+
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      batch.createVertex("Embedding", "vector", vector);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT vector FROM Embedding")) {
+      final Result r = rs.nextIfAvailable();
+      final float[] stored = r.getProperty("vector");
+      assertThat(stored).containsExactly(vector);
+    }
+
+    database.close();
+  }
 }
