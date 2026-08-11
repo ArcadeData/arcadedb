@@ -491,4 +491,34 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
     database.close();
   }
+
+  /**
+   * Code review follow-up on #6061: a BINARY property hits the same bug shape as MAP/LIST/ARRAY_OF_*,
+   * but closing it required both halves of the fix - the client-side JSON array encoding (this file)
+   * and a missing server-side {@code Collection -> byte[]} narrowing branch in
+   * {@link com.arcadedb.schema.Type#convert}, which previously left the parsed JSON array as an
+   * untyped {@code List} instead of converting it to {@code byte[]}.
+   */
+  @Test
+  void binaryPropertyRoundTrip() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE Blob IF NOT EXISTS");
+    database.command("sql", "CREATE PROPERTY Blob.data IF NOT EXISTS BINARY");
+
+    final byte[] data = new byte[] { 1, 2, 3, 4 };
+
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      batch.createVertex("Blob", "data", data);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT data FROM Blob")) {
+      final Result r = rs.nextIfAvailable();
+      final byte[] stored = r.getProperty("data");
+      assertThat(stored).containsExactly(data);
+    }
+
+    database.close();
+  }
 }

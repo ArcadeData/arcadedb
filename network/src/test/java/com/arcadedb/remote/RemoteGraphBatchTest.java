@@ -218,6 +218,18 @@ class RemoteGraphBatchTest {
     assertThat(sb.toString()).isEqualTo("[1,2,3]");
   }
 
+  // Code review follow-up: byte[] (BINARY property type) needs the same typed fast path as the
+  // other numeric arrays; the matching server-side Collection -> byte[] narrowing branch was added
+  // to Type.convert() (see Issue6061BinaryPropertyListConversionTest in the engine module).
+  @Test
+  void appendJsonValueSerializesByteArrayAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new byte[] { 1, 2, 3 });
+
+    assertThat(sb.toString()).isEqualTo("[1,2,3]");
+  }
+
   // Code review follow-up: boxed numeric arrays (Integer[], not int[]) are not covered by the
   // typed primitive fast paths, so they must still round-trip correctly through the generic
   // reflective appendJsonArray() fallback.

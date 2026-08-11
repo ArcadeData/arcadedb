@@ -508,6 +508,15 @@ public enum Type {
         for (int i = 0; i < src.length; i++)
           array[i] = (short) narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property);
         return array;
+      } else if (targetClass.equals(byte[].class) && value instanceof Collection<?> collection) {
+        // Convert Collection to byte[] for a BINARY property (issue #6061 follow-up): a JSON array
+        // received over the wire (e.g. from RemoteGraphBatch) parses into a List<Number>, which had
+        // no narrowing path back to byte[] and was silently stored as an untyped List instead.
+        final byte[] array = new byte[collection.size()];
+        int i = 0;
+        for (final Object item : collection)
+          array[i++] = narrowToIntegral((Number) item, Byte.MIN_VALUE, Byte.MAX_VALUE, "BYTE", property).byteValue();
+        return array;
       } else if (targetClass.isEnum()) {
         if (value instanceof Number number)
           return ((Class<Enum>) targetClass).getEnumConstants()[number.intValue()];

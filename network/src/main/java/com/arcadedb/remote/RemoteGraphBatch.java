@@ -319,6 +319,8 @@ public class RemoteGraphBatch implements AutoCloseable {
       appendJsonLongArray(sb, longs);
     else if (value instanceof short[] shorts)
       appendJsonShortArray(sb, shorts);
+    else if (value instanceof byte[] bytes)
+      appendJsonByteArray(sb, bytes);
     else if (value.getClass().isArray())
       appendJsonArray(sb, value);
     else
@@ -415,13 +417,29 @@ public class RemoteGraphBatch implements AutoCloseable {
     sb.append(']');
   }
 
-  // Remaining array kinds (byte[], Object[]/String[]/..., boxed Float[]/Double[]/..., boolean[],
-  // char[]) fall back to reflection - they hit the same bug as Map/List: a plain array is not a
-  // Collection, so without this branch it would fall through to value.toString() (e.g. "[F@6b95977c").
+  // byte[] (ArcadeDB's BINARY property type) gets the same typed fast path as the numeric array
+  // kinds above. Unlike those, the server needed a matching addition: Type.convert() had narrowing
+  // branches for float[]/double[]/int[]/long[]/short[] but not byte[], so a JSON array parsed into a
+  // List<Number> was left unconverted and silently stored as an untyped List instead of a byte[]
+  // (issue #6061 code review follow-up) - see the Collection -> byte[] branch added to Type.convert().
+  static void appendJsonByteArray(final StringBuilder sb, final byte[] array) {
+    sb.append('[');
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(array[i]);
+    }
+    sb.append(']');
+  }
+
+  // Remaining array kinds (Object[]/String[]/..., boxed Float[]/Double[]/..., boolean[], char[])
+  // fall back to reflection - they hit the same bug as Map/List: a plain array is not a Collection,
+  // so without this branch it would fall through to value.toString() (e.g. "[F@6b95977c").
   // java.lang.reflect.Array iterates any array type generically, mirroring JSONObject.put()'s handling
   // of the same case. The server-side Type.convert() already knows how to narrow a JSON array (parsed
-  // as a List) back to the schema-declared array type, so emitting a plain JSON array here is
-  // sufficient - no further client-side type-specific handling is needed.
+  // as a List) back to the schema-declared array type for every array kind ArcadeDB defines a
+  // property type for, so emitting a plain JSON array here is sufficient - no further client-side
+  // type-specific handling is needed.
   static void appendJsonArray(final StringBuilder sb, final Object array) {
     sb.append('[');
     final int length = Array.getLength(array);
