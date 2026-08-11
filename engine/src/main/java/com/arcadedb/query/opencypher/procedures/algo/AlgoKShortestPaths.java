@@ -140,9 +140,13 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       }
     }
 
-    // Yen's k-shortest paths
-    final List<int[]> kPaths     = new ArrayList<>(k);
-    final List<Double> kWeights  = new ArrayList<>(k);
+    // Yen's k-shortest paths. The loop below (`for (int ki = 1; ki < k; ki++)`) terminates as soon
+    // as no more candidate paths exist, so k itself is safe to leave unbounded (saturating a huge k
+    // to "as many k-shortest-paths as exist" is the right reading here) - but it must not be used
+    // directly as an eager ArrayList capacity, since that risks a multi-GB allocation attempt for a
+    // huge k (e.g. algo.kShortestPaths(a, b, 2147483648)) that will never be filled.
+    final List<int[]> kPaths     = new ArrayList<>(Math.min(k, n));
+    final List<Double> kWeights  = new ArrayList<>(Math.min(k, n));
 
     // Find first shortest path with Dijkstra
     final int[] firstPath = dijkstra(weightMatrix, n, startIdx, endIdx, null);

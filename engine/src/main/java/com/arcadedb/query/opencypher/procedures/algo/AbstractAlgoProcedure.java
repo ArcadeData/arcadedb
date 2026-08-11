@@ -166,7 +166,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     try {
       return NumberUtils.toIntExact(value);
     } catch (final ArithmeticException e) {
-      throw new IllegalArgumentException(getName() + "(): " + paramName + " is out of range for an int: " + value);
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " is out of range for an int: " + value, e);
     }
   }
 
