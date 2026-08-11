@@ -104,7 +104,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
     final double dampingFactor = config != null && config.get("dampingFactor") instanceof Number num ?
         num.doubleValue() : 0.85;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number num ?
-        num.intValue() : 20;
+        extractInt(num, "maxIterations") : 20;
     final double tolerance = config != null && config.get("tolerance") instanceof Number num ?
         num.doubleValue() : 0.0001;
 

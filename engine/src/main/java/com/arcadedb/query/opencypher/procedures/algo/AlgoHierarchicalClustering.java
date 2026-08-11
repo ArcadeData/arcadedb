@@ -83,7 +83,7 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int numClusters = args.length > 1 && args[1] instanceof Number n ? n.intValue() : 2;
+    final int numClusters = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "numClusters") : 2;
 
     final Database db = context.getDatabase();
 

@@ -85,7 +85,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     final Vertex sourceVertex = extractVertex(args[0], "sourceNode");
     final String[] relTypes = args.length > 1 ? extractRelTypes(args[1]) : null;
     final double dampingFactor = args.length > 2 && args[2] instanceof Number n ? n.doubleValue() : 0.85;
-    final int maxIterations = args.length > 3 && args[3] instanceof Number n ? n.intValue() : 20;
+    final int maxIterations = args.length > 3 && args[3] instanceof Number n ? extractInt(n, "maxIterations") : 20;
     final double tolerance = args.length > 4 && args[4] instanceof Number n ? n.doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();

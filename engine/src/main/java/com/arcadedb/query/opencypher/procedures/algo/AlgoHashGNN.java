@@ -93,8 +93,8 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
-    final int embDim = config != null && config.get("embeddingDimension") instanceof Number n ? n.intValue() : 128;
-    final int iterations = config != null && config.get("iterations") instanceof Number n ? n.intValue() : 4;
+    final int embDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractInt(n, "embeddingDimension") : 128;
+    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 4;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);

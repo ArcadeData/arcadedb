@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayDeque;
@@ -93,7 +94,7 @@ public class PathSubgraphNodes extends AbstractPathProcedure {
 
     final String[] relTypes = extractRelTypes(config.get("relationshipFilter"));
     final String[] labelFilter = extractLabels(config.get("labelFilter"));
-    final int maxLevel = config.containsKey("maxLevel") ? ((Number) config.get("maxLevel")).intValue() : Integer.MAX_VALUE;
+    final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
 
     // BFS to find all reachable nodes
     final Set<Vertex> reachableNodes = new HashSet<>();

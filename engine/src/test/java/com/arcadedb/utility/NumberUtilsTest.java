@@ -138,4 +138,37 @@ class NumberUtilsTest {
 
     assertThat(NumberUtils.saturateToInt(BigDecimal.valueOf(7))).isEqualTo(7);
   }
+
+  @Test
+  void toIntExactWithValueInRangeIsUnchanged() {
+    assertThat(NumberUtils.toIntExact(42)).isEqualTo(42);
+    assertThat(NumberUtils.toIntExact(-42)).isEqualTo(-42);
+    assertThat(NumberUtils.toIntExact(Integer.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(NumberUtils.toIntExact(Integer.MIN_VALUE)).isEqualTo(Integer.MIN_VALUE);
+  }
+
+  @Test
+  void toIntExactWithLongBeyondIntRangeThrows() {
+    // Issue #5924 - algorithm tuning knobs (iteration counts, embedding dimensions, ...) must fail
+    // loudly on overflow rather than saturate/wrap into a plausible-looking value that silently
+    // drives a degenerate computation.
+    assertThatThrownBy(() -> NumberUtils.toIntExact(Integer.MAX_VALUE + 1L))
+        .isInstanceOf(ArithmeticException.class);
+    assertThatThrownBy(() -> NumberUtils.toIntExact(Long.MIN_VALUE))
+        .isInstanceOf(ArithmeticException.class);
+  }
+
+  @Test
+  void toIntExactWithBigIntegerBeyondLongRangeThrows() {
+    final BigInteger huge = BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.TEN);
+    assertThatThrownBy(() -> NumberUtils.toIntExact(huge)).isInstanceOf(ArithmeticException.class);
+    assertThat(NumberUtils.toIntExact(BigInteger.valueOf(7))).isEqualTo(7);
+  }
+
+  @Test
+  void toIntExactWithBigDecimalBeyondLongRangeThrows() {
+    final BigDecimal huge = BigDecimal.valueOf(Long.MAX_VALUE).multiply(BigDecimal.TEN);
+    assertThatThrownBy(() -> NumberUtils.toIntExact(huge)).isInstanceOf(ArithmeticException.class);
+    assertThat(NumberUtils.toIntExact(BigDecimal.valueOf(7))).isEqualTo(7);
+  }
 }

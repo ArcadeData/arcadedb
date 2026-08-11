@@ -82,7 +82,7 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int kParam = args.length > 1 && args[1] instanceof Number n ? n.intValue() : 3;
+    final int kParam = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "k") : 3;
 
     final Database db = context.getDatabase();
 

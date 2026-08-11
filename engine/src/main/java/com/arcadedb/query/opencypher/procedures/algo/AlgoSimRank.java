@@ -85,7 +85,7 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
     final Vertex nodeB       = extractVertex(args[1], "nodeB");
     final String[] relTypes  = args.length > 2 ? extractRelTypes(args[2]) : null;
     final double decayFactor = args.length > 3 ? ((Number) args[3]).doubleValue() : 0.8;
-    final int maxIterations  = args.length > 4 ? ((Number) args[4]).intValue() : 5;
+    final int maxIterations  = args.length > 4 ? extractInt((Number) args[4], "maxIterations") : 5;
 
     final Database db = context.getDatabase();
 

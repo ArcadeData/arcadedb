@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -90,7 +91,7 @@ public class AlgoDFS extends AbstractAlgoProcedure {
     final Vertex startNode     = extractVertex(args[0], "startNode");
     final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1]) : null;
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
-    final int maxDepth         = args.length > 3 ? ((Number) args[3]).intValue() : Integer.MAX_VALUE;
+    final int maxDepth         = args.length > 3 ? NumberUtils.saturateToInt((Number) args[3]) : Integer.MAX_VALUE;
 
     final Database db = context.getDatabase();
 

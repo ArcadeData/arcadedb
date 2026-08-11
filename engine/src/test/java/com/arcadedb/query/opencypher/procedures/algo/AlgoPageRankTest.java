@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the algo.pagerank Cypher procedure.
@@ -232,6 +233,20 @@ class AlgoPageRankTest {
     assertThat(sum).isBetween(0.9, 1.1);
 
     gav.shutdown();
+  }
+
+  @Test
+  void pageRankMaxIterationsAboveIntRangeThrows() {
+    // Issue #5924: maxIterations used to narrow via .intValue(), so a Long above Integer.MAX_VALUE
+    // wrapped into a small/negative int and silently ran a degenerate (or zero-iteration)
+    // computation instead of failing. It must now be rejected loudly.
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "CALL algo.pagerank({maxIterations: $mi}) YIELD node, score RETURN node",
+          Map.of("mi", 2147483648L));
+      while (rs.hasNext())
+        rs.next();
+    }).hasStackTraceContaining("maxIterations");
   }
 
   @Test

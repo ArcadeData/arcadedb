@@ -100,7 +100,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
-        n.intValue() : 10;
+        extractInt(n, "maxIterations") : 10;
 
     final Database db = context.getDatabase();
 

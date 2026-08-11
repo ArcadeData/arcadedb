@@ -80,7 +80,7 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
 
     final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
     final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
-    final int maxIterations    = args.length > 2 ? ((Number) args[2]).intValue() : 20;
+    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations") : 20;
     final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();

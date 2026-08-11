@@ -80,9 +80,9 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final int k = args[0] instanceof Number n ? n.intValue() : 1;
+    final int k = args[0] instanceof Number n ? extractInt(n, "k") : 1;
     final String[] relTypes = args.length > 1 ? extractRelTypes(args[1]) : null;
-    final int simulations = args.length > 2 && args[2] instanceof Number n ? n.intValue() : 100;
+    final int simulations = args.length > 2 && args[2] instanceof Number n ? extractInt(n, "simulations") : 100;
     final double propagationProbability = args.length > 3 && args[3] instanceof Number n ? n.doubleValue() : 0.1;
 
     final Database db = context.getDatabase();
