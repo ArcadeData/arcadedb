@@ -32,9 +32,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -102,7 +103,7 @@ class Issue6049GAVSupernodeOrderTest extends TestHelper {
 
     // NOTHING LOST, NOTHING DUPLICATED
     assertThat(neighbors).hasSize(TOTAL);
-    assertThat(new HashSet<>(boxed(neighbors))).hasSize(TOTAL);
+    assertThat(Arrays.stream(neighbors).boxed().collect(Collectors.toSet())).hasSize(TOTAL);
 
     // THE CSR NEIGHBOUR ORDER IS ASCENDING BY DENSE NODE ID - the same invariant proven for a
     // non-promoted hub by GraphAnalyticalViewTest#sortedNeighbors, now shown to also hold across
@@ -144,13 +145,6 @@ class Issue6049GAVSupernodeOrderTest extends TestHelper {
     assertThat(gavOrder).hasSize(TOTAL);
     assertThat(gavOrder).containsExactlyInAnyOrderElementsOf(oltpOrder);
     assertThat(gavOrder).isNotEqualTo(oltpOrder);
-  }
-
-  private static List<Integer> boxed(final int[] values) {
-    final List<Integer> list = new ArrayList<>(values.length);
-    for (final int v : values)
-      list.add(v);
-    return list;
   }
 
   private void createSchema() {
