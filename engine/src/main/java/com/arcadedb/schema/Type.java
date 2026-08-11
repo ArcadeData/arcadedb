@@ -414,7 +414,7 @@ public enum Type {
         final float[] array = new float[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = ((Number) item).floatValue();
+          array[i++] = requireNonNullNumber(item, "FLOAT", property).floatValue();
         return array;
       } else if (targetClass.equals(float[].class) && value instanceof double[] src) {
         // Fast path: primitive narrowing copy
@@ -432,7 +432,7 @@ public enum Type {
         final double[] array = new double[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = ((Number) item).doubleValue();
+          array[i++] = requireNonNullNumber(item, "DOUBLE", property).doubleValue();
         return array;
       } else if (targetClass.equals(double[].class) && value instanceof float[] src) {
         // Issue #3864 follow-up: HTTP vector params arrive as float[] from JSON parsing.
@@ -507,6 +507,15 @@ public enum Type {
         final short[] array = new short[src.length];
         for (int i = 0; i < src.length; i++)
           array[i] = (short) narrowToIntegral(src[i], Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property);
+        return array;
+      } else if (targetClass.equals(byte[].class) && value instanceof Collection<?> collection) {
+        // Convert Collection to byte[] for a BINARY property (issue #6061 follow-up): a JSON array
+        // received over the wire (e.g. from RemoteGraphBatch) parses into a List<Number>, which had
+        // no narrowing path back to byte[] and was silently stored as an untyped List instead.
+        final byte[] array = new byte[collection.size()];
+        int i = 0;
+        for (final Object item : collection)
+          array[i++] = narrowToIntegral((Number) item, Byte.MIN_VALUE, Byte.MAX_VALUE, "BYTE", property).byteValue();
         return array;
       } else if (targetClass.isEnum()) {
         if (value instanceof Number number)
@@ -797,6 +806,22 @@ public enum Type {
   }
 
   /**
+   * Casts {@code item} to {@link Number}, rejecting a {@code null} element with a clear message
+   * instead of letting it NPE deep inside a {@code float}/{@code double} narrowing conversion
+   * (issue #6061 code review follow-up, sibling of the {@code null} guard added to
+   * {@link #narrowToIntegral}: a {@code List} containing a {@code null} element, e.g. sent for an
+   * {@code ARRAY_OF_FLOATS}/{@code ARRAY_OF_DOUBLES} property, previously NPE'd on {@code
+   * ((Number) item).floatValue()} instead of raising a clean validation error).
+   */
+  private static Number requireNonNullNumber(final Object item, final String targetType, final Property property) {
+    if (item == null)
+      throw new IllegalArgumentException(
+          "A null element cannot be converted to " + targetType //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+    return (Number) item;
+  }
+
+  /**
    * Range-checks {@code value} before narrowing it to a smaller integral type ({@code BYTE}, {@code SHORT} or
    * {@code INTEGER}). Narrowing with a plain {@code .intValue()}/{@code .shortValue()}/{@code .byteValue()} wraps
    * two's-complement on overflow instead of rejecting - {@code 3000000000L} silently became {@code -1294967296} -
@@ -810,9 +835,20 @@ public enum Type {
    * {@code NaN} needs its own guard: per the JLS narrowing-conversion rules {@code Double.NaN.longValue()}/
    * {@code Float.NaN.longValue()} return {@code 0}, which is in-range for every target type and would otherwise
    * slip through the range check as a silent {@code 0} (issue #5970).
+   * <p>
+   * {@code value} can be {@code null} here: every {@code Collection -> byte[]/short[]/int[]/long[]} branch in
+   * {@link #convert} passes a raw {@code (Number) item} cast from the source collection, and a {@code null}
+   * element casts cleanly, so without this guard a {@code List} containing {@code null} (e.g. sent for a
+   * BINARY/ARRAY_OF_* property) would NPE on {@code value.longValue()} below instead of raising a clean
+   * validation error (issue #6061 code review follow-up).
    */
   private static Number narrowToIntegral(final Number value, final long min, final long max, final String targetType,
       final Property property) {
+    if (value == null)
+      throw new IllegalArgumentException(
+          "A null element cannot be converted to " + targetType //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
     if (isNaN(value))
       throw new IllegalArgumentException(
           "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
