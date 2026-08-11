@@ -100,7 +100,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
     final AtomicReference<Exception> failure = new AtomicReference<>();
 
     try {
-      writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, archive ->
+      writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive ->
         // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
         database.executeInReadLock(() -> {
           // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
@@ -174,13 +174,27 @@ public class FullBackupFormat extends AbstractBackupFormat {
   }
 
   private void writeArchive(final File backupFile, final int compressionLevel, final int compressionThreads,
-      final int maxMBPerSecond, final BackupCallback callback) throws Exception {
+      final int maxMBPerSecond, final AtomicReference<Exception> failure, final BackupCallback callback) throws Exception {
     encryptFile(backupFile, out -> {
       final IoThrottler throttler = new IoThrottler(maxMBPerSecond);
-      try (final BackupArchiveWriter archive = compressionThreads > 0 ?
+      final BackupArchiveWriter archive = compressionThreads > 0 ?
           new ParallelZipArchiveWriter(out, compressionLevel, compressionThreads, throttler) :
-          new ZipStreamArchiveWriter(out, compressionLevel, throttler)) {
+          new ZipStreamArchiveWriter(out, compressionLevel, throttler);
+
+      // NOT try-WITH-RESOURCES: A BACKUP THAT FAILED INSIDE suspendFlushAndExecute REACHES HERE NORMALLY (THAT METHOD
+      // SWALLOWS ITS CALLBACK'S EXCEPTION), SO 'RETURNED WITHOUT THROWING' IS NOT THE SAME AS 'SUCCEEDED'. ONLY A
+      // BACKUP THAT ACTUALLY SUCCEEDED EARNS A CENTRAL DIRECTORY; ANY OTHER OUTCOME ABORTS, WHICH RELEASES THE
+      // RESOURCES WITHOUT TERMINATING THE ARCHIVE AND CANNOT THROW OVER THE FAILURE ALREADY IN FLIGHT
+      boolean terminated = false;
+      try {
         callback.backup(archive);
+        if (failure.get() == null) {
+          archive.close();
+          terminated = true;
+        }
+      } finally {
+        if (!terminated)
+          archive.abort();
       }
     });
   }

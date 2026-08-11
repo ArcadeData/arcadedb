@@ -75,6 +75,14 @@ public class ZipStreamArchiveWriter implements BackupArchiveWriter {
     zipStream.close();
   }
 
+  @Override
+  public void abort() {
+    // DELIBERATELY DOES NOTHING. java.util.zip OFFERS NO WAY TO RELEASE A ZipOutputStream'S Deflater WITHOUT ALSO
+    // FINISHING THE ARCHIVE, AND FINISHING IT IS EXACTLY WHAT MUST NOT HAPPEN HERE, SO THE STREAM IS LEFT
+    // UNTERMINATED AND THE Deflater IS RECLAIMED BY ITS CLEANER. ONE DEFLATER PER FAILED BACKUP IS NOT A LEAK
+    // WORTH TRADING A VALID-LOOKING TRUNCATED ARCHIVE FOR
+  }
+
   private static final class NonClosingOutputStream extends OutputStream {
     private final OutputStream delegate;
 

@@ -192,6 +192,31 @@ class ParallelZipArchiveWriterTest {
     assertReadableByStreamingReader(archive, sources);
   }
 
+  /**
+   * A writer that is aborted rather than closed must leave nothing a restore would accept. The partial file is
+   * normally deleted, but a delete can fail, and an archive with a valid central directory listing only the entries
+   * that made it is a backup that looks complete and is not.
+   */
+  @Test
+  void abortLeavesNoValidArchive() throws Exception {
+    final Map<String, byte[]> sources = buildFixture();
+    materialise(sources);
+
+    for (final boolean parallel : new boolean[] { true, false }) {
+      final File archive = new File(workDirectory, "aborted-" + parallel + ".zip");
+      try (final FileOutputStream out = new FileOutputStream(archive)) {
+        final BackupArchiveWriter writer = parallel ?
+            new ParallelZipArchiveWriter(out, 6, 4, new IoThrottler(0), SMALL_CHUNK) :
+            new ZipStreamArchiveWriter(out, 6, new IoThrottler(0));
+        writer.addFile(new File(workDirectory, "compressible.bin"));
+        writer.abort();
+      }
+
+      assertThat(archive).as("parallel=" + parallel).exists();
+      assertThatThrownBy(() -> new ZipFile(archive).close()).as("parallel=" + parallel).isInstanceOf(IOException.class);
+    }
+  }
+
   @Test
   void rejectsInvalidConfiguration() {
     assertThatThrownBy(() -> new ParallelZipArchiveWriter(OutputStream.nullOutputStream(), 6, 0, new IoThrottler(0)))

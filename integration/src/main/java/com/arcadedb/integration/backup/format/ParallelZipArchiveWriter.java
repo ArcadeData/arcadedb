@@ -72,6 +72,13 @@ import java.util.zip.Deflater;
  * dialect, and it removes any need to seek backwards - which an encrypted backup, written through a
  * {@code CipherOutputStream}, could not do anyway.
  * <p>
+ * The combination that is worth naming, because it is the one a hand-written ZIP writer most often gets wrong, is a
+ * streaming data descriptor on an entry above 4 GB: the descriptor's fields become 8 bytes wide, and nothing in the
+ * local header says so, so a reader has to infer it from the byte counts it has actually inflated (which is exactly
+ * what {@code ZipInputStream} does). Archives produced here have been verified against four independent readers -
+ * {@code ZipInputStream}, {@code ZipFile}, Info-ZIP {@code unzip -t} and Python's {@code zipfile} - with a 4 GB entry
+ * as well as small ones.
+ * <p>
  * <b>Concurrency.</b> Per the {@code engine-concurrency} skill this never touches {@code ForkJoinPool.commonPool()}.
  * It uses a dedicated {@link ThreadPoolExecutor} whose lifetime is exactly one backup: a backup is a rare, bursty
  * operation, so a permanently resident pool would hold idle threads for the 99.99% of the time no backup is running,
@@ -233,10 +240,21 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
       writeEndOfCentralDirectory(centralDirectoryOffset, written - centralDirectoryOffset);
       out.flush();
     } finally {
-      executor.shutdown();
-      for (Deflater deflater = deflaterPool.poll(); deflater != null; deflater = deflaterPool.poll())
-        deflater.end();
+      release();
     }
+  }
+
+  @Override
+  public void abort() {
+    closed = true;
+    release();
+  }
+
+  /** Gives back the pool threads and the native memory the deflaters hold. Never throws. */
+  private void release() {
+    executor.shutdownNow();
+    for (Deflater deflater = deflaterPool.poll(); deflater != null; deflater = deflaterPool.poll())
+      deflater.end();
   }
 
   // ------------------------------------------------------------------------------------------------- COMPRESSION

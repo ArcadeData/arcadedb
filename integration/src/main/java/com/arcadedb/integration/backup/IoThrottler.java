@@ -37,6 +37,8 @@ import java.util.concurrent.locks.LockSupport;
  */
 public class IoThrottler {
   private static final long ONE_SECOND_NANOS = 1_000_000_000L;
+  /** Byte count at which the baseline is moved forward, keeping {@code totalBytes * ONE_SECOND_NANOS} inside a long. */
+  private static final long REBASE_BYTES     = 1L << 30;
 
   private final long bytesPerSecond;
   private       long startNanos = -1;
@@ -66,12 +68,20 @@ public class IoThrottler {
 
     totalBytes += bytes;
 
-    final long deadline = startNanos + (long) (totalBytes / (double) bytesPerSecond * ONE_SECOND_NANOS);
+    final long deadline = startNanos + totalBytes * ONE_SECOND_NANOS / bytesPerSecond;
     final long delay = deadline - now;
     if (delay > 0)
       LockSupport.parkNanos(delay);
     else if (-delay > ONE_SECOND_NANOS)
       // FELL MORE THAN ONE SECOND BEHIND: FORGET THE EXCESS CREDIT INSTEAD OF LETTING IT BE SPENT AS AN UNBOUNDED BURST
       startNanos += -delay - ONE_SECOND_NANOS;
+
+    if (totalBytes >= REBASE_BYTES) {
+      // MOVE THE BASELINE TO THE DEADLINE JUST COMPUTED AND RESTART THE BYTE COUNT. THIS KEEPS totalBytes * 1e9 INSIDE
+      // A long (IT WOULD OVERFLOW PAST ~9.2GB, WHICH A BACKUP REACHES) SO THE DEADLINE STAYS EXACT INTEGER ARITHMETIC,
+      // AND BECAUSE THE NEW BASELINE IS THE EXACT OLD DEADLINE RATHER THAN 'now', NO ROUNDING DRIFT ACCUMULATES
+      startNanos = deadline;
+      totalBytes = 0L;
+    }
   }
 }

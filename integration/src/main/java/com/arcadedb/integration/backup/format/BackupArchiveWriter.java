@@ -53,4 +53,17 @@ public interface BackupArchiveWriter extends Closeable {
    */
   @Override
   void close() throws IOException;
+
+  /**
+   * Releases the writer's resources <b>without</b> terminating the archive, for a backup that has already failed.
+   * <p>
+   * A failed backup must not leave behind something a restore would accept. {@code FullBackupFormat} deletes the
+   * partial file, but a delete can itself fail (permissions, a full or read-only filesystem), and what would be left
+   * then is an archive with a perfectly valid central directory listing however many entries got written before the
+   * failure - a backup that looks complete and silently is not. Aborting instead leaves no central directory, so the
+   * file is structurally invalid and no tool will restore from it.
+   * <p>
+   * Must not throw: it runs on a path that is already carrying a failure, and must not replace it.
+   */
+  void abort();
 }

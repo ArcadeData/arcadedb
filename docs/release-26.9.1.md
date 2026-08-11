@@ -738,6 +738,8 @@ A backup that failed halfway still reported success. `PageManager.suspendFlushAn
 through `CodeUtils.executeIgnoringExceptions`, which logs and swallows, so an I/O error mid-backup left the
 archive to be finalized with a valid central directory over a truncated set of entries - a backup that looks
 valid and is not, which is the worst failure mode this code has. The failure is now carried out of the
-suspension by hand and the partial archive is deleted.
+suspension by hand, the partial archive is deleted, and only a backup that actually succeeded gets a central
+directory written at all: a failed one aborts the writer instead, so even if the delete cannot happen
+(permissions, a full or read-only filesystem) what is left is structurally invalid rather than plausible.
 
 [#6072](https://github.com/ArcadeData/arcadedb/issues/6072)

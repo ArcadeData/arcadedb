@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.restore.Restore;
@@ -44,6 +45,7 @@ import java.util.zip.ZipFile;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * End-to-end coverage of the configurable and parallel backup compression introduced by issue #6072. The contract
@@ -205,6 +207,34 @@ class BackupCompressionIT {
       FileUtils.deleteRecursively(new File(sqlBackupRoot));
       TestHelper.checkActiveDatabases();
     }
+  }
+
+  /**
+   * Regression: a backup that failed halfway used to report success. {@code PageManager.suspendFlushAndExecute} runs
+   * its callback through {@code CodeUtils.executeIgnoringExceptions}, so the archive was finalized with a valid
+   * central directory over a truncated set of entries - a backup that looks valid and is not.
+   */
+  @ParameterizedTest
+  @CsvSource({ "0", "4" })
+  void aFailedBackupThrowsAndLeavesNoArchive(final int threads) throws Exception {
+    try (final Database database = createDatabase()) {
+      final ComponentFile unreadable = ((DatabaseInternal) database).getFileManager().getFiles().stream()
+          .filter(f -> f != null && f.getOSFile().length() > 0).reduce((first, second) -> second).orElseThrow();
+
+      // POSIX ONLY: WHERE THE PERMISSION CANNOT BE TAKEN AWAY (WINDOWS, RUNNING AS ROOT) THERE IS NO WAY TO MAKE A
+      // COMPONENT FILE FAIL TO OPEN, SO THE SCENARIO IS NOT REPRODUCIBLE AND THE TEST SKIPS RATHER THAN PASSING VACUOUSLY
+      assumeTrue(unreadable.getOSFile().setReadable(false) && !unreadable.getOSFile().canRead(),
+          "cannot make a database file unreadable on this platform");
+      try {
+        assertThatThrownBy(() -> new Backup(database, BACKUP_FILE).setVerboseLevel(0).setCompressionThreads(threads)
+            .backupDatabase()).isInstanceOf(BackupException.class);
+
+        assertThat(new File(BACKUP_FILE)).as("a partial archive must not survive a failed backup").doesNotExist();
+      } finally {
+        unreadable.getOSFile().setReadable(true);
+      }
+    }
+    TestHelper.checkActiveDatabases();
   }
 
   @Test
