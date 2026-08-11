@@ -745,6 +745,12 @@ Two changes, both measured rather than assumed:
 (323 MB at level 9 against 348 MB at level 1). Level 6 is a reasonable middle - it costs roughly half of
 level 9 at the same ratio - and level 9 remains available for anyone who wants the smallest archive.
 
+> **Upgrade note.** This is a change of default, so a backup taken after upgrading is about 7.5% larger than
+> the same backup taken before it, with no configuration change on your side. If the backup target is sized
+> tightly, set `arcadedb.backup.compressionLevel=9` to keep exactly the previous archive sizes - they are
+> still produced several times faster than before, because the parallelism is independent of the level - or
+> `=6` for the same size at roughly half the CPU of 9.
+
 **Compression is now parallel** (`arcadedb.backup.compressionThreads`, default `-1` = half the available
 processors capped at 8). Splitting the work by archive entry would not have helped, because a database is
 often a handful of very large files and sometimes one dominant one, so the split is *inside* each entry: the

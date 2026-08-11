@@ -219,6 +219,63 @@ class ParallelZipArchiveWriterTest {
     }
   }
 
+  /**
+   * The other ZIP64 trigger, and the one that actually fires in production: an <b>archive</b> past 4 GB, which any
+   * backup of a database of a few tens of GB produces. It puts the central directory beyond the 32-bit offset field,
+   * so the ZIP64 end-of-central-directory record and its locator have to be written - a different branch from the
+   * >4 GB <i>entry</i> covered above, and one no small fixture reaches.
+   * <p>
+   * It also pins the field-by-field encoding, which is the subtle part. Only the fields that individually overflow
+   * are replaced by their sentinel: here the central-directory offset does, while the entry count and the directory
+   * size do not, so those two keep their real values. That is what {@code ZipOutputStream} itself emits - this test
+   * asserts against the JDK's own bytes for the same logical archive rather than against a reading of the
+   * specification, so the two can never drift.
+   * <p>
+   * Costs no disk: the source is sparse, the level is 0 so the 4 GB passes through as stored blocks, and both
+   * archives are written into a sink that keeps only the tail.
+   */
+  @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
+  void archiveLargerThan4GBMatchesTheJdkEndOfCentralDirectory() throws Exception {
+    final long size = 4L * 1024 * 1024 * 1024 + 4096;
+
+    final File source = new File(workDirectory, "huge.bin");
+    try (final RandomAccessFile raf = new RandomAccessFile(source, "rw")) {
+      raf.setLength(size);
+    }
+
+    final TailSink ours = new TailSink();
+    try (final BackupArchiveWriter writer = new ParallelZipArchiveWriter(ours, 0, 4, new IoThrottler(0))) {
+      writer.addFile(source);
+    }
+
+    final TailSink jdk = new TailSink();
+    try (final BackupArchiveWriter writer = new ZipStreamArchiveWriter(jdk, 0, new IoThrottler(0))) {
+      writer.addFile(source);
+    }
+
+    assertThat(ours.total()).as("the archive itself must cross 4GB for this to test anything").isGreaterThan(0xFFFFFFFFL);
+
+    final EndOfCentralDirectory oursEnd = EndOfCentralDirectory.parse(ours.tail());
+    final EndOfCentralDirectory jdkEnd = EndOfCentralDirectory.parse(jdk.tail());
+
+    assertThat(oursEnd.hasZip64Locator()).as("ZIP64 locator must be present past 4GB").isTrue();
+    assertThat(oursEnd.hasZip64Record()).as("ZIP64 end record must be present past 4GB").isTrue();
+
+    // ONLY THE OVERFLOWED FIELD CARRIES THE SENTINEL, EXACTLY AS THE JDK DOES IT
+    assertThat(oursEnd.centralDirectoryOffset()).isEqualTo(0xFFFFFFFFL).isEqualTo(jdkEnd.centralDirectoryOffset());
+    assertThat(oursEnd.entriesTotal()).isEqualTo(1).isEqualTo(jdkEnd.entriesTotal());
+    assertThat(oursEnd.entriesOnDisk()).isEqualTo(1).isEqualTo(jdkEnd.entriesOnDisk());
+    assertThat(oursEnd.centralDirectorySize()).isLessThan(0xFFFFFFFFL);
+    assertThat(jdkEnd.centralDirectorySize()).isLessThan(0xFFFFFFFFL);
+
+    // AND THE ZIP64 RECORD CARRIES THE REAL VALUES THE CLASSIC ONE COULD NOT HOLD
+    assertThat(oursEnd.zip64EntriesTotal()).isEqualTo(1);
+    assertThat(oursEnd.zip64CentralDirectoryOffset()).isGreaterThan(0xFFFFFFFFL);
+
+    source.delete();
+  }
+
   @Test
   void rejectsInvalidConfiguration() {
     assertThatThrownBy(() -> new ParallelZipArchiveWriter(OutputStream.nullOutputStream(), 6, 0, new IoThrottler(0)))
@@ -295,6 +352,71 @@ class ParallelZipArchiveWriterTest {
   }
 
   // ------------------------------------------------------------------------------------------------------- HELPERS
+
+  /** Swallows an arbitrarily large archive while keeping its last bytes, which is all the end records occupy. */
+  private static final class TailSink extends OutputStream {
+    private final byte[] tail = new byte[256];
+    private       long   total;
+
+    @Override
+    public void write(final int b) {
+      write(new byte[] { (byte) b }, 0, 1);
+    }
+
+    @Override
+    public void write(final byte[] b, final int off, final int len) {
+      total += len;
+      if (len >= tail.length)
+        System.arraycopy(b, off + len - tail.length, tail, 0, tail.length);
+      else {
+        System.arraycopy(tail, len, tail, 0, tail.length - len);
+        System.arraycopy(b, off, tail, tail.length - len, len);
+      }
+    }
+
+    byte[] tail() {
+      return tail;
+    }
+
+    long total() {
+      return total;
+    }
+  }
+
+  /**
+   * The three end records a ZIP64 archive finishes with, read straight out of the tail bytes: the classic
+   * end-of-central-directory (last 22 bytes when there is no comment), the ZIP64 locator (the 20 before it) and the
+   * ZIP64 end record (the 56 before that).
+   */
+  private record EndOfCentralDirectory(long entriesOnDisk, long entriesTotal, long centralDirectorySize,
+                                       long centralDirectoryOffset, boolean hasZip64Locator, boolean hasZip64Record,
+                                       long zip64EntriesTotal, long zip64CentralDirectoryOffset) {
+    static EndOfCentralDirectory parse(final byte[] tail) {
+      final int end = tail.length - 22;
+      if (u32(tail, end) != 0x06054b50L)
+        throw new IllegalStateException("end-of-central-directory signature not at the expected offset");
+
+      final int locator = end - 20;
+      final boolean hasLocator = locator >= 0 && u32(tail, locator) == 0x07064b50L;
+      final int zip64 = locator - 56;
+      final boolean hasRecord = hasLocator && zip64 >= 0 && u32(tail, zip64) == 0x06064b50L;
+
+      return new EndOfCentralDirectory(u16(tail, end + 8), u16(tail, end + 10), u32(tail, end + 12), u32(tail, end + 16),
+          hasLocator, hasRecord, hasRecord ? u64(tail, zip64 + 32) : -1, hasRecord ? u64(tail, zip64 + 48) : -1);
+    }
+
+    private static long u16(final byte[] b, final int o) {
+      return (b[o] & 0xFFL) | ((b[o + 1] & 0xFFL) << 8);
+    }
+
+    private static long u32(final byte[] b, final int o) {
+      return u16(b, o) | (u16(b, o + 2) << 16);
+    }
+
+    private static long u64(final byte[] b, final int o) {
+      return u32(b, o) | (u32(b, o + 4) << 32);
+    }
+  }
 
   private File writeArchive(final String archiveName, final Map<String, byte[]> sources, final int level,
       final int threads, final int chunkSize) throws IOException {

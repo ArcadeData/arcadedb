@@ -188,10 +188,13 @@ public class FullBackupFormat extends AbstractBackupFormat {
       boolean terminated = false;
       try {
         callback.backup(archive);
-        if (failure.get() == null) {
-          archive.close();
-          terminated = true;
-        }
+        if (failure.get() != null)
+          // SURFACE IT HERE RATHER THAN ONLY AFTER writeArchive RETURNS, SO THE STREAM-CLOSING BELOW KNOWS THE BACKUP
+          // FAILED AND CANNOT LET ITS OWN close() FAILURE TAKE THE ROOT CAUSE'S PLACE
+          throw failure.get();
+
+        archive.close();
+        terminated = true;
       } finally {
         if (!terminated)
           archive.abort();
@@ -239,10 +242,19 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
       try {
         callback.write(archiveStream);
-      } finally {
         // ON THE ENCRYPTED PATH THIS FINALISES THE CIPHER; ON THE PLAIN ONE IT IS THE SAME STREAM THE try-WITH-RESOURCES
-        // ALREADY OWNS, AND CLOSING A FileOutputStream TWICE IS A NO-OP
+        // ALREADY OWNS, AND CLOSING A FileOutputStream TWICE IS A NO-OP. ON THE SUCCESS PATH A FAILURE TO CLOSE IS THE
+        // BACKUP'S FAILURE - THE LAST BYTES MAY NOT HAVE REACHED THE DISK - SO IT PROPAGATES
         archiveStream.close();
+      } catch (final Exception e) {
+        try {
+          archiveStream.close();
+        } catch (final Exception closeError) {
+          // THE BACKUP HAD ALREADY FAILED. THE CLOSE FAILURE IS A CONSEQUENCE, NOT THE CAUSE, SO IT IS RECORDED
+          // ALONGSIDE INSTEAD OF REPLACING THE ONE THAT EXPLAINS WHAT WENT WRONG
+          e.addSuppressed(closeError);
+        }
+        throw e;
       }
     }
   }
