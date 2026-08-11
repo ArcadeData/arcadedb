@@ -29,9 +29,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
+import java.lang.reflect.Field;
 import java.util.Random;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -126,6 +129,93 @@ class LSMVectorIndexCloseCancelsInFlightBuildTest {
         // No flush()/rebuild-on-close: the build above was deliberately cancelled mid-flight, so the graph was
         // never persisted, and drop() is what the codebase uses to tear a test database down without paying for
         // that.
+        db.drop();
+      }
+    }
+  }
+
+  /**
+   * The test above exercises the common case, where {@code shutdownNow()} drains the pool inside its own 5s
+   * budget and the forced {@code cancel()} in {@code releaseBackgroundResources()} never actually has to run.
+   * This test drives that fallback directly: a worker that deliberately swallows interruption (standing in for
+   * JVector's {@code GraphIndexBuilder} not observing it, see {@code getOrCreateGraphBuildPool()}'s javadoc)
+   * never lets the pool terminate, so {@code awaitTermination(5, SECONDS)} times out and
+   * {@code releaseBackgroundResources()} must fall back to cancelling {@code graphBuildInsertionTask} directly.
+   * Injecting the pool/task fields directly keeps this deterministic and fast to set up, instead of depending on
+   * a real JVector build timing out in a way this test cannot control.
+   */
+  @Test
+  void releaseBackgroundResourcesCancelsAStuckInsertionTaskAfterTheShutdownTimeout() throws Exception {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        db.transaction(() -> {
+          final var type = db.getSchema().createDocumentType("Doc");
+          type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+          db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": 4, "
+              + "\"similarity\": \"COSINE\" }");
+        });
+        final LSMVectorIndex index = vectorIndex(db);
+
+        final ForkJoinPool pool = new ForkJoinPool(1);
+        final CountDownLatch stop = new CountDownLatch(1);
+        final CountDownLatch workerStarted = new CountDownLatch(1);
+        final ForkJoinTask<?> stuckTask = pool.submit(() -> {
+          workerStarted.countDown();
+          while (stop.getCount() > 0) {
+            try {
+              stop.await(50, TimeUnit.MILLISECONDS);
+            } catch (final InterruptedException ignored) {
+              // Deliberately swallow: this is standing in for JVector code that does not check interruption.
+            }
+          }
+        });
+
+        try {
+          assertThat(workerStarted.await(5, TimeUnit.SECONDS)).as("the stuck worker must have started").isTrue();
+
+          final Field poolField = LSMVectorIndex.class.getDeclaredField("graphBuildPool");
+          poolField.setAccessible(true);
+          poolField.set(index, pool);
+          final Field taskField = LSMVectorIndex.class.getDeclaredField("graphBuildInsertionTask");
+          taskField.setAccessible(true);
+          taskField.set(index, stuckTask);
+
+          final AtomicReference<Throwable> unexpectedFailure = new AtomicReference<>();
+          final Thread joiner = new Thread(() -> {
+            try {
+              stuckTask.join();
+            } catch (final CancellationException expected) {
+              // This is the outcome releaseBackgroundResources() forces below; not a failure.
+            } catch (final Throwable t) {
+              unexpectedFailure.set(t);
+            }
+          }, "test-stuck-task-joiner");
+          joiner.setDaemon(true);
+          joiner.start();
+          // Give the joiner time to actually park inside join() before racing it against
+          // releaseBackgroundResources() below - a join() called after the task is already cancelled would
+          // pass trivially without ever exercising the wakeup this test targets.
+          Thread.sleep(200);
+
+          // This is the call under test. It must fall back to cancelling stuckTask once awaitTermination(5s)
+          // times out, since the worker above never lets the pool terminate on its own.
+          index.releaseBackgroundResources();
+
+          joiner.join(10_000);
+          assertThat(joiner.isAlive())
+              .as("the external joiner must not outlive releaseBackgroundResources(): once shutdownNow() fails "
+                  + "to drain the pool within its own budget, the fallback cancel() must still unblock a caller "
+                  + "parked in ForkJoinTask.join(), not leave it hanging")
+              .isFalse();
+          assertThat(unexpectedFailure.get())
+              .as("the joiner must have exited via cancellation, not an unrelated error")
+              .isNull();
+        } finally {
+          stop.countDown();
+          pool.shutdownNow();
+        }
+      } finally {
         db.drop();
       }
     }
