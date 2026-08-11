@@ -100,6 +100,13 @@ class Issue6044StripeIterationOrderTest extends TestHelper {
 
     // (b) RANK-BOUNDED ERROR: every one of the newest 50 edges lands in the first 400 entries. Concatenation
     // scatters them over the whole list (one cluster per stripe, ~degree/stripes apart), so it cannot pass.
+    //
+    // The two bounds below are DETERMINISTIC, not sampled: the fixture inserts a fixed number of vertices in a
+    // fixed order into a fresh database, so the neighbour RIDs - and therefore StripeDirectory.stripeOf's
+    // placement of every edge - are the same on every run. They are stated loosely on purpose, well clear of the
+    // measured values (worst-placed ~140, ~88 of the newest 100 in the first 200), so that a change in bucket
+    // allocation that shifts the RIDs moves the numbers without failing the test; only a real regression in the
+    // rank/position relationship can cross them. Concatenation misses by an order of magnitude (worst ~1762).
     int worstOfTheNewest = 0;
     for (int rank = 0; rank < 50; rank++)
       worstOfTheNewest = Math.max(worstOfTheNewest, positionOf.get(sources.get(TOTAL - 1 - rank)));
