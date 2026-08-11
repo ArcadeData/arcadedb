@@ -60,6 +60,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * vector class sharing a Surefire fork queues behind every other one - including a rebuild left over from an already-finished class - and the waits
  * below then have to be sized for that worst case. A lane of its own keeps the convoy off the other ~1300 engine test classes. It does not fix the
  * convoy, which is still here; making the permit count configurable, or scoping it per database, would.
+ * <p>
+ * That queueing theory explains a genuine class of slowdown, but is not what the recurring CI flakes in this class turn out to be: a run where
+ * {@code REBUILD_SETTLE_TIMEOUT} was raised to sit above {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}'s own 600s production timeout still timed
+ * out at the new, higher ceiling with no "Timed out after ... waiting for a vector index rebuild permit" warning anywhere in the log - the one line
+ * {@code startAsyncGraphRebuild()} would have logged had it actually been waiting on a held permit. So the rebuild that timed out was not queued
+ * behind another one; it held the permit itself and simply took far longer than usual to run, which points at CPU-starved CI compute rather than
+ * semaphore contention. Configuring more permits would not have helped this specific symptom - it would only let more CPU-starved rebuilds compete
+ * for the same scarce cores at once.
  */
 @Tag("vector")
 class LSMVectorIndexRebuildTest extends TestHelper {

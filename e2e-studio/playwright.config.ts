@@ -39,7 +39,19 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        // GitHub Actions runners give Chromium a small /dev/shm; when a rendering-heavy page (the
+        // graph canvas in particular) runs out of shared memory, the tab crashes or its renderer never
+        // finishes painting, which shows up as every visibility assertion timing out with no JS error
+        // and no server-side symptom - the failure is in the browser process, not the page or the app.
+        // Chromium falls back to disk-backed shared memory with this flag; it is Google's own documented
+        // workaround for containerized CI (https://developer.chrome.com/blog/chrome-docker) and costs
+        // nothing outside that failure mode.
+        launchOptions: {
+          args: ['--disable-dev-shm-usage'],
+        },
+      },
     },
   ],
 });
