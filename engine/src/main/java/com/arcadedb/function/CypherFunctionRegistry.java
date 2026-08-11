@@ -30,6 +30,7 @@ import com.arcadedb.function.date.*;
 import com.arcadedb.function.map.*;
 import com.arcadedb.function.math.*;
 import com.arcadedb.function.node.*;
+import com.arcadedb.function.number.*;
 import com.arcadedb.function.path.PathCombine;
 import com.arcadedb.function.path.PathCreate;
 import com.arcadedb.function.path.PathElements;
@@ -232,6 +233,8 @@ public final class CypherFunctionRegistry {
     registerMathFunctions();
     // Convert functions
     registerConvertFunctions();
+    // Number functions
+    registerNumberFunctions();
     // Date functions
     registerDateFunctions();
     // Util functions
@@ -249,6 +252,7 @@ public final class CypherFunctionRegistry {
   }
 
   private static void registerCollFunctions() {
+    register(new CollAvg());
     register(new CollDistinct());
     register(new CollFlatten());
     register(new CollIndexOf());
@@ -257,6 +261,9 @@ public final class CypherFunctionRegistry {
     register(new CollMin());
     register(new CollRemove());
     register(new CollSort());
+    register(new CollSum());
+    register(new CollUnion());
+    register(new CollUnionAll());
   }
 
   private static void registerTextFunctions() {
@@ -314,6 +321,7 @@ public final class CypherFunctionRegistry {
     register(new MathMaxLong());
     register(new MathMinLong());
     register(new MathMaxDouble());
+    register(new MathRound());
   }
 
   private static void registerConvertFunctions() {
@@ -326,6 +334,11 @@ public final class CypherFunctionRegistry {
     register(new ConvertToBoolean());
     register(new ConvertToInteger());
     register(new ConvertToFloat());
+    register(new ConvertToString());
+  }
+
+  private static void registerNumberFunctions() {
+    register(new NumberFormat());
   }
 
   private static void registerDateFunctions() {
