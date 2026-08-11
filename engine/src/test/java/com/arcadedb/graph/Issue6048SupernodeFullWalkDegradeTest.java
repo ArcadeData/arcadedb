@@ -54,7 +54,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     walk, exactly on a stripe boundary, and past the whole list;</li>
  * <li>the ordering guarantee still holds for the prefix within the threshold;</li>
  * <li>a threshold of 0 reproduces the pre-#6044 concatenated order exactly, since a full walk with no rounds of
- *     interleaving is definitionally the classic layout's degree-dependent chain grouping.</li>
+ *     interleaving is definitionally the classic layout's degree-dependent chain grouping;</li>
+ * <li>the threshold does not leak across the generation boundary - the pre-promotion generation (walked last)
+ *     is unaffected by however far the promoted generation's rotation degraded before it.</li>
  * </ol>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -156,6 +158,38 @@ class Issue6048SupernodeFullWalkDegradeTest extends TestHelper {
     for (int rank = 0; rank < 50; rank++)
       worstOfTheNewest = Math.max(worstOfTheNewest, positionOf.get(sources.get(TOTAL - 1 - rank)));
     assertThat(worstOfTheNewest).as("rounds=0 must disable interleaving, not merely shrink its window").isGreaterThan(1000);
+  }
+
+  /**
+   * The degrade threshold is per generation ({@code interleaved()} builds a fresh {@code InterleavedIterator}
+   * per generation, so {@code browsed} starts at 0 for each), not accumulated across the whole vertex. Generation
+   * 0 - the pre-promotion classic chain, holding only the very first edge ever inserted here - is walked LAST
+   * and, being a single chain, bypasses {@code InterleavedIterator} entirely (the "size==1" unwrap in
+   * {@code interleaved()}): there is no degrade state to leak into it even in principle, but this pins the
+   * observable consequence. With rounds=1 (16-entry threshold), generation 1's ~1,936 entries degrade to
+   * concatenation almost immediately; the oldest edge must still land exactly at the tail, unaffected by
+   * whatever generation 1's rotation did before it.
+   */
+  @Test
+  void degradeThresholdDoesNotCarryOverToTheNextGeneration() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(THRESHOLD);
+    GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(STRIPES);
+    GlobalConfiguration.GRAPH_SUPERNODE_INTERLEAVE_ROUNDS.setValue(1);
+
+    createSchema();
+    final RID hubRID = createHub();
+    final List<RID> sources = insertEdges(hubRID, TOTAL);
+    assertThat(loadInHead(hubRID)).isInstanceOf(StripeDirectory.class);
+
+    final Map<RID, Integer> positionOf = positionsOfNeighbours(hubRID);
+    assertThat(positionOf).hasSize(TOTAL);
+
+    // GENERATION 0 (pre-promotion, oldest edges) STAYS AT THE TAIL regardless of how generation 1 degraded.
+    assertThat(positionOf.get(sources.getFirst())).isEqualTo(TOTAL - 1);
+
+    // GENERATION 1's OWN NEWEST EDGE IS STILL WITHIN THE FIRST TURN: its rotation started fresh, not partway
+    // through some carried-over count.
+    assertThat(positionOf.get(sources.getLast())).isLessThan(STRIPES);
   }
 
   private void createSchema() {
