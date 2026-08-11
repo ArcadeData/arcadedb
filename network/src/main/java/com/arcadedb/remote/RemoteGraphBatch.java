@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -292,8 +293,42 @@ public class RemoteGraphBatch implements AutoCloseable {
       appendJsonString(sb, (String) value);
     else if (value instanceof Number || value instanceof Boolean)
       sb.append(value);
+    else if (value instanceof Map<?, ?> map)
+      appendJsonMap(sb, map);
+    else if (value instanceof Collection<?> collection)
+      appendJsonCollection(sb, collection);
     else
       appendJsonString(sb, value.toString());
+  }
+
+  // MAP-typed properties must be sent as a real JSON object (not `value.toString()`, which
+  // produces a plain string like "{1=1, 2=2}") or DocumentValidator rejects the value on
+  // the server as an incompatible type for the declared MAP property - see issue #6061.
+  static void appendJsonMap(final StringBuilder sb, final Map<?, ?> map) {
+    sb.append('{');
+    boolean first = true;
+    for (final Map.Entry<?, ?> entry : map.entrySet()) {
+      if (!first)
+        sb.append(',');
+      first = false;
+      appendJsonString(sb, String.valueOf(entry.getKey()));
+      sb.append(':');
+      appendJsonValue(sb, entry.getValue());
+    }
+    sb.append('}');
+  }
+
+  // Same rationale as appendJsonMap(), for LIST-typed properties.
+  static void appendJsonCollection(final StringBuilder sb, final Collection<?> collection) {
+    sb.append('[');
+    boolean first = true;
+    for (final Object item : collection) {
+      if (!first)
+        sb.append(',');
+      first = false;
+      appendJsonValue(sb, item);
+    }
+    sb.append(']');
   }
 
   static void appendJsonString(final StringBuilder sb, final String s) {

@@ -21,11 +21,16 @@ package com.arcadedb.remote;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link RemoteGraphBatch} reference resolution that do not require a running server.
+ * Unit tests for {@link RemoteGraphBatch} reference resolution and JSON property serialization
+ * that do not require a running server.
  * The vertex reference is validated before any buffering or network interaction, so a null/empty
  * reference must be rejected with a clear {@link IllegalArgumentException} instead of an obscure
  * NullPointerException / StringIndexOutOfBoundsException.
@@ -67,5 +72,62 @@ class RemoteGraphBatchTest {
     assertThatThrownBy(() -> batch.createEdge("KNOWS", "#3:0", ""))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("cannot be null or empty");
+  }
+
+  // Issue #6061: a Map-typed property value must be serialized as a real JSON object, not
+  // stringified via Map.toString() (which produces "{1=1, 2=2}" and gets rejected server-side
+  // as an incompatible type for a MAP property).
+  @Test
+  void appendJsonValueSerializesMapAsJsonObject() {
+    final StringBuilder sb = new StringBuilder();
+    final Map<String, String> map = new LinkedHashMap<>();
+    map.put("1", "1");
+    map.put("2", "2");
+
+    RemoteGraphBatch.appendJsonValue(sb, map);
+
+    assertThat(sb.toString()).isEqualTo("{\"1\":\"1\",\"2\":\"2\"}");
+  }
+
+  @Test
+  void appendJsonValueSerializesEmptyMapAsEmptyJsonObject() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, new LinkedHashMap<>());
+
+    assertThat(sb.toString()).isEqualTo("{}");
+  }
+
+  @Test
+  void appendJsonValueSerializesListAsJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, List.of(1, 2, 3));
+
+    assertThat(sb.toString()).isEqualTo("[1,2,3]");
+  }
+
+  @Test
+  void appendJsonValueSerializesNestedMapAndListValues() {
+    final StringBuilder sb = new StringBuilder();
+    final Map<String, Object> map = new LinkedHashMap<>();
+    map.put("tags", List.of("a", "b"));
+    map.put("count", 2);
+
+    RemoteGraphBatch.appendJsonValue(sb, map);
+
+    assertThat(sb.toString()).isEqualTo("{\"tags\":[\"a\",\"b\"],\"count\":2}");
+  }
+
+  @Test
+  void appendPropertiesSerializesMapProperty() {
+    final StringBuilder sb = new StringBuilder();
+    final Map<String, String> map = new LinkedHashMap<>();
+    map.put("1", "1");
+    map.put("2", "2");
+
+    RemoteGraphBatch.appendProperties(sb, new Object[] { "map", map });
+
+    assertThat(sb.toString()).isEqualTo(",\"map\":{\"1\":\"1\",\"2\":\"2\"}");
   }
 }
