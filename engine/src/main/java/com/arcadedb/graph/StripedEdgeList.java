@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
@@ -64,7 +65,11 @@ import java.util.logging.Level;
  * <li>the <b>NEWEST</b> edge of the list is always inside the first {@code stripes} entries: it is the head of
  *     its own chain and the rotation emits every chain's head in the first turn;</li>
  * <li><b>APPROXIMATELY</b> newest-first globally, with the deviation of an edge's returned position from its true
- *     recency rank {@code r} bounded by a small multiple of {@code r} - independent of the vertex degree.</li>
+ *     recency rank {@code r} bounded by a small multiple of {@code r} - independent of the vertex degree - for
+ *     the first {@link com.arcadedb.GlobalConfiguration#GRAPH_SUPERNODE_INTERLEAVE_ROUNDS} rounds of a
+ *     generation's rotation. Past that (#6048), the walk degrades to plain concatenation of what is left in each
+ *     chain, on the reasoning that a caller still reading at that point is doing a full walk rather than paging,
+ *     so the order stops being useful and the locality of one cursor draining a chain at a time is worth more.</li>
  * </ul>
  * It is NOT an ordering guarantee: an application that needs an exact order must sort, or read through an index
  * on a timestamp property. That was true of the classic layout too - reverse-insertion order was never part of
@@ -493,10 +498,19 @@ public class StripedEdgeList extends EdgeLinkedList {
    * <p>
    * A generation contributing a single chain is passed through unwrapped: the rotation would be a no-op and the
    * plain chain iterator keeps its identity (e.g. {@code ResettableIterator} specialisations) and its locality.
+   * <h2>Degrading to concatenation on a full walk (#6048)</h2>
+   * Interleaving keeps {@code size} chunk pages resident and hops between {@code size} files every {@code size}
+   * entries - a locality cost that a paged read (small LIMIT) never notices but a full walk pays for the whole
+   * degree, for an ordering it never consults. {@link GlobalConfiguration#GRAPH_SUPERNODE_INTERLEAVE_ROUNDS}
+   * bounds that cost: past {@code rounds x size} entries of a generation, {@link InterleavedIterator} degrades
+   * to draining the remaining chains one at a time (see its Javadoc), so the extra locality cost a full walk
+   * pays for the ordered prefix is a fixed amount independent of how large the super-node has grown, while a
+   * paged read within the threshold keeps the full rank-fidelity #6044 restored.
    */
   private <T> Iterator<T> interleaved(final ChainIteratorFactory<T> factory) {
     final MultiIterator<T> iterator = new MultiIterator<>();
     final List<EdgeLinkedList> chains = new ArrayList<>();
+    final long rounds = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_INTERLEAVE_ROUNDS);
     for (int g = directory.getGenerationCount() - 1; g >= 0; g--) {
       chains.clear();
       for (int s = 0; s < directory.getStripes(g); s++)
@@ -514,7 +528,9 @@ public class StripedEdgeList extends EdgeLinkedList {
       @SuppressWarnings("unchecked") final Iterator<T>[] cursors = new Iterator[size];
       for (int i = 0; i < size; i++)
         cursors[i] = factory.create(chains.get(i));
-      iterator.addIterator(new InterleavedIterator<>(cursors));
+      // 'rounds' is a long so the product cannot overflow (both factors are Integer-config-sized, size in
+      // particular bounded by GRAPH_SUPERNODE_STRIPES): no need to special-case a "never degrade" sentinel.
+      iterator.addIterator(new InterleavedIterator<>(cursors, rounds * size));
     }
     return iterator;
   }

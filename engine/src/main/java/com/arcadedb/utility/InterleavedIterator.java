@@ -35,6 +35,15 @@ import java.util.NoSuchElementException;
  * <p>
  * The rotation is kept in a plain array that is compacted on exhaustion, so steady-state cost per entry is one
  * array read plus one bounds check; no per-entry allocation.
+ * <h2>Degrading to concatenation past a threshold (#6048)</h2>
+ * A caller that keeps reading past the {@code degradeAfter}-th entry is, by construction, not paging - a paged
+ * read stops well before that or it would not be paging - so it is a full walk, for which the rank-fidelity this
+ * class buys is worth nothing and the {@code activeCount} resident sources (one chunk page per source, in the
+ * super-node case) are pure locality cost. Once {@link #browsed} reaches the threshold, {@link #next()} stops
+ * advancing {@link #turn}: the source that has the turn is drained to exhaustion (the {@link #hasNext()}
+ * compaction slides the next source into the same slot when that happens, so this needs no extra state), and the
+ * remaining sources are consumed one at a time from wherever the rotation left off - concatenation of the tails,
+ * recovering full-walk locality without restarting or reordering anything already emitted.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -48,18 +57,35 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
   /** Index in {@code active} of the source holding the already-peeked entry, or -1 when none is pending. */
   private       int           pending = -1;
   private       long          browsed = 0L;
+  /** Entry count at which the rotation degrades to concatenation. {@code Long.MAX_VALUE} never degrades. */
+  private final long          degradeAfter;
 
   /**
    * Takes ownership of the given array (it is not copied): the caller must not touch it afterwards. The sources
    * are used from where they currently are - the constructor deliberately does NOT rewind them, so a partially
    * consumed source keeps its position; {@link #reset()} is what rewinds.
+   * <p>
+   * Never degrades to concatenation; equivalent to {@code InterleavedIterator(sources, Long.MAX_VALUE)}.
+   */
+  public InterleavedIterator(final Iterator<T>[] sources) {
+    this(sources, Long.MAX_VALUE);
+  }
+
+  /**
+   * As {@link #InterleavedIterator(Iterator[])}, but the rotation degrades to plain concatenation of the
+   * remaining sources once {@code degradeAfter} entries have been emitted (see the class Javadoc).
+   *
+   * @param degradeAfter entry count at which to degrade, or {@code Long.MAX_VALUE} to never degrade. Not
+   *                      validated to be positive: a value {@code <= 0} degrades from the very first entry,
+   *                      which is a legitimate (if unusual) way to ask for plain concatenation through this class.
    */
   @SuppressWarnings("unchecked")
-  public InterleavedIterator(final Iterator<T>[] sources) {
+  public InterleavedIterator(final Iterator<T>[] sources, final long degradeAfter) {
     this.sources = sources;
     this.active = new Iterator[sources.length];
     System.arraycopy(sources, 0, active, 0, sources.length);
     this.activeCount = sources.length;
+    this.degradeAfter = degradeAfter;
   }
 
   @Override
@@ -93,8 +119,12 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
 
     final T value = active[pending].next();
     pending = -1;
-    ++turn;
     ++browsed;
+    // Below the threshold, rotate as usual. At/past it, leave `turn` where it is so the same source keeps
+    // getting picked - draining it to exhaustion instead of taking one entry per round - which degrades the
+    // rest of the walk into concatenation (see the class Javadoc).
+    if (browsed < degradeAfter)
+      ++turn;
     return value;
   }
 
