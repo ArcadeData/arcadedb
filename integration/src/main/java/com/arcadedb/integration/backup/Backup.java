@@ -101,6 +101,33 @@ public class Backup {
     return this;
   }
 
+  /**
+   * Deflate level, 0 (store) to 9 (smallest). Overrides {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_LEVEL}.
+   */
+  public Backup setCompressionLevel(final int compressionLevel) {
+    settings.compressionLevel = BackupSettings.checkIntSetting("compressionLevel", compressionLevel, 0, 9);
+    return this;
+  }
+
+  /**
+   * Compression threads: -1 automatic, 0 the legacy single-threaded writer, N a pool of N. Overrides
+   * {@link com.arcadedb.GlobalConfiguration#BACKUP_COMPRESSION_THREADS}.
+   */
+  public Backup setCompressionThreads(final int compressionThreads) {
+    settings.compressionThreads = BackupSettings.checkIntSetting("compressionThreads", compressionThreads, -1,
+        BackupSettings.MAX_COMPRESSION_THREADS);
+    return this;
+  }
+
+  /**
+   * Read-side rate cap in MB/s, 0 for unlimited. Overrides
+   * {@link com.arcadedb.GlobalConfiguration#BACKUP_MAX_MB_PER_SECOND}.
+   */
+  public Backup setMaxMBPerSecond(final int maxMBPerSecond) {
+    settings.maxMBPerSecond = BackupSettings.checkIntSetting("maxMBPerSecond", maxMBPerSecond, 0, Integer.MAX_VALUE);
+    return this;
+  }
+
   protected void openDatabase() {
     if (database != null && database.isOpen())
       return;

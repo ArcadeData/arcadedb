@@ -724,3 +724,95 @@ other RPC on this service starts. Naming the leader is a fact about the cluster'
 cannot reach the database it asked for is answered about that database rather than told where the leader lives.
 
 [#6070](https://github.com/ArcadeData/arcadedb/issues/6070)
+
+## The full backup is several times faster, and the flush-suspension window it opens is proportionally shorter (#6072)
+
+`FullBackupFormat` streamed every database file into a ZIP at `setLevel(9)`, on the calling thread. Deflate at
+level 9 sustains roughly 20-40 MB/s on one core, so the backup was CPU bound long before it was I/O bound, and
+a 100 GB database was an hour or more of pure compression.
+
+Duration is not the only cost. The backup runs inside `PageManager.suspendFlushAndExecute`, and while flushing
+is suspended, dirty pages pile up in `PageManagerFlushThread.deferredByDatabase` until they hit
+`arcadedb.flushSuspendMaxDeferredRAM` (512 MB by default), past which committing threads are throttled instead.
+The backup's duration *is* the writer-throttling window, so making the backup n times faster shortens that
+window by the same factor. The read lock the backup also takes is not what users feel - it blocks schema
+changes and file creation, not transactions.
+
+Two changes, both measured rather than assumed:
+
+**The deflate level is now configurable and defaults to 1 instead of 9**
+(`arcadedb.backup.compressionLevel`). On a 1.25 GB database that is 3.1x faster for a 7.5% bigger archive
+(323 MB at level 9 against 348 MB at level 1). Level 6 is a reasonable middle - it costs roughly half of
+level 9 at the same ratio - and level 9 remains available for anyone who wants the smallest archive.
+
+> **Upgrade note.** This is a change of default, so a backup taken after upgrading is about 7.5% larger than
+> the same backup taken before it, with no configuration change on your side. If the backup target is sized
+> tightly, set `arcadedb.backup.compressionLevel=9` to keep exactly the previous archive sizes - they are
+> still produced several times faster than before, because the parallelism is independent of the level - or
+> `=6` for the same size at roughly half the CPU of 9.
+
+**Compression is now parallel** (`arcadedb.backup.compressionThreads`, default `-1` = half the available
+processors capped at 8). Splitting the work by archive entry would not have helped, because a database is
+often a handful of very large files and sometimes one dominant one, so the split is *inside* each entry: the
+reader cuts every file into 1 MB chunks, each chunk is deflated by its own `Deflater` and terminated with
+`SYNC_FLUSH`, and the compressed chunks are concatenated back in order. Deflate streams ended that way
+concatenate into one valid stream, which is the same construction pigz uses for parallel gzip; the only cost
+is that each chunk starts from an empty dictionary, measured at well under 1% of ratio at that chunk size. Peak heap
+for the parallel path is bounded by construction at two chunks in flight per thread, each holding a ~1 MB input and a
+~1 MB output buffer: ~32 MB of buffers at 8 threads, which is the ~45 MB the benchmark measures minus the ~12 MB
+baseline the process uses anyway.
+Scaling is close to linear: on the same 1.25 GB database, level 1 takes 6.2 s single-threaded, 2.5 s on 2
+threads, 1.3 s on 4 and 0.7 s on 8, against 18.9 s for the old default - **27x end to end**. Peak heap for the
+parallel path is bounded by construction at two chunk buffers per thread, measured at 33 MB above baseline on
+8 threads.
+
+`java.util.zip.ZipOutputStream` owns its `Deflater` and cannot be handed pre-compressed data, so the parallel
+path emits the ZIP container itself (`ParallelZipArchiveWriter`). **The archive format did not change.** Sizes
+are unknown when an entry header is written, so the writer uses the streaming form the ZIP specification
+provides for exactly that case - general-purpose bit 3, zeroed sizes in the local header, a data descriptor
+after the data - which is what `ZipOutputStream` itself emits for a `DEFLATED` entry of unknown size. Old
+backups restore, new backups restore through the unchanged restore path, and both are readable by any standard
+unzip tool, including the ZIP64 extensions an entry above 4 GB needs. The previous single-threaded writer is
+still there and is selected by `arcadedb.backup.compressionThreads = 0`.
+
+The number that matters most is not the backup's own duration but what it does to the writers it runs
+alongside. Under a sustained insert load, measuring only inside the backup window: writers sustained 159,560
+rec/s with no backup running, 6,809 rec/s (4.3%) for the 48.6 s a level-9 single-threaded backup took, and
+123,192 rec/s (77%) for the 2.1 s the new default took. The deferred-RAM high-water mark reached the 512 MB
+`flushSuspendMaxDeferredRAM` cap in every backed-up run, confirming writers were being throttled outright -
+what changed is how long they were. Commit latency inside the window is barely affected either way
+(p95 1,952 us against a 1,627 us baseline, p99 2,123 us against 3,393 us); throughput, not latency, is where
+the suspension is paid for.
+
+A third, optional knob caps the rate at which the backup reads the database files
+(`arcadedb.backup.maxMBPerSecond`, 0 = unlimited) so a backup cannot saturate the production disk. It is off by
+default, and it trades against the flush suspension: throttling makes the backup last longer, and writers are
+throttled for the whole of it.
+
+All three are settable per backup as well: on the command line (`-compressionLevel`, `-compressionThreads`,
+`-maxMBPerSecond`), through the `Backup` API, and in SQL
+(`BACKUP DATABASE ... WITH compressionLevel = 6, compressionThreads = 4`).
+
+### Two defects found on the way
+
+`BACKUP DATABASE ... WITH ...` silently dropped **every** setting. The statement matched the setting name
+against `Expression.toString()`, which renders a string quoted, so no `case` ever matched. The visible
+consequence was that `WITH encryptionKey = '...'` produced an archive in clear - it restored without the key.
+The same statement's `copy()` also dropped the settings map, so a copy taken from the statement cache lost
+them again. Both are fixed and covered by a test that proves the archive is genuinely encrypted, by asserting
+a restore without the key fails.
+
+An unrecognised setting name is now an error rather than being ignored, which closes the same hole by a
+second route: `WITH encryptionkey = '...'`, one wrong character, would otherwise still look like a request
+for an encrypted archive and produce a cleartext one. Nothing that worked stops working - until the fix
+above, every setting was ignored, so no statement can have depended on one being accepted.
+
+A backup that failed halfway still reported success. `PageManager.suspendFlushAndExecute` runs its callback
+through `CodeUtils.executeIgnoringExceptions`, which logs and swallows, so an I/O error mid-backup left the
+archive to be finalized with a valid central directory over a truncated set of entries - a backup that looks
+valid and is not, which is the worst failure mode this code has. The failure is now carried out of the
+suspension by hand, the partial archive is deleted, and only a backup that actually succeeded gets a central
+directory written at all: a failed one aborts the writer instead, so even if the delete cannot happen
+(permissions, a full or read-only filesystem) what is left is structurally invalid rather than plausible.
+
+[#6072](https://github.com/ArcadeData/arcadedb/issues/6072)
