@@ -566,6 +566,18 @@ walk, export. They consume the whole list, order means nothing to them, and one 
 chunk page beats `stripes` of them. Paging the first N edges is where the locality cost of the rotation is
 negligible and the ordering benefit is everything.
 
+**Follow-up (#6048): the OLTP read walks pay that same locality cost too, on an ordinary full traversal.**
+`MATCH (h)-[:LINK]->(x) RETURN x` with no `LIMIT`, a Gremlin `out()`, or any other walk that consumes
+`edgeIterator()`/`vertexIterator()`/`ridIterator()` to exhaustion goes through the interleaved rotation exactly
+like a paged read does, and now keeps `stripes` chunk pages resident and hops across `stripes` files the whole
+way through - for an order it never consults, since it reads everything anyway. New setting
+`arcadedb.graph.supernodeInterleaveRounds` (default 64) bounds it: past `rounds × stripes` entries of a
+generation, `InterleavedIterator` degrades to draining whatever is left of each chain one at a time, recovering
+the maintenance walks' one-cursor locality for the remainder of a full walk while a paged read within the
+threshold keeps the full rank-fidelity above. The degrade point scales with the live stripe count, not with the
+vertex's degree, so a full walk's extra cost for the ordered prefix stays bounded no matter how large the
+super-node grows. Set it to `0` to disable interleaving entirely (immediate concatenation, the pre-#6044 order).
+
 Read-side only: no on-disk format change, no `HASH_VERSION` bump, no migration, and a database promoted by an
 earlier build gets the new order the moment it is read by this one.
 
@@ -584,7 +596,7 @@ LIMIT 100` returns 100 neighbours with no recency property whatsoever, even thou
 approximate newest-first. This is documented in `GraphAnalyticalView`'s and `StripedEdgeList`'s javadoc, and in
 `GRAPH_SUPERNODE_THRESHOLD`'s setting description, rather than qualified only here.
 
-[#6044](https://github.com/ArcadeData/arcadedb/issues/6044), [#6049](https://github.com/ArcadeData/arcadedb/issues/6049)
+[#6044](https://github.com/ArcadeData/arcadedb/issues/6044), [#6049](https://github.com/ArcadeData/arcadedb/issues/6049), [#6048](https://github.com/ArcadeData/arcadedb/issues/6048)
 
 ## `Type.convert()`: narrowing an array or Collection of `double`/`float`/`long` to a smaller integral array no longer silently corrupts values (#6020)
 
