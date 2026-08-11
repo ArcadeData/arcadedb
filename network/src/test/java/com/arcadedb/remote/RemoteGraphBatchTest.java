@@ -110,6 +110,15 @@ class RemoteGraphBatchTest {
   }
 
   @Test
+  void appendJsonValueSerializesEmptyListAsEmptyJsonArray() {
+    final StringBuilder sb = new StringBuilder();
+
+    RemoteGraphBatch.appendJsonValue(sb, List.of());
+
+    assertThat(sb.toString()).isEqualTo("[]");
+  }
+
+  @Test
   void appendJsonValueSerializesNestedMapAndListValues() {
     final StringBuilder sb = new StringBuilder();
     final Map<String, Object> map = new LinkedHashMap<>();

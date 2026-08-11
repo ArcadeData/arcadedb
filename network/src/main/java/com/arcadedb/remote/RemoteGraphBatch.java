@@ -272,7 +272,11 @@ public class RemoteGraphBatch implements AutoCloseable {
     resolvedPositions = Arrays.copyOf(resolvedPositions, newSize);
   }
 
-  // --- JSON serialization helpers (zero-allocation per-record) ---
+  // --- JSON serialization helpers ---
+  // Scalars and the typed primitive-array fast paths (appendJsonFloatArray and siblings) are
+  // zero-allocation. Map/Collection/JSONArray/boxed-array values are not (iterators, toList(),
+  // Array.get() boxing), but those are comparatively rare property shapes, not the per-record
+  // scalar hot path this was originally written for.
 
   static void appendProperties(final StringBuilder sb, final Object[] properties) {
     if (properties == null || properties.length == 0)
