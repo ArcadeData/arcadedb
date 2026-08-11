@@ -52,6 +52,13 @@ import java.util.Map;
  * }
  * // batch.getResult().getVerticesCreated() == 2
  * </pre>
+ * <p>
+ * This class is the JSONL-over-HTTP loader. A connection that speaks another protocol returns its own subclass
+ * from {@code batch()} and carries the load over that protocol instead: {@code RemoteGrpcDatabase} returns a
+ * loader backed by the {@code GraphBatchLoad} streaming RPC (issue #6070). The public API above is the same for
+ * either, and so is the meaning of every {@link Builder} option; what differs is that a transport holding one
+ * session for the whole load has the server resolve temporary ids, where this one resolves them client-side
+ * because each flush is an independent request the server does not remember.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -61,21 +68,21 @@ public class RemoteGraphBatch implements AutoCloseable {
   private static final int DEFAULT_BUFFER_SIZE = 8192;
   private static final int INITIAL_MAPPING_CAPACITY = 1024;
 
-  private final RemoteDatabase      database;
-  private final Map<String, String> queryParams;
-  private final int                 flushEvery;
-  private final StringBuilder       buffer;
-  private       int                 vertexCounter;
+  private final   RemoteDatabase      database;
+  private final   Map<String, String> queryParams;
+  private final   int                 flushEvery;
+  private final   StringBuilder       buffer;
+  protected       int                 vertexCounter;
   /** Position of the first vertex of the buffer being filled, i.e. what the server has to number this payload from. */
-  private       int                 bufferOrdinalBase;
-  private       int                 itemsInBuffer;
-  private       boolean             hasEdges;
-  private       boolean             closed;
+  private         int                 bufferOrdinalBase;
+  private         int                 itemsInBuffer;
+  protected       boolean             hasEdges;
+  protected       boolean             closed;
 
   // --- Aggregated result across all flushes ---
-  private long totalVerticesCreated;
-  private long totalEdgesCreated;
-  private long totalElapsedMs;
+  protected long totalVerticesCreated;
+  protected long totalEdgesCreated;
+  protected long totalElapsedMs;
 
   // --- Resolved temp ID mapping: flat arrays indexed by vertex counter ---
   // resolvedBucketIds[i] and resolvedPositions[i] hold the real RID for vertex "v<i>"
@@ -99,6 +106,23 @@ public class RemoteGraphBatch implements AutoCloseable {
     this.buffer = new StringBuilder(DEFAULT_BUFFER_SIZE);
     this.resolvedBucketIds = new int[INITIAL_MAPPING_CAPACITY];
     this.resolvedPositions = new long[INITIAL_MAPPING_CAPACITY];
+  }
+
+  /**
+   * Constructor for a subclass that carries the load over a different transport. None of the state this class
+   * keeps for the JSONL-over-HTTP path is allocated: the payload buffer, the flush accounting and the
+   * client-side temporary-id mapping all exist because each flush is an independent stateless request, and a
+   * transport that holds one session for the whole load has the server resolve references instead. A subclass
+   * using it must override {@link #createVertex}, {@link #createEdge} and {@link #flush}, which would otherwise
+   * dereference the buffer this constructor leaves null.
+   */
+  protected RemoteGraphBatch(final RemoteDatabase database) {
+    this.database = database;
+    this.queryParams = null;
+    this.flushEvery = Integer.MAX_VALUE;
+    this.buffer = null;
+    this.resolvedBucketIds = null;
+    this.resolvedPositions = null;
   }
 
   /**
@@ -238,7 +262,7 @@ public class RemoteGraphBatch implements AutoCloseable {
     flush();
   }
 
-  private void checkOpen() {
+  protected void checkOpen() {
     if (closed)
       throw new IllegalStateException("Batch is already closed");
   }
@@ -490,11 +514,28 @@ public class RemoteGraphBatch implements AutoCloseable {
    * the server-side GraphBatch.Builder options.
    */
   public static class Builder {
-    private final RemoteDatabase      database;
-    private final Map<String, String> queryParams = new HashMap<>();
-    private       int                 flushEvery  = DEFAULT_FLUSH_EVERY;
+    protected final RemoteDatabase database;
+    protected       int            flushEvery = DEFAULT_FLUSH_EVERY;
 
-    Builder(final RemoteDatabase database) {
+    // Options are held typed rather than pre-rendered into query-string entries so a subclass carrying the load
+    // over a transport that is not HTTP can read them back without parsing its own parameters (issue #6070).
+    // Boxed because "not set" and "set to the server default" are different: the server only overrides a default
+    // for an option the caller actually chose.
+    protected Integer batchSize;
+    protected Integer expectedEdgeCount;
+    protected Integer edgeListInitialSize;
+    protected Boolean lightEdges;
+    protected Boolean bidirectional;
+    protected Integer commitEvery;
+    protected Integer vertexBatchSize;
+    protected Boolean useWAL;
+    protected Boolean preAllocateEdgeChunks;
+    protected Boolean parallelFlush;
+    protected Integer commitRetries;
+    protected Long    commitRetryDelayMs;
+
+    /** Not for direct use: a builder comes from {@link RemoteDatabase#batch()}, which picks the right one for its transport. */
+    protected Builder(final RemoteDatabase database) {
       this.database = database;
     }
 
@@ -512,19 +553,19 @@ public class RemoteGraphBatch implements AutoCloseable {
 
     /** Maximum number of edges buffered before an automatic flush on the server. Default: 100,000. */
     public Builder withBatchSize(final int batchSize) {
-      queryParams.put("batchSize", String.valueOf(batchSize));
+      this.batchSize = batchSize;
       return this;
     }
 
     /** Hint for expected total edge count, used for server-side auto-tuning. */
     public Builder withExpectedEdgeCount(final int expectedEdgeCount) {
-      queryParams.put("expectedEdgeCount", String.valueOf(expectedEdgeCount));
+      this.expectedEdgeCount = expectedEdgeCount;
       return this;
     }
 
     /** Initial size in bytes for new edge segments. Default: 2048. */
     public Builder withEdgeListInitialSize(final int size) {
-      queryParams.put("edgeListInitialSize", String.valueOf(size));
+      this.edgeListInitialSize = size;
       return this;
     }
 
@@ -535,19 +576,19 @@ public class RemoteGraphBatch implements AutoCloseable {
      */
     @Deprecated
     public Builder withLightEdges(final boolean lightEdges) {
-      queryParams.put("lightEdges", String.valueOf(lightEdges));
+      this.lightEdges = lightEdges;
       return this;
     }
 
     /** If true, incoming edges are also connected. Default: true. */
     public Builder withBidirectional(final boolean bidirectional) {
-      queryParams.put("bidirectional", String.valueOf(bidirectional));
+      this.bidirectional = bidirectional;
       return this;
     }
 
     /** Number of edges to process before committing within a server-side flush. Default: 50,000. */
     public Builder withCommitEvery(final int commitEvery) {
-      queryParams.put("commitEvery", String.valueOf(commitEvery));
+      this.commitEvery = commitEvery;
       return this;
     }
 
@@ -559,32 +600,78 @@ public class RemoteGraphBatch implements AutoCloseable {
     public Builder withVertexBatchSize(final int vertexBatchSize) {
       if (vertexBatchSize < 1)
         throw new IllegalArgumentException("vertexBatchSize must be greater than 0");
-      queryParams.put("vertexBatchSize", String.valueOf(vertexBatchSize));
+      this.vertexBatchSize = vertexBatchSize;
       return this;
     }
 
     /** If true, enables Write-Ahead Logging during import. Default: false. */
     public Builder withWAL(final boolean useWAL) {
-      queryParams.put("wal", String.valueOf(useWAL));
+      this.useWAL = useWAL;
       return this;
     }
 
     /** If true, pre-allocates empty edge segments at vertex creation. Default: true. */
     public Builder withPreAllocateEdgeChunks(final boolean preAllocate) {
-      queryParams.put("preAllocateEdgeChunks", String.valueOf(preAllocate));
+      this.preAllocateEdgeChunks = preAllocate;
       return this;
     }
 
     /** If true, edge connection during flush is parallelized. Default: true. */
     public Builder withParallelFlush(final boolean parallel) {
-      queryParams.put("parallelFlush", String.valueOf(parallel));
+      this.parallelFlush = parallel;
       return this;
+    }
+
+    /**
+     * Number of times a vertex-creation commit is retried when it fails with a transient error, such as a
+     * quorum lost to a leader re-election on a replicated database. Default: 10. Set to 0 to fail on the first
+     * error instead of retrying.
+     */
+    public Builder withCommitRetries(final int commitRetries) {
+      if (commitRetries < 0)
+        throw new IllegalArgumentException("commitRetries must be >= 0");
+      this.commitRetries = commitRetries;
+      return this;
+    }
+
+    /**
+     * Initial back-off in milliseconds before the first vertex-commit retry; later retries back off
+     * exponentially from it. Default: 1000.
+     */
+    public Builder withCommitRetryDelay(final long commitRetryDelayMs) {
+      if (commitRetryDelayMs < 0)
+        throw new IllegalArgumentException("commitRetryDelayMs must be >= 0");
+      this.commitRetryDelayMs = commitRetryDelayMs;
+      return this;
+    }
+
+    /** Renders the options chosen by the caller as the query-string parameters of {@code POST /api/v1/batch}. */
+    protected Map<String, String> toQueryParams() {
+      final Map<String, String> queryParams = new HashMap<>();
+      putIfSet(queryParams, "batchSize", batchSize);
+      putIfSet(queryParams, "expectedEdgeCount", expectedEdgeCount);
+      putIfSet(queryParams, "edgeListInitialSize", edgeListInitialSize);
+      putIfSet(queryParams, "lightEdges", lightEdges);
+      putIfSet(queryParams, "bidirectional", bidirectional);
+      putIfSet(queryParams, "commitEvery", commitEvery);
+      putIfSet(queryParams, "vertexBatchSize", vertexBatchSize);
+      putIfSet(queryParams, "wal", useWAL);
+      putIfSet(queryParams, "preAllocateEdgeChunks", preAllocateEdgeChunks);
+      putIfSet(queryParams, "parallelFlush", parallelFlush);
+      putIfSet(queryParams, "commitRetries", commitRetries);
+      putIfSet(queryParams, "commitRetryDelayMs", commitRetryDelayMs);
+      return queryParams;
+    }
+
+    private static void putIfSet(final Map<String, String> queryParams, final String name, final Object value) {
+      if (value != null)
+        queryParams.put(name, value.toString());
     }
 
     /** Creates the {@link RemoteGraphBatch} ready for buffering vertices and edges. */
     public RemoteGraphBatch build() {
       final int effectiveFlushEvery = flushEvery == 0 ? Integer.MAX_VALUE : flushEvery;
-      return new RemoteGraphBatch(database, queryParams, effectiveFlushEvery);
+      return new RemoteGraphBatch(database, toQueryParams(), effectiveFlushEvery);
     }
   }
 }

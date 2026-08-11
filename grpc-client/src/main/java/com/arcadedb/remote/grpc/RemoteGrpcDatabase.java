@@ -1357,6 +1357,32 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     }
   }
 
+  /**
+   * Returns a builder for a batch graph import that travels over the {@code GraphBatchLoad} streaming RPC, the
+   * gRPC transport this connection was opened for, rather than as JSONL over HTTP the way the inherited
+   * implementation would (issue #6070). The builder and the loader it produces expose the same API as the HTTP
+   * ones, so this override is transparent to a caller that only uses {@code batch()}.
+   *
+   * @return a new {@link RemoteGrpcGraphBatch.Builder}
+   */
+  @Override
+  public RemoteGrpcGraphBatch.Builder batch() {
+    checkDatabaseIsOpen();
+    return new RemoteGrpcGraphBatch.Builder(this);
+  }
+
+  /**
+   * Opens one {@code GraphBatchLoad} call and returns its client end. Package-visible so
+   * {@link RemoteGrpcGraphBatch} can drive the stream without reaching for the stub itself.
+   */
+  GraphBatchLoadStream openGraphBatchLoadStream(final long timeoutMs) {
+    final GraphBatchLoadStream stream = new GraphBatchLoadStream(timeoutMs);
+    stream.start(callAsyncDuplex("GraphBatchLoad", timeoutMs,
+        (stub, responseObserver) -> stub.graphBatchLoad(responseObserver),
+        stream.responseObserver()));
+    return stream;
+  }
+
   // Convenience overload
   public InsertSummary ingestStreamAsListOfMaps(final InsertOptions options, final List<Map<String, Object>> rows,
                                                 final int chunkSize,

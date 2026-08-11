@@ -311,6 +311,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   /**
    * Returns a builder for configuring a remote batch graph import.
    * The builder mirrors the server-side GraphBatch.Builder parameters.
+   * <p>
+   * The load travels over the same protocol as the connection it is started from: this class sends it as JSONL
+   * to {@code POST /api/v1/batch}, while a subclass speaking another protocol overrides this method to return a
+   * builder for its own loader - {@code RemoteGrpcDatabase} returns one backed by the {@code GraphBatchLoad}
+   * streaming RPC (issue #6070). Every option below means the same thing either way.
    *
    * @return a new {@link RemoteGraphBatch.Builder}
    */
