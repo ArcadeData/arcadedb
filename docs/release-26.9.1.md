@@ -644,3 +644,24 @@ exclusion guarded against. Not a known exploitable bypass in the current built-i
 for any embedder configuring a broader one via `HostClassLookupFilter`'s public constructor.
 
 [#6045](https://github.com/ArcadeData/arcadedb/issues/6045)
+
+## Closing a database no longer risks leaving an in-flight vector graph build's thread alive indefinitely (#5872)
+
+`LSMVectorIndex` builds its HNSW graph on a dedicated `ForkJoinPool` for exactly one reason: `shutdownNow()` on
+close is supposed to cancel a build still in progress, since JVector's `GraphIndexBuilder` does not observe
+`Thread.interrupt()` on the thread that called it, only on the pool's own workers. But the insertion itself is
+`buildPool.submit(() -> IntStream.range(...).parallel().forEach(...)).join()`, joined from the calling thread -
+external to the pool. `shutdownNow()` only cancels tasks it still finds queued and unstarted; once insertion is
+under way, the joiner is parked on that specific task's own completion status, which an external (non-pool)
+`ForkJoinTask.join()` waits for without ever checking `Thread.interrupt()`. The original report reproduced a
+build thread still alive and parked in `ForkJoinTask.join()` a full 60 seconds after `db.close()` returned, with
+every pool worker already idle - `shutdownNow()` had nothing left to cancel, and nothing was ever going to mark
+that specific task done.
+
+The fix keeps a handle to the submitted insertion task and, on `releaseBackgroundResources()`, cancels it
+directly before shutting the pool down. `ForkJoinTask.cancel()` forces the task's own completion status and wakes
+every joiner waiting on it, which `shutdownNow()` cannot do for a task already under way. The resulting
+`CancellationException` is now recognized as the expected outcome of a close racing a build, logged once at INFO
+rather than surfacing as a SEVERE "Error building graph from scratch" wrapped in an opaque `IndexException`.
+
+[#5872](https://github.com/ArcadeData/arcadedb/issues/5872)

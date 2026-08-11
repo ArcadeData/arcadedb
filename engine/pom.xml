@@ -48,6 +48,22 @@
             native.graalvm.version comment for the exact failure mode).
         -->
         <graalvm.version>25.2.4</graalvm.version>
+        <!--
+            Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
+            contractually guarantee across versions:
+            - GraphIndexBuilder.build() is unrolled by hand in buildGraphFromScratchExclusively() (see the
+              MAINTENANCE comment at that unroll) to make the insertion/cleanup phase boundary observable.
+            - GraphIndexBuilder.cleanup() is wrapped in its own tracked submit()/join() the same way, because
+              cleanup() does the identical external-join shape internally (see the MAINTENANCE comment at that
+              wrapper) - re-check its two internal parallelExecutor.submit(...).join() calls are still there
+              and in the same order.
+            - buildGraphFromScratchExclusively()'s CancellationException handler (issue #5872) skips
+              GraphIndexBuilder.close() on the fallback path where releaseBackgroundResources() forces an
+              in-flight build's join() to unblock while a pool worker may still be running. That is safe only
+              because every GraphIndexBuilder this engine constructs backs onto OnHeapGraphIndex, whose
+              View.close() is a documented no-op as of 4.0.0-rc.9 - re-verify that close() still touches no
+              live state before relying on it after a version bump.
+        -->
         <jvector.version>4.0.0-rc.9</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
