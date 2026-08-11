@@ -51,6 +51,21 @@ class CypherMissingFunctionsTest {
       database.drop();
   }
 
+  // ========== coll.avg ==========
+  @Test
+  void collAvg() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.avg([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(2.5);
+  }
+
+  @Test
+  void collAvgEmpty() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.avg([]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Object) rs.next().getProperty("result")).isNull();
+  }
+
   // ========== coll.distinct ==========
   @Test
   void collDistinct() {
@@ -210,6 +225,52 @@ class CypherMissingFunctionsTest {
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
     assertThat(((Number) result.get(3)).longValue()).isEqualTo(4L);
     assertThat(((Number) result.get(4)).longValue()).isEqualTo(5L);
+  }
+
+  // ========== coll.sum ==========
+  @Test
+  void collSum() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.sum([1, 2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(10.0);
+  }
+
+  @Test
+  void collSumEmpty() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.sum([]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isEqualTo(0.0);
+  }
+
+  // ========== coll.union ==========
+  @Test
+  void collUnion() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.union([1, 2, 3], [2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(4);
+    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
+    assertThat(((Number) result.get(3)).longValue()).isEqualTo(4L);
+  }
+
+  // ========== coll.unionAll ==========
+  @Test
+  void collUnionAll() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.unionAll([1, 2, 3], [2, 3, 4]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    // Unlike coll.union, duplicates across the two lists are preserved
+    assertThat(result).hasSize(6);
+    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
+    assertThat(((Number) result.get(3)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(4)).longValue()).isEqualTo(3L);
+    assertThat(((Number) result.get(5)).longValue()).isEqualTo(4L);
   }
 
   // ========== elementId ==========
