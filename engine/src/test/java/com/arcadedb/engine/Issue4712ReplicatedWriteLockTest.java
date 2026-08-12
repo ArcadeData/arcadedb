@@ -118,8 +118,12 @@ class Issue4712ReplicatedWriteLockTest extends TestHelper {
       pendingFlushPages.remove(pageId);
     }
 
-    assertThat(applyDone.await(5, TimeUnit.SECONDS)).isTrue();
-    applier.join(5_000);
+    // A generous bound, not a tight one: this only needs to be "clearly longer than the applier could ever take
+    // once unblocked" (a single yield-loop retry + a tiny page write). On a constrained/loaded CI runner sharing
+    // one JVM fork with the rest of the unit-test suite, 5s occasionally was not enough headroom for the applier
+    // thread to get scheduled promptly, causing intermittent failures unrelated to the interlock logic itself.
+    assertThat(applyDone.await(20, TimeUnit.SECONDS)).isTrue();
+    applier.join(20_000);
     assertThat(error.get()).isNull();
 
     // The new version was durably written and reloads correctly from disk.
