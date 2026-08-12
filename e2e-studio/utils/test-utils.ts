@@ -129,7 +129,10 @@ export class ArcadeStudioTestHelper {
     await this.page.locator('[data-testid="execute-query-button"]').click();
 
     // Wait for results with network stability
-    await expect(this.page.getByText('Returned')).toBeVisible({
+    // Scoped to .result-stats: an unscoped getByText('Returned') is a substring match that
+    // also resolves against the (hidden but DOM-present) server settings table, whose
+    // GRAPH_SUPERNODE_THRESHOLD description contains "...is returned at a position...".
+    await expect(this.page.locator('.result-stats').getByText('Returned')).toBeVisible({
       timeout: TEST_CONFIG.timeouts.query
     });
     await this.page.waitForLoadState('networkidle');

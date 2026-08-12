@@ -83,7 +83,7 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
       if (await expandButton.isVisible({ timeout: 2000 })) {
         await expandButton.first().click();
         await page.waitForLoadState('networkidle');
-        await expect(page.getByText('Returned')).toBeVisible({ timeout: 10000 }).catch(() => {});
+        await expect(page.locator('.result-stats').getByText('Returned')).toBeVisible({ timeout: 10000 }).catch(() => {});
       } else {
         // Method 2: Use programmatic expansion via cytoscape API
         await page.evaluate(() => {
@@ -112,7 +112,7 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
         (window as any).editor.setValue('SELECT FROM Beer WHERE out().size() > 0 LIMIT 3');
       });
       await page.locator('[data-testid="execute-query-button"]').click();
-      await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
+      await expect(page.locator('.result-stats').getByText('Returned')).toBeVisible({ timeout: 15000 });
       await page.waitForLoadState('networkidle');
     }
 
