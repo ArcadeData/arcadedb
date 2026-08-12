@@ -69,6 +69,15 @@ class BucketIteratorCorruptedPlaceholderPointerTest extends TestHelper {
     final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
     assertThat(bucket.getTotalPages()).as("both records must fit on a single page").isEqualTo(1);
 
+    // The commit above scheduled page 0 for an ASYNC flush (PageManagerFlushThread). Drain that queue before
+    // the raw write below: otherwise the still-in-flight flush of the pre-corruption page can land on disk
+    // AFTER our direct file write, silently undoing the corruption and making this test intermittently see 2
+    // uncorrupted records instead of 1 - the raw write bypasses TransactionContext.commit() (see below), so
+    // it never gets the flush-scheduling that would normally keep the two writes ordered.
+    assertThat(((DatabaseInternal) database).getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+        .as("pre-corruption page must be fully flushed before the raw write races against it")
+        .isTrue();
+
     // Read the current page, relocate the SECOND record's slot to a placeholder marker positioned 4 bytes from
     // the page's content boundary, and write the result straight to the file - never going through
     // TransactionContext.commit(), so LocalBucket.compressPage()'s defragmentation never runs on this write and
