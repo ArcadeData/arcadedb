@@ -103,6 +103,32 @@ public final class LongLongHashMap {
   }
 
   /**
+   * Associates {@code value} with {@code key}, replacing any previous value. Unlike {@link #add}, which folds a
+   * delta into whatever is already there, this is a plain overwrite - what a caller storing a location rather than
+   * accumulating a count needs (e.g. the page pre-image offsets of the snapshot shadow, issue #6075).
+   * <p>
+   * {@code Long.MIN_VALUE} is the empty-slot marker and therefore cannot be used as a key.
+   */
+  public void put(final long key, final long value) {
+    int idx = hash(key) & mask;
+    while (true) {
+      final long k = keys[idx];
+      if (k == key) {
+        values[idx] = value;
+        return;
+      }
+      if (k == EMPTY) {
+        keys[idx] = key;
+        values[idx] = value;
+        if (++size >= threshold)
+          resize();
+        return;
+      }
+      idx = (idx + 1) & mask;
+    }
+  }
+
+  /**
    * Returns the value for the given key, or the default value if the key is not present.
    */
   public long get(final long key, final long defaultValue) {

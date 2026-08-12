@@ -840,3 +840,84 @@ directory written at all: a failed one aborts the writer instead, so even if the
 (permissions, a full or read-only filesystem) what is left is structurally invalid rather than plausible.
 
 [#6072](https://github.com/ArcadeData/arcadedb/issues/6072)
+
+## A backup no longer freezes the database: point-in-time page snapshots replace the flush suspension (#6075)
+
+Phase 1 (#6072) made the backup 27x faster, which shortened the window during which writers are throttled but did
+not remove the throttling. This removes it. `PageManager.suspendFlushAndExecute` - which parks the page-flush
+thread for the whole of a backup, an HA snapshot ship or an HA database verify, so dirty pages accumulate in RAM
+until `arcadedb.flushSuspendMaxDeferredRAM` (512 MB) and committing threads are then throttled outright - is
+replaced by a real snapshot primitive: `PageManager.openSnapshot()`, a **page-level copy-on-write shadow**.
+
+While a window is open, the first write to any page that existed at t0 first copies that page's current on-disk
+image into a shadow, inside the per-page I/O slot the write already holds. A reader resolves every page as "shadow
+if present, data file otherwise" and therefore sees exactly the t0 image, however far the live database has moved
+on. Flushing is never suspended, so writers run at full speed for the whole operation.
+
+Three things follow from that, beyond the writer impact:
+
+- **Index compaction runs during a backup again.** The suspension was the only thing stopping `LSMTreeIndex` and
+  `LSMVectorIndex` compaction from dropping a file under a running backup (`LSMTreeIndexCompactor` does not take the
+  database write lock, so the backup's read lock never excluded it), and both refuse to compact while it is held. A
+  long backup silently stopped compaction. Now a file dropped while a window is open simply has its physical
+  deletion deferred until the window closes, so compaction proceeds.
+- **The snapshot point is a real transaction boundary.** The window opens on a FULL drain of the flush queue, not
+  the in-flight batch alone, so the restored database contains every transaction committed before t0 - closing the
+  recency gap that could leave a restored backup a few hundred transactions behind. The HA snapshot ship now also
+  reports the t0 transaction id (#5277's `last-tx-id.bin` marker) instead of the live counter, so the marker can no
+  longer name a transaction whose pages were still in the queue.
+- **The page image and its version are provably paired**, because they are read together, under the same per-page
+  lock, from the same snapshot. That is the property incremental backup (phase 3) has to be built on: with a fuzzy
+  copy, a manifest recorded at a different instant than the image it describes makes the next incremental conclude
+  "unchanged" and silently drop a revision.
+
+### Zero cost when no snapshot is open
+
+With no window open the write path pays one volatile field read and a branch the predictor always gets right, inside
+a critical section that already performs a page-size (64 KB) `pwrite`: roughly 1 ns against 10-50 us. That is
+implementation discipline rather than design - a single nullable field, not a listener list; nothing before the null
+check; and the hook goes strictly inside the existing `concurrentPageAccess` write branch, which is the single funnel
+both physical page-write call sites already go through, so it needs no new lock and adds no lock-ordering risk.
+
+### The barrier, which is where the correctness lives
+
+Flipping the flag is not the same as opening the window: a writer can already be inside its write section having
+read "no window", and would then overwrite its page unshadowed. So every writer is excluded before t0 is stamped,
+each by the mechanism that already serializes it - a full flush-queue drain, then a suspension parking the flush
+thread on a batch (that is, transaction) boundary, then the transaction manager's apply lock to exclude Raft and
+recovery replay, then the global page-manager lock to exclude synchronous commits. Only then are the per-file page
+counts and `lastTxId` recorded. Performing these in the other order produces subtly torn snapshots that pass tests
+and fail in production, which is why the barrier is what the test suite hammers hardest.
+
+### Reading stays sequential
+
+The obvious snapshot reader takes the per-page I/O slot for every page, turning one streaming `transferTo` into a
+lock acquisition per page. It is not needed: a write during the window ALWAYS shadows the page before touching the
+file, so a run of pages is read in one bulk call with no lock at all and the shadow re-probed afterwards - any page
+a writer touched underneath the read is now in the shadow, and its t0 image is taken from there. A torn read is
+therefore always detected, and the common case costs one probe per page against a primitive open-addressing map.
+
+### Bounded, and with a fallback
+
+The shadow is RAM first (`arcadedb.pageSnapshotMaxRAM`, 64 MB) spilling to an append-only scratch file, and capped
+overall (`arcadedb.pageSnapshotMaxSize`, 1 GB). Worst case it grows to the working set dirtied during the window,
+which on a small very hot database approaches the database size, so an uncapped shadow would reproduce the "snapshot
+full" failure of sparse-file snapshots. On breach the window is invalidated and every read fails loudly: a backup
+restarts on the suspend-and-freeze path, which throttles writers but always completes. That path stays available
+and can be selected outright with `arcadedb.pageSnapshotEnabled = false`. The shadow file is pure scratch - recovery
+never reads it, its extension is not a supported component extension, and an orphan left by a crash is deleted at
+the next open.
+
+Overlapping windows are supported rather than serialized: each owns its shadow, and a write captures the same
+freshly read pre-image into every window that still needs it.
+
+### One incidental change to every backup archive
+
+The two backup writers disagreed about ZIP entry timestamps: the parallel one stamped the source file's
+modification time, the single-threaded one left `ZipOutputStream` to stamp the moment the entry was written. Adding
+the stream-based entry API the snapshot path needs routed both through one implementation, so they now agree on the
+source file's modification time - which is the more useful of the two, and was already what the default
+(multi-threaded) writer produced. Nothing about restoring changes; only the timestamps a listing shows for an
+archive written with `arcadedb.backup.compressionThreads = 0`.
+
+[#6075](https://github.com/ArcadeData/arcadedb/issues/6075)

@@ -25,6 +25,7 @@ import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -176,11 +177,18 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
 
   @Override
   public EntryStats addFile(final File inputFile) throws IOException {
+    try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
+      return addEntry(inputFile.getName(), inputFile.lastModified(), fileIn);
+    }
+  }
+
+  @Override
+  public EntryStats addEntry(final String name, final long lastModified, final InputStream input) throws IOException {
     if (closed)
       throw new IllegalStateException("Backup archive already closed");
 
-    final byte[] nameBytes = inputFile.getName().getBytes(StandardCharsets.UTF_8);
-    final int dosTime = toDosTime(inputFile.lastModified());
+    final byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+    final int dosTime = toDosTime(lastModified);
     final long localHeaderOffset = written;
 
     writeLocalFileHeader(nameBytes, dosTime);
@@ -191,20 +199,20 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
     long uncompressedSize = 0L;
     long compressedSize = 0L;
     try {
-      try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
+      try (final InputStream in = input) {
         while (true) {
-          final byte[] input = acquireInputBuffer();
-          final int read = fileIn.readNBytes(input, 0, chunkSize);
+          final byte[] chunk = acquireInputBuffer();
+          final int read = in.readNBytes(chunk, 0, chunkSize);
           if (read <= 0) {
-            inputBufferPool.push(input);
+            inputBufferPool.push(chunk);
             break;
           }
 
           throttler.throttle(read);
-          crc.update(input, 0, read);
+          crc.update(chunk, 0, read);
           uncompressedSize += read;
 
-          inFlight.add(submitChunk(input, read));
+          inFlight.add(submitChunk(chunk, read));
 
           while (inFlight.size() >= maxChunksInFlight)
             compressedSize += drainChunk(inFlight.poll());

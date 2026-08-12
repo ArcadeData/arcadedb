@@ -451,6 +451,34 @@ public enum GlobalConfiguration {
       (unbounded, pre-4728 behavior).""",
       Long.class, 512),
 
+  PAGE_SNAPSHOT_ENABLED("arcadedb.pageSnapshotEnabled", SCOPE.DATABASE,
+      """
+      Serve point-in-time readers (full backup, HA database verify, HA snapshot ship) from the page-level \
+      copy-on-write shadow instead of freezing the data files with FLUSH_SUSPEND_MAX_DEFERRED_RAM-bounded flush \
+      suspension (issue #6075). With the shadow the only stall is one bounded flush-queue drain when the window \
+      opens; after that writers run at full speed for the whole operation and index compaction is no longer \
+      postponed. Set to false to fall back to the historical suspend-and-freeze path, which is also selected \
+      automatically when a shadow breaches PAGE_SNAPSHOT_MAX_SIZE.""",
+      Boolean.class, true),
+
+  PAGE_SNAPSHOT_MAX_RAM("arcadedb.pageSnapshotMaxRAM", SCOPE.DATABASE,
+      """
+      Maximum amount of RAM (in MB) of page pre-images a snapshot window keeps in memory before spilling the rest \
+      to a scratch file next to the database (issue #6075). The shadow only ever holds the pages DIRTIED while the \
+      window is open, once each, so a short backup on a moderately busy database often never touches the disk at \
+      all - which is the point of making it RAM first. Raise it to trade heap for keeping longer windows in memory.""",
+      Long.class, 64),
+
+  PAGE_SNAPSHOT_MAX_SIZE("arcadedb.pageSnapshotMaxSize", SCOPE.DATABASE,
+      """
+      Hard cap (in MB, RAM plus spill file) on the size a single snapshot shadow may reach before the window is \
+      declared overflowed (issue #6075, challenge C4). Worst case the shadow grows to the working set dirtied while \
+      the window is open, which on a small very hot database approaches the database size, so an uncapped shadow \
+      would reproduce the 'snapshot full' failure mode of sparse-file snapshots. On breach the window stops \
+      capturing and every reader fails loudly, so the consumer can fall back to the suspend-and-freeze path - never \
+      a silently truncated or torn snapshot. Set to 0 for no cap.""",
+      Long.class, 1024),
+
   EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),
 

@@ -22,6 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.backup.IoThrottler;
@@ -40,6 +42,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.SecureRandom;
 import java.security.spec.KeySpec;
@@ -93,44 +96,57 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     final long beginTime = System.currentTimeMillis();
     final AtomicLong databaseOrigSize = new AtomicLong();
-    // PageManager.suspendFlushAndExecute RUNS ITS CALLBACK THROUGH CodeUtils.executeIgnoringExceptions, WHICH LOGS AND
-    // SWALLOWS. WITHOUT CARRYING THE FAILURE OUT BY HAND, A BACKUP THAT DIED HALFWAY WOULD STILL GET ITS CENTRAL
-    // DIRECTORY WRITTEN AND BE REPORTED AS SUCCESSFUL - A TRUNCATED ARCHIVE THAT LOOKS VALID IS THE WORST POSSIBLE
-    // FAILURE MODE FOR A BACKUP
-    final AtomicReference<Exception> failure = new AtomicReference<>();
 
-    try {
-      writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive ->
-        // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
-        database.executeInReadLock(() -> {
-          // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
-          database.getPageManager().suspendFlushAndExecute(database, () -> {
-            try {
-              long origSize = 0L;
-              origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
-              origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+    // #6075: READ THE PAGE FILES THROUGH A POINT-IN-TIME SNAPSHOT INSTEAD OF FREEZING THEM. THE OLD PATH SUSPENDED
+    // PAGE FLUSHING FOR THE WHOLE BACKUP, SO DIRTY PAGES PILED UP IN RAM UNTIL FLUSH_SUSPEND_MAX_DEFERRED_RAM AND
+    // COMMITTING THREADS WERE THROTTLED - AND LSM/VECTOR INDEX COMPACTION WAS POSTPONED WITH THEM. IT IS KEPT AS A
+    // FALLBACK, SELECTED BY CONFIGURATION OR AUTOMATICALLY WHEN THE SHADOW BREACHES ITS CAP
+    boolean useSnapshot = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED);
 
-              final Collection<ComponentFile> files = database.getFileManager().getFiles();
+    while (true) {
+      // PageManager.suspendFlushAndExecute RUNS ITS CALLBACK THROUGH CodeUtils.executeIgnoringExceptions, WHICH LOGS AND
+      // SWALLOWS. WITHOUT CARRYING THE FAILURE OUT BY HAND, A BACKUP THAT DIED HALFWAY WOULD STILL GET ITS CENTRAL
+      // DIRECTORY WRITTEN AND BE REPORTED AS SUCCESSFUL - A TRUNCATED ARCHIVE THAT LOOKS VALID IS THE WORST POSSIBLE
+      // FAILURE MODE FOR A BACKUP
+      final AtomicReference<Exception> failure = new AtomicReference<>();
+      final boolean snapshotAttempt = useSnapshot;
 
-              for (final ComponentFile file : new ArrayList<>(files))
-                if (file != null)
-                  origSize += compressFile(archive, file.getOSFile());
-
-              databaseOrigSize.set(origSize);
-            } catch (final Exception e) {
-              failure.set(e);
-              throw e;
-            }
-          });
-          return null;
-        }));
-      // NO SECOND CHECK OF failure HERE: writeArchive RETHROWS IT FROM INSIDE ITS OWN CALLBACK, WHICH IT HAS TO DO SO
-      // THE STREAM-CLOSING THERE KNOWS THE BACKUP FAILED. A CHECK AT THIS POINT WOULD BE UNREACHABLE, AND UNREACHABLE
-      // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
-    } catch (final Exception e) {
-      // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
-      backupFile.delete();
-      throw e;
+      try {
+        writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive ->
+          // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
+          database.executeInReadLock(() -> {
+            if (snapshotAttempt)
+              databaseOrigSize.set(backupFromSnapshot(archive));
+            else
+              // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
+              database.getPageManager().suspendFlushAndExecute(database, () -> {
+                try {
+                  databaseOrigSize.set(backupFromFrozenFiles(archive));
+                } catch (final Exception e) {
+                  failure.set(e);
+                  throw e;
+                }
+              });
+            return null;
+          }));
+        // NO SECOND CHECK OF failure HERE: writeArchive RETHROWS IT FROM INSIDE ITS OWN CALLBACK, WHICH IT HAS TO DO SO
+        // THE STREAM-CLOSING THERE KNOWS THE BACKUP FAILED. A CHECK AT THIS POINT WOULD BE UNREACHABLE, AND UNREACHABLE
+        // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
+        break;
+      } catch (final PageSnapshotException e) {
+        // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
+        backupFile.delete();
+        if (!snapshotAttempt)
+          throw e;
+        // THE WINDOW COULD NOT HOLD THE POINT IN TIME (THE SHADOW BREACHED ITS CAP, OR A PRE-IMAGE COULD NOT BE READ).
+        // A STREAMED ARCHIVE CANNOT BE REPAIRED IN PLACE, SO THE WHOLE BACKUP RESTARTS ON THE PATH THAT ALWAYS
+        // COMPLETES - AT THE COST OF THROTTLING WRITERS, WHICH IS STILL BETTER THAN NOT HAVING A BACKUP
+        logger.logLine(0, "Point-in-time snapshot unusable (%s): retrying with page flushing suspended...", e.getMessage());
+        useSnapshot = false;
+      } catch (final Exception e) {
+        backupFile.delete();
+        throw e;
+      }
     }
 
     final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
@@ -140,6 +156,63 @@ public class FullBackupFormat extends AbstractBackupFormat {
     logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs,
         FileUtils.getSizeAsString(origSize), FileUtils.getSizeAsString(databaseCompressedSize),
         origSize > 0 ? (origSize - databaseCompressedSize) * 100 / origSize : 0);
+  }
+
+  /**
+   * Archives the two configuration files plus every PAGE file as it stood at the snapshot's t0 (issue #6075).
+   * <p>
+   * The configuration files are still read straight off the filesystem: they are not page files, so the snapshot
+   * does not cover them, and the database read lock this runs under is what keeps them consistent with the page
+   * files - it excludes the DDL that rewrites them. Files created after t0 are absent from the snapshot by
+   * construction, which is correct: they did not exist at the point in time being archived. Files DROPPED after t0
+   * are still readable, because their physical deletion is deferred until the window closes.
+   */
+  private long backupFromSnapshot(final BackupArchiveWriter archive) throws Exception {
+    long origSize = 0L;
+    try (final PageSnapshot snapshot = database.getPageManager().openSnapshot(database)) {
+      origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
+      origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+
+      for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
+        origSize += compressEntry(archive, file.fileName(), file.lastModified(), snapshot.newInputStream(file.fileId()));
+
+      // ANY PAGE READ ABOVE COULD HAVE BEEN THE ONE THAT BREACHED THE SHADOW CAP, AND A STREAM THAT ALREADY FAILED
+      // WOULD HAVE THROWN - BUT RE-CHECKING HERE ALSO CATCHES A WINDOW INVALIDATED AFTER ITS LAST BYTE WAS READ,
+      // WHICH WOULD OTHERWISE PRODUCE AN ARCHIVE NOBODY EVER VERIFIED
+      snapshot.checkValid();
+
+      logger.logLine(2, "- Snapshot at txId=%d shadowed %d page(s), %s (%s spilled to disk)", snapshot.getLastTxId(),
+          snapshot.getShadowedPages(), FileUtils.getSizeAsString(snapshot.getShadowSizeInBytes()),
+          FileUtils.getSizeAsString(snapshot.getShadowSpilledBytes()));
+    }
+    return origSize;
+  }
+
+  /** The historical path: the data files are frozen by suspending page flushing and copied straight off the disk. */
+  private long backupFromFrozenFiles(final BackupArchiveWriter archive) throws IOException {
+    long origSize = 0L;
+    origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
+    origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+
+    final Collection<ComponentFile> files = database.getFileManager().getFiles();
+
+    for (final ComponentFile file : new ArrayList<>(files))
+      if (file != null)
+        origSize += compressFile(archive, file.getOSFile());
+
+    return origSize;
+  }
+
+  private long compressEntry(final BackupArchiveWriter archive, final String name, final long lastModified,
+      final InputStream input) throws IOException {
+    logger.log(2, "- File '%s'...", name);
+    final BackupArchiveWriter.EntryStats stats = archive.addEntry(name, lastModified, input);
+    final long origSize = stats.uncompressedSize();
+    final long compressedSize = stats.compressedSize();
+
+    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
+        FileUtils.getSizeAsString(compressedSize), origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+    return origSize;
   }
 
   private long compressFile(final BackupArchiveWriter archive, final File inputFile) throws IOException {

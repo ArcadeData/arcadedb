@@ -20,12 +20,14 @@ package com.arcadedb.engine;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CodeUtils;
@@ -33,17 +35,38 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.function.BiFunction;
 
 /**
  * Manages pages from disk to RAM. Each page can have different size.
+ * <p>
+ * <b>LOCK ORDER</b> for everything the point-in-time snapshot machinery of issue #6075 touches. It is stated here
+ * rather than spread across the methods because no single call site shows more than two of these locks, so a change
+ * to {@link #openSnapshot}, {@link FileManager#dropFile} or {@link FileManager#getOrCreateFile} could reintroduce a
+ * cycle with no local signal that it had:
+ * <ol>
+ * <li>the per-database snapshot BARRIER monitor ({@code snapshotBarrierLocks}), taken first and only by
+ * {@link #openSnapshot};</li>
+ * <li>{@link TransactionManager#getApplyLock()};</li>
+ * <li>this manager's own {@link com.arcadedb.utility.LockContext} lock;</li>
+ * <li>the {@link FileManager} monitor (through {@link FileManager#executeWithFileSetLocked});</li>
+ * <li>{@code snapshotRegistryLock}, always last.</li>
+ * </ol>
+ * {@link #openSnapshot} walks 1 to 5 in that order; {@link FileManager#dropFile} takes 4 then 5, which agrees. No
+ * path takes the FileManager monitor and then this manager's lock, and none takes the registry lock and then
+ * anything else - {@code PageSnapshot.close()} unregisters (5) and only then drops its retained files, holding
+ * nothing.
  */
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
@@ -81,6 +104,37 @@ public class PageManager extends LockContext {
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
   private volatile int                                freePageRAM;
+
+  /**
+   * #6075: the point-in-time snapshot windows currently open, {@code null} when there is none anywhere in the JVM -
+   * which is the steady state. The write path therefore pays ONE volatile field read plus a branch the predictor
+   * always gets right, inside a critical section that already performs a page-size {@code pwrite}: roughly 1 ns
+   * against 10-50 us.
+   * <p>
+   * It is deliberately ONE nullable field and NOT a listener list: a {@code List<PageWriteListener>} iterated per
+   * write costs real cycles and can go megamorphic, while a single nullable field inlines away. It is also a single
+   * read yielding both the flag and the state, so there is no double-read race between "is a window open" and
+   * "which window". Copy-on-write on registration, which only happens when a window opens or closes.
+   */
+  private volatile PageSnapshot[] activeSnapshots = null;
+  private final    Object         snapshotRegistryLock = new Object();
+  /** Serializes the t0 barrier per database (NOT the windows themselves, which may overlap freely). */
+  private final ConcurrentHashMap<Database, Object>              snapshotBarrierLocks = new ConcurrentHashMap<>();
+  /**
+   * Challenge C2: files dropped while a snapshot window is open are not deleted, so index compaction runs freely
+   * during a backup instead of being postponed. The count is how many windows still need the file; the last one to
+   * close performs the physical delete.
+   */
+  private final ConcurrentHashMap<ComponentFile, AtomicInteger> deferredFileDrops    = new ConcurrentHashMap<>();
+  private final AtomicLong                                      snapshotCounter      = new AtomicLong();
+  /**
+   * Reused per-thread scratch for the page pre-image. Sized to the largest page seen by this thread, so a capture
+   * allocates nothing after the first one; {@link PageShadow#store} copies out of it, so it can be recycled at once.
+   */
+  private static final ThreadLocal<byte[]> PRE_IMAGE_BUFFER = ThreadLocal.withInitial(() -> new byte[0]);
+
+  /** How many times the t0 barrier retries when commits slip in between the full drain and the suspension. */
+  private static final int SNAPSHOT_BARRIER_ATTEMPTS = 3;
 
   @ExcludeFromJacocoGeneratedReport
   public interface ConcurrentPageAccessCallback {
@@ -201,6 +255,21 @@ public class PageManager extends LockContext {
    * flush thread blocking on the lock this thread holds while waiting for it to exit). Verified true today.
    */
   private void shutdown() {
+    // #6075: a snapshot window outliving the page manager would keep its shadow file and any file whose deletion it
+    // deferred alive forever. Consumers always close in a finally, so this only fires on an abnormal teardown - which
+    // is exactly the situation where a window could be mid-registration, so the read takes the registry lock rather
+    // than assuming the quiet teardown it is here to survive.
+    final PageSnapshot[] leftovers;
+    synchronized (snapshotRegistryLock) {
+      leftovers = activeSnapshots;
+    }
+    if (leftovers != null) {
+      LogManager.instance().log(this, Level.WARNING, "Closing %d snapshot window(s) still open at page manager shutdown",
+          null, leftovers.length);
+      for (final PageSnapshot snapshot : leftovers)
+        CodeUtils.executeIgnoringExceptions(snapshot::close, "Error on closing a leftover snapshot window", false);
+    }
+
     if (flushThread != null) {
       try {
         flushThread.closeAndJoin();
@@ -240,6 +309,9 @@ public class PageManager extends LockContext {
   public void removeModifiedPagesOfDatabase(final Database database) {
     if (flushThread != null)
       flushThread.removeAllPagesOfDatabase(database);
+    // Forget the snapshot barrier monitor too, so a closed/dropped Database instance (and everything it pins) can be
+    // garbage collected instead of being retained as a map key for the lifetime of the JVM-wide page manager.
+    snapshotBarrierLocks.remove(database);
   }
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
@@ -260,6 +332,327 @@ public class PageManager extends LockContext {
 
   public boolean isPageFlushingSuspended(final Database database) {
     return flushThread.isSuspended(database);
+  }
+
+  // --------------------------------------------------------------------------------- POINT-IN-TIME SNAPSHOT (#6075)
+
+  /**
+   * Opens a point-in-time snapshot of every page file of a database: the primitive that replaces
+   * {@link #suspendFlushAndExecute} for readers that need the data files to stand still (full backup, HA snapshot
+   * ship, HA database verify). Unlike the suspension, which throttles writers for its whole duration and postpones
+   * index compaction with it, the only stall is the bounded barrier below; after that writers run at full speed and
+   * pay one page read plus one shadow write for the FIRST write to each page that existed at t0.
+   * <p>
+   * <b>The barrier is the correctness of the whole design, and its ORDER is what makes it correct.</b> Flipping the
+   * flag is not the same as opening the window: {@code concurrentPageAccess} grants the per-page write slot with a
+   * {@code putIfAbsent}, so at the instant of the flip a writer can already be inside its write section having read
+   * {@code activeSnapshots == null}. It would overwrite its page without shadowing it, and the snapshot would hold
+   * that page as of t0 plus epsilon, torn against everything else. So every writer is excluded BEFORE t0 is stamped,
+   * each by the mechanism that already serializes it:
+   * <ol>
+   * <li>{@link #waitAllPagesOfDatabaseAreFlushed} drains the flush queue COMPLETELY - not just the in-flight batch
+   * the way {@code waitForCurrentFlushToComplete} does - so every committed transaction is materialised. This is
+   * what makes t0 a genuine, recent transaction boundary and closes the recency gap the suspension left (a restored
+   * backup could be a few hundred transactions behind backup start).</li>
+   * <li>The flush thread is then suspended and its in-flight batch awaited, so the asynchronous path is parked on a
+   * BATCH boundary. That granularity matters: a batch is one transaction's pages, so a snapshot taken between
+   * batches can never hold half a transaction. If commits slipped in between the drain and the suspension, the
+   * suspension is released (which flushes what it deferred) and the barrier retries.</li>
+   * <li>The transaction manager's apply lock is taken exclusively, which excludes Raft and crash-recovery replay -
+   * the one writer that goes to the files outside the flush pipeline ({@code writePageWithLock}). Applies are
+   * serialised on the state machine thread, so this is a single bounded wait.</li>
+   * <li>The global page-manager lock is taken, which excludes synchronous commits: they publish their pages from
+   * {@link #publishPages}, which holds it for the whole write.</li>
+   * </ol>
+   * Only then are the per-file page counts and {@code lastTxId} recorded and the window published. Doing these in
+   * the other order produces subtly torn snapshots that pass tests and fail in production.
+   * <p>
+   * The tempting alternative - a shared read lock on the write path so the flip can take the exclusive side - is
+   * correct but adds a permanent cost to the hot path that no flag can turn off. Do not.
+   * <p>
+   * Windows may overlap freely, on the same database or on different ones: each owns its own shadow and a write
+   * captures the same freshly read pre-image into every window that still needs it (challenge C3). Only the barrier
+   * is serialized per database, and only for its own duration.
+   *
+   * <b>Every failure surfaces as {@link PageSnapshotException}</b>, including an I/O error while enumerating the
+   * files and an interrupt during the barrier. That is deliberate: a consumer's fallback to the suspend-and-freeze
+   * path is only genuinely unconditional if there is ONE exception type to catch - and these callers run inside
+   * {@code executeInReadLock}, which wraps a checked exception into something a {@code catch (PageSnapshotException)}
+   * would never match, so a leaked {@code IOException} silently disables the fallback.
+   *
+   * @return a handle the caller MUST close, ideally in a try-with-resources: the shadow and any file whose deletion
+   *     was deferred for it are released there.
+   */
+  public PageSnapshot openSnapshot(final DatabaseInternal database) {
+    try {
+      return openSnapshotInternal(database);
+    } catch (final PageSnapshotException e) {
+      throw e;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new PageSnapshotException("Interrupted while opening a snapshot of database '" + database.getName() + "'", e);
+    } catch (final Exception e) {
+      throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName() + "'", e);
+    }
+  }
+
+  private PageSnapshot openSnapshotInternal(final DatabaseInternal database) throws IOException, InterruptedException {
+    final PageManagerFlushThread thread = flushThread;
+    if (thread == null)
+      throw new PageSnapshotException(
+          "Cannot open a snapshot of database '" + database.getName() + "': the page manager is not running");
+
+    synchronized (snapshotBarrierLock(database)) {
+      boolean suspended = false;
+      try {
+        for (int attempt = 1; ; ++attempt) {
+          if (!waitAllPagesOfDatabaseAreFlushed(database))
+            LogManager.instance().log(this, Level.WARNING,
+                "Snapshot of database '%s': the flush queue did not drain within the timeout, the snapshot point may be behind the last committed transaction",
+                null, database.getName());
+
+          thread.setSuspended(database, true);
+          suspended = true;
+          thread.waitForCurrentFlushToComplete(database);
+
+          if (!thread.hasPendingPagesOfDatabase(database))
+            // CLEAN: THE QUEUE DRAINED AND STAYED DRAINED ACROSS THE SUSPENSION, SO t0 IS A GENUINE, CURRENT
+            // TRANSACTION BOUNDARY
+            break;
+
+          if (attempt >= SNAPSHOT_BARRIER_ATTEMPTS) {
+            // GAVE UP: SUSTAINED WRITE PRESSURE KEPT LANDING COMMITS BETWEEN THE DRAIN AND THE SUSPENSION. THE
+            // SNAPSHOT IS STILL CONSISTENT - IT IS TAKEN ON A BATCH BOUNDARY EITHER WAY - JUST AS SLIGHTLY BEHIND
+            // THE LAST COMMIT AS THE SUSPEND-AND-FREEZE PATH ALWAYS WAS. LOGGED BECAUSE "t0 IS A REAL TRANSACTION
+            // BOUNDARY" IS ONE OF THIS DESIGN'S CLAIMS, AND THE DEGRADED CASE MUST BE OBSERVABLE RATHER THAN ONLY
+            // INFERABLE FROM BEHAVIOUR
+            LogManager.instance().log(this, Level.WARNING,
+                "Snapshot of database '%s': the flush pipeline still had pending pages after %d barrier attempts, so the snapshot point may be slightly behind the last committed transaction. Sustained write pressure, not an error",
+                null, database.getName(), attempt);
+            break;
+          }
+
+          // COMMITS LANDED BETWEEN THE DRAIN AND THE SUSPENSION. RELEASING THE SUSPENSION FLUSHES WHAT IT DEFERRED,
+          // SO THE RETRY STARTS FROM A CLEANER PIPELINE
+          thread.setSuspended(database, false);
+          suspended = false;
+        }
+
+        final ReentrantReadWriteLock applyLock = database.getTransactionManager().getApplyLock();
+        applyLock.writeLock().lock();
+        try {
+          lock();
+          try {
+            // LIST THE FILES AND PUBLISH THE WINDOW AS ONE ATOMIC STEP AGAINST FileManager.dropFile. Without this a
+            // file dropped in the gap - which index compaction can do at any moment, taking no database lock - would
+            // be physically deleted, because deferFileDrop only protects windows that are already published, and the
+            // snapshot would then be holding a closed channel
+            return database.getFileManager()
+                .executeWithFileSetLocked(() -> registerSnapshot(buildSnapshot(database)));
+          } finally {
+            unlock();
+          }
+        } finally {
+          applyLock.writeLock().unlock();
+        }
+      } finally {
+        if (suspended)
+          thread.setSuspended(database, false);
+      }
+    }
+  }
+
+  /**
+   * True while at least one point-in-time snapshot window is open on the database: the public counterpart of
+   * {@link #isPageFlushingSuspended}, for embedders, diagnostics and tests that need to observe a window's lifetime.
+   * <p>
+   * Deliberately NOT consulted by the compaction guards. {@code LSMTreeIndex} and {@code LSMVectorIndex} still gate
+   * on {@code isPageFlushingSuspended}, which the snapshot path never sets - so compaction runs during a snapshot
+   * by construction rather than by a second check that could drift out of step with the first.
+   */
+  public boolean isSnapshotWindowOpen(final Database database) {
+    final PageSnapshot[] snapshots = activeSnapshots;
+    if (snapshots == null)
+      return false;
+    for (final PageSnapshot snapshot : snapshots)
+      if (snapshot.isFor(database))
+        return true;
+    return false;
+  }
+
+  /**
+   * Deletion of a file dropped while a snapshot window needs it is DEFERRED to the close of the last such window
+   * (challenge C2). Called by {@link FileManager#dropFile}.
+   * <p>
+   * The alternative - postponing compaction for the duration of the window, which is what the
+   * {@code isPageFlushingSuspended} guard does today - would keep one of the costs this issue set out to remove: a
+   * long backup silently stops LSM and vector index compaction. Deferring the delete instead lets compaction run
+   * freely, at the cost of the dropped file's disk space until the window closes.
+   *
+   * @return {@code true} when the physical delete has been taken over, so the caller must NOT delete the file.
+   */
+  public boolean deferFileDrop(final Database database, final ComponentFile file) {
+    if (activeSnapshots == null)
+      return false;
+
+    // UNDER THE REGISTRY LOCK: A WINDOW UNREGISTERS ITSELF (AND ONLY THEN DRAINS ITS RETAINED FILES) UNDER THE SAME
+    // LOCK, SO A FILE HANDED OVER HERE IS ALWAYS EITHER TAKEN BY A LIVE WINDOW OR NOT HANDED OVER AT ALL
+    synchronized (snapshotRegistryLock) {
+      final PageSnapshot[] snapshots = activeSnapshots;
+      if (snapshots == null)
+        return false;
+
+      int owners = 0;
+      for (final PageSnapshot snapshot : snapshots)
+        if (snapshot.isFor(database) && snapshot.getFile(file.getFileId()) != null)
+          ++owners;
+
+      if (owners == 0)
+        return false;
+
+      deferredFileDrops.put(file, new AtomicInteger(owners));
+      for (final PageSnapshot snapshot : snapshots)
+        if (snapshot.isFor(database) && snapshot.getFile(file.getFileId()) != null)
+          snapshot.retainDroppedFile(file);
+
+      LogManager.instance().log(this, Level.FINE,
+          "Deferring the deletion of file '%s' until %d snapshot window(s) of database '%s' close", null, file.getFileName(),
+          owners, database.getName());
+      return true;
+    }
+  }
+
+  /** Releases one window's claim on a deferred file deletion; the last one performs it. */
+  void releaseDeferredFileDrop(final ComponentFile file) {
+    final AtomicInteger owners = deferredFileDrops.get(file);
+    if (owners == null)
+      return;
+    if (owners.decrementAndGet() <= 0) {
+      deferredFileDrops.remove(file);
+      try {
+        file.drop();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error on deleting file '%s', whose deletion was deferred while a snapshot window was open", e, file.getFileName());
+      }
+    }
+  }
+
+  private PageSnapshot buildSnapshot(final DatabaseInternal database) throws IOException {
+    final List<PageSnapshot.SnapshotFile> files = new ArrayList<>();
+    for (final ComponentFile file : database.getFileManager().getFiles()) {
+      // A null slot is a dropped file id and a not-yet-opened one is the reserved slot of a file id that has been
+      // allocated but whose file does not exist yet: neither has content at t0, so both are correctly absent. Any
+      // OTHER unusable file would silently shrink the archive while the backup still reported success, which is the
+      // worst failure mode a backup has - so it is named in the log rather than dropped quietly.
+      if (file == null)
+        continue;
+      if (!(file instanceof PaginatedComponentFile paginated) || !paginated.isOpen() || paginated.getPageSize() <= 0) {
+        LogManager.instance().log(this, Level.FINE,
+            "Snapshot of database '%s' skips file '%s' (id=%d): it is not an open paginated file at t0", null,
+            database.getName(), file.getFileName(), file.getFileId());
+        continue;
+      }
+
+      // getTotalPages() is a channel.size() syscall, and unlike SnapshotFile.lastModified() it CANNOT be made lazy:
+      // the page count at t0 is what defines which pages the snapshot covers, and reading it later would let a page
+      // appended after t0 into the snapshot un-shadowed. An fstat per file is orders of magnitude cheaper than the
+      // flush-queue drain this same barrier already performed.
+      files.add(new PageSnapshot.SnapshotFile(paginated.getFileId(), paginated, paginated.getPageSize(),
+          (int) paginated.getTotalPages(), paginated.getFileName()));
+    }
+
+    final ContextConfiguration configuration = database.getConfiguration();
+    final long maxRAM = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM) * 1024 * 1024;
+    final long maxSize = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE) * 1024 * 1024;
+    final File spillFile = new File(database.getDatabasePath(),
+        "snapshot-" + snapshotCounter.incrementAndGet() + "." + PageSnapshot.SHADOW_FILE_EXT);
+
+    return new PageSnapshot(database, this, database.getTransactionManager().getLastTransactionId(), files,
+        new PageShadow(spillFile, maxRAM, maxSize));
+  }
+
+  private PageSnapshot registerSnapshot(final PageSnapshot snapshot) {
+    synchronized (snapshotRegistryLock) {
+      final PageSnapshot[] current = activeSnapshots;
+      final PageSnapshot[] updated = current == null ? new PageSnapshot[1] : Arrays.copyOf(current, current.length + 1);
+      updated[updated.length - 1] = snapshot;
+      activeSnapshots = updated;
+    }
+    return snapshot;
+  }
+
+  void unregisterSnapshot(final PageSnapshot snapshot) {
+    synchronized (snapshotRegistryLock) {
+      final PageSnapshot[] current = activeSnapshots;
+      if (current == null)
+        return;
+      int found = -1;
+      for (int i = 0; i < current.length; i++)
+        if (current[i] == snapshot) {
+          found = i;
+          break;
+        }
+      if (found < 0)
+        return;
+      if (current.length == 1) {
+        activeSnapshots = null;
+        return;
+      }
+      final PageSnapshot[] updated = new PageSnapshot[current.length - 1];
+      System.arraycopy(current, 0, updated, 0, found);
+      System.arraycopy(current, found + 1, updated, found, current.length - found - 1);
+      activeSnapshots = updated;
+    }
+  }
+
+  private Object snapshotBarrierLock(final Database database) {
+    return snapshotBarrierLocks.computeIfAbsent(database, k -> new Object());
+  }
+
+  /**
+   * Copies the current on-disk image of a page into every open window that still needs it, from inside the write
+   * slot the caller already holds. The image is read ONCE and shared: a window that has not shadowed the page yet
+   * sees exactly the same content at t0, because any intervening write would have populated it.
+   * <p>
+   * A failure here never propagates to the writer - a snapshot must never be able to break the live database - it
+   * invalidates the window instead, and every later read through it fails loudly.
+   */
+  private void capturePreImages(final PageSnapshot[] snapshots, final PageId pageId) {
+    final BasicDatabase database = pageId.getDatabase();
+    final int fileId = pageId.getFileId();
+    final int pageNumber = pageId.getPageNumber();
+
+    byte[] preImage = null;
+    int pageSize = 0;
+
+    for (final PageSnapshot snapshot : snapshots) {
+      if (!snapshot.isFor(database) || !snapshot.needsPreImage(fileId, pageNumber))
+        continue;
+
+      if (preImage == null) {
+        final PageSnapshot.SnapshotFile snapshotFile = snapshot.getFile(fileId);
+        pageSize = snapshotFile.pageSize();
+        byte[] buffer = PRE_IMAGE_BUFFER.get();
+        if (buffer.length < pageSize) {
+          buffer = new byte[pageSize];
+          PRE_IMAGE_BUFFER.set(buffer);
+        }
+
+        try {
+          snapshotFile.file().readPages(pageNumber, 1, ByteBuffer.wrap(buffer, 0, pageSize));
+        } catch (final IOException e) {
+          // THE FILE, NOT ONE WINDOW, IS WHAT FAILED: EVERY WINDOW THAT STILL NEEDED THIS PAGE LOSES ITS t0 IMAGE
+          for (final PageSnapshot other : snapshots)
+            if (other.isFor(database) && other.needsPreImage(fileId, pageNumber))
+              other.invalidateOnCaptureError(fileId, pageNumber, e);
+          return;
+        }
+        preImage = buffer;
+      }
+
+      snapshot.storePreImage(fileId, pageNumber, preImage, pageSize);
+    }
   }
 
   /**
@@ -731,7 +1124,17 @@ public class PageManager extends LockContext {
     return page;
   }
 
-  private void concurrentPageAccess(final PageId pageId, final Boolean writeAccess, final ConcurrentPageAccessCallback callback)
+  /**
+   * The single funnel every physical page read and write goes through, and therefore the natural home of the
+   * copy-on-write hook of issue #6075: putting it in the write branch here covers {@link #flushPage} (the normal
+   * sync/async flush path) and {@link #writePageWithLock} (Raft and recovery replay) BY CONSTRUCTION - they are the
+   * only two physical page-write call sites in the engine - with no new lock and no new lock-ordering risk, and the
+   * pre-image capture is serialized against concurrent readers of the same page for free.
+   * <p>
+   * <b>Nothing runs before the {@code null} check</b>: no {@code PageId} allocation, no map lookup, no extra lock.
+   * With no window open the whole hook is one volatile read and a perfectly predicted branch.
+   */
+  private void concurrentPageAccess(final PageId pageId, final boolean writeAccess, final ConcurrentPageAccessCallback callback)
       throws IOException {
     // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
     while (true) {
@@ -745,6 +1148,11 @@ public class PageManager extends LockContext {
 
       if (pendingFlushPages.putIfAbsent(pageId, writeAccess) == null)
         try {
+          if (writeAccess) {
+            final PageSnapshot[] snapshots = activeSnapshots;
+            if (snapshots != null)
+              capturePreImages(snapshots, pageId);
+          }
           callback.access();
           return;
         } finally {

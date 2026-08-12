@@ -21,6 +21,7 @@ package com.arcadedb.integration.backup.format;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * Minimal contract a full-backup archive writer has to satisfy: append whole files as independent ZIP entries and, on
@@ -47,6 +48,15 @@ public interface BackupArchiveWriter extends Closeable {
    * Appends the whole content of {@code inputFile}, which must exist, as a new archive entry named after the file.
    */
   EntryStats addFile(File inputFile) throws IOException;
+
+  /**
+   * Appends a stream as a new archive entry under an explicit name, for content that is not a file on disk.
+   * <p>
+   * The full backup reads its page files through a point-in-time snapshot ({@code PageManager.openSnapshot}, issue
+   * #6075) rather than straight off the filesystem, so what it hands over is a stream of the page images as of t0,
+   * not a {@link File}. The stream is fully consumed and closed by the implementation.
+   */
+  EntryStats addEntry(String name, long lastModified, InputStream input) throws IOException;
 
   /**
    * Terminates the archive. The underlying stream is left open for the caller to close.

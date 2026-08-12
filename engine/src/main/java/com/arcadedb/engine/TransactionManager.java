@@ -39,6 +39,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
@@ -66,6 +67,15 @@ public class TransactionManager {
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
+  /**
+   * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
+   * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
+   * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
+   * without this lock a multi-page apply could straddle t0 and leave the snapshot with some of that transaction's
+   * pages and not the others. The shared side is one uncontended acquisition per REPLAYED TRANSACTION - never on
+   * the local commit path - so it is nowhere near a hot path.
+   */
+  private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;
@@ -477,7 +487,30 @@ public class TransactionManager {
     return map;
   }
 
+  /**
+   * Applies a replicated or recovered transaction to the data files. Runs under the SHARED side of
+   * {@link #getApplyLock()} so a point-in-time snapshot's t0 barrier (#6075) can exclude it wholesale: this writer
+   * goes to the files outside the flush pipeline, so a multi-page apply straddling t0 would leave the snapshot
+   * holding part of a transaction.
+   */
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final boolean ignoreErrors) {
+    applyLock.readLock().lock();
+    try {
+      return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors);
+    } finally {
+      applyLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Serializes {@link #applyChanges} against the snapshot t0 barrier. Never taken on the local commit path.
+   */
+  public ReentrantReadWriteLock getApplyLock() {
+    return applyLock;
+  }
+
+  private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
     boolean changed = false;
     boolean involveDictionary = false;

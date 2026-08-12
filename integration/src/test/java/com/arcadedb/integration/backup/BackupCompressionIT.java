@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.restore.Restore;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -213,17 +214,22 @@ class BackupCompressionIT {
    * Regression: a backup that failed halfway used to report success. {@code PageManager.suspendFlushAndExecute} runs
    * its callback through {@code CodeUtils.executeIgnoringExceptions}, so the archive was finalized with a valid
    * central directory over a truncated set of entries - a backup that looks valid and is not.
+   * <p>
+   * The failure is injected on the SCHEMA configuration file, which both backup paths read straight off the
+   * filesystem. Since #6075 the page files are read through the snapshot's already-open channels, so revoking their
+   * permission mid-run no longer breaks a backup at all - the coverage that matters here is the archive lifecycle,
+   * and it is exercised on the snapshot path and the suspend-and-freeze fallback alike.
    */
   @ParameterizedTest
-  @CsvSource({ "0", "4" })
-  void aFailedBackupThrowsAndLeavesNoArchive(final int threads) throws Exception {
+  @CsvSource({ "0,true", "4,true", "0,false", "4,false" })
+  void aFailedBackupThrowsAndLeavesNoArchive(final int threads, final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
     try (final Database database = createDatabase()) {
-      final ComponentFile unreadable = ((DatabaseInternal) database).getFileManager().getFiles().stream()
-          .filter(f -> f != null && f.getOSFile().length() > 0).reduce((first, second) -> second).orElseThrow();
+      final File unreadable = ((LocalSchema) database.getSchema()).getConfigurationFile();
 
       // POSIX ONLY: WHERE THE PERMISSION CANNOT BE TAKEN AWAY (WINDOWS, RUNNING AS ROOT) THERE IS NO WAY TO MAKE A
-      // COMPONENT FILE FAIL TO OPEN, SO THE SCENARIO IS NOT REPRODUCIBLE AND THE TEST SKIPS RATHER THAN PASSING VACUOUSLY
-      assumeTrue(unreadable.getOSFile().setReadable(false) && !unreadable.getOSFile().canRead(),
+      // FILE FAIL TO OPEN, SO THE SCENARIO IS NOT REPRODUCIBLE AND THE TEST SKIPS RATHER THAN PASSING VACUOUSLY
+      assumeTrue(unreadable.setReadable(false) && !unreadable.canRead(),
           "cannot make a database file unreadable on this platform");
       try {
         assertThatThrownBy(() -> new Backup(database, BACKUP_FILE).setVerboseLevel(0).setCompressionThreads(threads)
@@ -231,8 +237,10 @@ class BackupCompressionIT {
 
         assertThat(new File(BACKUP_FILE)).as("a partial archive must not survive a failed backup").doesNotExist();
       } finally {
-        unreadable.getOSFile().setReadable(true);
+        unreadable.setReadable(true);
       }
+    } finally {
+      GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.reset();
     }
     TestHelper.checkActiveDatabases();
   }
