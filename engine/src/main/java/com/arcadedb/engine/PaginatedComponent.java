@@ -84,22 +84,16 @@ public abstract class PaginatedComponent extends Component {
     reservedPageCounter.set(pageCount.get());
   }
 
-  public void rename(final String newName) throws IOException {
+  public void rename(final String newComponentName) throws IOException {
     // #4928: the bounded wait can give up on a wedged flush. Renaming with pages still in flight would let
     // the flush thread write to the file under its old identity: abort loudly instead, the rename can be
     // retried once the flush recovers.
     if (!PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database))
       throw new IOException("Cannot rename component '" + componentName
           + "': pages are still pending flush after the no-progress timeout (see arcadedb.flushAllPagesTimeout)");
-    file.rename(newName);
-
-    // Derive the new component name from the renamed OS file name.
-    // PaginatedComponentFile.rename() preserves the bucket suffix in the filename
-    // (e.g., "ASKED_0.3.65536.v1.bucket"), so extract everything before the first "."
-    // to get the correct component name including the bucket index.
-    final String newOsFileName = file.getOSFile().getName();
-    final int dotPos = newOsFileName.indexOf('.');
-    final String newComponentName = dotPos >= 0 ? newOsFileName.substring(0, dotPos) : newName;
+    // The argument is the new component name, not a type name and not a file name: the file layer recomposes the
+    // '.fileId.pageSize.vVersion.ext' tail itself, so nothing here has to locate where the name ends.
+    file.renameComponent(newComponentName);
 
     database.getFileManager().renameFile(componentName, newComponentName);
     componentName = newComponentName;

@@ -59,7 +59,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -113,9 +112,8 @@ public class Neo4jImporter {
       .optionalStart().appendLiteral('[').appendZoneRegionId().appendLiteral(']').optionalEnd()
       .optionalEnd()
       .toFormatter();
-  // Allow-list for imported labels: ASCII letters, digits, underscore, hyphen and space only. Excluding '.', '/' and '\'
-  // makes path-traversal sequences structurally impossible in the on-disk bucket file names derived from these labels.
-  private final static Pattern                        SAFE_LABEL               = Pattern.compile("[A-Za-z0-9_ -]+");
+  // Vertex type holding the nodes that carry no label, and the super type of every label-derived type.
+  private final static String                         ROOT_NODE_TYPE           = "Node";
 
   // Neo4j ID -> packed ArcadeDB RID mapping, populated during vertex pass.
   // Uses primitive LongLongMap for numeric IDs (common case), falls back to HashMap for non-numeric IDs.
@@ -233,7 +231,7 @@ public class Neo4jImporter {
   }
 
   private void syncSchema() throws IOException {
-    final VertexType rootNodeType = database.getSchema().buildVertexType().withName("Node")
+    final VertexType rootNodeType = database.getSchema().buildVertexType().withName(ROOT_NODE_TYPE)
         .withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
     rootNodeType.getOrCreateProperty("id", Type.STRING);
     rootNodeType.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
@@ -241,7 +239,13 @@ public class Neo4jImporter {
     readFile(json -> {
       switch (json.getString("type")) {
       case "node":
+        // A node with no labels is kept on the root type rather than dropped: it still carries an id and properties,
+        // and the alternative is silent data loss.
         final Pair<String, List<String>> labels = typeNameFromLabels(json);
+        if (labels == null) {
+          inferPropertyType(json, ROOT_NODE_TYPE);
+          break;
+        }
 
         if (!database.getSchema().existsType(labels.getFirst())) {
           final VertexType type = database.getSchema().buildVertexType().withName(labels.getFirst())
@@ -342,12 +346,11 @@ public class Neo4jImporter {
 
           final Pair<String, List<String>> type = typeNameFromLabels(json);
           if (type == null) {
-            log("- found vertex in line %d without labels. Skip it.", lineNumber.get());
+            log("- found vertex in line %d without labels. Importing it as '%s'.", lineNumber.get(), ROOT_NODE_TYPE);
             context.warnings.incrementAndGet();
-            return null;
           }
 
-          final String typeName = type.getFirst();
+          final String typeName = type != null ? type.getFirst() : ROOT_NODE_TYPE;
           final String id = json.getString("id");
 
           try {
@@ -425,7 +428,7 @@ public class Neo4jImporter {
                 context.createdEdges.get() / elapsed * 1000);
           }
 
-          final String type = validateLabel(json.getString("label"));
+          final String type = json.has("label") && !json.isNull("label") ? validateLabel(json.getString("label")) : null;
           if (type == null) {
             log("- found edge in line %d without labels. Skip it.", lineNumber.get());
             context.warnings.incrementAndGet();
@@ -711,11 +714,39 @@ public class Neo4jImporter {
     return null;
   }
 
-  // Validates untrusted import labels against a strict allow-list before they become on-disk bucket file names. Only
-  // letters, digits, underscore, hyphen and space are accepted; path separators and '..' cannot appear by construction.
+  /**
+   * Validates an untrusted import label before it becomes a type name and, through it, an on-disk file name.
+   * <p>
+   * Neo4j allows any string in a backtick-quoted label, and almost all of them survive here: a type name is
+   * percent-encoded on its way to the bucket name, and the component-file name is parsed right-to-left off its
+   * fixed {@code .fileId.pageSize.vVersion.ext} tail, so dots, accents and colons round-trip. Only four classes of
+   * label are refused, and each of them for a reason that cannot be encoded away.
+   */
   private static String validateLabel(final String label) {
-    if (label != null && !SAFE_LABEL.matcher(label).matches())
-      throw new ImportException("Invalid label: must not contain path separators or '..'");
+    if (label == null)
+      return null;
+
+    if (label.isEmpty())
+      throw new ImportException("Invalid label: it cannot be empty");
+
+    // Would address a file outside the database directory once used as a bucket name.
+    if (label.indexOf('/') > -1 || label.indexOf('\\') > -1 || ".".equals(label) || "..".equals(label))
+      throw new ImportException("Invalid label '" + label + "': it cannot contain path separators or be '.' or '..'");
+
+    // Left untouched by percent-encoding and not a legal file name character on Windows.
+    if (label.indexOf('*') > -1)
+      throw new ImportException("Invalid label '" + label + "': it cannot contain '*'");
+
+    // The labels of a multi-label node are joined with this separator to build the composite type name, so a label
+    // containing it would be indistinguishable from a composite of two labels.
+    if (label.contains(Labels.LABEL_SEPARATOR))
+      throw new ImportException("Invalid label '" + label + "': '" + Labels.LABEL_SEPARATOR
+          + "' is reserved to join the labels of a multi-label node");
+
+    // TypeBuilder refuses a comma in a type name: an index name embeds its property list as "Type[a,b]".
+    if (label.indexOf(',') > -1)
+      throw new ImportException("Invalid label '" + label + "': it cannot contain ','");
+
     return label;
   }
 
