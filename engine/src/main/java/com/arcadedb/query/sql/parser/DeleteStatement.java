@@ -41,8 +41,7 @@ public class DeleteStatement extends Statement {
   public Batch       batch;
   public boolean     unsafe       = false;
 
-  public DeleteStatement(final int id) {
-    super(id);
+  public DeleteStatement() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -68,7 +67,7 @@ public class DeleteStatement extends Statement {
 
   @Override
   public DeleteStatement copy() {
-    final DeleteStatement result = new DeleteStatement(-1);
+    final DeleteStatement result = new DeleteStatement();
     result.fromClause = fromClause == null ? null : fromClause.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.returnBefore = returnBefore;

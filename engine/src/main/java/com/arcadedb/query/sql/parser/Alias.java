@@ -23,8 +23,7 @@ package com.arcadedb.query.sql.parser;
 import java.util.Map;
 
 public class Alias extends SimpleNode {
-  public Alias(final int id) {
-    super(id);
+  public Alias() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

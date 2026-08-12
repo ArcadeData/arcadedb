@@ -30,8 +30,7 @@ import java.util.Map;
 public class IsNotNullCondition extends BooleanExpression {
   public Expression expression;
 
-  public IsNotNullCondition(final int id) {
-    super(id);
+  public IsNotNullCondition() {
   }
 
   @Override
@@ -51,7 +50,7 @@ public class IsNotNullCondition extends BooleanExpression {
 
   @Override
   public BooleanExpression copy() {
-    final IsNotNullCondition result = new IsNotNullCondition(-1);
+    final IsNotNullCondition result = new IsNotNullCondition();
     result.expression = expression.copy();
     return result;
   }

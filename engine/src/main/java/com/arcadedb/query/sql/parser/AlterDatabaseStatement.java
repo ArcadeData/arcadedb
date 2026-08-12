@@ -42,8 +42,7 @@ public class AlterDatabaseStatement extends DDLStatement {
   public Identifier settingName;
   public Expression settingValue;
 
-  public AlterDatabaseStatement(final int id) {
-    super(id);
+  public AlterDatabaseStatement() {
   }
 
   @Override
@@ -125,7 +124,7 @@ public class AlterDatabaseStatement extends DDLStatement {
 
   @Override
   public AlterDatabaseStatement copy() {
-    final AlterDatabaseStatement result = new AlterDatabaseStatement(-1);
+    final AlterDatabaseStatement result = new AlterDatabaseStatement();
     result.settingName = settingName == null ? null : settingName.copy();
     result.settingValue = settingValue == null ? null : settingValue.copy();
     return result;

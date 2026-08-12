@@ -50,8 +50,7 @@ public class MethodCall extends SimpleNode {
 
   private Boolean calculatedIsGraph = null;
 
-  public MethodCall(final int id) {
-    super(id);
+  public MethodCall() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -167,7 +166,7 @@ public class MethodCall extends SimpleNode {
   }
 
   public MethodCall copy() {
-    final MethodCall result = new MethodCall(-1);
+    final MethodCall result = new MethodCall();
     result.methodName = methodName.copy();
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;

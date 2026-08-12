@@ -417,7 +417,7 @@ class DeleteFromIndexStepTest extends TestHelper {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
-      final DeleteFromIndexStep step = new DeleteFromIndexStep(index, new AndBlock(-1), null, null, context);
+      final DeleteFromIndexStep step = new DeleteFromIndexStep(index, new AndBlock(), null, null, context);
 
       assertThatThrownBy(() -> step.syncPull(context, 1))
           .isInstanceOf(CommandExecutionException.class)

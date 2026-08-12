@@ -29,8 +29,7 @@ public class BucketList extends SimpleNode {
 
   public List<Identifier> buckets = new ArrayList<>();
 
-  public BucketList(final int id) {
-    super(id);
+  public BucketList() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -49,7 +48,7 @@ public class BucketList extends SimpleNode {
   public List<Bucket> toListOfClusters() {
     final List<Bucket> result = new ArrayList<>();
     for (final Identifier id : buckets) {
-      final Bucket bucket = new Bucket(-1);
+      final Bucket bucket = new Bucket();
       bucket.bucketName = id.getStringValue();
       result.add(bucket);
     }
@@ -57,7 +56,7 @@ public class BucketList extends SimpleNode {
   }
 
   public BucketList copy() {
-    final BucketList result = new BucketList(-1);
+    final BucketList result = new BucketList();
     result.buckets = buckets.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

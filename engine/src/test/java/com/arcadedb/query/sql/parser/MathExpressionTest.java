@@ -34,7 +34,7 @@ class MathExpressionTest {
   @Test
   void types() {
 
-    final MathExpression expr = new MathExpression(-1);
+    final MathExpression expr = new MathExpression();
 
     final MathExpression.Operator[] basicOps = new MathExpression.Operator[] { MathExpression.Operator.PLUS, MathExpression.Operator.MINUS,
         MathExpression.Operator.STAR, MathExpression.Operator.SLASH, MathExpression.Operator.REM };
@@ -66,7 +66,7 @@ class MathExpressionTest {
 
   @Test
   void priority() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(10));
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(integer(5));
@@ -86,7 +86,7 @@ class MathExpressionTest {
 
   @Test
   void priority2() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(1));
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(integer(2));
@@ -112,7 +112,7 @@ class MathExpressionTest {
 
   @Test
   void priority3() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(3));
     exp.operators.add(MathExpression.Operator.RSHIFT);
     exp.childExpressions.add(integer(1));
@@ -126,7 +126,7 @@ class MathExpressionTest {
 
   @Test
   void priority4() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(3));
     exp.operators.add(MathExpression.Operator.LSHIFT);
     exp.childExpressions.add(integer(1));
@@ -140,7 +140,7 @@ class MathExpressionTest {
 
   @Test
   void and() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(5));
     exp.operators.add(MathExpression.Operator.BIT_AND);
     exp.childExpressions.add(integer(1));
@@ -152,7 +152,7 @@ class MathExpressionTest {
 
   @Test
   void and2() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(5));
     exp.operators.add(MathExpression.Operator.BIT_AND);
     exp.childExpressions.add(integer(4));
@@ -164,7 +164,7 @@ class MathExpressionTest {
 
   @Test
   void divide() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(20));
     exp.operators.add(MathExpression.Operator.SLASH);
     exp.childExpressions.add(integer(4));
@@ -176,7 +176,7 @@ class MathExpressionTest {
 
   @Test
   void divideByNull() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(20));
     exp.operators.add(MathExpression.Operator.SLASH);
     exp.childExpressions.add(nullValue());
@@ -187,7 +187,7 @@ class MathExpressionTest {
 
   @Test
   void or() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(integer(4));
     exp.operators.add(MathExpression.Operator.BIT_OR);
     exp.childExpressions.add(integer(1));
@@ -208,7 +208,7 @@ class MathExpressionTest {
 
   @Test
   void addListOfNumbers() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(list(1, 2, 3));
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(integer(5));
@@ -220,7 +220,7 @@ class MathExpressionTest {
 
   @Test
   void addListOfStrings() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(list("this", "is", "a"));
     exp.operators.add(MathExpression.Operator.PLUS);
     exp.childExpressions.add(str("test"));
@@ -232,7 +232,7 @@ class MathExpressionTest {
 
   @Test
   void removeListOfStrings() {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(list("this", "is", "a", "test"));
     exp.operators.add(MathExpression.Operator.MINUS);
     exp.childExpressions.add(str("a"));
@@ -244,7 +244,7 @@ class MathExpressionTest {
   }
 
   private void testNullCoalescingGeneric(final MathExpression left, final MathExpression right, final Object expected) {
-    final MathExpression exp = new MathExpression(-1);
+    final MathExpression exp = new MathExpression();
     exp.childExpressions.add(left);
     exp.operators.add(MathExpression.Operator.NULL_COALESCING);
     exp.childExpressions.add(right);
@@ -255,38 +255,38 @@ class MathExpressionTest {
   }
 
   private MathExpression integer(final Number i) {
-    final BaseExpression exp = new BaseExpression(-1);
-    final PInteger integer = new PInteger(-1);
+    final BaseExpression exp = new BaseExpression();
+    final PInteger integer = new PInteger();
     integer.setValue(i);
     exp.number = integer;
     return exp;
   }
 
   private BaseExpression nullValue() {
-    final BaseExpression exp = new BaseExpression(-1);
+    final BaseExpression exp = new BaseExpression();
     exp.isNull = true;
     return exp;
   }
 
   private MathExpression str(final String value) {
-    final BaseExpression exp = new BaseExpression(-1);
+    final BaseExpression exp = new BaseExpression();
     exp.string = "'" + value + "'";
     return exp;
   }
 
   private MathExpression nullExpr() {
-    return new BaseExpression(-1);
+    return new BaseExpression();
   }
 
   private MathExpression list(final Number... values) {
-    final BaseExpression exp = new BaseExpression(-1);
-    exp.identifier = new BaseIdentifier(-1);
-    exp.identifier.levelZero = new LevelZeroIdentifier(-1);
-    final PCollection coll = new PCollection(-1);
+    final BaseExpression exp = new BaseExpression();
+    exp.identifier = new BaseIdentifier();
+    exp.identifier.levelZero = new LevelZeroIdentifier();
+    final PCollection coll = new PCollection();
     exp.identifier.levelZero.collection = coll;
 
     for (final Number val : values) {
-      final Expression sub = new Expression(-1);
+      final Expression sub = new Expression();
       sub.mathExpression = integer(val);
       coll.expressions.add(sub);
     }
@@ -294,14 +294,14 @@ class MathExpressionTest {
   }
 
   private MathExpression list(final String... values) {
-    final BaseExpression exp = new BaseExpression(-1);
-    exp.identifier = new BaseIdentifier(-1);
-    exp.identifier.levelZero = new LevelZeroIdentifier(-1);
-    final PCollection coll = new PCollection(-1);
+    final BaseExpression exp = new BaseExpression();
+    exp.identifier = new BaseIdentifier();
+    exp.identifier.levelZero = new LevelZeroIdentifier();
+    final PCollection coll = new PCollection();
     exp.identifier.levelZero.collection = coll;
 
     for (final String val : values) {
-      final Expression sub = new Expression(-1);
+      final Expression sub = new Expression();
       sub.mathExpression = str(val);
       coll.expressions.add(sub);
     }

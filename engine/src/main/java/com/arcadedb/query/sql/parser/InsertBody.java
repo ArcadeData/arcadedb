@@ -32,8 +32,7 @@ public class InsertBody extends SimpleNode {
   public JsonArray                 contentArray;
   public InputParameter            contentInputParam;
 
-  public InsertBody(final int id) {
-    super(id);
+  public InsertBody() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -96,7 +95,7 @@ public class InsertBody extends SimpleNode {
   }
 
   public InsertBody copy() {
-    final InsertBody result = new InsertBody(-1);
+    final InsertBody result = new InsertBody();
     result.identifierList = identifierList == null ? null : identifierList.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.valueExpressions = valueExpressions == null ?
         null :

@@ -26,12 +26,10 @@ import java.util.Objects;
 public class Url extends SimpleNode {
   protected String urlString;
 
-  public Url(final int id) {
-    super(id);
+  public Url() {
   }
 
   public Url(final String url) {
-    super(-1);
     this.urlString = url;
   }
 
@@ -57,7 +55,7 @@ public class Url extends SimpleNode {
 
   @Override
   public SimpleNode copy() {
-    final Url result = new Url(-1);
+    final Url result = new Url();
     result.urlString = urlString;
     return result;
   }

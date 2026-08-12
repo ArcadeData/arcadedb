@@ -23,8 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 
 public class WithinOperator extends SimpleNode implements BinaryCompareOperator {
-  public WithinOperator(final int id) {
-    super(id);
+  public WithinOperator() {
   }
 
   @Override

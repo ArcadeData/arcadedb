@@ -21,8 +21,7 @@ public class BreakStatement extends SimpleExecStatement {
     }
   };
 
-  public BreakStatement(int id) {
-    super(id);
+  public BreakStatement() {
   }
 
   @Override

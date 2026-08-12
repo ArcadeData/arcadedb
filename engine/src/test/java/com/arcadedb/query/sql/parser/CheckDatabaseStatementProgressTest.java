@@ -45,7 +45,7 @@ class CheckDatabaseStatementProgressTest extends TestHelper {
     final CommandContext context = new BasicCommandContext();
     ((BasicCommandContext) context).setDatabase(database);
 
-    final CheckDatabaseStatement statement = new CheckDatabaseStatement(-1) {
+    final CheckDatabaseStatement statement = new CheckDatabaseStatement() {
       @Override
       DatabaseChecker createChecker(final CommandContext ctx) {
         return new DatabaseChecker(ctx.getDatabase().getWrappedDatabaseInstance()) {

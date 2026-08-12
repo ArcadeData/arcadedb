@@ -26,8 +26,7 @@ import java.util.Collection;
 import java.util.Iterator;
 
 public class InOperator extends SimpleNode implements BinaryCompareOperator {
-  public InOperator(final int id) {
-    super(id);
+  public InOperator() {
   }
 
   @Override

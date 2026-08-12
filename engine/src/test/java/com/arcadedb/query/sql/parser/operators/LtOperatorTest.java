@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.fail;
 class LtOperatorTest {
   @Test
   void test() {
-    final LtOperator op = new LtOperator(-1);
+    final LtOperator op = new LtOperator();
     assertThat(op.execute(null, 1, 1)).isFalse();
     assertThat(op.execute(null, 1, 0)).isFalse();
     assertThat(op.execute(null, 0, 1)).isTrue();

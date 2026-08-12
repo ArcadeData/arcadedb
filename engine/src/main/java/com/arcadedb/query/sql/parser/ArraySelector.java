@@ -34,8 +34,7 @@ public class ArraySelector extends SimpleNode {
   public Expression     expression;
   protected PInteger       integer;
 
-  public ArraySelector(final int id) {
-    super(id);
+  public ArraySelector() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -89,7 +88,7 @@ public class ArraySelector extends SimpleNode {
   }
 
   public ArraySelector copy() {
-    final ArraySelector result = new ArraySelector(-1);
+    final ArraySelector result = new ArraySelector();
     result.rid = rid == null ? null : rid.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.expression = expression == null ? null : expression.copy();

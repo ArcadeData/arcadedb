@@ -30,8 +30,7 @@ import java.util.Iterator;
 import java.util.Locale;
 
 public class ILikeOperator extends SimpleNode implements BinaryCompareOperator {
-  public ILikeOperator(final int id) {
-    super(id);
+  public ILikeOperator() {
   }
 
   @Override

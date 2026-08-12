@@ -27,8 +27,7 @@ public class UpdateAddItem extends SimpleNode {
   protected Identifier left;
   protected Expression right;
 
-  public UpdateAddItem(final int id) {
-    super(id);
+  public UpdateAddItem() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

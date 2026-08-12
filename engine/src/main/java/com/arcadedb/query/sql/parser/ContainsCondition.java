@@ -36,8 +36,7 @@ public class ContainsCondition extends BooleanExpression {
   public Expression        right;
   public BooleanExpression condition;
 
-  public ContainsCondition(final int id) {
-    super(id);
+  public ContainsCondition() {
   }
 
   public boolean execute(final Object left, Object right) {
@@ -201,7 +200,7 @@ public class ContainsCondition extends BooleanExpression {
 
   @Override
   public ContainsCondition copy() {
-    final ContainsCondition result = new ContainsCondition(-1);
+    final ContainsCondition result = new ContainsCondition();
     result.left = left == null ? null : left.copy();
     result.right = right == null ? null : right.copy();
     result.condition = condition == null ? null : condition.copy();

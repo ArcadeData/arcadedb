@@ -288,7 +288,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
     final Object rightValue = inCondition.evaluateRight((Result) null, context);
-    final EqualsCompareOperator equals = new EqualsCompareOperator(-1);
+    final EqualsCompareOperator equals = new EqualsCompareOperator();
     if (MultiValue.isMultiValue(rightValue)) {
       customIterator = new MultiIterator<>();
       for (final Object item : MultiValue.getMultiValueIterable(rightValue)) {
@@ -435,7 +435,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private List<PCollection> cartesianProduct(final PCollection key) {
-    return cartesianProduct(new PCollection(-1), key);//TODO
+    return cartesianProduct(new PCollection(), key);//TODO
   }
 
   private List<PCollection> cartesianProduct(final PCollection head, final PCollection key) {
@@ -450,7 +450,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (!(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();
       for (final Object elemInKey : MultiValue.getMultiValueIterable(value)) {
-        final PCollection newHead = new PCollection(-1);
+        final PCollection newHead = new PCollection();
         for (final Expression exp : head.getExpressions())
           newHead.add(exp.copy());
 
@@ -461,7 +461,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
       return result;
     } else {
-      final PCollection newHead = new PCollection(-1);
+      final PCollection newHead = new PCollection();
       for (final Expression exp : head.getExpressions())
         newHead.add(exp.copy());
 
@@ -657,7 +657,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private static PCollection indexKeyFrom(final AndBlock keyCondition, final BinaryCondition additional) {
-    PCollection result = new PCollection(-1);
+    PCollection result = new PCollection();
     for (BooleanExpression exp : keyCondition.getSubBlocks()) {
       Expression res = exp.resolveKeyFrom(additional);
       if (res != null) {
@@ -668,7 +668,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private static PCollection indexKeyTo(final AndBlock keyCondition, final BinaryCondition additional) {
-    PCollection result = new PCollection(-1);
+    PCollection result = new PCollection();
     for (BooleanExpression exp : keyCondition.getSubBlocks()) {
       Expression res = exp.resolveKeyTo(additional);
       if (res != null) {

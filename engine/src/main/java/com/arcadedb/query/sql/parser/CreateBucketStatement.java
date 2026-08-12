@@ -35,8 +35,7 @@ public class CreateBucketStatement extends DDLStatement {
   public boolean    ifNotExists = false;
   public boolean    blob        = false;
 
-  public CreateBucketStatement(final int id) {
-    super(id);
+  public CreateBucketStatement() {
   }
 
   @Override
@@ -74,7 +73,7 @@ public class CreateBucketStatement extends DDLStatement {
 
   @Override
   public CreateBucketStatement copy() {
-    final CreateBucketStatement result = new CreateBucketStatement(-1);
+    final CreateBucketStatement result = new CreateBucketStatement();
     result.name = name == null ? null : name.copy();
     result.ifNotExists = this.ifNotExists;
     result.blob = blob;

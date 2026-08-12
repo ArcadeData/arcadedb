@@ -26,8 +26,7 @@ public class PositionalParameter extends InputParameter {
 
   public int paramNumber;
 
-  public PositionalParameter(final int id) {
-    super(id);
+  public PositionalParameter() {
   }
 
   @Override
@@ -69,7 +68,7 @@ public class PositionalParameter extends InputParameter {
 
   @Override
   public PositionalParameter copy() {
-    final PositionalParameter result = new PositionalParameter(-1);
+    final PositionalParameter result = new PositionalParameter();
     result.paramNumber = paramNumber;
     return result;
   }

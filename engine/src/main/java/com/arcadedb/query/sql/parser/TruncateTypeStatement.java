@@ -43,8 +43,7 @@ public class TruncateTypeStatement extends DDLStatement {
   public boolean    polymorphic = false;
   public boolean    unsafe      = false;
 
-  public TruncateTypeStatement(final int id) {
-    super(id);
+  public TruncateTypeStatement() {
   }
 
   @Override
@@ -237,7 +236,7 @@ public class TruncateTypeStatement extends DDLStatement {
 
   @Override
   public TruncateTypeStatement copy() {
-    final TruncateTypeStatement result = new TruncateTypeStatement(-1);
+    final TruncateTypeStatement result = new TruncateTypeStatement();
     result.typeName = typeName == null ? null : typeName.copy();
     result.polymorphic = polymorphic;
     result.unsafe = unsafe;

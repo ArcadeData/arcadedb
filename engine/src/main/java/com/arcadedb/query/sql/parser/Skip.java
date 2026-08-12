@@ -32,8 +32,7 @@ public class Skip extends SimpleNode {
   public InputParameter inputParam;
   public Expression     expression;
 
-  public Skip(final int id) {
-    super(id);
+  public Skip() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -78,7 +77,7 @@ public class Skip extends SimpleNode {
   }
 
   public Skip copy() {
-    final Skip result = new Skip(-1);
+    final Skip result = new Skip();
     result.num = num == null ? null : num.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.expression = expression == null ? null : expression.copy();

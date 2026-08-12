@@ -33,8 +33,7 @@ public class Limit extends SimpleNode {
   public InputParameter inputParam;
   public Expression     expression;
 
-  public Limit(final int id) {
-    super(id);
+  public Limit() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -81,12 +80,12 @@ public class Limit extends SimpleNode {
   }
 
   public Limit setValue(final int value) {
-    num = new PInteger(-1).setValue(value);
+    num = new PInteger().setValue(value);
     return this;
   }
 
   public Limit copy() {
-    final Limit result = new Limit(-1);
+    final Limit result = new Limit();
     result.num = num == null ? null : num.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.expression = expression == null ? null : expression.copy();

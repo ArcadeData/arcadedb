@@ -29,8 +29,7 @@ public class DropContinuousAggregateStatement extends DDLStatement {
   public Identifier name;
   public boolean ifExists = false;
 
-  public DropContinuousAggregateStatement(final int id) {
-    super(id);
+  public DropContinuousAggregateStatement() {
   }
 
   @Override

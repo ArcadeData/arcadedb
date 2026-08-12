@@ -47,8 +47,7 @@ public class SelectStatement extends Statement {
   public Skip        skip;
   public LetClause   letClause;
 
-  public SelectStatement(final int id) {
-    super(id);
+  public SelectStatement() {
   }
 
   public Projection getProjection() {
@@ -229,7 +228,7 @@ public class SelectStatement extends Statement {
   @Override
   public SelectStatement copy() {
     try {
-      final SelectStatement result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      final SelectStatement result = getClass().getConstructor().newInstance();
       result.originalStatement = originalStatement;
       result.target = target == null ? null : target.copy();
       result.projection = projection == null ? null : projection.copy();
@@ -306,11 +305,11 @@ public class SelectStatement extends Statement {
   private void setProfilingConstraints(final DatabaseInternal db) {
     final long profiledLimit = db.getResultSetLimit();
     if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
-      setLimit(new Limit(-1).setValue((int) profiledLimit));
+      setLimit(new Limit().setValue((int) profiledLimit));
 
     final long profiledTimeout = db.getReadTimeout();
     if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
-      setTimeout(new Timeout(-1).setValue((int) profiledTimeout));
+      setTimeout(new Timeout().setValue((int) profiledTimeout));
   }
 }
 /* JavaCC - OriginalChecksum=b26959b9726a8cf35d6283eca931da6b (do not edit this line) */

@@ -42,8 +42,7 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
   public boolean                 addPolicy;
   public List<DownsamplingTier>  tiers = new ArrayList<>();
 
-  public AlterTimeSeriesTypeStatement(final int id) {
-    super(id);
+  public AlterTimeSeriesTypeStatement() {
   }
 
   @Override
@@ -82,7 +81,7 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
 
   @Override
   public AlterTimeSeriesTypeStatement copy() {
-    final AlterTimeSeriesTypeStatement result = new AlterTimeSeriesTypeStatement(-1);
+    final AlterTimeSeriesTypeStatement result = new AlterTimeSeriesTypeStatement();
     result.name = name == null ? null : name.copy();
     result.addPolicy = addPolicy;
     result.tiers = new ArrayList<>(tiers);

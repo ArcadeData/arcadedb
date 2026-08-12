@@ -35,8 +35,7 @@ public class ArrayLiteralExpression extends MathExpression {
 
   public List<Expression> items = new ArrayList<>();
 
-  public ArrayLiteralExpression(final int id) {
-    super(id);
+  public ArrayLiteralExpression() {
   }
 
   public void addItem(final Expression item) {
@@ -113,7 +112,7 @@ public class ArrayLiteralExpression extends MathExpression {
 
   @Override
   public MathExpression copy() {
-    final ArrayLiteralExpression result = new ArrayLiteralExpression(-1);
+    final ArrayLiteralExpression result = new ArrayLiteralExpression();
     for (final Expression item : items) {
       result.items.add(item.copy());
     }
@@ -148,7 +147,7 @@ public class ArrayLiteralExpression extends MathExpression {
   @Override
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final ArrayLiteralExpression result = new ArrayLiteralExpression(-1);
+      final ArrayLiteralExpression result = new ArrayLiteralExpression();
 
       for (final Expression item : items) {
         final SimpleNode splitResult = item.splitForAggregation(aggregateProj, context);

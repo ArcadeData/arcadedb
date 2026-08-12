@@ -30,8 +30,7 @@ import java.util.Map;
 public class IsDefinedCondition extends BooleanExpression implements SimpleBooleanExpression {
   public Expression expression;
 
-  public IsDefinedCondition(final int id) {
-    super(id);
+  public IsDefinedCondition() {
   }
 
   @Override
@@ -51,7 +50,7 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
 
   @Override
   public IsDefinedCondition copy() {
-    final IsDefinedCondition result = new IsDefinedCondition(-1);
+    final IsDefinedCondition result = new IsDefinedCondition();
     result.expression = expression.copy();
     return result;
   }

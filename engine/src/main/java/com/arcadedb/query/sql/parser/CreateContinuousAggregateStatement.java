@@ -29,8 +29,7 @@ public class CreateContinuousAggregateStatement extends DDLStatement {
   public SelectStatement selectStatement;
   public boolean ifNotExists = false;
 
-  public CreateContinuousAggregateStatement(final int id) {
-    super(id);
+  public CreateContinuousAggregateStatement() {
   }
 
   @Override

@@ -34,8 +34,7 @@ public class ContainsAnyCondition extends BooleanExpression {
   public Expression right;
   public OrBlock    rightBlock;
 
-  public ContainsAnyCondition(final int id) {
-    super(id);
+  public ContainsAnyCondition() {
   }
 
   public boolean execute(Object left, Object right) {
@@ -160,7 +159,7 @@ public class ContainsAnyCondition extends BooleanExpression {
 
   @Override
   public ContainsAnyCondition copy() {
-    final ContainsAnyCondition result = new ContainsAnyCondition(-1);
+    final ContainsAnyCondition result = new ContainsAnyCondition();
     result.left = left.copy();
     result.right = right == null ? null : right.copy();
     result.rightBlock = rightBlock == null ? null : rightBlock.copy();

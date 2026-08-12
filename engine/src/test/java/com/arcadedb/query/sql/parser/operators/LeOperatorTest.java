@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.fail;
 class LeOperatorTest {
   @Test
   void test() {
-    final LeOperator op = new LeOperator(-1);
+    final LeOperator op = new LeOperator();
     assertThat(op.execute(null, 1, 1)).isTrue();
     assertThat(op.execute(null, 1, 0)).isFalse();
     assertThat(op.execute(null, 0, 1)).isTrue();

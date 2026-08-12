@@ -16,8 +16,7 @@ public class Batch extends SimpleNode {
   public InputParameter inputParam;
   public Expression     expression;
 
-  public Batch(final int id) {
-    super(id);
+  public Batch() {
   }
 
   public int evaluate(final CommandContext ctx) {
@@ -55,7 +54,7 @@ public class Batch extends SimpleNode {
   }
 
   public Batch copy() {
-    final Batch result = new Batch(-1);
+    final Batch result = new Batch();
     result.num = num == null ? null : num.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.expression = expression == null ? null : expression.copy();

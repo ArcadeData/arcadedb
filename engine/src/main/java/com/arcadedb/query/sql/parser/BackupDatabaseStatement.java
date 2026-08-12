@@ -45,8 +45,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   protected       Expression                  value;
   public final    Map<Expression, Expression> settings = new HashMap<>();
 
-  public BackupDatabaseStatement(final int id) {
-    super(id);
+  public BackupDatabaseStatement() {
   }
 
   @Override
@@ -198,7 +197,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public Statement copy() {
-    final BackupDatabaseStatement result = new BackupDatabaseStatement(-1);
+    final BackupDatabaseStatement result = new BackupDatabaseStatement();
     result.url = this.url;
     // WITHOUT THIS, A COPY TAKEN FROM THE STATEMENT CACHE SILENTLY DROPS EVERY 'WITH ...' SETTING
     result.settings.putAll(this.settings);

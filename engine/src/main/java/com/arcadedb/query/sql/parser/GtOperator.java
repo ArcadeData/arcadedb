@@ -26,8 +26,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 public class GtOperator extends SimpleNode implements BinaryCompareOperator {
-  public GtOperator(final int id) {
-    super(id);
+  public GtOperator() {
   }
 
   @Override

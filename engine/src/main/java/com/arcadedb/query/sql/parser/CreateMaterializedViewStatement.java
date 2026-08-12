@@ -34,8 +34,7 @@ public class CreateMaterializedViewStatement extends DDLStatement {
   public int buckets;
   public boolean ifNotExists = false;
 
-  public CreateMaterializedViewStatement(final int id) {
-    super(id);
+  public CreateMaterializedViewStatement() {
   }
 
   @Override

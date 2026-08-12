@@ -37,7 +37,6 @@ import java.util.Map;
  */
 public class ValueExpression extends Expression {
   public ValueExpression(final Object val) {
-    super(-1);
     this.value = val;
   }
 

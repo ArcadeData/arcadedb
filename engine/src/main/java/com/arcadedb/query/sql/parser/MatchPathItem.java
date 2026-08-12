@@ -33,8 +33,7 @@ public class MatchPathItem extends SimpleNode {
   protected MethodCall  method;
   protected MatchFilter filter;
 
-  public MatchPathItem(final int id) {
-    super(id);
+  public MatchPathItem() {
   }
 
   public boolean isBidirectional() {
@@ -177,7 +176,7 @@ public class MatchPathItem extends SimpleNode {
   public MatchPathItem copy() {
     final MatchPathItem result;
     try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      result = getClass().getConstructor().newInstance();
     } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }

@@ -89,8 +89,7 @@ public class CreateIndexStatement extends DDLStatement {
   public LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   public List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
 
-  public CreateIndexStatement(final int id) {
-    super(id);
+  public CreateIndexStatement() {
   }
 
   @Override
@@ -510,7 +509,7 @@ public class CreateIndexStatement extends DDLStatement {
 
   @Override
   public CreateIndexStatement copy() {
-    final CreateIndexStatement result = new CreateIndexStatement(-1);
+    final CreateIndexStatement result = new CreateIndexStatement();
     result.name = name == null ? null : name.copy();
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyList = propertyList == null ? null : propertyList.stream().map(x -> x.copy()).collect(Collectors.toList());

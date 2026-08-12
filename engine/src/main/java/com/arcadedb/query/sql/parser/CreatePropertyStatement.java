@@ -48,8 +48,7 @@ public class CreatePropertyStatement extends DDLStatement {
    */
   public final Map<Identifier, Expression> customProperties = new LinkedHashMap<>();
 
-  public CreatePropertyStatement(final int id) {
-    super(id);
+  public CreatePropertyStatement() {
   }
 
   @Override
@@ -154,7 +153,7 @@ public class CreatePropertyStatement extends DDLStatement {
 
   @Override
   public CreatePropertyStatement copy() {
-    final CreatePropertyStatement result = new CreatePropertyStatement(-1);
+    final CreatePropertyStatement result = new CreatePropertyStatement();
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.ifNotExists = ifNotExists;
