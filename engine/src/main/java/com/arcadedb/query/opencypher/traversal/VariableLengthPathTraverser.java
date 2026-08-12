@@ -42,7 +42,7 @@ public class VariableLengthPathTraverser extends GraphTraverser {
    * @param minHops           minimum number of hops
    * @param maxHops           maximum number of hops
    * @param trackPaths        whether to track full paths
-   * @param useBFS            true for BFS (shortest paths), false for DFS
+   * @param useBFS            true for BFS (level-order; frontier grows with branching factor), false for DFS (bounded stack regardless of branching factor - see #6097)
    */
   public VariableLengthPathTraverser(final Direction direction, final String[] relationshipTypes, final int minHops,
       final int maxHops, final boolean trackPaths, final boolean useBFS) {

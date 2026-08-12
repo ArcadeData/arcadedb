@@ -134,8 +134,12 @@ public class DepthFirstTraverser extends GraphTraverser {
    * Genuinely lazy: expands one branch at a time via an explicit stack instead of recursing to
    * completion and collecting every matching path into a list up front. A path is emitted the
    * moment it is discovered (pre-order), and only the current root-to-frontier chain - at most
-   * {@code maxHops} frames - is ever held in memory, regardless of how many distinct paths the
-   * pattern has in total. Recursive eager enumeration used to hold every one of those paths
+   * {@code maxHops} frames - is ever on the stack, regardless of how many distinct paths the
+   * pattern has in total. (Each frame's {@link TraversalPath} still copies its parent's vertex/edge
+   * arrays, so per-frame size grows with depth: active memory is bounded by {@code maxHops} frames
+   * of up to {@code maxHops} elements each - {@code O(maxHops^2)} in the worst case, not a flat
+   * {@code O(maxHops)} - but that is no longer combinatorial in the branching factor, which is what
+   * made eager enumeration unbounded.) Recursive eager enumeration used to hold every matching path
    * simultaneously, which grows combinatorially with the branching factor (see #6097).
    */
   private class DFSPathIterator implements Iterator<TraversalPath> {
