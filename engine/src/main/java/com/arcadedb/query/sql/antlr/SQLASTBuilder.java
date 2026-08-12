@@ -2687,6 +2687,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitUnary(final SQLParser.UnaryContext ctx) {
+    if (ctx.MINUS() != null) {
+      final BaseExpression longMinValue = tryFoldLongMinValueLiteral(ctx);
+      if (longMinValue != null)
+        return longMinValue;
+    }
+
     final MathExpression innerExpr = (MathExpression) visit(ctx.mathExpression());
 
     if (ctx.PLUS() != null) {
@@ -2714,6 +2720,48 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     throw new CommandSQLParsingException("Unknown unary operator");
+  }
+
+  /**
+   * Folds a directly-negated integer literal whose bare magnitude cannot be represented as a {@code long} on its
+   * own into a single {@code Long.MIN_VALUE} literal, or returns {@code null} when the ordinary {@code 0 - X}
+   * handling in {@link #visitUnary} should run instead.
+   * <p>
+   * {@code 9223372036854775808} (one past {@code Long.MAX_VALUE}) is the only positive magnitude that overflows
+   * both {@code Integer.parseInt} and {@code Long.parseLong}, yet has a valid {@code long} value once negated
+   * ({@code Long.MIN_VALUE}). {@link #visitIntegerLiteral} converts the magnitude before any enclosing unary minus
+   * is applied, so without this fold that one value can never be parsed as a literal - the standard
+   * two's-complement-minimum hazard. Java's own lexer solves it the same way: the magnitude is accepted only when
+   * directly preceded by a unary minus, with the sign folded in before conversion.
+   * <p>
+   * Ordinary literals (the bare magnitude already fits in a {@code long}) fall through untouched, so this only
+   * changes behaviour for the single value that used to fail to parse.
+   */
+  private BaseExpression tryFoldLongMinValueLiteral(final SQLParser.UnaryContext ctx) {
+    if (!(ctx.mathExpression() instanceof final SQLParser.BaseContext baseCtx))
+      return null;
+    if (!(baseCtx.baseExpression() instanceof final SQLParser.IntegerLiteralContext intCtx))
+      return null;
+
+    final String text = intCtx.INTEGER_LITERAL().getText();
+    for (int i = 0; i < text.length(); i++)
+      if (!Character.isDigit(text.charAt(i)))
+        return null; // has an L/l suffix, or is hex/octal: not the plain-decimal shape we fold here
+
+    try {
+      Long.parseLong(text);
+      return null; // magnitude fits on its own: let the existing 0 - X handling run as before
+    } catch (final NumberFormatException magnitudeOverflow) {
+      // only Long.MIN_VALUE's magnitude can still be represented once the sign is folded in;
+      // anything larger is a genuine overflow and keeps raising the original error
+      try {
+        final BaseExpression baseExpr = new BaseExpression(-1);
+        baseExpr.number = new PInteger(-1).setValue(Long.parseLong("-" + text));
+        return baseExpr;
+      } catch (final NumberFormatException stillInvalid) {
+        throw new CommandSQLParsingException("Invalid integer: " + text);
+      }
+    }
   }
 
   /**
