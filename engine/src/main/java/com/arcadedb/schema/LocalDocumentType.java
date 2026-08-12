@@ -205,7 +205,7 @@ public class LocalDocumentType implements DocumentType {
       for (Bucket bucket : buckets) {
         final String oldBucketName = bucket.getName();
 
-        ((LocalBucket) bucket).rename(newName);
+        ((LocalBucket) bucket).rename(LocalSchema.rebaseComponentName(oldBucketName, oldName, newName, schema.getEncoding()));
 
         removedBuckets.add(bucket);
 
@@ -232,8 +232,8 @@ public class LocalDocumentType implements DocumentType {
       for (Bucket bucket : removedBuckets) {
         try {
           final String newBucketName = bucket.getName();
-          final String oldBucketName = oldName + newBucketName.substring(newBucketName.lastIndexOf("_"));
-          ((LocalBucket) bucket).rename(oldBucketName);
+          ((LocalBucket) bucket).rename(
+              LocalSchema.rebaseComponentName(newBucketName, newName, oldName, schema.getEncoding()));
         } catch (IOException ex) {
           corrupted = true;
         }

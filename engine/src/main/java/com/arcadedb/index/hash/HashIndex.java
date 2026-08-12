@@ -41,6 +41,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
@@ -606,10 +607,13 @@ public class HashIndex implements IndexInternal {
 
   @Override
   public void updateTypeName(final String newTypeName) {
+    final String oldTypeName = metadata.typeName;
     metadata.typeName = newTypeName;
     if (bucket != null) {
       try {
-        bucket.getComponentFile().rename(newTypeName);
+        // Rename through the component so the component name and the FileManager map follow the file.
+        bucket.rename(LocalSchema.rebaseComponentName(bucket.getName(), oldTypeName, newTypeName,
+            getDatabase().getSchema().getEncoding()));
       } catch (final IOException e) {
         throw new IndexException("Error on renaming index file for hash index '" + name + "'", e);
       }

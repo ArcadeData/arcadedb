@@ -246,10 +246,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public void updateTypeName(final String newTypeName) {
+    final String oldTypeName = metadata.typeName;
     metadata.typeName = newTypeName;
     if (mutable != null) {
       try {
-        mutable.getComponentFile().rename(newTypeName);
+        // Rename through the component so the component name and the FileManager map follow the file.
+        mutable.rename(LocalSchema.rebaseComponentName(mutable.getName(), oldTypeName, newTypeName,
+            getDatabase().getSchema().getEncoding()));
       } catch (IOException e) {
         throw new SchemaException("Error on renaming index file for index '" + name + "'", e);
       }

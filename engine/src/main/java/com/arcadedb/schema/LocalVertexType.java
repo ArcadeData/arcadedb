@@ -53,16 +53,12 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       for (Bucket bucket : additionalBuckets) {
         final String oldBucketName = bucket.getName();
 
-        String newBucketName;
-        if (oldBucketName.endsWith(GraphEngine.OUT_EDGES_SUFFIX)) {
-          newBucketName = oldBucketName.substring(0, oldBucketName.length() - GraphEngine.OUT_EDGES_SUFFIX.length());
-        } else if (oldBucketName.endsWith(GraphEngine.IN_EDGES_SUFFIX)) {
-          newBucketName = oldBucketName.substring(0, oldBucketName.length() - GraphEngine.IN_EDGES_SUFFIX.length());
-        } else
+        if (!oldBucketName.endsWith(GraphEngine.OUT_EDGES_SUFFIX) && !oldBucketName.endsWith(GraphEngine.IN_EDGES_SUFFIX))
           throw new SchemaException(
               "Cannot rename bucket '" + oldBucketName + "' because it does not follow the naming convention");
 
-        newBucketName = newName + newBucketName.substring(newBucketName.lastIndexOf("_"));
+        // The bucket index and the edge marker both live in the suffix, which is carried over untouched.
+        final String newBucketName = LocalSchema.rebaseComponentName(oldBucketName, oldName, newName, schema.getEncoding());
 
         ((LocalBucket) bucket).rename(newBucketName);
 
@@ -79,8 +75,8 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       for (Bucket bucket : removedBuckets) {
         try {
           final String newBucketName = bucket.getName();
-          final String oldBucketName = oldName + newBucketName.substring(newBucketName.lastIndexOf("_"));
-          ((LocalBucket) bucket).rename(oldBucketName);
+          ((LocalBucket) bucket).rename(
+              LocalSchema.rebaseComponentName(newBucketName, newName, oldName, schema.getEncoding()));
         } catch (IOException ex) {
           corrupted = true;
         }

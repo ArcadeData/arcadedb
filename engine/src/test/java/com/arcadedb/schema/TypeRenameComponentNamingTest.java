@@ -1,0 +1,183 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.util.regex.Pattern;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Renaming a type re-derives the file name of every component it owns. That used to be done by guessing where
+ * the component name ended: the first '_' for the bucket suffix and the first '.' for the extension tail, plus a
+ * "does the new name look like a complete file name?" test of {@code contains(".") && contains("_")}. Each guess
+ * is wrong for a name that itself contains the character being searched for, so a type named {@code Und_Er} was
+ * renamed into a mangled file name and a type renamed to {@code na_me.dot} lost its
+ * {@code .fileId.pageSize.vVersion.ext} tail entirely, which makes the reopen scan skip the file as an unknown
+ * extension and silently drop the records.
+ * <p>
+ * The suffix is now taken from the component name the file parser already resolved, so these tests pin the
+ * naming for every combination of '_' and '.' on both sides of the rename.
+ */
+class TypeRenameComponentNamingTest extends TestHelper {
+
+  /** {@code <componentName>.<fileId>.<pageSize>.v<version>.<ext>} */
+  private static final Pattern COMPONENT_FILE = Pattern.compile("^.+\\.\\d+\\.\\d+\\.v\\d+\\.[A-Za-z_]+$");
+
+  @Test
+  void renameTypeWhoseNameContainsUnderscore() {
+    createVertexTypeWithRecords("Und_Er", 10);
+
+    database.getSchema().getType("Und_Er").rename("Other");
+
+    assertRenamed("Und_Er", "Other", 10);
+  }
+
+  @Test
+  void renameTypeToNameContainingDot() {
+    createVertexTypeWithRecords("Plain", 10);
+
+    database.getSchema().getType("Plain").rename("ren.amed");
+
+    assertRenamed("Plain", "ren.amed", 10);
+  }
+
+  @Test
+  void renameTypeToNameContainingBothDotAndUnderscore() {
+    createVertexTypeWithRecords("Src", 10);
+
+    database.getSchema().getType("Src").rename("na_me.dot");
+
+    assertRenamed("Src", "na_me.dot", 10);
+  }
+
+  @Test
+  void renameDottedTypeToAnotherDottedName() {
+    createVertexTypeWithRecords("acme.Customer", 10);
+
+    database.getSchema().getType("acme.Customer").rename("acme.crm.Client");
+
+    assertRenamed("acme.Customer", "acme.crm.Client", 10);
+  }
+
+  @Test
+  void renameVertexTypeWithEdgesPreservesEdgeBucketMarkers() {
+    database.getSchema().createVertexType("Us_er", 1);
+    database.getSchema().createVertexType("Question", 1);
+    database.getSchema().createEdgeType("POS_TED", 1);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++) {
+        final var user = database.newVertex("Us_er").set("name", "user" + i).save();
+        final var question = database.newVertex("Question").set("title", "q" + i).save();
+        user.newEdge("POS_TED", question, true, new Object[0]);
+      }
+    });
+
+    database.getSchema().getType("Us_er").rename("re.named");
+
+    // The out/in edge buckets belong to the vertex type and must keep their marker suffix.
+    final var edgeBuckets = database.getSchema().getType("re.named").getInvolvedBuckets().stream()
+        .map(b -> b.getName()).filter(n -> n.endsWith("_out_edges") || n.endsWith("_in_edges")).toList();
+    assertThat(edgeBuckets).hasSize(2);
+    assertThat(edgeBuckets).allSatisfy(n -> assertThat(n).startsWith("re.named_0_"));
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.countType("re.named", true)).isEqualTo(10L);
+    assertThat(database.countType("POS_TED", true)).isEqualTo(10L);
+    database.transaction(() -> assertThat(database.query("sql", "select expand(out('POS_TED')) from `re.named`").stream().count())
+        .isEqualTo(10L));
+  }
+
+  @Test
+  void renameTypeWithIndexKeepsIndexUsableAfterReopen() {
+    database.getSchema().createVertexType("In_Dexed", 1).createProperty("code", Type.STRING)
+        .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newVertex("In_Dexed").set("code", "c" + i).save();
+    });
+
+    database.getSchema().getType("In_Dexed").rename("idx.renamed");
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.countType("idx.renamed", true)).isEqualTo(10L);
+    database.transaction(() -> assertThat(
+        database.query("sql", "select from `idx.renamed` where code = 'c7'").stream().count()).isEqualTo(1L));
+  }
+
+  private void createVertexTypeWithRecords(final String typeName, final int records) {
+    database.getSchema().createVertexType(typeName, 1);
+    database.transaction(() -> {
+      for (int i = 0; i < records; i++)
+        database.newVertex(typeName).set("k", i).save();
+    });
+  }
+
+  private void assertRenamed(final String oldName, final String newName, final int records) {
+    assertThat(database.getSchema().existsType(oldName)).isFalse();
+    assertThat(database.getSchema().existsType(newName)).isTrue();
+    assertThat(database.countType(newName, true)).as("records right after rename").isEqualTo((long) records);
+
+    // The bucket keeps its index suffix and nothing else: a leaked fragment of the old name (e.g. "Other_Er_0"
+    // after renaming "Und_Er") is exactly the mangling this pins.
+    final var buckets = database.getSchema().getType(newName).getBuckets(false);
+    for (int i = 0; i < buckets.size(); i++)
+      assertThat(buckets.get(i).getName()).isEqualTo(newName + "_" + i);
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.getSchema().existsType(newName)).as("type survives reopen").isTrue();
+    assertThat(database.countType(newName, true)).as("records survive reopen").isEqualTo((long) records);
+  }
+
+  /**
+   * Every component file must still carry its {@code .fileId.pageSize.vVersion.ext} tail. A file that lost it is
+   * not reported as an error on reopen: the directory scan just does not recognise the extension and skips it, so
+   * without this check the data loss is invisible until a count comes back short.
+   */
+  private void assertComponentFileNamesAreWellFormed() {
+    final File[] files = new File(database.getDatabasePath()).listFiles();
+    assertThat(files).isNotNull();
+    for (final File f : files) {
+      final String name = f.getName();
+      // Database-level files, not components: configuration/schema/statistics json, last-tx-id.bin, txlog wal, lock.
+      if (name.endsWith(".json") || name.endsWith(".bin") || name.endsWith(".wal") || name.endsWith(".lck"))
+        continue;
+      assertThat(COMPONENT_FILE.matcher(name).matches())
+          .as("component file '%s' lost its '.fileId.pageSize.vVersion.ext' tail", name).isTrue();
+    }
+  }
+
+  private void reopen() {
+    final String databasePath = database.getDatabasePath();
+    database.close();
+    database = new DatabaseFactory(databasePath).open();
+  }
+}
