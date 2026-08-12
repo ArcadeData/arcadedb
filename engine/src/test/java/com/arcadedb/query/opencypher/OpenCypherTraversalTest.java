@@ -18,11 +18,13 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.traversal.BreadthFirstTraverser;
 import com.arcadedb.query.opencypher.traversal.DepthFirstTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -262,6 +264,62 @@ class OpenCypherTraversalTest {
       assertThat(path.containsVertex(charlie)).isTrue();
       assertThat(path.containsVertex(david)).isTrue();
     }
+  }
+
+  /**
+   * Regression for the lazy {@code DFSPathIterator} rewrite (#6097): exercises the
+   * {@code depth >= minHops && depth <= maxHops} emission boundary directly against the raw
+   * iterator, rather than through the full Cypher pipeline.
+   */
+  @Test
+  void depthFirstPathTraversalRespectsMinHopsBoundaryExactly() {
+    final DepthFirstTraverser traverser = new DepthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 2, 3, true, true);
+
+    final List<String> endNames = new ArrayList<>();
+    traverser.traversePaths(alice).forEachRemaining(p -> endNames.add((String) p.getEndVertex().get("name")));
+
+    // Bob (1 hop) is below minHops and must be excluded; Charlie (2) and David (3) are in range.
+    assertThat(endNames).containsExactlyInAnyOrder("Charlie", "David");
+  }
+
+  /** Same boundary check as above, for the lazy {@code BFSPathIterator} rewrite (#6097). */
+  @Test
+  void breadthFirstPathTraversalRespectsMinHopsBoundaryExactly() {
+    final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 2, 3, true, true);
+
+    final List<String> endNames = new ArrayList<>();
+    traverser.traversePaths(alice).forEachRemaining(p -> endNames.add((String) p.getEndVertex().get("name")));
+
+    assertThat(endNames).containsExactlyInAnyOrder("Charlie", "David");
+  }
+
+  /**
+   * Regression for the lazy {@code DFSPathIterator} rewrite (#6097), combining {@code minHops > 0}
+   * with {@link PathMode#ACYCLIC} on a graph with a cycle (X-&gt;Y-&gt;Z-&gt;X): ACYCLIC forbids
+   * revisiting a vertex already on the path, so the cycle can never close back through X, and only
+   * Z - not a second visit to X - should qualify once Y (1 hop, below minHops) is excluded.
+   */
+  @Test
+  void depthFirstPathTraversalAcyclicModeWithMinHopsBoundary() throws Exception {
+    TestHelper.executeInNewDatabase("opencypher-traversal-acyclic-minhops-6097", db -> {
+      db.getSchema().createVertexType("Node6097");
+      db.getSchema().createEdgeType("NEXT6097");
+
+      final MutableVertex x = db.newVertex("Node6097").set("name", "X").save();
+      final MutableVertex y = db.newVertex("Node6097").set("name", "Y").save();
+      final MutableVertex z = db.newVertex("Node6097").set("name", "Z").save();
+      x.newEdge("NEXT6097", y).save();
+      y.newEdge("NEXT6097", z).save();
+      z.newEdge("NEXT6097", x).save();
+
+      final DepthFirstTraverser traverser = new DepthFirstTraverser(Direction.OUT, new String[]{"NEXT6097"}, null, 2, 5, true,
+          PathMode.ACYCLIC);
+
+      final List<String> endNames = new ArrayList<>();
+      traverser.traversePaths(x).forEachRemaining(p -> endNames.add((String) p.getEndVertex().get("name")));
+
+      assertThat(endNames).containsExactly("Z");
+    });
   }
 
   /** See issue #3285 */

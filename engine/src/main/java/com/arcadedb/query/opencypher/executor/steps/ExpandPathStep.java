@@ -61,6 +61,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
   private final String targetVariable;
   private final RelationshipPattern pattern;
   private final NodePattern targetNodePattern;
+  // CypherExecutionPlan passes false (DFS) for every MATCH-driven instantiation: DFS's active
+  // stack is bounded by maxHops regardless of branching factor, while BFS's frontier queue is not
+  // (see #6097). Flipping this back to true reintroduces the original OOM risk.
   private final boolean useBFS;
   private final PathMode pathMode;
   private final Set<String> previousStepVariables;
