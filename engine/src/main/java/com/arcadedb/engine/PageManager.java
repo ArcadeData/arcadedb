@@ -50,6 +50,23 @@ import java.util.function.BiFunction;
 
 /**
  * Manages pages from disk to RAM. Each page can have different size.
+ * <p>
+ * <b>LOCK ORDER</b> for everything the point-in-time snapshot machinery of issue #6075 touches. It is stated here
+ * rather than spread across the methods because no single call site shows more than two of these locks, so a change
+ * to {@link #openSnapshot}, {@link FileManager#dropFile} or {@link FileManager#getOrCreateFile} could reintroduce a
+ * cycle with no local signal that it had:
+ * <ol>
+ * <li>the per-database snapshot BARRIER monitor ({@code snapshotBarrierLocks}), taken first and only by
+ * {@link #openSnapshot};</li>
+ * <li>{@link TransactionManager#getApplyLock()};</li>
+ * <li>this manager's own {@link com.arcadedb.utility.LockContext} lock;</li>
+ * <li>the {@link FileManager} monitor (through {@link FileManager#executeWithFileSetLocked});</li>
+ * <li>{@code snapshotRegistryLock}, always last.</li>
+ * </ol>
+ * {@link #openSnapshot} walks 1 to 5 in that order; {@link FileManager#dropFile} takes 4 then 5, which agrees. No
+ * path takes the FileManager monitor and then this manager's lock, and none takes the registry lock and then
+ * anything else - {@code PageSnapshot.close()} unregisters (5) and only then drops its retained files, holding
+ * nothing.
  */
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
@@ -374,12 +391,25 @@ public class PageManager extends LockContext {
           suspended = true;
           thread.waitForCurrentFlushToComplete(database);
 
-          if (!thread.hasPendingPagesOfDatabase(database) || attempt >= SNAPSHOT_BARRIER_ATTEMPTS)
+          if (!thread.hasPendingPagesOfDatabase(database))
+            // CLEAN: THE QUEUE DRAINED AND STAYED DRAINED ACROSS THE SUSPENSION, SO t0 IS A GENUINE, CURRENT
+            // TRANSACTION BOUNDARY
             break;
 
+          if (attempt >= SNAPSHOT_BARRIER_ATTEMPTS) {
+            // GAVE UP: SUSTAINED WRITE PRESSURE KEPT LANDING COMMITS BETWEEN THE DRAIN AND THE SUSPENSION. THE
+            // SNAPSHOT IS STILL CONSISTENT - IT IS TAKEN ON A BATCH BOUNDARY EITHER WAY - JUST AS SLIGHTLY BEHIND
+            // THE LAST COMMIT AS THE SUSPEND-AND-FREEZE PATH ALWAYS WAS. LOGGED BECAUSE "t0 IS A REAL TRANSACTION
+            // BOUNDARY" IS ONE OF THIS DESIGN'S CLAIMS, AND THE DEGRADED CASE MUST BE OBSERVABLE RATHER THAN ONLY
+            // INFERABLE FROM BEHAVIOUR
+            LogManager.instance().log(this, Level.WARNING,
+                "Snapshot of database '%s': the flush pipeline still had pending pages after %d barrier attempts, so the snapshot point may be slightly behind the last committed transaction. Sustained write pressure, not an error",
+                null, database.getName(), attempt);
+            break;
+          }
+
           // COMMITS LANDED BETWEEN THE DRAIN AND THE SUSPENSION. RELEASING THE SUSPENSION FLUSHES WHAT IT DEFERRED,
-          // SO THE RETRY STARTS FROM A CLEANER PIPELINE. AFTER THE LAST ATTEMPT WE PROCEED ANYWAY: THE RESULT IS
-          // STILL CONSISTENT, JUST AS SLIGHTLY BEHIND AS THE SUSPEND-AND-FREEZE PATH ALWAYS WAS
+          // SO THE RETRY STARTS FROM A CLEANER PIPELINE
           thread.setSuspended(database, false);
           suspended = false;
         }
