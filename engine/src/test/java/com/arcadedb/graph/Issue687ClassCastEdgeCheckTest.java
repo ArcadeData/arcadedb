@@ -35,9 +35,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * when a vertex adjacency-list entry points to a RID that resolves to a record which is NOT an edge:
  * {@code edgeRID.asEdge(true)} = {@code (Edge) lookupByRID(...)} throws {@link ClassCastException}.
  * <p>
- * This test reproduces that exact category (a vertex's IN list holds a pointer to a plain vertex) and
+ * This test reproduces that exact category (a vertex adjacency list holds a pointer to a plain vertex) and
  * documents what plain check vs. fix mode do with the *pointed-to* record, since the escalation asks
- * whether {@code CHECK DATABASE FIX} handles these safely.
+ * whether {@code CHECK DATABASE FIX} handles these safely. {@code checkIncomingEdges} (IN list) and
+ * {@code checkOutgoingEdges} (OUT list) carry separate, independently maintained copies of the same
+ * {@link ClassCastException} handler, so both directions are exercised here.
  */
 class Issue687ClassCastEdgeCheckTest extends TestHelper {
   private static final String VERTEX_TYPE = "Node";
@@ -104,6 +106,51 @@ class Issue687ClassCastEdgeCheckTest extends TestHelper {
     assertThat((Long) verify.get("totalWarnings")).as("database must be clean after FIX").isEqualTo(0L);
   }
 
+  /**
+   * {@code checkOutgoingEdges} carries its own copy of the {@code ClassCastException} handler (a separate
+   * catch block, mirroring {@code checkIncomingEdges}). Same corruption shape, OUT list this time: nothing
+   * here proves the OUT-side handler behaves the same as the IN-side one already covered above.
+   */
+  @Test
+  void classCastOnOutgoingEdgeLoadIsReportedAndReadOnly() {
+    final int degree = 20;
+    final RID hubRid = createHubWithOutgoingEdges(degree);
+    final RID bystander = injectClassCastEntryOnOutList(hubRid);
+
+    final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database).checkVertices(VERTEX_TYPE, false, 0);
+
+    @SuppressWarnings("unchecked")
+    final Collection<String> warnings = (Collection<String>) stats.get("warnings");
+    assertThat(warnings).anyMatch(w -> w.contains(bystander.toString()) && w.contains("error on loading"));
+    assertThat(warnings).anyMatch(w -> w.contains(bystander.toString()) && w.toLowerCase().contains("cast"));
+
+    @SuppressWarnings("unchecked")
+    final Collection<RID> corrupted = (Collection<RID>) stats.get("corruptedRecords");
+    assertThat(corrupted).doesNotContain(bystander);
+    assertThat((Long) stats.get("invalidLinks")).isGreaterThanOrEqualTo(1L);
+
+    database.transaction(() -> assertThat(bystander.asVertex(true)).isNotNull());
+  }
+
+  /**
+   * Same FIX-mode guarantee as {@link #classCastOnEdgeLoadFixBehavior()}, exercised through the OUT-list
+   * handler instead of the IN-list one.
+   */
+  @Test
+  void classCastOnOutgoingEdgeLoadFixBehavior() {
+    final int degree = 20;
+    final RID hubRid = createHubWithOutgoingEdges(degree);
+    final RID bystander = injectClassCastEntryOnOutList(hubRid);
+
+    new GraphDatabaseChecker((DatabaseInternal) database).checkVertices(VERTEX_TYPE, true, 0);
+
+    assertThat(existsAsVertex(bystander)).as("FIX must not delete the non-edge record the bad entry pointed at").isTrue();
+    assertThat(countOutEdges(hubRid)).as("real edges must be preserved by FIX").isEqualTo(degree);
+
+    final Map<String, Object> verify = new GraphDatabaseChecker((DatabaseInternal) database).checkVertices(VERTEX_TYPE, false, 0);
+    assertThat((Long) verify.get("totalWarnings")).as("database must be clean after FIX").isEqualTo(0L);
+  }
+
   /** Injects one corrupt IN-list entry on the hub: edgeRID = a plain vertex (not an edge). Returns that vertex RID. */
   private RID injectClassCastEntry(final RID hubRid) {
     final RID[] bystander = new RID[1];
@@ -115,6 +162,21 @@ class Issue687ClassCastEdgeCheckTest extends TestHelper {
       // Second field is the connected (outgoing) vertex of an IN entry; asEdge on the first field fails first.
       ((DatabaseInternal) database).getGraphEngine()
           .getOrCreateEdgeList(hub, Vertex.DIRECTION.IN)
+          .add(bystander[0], hub.getIdentity());
+    });
+    return bystander[0];
+  }
+
+  /** Same injection as {@link #injectClassCastEntry(RID)}, but into the hub's OUT list. */
+  private RID injectClassCastEntryOnOutList(final RID hubRid) {
+    final RID[] bystander = new RID[1];
+    database.transaction(() -> {
+      bystander[0] = database.newVertex(VERTEX_TYPE).set("role", "bystander").save().getIdentity();
+
+      final VertexInternal hub = (VertexInternal) hubRid.asVertex(true);
+      // Second field is the connected (incoming) vertex of an OUT entry; asEdge on the first field fails first.
+      ((DatabaseInternal) database).getGraphEngine()
+          .getOrCreateEdgeList(hub, Vertex.DIRECTION.OUT)
           .add(bystander[0], hub.getIdentity());
     });
     return bystander[0];
@@ -139,6 +201,12 @@ class Issue687ClassCastEdgeCheckTest extends TestHelper {
     return count[0];
   }
 
+  private long countOutEdges(final RID hubRid) {
+    final long[] count = new long[1];
+    database.transaction(() -> count[0] = hubRid.asVertex(true).countEdges(Vertex.DIRECTION.OUT, EDGE_TYPE));
+    return count[0];
+  }
+
   /** Creates the hub plus {@code degree} sources, each with one edge source -> hub (hub's IN list). */
   private RID createHub(final int degree) {
     database.transaction(() -> {
@@ -152,6 +220,24 @@ class Issue687ClassCastEdgeCheckTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < degree; i++)
         database.newVertex(VERTEX_TYPE).set("i", i).save().newEdge(EDGE_TYPE, hub[0]);
+    });
+    return hub[0];
+  }
+
+  /** Creates the hub plus {@code degree} targets, each with one edge hub -> target (hub's OUT list). */
+  private RID createHubWithOutgoingEdges(final int degree) {
+    database.transaction(() -> {
+      database.getSchema().createVertexType(VERTEX_TYPE, 1);
+      database.getSchema().createEdgeType(EDGE_TYPE, 1);
+    });
+
+    final RID[] hub = new RID[1];
+    database.transaction(() -> hub[0] = database.newVertex(VERTEX_TYPE).set("name", "hub").save().getIdentity());
+
+    database.transaction(() -> {
+      final Vertex hubVertex = hub[0].asVertex(true);
+      for (int i = 0; i < degree; i++)
+        hubVertex.newEdge(EDGE_TYPE, database.newVertex(VERTEX_TYPE).set("i", i).save());
     });
     return hub[0];
   }
