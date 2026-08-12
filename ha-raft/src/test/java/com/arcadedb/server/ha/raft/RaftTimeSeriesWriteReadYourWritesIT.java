@@ -109,6 +109,68 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * Regression test for the fourth review round's coverage gap: the PR body's own stated motivation is that
+   * a partial-write 400 still needs a usable bookmark, since {@code TimeSeriesEngine.appendBatch} commits
+   * each measurement's shard transaction independently - a later measurement being dropped as unknown
+   * doesn't undo an earlier one that already landed. This drives that exact scenario end-to-end: one valid
+   * measurement plus one unknown measurement in the same request (matching the non-HA
+   * {@code PostTimeSeriesWriteHandlerIT#partialWriteReportsDroppedMeasurements} semantics), asserts the 400
+   * response still carries the bookmark, and that the bookmark is usable to read the surviving sample back
+   * from a follower.
+   */
+  @Test
+  void lineProtocolPartialWrite400EmitsUsableCommitIndexBookmark() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final int followerIndex = leaderIndex == 0 ? 1 : 0;
+    final int leaderPort = 2480 + leaderIndex;
+    final int followerPort = 2480 + followerIndex;
+    final String dbName = getDatabaseName();
+    final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+    final String tsType = "RywPartialWriteWeather";
+
+    try (final RemoteDatabase setup = new RemoteDatabase("127.0.0.1", leaderPort, dbName, "root", password)) {
+      setup.command("sql",
+          "CREATE TIMESERIES TYPE " + tsType + " TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE)");
+    }
+
+    // One valid measurement (tsType) plus one unknown measurement: the handler inserts the valid sample,
+    // then reports 400 naming the dropped one (issue #5036 semantics) - a partial write, not a full rollback.
+    final String lineProtocol = tsType + ",location=us-east temperature=22.5 1000\n"
+        + "ryw_unknown_measurement,location=us value=1.0 2000\n";
+    final HttpURLConnection connection = openLineProtocolConnection(leaderPort, password);
+    try (final OutputStream os = connection.getOutputStream()) {
+      os.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
+      os.flush();
+    }
+    assertThat(connection.getResponseCode())
+        .as("The unknown measurement must still produce a partial-write 400 (issue #5036)")
+        .isEqualTo(400);
+
+    final String bookmarkHeader = connection.getHeaderField("X-ArcadeDB-Commit-Index");
+    assertThat(bookmarkHeader)
+        .as("A partial-write 400 must still carry the bookmark for the measurement that did commit (issue #5866)")
+        .isNotNull();
+    final long writerIndex = Long.parseLong(bookmarkHeader);
+    assertThat(writerIndex).isGreaterThanOrEqualTo(0);
+
+    try (final RemoteDatabase reader = new RemoteDatabase("127.0.0.1", followerPort, dbName, "root", password)) {
+      reader.setReadConsistency(ReadConsistency.READ_YOUR_WRITES);
+
+      final var updateMethod = RemoteDatabase.class.getDeclaredMethod("updateLastCommitIndex", long.class);
+      updateMethod.setAccessible(true);
+      updateMethod.invoke(reader, writerIndex);
+
+      final ResultSet rs = reader.query("sql", "SELECT FROM " + tsType);
+      assertThat(rs.stream().count())
+          .as("Follower must see the sample that DID commit despite the request's overall 400, using "
+              + "READ_YOUR_WRITES with the partial-write response's bookmark")
+          .isEqualTo(1);
+    }
+  }
+
   @Test
   void prometheusRemoteWriteEmitsCommitIndexBookmarkUsableOnFollower() throws Exception {
     final int leaderIndex = findLeaderIndex();
