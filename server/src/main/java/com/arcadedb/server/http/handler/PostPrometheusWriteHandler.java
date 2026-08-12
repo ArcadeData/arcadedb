@@ -70,13 +70,16 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
     checkAuthorizationOnDatabase(user, databaseParam.getFirst());
 
-    // These two checks stay ahead of resolving `database` on purpose: httpServer.getServer().getDatabase(...,
-    // allowLoad=false) throws DatabaseOperationException (a plain RuntimeException, not one of the specific
-    // arms AbstractServerHttpHandler.handleRequest's catch chain recognizes) when the database is absent or
-    // closed, which falls through to a 500 instead of a 400. Resolving `database` before these would turn a
-    // bad-database-name-plus-empty/corrupt-body request into a 500 - a regression an earlier revision of this
-    // fix introduced and review caught. Neither check needs the database, so they keep running first exactly
-    // as they did before this PR.
+    // These checks - and the writeRequest.getTimeSeries().isEmpty() short-circuit below - stay ahead of
+    // resolving `database` on purpose: httpServer.getServer().getDatabase(..., allowLoad=false) throws
+    // DatabaseOperationException (a plain RuntimeException, not one of the specific arms
+    // AbstractServerHttpHandler.handleRequest's catch chain recognizes) when the database is absent or
+    // closed, which falls through to a 500 instead of a 400/204. An earlier revision of this fix moved
+    // `database` resolution ahead of the isEmpty() check so that response could also carry the bookmark;
+    // review caught that this turns ANY request against a nonexistent database - even a well-formed one
+    // that resolves to zero series - into a 500. None of these checks need the database, and a
+    // zero-series write has nothing to bookmark, so this keeps the pre-#5866 ordering: `database` is
+    // resolved only once there is an actual write to make.
     if (rawBytes == null || rawBytes.length == 0)
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
@@ -90,19 +93,16 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
 
     // Decode protobuf WriteRequest
     final WriteRequest writeRequest = WriteRequest.decode(decompressed);
+    if (writeRequest.getTimeSeries().isEmpty())
+      return new ExecutionResponse(204, "");
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
-    // Resolved as soon as the database is known - and before the empty-write-request short-circuit below -
-    // so that response also carries the bookmark, matching PostTimeSeriesWriteHandler's behavior. The
-    // finally also covers a partial-write error: TimeSeriesShard.appendSamples commits its own shard
-    // transaction per series, so a series already appended before a later one throws is durable regardless
-    // of how this request rolls back (issue #5866).
+    // Resolved once so the bookmark can be emitted in the finally below even on a partial-write error:
+    // TimeSeriesShard.appendSamples commits its own shard transaction per series, so a series already
+    // appended before a later one throws is durable regardless of how this request rolls back (issue #5866).
     final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
     try {
-      if (writeRequest.getTimeSeries().isEmpty())
-        return new ExecutionResponse(204, "");
-
       // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
       // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
       // shard writes by the time it returns. If a later series throws, the rollback here cannot undo the

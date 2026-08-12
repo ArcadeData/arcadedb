@@ -159,51 +159,49 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
   }
 
   /**
-   * Regression test for the second review round on this issue: the fix's first revision resolved
-   * {@code writeRequest.getTimeSeries().isEmpty()}'s 204 short-circuit response's bookmark by moving the
-   * database resolution ahead of the request-body/Snappy validation checks - which turned a
-   * nonexistent-database-plus-bad-body request into a 500 instead of 400, since
-   * {@code AbstractServerHttpHandler.handleRequest}'s catch chain has no arm for
-   * {@code DatabaseOperationException}. The final fix keeps those checks first and resolves the database
-   * only once the payload is known to decode, so this asserts both halves: the empty-write-request 204 now
-   * carries the bookmark, and a bad database name still surfaces as 400, not 500.
+   * Regression test for the second and third review rounds on this issue. Two earlier revisions of the fix
+   * each moved {@code database} resolution further ahead - first past the request-body/Snappy checks, then
+   * past those but still ahead of the {@code writeRequest.getTimeSeries().isEmpty()} short-circuit - trying
+   * to give that 204 a bookmark too. Both times, {@code httpServer.getServer().getDatabase(..., allowLoad=
+   * false)} throwing {@code DatabaseOperationException} for an absent/closed database turned some
+   * nonexistent-database request into a 500 instead of its pre-#5866 status, since
+   * {@code AbstractServerHttpHandler.handleRequest}'s catch chain has no arm for that exception. The final
+   * fix backs off the "isEmpty() 204 also gets a bookmark" attempt entirely and resolves {@code database}
+   * only once there is an actual write to make - matching the ordering PostPrometheusWriteHandler had before
+   * this PR - so a nonexistent database never reaches {@code getDatabase()} on either the truly-empty-body
+   * path or the well-formed-but-zero-series path.
    */
   @Test
-  void prometheusEmptyWriteRequestStillEmitsBookmarkAndBadDatabaseStays400() throws Exception {
+  void prometheusNonexistentDatabaseNeverSurfacesA500() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int leaderPort = 2480 + leaderIndex;
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+    final String bogusDb = "this_database_does_not_exist";
 
-    // Seed a committed index so the leader's lastAppliedIndex is >= 0 (emitCommitIndexBookmark is a no-op
-    // below that).
-    try (final RemoteDatabase setup = new RemoteDatabase("127.0.0.1", leaderPort, getDatabaseName(), "root", password)) {
-      setup.command("sql", "CREATE DOCUMENT TYPE PromEmptyWriteSeed");
-    }
-
-    // An empty WriteRequest (no time series) against the real database: the handler's isEmpty() short-circuit
-    // must still resolve the database first and carry the bookmark on its 204.
-    final byte[] emptyCompressed = Snappy.compress(new WriteRequest(List.of()).encode());
-    final HttpURLConnection emptyConnection = openPrometheusWriteConnection(leaderPort, password);
-    try (final OutputStream os = emptyConnection.getOutputStream()) {
-      os.write(emptyCompressed);
-      os.flush();
-    }
-    assertThat(emptyConnection.getResponseCode()).isEqualTo(204);
-    assertThat(emptyConnection.getHeaderField("X-ArcadeDB-Commit-Index"))
-        .as("The empty-write-request 204 must carry the bookmark too, not just the write-with-data path")
-        .isNotNull();
-
-    // A nonexistent database combined with an empty body must still surface as 400 - not the 500 that a
-    // premature getDatabase() resolution would produce (issue #5866, second review round).
-    final HttpURLConnection badDbEmptyBodyConnection = openPrometheusWriteConnectionForDatabase(leaderPort, password,
-        "this_database_does_not_exist");
+    // A nonexistent database combined with an empty body must stay 400 - not the 500 a premature
+    // getDatabase() resolution ahead of the rawBytes-empty check would produce.
+    final HttpURLConnection badDbEmptyBodyConnection = openPrometheusWriteConnectionForDatabase(leaderPort, password, bogusDb);
     try (final OutputStream os = badDbEmptyBodyConnection.getOutputStream()) {
       os.flush();
     }
     assertThat(badDbEmptyBodyConnection.getResponseCode())
         .as("A nonexistent database plus an empty body must stay 400, not fall through to a 500")
         .isEqualTo(400);
+
+    // The exact case the third review round flagged: a well-formed, Snappy-compressed, protobuf-decodable
+    // WriteRequest with zero time series, against a nonexistent database. This must NOT surface as 500 -
+    // not the 500 a getDatabase() resolution ahead of the isEmpty() check would produce.
+    final byte[] emptyCompressed = Snappy.compress(new WriteRequest(List.of()).encode());
+    final HttpURLConnection badDbEmptyWriteRequestConnection =
+        openPrometheusWriteConnectionForDatabase(leaderPort, password, bogusDb);
+    try (final OutputStream os = badDbEmptyWriteRequestConnection.getOutputStream()) {
+      os.write(emptyCompressed);
+      os.flush();
+    }
+    assertThat(badDbEmptyWriteRequestConnection.getResponseCode())
+        .as("A nonexistent database plus a well-formed but zero-series WriteRequest must not surface as 500")
+        .isNotEqualTo(500);
   }
 
   private HttpURLConnection openLineProtocolConnection(final int port, final String password) throws Exception {
