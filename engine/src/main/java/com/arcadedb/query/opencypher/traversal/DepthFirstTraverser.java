@@ -27,7 +27,10 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.utility.RidHashSet;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -127,53 +130,73 @@ public class DepthFirstTraverser extends GraphTraverser {
 
   /**
    * Iterator for DFS path traversal.
+   * <p>
+   * Genuinely lazy: expands one branch at a time via an explicit stack instead of recursing to
+   * completion and collecting every matching path into a list up front. A path is emitted the
+   * moment it is discovered (pre-order), and only the current root-to-frontier chain - at most
+   * {@code maxHops} frames - is ever on the stack, regardless of how many distinct paths the
+   * pattern has in total. (Each frame's {@link TraversalPath} still copies its parent's vertex/edge
+   * arrays, so per-frame size grows with depth: active memory is bounded by {@code maxHops} frames
+   * of up to {@code maxHops} elements each - {@code O(maxHops^2)} in the worst case, not a flat
+   * {@code O(maxHops)} - but that is no longer combinatorial in the branching factor, which is what
+   * made eager enumeration unbounded.) Recursive eager enumeration used to hold every matching path
+   * simultaneously, which grows combinatorially with the branching factor (see #6097).
    */
   private class DFSPathIterator implements Iterator<TraversalPath> {
-    private final List<TraversalPath> results = new ArrayList<>();
-    private int currentIndex = 0;
+    private final Deque<Frame> stack = new ArrayDeque<>();
+    private TraversalPath nextResult;
 
     DFSPathIterator(final Vertex startVertex) {
-      final TraversalPath initialPath = new TraversalPath(startVertex);
-      performDFS(initialPath, 0);
+      stack.push(new Frame(new TraversalPath(startVertex), 0));
+      advance();
     }
 
-    private void performDFS(final TraversalPath path, final int depth) {
-      final Vertex vertex = path.getEndVertex();
+    /**
+     * Advances the stack until the next path in [minHops, maxHops] is found (pre-order), or the
+     * stack is exhausted. Each frame is visited once for emission (when its edge iterator is
+     * first created) and then revisited only to pull its next unexplored edge.
+     */
+    private void advance() {
+      nextResult = null;
+      while (!stack.isEmpty()) {
+        final Frame frame = stack.peek();
 
-      // Add to results if depth is within bounds
-      if (depth >= minHops && depth <= maxHops)
-        results.add(path);
+        if (frame.edges == null) {
+          frame.edges = frame.depth < maxHops ? getEdges(frame.path.getEndVertex()).iterator() : Collections.emptyIterator();
+          if (frame.depth >= minHops && frame.depth <= maxHops) {
+            nextResult = frame.path;
+            return;
+          }
+        }
 
-      // Stop if we've reached max depth
-      if (depth >= maxHops)
-        return;
+        if (frame.edges.hasNext()) {
+          final Edge edge = frame.edges.next();
+          try {
+            if (!matchesTypeFilter(edge))
+              continue;
 
-      // Recursively explore neighbors
-      for (final Edge edge : getEdges(vertex)) {
-        try {
-          if (!matchesTypeFilter(edge))
-            continue;
+            if (!matchesPropertyFilter(edge))
+              continue;
 
-          if (!matchesPropertyFilter(edge))
-            continue;
+            if (!matchesEdgePredicate(edge))
+              continue;
 
-          if (!matchesEdgePredicate(edge))
-            continue;
+            // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
+            if (pathMode != PathMode.WALK && pathContainsEdge(frame.path, edge))
+              continue;
 
-          // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
-          if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
-            continue;
+            final Vertex nextVertex = getOtherVertex(edge, frame.path.getEndVertex());
 
-          final Vertex nextVertex = getOtherVertex(edge, vertex);
+            // ACYCLIC: also enforce vertex uniqueness
+            if (pathMode == PathMode.ACYCLIC && frame.path.containsVertex(nextVertex))
+              continue;
 
-          // ACYCLIC: also enforce vertex uniqueness
-          if (pathMode == PathMode.ACYCLIC && path.containsVertex(nextVertex))
-            continue;
-
-          final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
-          performDFS(newPath, depth + 1);
-        } catch (final RecordNotFoundException e) {
-          GhostEdgeReporter.reportSkipped(e);
+            stack.push(new Frame(new TraversalPath(frame.path, edge, nextVertex), frame.depth + 1));
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
+          }
+        } else {
+          stack.pop();
         }
       }
     }
@@ -188,7 +211,7 @@ public class DepthFirstTraverser extends GraphTraverser {
 
     @Override
     public boolean hasNext() {
-      return currentIndex < results.size();
+      return nextResult != null;
     }
 
     @Override
@@ -196,7 +219,24 @@ public class DepthFirstTraverser extends GraphTraverser {
       if (!hasNext()) {
         throw new NoSuchElementException();
       }
-      return results.get(currentIndex++);
+      final TraversalPath result = nextResult;
+      advance();
+      return result;
+    }
+  }
+
+  /**
+   * One in-progress node in the DFS stack: the path reaching it, its depth, and a lazily-created
+   * iterator over its outgoing edges that resumes exactly where the last visit left off.
+   */
+  private static final class Frame {
+    final TraversalPath path;
+    final int           depth;
+    Iterator<Edge>       edges;
+
+    Frame(final TraversalPath path, final int depth) {
+      this.path = path;
+      this.depth = depth;
     }
   }
 }

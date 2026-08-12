@@ -1957,8 +1957,13 @@ public class CypherExecutionPlan {
 
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
+            // DFS, not BFS: DFS's active stack is bounded by maxHops regardless of branching
+            // factor, while BFS's frontier queue must hold an entire level's children before it
+            // can dequeue the first one - level-order expansion via a single FIFO queue offers no
+            // way around that. A MATCH's result order is unspecified without ORDER BY, so this is
+            // a pure implementation-strategy change, not a semantic one (#6097).
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
-                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, boundVariables),
+                false, effectiveTargetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, boundVariables),
                 directionOverride, reversed, context);
           } else {
             // Check if this hop requires IN traversal on a unidirectional edge.
@@ -2546,7 +2551,8 @@ public class CypherExecutionPlan {
                 if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
                   // filtering. Snapshot previously bound variables for relationship-uniqueness scoping.
-                  nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
+                  // DFS, not BFS: see the matching comment in the optimizer plan builder above (#6097).
+                  nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, false,
                       targetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, legacyBoundVariables), context);
                 } else {
                   // Fixed-length relationship - pass path variable, target node pattern, and bound variables

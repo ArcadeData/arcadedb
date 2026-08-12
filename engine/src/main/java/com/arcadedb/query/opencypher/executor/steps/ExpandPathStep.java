@@ -61,6 +61,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
   private final String targetVariable;
   private final RelationshipPattern pattern;
   private final NodePattern targetNodePattern;
+  // CypherExecutionPlan passes false (DFS) for every MATCH-driven instantiation: DFS's active
+  // stack is bounded by maxHops regardless of branching factor, while BFS's frontier queue is not
+  // (see #6097). Flipping this back to true reintroduces the original OOM risk.
   private final boolean useBFS;
   private final PathMode pathMode;
   private final Set<String> previousStepVariables;
@@ -80,7 +83,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
    * @param relationshipVariable variable name for the relationship list (can be null)
    * @param targetVariable       variable name for target vertex
    * @param pattern              relationship pattern with variable-length specification
-   * @param useBFS               true for BFS (shortest paths), false for DFS (all paths)
+   * @param useBFS               true for BFS (level-order; frontier grows with branching factor), false for DFS (default for MATCH: bounded stack, no combinatorial blow-up - see #6097)
    * @param context              command context
    */
   public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
@@ -105,7 +108,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
    * @param relationshipVariable  variable name for the relationship list (can be null)
    * @param targetVariable        variable name for target vertex
    * @param pattern               relationship pattern with variable-length specification
-   * @param useBFS                true for BFS (shortest paths), false for DFS (all paths)
+   * @param useBFS                true for BFS (level-order; frontier grows with branching factor), false for DFS (default for MATCH: bounded stack, no combinatorial blow-up - see #6097)
    * @param targetNodePattern     target node pattern for label/property filtering
    * @param pathMode              path mode override (DIFFERENT_RELATIONSHIPS, etc.)
    * @param previousStepVariables snapshot of variables bound by previous MATCH clauses (or WITH); these

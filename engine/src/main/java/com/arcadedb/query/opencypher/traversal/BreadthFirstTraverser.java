@@ -140,63 +140,70 @@ public class BreadthFirstTraverser extends GraphTraverser {
 
   /**
    * Iterator for BFS path traversal.
+   * <p>
+   * Lazy: each call to {@code next()} advances the frontier queue only as far as needed to
+   * produce one more result, instead of running the whole traversal to completion up front and
+   * collecting every matching path into a list before the first row is available (#6097). Note
+   * this still does not bound peak memory for a uniformly-branching pattern: level-order
+   * expansion via a single FIFO queue necessarily enqueues an entire level's children before the
+   * first child can be dequeued, so the queue itself can grow as large as the widest level. DFS
+   * (see {@link DepthFirstTraverser}) is the traversal that gives a real, branching-independent
+   * memory bound and is what {@code ExpandPathStep} now defaults to; this laziness mainly avoids
+   * doubling up on storage (queue and results list) and lets a downstream LIMIT stop a
+   * BFS-ordered (shortest-first) traversal early.
    */
   private class BFSPathIterator implements Iterator<TraversalPath> {
     private final Queue<PathWithDepth> queue = new LinkedList<>();
-    private final List<TraversalPath> results = new ArrayList<>();
-    private int currentIndex = 0;
+    private TraversalPath nextResult;
 
     BFSPathIterator(final Vertex startVertex) {
-      final TraversalPath initialPath = new TraversalPath(startVertex);
-      queue.add(new PathWithDepth(initialPath, 0));
-
-      // Perform full BFS traversal
-      performTraversal();
+      queue.add(new PathWithDepth(new TraversalPath(startVertex), 0));
+      advance();
     }
 
-    private void performTraversal() {
+    private void advance() {
+      nextResult = null;
       while (!queue.isEmpty()) {
         final PathWithDepth current = queue.poll();
         final TraversalPath path = current.path;
         final int depth = current.depth;
         final Vertex vertex = path.getEndVertex();
 
-        // Add to results if depth is within bounds
-        if (depth >= minHops && depth <= maxHops) {
-          results.add(path);
+        // Expand to neighbors, unless we've reached max depth
+        if (depth < maxHops) {
+          for (final Edge edge : getEdges(vertex)) {
+            try {
+              if (!matchesTypeFilter(edge))
+                continue;
+
+              if (!matchesPropertyFilter(edge))
+                continue;
+
+              if (!matchesEdgePredicate(edge))
+                continue;
+
+              // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
+              if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
+                continue;
+
+              final Vertex nextVertex = getOtherVertex(edge, vertex);
+
+              // ACYCLIC: also enforce vertex uniqueness
+              if (pathMode == PathMode.ACYCLIC && path.containsVertex(nextVertex))
+                continue;
+
+              final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
+              queue.add(new PathWithDepth(newPath, depth + 1));
+            } catch (final RecordNotFoundException e) {
+              GhostEdgeReporter.reportSkipped(e);
+            }
+          }
         }
 
-        // Stop expanding if we've reached max depth
-        if (depth >= maxHops)
-          continue;
-
-        // Expand to neighbors
-        for (final Edge edge : getEdges(vertex)) {
-          try {
-            if (!matchesTypeFilter(edge))
-              continue;
-
-            if (!matchesPropertyFilter(edge))
-              continue;
-
-            if (!matchesEdgePredicate(edge))
-              continue;
-
-            // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
-            if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
-              continue;
-
-            final Vertex nextVertex = getOtherVertex(edge, vertex);
-
-            // ACYCLIC: also enforce vertex uniqueness
-            if (pathMode == PathMode.ACYCLIC && path.containsVertex(nextVertex))
-              continue;
-
-            final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
-            queue.add(new PathWithDepth(newPath, depth + 1));
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
+        // Emit this path if its depth is within bounds
+        if (depth >= minHops && depth <= maxHops) {
+          nextResult = path;
+          return;
         }
       }
     }
@@ -214,7 +221,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
 
     @Override
     public boolean hasNext() {
-      return currentIndex < results.size();
+      return nextResult != null;
     }
 
     @Override
@@ -222,7 +229,9 @@ public class BreadthFirstTraverser extends GraphTraverser {
       if (!hasNext()) {
         throw new NoSuchElementException();
       }
-      return results.get(currentIndex++);
+      final TraversalPath result = nextResult;
+      advance();
+      return result;
     }
   }
 
