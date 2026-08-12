@@ -19,9 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -30,7 +28,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -44,27 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class PostgresBindParamBoundIT extends BaseGraphServerTest {
-
-  @Override
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("Postgres:com.arcadedb.postgres.PostgresProtocolPlugin");
-    GlobalConfiguration.POSTGRES_DEBUG.setValue("false");
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    GlobalConfiguration.POSTGRES_DEBUG.setValue("false");
-    super.endTest();
-  }
-
-  @Override
-  protected String getDatabaseName() {
-    return "postgresdb";
-  }
+class PostgresBindParamBoundIT extends PostgresWireProtocolTestBase {
 
   @Test
   @DisplayName("[#5894] Oversized Bind parameter length is rejected before allocation, with a graceful error instead of an OOM'd thread")
@@ -121,30 +98,6 @@ class PostgresBindParamBoundIT extends BaseGraphServerTest {
     });
   }
 
-  private static void sendStartupMessage(final DataOutputStream out, final String user, final String database) throws Exception {
-    final ByteArrayOutputStream body = new ByteArrayOutputStream();
-    writeCString(body, "user");
-    writeCString(body, user);
-    writeCString(body, "database");
-    writeCString(body, database);
-    body.write(0);
-
-    final byte[] bodyBytes = body.toByteArray();
-    out.writeInt(4 + 4 + bodyBytes.length);
-    out.writeInt(196608); // protocol version 3.0
-    out.write(bodyBytes);
-    out.flush();
-  }
-
-  private static void sendPasswordMessage(final DataOutputStream out, final String password) throws Exception {
-    final byte[] pwBytes = password.getBytes(StandardCharsets.UTF_8);
-    out.writeByte('p');
-    out.writeInt(4 + pwBytes.length + 1);
-    out.write(pwBytes);
-    out.writeByte(0);
-    out.flush();
-  }
-
   private static void sendParse(final DataOutputStream out, final String query) throws Exception {
     final ByteArrayOutputStream body = new ByteArrayOutputStream();
     writeCString(body, ""); // unnamed statement
@@ -182,33 +135,5 @@ class PostgresBindParamBoundIT extends BaseGraphServerTest {
     out.writeInt(4 + bodyBytes.length);
     out.write(bodyBytes);
     out.flush();
-  }
-
-  private static void writeCString(final ByteArrayOutputStream out, final String s) {
-    out.writeBytes(s.getBytes(StandardCharsets.UTF_8));
-    out.write(0);
-  }
-
-  private static void readMessage(final DataInputStream in) throws Exception {
-    final int type = in.readUnsignedByte();
-    final int length = in.readInt();
-    in.skipNBytes(length - 4);
-  }
-
-  private static void readMessageOfType(final DataInputStream in, final char expectedType) throws Exception {
-    while (true) {
-      final int type = in.readUnsignedByte();
-      final int length = in.readInt();
-      in.skipNBytes(length - 4);
-      if (type == expectedType)
-        return;
-    }
-  }
-
-  private static int readMessageType(final DataInputStream in) throws Exception {
-    final int type = in.readUnsignedByte();
-    final int length = in.readInt();
-    in.skipNBytes(length - 4);
-    return type;
   }
 }

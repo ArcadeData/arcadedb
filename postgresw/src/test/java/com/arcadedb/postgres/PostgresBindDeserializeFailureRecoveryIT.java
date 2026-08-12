@@ -19,9 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -51,31 +49,11 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class PostgresBindDeserializeFailureRecoveryIT extends BaseGraphServerTest {
+class PostgresBindDeserializeFailureRecoveryIT extends PostgresWireProtocolTestBase {
 
   // Deliberately not a real PostgreSQL OID (all built-in type codes are well under 10000): guarantees
   // PostgresType.deserialize() throws "Type with code ... not supported for deserializing".
   private static final int UNSUPPORTED_TYPE_OID = 999999;
-
-  @Override
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("Postgres:com.arcadedb.postgres.PostgresProtocolPlugin");
-    GlobalConfiguration.POSTGRES_DEBUG.setValue("false");
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    GlobalConfiguration.POSTGRES_DEBUG.setValue("false");
-    super.endTest();
-  }
-
-  @Override
-  protected String getDatabaseName() {
-    return "postgresdb";
-  }
 
   @Test
   @DisplayName("[#5923] A Bind parameter that fails deserialization leaves the channel aligned for the next message")
@@ -122,30 +100,6 @@ class PostgresBindDeserializeFailureRecoveryIT extends BaseGraphServerTest {
         readMessageOfType(in, 'Z');
       });
     }
-  }
-
-  private static void sendStartupMessage(final DataOutputStream out, final String user, final String database) throws Exception {
-    final ByteArrayOutputStream body = new ByteArrayOutputStream();
-    writeCString(body, "user");
-    writeCString(body, user);
-    writeCString(body, "database");
-    writeCString(body, database);
-    body.write(0);
-
-    final byte[] bodyBytes = body.toByteArray();
-    out.writeInt(4 + 4 + bodyBytes.length);
-    out.writeInt(196608); // protocol version 3.0
-    out.write(bodyBytes);
-    out.flush();
-  }
-
-  private static void sendPasswordMessage(final DataOutputStream out, final String password) throws Exception {
-    final byte[] pwBytes = password.getBytes(StandardCharsets.UTF_8);
-    out.writeByte('p');
-    out.writeInt(4 + pwBytes.length + 1);
-    out.write(pwBytes);
-    out.writeByte(0);
-    out.flush();
   }
 
   /**
@@ -214,33 +168,5 @@ class PostgresBindDeserializeFailureRecoveryIT extends BaseGraphServerTest {
     out.write(queryBytes);
     out.writeByte(0);
     out.flush();
-  }
-
-  private static void writeCString(final ByteArrayOutputStream out, final String s) {
-    out.writeBytes(s.getBytes(StandardCharsets.UTF_8));
-    out.write(0);
-  }
-
-  private static void readMessage(final DataInputStream in) throws Exception {
-    final int type = in.readUnsignedByte();
-    final int length = in.readInt();
-    in.skipNBytes(length - 4);
-  }
-
-  private static void readMessageOfType(final DataInputStream in, final char expectedType) throws Exception {
-    while (true) {
-      final int type = in.readUnsignedByte();
-      final int length = in.readInt();
-      in.skipNBytes(length - 4);
-      if (type == expectedType)
-        return;
-    }
-  }
-
-  private static int readMessageType(final DataInputStream in) throws Exception {
-    final int type = in.readUnsignedByte();
-    final int length = in.readInt();
-    in.skipNBytes(length - 4);
-    return type;
   }
 }
