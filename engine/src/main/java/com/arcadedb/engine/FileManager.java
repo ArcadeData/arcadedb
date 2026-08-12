@@ -49,6 +49,19 @@ public class FileManager {
   private volatile     List<FileChange>                          recordedChanges   = null;
   private volatile     Thread                                    recordingThread   = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
+  /**
+   * Decides whether the physical deletion of a dropped file has to be DEFERRED because a point-in-time snapshot
+   * window still needs to read it (issue #6075, challenge C2). Installed by {@code LocalDatabase} and delegating to
+   * {@code PageManager}; {@code null} on a file manager not attached to a database (tests, tooling), where nothing
+   * can be snapshotting anyway.
+   */
+  private volatile DroppedFileHandler droppedFileHandler = null;
+
+  @FunctionalInterface
+  public interface DroppedFileHandler {
+    /** @return true when the caller must NOT delete the file: an open snapshot window took the deletion over. */
+    boolean deferDrop(ComponentFile file);
+  }
 
   public static class FileChange {
     public final boolean create;
@@ -232,6 +245,32 @@ public class FileManager {
     fileIdMap.clear();
   }
 
+  /** Installs the snapshot-aware deletion policy for dropped files (issue #6075). */
+  public void setDroppedFileHandler(final DroppedFileHandler handler) {
+    this.droppedFileHandler = handler;
+  }
+
+  @FunctionalInterface
+  public interface FileSetOperation<T> {
+    T execute() throws IOException;
+  }
+
+  /**
+   * Runs {@code operation} holding the monitor {@link #dropFile} and {@link #getOrCreateFile} take, so the registered
+   * file set cannot change underneath it.
+   * <p>
+   * The snapshot t0 barrier (issue #6075) uses this to close a TOCTOU window that would otherwise defeat the whole
+   * deferred-deletion mechanism: it lists the files it is about to snapshot and only THEN publishes the window, and
+   * {@code PageManager.deferFileDrop} keeps a dropped file alive only for windows that are already published. A
+   * {@code dropFile} landing in that gap - which index compaction can do at any moment, since it takes no database
+   * lock - would delete a file the snapshot had just claimed. Holding this monitor across list-and-publish makes the
+   * two mutually exclusive. Lock ORDER matters and is the same on both paths: this monitor first, then
+   * {@code PageManager}'s snapshot registry lock.
+   */
+  public synchronized <T> T executeWithFileSetLocked(final FileSetOperation<T> operation) throws IOException {
+    return operation.execute();
+  }
+
   public void dropFile(final int fileId) throws IOException {
     final ComponentFile file;
     synchronized (this) {
@@ -242,7 +281,14 @@ public class FileManager {
       // the delete; dropFile is a rare DDL operation, so briefly blocking concurrent registerFile is fine.
       file = fileIdMap.get(fileId);
       if (file != null) {
-        file.drop();
+        // #6075 (challenge C2): while a snapshot window is open the file is kept alive and its deletion deferred to
+        // the close of the last window that needs it, so LSM and vector index compaction can keep dropping files
+        // during a backup instead of being postponed for its whole duration. The file leaves this manager either
+        // way - the LIVE database must see it as gone immediately.
+        final DroppedFileHandler handler = droppedFileHandler;
+        if (handler == null || !handler.deferDrop(file))
+          file.drop();
+
         fileIdMap.remove(fileId);
         fileNameMap.remove(file.getComponentName());
         files.set(fileId, null);

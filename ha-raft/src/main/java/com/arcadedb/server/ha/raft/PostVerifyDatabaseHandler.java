@@ -20,6 +20,9 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.exception.PageSnapshotException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -42,6 +45,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 
 /**
@@ -125,20 +129,43 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     final JSONObject localChecksums = new JSONObject();
     final JSONArray localFiles = new JSONArray();
     db.executeInReadLock(() -> {
+      // #6075: CRC THE FILES THROUGH A POINT-IN-TIME SNAPSHOT INSTEAD OF FREEZING THEM WITH A FLUSH SUSPENSION. A
+      // VERIFY OF A LARGE DATABASE READS EVERY BYTE OF EVERY FILE, SO THE OLD PATH THROTTLED WRITERS FOR ITS WHOLE
+      // DURATION AND POSTPONED INDEX COMPACTION WITH THEM. THE CHECKSUM IS BYTE-FOR-BYTE THE SAME VALUE, SO A PEER
+      // STILL ON THE FALLBACK PATH COMPARES EQUAL
+      if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
+        // COLLECTED ASIDE AND MERGED ONLY ON SUCCESS: A WINDOW INVALIDATED HALFWAY THROUGH MUST NOT LEAVE THE
+        // RESPONSE HOLDING A MIX OF SNAPSHOT AND FALLBACK CHECKSUMS
+        final JSONObject snapshotChecksums = new JSONObject();
+        final JSONArray snapshotFiles = new JSONArray();
+        try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+          for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
+            try {
+              collectFileInfo(snapshotChecksums, snapshotFiles, file.fileName(), snapshot.calculateChecksum(file.fileId()),
+                  file.size());
+            } catch (final PageSnapshotException e) {
+              throw e;
+            } catch (final Exception e) {
+              // skip files that cannot be checksummed (e.g. in-flight creation)
+            }
+
+          for (final String name : snapshotChecksums.keySet())
+            localChecksums.put(name, snapshotChecksums.getLong(name));
+          for (int i = 0; i < snapshotFiles.length(); i++)
+            localFiles.put(snapshotFiles.getJSONObject(i));
+          return null;
+        } catch (final PageSnapshotException e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Point-in-time snapshot unusable for the verify of database '%s' (%s): falling back to suspending the page flush",
+              null, db.getName(), e.getMessage());
+        }
+      }
+
       db.getPageManager().suspendFlushAndExecute(db, () -> {
         for (final var file : db.getFileManager().getFiles())
           if (file != null) {
-            final String name = file.getFileName();
             try {
-              final long crc = file.calculateChecksum();
-              localChecksums.put(name, crc);
-
-              final JSONObject fileInfo = new JSONObject();
-              fileInfo.put("name", name);
-              fileInfo.put("checksum", crc);
-              fileInfo.put("size", file.getSize());
-              fileInfo.put("type", categorizeFile(name));
-              localFiles.put(fileInfo);
+              collectFileInfo(localChecksums, localFiles, file.getFileName(), file.calculateChecksum(), file.getSize());
             } catch (final Exception e) {
               // skip files that cannot be checksummed (e.g. in-flight creation)
             }
@@ -342,6 +369,19 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       peerResult.put("error", e.getMessage());
     }
     return peerResult;
+  }
+
+  /** Records one file's checksum in both shapes the response carries: the flat map peers compare, and the detail list. */
+  private static void collectFileInfo(final JSONObject checksums, final JSONArray files, final String name, final long crc,
+      final long size) {
+    checksums.put(name, crc);
+
+    final JSONObject fileInfo = new JSONObject();
+    fileInfo.put("name", name);
+    fileInfo.put("checksum", crc);
+    fileInfo.put("size", size);
+    fileInfo.put("type", categorizeFile(name));
+    files.put(fileInfo);
   }
 
   private static String categorizeFile(final String fileName) {

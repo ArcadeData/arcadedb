@@ -212,11 +212,7 @@ public class PageManagerFlushThread extends Thread {
     long lastFlushed = flushedCounter.get();
     long lastProgressAt = System.currentTimeMillis();
     while (true) {
-      int pending = 0;
-      for (final PageId key : pageIndex.keySet()) {
-        if (database.equals(key.getDatabase()))
-          ++pending;
-      }
+      final int pending = countPendingPagesOfDatabase(database, false);
 
       if (pending == 0)
         return true;
@@ -366,6 +362,31 @@ public class PageManagerFlushThread extends Thread {
         nextPagesToFlush.set(null);
       }
     }
+  }
+
+  /**
+   * Whether any page of the database is still anywhere in the flush pipeline. Used by the snapshot t0 barrier
+   * (#6075) to tell "the queue drained and stayed drained" from "commits landed between the drain and the
+   * suspension", in which case the barrier retries instead of stamping a t0 that is already behind.
+   */
+  boolean hasPendingPagesOfDatabase(final Database database) {
+    return countPendingPagesOfDatabase(database, true) > 0;
+  }
+
+  /**
+   * Pages of the database still anywhere in the flush pipeline.
+   *
+   * @param stopAtFirst return as soon as one is found, for the callers that only need the boolean
+   */
+  private int countPendingPagesOfDatabase(final Database database, final boolean stopAtFirst) {
+    int pending = 0;
+    for (final PageId key : pageIndex.keySet())
+      if (database.equals(key.getDatabase())) {
+        ++pending;
+        if (stopAtFirst)
+          return pending;
+      }
+    return pending;
   }
 
   public void waitForCurrentFlushToComplete(final Database database) throws InterruptedException {

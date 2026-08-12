@@ -32,6 +32,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -2493,12 +2494,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     transactionManager.checkIntegrity();
   }
 
+  /** Removes any {@code .pshadow} scratch file left behind by a snapshot window that a crash interrupted (#6075). */
+  private void deleteOrphanSnapshotShadows() {
+    final File[] orphans = new File(databasePath).listFiles(
+        (dir, name) -> name.endsWith("." + PageSnapshot.SHADOW_FILE_EXT));
+    if (orphans == null)
+      return;
+    for (final File orphan : orphans) {
+      LogManager.instance().log(this, Level.FINE, "Deleting orphan snapshot shadow file '%s'", null, orphan.getName());
+      if (!orphan.delete())
+        LogManager.instance().log(this, Level.WARNING, "Cannot delete the orphan snapshot shadow file '%s'", null, orphan);
+    }
+  }
+
   private void openInternal() {
     try {
       DatabaseContext.INSTANCE.init(this);
       setLockingEnabled(configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED));
 
+      // #6075 (challenge C8): the copy-on-write shadow of a snapshot window is pure scratch - recovery never reads
+      // it - so a crash mid-window leaves nothing but an orphan file to delete here. Its extension is deliberately
+      // absent from SUPPORTED_FILE_EXT, so the FileManager scan below never mistakes one for a data file.
+      deleteOrphanSnapshotShadows();
+
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolveExternalBucketPath());
+      fileManager.setDroppedFileHandler(file -> PageManager.INSTANCE.deferFileDrop(wrappedDatabaseInstance, file));
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
 
       open = true;
