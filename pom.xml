@@ -53,6 +53,20 @@
         <skipITs>true</skipITs>
         <skipTests>false</skipTests>
 
+        <!-- Default surefire tag exclusion (issue #5697): keep this as a property, not a literal
+             <excludedGroups> in the surefire <configuration> below. A literal there would win over
+             the same-named -D user property on the command line (plugin configuration beats -D),
+             silently defeating every CI lane that passes its own -DexcludedGroups=... or that relies
+             on -Dgroups=benchmark alone selecting benchmark-tagged tests. Keeping it a property lets
+             -DexcludedGroups=... on the command line override this default as expected. -->
+        <excludedGroups>benchmark</excludedGroups>
+        <!-- maven-failsafe-plugin's own excludedGroups parameter defaults to this SAME ${excludedGroups}
+             user property (confirmed via its plugin.xml), so without a parameter of its own it would
+             silently inherit the surefire-only "benchmark" default above and drop @Tag("benchmark")
+             integration tests (e.g. Issue5413DenseVectorServerLatencyIT) from every -Pintegration lane.
+             Give failsafe its own namespaced property, left empty by default, so ITs are unaffected. -->
+        <failsafe.excludedGroups></failsafe.excludedGroups>
+
         <itCoverageAgent></itCoverageAgent>
         <argLine></argLine>
 
@@ -235,8 +249,11 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
-                    <!-- ADD THIS LINE TO SKIP BENCHMARKS BY DEFAULT -->
-<!--                    <excludedGroups>benchmark</excludedGroups>-->
+                    <!-- Skip @Tag("benchmark") classes by default (issue #5697). Sourced from the
+                         ${excludedGroups} property above so -DexcludedGroups=... on the command line
+                         still overrides it, e.g. benchmark-tests.yml clears it to run benchmarks and
+                         mvn-test.yml widens it to slow,benchmark,vector for the default lane. -->
+                    <excludedGroups>${excludedGroups}</excludedGroups>
                     <properties>
                         <!-- Work around. Surefire does not include enough
                              information to disambiguate between different
@@ -293,6 +310,9 @@
                         <!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
                     </excludes>
+                    <!-- Explicit, namespaced override of failsafe's excludedGroups (issue #5697): keeps
+                         it independent of the surefire-only ${excludedGroups} default set above. -->
+                    <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
                     <skipTests>${skipITs}</skipTests>
                     <skipITs>${skipITs}</skipITs>
                     <excludeJUnit5Engines>

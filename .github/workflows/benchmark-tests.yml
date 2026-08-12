@@ -51,7 +51,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Benchmark Unit Tests with Coverage
-        run: ./mvnw verify --batch-mode --errors --fail-never --show-version -Dgroups=benchmark -Dsurefire.includes=**/*Benchmark.java
+        # pom.xml now excludes @Tag("benchmark") by default (issue #5697); clear excludedGroups here
+        # so -Dgroups=benchmark still selects the benchmark-tagged tests this lane exists to run.
+        run: ./mvnw verify --batch-mode --errors --fail-never --show-version -Dgroups=benchmark -DexcludedGroups= -Dsurefire.includes=**/*Benchmark.java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
