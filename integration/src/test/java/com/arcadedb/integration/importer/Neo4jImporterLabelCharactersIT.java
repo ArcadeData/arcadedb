@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -64,7 +65,6 @@ class Neo4jImporterLabelCharactersIT {
       // The dotted names have to be reachable from SQL, which means backtick-quoted.
       assertThat(db.query("sql", "select expand(out(`HAS.ORDER`)) from `acme.Customer`").stream().count()).isEqualTo(1L);
     }
-    cleanUp();
   }
 
   /**
@@ -87,7 +87,6 @@ class Neo4jImporterLabelCharactersIT {
       // The three unlabelled nodes are kept on the root type instead of being dropped.
       assertThat(db.countType("Node", false)).isEqualTo(3L);
     }
-    cleanUp();
   }
 
   @Test
@@ -106,15 +105,11 @@ class Neo4jImporterLabelCharactersIT {
 
   private void assertRejected(final String label, final String expectedMessageFragment) {
     final String content = "{\"type\":\"node\",\"id\":\"0\",\"labels\":[\"" + label + "\"],\"properties\":{\"name\":\"x\"}}\n";
-    try {
-      assertThatThrownBy(() -> new Neo4jImporter(new ByteArrayInputStream(content.getBytes()),
-          (" -d " + DATABASE_PATH + " -o").split(" ")).run())
-          .as("label '%s'", label)
-          .isInstanceOf(ImportException.class)
-          .hasMessageContaining(expectedMessageFragment);
-    } finally {
-      cleanUp();
-    }
+    assertThatThrownBy(() -> new Neo4jImporter(new ByteArrayInputStream(content.getBytes()),
+        (" -d " + DATABASE_PATH + " -o").split(" ")).run())
+        .as("label '%s'", label)
+        .isInstanceOf(ImportException.class)
+        .hasMessageContaining(expectedMessageFragment);
   }
 
   private void runImport(final String content) throws Exception {
@@ -122,7 +117,8 @@ class Neo4jImporterLabelCharactersIT {
     TestHelper.checkActiveDatabases();
   }
 
-  private void cleanUp() {
+  @AfterEach
+  void cleanUp() {
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 }
