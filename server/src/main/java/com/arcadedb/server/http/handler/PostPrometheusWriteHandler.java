@@ -26,6 +26,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
@@ -87,67 +88,75 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
-    // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
-    // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
-    // shard writes by the time it returns. If a later series throws, the rollback here cannot undo the
-    // series already written and the caller sees an error with part of the payload persisted.
-    database.begin();
+    // Resolved once so the bookmark can be emitted in the finally below even on a partial-write error:
+    // TimeSeriesShard.appendSamples commits its own shard transaction per series, so a series already
+    // appended before a later one throws is durable regardless of how this request rolls back (issue #5866).
+    final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
     try {
-      for (final TimeSeries ts : writeRequest.getTimeSeries()) {
-        final String metricName = ts.getMetricName();
-        if (metricName == null || metricName.isEmpty())
-          continue;
-
-        // Sanitize metric name: dots/hyphens → underscores
-        final String typeName = sanitizeTypeName(metricName);
-
-        // Auto-create type if needed
-        final LocalTimeSeriesType tsType = getOrCreateType(database, typeName, ts.getLabels());
-        final TimeSeriesEngine engine = tsType.getEngine();
-        final List<ColumnDefinition> columns = tsType.getTsColumns();
-
-        // Append this series' samples as ONE batch. All samples of a remote-write TimeSeries share the
-        // same type and labels, so they can go in a single shard transaction. Appending one at a time
-        // would cost a transaction per sample - and on a Raft HA leader, a replicated quorum round trip
-        // per sample, serialized behind the per-shard append lock.
-        final List<Sample> tsSamples = ts.getSamples();
-        final int count = tsSamples.size();
-        if (count == 0)
-          continue;
-
-        final long[] timestamps = new long[count];
-        for (int s = 0; s < count; s++)
-          timestamps[s] = tsSamples.get(s).timestampMs();
-
-        // Fill the value grid column by column, matching its column-major layout. A TAG value comes from
-        // the series labels, which are per-series and not per-sample, so it is resolved ONCE and broadcast
-        // down the column: findLabelValue is a linear scan that re-sanitizes every label name it visits,
-        // so resolving it per sample would repeat identical work for every sample of every tag column.
-        final Object[][] columnValues = new Object[columns.size() - 1][count];
-
-        int colIdx = 0;
-        for (final ColumnDefinition col : columns) {
-          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+      // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
+      // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
+      // shard writes by the time it returns. If a later series throws, the rollback here cannot undo the
+      // series already written and the caller sees an error with part of the payload persisted.
+      database.begin();
+      try {
+        for (final TimeSeries ts : writeRequest.getTimeSeries()) {
+          final String metricName = ts.getMetricName();
+          if (metricName == null || metricName.isEmpty())
             continue;
 
-          if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-            Arrays.fill(columnValues[colIdx], findLabelValue(ts.getLabels(), col.getName()));
-          else
-            for (int s = 0; s < count; s++)
-              columnValues[colIdx][s] = tsSamples.get(s).value(); // the "value" field
+          // Sanitize metric name: dots/hyphens → underscores
+          final String typeName = sanitizeTypeName(metricName);
 
-          colIdx++;
+          // Auto-create type if needed
+          final LocalTimeSeriesType tsType = getOrCreateType(database, typeName, ts.getLabels());
+          final TimeSeriesEngine engine = tsType.getEngine();
+          final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+          // Append this series' samples as ONE batch. All samples of a remote-write TimeSeries share the
+          // same type and labels, so they can go in a single shard transaction. Appending one at a time
+          // would cost a transaction per sample - and on a Raft HA leader, a replicated quorum round trip
+          // per sample, serialized behind the per-shard append lock.
+          final List<Sample> tsSamples = ts.getSamples();
+          final int count = tsSamples.size();
+          if (count == 0)
+            continue;
+
+          final long[] timestamps = new long[count];
+          for (int s = 0; s < count; s++)
+            timestamps[s] = tsSamples.get(s).timestampMs();
+
+          // Fill the value grid column by column, matching its column-major layout. A TAG value comes from
+          // the series labels, which are per-series and not per-sample, so it is resolved ONCE and broadcast
+          // down the column: findLabelValue is a linear scan that re-sanitizes every label name it visits,
+          // so resolving it per sample would repeat identical work for every sample of every tag column.
+          final Object[][] columnValues = new Object[columns.size() - 1][count];
+
+          int colIdx = 0;
+          for (final ColumnDefinition col : columns) {
+            if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+              continue;
+
+            if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+              Arrays.fill(columnValues[colIdx], findLabelValue(ts.getLabels(), col.getName()));
+            else
+              for (int s = 0; s < count; s++)
+                columnValues[colIdx][s] = tsSamples.get(s).value(); // the "value" field
+
+            colIdx++;
+          }
+
+          engine.appendBatch(timestamps, columnValues);
         }
-
-        engine.appendBatch(timestamps, columnValues);
+        database.commit();
+      } catch (final Exception e) {
+        database.rollback();
+        throw e;
       }
-      database.commit();
-    } catch (final Exception e) {
-      database.rollback();
-      throw e;
-    }
 
-    return new ExecutionResponse(204, "");
+      return new ExecutionResponse(204, "");
+    } finally {
+      emitCommitIndexBookmark(exchange, haDb);
+    }
   }
 
   private LocalTimeSeriesType getOrCreateType(final DatabaseInternal database, final String typeName,

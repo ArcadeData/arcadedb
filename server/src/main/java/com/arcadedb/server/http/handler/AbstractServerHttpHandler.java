@@ -1038,9 +1038,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Emits the {@code X-ArcadeDB-Commit-Index} response header, the read-your-writes bookmark a
    * {@code READ_YOUR_WRITES} client captures and carries into its next read. A no-op when {@code haDb} is
    * {@code null} (standalone database) or has not applied anything yet. Shared by
-   * {@link DatabaseAbstractHandler} (issue #5845) and {@link PostBatchHandler} (issue #5862), the only two
-   * write paths whose commit happens outside, or beyond, the generic per-request wrapper in
-   * {@link #handleRequest}.
+   * {@link DatabaseAbstractHandler} (issue #5845), {@link PostBatchHandler} (issue #5862),
+   * {@link PostTimeSeriesWriteHandler} and {@link PostPrometheusWriteHandler} (issue #5866) - every write
+   * path whose commit happens outside, or beyond, the generic per-request wrapper in {@link #handleRequest}.
    */
   protected static void emitCommitIndexBookmark(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
     if (haDb == null)
