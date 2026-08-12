@@ -2723,22 +2723,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Folds a directly-negated integer literal whose bare magnitude cannot be represented as a {@code long} on its
-   * own into a single {@code Long.MIN_VALUE} literal, or returns {@code null} when the ordinary {@code 0 - X}
-   * handling in {@link #visitUnary} should run instead.
-   * <p>
-   * {@code 9223372036854775808} (one past {@code Long.MAX_VALUE}) is the only positive magnitude that overflows
-   * both {@code Integer.parseInt} and {@code Long.parseLong}, yet has a valid {@code long} value once negated
-   * ({@code Long.MIN_VALUE}). {@link #visitIntegerLiteral} converts the magnitude before any enclosing unary minus
-   * is applied, so without this fold that one value can never be parsed as a literal - the standard
-   * two's-complement-minimum hazard. Java's own lexer solves it the same way: the magnitude is accepted only when
-   * directly preceded by a unary minus, with the sign folded in before conversion.
-   * <p>
-   * Ordinary literals (the bare magnitude already fits in a {@code long}) fall through untouched, so this only
-   * changes behaviour for the single value that used to fail to parse. An explicit {@code L}/{@code l} suffix
-   * (e.g. {@code -9223372036854775808L}) is stripped before the digit check and folded the same way: the suffix
-   * only ever forces {@link #visitIntegerLiteral} to prefer the {@code long} conversion, which is already what
-   * happens here.
+   * Folds a directly-negated integer literal (optionally {@code L}/{@code l}-suffixed) whose bare magnitude
+   * overflows {@code long} on its own into a single {@code Long.MIN_VALUE} literal - the standard
+   * two's-complement-minimum hazard, since {@link #visitIntegerLiteral} otherwise converts the magnitude before
+   * the enclosing unary minus is applied. Returns {@code null} for every other shape, letting the ordinary
+   * {@code 0 - X} handling in {@link #visitUnary} run instead.
    */
   private BaseExpression tryFoldLongMinValueLiteral(final SQLParser.UnaryContext ctx) {
     if (!(ctx.mathExpression() instanceof final SQLParser.BaseContext baseCtx))

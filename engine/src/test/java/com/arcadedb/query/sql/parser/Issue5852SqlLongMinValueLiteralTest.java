@@ -19,11 +19,14 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #5852: {@code Long.MIN_VALUE} (-9223372036854775808) could not be written as a SQL
@@ -93,8 +96,8 @@ class Issue5852SqlLongMinValueLiteralTest {
   @Test
   void largerOverflowIsStillRejected() throws Exception {
     TestHelper.executeInNewDatabase("./target/databases/testIssue5852StillInvalid", db -> {
-      org.assertj.core.api.Assertions.assertThatThrownBy(() -> db.query("sql", "SELECT -99223372036854775808 AS r").close())
-          .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+      assertThatThrownBy(() -> db.query("sql", "SELECT -99223372036854775808 AS r").close())
+          .isInstanceOf(CommandSQLParsingException.class)
           .hasMessageContaining("Invalid integer");
     });
   }
@@ -108,7 +111,7 @@ class Issue5852SqlLongMinValueLiteralTest {
     TestHelper.executeInNewDatabase("./target/databases/testIssue5852IndexLookup", db -> {
       db.getSchema().createVertexType("V");
       db.getSchema().getType("V").createProperty("k", Type.LONG);
-      db.getSchema().getType("V").createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, true, "k");
+      db.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
 
       db.transaction(() -> db.command("sql", "INSERT INTO V SET k = 0 - 9223372036854775807 - 1"));
 
