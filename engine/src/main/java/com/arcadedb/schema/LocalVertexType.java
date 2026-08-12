@@ -59,6 +59,9 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
 
         // The bucket index and the edge marker both live in the suffix, which is carried over untouched.
         final String newBucketName = LocalSchema.rebaseComponentName(oldBucketName, oldName, newName, schema.getEncoding());
+        if (newBucketName == null)
+          // Edge bucket of a bucket attached with addBucket(): named after that bucket, not after the type.
+          continue;
 
         ((LocalBucket) bucket).rename(newBucketName);
 
@@ -68,15 +71,21 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
         schema.bucketMap.put(bucket.getName(), (LocalBucket) bucket);
       }
 
-    } catch (IOException e) {
+      // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the edge buckets
+      // already renamed on disk with a schema.json that still names the old files.
+    } catch (IOException | SchemaException e) {
       super.rename(oldName);
 
       boolean corrupted = false;
       for (Bucket bucket : removedBuckets) {
         try {
           final String newBucketName = bucket.getName();
-          ((LocalBucket) bucket).rename(
-              LocalSchema.rebaseComponentName(newBucketName, newName, oldName, schema.getEncoding()));
+          final String restoredName = LocalSchema.rebaseComponentName(newBucketName, newName, oldName,
+              schema.getEncoding());
+          if (restoredName == null)
+            corrupted = true;
+          else
+            ((LocalBucket) bucket).rename(restoredName);
         } catch (IOException ex) {
           corrupted = true;
         }

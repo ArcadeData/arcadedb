@@ -586,13 +586,20 @@ public class LocalSchema implements Schema {
    * verbatim. The suffix carries the bucket index, the {@code _out_edges}/{@code _in_edges} marker and the index
    * timestamp, so it must not be re-derived by searching for a delimiter: both '_' and '.' are legal inside a type
    * name and any such search picks the wrong one.
+   * <p>
+   * Returns {@code null} when the component name is not derived from the old type name, which is the case for a
+   * bucket created on its own and attached with {@link DocumentType#addBucket} (and for anything named after such a
+   * bucket). A name that was never built from the type name must not follow it when the type is renamed, so the
+   * caller leaves that component untouched.
+   * <p>
+   * The result needs no further validation: it is {@link FileUtils#encode}d, and the suffix it carries came from a
+   * name that was validated by {@link #checkValidBucketName} when its bucket was created.
    */
   public static String rebaseComponentName(final String componentName, final String oldTypeName, final String newTypeName,
       final String encoding) {
     final String oldPrefix = FileUtils.encode(oldTypeName, encoding);
     if (!componentName.startsWith(oldPrefix))
-      throw new SchemaException(
-          "Cannot rename component '" + componentName + "': it does not start with the expected prefix '" + oldPrefix + "'");
+      return null;
 
     return FileUtils.encode(newTypeName, encoding) + componentName.substring(oldPrefix.length());
   }

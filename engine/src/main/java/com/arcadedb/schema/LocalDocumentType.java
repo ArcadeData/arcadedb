@@ -205,7 +205,12 @@ public class LocalDocumentType implements DocumentType {
       for (Bucket bucket : buckets) {
         final String oldBucketName = bucket.getName();
 
-        ((LocalBucket) bucket).rename(LocalSchema.rebaseComponentName(oldBucketName, oldName, newName, schema.getEncoding()));
+        final String newBucketName = LocalSchema.rebaseComponentName(oldBucketName, oldName, newName, schema.getEncoding());
+        if (newBucketName == null)
+          // Bucket attached with addBucket() under a name of its own: it does not follow the type name.
+          continue;
+
+        ((LocalBucket) bucket).rename(newBucketName);
 
         removedBuckets.add(bucket);
 
@@ -223,7 +228,9 @@ public class LocalDocumentType implements DocumentType {
 
       schema.saveConfiguration();
 
-    } catch (IOException e) {
+      // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the buckets
+      // already renamed on disk with a schema.json that still names the old files.
+    } catch (IOException | SchemaException e) {
       name = oldName;
       schema.types.put(oldName, this);
       schema.types.remove(newName);
@@ -232,8 +239,12 @@ public class LocalDocumentType implements DocumentType {
       for (Bucket bucket : removedBuckets) {
         try {
           final String newBucketName = bucket.getName();
-          ((LocalBucket) bucket).rename(
-              LocalSchema.rebaseComponentName(newBucketName, newName, oldName, schema.getEncoding()));
+          final String restoredName = LocalSchema.rebaseComponentName(newBucketName, newName, oldName,
+              schema.getEncoding());
+          if (restoredName == null)
+            corrupted = true;
+          else
+            ((LocalBucket) bucket).rename(restoredName);
         } catch (IOException ex) {
           corrupted = true;
         }

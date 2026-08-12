@@ -611,9 +611,12 @@ public class HashIndex implements IndexInternal {
     metadata.typeName = newTypeName;
     if (bucket != null) {
       try {
-        // Rename through the component so the component name and the FileManager map follow the file.
-        bucket.rename(LocalSchema.rebaseComponentName(bucket.getName(), oldTypeName, newTypeName,
-            getDatabase().getSchema().getEncoding()));
+        // Rename through the component so the component name and the FileManager map follow the file. A null result
+        // means the index sits on a bucket attached with addBucket(), whose name does not follow the type name.
+        final String newComponentName = LocalSchema.rebaseComponentName(bucket.getName(), oldTypeName, newTypeName,
+            getDatabase().getSchema().getEncoding());
+        if (newComponentName != null)
+          bucket.rename(newComponentName);
       } catch (final IOException e) {
         throw new IndexException("Error on renaming index file for hash index '" + name + "'", e);
       }

@@ -111,6 +111,44 @@ class TypeRenameComponentNamingTest extends TestHelper {
         .isEqualTo(10L));
   }
 
+  /**
+   * A bucket attached with {@link DocumentType#addBucket} carries a name of its own (see
+   * {@code Issue774AddBucketWithIndexTest}, which attaches "O202203" to type "Order"). That name is not derived
+   * from the type name, so it must stay put when the type is renamed rather than be rebased onto the new name or
+   * abort the rename half-way through.
+   */
+  @Test
+  void renameTypeWithCustomNamedBucketLeavesThatBucketAlone() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("Order", 1);
+      type.createProperty("p1", Type.STRING);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p1");
+    });
+    database.transaction(() -> database.getSchema().getType("Order")
+        .addBucket(database.getSchema().createBucket("O202203")));
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO BUCKET:O202203 SET p1 = 'a'");
+      database.command("sql", "INSERT INTO Order SET p1 = 'b'");
+    });
+
+    database.getSchema().getType("Order").rename("Orders");
+
+    assertThat(database.getSchema().existsType("Orders")).isTrue();
+    // The default bucket followed the type, the manually attached one kept its own name.
+    final var bucketNames = database.getSchema().getType("Orders").getBuckets(false).stream().map(b -> b.getName()).toList();
+    assertThat(bucketNames).containsExactlyInAnyOrder("Orders_0", "O202203");
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.getSchema().existsType("Orders")).isTrue();
+    assertThat(database.countType("Orders", true)).isEqualTo(2L);
+    database.transaction(() -> {
+      assertThat(database.query("sql", "SELECT FROM Orders WHERE p1 = 'a'").stream().count()).isEqualTo(1L);
+      assertThat(database.query("sql", "SELECT FROM Orders WHERE p1 = 'b'").stream().count()).isEqualTo(1L);
+    });
+  }
+
   @Test
   void renameTypeWithIndexKeepsIndexUsableAfterReopen() {
     database.getSchema().createVertexType("In_Dexed", 1).createProperty("code", Type.STRING)
