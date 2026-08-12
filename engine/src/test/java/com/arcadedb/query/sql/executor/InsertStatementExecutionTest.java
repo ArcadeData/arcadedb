@@ -70,6 +70,23 @@ public class InsertStatementExecutionTest extends TestHelper {
     assertThat(executions.get()).isEqualTo(1);
   }
 
+  // ScriptLineStep.syncPull() also calls executeInternal() eagerly before fetchNext(), the same shape as
+  // InsertStatement.execute() - an INSERT run as a line of a batch script hits this path, not the other two.
+  @Test
+  void insertExecutionPlanRunsOnceInsideScriptLineStep() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final AtomicInteger executions = new AtomicInteger();
+    final InsertExecutionPlan executionPlan = countingExecutionPlan(context, executions);
+
+    final ScriptLineStep scriptLineStep = new ScriptLineStep(executionPlan, context);
+    final ResultSet result = scriptLineStep.syncPull(context, 1);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    assertThat(executions.get()).isEqualTo(1);
+  }
+
   private void assertInsertExecutionPlanRunsOnce(final Function<InsertStatement, ResultSet> executeStatement) {
     final AtomicInteger executions = new AtomicInteger();
     final InsertStatement statement = new InsertStatement(-1) {
