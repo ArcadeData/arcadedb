@@ -44,7 +44,12 @@ import java.util.logging.Level;
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   private static final int  BASE_RAFT_PORT          = 2434;
-  private static final long RESYNC_RETRY_TIMEOUT_MS = 30_000;
+  // 60s, not 30s: CI runners for this job are consistently ~3x slower than a local run for this
+  // kind of cross-node convergence wait (issue #5668 measured 15.3s locally vs 42.7s on a CI
+  // runner for the same assertion), and both withResyncRetry() and awaitValue()/awaitCountOn()
+  // return as soon as the condition is met - a longer ceiling only matters on the genuinely-slow
+  // or genuinely-stuck path, never on the common fast path.
+  private static final long RESYNC_RETRY_TIMEOUT_MS = 60_000;
 
   /**
    * Returns the peer ID for a given server index in the test cluster.
