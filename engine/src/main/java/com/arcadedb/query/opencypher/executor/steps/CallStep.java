@@ -49,6 +49,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /**
  * Execution step for CALL clause.
@@ -341,11 +342,17 @@ public class CallStep extends AbstractExecutionStep {
       if (autoCommit)
         context.getDatabase().begin();
 
-      // Return iterator for lazy evaluation instead of collecting to list
-      // This prevents memory exhaustion for procedures that yield many results
-      final Iterator<ResultInternal> result = procedure.execute(args, inputRow, context)
-          .map(this::convertProcedureResultToInternal)
-          .iterator();
+      final Stream<ResultInternal> resultStream = procedure.execute(args, inputRow, context)
+          .map(this::convertProcedureResultToInternal);
+
+      // .map()/.iterator() are lazy, so without forcing it here commit() would run before the stream is ever
+      // drained. Every current write procedure happens to mutate and materialize its Stream eagerly inside
+      // execute() (see the contract documented on CypherProcedure#execute), so this only pays the list-copy
+      // cost on the auto-commit path - the no-active-transaction path is exactly where a future write
+      // procedure returning a lazily-generated Stream would otherwise commit before it ever mutates anything.
+      // Everywhere else, keep the iterator for lazy evaluation instead of collecting to list - this prevents
+      // memory exhaustion for procedures that yield many results.
+      final Iterator<ResultInternal> result = autoCommit ? resultStream.toList().iterator() : resultStream.iterator();
 
       if (autoCommit)
         context.getDatabase().commit();

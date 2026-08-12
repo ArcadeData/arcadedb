@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -181,6 +182,47 @@ class CallStepWriteProcedureAutoCommitTest {
         .hasCauseInstanceOf(IllegalArgumentException.class);
 
     assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  @Test
+  void refactorCloneNodesWithRelationshipsAutoCommitsWithNoExplicitTransaction() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.commit();
+
+    assertThat(database.isTransactionActive()).isFalse();
+
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a], {}) YIELD output RETURN output");
+    final Result result = rs.next();
+    final Vertex clone = result.getProperty("output");
+    assertThat(clone.get("name")).isEqualTo("A");
+
+    assertThat(database.isTransactionActive()).isFalse();
+    try (final ResultSet check = database.query("sql", "SELECT count(*) AS c FROM Person")) {
+      assertThat(check.next().<Long>getProperty("c")).isEqualTo(2L);
+    }
+  }
+
+  /**
+   * {@code do.when} takes a materially different path from the other write procedures: instead of mutating
+   * directly, it dispatches its write sub-query to a nested {@code database.command(...)} call. Confirms that
+   * indirection still works correctly with no explicit transaction wrapping the outer {@code CALL}.
+   */
+  @Test
+  void doWhenAutoCommitsWriteSubQueryWithNoExplicitTransaction() {
+    assertThat(database.isTransactionActive()).isFalse();
+
+    try (final ResultSet rs = database.command("opencypher",
+        "CALL apoc.do.when(true, \"CREATE (n:Person {name: 'Bob'}) RETURN n\", '', {}) YIELD value RETURN value")) {
+      assertThat(rs.hasNext()).isTrue();
+      rs.next();
+    }
+
+    assertThat(database.isTransactionActive()).isFalse();
+    try (final ResultSet check = database.query("sql", "SELECT FROM Person WHERE name = 'Bob'")) {
+      assertThat(check.hasNext()).isTrue();
+    }
   }
 
   @Test
