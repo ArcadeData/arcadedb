@@ -44,7 +44,21 @@ import java.util.logging.Level;
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   private static final int  BASE_RAFT_PORT          = 2434;
-  private static final long RESYNC_RETRY_TIMEOUT_MS = 30_000;
+  // 120s: two independent CI runs of this PR (runs 31578870619 and 31587763511) each showed
+  // Issue5410AbandonedTicketReleaseIT stall for the ENTIRE poll budget - once at 30s, once at 60s -
+  // immediately after RaftMigrationCompactionRaceIT (a 72k-record, 24-compaction-round, 12-writer-
+  // thread IT) ran in the same shared, reused JVM fork (failsafe reuseForks=true/forkCount=1 for the
+  // whole module). Both stalls were confirmed real via the test's own embedded log timestamps, not a
+  // log-flush artifact. Not reproducible locally in isolation, nor under an emulated 4-CPU/3.9GB-heap
+  // constraint matching the CI runner - only in the full-suite adjacency. The project's own
+  // engine-concurrency skill documents ArcadeStateMachine.notifyInstallSnapshotFromLeader as a
+  // not-yet-migrated user of the JDK common ForkJoinPool, which is also shared with JDK GC/reference
+  // handler internals - exactly the "long-running [GC-heavy] work starves engine work" failure shape
+  // this looks like. This bump is a mitigation, not a fix: it only widens the ceiling on the rare
+  // stalled path (withResyncRetry()/awaitValue()/awaitCountOn() all return as soon as the condition
+  // is met), while the real fix - isolating heavy ITs into their own fork, or migrating the common-
+  // pool caller - is tracked as a follow-up rather than attempted here.
+  private static final long RESYNC_RETRY_TIMEOUT_MS = 120_000;
 
   /**
    * Returns the peer ID for a given server index in the test cluster.

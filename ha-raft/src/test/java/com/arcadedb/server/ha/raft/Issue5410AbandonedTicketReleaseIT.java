@@ -86,6 +86,7 @@ class Issue5410AbandonedTicketReleaseIT extends BaseRaftHATest {
 
     leaderDb.transaction(() -> {
       final MutableVertex v = leaderDb.newVertex(VERTEX_TYPE);
+      v.set("id", 1);
       v.set("name", "baseline");
       v.save();
     });
@@ -120,6 +121,7 @@ class Issue5410AbandonedTicketReleaseIT extends BaseRaftHATest {
     try {
       leaderDb.begin();
       final MutableVertex v = leaderDb.newVertex(VERTEX_TYPE);
+      v.set("id", 2);
       v.set("name", "abandoned");
       v.save();
       leaderDb.commit();
@@ -135,23 +137,17 @@ class Issue5410AbandonedTicketReleaseIT extends BaseRaftHATest {
 
     // The abandoned entry reaches quorum and every node - including the leader, via the
     // abandonedLocalTransactions path - converges on both vertices (the #4790 contract).
-    final long deadline = System.currentTimeMillis() + 30_000;
-    boolean converged = false;
-    while (System.currentTimeMillis() < deadline && !converged) {
-      for (int i = 0; i < getServerCount(); i++)
-        waitForReplicationIsCompleted(i);
-      converged = true;
-      for (int i = 0; i < getServerCount(); i++)
-        if (getServerDatabase(i, getDatabaseName()).countType(VERTEX_TYPE, true) != 2L) {
-          converged = false;
-          break;
-        }
-      if (!converged)
-        Thread.sleep(250);
-    }
-
+    // awaitCountOn() polls the actual data on each node directly rather than trusting
+    // waitForReplicationIsCompleted()'s Raft-index snapshot: that helper only waits for a
+    // follower to catch up to wherever the leader's applied index happens to be *right now*,
+    // which says nothing about whether the leader itself has finished applying the abandoned
+    // entry via the recovery path exercised here. Each node also gets its own poll budget
+    // instead of one shared deadline across the whole cluster, so a slow CI runner (#5668,
+    // observed as a hard "expected: 2L but was: 1L" once the old single 30s budget elapsed)
+    // costs time rather than a failure, and on a genuine stall the assertion reports the count
+    // the node actually reached.
     for (int i = 0; i < getServerCount(); i++)
-      assertThat(getServerDatabase(i, getDatabaseName()).countType(VERTEX_TYPE, true))
+      assertThat(awaitCountOn(i, VERTEX_TYPE, 2L))
           .as("Node %d must hold both vertices", i)
           .isEqualTo(2L);
 
