@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -66,6 +65,24 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
     // replaces its Database instance mid-test, and a handle cached before that point throws
     // DatabaseIsClosedException on next use - the #5977 stale-handle pattern already documented on
     // BaseRaftHATest and fixed the same way in RaftReplicationMaterializedViewIT (#5668).
+    //
+    // Each withResyncRetry() call below wraps exactly one mutating statement. withResyncRetry()
+    // retries its whole lambda from scratch on DatabaseIsClosedException, so a lambda bundling two
+    // mutations would risk re-running the first (already-applied) mutation against a fresh handle
+    // if only the second one hit the resync window - trading the stale-handle flake for a rarer
+    // "already exists" one. Keeping one statement per call keeps every retry idempotent.
+
+    // Preserve pre-existing per-server safety net: nothing before this point should leave a
+    // transaction open on any server, but commit defensively if one is, same as the original
+    // databases[] setup loop did before the withResyncRetry conversion.
+    for (int i = 0; i < getServerCount(); i++) {
+      final int serverIndex = i;
+      withResyncRetry(serverIndex, db -> {
+        if (db.isTransactionActive())
+          db.commit();
+        return null;
+      });
+    }
 
     // CREATE NEW TYPE on the leader
     withResyncRetry(leaderIndex, db -> {
@@ -83,8 +100,11 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
 
     // CREATE NEW BUCKET and add to type
     withResyncRetry(leaderIndex, db -> {
-      final Bucket newBucket = db.getSchema().createBucket("raftNewBucket");
-      db.getSchema().getType("RaftRuntimeVertex0").addBucket(newBucket);
+      db.getSchema().createBucket("raftNewBucket");
+      return null;
+    });
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().getType("RaftRuntimeVertex0").addBucket(db.getSchema().getBucketByName("raftNewBucket"));
       return null;
     });
     testOnAllServers(database -> isInSchemaFile(database, "raftNewBucket"));
@@ -114,6 +134,9 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
     // REMOVE BUCKET FROM TYPE THEN DROP BUCKET
     withResyncRetry(leaderIndex, db -> {
       db.getSchema().getType("RaftRuntimeVertex0").removeBucket(db.getSchema().getBucketByName("raftNewBucket"));
+      return null;
+    });
+    withResyncRetry(leaderIndex, db -> {
       db.getSchema().dropBucket("raftNewBucket");
       return null;
     });
@@ -245,6 +268,6 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
   // asserts an invariant the system never promised and fails intermittently depending on whether a
   // resync happened to run during the test.
   private static String normalizeSchemaVersion(final String schemaJson) {
-    return SCHEMA_VERSION_FIELD.matcher(schemaJson).replaceFirst("\"schemaVersion\":0");
+    return SCHEMA_VERSION_FIELD.matcher(schemaJson).replaceAll("\"schemaVersion\":0");
   }
 }
