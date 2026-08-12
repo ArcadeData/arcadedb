@@ -34,6 +34,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The assertions compare an in-run baseline (the same retry loop with no backoff configured) against the same
  * loop with the backoff raised, so nothing depends on an absolute wall-clock budget. When the retry loop reads
  * the global static the two runs are indistinguishable and the gap collapses to zero.
+ * <p>
+ * Since #5587, the per-attempt window is {@code min(TX_RETRY_DELAY, TX_RETRY_DELAY_BASE * 2^attempt)} instead
+ * of a flat {@code TX_RETRY_DELAY}. Both settings are set to the same {@link #RAISED_DELAY_MS} here, which
+ * collapses that formula back to a flat window on every attempt ({@code min(x, x * 2^n) == x}) - the scope
+ * behaviour under test does not depend on the backoff shape, only on which configuration wins, so pinning the
+ * shape keeps this test's timing budget identical to before #5587.
  */
 public class Issue5693TxRetryDelayScopeTest extends TestHelper {
   /** One more than the number of forced failures, so the last attempt succeeds. */
@@ -46,6 +52,7 @@ public class Issue5693TxRetryDelayScopeTest extends TestHelper {
   @Test
   void theRetryLoopUsesTheDelayConfiguredOnThisDatabase() {
     final int savedGlobal = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+    final int savedGlobalBase = GlobalConfiguration.TX_RETRY_DELAY_BASE.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(0);
     try {
       // BASELINE TAKEN IN-RUN: NO BACKOFF ANYWHERE, SO THIS IS THE COST OF THE RETRY LOOP ITSELF
@@ -54,6 +61,7 @@ public class Issue5693TxRetryDelayScopeTest extends TestHelper {
 
       // ONLY THE DATABASE IS RETUNED: THE GLOBAL STATIC STAYS AT 0
       database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY, RAISED_DELAY_MS);
+      database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY_BASE, RAISED_DELAY_MS);
       final long observedMs = timeForcedRetries();
 
       assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)).isEqualTo(
@@ -61,6 +69,7 @@ public class Issue5693TxRetryDelayScopeTest extends TestHelper {
       assertThat(observedMs - baselineMs).isGreaterThan(MIN_GAP_MS);
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY, savedGlobal);
+      database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY_BASE, savedGlobalBase);
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedGlobal);
     }
   }
@@ -68,17 +77,20 @@ public class Issue5693TxRetryDelayScopeTest extends TestHelper {
   @Test
   void theGlobalDelayStillAppliesWhenTheDatabaseDoesNotOverrideIt() {
     final int savedGlobal = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+    final int savedGlobalBase = GlobalConfiguration.TX_RETRY_DELAY_BASE.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(0);
     try {
       final long baselineMs = timeForcedRetries();
 
       // NOTHING IS SET ON THE DATABASE, SO THE GLOBAL VALUE MUST STILL BE HONOURED
       GlobalConfiguration.TX_RETRY_DELAY.setValue(RAISED_DELAY_MS);
+      GlobalConfiguration.TX_RETRY_DELAY_BASE.setValue(RAISED_DELAY_MS);
       final long observedMs = timeForcedRetries();
 
       assertThat(observedMs - baselineMs).isGreaterThan(MIN_GAP_MS);
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedGlobal);
+      GlobalConfiguration.TX_RETRY_DELAY_BASE.setValue(savedGlobalBase);
     }
   }
 

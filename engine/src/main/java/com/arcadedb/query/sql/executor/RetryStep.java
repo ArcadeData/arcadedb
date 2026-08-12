@@ -25,9 +25,9 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 public class RetryStep extends AbstractExecutionStep {
@@ -36,6 +36,7 @@ public class RetryStep extends AbstractExecutionStep {
   public        boolean               elseFail;
   private final int                   retries;
   private final int                   retryDelay;
+  private final int                   retryDelayBase;
   private       ExecutionStepInternal finalResult = null;
 
   public RetryStep(List<Statement> statements, int retries, List<Statement> elseStatements, Boolean elseFail, CommandContext ctx,
@@ -45,21 +46,22 @@ public class RetryStep extends AbstractExecutionStep {
     this.retries = retries;
     this.elseBody = elseStatements;
     this.elseFail = !Boolean.FALSE.equals(elseFail);
-    this.retryDelay = readRetryDelay(ctx);
+    this.retryDelay = readRetrySetting(ctx, GlobalConfiguration.TX_RETRY_DELAY);
+    this.retryDelayBase = readRetrySetting(ctx, GlobalConfiguration.TX_RETRY_DELAY_BASE);
   }
 
   /**
-   * Resolves the backoff between retries from the database the script runs against. The setting is declared
-   * with database scope, so the database's own configuration is the authority and it already falls back to the
+   * Resolves a retry-backoff setting from the database the script runs against. The setting is declared with
+   * database scope, so the database's own configuration is the authority and it already falls back to the
    * global value when the database does not override it. The command context's configuration is deliberately
    * not used: the script engine is handed either an empty configuration (embedded API) or the server's one
    * (HTTP, Postgres and the replicated paths), and neither carries a per-database override.
    */
-  private static int readRetryDelay(final CommandContext ctx) {
+  private static int readRetrySetting(final CommandContext ctx, final GlobalConfiguration setting) {
     final DatabaseInternal database = ctx != null ? ctx.getDatabase() : null;
     return database != null ?
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY) :
-        GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+        database.getConfiguration().getValueAsInteger(setting) :
+        setting.getValueAsInteger();
   }
 
   // @VisibleForTesting
@@ -113,7 +115,7 @@ public class RetryStep extends AbstractExecutionStep {
           }
         }
 
-        delayBetweenRetries();
+        delayBetweenRetries(attempt);
       }
     }
 
@@ -132,17 +134,20 @@ public class RetryStep extends AbstractExecutionStep {
     return plan;
   }
 
-  private void delayBetweenRetries() {
+  /**
+   * Sleeps an exponential-backoff-with-full-jitter interval before the next {@code COMMIT RETRY} attempt
+   * (issue #5587). See {@link RetryBackoff} for the shared policy, also used by the programmatic retry loop in
+   * {@link com.arcadedb.database.LocalDatabase#transaction}.
+   *
+   * @param attempt zero-based count of retries already performed by this statement
+   */
+  private void delayBetweenRetries(final int attempt) {
     if (retryDelay > 0) {
       LogManager.instance()
-          .log(this, Level.FINE, "Wait %d ms before the next retry for transaction commit (threadId=%d)", retryDelay,
-              Thread.currentThread().getId());
+          .log(this, Level.FINE, "Wait up to %d ms before the next retry for transaction commit (attempt=%d, threadId=%d)",
+              RetryBackoff.windowMs(attempt, retryDelayBase, retryDelay), attempt + 1, Thread.currentThread().threadId());
 
-      try {
-        Thread.sleep(1 + ThreadLocalRandom.current().nextInt(retryDelay));
-      } catch (InterruptedException ex) {
-        Thread.currentThread().interrupt();
-      }
+      RetryBackoff.sleep(attempt, retryDelayBase, retryDelay);
     }
   }
 }

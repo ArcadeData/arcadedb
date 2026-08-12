@@ -102,6 +102,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.RWLockContext;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.io.File;
 import java.io.IOException;
@@ -125,7 +126,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
@@ -1417,6 +1417,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       attempts = 1;
 
     final int retryDelay = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY);
+    final int retryDelayBase = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE);
 
     boolean duplicatedKeyRetried = false;
 
@@ -1474,7 +1475,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
 
         if (retry < attempts - 1)
-          delayBetweenRetries(retryDelay);
+          delayBetweenRetries(retry, retryDelayBase, retryDelay);
 
       } catch (final Throwable e) {
         if (wrappedDatabaseInstance.isTransactionActive())
@@ -2675,17 +2676,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
-  private void delayBetweenRetries(final int retryDelay) {
-    if (retryDelay > 0) {
+  /**
+   * Sleeps an exponential-backoff-with-full-jitter interval before the next transaction retry (issue #5587):
+   * the window widens with every failed {@code attempt} instead of staying flat, so a transaction that has
+   * already lost several races backs off further than one on its first attempt. See {@link RetryBackoff} for
+   * the shared policy.
+   *
+   * @param attempt        zero-based count of retries already performed in this transaction
+   * @param retryDelayBase the backoff window's starting size ({@link GlobalConfiguration#TX_RETRY_DELAY_BASE})
+   * @param retryDelayCap  the backoff window's cap, and the on/off switch ({@link
+   *                       GlobalConfiguration#TX_RETRY_DELAY})
+   */
+  private void delayBetweenRetries(final int attempt, final int retryDelayBase, final int retryDelayCap) {
+    if (retryDelayCap > 0) {
       LogManager.instance()
-          .log(this, Level.FINE, "Wait %d ms before the next retry for transaction commit (threadId=%d)", retryDelay,
-              Thread.currentThread().getId());
+          .log(this, Level.FINE, "Wait up to %d ms before the next retry for transaction commit (attempt=%d, threadId=%d)",
+              RetryBackoff.windowMs(attempt, retryDelayBase, retryDelayCap), attempt + 1, Thread.currentThread().threadId());
 
-      try {
-        Thread.sleep(1 + ThreadLocalRandom.current().nextInt(retryDelay));
-      } catch (InterruptedException ex) {
-        Thread.currentThread().interrupt();
-      }
+      RetryBackoff.sleep(attempt, retryDelayBase, retryDelayCap);
     }
   }
 }
