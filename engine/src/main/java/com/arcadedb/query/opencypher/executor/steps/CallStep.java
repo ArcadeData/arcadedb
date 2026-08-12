@@ -49,6 +49,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /**
  * Execution step for CALL clause.
@@ -323,23 +324,51 @@ public class CallStep extends AbstractExecutionStep {
 
   /**
    * Executes a registered procedure.
-   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory.
+   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory - except on
+   * the auto-commit path (see below), which fully materializes before returning.
+   * <p>
+   * A write procedure (e.g. merge.node, apoc.refactor.mergeNodes) mutates the graph synchronously inside
+   * {@link CypherProcedure#execute}, the same way {@code SetStep}/{@code DeleteStep}/etc. mutate it - but unlike
+   * those steps it was never wrapped in an auto-commit, so a top-level {@code CALL} to a write procedure with no
+   * transaction already open failed with "Transaction not active" (issue #6073). Auto-commit here mirrors
+   * {@code SetStep.applySetOperations}: begin only when no transaction is already active, so a caller-managed
+   * transaction around the CALL is left untouched.
    */
   private Object executeProcedure(final CypherProcedure procedure, final Object[] args,
                                    final Result inputRow, final CommandContext context) {
+    final boolean autoCommit = procedure.isWriteProcedure() && !context.getDatabase().isTransactionActive();
     try {
       procedure.validateArgs(args);
-      // Return iterator for lazy evaluation instead of collecting to list
-      // This prevents memory exhaustion for procedures that yield many results
-      return procedure.execute(args, inputRow, context)
-          .map(this::convertProcedureResultToInternal)
-          .iterator();
+
+      if (autoCommit)
+        context.getDatabase().begin();
+
+      final Stream<ResultInternal> resultStream = procedure.execute(args, inputRow, context)
+          .map(this::convertProcedureResultToInternal);
+
+      // .map()/.iterator() are lazy, so without forcing it here commit() would run before the stream is ever
+      // drained. Every current write procedure happens to mutate and materialize its Stream eagerly inside
+      // execute() (see the contract documented on CypherProcedure#execute), so this only pays the list-copy
+      // cost on the auto-commit path - the no-active-transaction path is exactly where a future write
+      // procedure returning a lazily-generated Stream would otherwise commit before it ever mutates anything.
+      // Everywhere else, keep the iterator for lazy evaluation instead of collecting to list - this prevents
+      // memory exhaustion for procedures that yield many results.
+      final Iterator<ResultInternal> result = autoCommit ? resultStream.toList().iterator() : resultStream.iterator();
+
+      if (autoCommit)
+        context.getDatabase().commit();
+
+      return result;
     } catch (final CommandParsingException clientError) {
       // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
+      if (autoCommit && context.getDatabase().isTransactionActive())
+        context.getDatabase().rollback();
       throw clientError;
     } catch (final Exception e) {
+      if (autoCommit && context.getDatabase().isTransactionActive())
+        context.getDatabase().rollback();
       if (callClause.isOptional())
         return null;
       throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
