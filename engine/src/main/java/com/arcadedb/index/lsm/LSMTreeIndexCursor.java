@@ -74,7 +74,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       Object[]                               currentKeys;
   private       RID[]                                  currentValues;
   private       int                                    currentValueIndex = 0;
-  private       int                                    validIterators;
   private       TempIndexCursor                        txCursor;
   private       Object[]                               txCursorKeys;
   /** Dead (tombstone-resolved) keys skipped by this scan; flushed to the main index stats at scan end. */
@@ -140,8 +139,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
     lastConsumedPosition = new int[totalCursors];
     Arrays.fill(lastConsumedPageNumber, ascendingOrder ? Integer.MIN_VALUE : Integer.MAX_VALUE);
     Arrays.fill(lastConsumedPosition, ascendingOrder ? Integer.MIN_VALUE : Integer.MAX_VALUE);
-
-    validIterators = 0;
 
     for (int i = 0; i < compactedSeriesIterators.size(); ++i) {
       LSMTreeIndexUnderlyingCompactedSeriesCursor pageCursor = compactedSeriesIterators.get(i);
@@ -284,14 +281,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
             }
 
           if (allFullKeyTomb) {
-            // #4944: never leave a cursor parked on a full-key tombstone. It would stay alive but
-            // uncounted in validIterators, while next() decrements the counter whenever ANY cursor
-            // is exhausted or leaves the range: the counter could reach zero with other cursors
-            // still holding valid rows, silently truncating the scan. Skip past tombstone-only keys
+            // #4944: never leave a cursor parked on a full-key tombstone - a page whose only entries left
+            // are dead weight would sit in pageCursors forever contributing nothing, and every round of
+            // fetchNext() would have to walk through it for no gain. Skip past tombstone-only keys
             // (recording them so older cursors skip their shadowed entries too: a newer re-add of
             // the same key always lives in an earlier-processed cursor, so this stays temporally
-            // correct) until a countable key is found or the cursor is exhausted. The invariant is:
-            // every cursor left alive by this constructor is counted in validIterators.
+            // correct) until a countable key is found or the cursor is exhausted.
             removedKeys.add(keys);
             if (pageCursor.hasNext()) {
               advanceCursor(i); // keeps the cursorKeys cache in sync with the advanced cursor
@@ -302,8 +297,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
             cursorKeys[i] = null;
             break;
           }
-
-          validIterators++;
         }
         break;
       }
@@ -397,9 +390,20 @@ public class LSMTreeIndexCursor implements IndexCursor {
    * Whether any SOURCE of entries is left: a live underlying cursor, the RIDs of the key group currently loaded, or the
    * in-transaction overlay. This is what {@code hasNext()} used to answer directly - optimistic, because a live source
    * may still hold nothing but tombstones - and it is now only the loop condition of {@link #fetchNext()}.
+   * <p>
+   * Reads {@link #pageCursors} directly rather than a separately maintained live-count (#5683): a counter kept in
+   * lockstep with every site that nulls a slot is a standing invitation for the two to drift apart, and #4944 was
+   * exactly that - a counter/array drift bug whose failure mode was silent truncation (the scan reported itself
+   * exhausted while live page cursors remained). {@code pageCursors} is sized by the number of index components, not
+   * by data, so this walk is short and bounded - it runs once per merge round, not once per row.
    */
   private boolean hasMoreSources() {
-    return validIterators > 0 || (currentValues != null && currentValueIndex < currentValues.length) || txCursor != null;
+    if ((currentValues != null && currentValueIndex < currentValues.length) || txCursor != null)
+      return true;
+    for (final LSMTreeIndexUnderlyingAbstractCursor pageCursor : pageCursors)
+      if (pageCursor != null)
+        return true;
+    return false;
   }
 
   /**
@@ -439,6 +443,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
       for (int p = 0; p < totalCursors; ++p) {
         if (pageCursors[p] != null) {
           if (minorKey == null) {
+            // #5683: clear before adding, exactly like every other transition into a new minor key below.
+            // Without it, a live cursor whose cached key is itself null (cursorKeys[p] == null) leaves
+            // minorKey == null after this branch, so the NEXT live cursor also lands here - and would be
+            // appended to a list that already holds the first (differently-keyed) cursor instead of
+            // starting a fresh one, folding two unrelated keys into one group.
+            minorKeyIndexes.clear();
             minorKey = cursorKeys[p];
             minorKeyIndexes.add(p);
           } else {
@@ -481,7 +491,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
       }
 
       if (minorKey == null) {
-        validIterators = 0;
         flushScanStats();
         return;
       }
@@ -554,14 +563,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
                 currentCursor.close();
                 pageCursors[minorKeyIndex] = null;
                 cursorKeys[minorKeyIndex] = null;
-                --validIterators;
               }
             }
           } else {
             currentCursor.close();
             pageCursors[minorKeyIndex] = null;
             cursorKeys[minorKeyIndex] = null;
-            --validIterators;
           }
         }
       }
@@ -726,7 +733,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
         it.close();
     Arrays.fill(pageCursors, null);
     // a closed cursor is exhausted: drop the prefetched entry and the merge state so hasNext() cannot resurrect it
-    validIterators = 0;
     txCursor = null;
     txCursorKeys = null;
     currentValues = null;
