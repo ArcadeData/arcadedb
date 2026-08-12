@@ -116,11 +116,12 @@ class CallStepWriteProcedureAutoCommitTest {
 
     assertThat(database.isTransactionActive()).isFalse();
 
-    final ResultSet rs = database.command("opencypher",
-        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) CALL apoc.refactor.mergeNodes([a,b], {}) YIELD node RETURN node");
-    final String survivorId = rs.next().getVertex().get().getIdentity().toString();
+    try (final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) CALL apoc.refactor.mergeNodes([a,b], {}) YIELD node RETURN node")) {
+      final String survivorId = rs.next().getVertex().get().getIdentity().toString();
+      assertThat(survivorId).isEqualTo(aId);
+    }
 
-    assertThat(survivorId).isEqualTo(aId);
     assertThat(database.isTransactionActive()).isFalse();
   }
 
@@ -192,11 +193,12 @@ class CallStepWriteProcedureAutoCommitTest {
 
     assertThat(database.isTransactionActive()).isFalse();
 
-    final ResultSet rs = database.command("opencypher",
-        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a], {}) YIELD output RETURN output");
-    final Result result = rs.next();
-    final Vertex clone = result.getProperty("output");
-    assertThat(clone.get("name")).isEqualTo("A");
+    try (final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a], {}) YIELD output RETURN output")) {
+      final Result result = rs.next();
+      final Vertex clone = result.getProperty("output");
+      assertThat(clone.get("name")).isEqualTo("A");
+    }
 
     assertThat(database.isTransactionActive()).isFalse();
     try (final ResultSet check = database.query("sql", "SELECT count(*) AS c FROM Person")) {

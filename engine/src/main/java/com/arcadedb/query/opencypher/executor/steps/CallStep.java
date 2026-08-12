@@ -324,7 +324,8 @@ public class CallStep extends AbstractExecutionStep {
 
   /**
    * Executes a registered procedure.
-   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory.
+   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory - except on
+   * the auto-commit path (see below), which fully materializes before returning.
    * <p>
    * A write procedure (e.g. merge.node, apoc.refactor.mergeNodes) mutates the graph synchronously inside
    * {@link CypherProcedure#execute}, the same way {@code SetStep}/{@code DeleteStep}/etc. mutate it - but unlike
