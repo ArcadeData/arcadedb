@@ -59,33 +59,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate third-party license report
+      # No version is pinned here: that lets Maven resolve org.codehaus.mojo:license-maven-plugin
+      # against the version and <configuration> (<licenseMerges>, <excludedLicenses>) declared for
+      # it in the root pom.xml, instead of running with an unconfigured, unrelated pinned version
+      # as a bare CLI invocation. It also aggregates the whole reactor rather than just the root
+      # aggregator pom's own (near-empty) direct dependencies, which is what both checks below need.
+      - name: Generate aggregated third-party license report
         run: |
-          echo "Generating license report..."
-          mvn org.codehaus.mojo:license-maven-plugin:2.4.0:add-third-party -DskipTests
+          echo "Generating aggregated license report for the whole reactor..."
+          mvn org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party -DskipTests
         continue-on-error: false
 
-      - name: Check for blacklisted licenses
+      # #5651: this allow-list check replaces the previous "grep for GPL/AGPL/SSPL" deny-only step.
+      # An allow-list is strictly stronger than a deny-list (anything not allowed is denied, whatever
+      # it is called), and a naive substring grep for "GPL" would mis-fire the moment this workflow
+      # started looking at the real aggregated report: dependencies this project already ships, e.g.
+      # org.openjdk.jmh (test/benchmark scope) and javax.annotation-api, declare licenses that merely
+      # *mention* GPL in passing ("... with the Classpath exception", "CDDL + GPLv2 with classpath
+      # exception") - see check-license-allowlist.py's ALLOWED_CLAUSES docstring for the full
+      # reasoning. Before #5651 this Maven-side check had never actually seen the real dependency
+      # graph either: it ran against the root aggregator pom's own (near-empty, test-scope-only)
+      # direct dependencies, because add-third-party is a no-op for `pom`-packaged projects.
+      - name: Check for licenses outside the allow-list
         run: |
-          echo "Checking for incompatible licenses (GPL, AGPL, SSPL)..."
-          if grep -iE "(GPL|AGPL|SSPL|Commons Clause)" target/generated-sources/license/THIRD-PARTY.txt 2>/dev/null; then
-            echo "❌ ERROR: Found incompatible licenses!"
-            grep -iE "(GPL|AGPL|SSPL|Commons Clause)" target/generated-sources/license/THIRD-PARTY.txt
-            exit 1
-          else
-            echo "✅ No blacklisted licenses found"
-          fi
-
-      - name: Aggregate license information
-        run: |
-          echo "Aggregating license information from all modules..."
-          mvn org.codehaus.mojo:license-maven-plugin:2.4.0:aggregate-add-third-party -DskipTests
-        continue-on-error: true
+          echo "Checking that every dependency license is on ArcadeDB's allow-list (CLAUDE.md)..."
+          .github/scripts/check-license-allowlist.py target/generated-sources/license/THIRD-PARTY.txt
 
       - name: Download license files
         run: |
           echo "Downloading license files..."
-          mvn org.codehaus.mojo:license-maven-plugin:2.4.0:aggregate-download-licenses -DskipTests
+          mvn org.codehaus.mojo:license-maven-plugin:aggregate-download-licenses -DskipTests
         continue-on-error: true
 
       - name: Sanitize license filenames for upload-artifact compatibility
@@ -144,14 +147,14 @@ jobs:
           echo "### License Compliance Check Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📋 **Reports generated:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Third-party licenses list" >> $GITHUB_STEP_SUMMARY
-          echo "- Aggregated module licenses" >> $GITHUB_STEP_SUMMARY
+          echo "- Aggregated third-party licenses list (allow-list checked against CLAUDE.md)" >> $GITHUB_STEP_SUMMARY
           echo "- Downloaded license texts" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📦 Download the 'license-compliance-report' artifact to review full details." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "🔍 **How to review locally:**" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "mvn org.codehaus.mojo:license-maven-plugin:2.4.0:add-third-party" >> $GITHUB_STEP_SUMMARY
+          echo "mvn org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party" >> $GITHUB_STEP_SUMMARY
           echo "cat target/generated-sources/license/THIRD-PARTY.txt" >> $GITHUB_STEP_SUMMARY
+          echo ".github/scripts/check-license-allowlist.py target/generated-sources/license/THIRD-PARTY.txt" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

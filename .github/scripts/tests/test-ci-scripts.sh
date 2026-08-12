@@ -24,6 +24,7 @@ DEPS="$SCRIPTS/check-workflow-artifact-deps.py"
 COLLECT="$SCRIPTS/collect-coverage-reports.sh"
 RESULTS="$SCRIPTS/check-test-results.py"
 GUARDS="$SCRIPTS/check-test-reporter-guards.py"
+ALLOWLIST="$SCRIPTS/check-license-allowlist.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -650,6 +651,102 @@ expect "accepts a job whose test step exits on failure" 0 "" \
 # must stay clean with the e2e reporters exempt, and the nightly workflows with theirs not.
 expect "accepts the workflows as they stand" 0 "no unguarded reporter exemptions" \
     "$GUARDS"
+
+echo "check-license-allowlist.py"
+
+# The #5651 shape: the npm side of dependency-review-config.yml has an allow-list
+# (license-checker --onlyAllow), the Maven side only ever had a deny-list. A license
+# that is neither denied nor explicitly allowed must fail loudly instead of passing
+# both gates by omission. "Mozilla Public License 2.0" (no comma, no "Version") is
+# deliberately not the exact clause ALLOWED_CLAUSES recognizes for MPL-2.0, so this
+# also pins that matching is exact-clause, not fuzzy.
+mkdir -p "$work/license-mpl"
+cat >"$work/license-mpl/THIRD-PARTY.txt" <<'EOF'
+List of third-party dependencies grouped by their license type.
+
+    (Apache License 2.0) Apache Commons Lang (org.apache.commons:commons-lang3:3.14.0 - https://commons.apache.org/proper/commons-lang/)
+    (Mozilla Public License 2.0) Some MPL Lib (org.example:mpl-lib:1.0.0 - https://example.org)
+EOF
+expect "rejects a license outside the allow-list" 1 "Mozilla Public License 2.0" \
+    "$ALLOWLIST" "$work/license-mpl/THIRD-PARTY.txt"
+
+# A bare GPL (no classpath exception) must still be rejected, even though this script
+# allows a specific classpath-exception GPL clause elsewhere - the exception text has
+# to actually be present, "GPL" as a substring is not enough either way.
+mkdir -p "$work/license-bare-gpl"
+cat >"$work/license-bare-gpl/THIRD-PARTY.txt" <<'EOF'
+List of third-party dependencies grouped by their license type.
+
+    (Apache License 2.0) Apache Commons Lang (org.apache.commons:commons-lang3:3.14.0 - https://commons.apache.org/proper/commons-lang/)
+    (GNU General Public License v3.0) Some GPL Lib (org.example:gpl-lib:1.0.0 - https://example.org)
+EOF
+expect "rejects a bare GPL with no classpath exception" 1 "GNU General Public License v3.0" \
+    "$ALLOWLIST" "$work/license-bare-gpl/THIRD-PARTY.txt"
+
+# Every family named in CLAUDE.md's ALLOWED list must pass, plus the license clauses
+# this project already ships that motivated adding ISC / MPL-2.0 / CDDL / GPL-2.0-with-
+# classpath-exception to that list alongside this script (see CLAUDE.md and the
+# ALLOWED_CLAUSES docstring for the reasoning and the real dependency each one covers).
+# The JMH and "New/Revised" BSD lines also pin that a clause with its own nested
+# parentheses is parsed as one clause, not split apart.
+mkdir -p "$work/license-clean"
+cat >"$work/license-clean/THIRD-PARTY.txt" <<'EOF'
+List of third-party dependencies grouped by their license type.
+
+    (Apache License 2.0) Apache Commons Lang (org.apache.commons:commons-lang3:3.14.0 - https://commons.apache.org/proper/commons-lang/)
+    (MIT License) SLF4J API Module (org.slf4j:slf4j-api:2.0.16 - http://www.slf4j.org)
+    (BSD 2-Clause) Some BSD2 Lib (org.example:bsd2-lib:1.0.0 - https://example.org)
+    (BSD 3-Clause) ANTLR 4 Runtime (org.antlr:antlr4-runtime:4.13.2 - https://www.antlr.org)
+    (BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)) abego TreeLayout Core (org.abego.treelayout:org.abego.treelayout.core:1.0.3 - http://treelayout.sourceforge.net)
+    (EPL 1.0) logback-core (ch.qos.logback:logback-core:1.5.27 - https://logback.qos.ch/)
+    (EPL 2.0) JUnit Jupiter API (org.junit.jupiter:junit-jupiter-api:6.0.2 - https://junit.org/junit5/)
+    (UPL 1.0) Some UPL Lib (org.example:upl-lib:1.0.0 - https://example.org)
+    (EDL 1.0) Jakarta Activation API (jakarta.activation:jakarta.activation-api:2.1.3 - https://github.com/eclipse-ee4j/jaf-api)
+    (LGPL 2.1) logback-classic (ch.qos.logback:logback-classic:1.5.27 - https://logback.qos.ch/)
+    (CC0 1.0 Universal) Some Public Domain Lib (org.example:cc0-lib:1.0.0 - https://example.org)
+    (ISC) jBCrypt (org.mindrot:jbcrypt:0.4 - https://github.com/djmdjm/jBCrypt)
+    (Mozilla Public License, Version 2.0) rhino (org.mozilla:rhino:1.7.15.1 - https://mozilla.github.io/rhino/)
+    (CDDL + GPLv2 with classpath exception) javax.annotation API (javax.annotation:javax.annotation-api:1.3.2 - http://jcp.org/en/jsr/detail?id=250)
+    (GNU General Public License (GPL), version 2, with the Classpath exception) JMH Core (org.openjdk.jmh:jmh-core:1.37 - http://openjdk.java.net/projects/code-tools/jmh/jmh-core/)
+    (EPL 2.0) (GPL2 w/ CPE) Jakarta Annotations API (jakarta.annotation:jakarta.annotation-api:1.3.5 - https://projects.eclipse.org/projects/ee4j.ca)
+EOF
+expect "accepts every license family in CLAUDE.md's allow-list" 0 "" \
+    "$ALLOWLIST" "$work/license-clean/THIRD-PARTY.txt"
+
+# A dual-license dependency passes if ANY declared option is allowed, matching how a
+# recipient may actually choose a license - even when the other option alone would not
+# be (a bare GPL2, here, only made safe by the classpath exception in the other clause).
+mkdir -p "$work/license-dual"
+cat >"$work/license-dual/THIRD-PARTY.txt" <<'EOF'
+List of third-party dependencies grouped by their license type.
+
+    (Apache License 2.0) (GNU Lesser General Public License) javaparser-core (com.github.javaparser:javaparser-core:3.26.3 - https://github.com/javaparser/javaparser-core)
+EOF
+expect "accepts a dual-licensed dependency if one option is allowed" 0 "" \
+    "$ALLOWLIST" "$work/license-dual/THIRD-PARTY.txt"
+
+# A report with no "(<license>)" heading lines means the wrong goal ran (e.g.
+# add-third-party against the near-empty root aggregator pom instead of
+# aggregate-add-third-party against the whole reactor) - fail loudly rather than
+# silently reporting zero violations.
+mkdir -p "$work/license-empty"
+printf 'List of third-party dependencies grouped by their license type.\n' \
+    >"$work/license-empty/THIRD-PARTY.txt"
+expect "rejects a report with no dependency lines" 2 "nothing to check" \
+    "$ALLOWLIST" "$work/license-empty/THIRD-PARTY.txt"
+
+expect "rejects a missing report file" 2 "not found" \
+    "$ALLOWLIST" "$work/license-mpl/does-not-exist.txt"
+
+# The live report is the point of the check: it must stay clean against the actual
+# reactor, generated locally with:
+#   mvn org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party -DskipTests
+# A committed fixture (tests/fixtures/THIRD-PARTY-reactor-2026-08-11.txt), snapshotted
+# from a real run against the full engine dependency closure (422 dependencies), stands
+# in for that live report here so this self-test does not need network access or a
+# multi-gigabyte local Maven repository to run.
+expect "accepts a real reactor-wide report (422 dependencies, snapshotted 2026-08-11)" 0 "" \
+    "$ALLOWLIST" "$SCRIPTS/tests/fixtures/THIRD-PARTY-reactor-2026-08-11.txt"
 
 echo
 if [[ $failures -gt 0 ]]; then
