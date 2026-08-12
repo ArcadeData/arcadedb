@@ -445,9 +445,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this seed
       // can advance the applied index past a pending target (a follower catching up via snapshot
       // install), and notifyApplied() has no other caller on this path (issue #5846).
-      final RaftHAServer raftHAOnReinit = this.raftHAServer;
-      if (raftHAOnReinit != null)
-        raftHAOnReinit.notifyApplied();
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null)
+        raftHA.notifyApplied();
     } else
       lastAppliedIndex.set(-1);
 
@@ -1188,9 +1188,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
         // leader-driven snapshot install advances the applied index without going through
         // applyTransaction(), the only other notifyApplied() call site (issue #5846).
-        final RaftHAServer raftHAOnInstall = this.raftHAServer;
-        if (raftHAOnInstall != null)
-          raftHAOnInstall.notifyApplied();
+        final RaftHAServer raftHA = this.raftHAServer;
+        if (raftHA != null)
+          raftHA.notifyApplied();
 
         LogManager.instance().log(this, Level.INFO,
             "HA resync finished (mode=snapshot, result=ok): snapshotIndex=%d", snapshotIndex);
