@@ -64,7 +64,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class PageSnapshotTest extends TestHelper {
 
-  private static final String TYPE = "Doc";
+  private static final String TYPE       = "Doc";
+  private static final String SPILL_TYPE = "Spill";
 
   @Override
   protected void beginTest() {
@@ -427,6 +428,52 @@ class PageSnapshotTest extends TestHelper {
   }
 
   /**
+   * The shadow is RAM first with disk spill (challenge C5), and the spill is the half a short backup never reaches -
+   * so it needs its own test or it ships untested. A 1 MB RAM budget against a dataset laid out over hundreds of
+   * small pages forces the pre-images past the budget and onto disk, which exercises the spill write, the spill
+   * read, the primitive index rehash (its load factor trips past 512 entries), and the scratch-file cleanup on
+   * close - while the t0 image the window serves must be exactly as intact as it is for a RAM-only shadow.
+   */
+  @Test
+  void aShadowThatOutgrowsItsRamBudgetSpillsToDiskAndStillServesT0() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManager pageManager = db.getPageManager();
+
+    // SMALL PAGES SO A FEW MB OF DATA BECOMES THE HUNDREDS OF DISTINCT PAGES THE REHASH AND THE SPILL BOTH NEED
+    database.getSchema().buildDocumentType().withName(SPILL_TYPE).withTotalBuckets(1).withPageSize(16_384).create();
+    database.transaction(() -> {
+      for (int i = 0; i < 60_000; i++)
+        database.newDocument(SPILL_TYPE).set("id", i).set("payload", "s".repeat(120)).save();
+    });
+    pageManager.waitAllPagesOfDatabaseAreFlushed(db);
+
+    GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM.setValue(1);
+    GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE.setValue(256);
+
+    final File[] shadowsDuringWindow;
+    try (final PageSnapshot snapshot = pageManager.openSnapshot(db)) {
+      final Map<Integer, Long> t0Checksums = checksums(snapshot);
+
+      database.transaction(() -> database.iterateType(SPILL_TYPE, false).forEachRemaining(
+          record -> record.asDocument().modify().set("payload", "t".repeat(120)).save()));
+      pageManager.waitAllPagesOfDatabaseAreFlushed(db);
+
+      assertThat(snapshot.getStatus()).isEqualTo(PageSnapshot.STATUS.ACTIVE);
+      assertThat(snapshot.getShadowedPages()).as("the rewrite must shadow more pages than the index starts sized for")
+          .isGreaterThan(512);
+      assertThat(snapshot.getShadowSpilledBytes()).as("the shadow must have outgrown its 1 MB RAM budget").isPositive();
+
+      shadowsDuringWindow = shadowFiles();
+      assertThat(shadowsDuringWindow).as("the spill file must exist while the window is open").isNotEmpty();
+
+      // THE POINT OF THE TEST: A SPILLED PRE-IMAGE READS BACK EXACTLY LIKE A RAM ONE
+      assertThat(checksums(snapshot)).isEqualTo(t0Checksums);
+    }
+
+    assertThat(shadowFiles()).as("the scratch file must be deleted when the window closes").isEmpty();
+  }
+
+  /**
    * Challenge C8: the shadow is pure scratch, so a crash mid-window leaves an orphan file which the next open must
    * delete. It must also never be mistaken for a data file, which is why its extension is absent from
    * {@code LocalDatabase.SUPPORTED_FILE_EXT}.
@@ -508,6 +555,12 @@ class PageSnapshotTest extends TestHelper {
 
   private void newDocument(final int id, final String payload) {
     database.newDocument(TYPE).set("id", id).set("payload", payload).save();
+  }
+
+  private File[] shadowFiles() {
+    final File[] found = new File(database.getDatabasePath()).listFiles(
+        (dir, name) -> name.endsWith("." + PageSnapshot.SHADOW_FILE_EXT));
+    return found != null ? found : new File[0];
   }
 
   private Map<Integer, Long> checksums(final PageSnapshot snapshot) throws IOException {
