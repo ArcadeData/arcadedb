@@ -94,6 +94,17 @@ public interface Procedure {
    * (like algo.allSimplePaths), it may contain many elements.
    * </p>
    *
+   * <p>
+   * A procedure for which {@link #isWriteProcedure()} returns {@code true} must perform its mutation and
+   * fully materialize the returned {@link Stream} before returning it, rather than generating results lazily
+   * as the stream is consumed. The caller (Cypher's {@code CALL} step) auto-commits a write procedure called
+   * with no transaction already open by committing immediately after building the stream, before any
+   * downstream consumer has pulled from it - a write procedure that mutated lazily during stream consumption
+   * would then attempt its write after that auto-opened transaction had already closed. Every current write
+   * procedure already satisfies this (e.g. by building a {@code List} and returning {@code list.stream()}, or
+   * {@code Stream.of(result)} after the mutation completes).
+   * </p>
+   *
    * @param args     the procedure arguments (already evaluated)
    * @param inputRow the current input row (may be null for standalone CALL)
    * @param context  the command execution context
