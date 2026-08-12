@@ -2026,20 +2026,19 @@ public class SelectExecutionPlanner {
 
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
       final BooleanExpression expr = andBlock.getSubBlocks().get(i);
-      final List<RID> rids = extractRidEqualityOrInList(expr, context);
-      if (rids == null)
-        continue;
+      if (extractRidEqualityOrInList(expr, context) == null)
+        continue; // not one of the @rid = <RID> / @rid IN [<RID list>] shapes
 
-      if (rids.isEmpty()) {
-        // The RID list is definitely empty (e.g. an empty IN-list or a null bind parameter):
-        // no record can match, whatever the remaining conditions are.
-        plan.chain(new EmptyStep(context));
-        info.whereClause = null;
-        info.flattenedWhereClause = null;
-        return true;
-      }
-
-      plan.chain(new FetchFromRidsStep(rids, context));
+      // Deliberately do NOT bake the RID(s) resolved above into the fetch step: this build may run
+      // once per statement text and get reused later, with different bound parameters, straight from
+      // db.getExecutionPlanCache() (see ExecutionPlanCache.get()'s InternalExecutionPlan.copy(context)).
+      // FetchFromRidsStep(BooleanExpression, CommandContext) re-resolves ridCondition lazily against
+      // each execution's own live context instead, keeping this whole plan cacheable. That includes
+      // whatever this particular build's RIDs resolved to being empty (e.g. a null-bound parameter):
+      // baking THAT into a cached plan would be just as wrong for a later, differently-bound
+      // execution - see EmptyStep.canBeCached()'s "DON'T TOUCH" comment for exactly this hazard, and
+      // issue #5855.
+      plan.chain(new FetchFromRidsStep(expr, context));
       plan.chain(new FilterByTypeStep(identifier, context));
 
       final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
@@ -2062,16 +2061,21 @@ public class SelectExecutionPlanner {
 
   /**
    * Recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also {@code IN (<RID list>)}
-   * and {@code IN <bind parameter>}) and resolves the RID(s) at plan time. Returns {@code null} if
-   * {@code expr} isn't one of these shapes, or if any element can't be resolved to a RID at plan
-   * time (e.g. it's computed from a per-record field) - the caller falls back to the normal scan
-   * in that case, which still evaluates correctly. Returns an empty list if the condition can
-   * never match any record (empty IN-list, or a bind parameter bound to null) so the caller can
-   * short-circuit to no results. {@code @rid NOT IN [...]} is deliberately not handled here:
-   * excluding a RID set still requires scanning every other record of the type, which this
-   * optimization cannot help with.
+   * and {@code IN <bind parameter>}) and resolves the RID(s) against {@code context}. Returns
+   * {@code null} if {@code expr} isn't one of these shapes, or if any element can't be resolved to a
+   * RID given {@code context} (e.g. it's computed from a per-record field). Returns an empty list if
+   * the condition can never match any record (empty IN-list, or a bind parameter bound to null).
+   * {@code @rid NOT IN [...]} is deliberately not handled here: excluding a RID set still requires
+   * scanning every other record of the type, which this optimization cannot help with.
+   * <p>
+   * Called from two places: {@link #handleTypeWithRidFilter} at plan-build time, only to decide
+   * whether {@code expr} is one of these shapes at all (the caller falls back to the normal scan
+   * path if not, which still evaluates correctly); and {@link FetchFromRidsStep#syncPull} on every
+   * pull of the resulting step's execution, re-resolving against that execution's own live
+   * {@code context} so the step - and the whole plan - stays safe to reuse from
+   * {@code db.getExecutionPlanCache()} with different bound parameters (issue #5855).
    */
-  private static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
+  static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
     if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
         && RID_PROPERTY.equalsIgnoreCase(bc.getLeft().toString())) {
       final RID rid = extractRidValue(bc.getRight(), context);
