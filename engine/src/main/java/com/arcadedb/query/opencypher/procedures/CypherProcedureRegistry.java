@@ -89,6 +89,7 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoTopologicalSort;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTriangleCount;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoVoteRank;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
+import com.arcadedb.query.opencypher.procedures.control.DoWhen;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
 import com.arcadedb.query.opencypher.procedures.meta.MetaGraph;
@@ -101,6 +102,8 @@ import com.arcadedb.query.opencypher.procedures.path.PathExpandConfig;
 import com.arcadedb.query.opencypher.procedures.path.PathSpanningTree;
 import com.arcadedb.query.opencypher.procedures.path.PathSubgraphAll;
 import com.arcadedb.query.opencypher.procedures.path.PathSubgraphNodes;
+import com.arcadedb.query.opencypher.procedures.refactor.RefactorCloneNodesWithRelationships;
+import com.arcadedb.query.opencypher.procedures.refactor.RefactorMergeNodes;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -293,6 +296,10 @@ public final class CypherProcedureRegistry {
     registerMetaProcedures();
     // Database index procedures (Neo4j compatibility)
     registerDbProcedures();
+    // Control-flow procedures (APOC compatibility)
+    registerControlProcedures();
+    // Refactor procedures (APOC compatibility)
+    registerRefactorProcedures();
   }
 
   private static void registerMergeProcedures() {
@@ -389,5 +396,14 @@ public final class CypherProcedureRegistry {
     register(new MetaStats());
     register(new MetaNodeTypeProperties());
     register(new MetaRelTypeProperties());
+  }
+
+  private static void registerControlProcedures() {
+    register(new DoWhen());
+  }
+
+  private static void registerRefactorProcedures() {
+    register(new RefactorMergeNodes());
+    register(new RefactorCloneNodesWithRelationships());
   }
 }
