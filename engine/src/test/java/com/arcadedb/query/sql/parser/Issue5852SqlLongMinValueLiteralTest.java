@@ -69,6 +69,24 @@ class Issue5852SqlLongMinValueLiteralTest {
   }
 
   /**
+   * The explicit {@code L}/{@code l}-suffixed spelling must fold the same way as the bare literal: the suffix only
+   * ever forces the {@code long} conversion, which is already what the fold produces.
+   */
+  @Test
+  void longSuffixedLongMinValueLiteralParsesToTheCorrectValue() throws Exception {
+    TestHelper.executeInNewDatabase("./target/databases/testIssue5852LiteralSuffixSelect", db -> {
+      try (final ResultSet rs = db.query("sql", "SELECT -9223372036854775808L AS r")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Long>getProperty("r")).isEqualTo(Long.MIN_VALUE);
+      }
+      try (final ResultSet rs = db.query("sql", "SELECT -9223372036854775808l AS r")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Long>getProperty("r")).isEqualTo(Long.MIN_VALUE);
+      }
+    });
+  }
+
+  /**
    * A magnitude that overflows even after the sign is folded in (more digits than {@code Long.MIN_VALUE}'s) must
    * still be rejected with the original error, not silently accepted.
    */

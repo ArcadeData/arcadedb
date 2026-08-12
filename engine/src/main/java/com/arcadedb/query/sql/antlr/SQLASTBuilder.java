@@ -2735,7 +2735,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * directly preceded by a unary minus, with the sign folded in before conversion.
    * <p>
    * Ordinary literals (the bare magnitude already fits in a {@code long}) fall through untouched, so this only
-   * changes behaviour for the single value that used to fail to parse.
+   * changes behaviour for the single value that used to fail to parse. An explicit {@code L}/{@code l} suffix
+   * (e.g. {@code -9223372036854775808L}) is stripped before the digit check and folded the same way: the suffix
+   * only ever forces {@link #visitIntegerLiteral} to prefer the {@code long} conversion, which is already what
+   * happens here.
    */
   private BaseExpression tryFoldLongMinValueLiteral(final SQLParser.UnaryContext ctx) {
     if (!(ctx.mathExpression() instanceof final SQLParser.BaseContext baseCtx))
@@ -2743,10 +2746,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (!(baseCtx.baseExpression() instanceof final SQLParser.IntegerLiteralContext intCtx))
       return null;
 
-    final String text = intCtx.INTEGER_LITERAL().getText();
+    final String originalText = intCtx.INTEGER_LITERAL().getText();
+    final String text = (originalText.endsWith("L") || originalText.endsWith("l"))
+        ? originalText.substring(0, originalText.length() - 1) : originalText;
+
     for (int i = 0; i < text.length(); i++)
       if (!Character.isDigit(text.charAt(i)))
-        return null; // has an L/l suffix, or is hex/octal: not the plain-decimal shape we fold here
+        return null; // hex/octal-shaped: not the plain-decimal shape we fold here
 
     try {
       Long.parseLong(text);
@@ -2759,7 +2765,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         baseExpr.number = new PInteger(-1).setValue(Long.parseLong("-" + text));
         return baseExpr;
       } catch (final NumberFormatException stillInvalid) {
-        throw new CommandSQLParsingException("Invalid integer: " + text);
+        throw new CommandSQLParsingException("Invalid integer: " + originalText);
       }
     }
   }
