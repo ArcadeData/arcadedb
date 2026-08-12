@@ -369,10 +369,29 @@ public class PageManager extends LockContext {
    * captures the same freshly read pre-image into every window that still needs it (challenge C3). Only the barrier
    * is serialized per database, and only for its own duration.
    *
+   * <b>Every failure surfaces as {@link PageSnapshotException}</b>, including an I/O error while enumerating the
+   * files and an interrupt during the barrier. That is deliberate: a consumer's fallback to the suspend-and-freeze
+   * path is only genuinely unconditional if there is ONE exception type to catch - and these callers run inside
+   * {@code executeInReadLock}, which wraps a checked exception into something a {@code catch (PageSnapshotException)}
+   * would never match, so a leaked {@code IOException} silently disables the fallback.
+   *
    * @return a handle the caller MUST close, ideally in a try-with-resources: the shadow and any file whose deletion
    *     was deferred for it are released there.
    */
-  public PageSnapshot openSnapshot(final DatabaseInternal database) throws IOException, InterruptedException {
+  public PageSnapshot openSnapshot(final DatabaseInternal database) {
+    try {
+      return openSnapshotInternal(database);
+    } catch (final PageSnapshotException e) {
+      throw e;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new PageSnapshotException("Interrupted while opening a snapshot of database '" + database.getName() + "'", e);
+    } catch (final Exception e) {
+      throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName() + "'", e);
+    }
+  }
+
+  private PageSnapshot openSnapshotInternal(final DatabaseInternal database) throws IOException, InterruptedException {
     final PageManagerFlushThread thread = flushThread;
     if (thread == null)
       throw new PageSnapshotException(
@@ -510,13 +529,25 @@ public class PageManager extends LockContext {
   private PageSnapshot buildSnapshot(final DatabaseInternal database) throws IOException {
     final List<PageSnapshot.SnapshotFile> files = new ArrayList<>();
     for (final ComponentFile file : database.getFileManager().getFiles()) {
-      if (!(file instanceof PaginatedComponentFile paginated) || !paginated.isOpen())
+      // A null slot is a dropped file id and a not-yet-opened one is the reserved slot of a file id that has been
+      // allocated but whose file does not exist yet: neither has content at t0, so both are correctly absent. Any
+      // OTHER unusable file would silently shrink the archive while the backup still reported success, which is the
+      // worst failure mode a backup has - so it is named in the log rather than dropped quietly.
+      if (file == null)
         continue;
-      final int pageSize = paginated.getPageSize();
-      if (pageSize <= 0)
+      if (!(file instanceof PaginatedComponentFile paginated) || !paginated.isOpen() || paginated.getPageSize() <= 0) {
+        LogManager.instance().log(this, Level.FINE,
+            "Snapshot of database '%s' skips file '%s' (id=%d): it is not an open paginated file at t0", null,
+            database.getName(), file.getFileName(), file.getFileId());
         continue;
-      files.add(new PageSnapshot.SnapshotFile(paginated.getFileId(), paginated, pageSize, (int) paginated.getTotalPages(),
-          paginated.getFileName()));
+      }
+
+      // getTotalPages() is a channel.size() syscall, and unlike SnapshotFile.lastModified() it CANNOT be made lazy:
+      // the page count at t0 is what defines which pages the snapshot covers, and reading it later would let a page
+      // appended after t0 into the snapshot un-shadowed. An fstat per file is orders of magnitude cheaper than the
+      // flush-queue drain this same barrier already performed.
+      files.add(new PageSnapshot.SnapshotFile(paginated.getFileId(), paginated, paginated.getPageSize(),
+          (int) paginated.getTotalPages(), paginated.getFileName()));
     }
 
     final ContextConfiguration configuration = database.getConfiguration();

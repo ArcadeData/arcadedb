@@ -26,6 +26,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -227,13 +228,19 @@ public class SnapshotHttpHandler implements HttpHandler {
                   databaseName, e.getMessage());
             }
 
-          if (snapshot != null)
+          if (snapshot != null) {
+            final PageSnapshot openWindow = snapshot;
             try {
-              serveSnapshotZip(exchange, db, databaseName, snapshot);
+              // THE SUSPEND-AND-FREEZE BRANCH BELOW RUNS ITS CALLBACK THROUGH suspendFlushAndExecute, WHICH LOGS AND
+              // SWALLOWS. MATCHING THAT HERE KEEPS THE HANDLER'S CONTRACT IDENTICAL ON BOTH PATHS: A TRANSFER THAT
+              // DIES MID-STREAM HAS ALREADY COMMITTED ITS RESPONSE, SO THERE IS NOTHING USEFUL TO TURN THE THROW
+              // INTO - THE FOLLOWER DETECTS THE MISSING MANIFEST (#4831) AND RETRIES
+              CodeUtils.executeIgnoringExceptions(() -> serveSnapshotZip(exchange, db, databaseName, openWindow),
+                  "Error serving the snapshot of database '" + databaseName + "'", true);
             } finally {
-              snapshot.close();
+              openWindow.close();
             }
-          else
+          } else
             // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
             // perDatabaseSuspendLock additionally serializes same-database zip streams (see its comment).
             db.getPageManager().suspendFlushAndExecute(db, () -> serveSnapshotZip(exchange, db, databaseName, null));

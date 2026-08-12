@@ -911,4 +911,13 @@ the next open.
 Overlapping windows are supported rather than serialized: each owns its shadow, and a write captures the same
 freshly read pre-image into every window that still needs it.
 
+### One incidental change to every backup archive
+
+The two backup writers disagreed about ZIP entry timestamps: the parallel one stamped the source file's
+modification time, the single-threaded one left `ZipOutputStream` to stamp the moment the entry was written. Adding
+the stream-based entry API the snapshot path needs routed both through one implementation, so they now agree on the
+source file's modification time - which is the more useful of the two, and was already what the default
+(multi-threaded) writer produced. Nothing about restoring changes; only the timestamps a listing shows for an
+archive written with `arcadedb.backup.compressionThreads = 0`.
+
 [#6075](https://github.com/ArcadeData/arcadedb/issues/6075)

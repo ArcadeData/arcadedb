@@ -19,6 +19,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.LongLongHashMap;
 
 import java.io.File;
 import java.io.IOException;
@@ -26,7 +27,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
-import java.util.Arrays;
 import java.util.logging.Level;
 
 /**
@@ -40,9 +40,10 @@ import java.util.logging.Level;
  * <p>
  * <b>Why the index is a primitive open-addressing map</b> (challenge C6). It is probed on every page write while a
  * window is open, from the flush thread. A {@code HashMap<PageId, Long>} would box the value and allocate an entry
- * per shadowed page on the flush hot path; this costs 16 bytes per entry with no allocation at all, so a million
- * shadowed pages is 16 MB of index. Keys pack {@code fileId} and {@code pageNumber} into one {@code long} and are
- * therefore always non-negative, which frees {@code -1} as the empty slot marker.
+ * per shadowed page on the flush hot path; {@link LongLongHashMap} costs 16 bytes per entry with no allocation at
+ * all, so a million shadowed pages is 16 MB of index. Keys pack {@code fileId} and {@code pageNumber} into one
+ * {@code long}, so they are always non-negative and can never collide with that map's {@code Long.MIN_VALUE} empty
+ * marker - which is also what makes {@code Long.MIN_VALUE} usable here as the "not shadowed" lookup default.
  * <p>
  * <b>Concurrency.</b> The index is serialized on this instance, but the I/O is deliberately NOT: the capture side is
  * called from inside {@code PageManager.concurrentPageAccess}'s per-page write slot, so two threads never capture the
@@ -60,21 +61,14 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PageShadow implements AutoCloseable {
-  /** Keys pack two non-negative ints, so they are never negative and -1 is free as the empty-slot marker. */
-  private static final long EMPTY_KEY          = -1L;
-  private static final int  INITIAL_CAPACITY   = 1024;
   /** A RAM slot index is stored as-is; a spill offset as {@code -(offset + 1)}, so the two never collide. */
-  private static final long NOT_FOUND          = Long.MIN_VALUE;
+  private static final long NOT_FOUND = Long.MIN_VALUE;
 
   private final File spillFile;
   private final long maxRAMBytes;
   private final long maxTotalBytes;
 
-  private long[] indexKeys;
-  private long[] indexValues;
-  private int    indexSize;
-  private int    indexMask;
-  private int    indexThreshold;
+  private LongLongHashMap index = new LongLongHashMap();
 
   private byte[][] ramSlots  = new byte[64][];
   private int      ramCount  = 0;
@@ -89,7 +83,6 @@ final class PageShadow implements AutoCloseable {
     this.spillFile = spillFile;
     this.maxRAMBytes = maxRAMBytes;
     this.maxTotalBytes = maxTotalBytes;
-    allocateIndex(INITIAL_CAPACITY);
   }
 
   /** Packs a page coordinate into the primitive index key. Both components are non-negative by construction. */
@@ -98,7 +91,7 @@ final class PageShadow implements AutoCloseable {
   }
 
   synchronized boolean contains(final long key) {
-    return !closed && lookup(key) != NOT_FOUND;
+    return !closed && index.get(key, NOT_FOUND) != NOT_FOUND;
   }
 
   /**
@@ -114,7 +107,7 @@ final class PageShadow implements AutoCloseable {
     synchronized (this) {
       if (closed)
         return false;
-      if (lookup(key) != NOT_FOUND)
+      if (index.get(key, NOT_FOUND) != NOT_FOUND)
         // ALREADY CAPTURED BY AN EARLIER WRITE TO THE SAME PAGE: THE FIRST PRE-IMAGE IS THE SNAPSHOT ONE, KEEP IT
         return true;
 
@@ -130,7 +123,7 @@ final class PageShadow implements AutoCloseable {
           ramSlots = larger;
         }
         ramSlots[ramCount] = copy;
-        insert(key, ramCount++);
+        index.put(key, ramCount++);
         ramBytes += length;
         return true;
       }
@@ -159,7 +152,7 @@ final class PageShadow implements AutoCloseable {
       if (closed)
         return true;
       // PUBLISHED ONLY NOW: A READER THAT SEES THE ENTRY IS GUARANTEED TO SEE THE COMPLETE BYTES
-      insert(key, -(offset + 1));
+      index.put(key, -(offset + 1));
     }
     return true;
   }
@@ -179,7 +172,7 @@ final class PageShadow implements AutoCloseable {
       if (closed)
         return false;
 
-      slot = lookup(key);
+      slot = index.get(key, NOT_FOUND);
       if (slot == NOT_FOUND)
         return false;
 
@@ -209,7 +202,7 @@ final class PageShadow implements AutoCloseable {
 
   /** Number of pages currently shadowed. */
   synchronized int getPageCount() {
-    return indexSize;
+    return index.size();
   }
 
   /** Bytes held in RAM plus bytes spilled to disk: what {@code PAGE_SNAPSHOT_MAX_SIZE} caps. */
@@ -230,11 +223,8 @@ final class PageShadow implements AutoCloseable {
     ramSlots = new byte[0][];
     ramCount = 0;
     ramBytes = 0L;
-    // RELEASE THE INDEX TOO: EVERY LOOKUP IS GATED ON closed ABOVE, SO NOTHING PROBES THESE ARRAYS AGAIN
-    indexKeys = new long[0];
-    indexValues = new long[0];
-    indexMask = 0;
-    indexSize = 0;
+    // RELEASE THE INDEX TOO: EVERY LOOKUP IS GATED ON closed ABOVE, SO NOTHING PROBES IT AGAIN
+    index = new LongLongHashMap(16);
 
     if (spillChannel != null) {
       try {
@@ -256,69 +246,4 @@ final class PageShadow implements AutoCloseable {
     }
   }
 
-  // ------------------------------------------------------------------------------------- PRIMITIVE INDEX
-
-  private void allocateIndex(final int capacity) {
-    int size = INITIAL_CAPACITY;
-    while (size < capacity)
-      size <<= 1;
-    indexKeys = new long[size];
-    indexValues = new long[size];
-    Arrays.fill(indexKeys, EMPTY_KEY);
-    indexMask = size - 1;
-    indexSize = 0;
-    // LOAD FACTOR 0.5: LINEAR PROBING DEGRADES SHARPLY PAST THAT, AND THE MEMORY IS TRIVIAL NEXT TO THE PAGE IMAGES
-    indexThreshold = size >> 1;
-  }
-
-  private long lookup(final long key) {
-    int pos = hash(key) & indexMask;
-    while (true) {
-      final long k = indexKeys[pos];
-      if (k == EMPTY_KEY)
-        return NOT_FOUND;
-      if (k == key)
-        return indexValues[pos];
-      pos = (pos + 1) & indexMask;
-    }
-  }
-
-  private void insert(final long key, final long value) {
-    if (indexSize >= indexThreshold)
-      rehash();
-
-    int pos = hash(key) & indexMask;
-    while (true) {
-      final long k = indexKeys[pos];
-      if (k == EMPTY_KEY) {
-        indexKeys[pos] = key;
-        indexValues[pos] = value;
-        ++indexSize;
-        return;
-      }
-      if (k == key) {
-        indexValues[pos] = value;
-        return;
-      }
-      pos = (pos + 1) & indexMask;
-    }
-  }
-
-  private void rehash() {
-    final long[] oldKeys = indexKeys;
-    final long[] oldValues = indexValues;
-    allocateIndex(oldKeys.length * 2);
-    for (int i = 0; i < oldKeys.length; i++)
-      if (oldKeys[i] != EMPTY_KEY)
-        insert(oldKeys[i], oldValues[i]);
-  }
-
-  /**
-   * Fibonacci hashing of the packed key. Page numbers are dense and sequential, so the low bits alone would map a
-   * whole file onto one contiguous run of slots; multiplying by the golden-ratio constant spreads them.
-   */
-  private static int hash(final long key) {
-    final long h = key * 0x9E3779B97F4A7C15L;
-    return (int) (h ^ (h >>> 32)) & 0x7FFFFFFF;
-  }
 }

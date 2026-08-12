@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
@@ -41,6 +42,7 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -65,7 +67,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PageSnapshotTest extends TestHelper {
 
   private static final String TYPE       = "Doc";
-  private static final String SPILL_TYPE = "Spill";
+  private static final String SPILL_TYPE  = "Spill";
+  private static final String SPARSE_TYPE = "Sparse";
 
   @Override
   protected void beginTest() {
@@ -425,6 +428,58 @@ class PageSnapshotTest extends TestHelper {
     }
 
     assertThat(database.countType(TYPE, false)).isEqualTo(2_000);
+  }
+
+  /**
+   * A SPARSE set of shadowed pages inside one bulk-read run: the case the reader gets wrong if it only restores the
+   * pages it found missing on the first probe.
+   * <p>
+   * The reader resolves a run of {@code READ_RUN_PAGES} pages by probing the shadow, bulk-reading the span of pages
+   * that were NOT in it, then re-probing. A page that was already shadowed but sits INSIDE that span - because its
+   * neighbours were not shadowed - has its pre-image overwritten by the bulk read, and is only restored if the
+   * re-probe is unconditional. Pages are shadowed in write order, which has nothing to do with run boundaries, so
+   * this is the ordinary case rather than an exotic one, and getting it wrong is silent: the archive simply holds
+   * post-t0 content for those pages.
+   * <p>
+   * Updating one record every few hundred lands the dirty pages scattered across the file, which is exactly the
+   * pattern needed. The assertion is the whole-file checksum, so any page served from after t0 fails it.
+   */
+  @Test
+  void aSparseSetOfShadowedPagesInsideOneReadRunStillServesT0() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManager pageManager = db.getPageManager();
+
+    database.getSchema().buildDocumentType().withName(SPARSE_TYPE).withTotalBuckets(1).withPageSize(16_384).create();
+    database.transaction(() -> {
+      for (int i = 0; i < 20_000; i++)
+        database.newDocument(SPARSE_TYPE).set("id", i).set("payload", "p".repeat(120)).save();
+    });
+    pageManager.waitAllPagesOfDatabaseAreFlushed(db);
+
+    try (final PageSnapshot snapshot = pageManager.openSnapshot(db)) {
+      final Map<Integer, Long> t0Checksums = checksums(snapshot);
+      final int filesAtT0 = snapshot.getFiles().size();
+
+      // EVERY 500th RECORD: THE DIRTIED PAGES ARE SPREAD OUT, SO A BULK-READ RUN TYPICALLY SPANS SHADOWED PAGES
+      // WITH UNSHADOWED NEIGHBOURS ON BOTH SIDES
+      database.transaction(() -> {
+        final Iterator<Record> records = database.iterateType(SPARSE_TYPE, false);
+        for (int i = 0; records.hasNext(); i++) {
+          final Record record = records.next();
+          if (i % 500 == 0)
+            record.asDocument().modify().set("payload", "M".repeat(120)).save();
+        }
+      });
+      pageManager.waitAllPagesOfDatabaseAreFlushed(db);
+
+      final int shadowed = snapshot.getShadowedPages();
+      assertThat(shadowed).as("the scattered updates must shadow some pages, but far from all of them").isPositive();
+      assertThat(shadowed).as("a fully shadowed file would not exercise the mixed run this test is about")
+          .isLessThan(filesAtT0 * 100);
+
+      assertThat(checksums(snapshot)).as("a page shadowed before the read must not be served from the live file")
+          .isEqualTo(t0Checksums);
+    }
   }
 
   /**

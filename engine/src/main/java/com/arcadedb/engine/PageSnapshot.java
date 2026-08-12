@@ -352,7 +352,6 @@ public class PageSnapshot implements AutoCloseable {
     private final SnapshotFile snapshotFile;
     private final byte[]       buffer;
     private final ByteBuffer   byteBuffer;
-    private final boolean[]    fromShadow;
 
     private int nextPage    = 0;
     private int bufferLimit = 0;
@@ -362,7 +361,6 @@ public class PageSnapshot implements AutoCloseable {
       this.snapshotFile = snapshotFile;
       this.buffer = new byte[READ_RUN_PAGES * snapshotFile.pageSize()];
       this.byteBuffer = ByteBuffer.wrap(buffer);
-      this.fromShadow = new boolean[READ_RUN_PAGES];
     }
 
     @Override
@@ -399,21 +397,21 @@ public class PageSnapshot implements AutoCloseable {
       final int runPages = Math.min(READ_RUN_PAGES, snapshotFile.pageCount() - nextPage);
       final int fileId = snapshotFile.fileId();
 
-      // 1. PRE-PROBE: PAGES ALREADY SHADOWED ARE SERVED FROM THE SHADOW AND EXCLUDED FROM THE BULK READ
+      // 1. PRE-PROBE: PAGES ALREADY SHADOWED ARE SERVED FROM THE SHADOW, AND THE BULK READ ONLY HAS TO SPAN THE
+      //    OUTERMOST PAGES THAT ARE NOT
       int firstUnshadowed = -1;
       int lastUnshadowed = -1;
-      for (int i = 0; i < runPages; i++) {
-        fromShadow[i] = shadow.read(PageShadow.key(fileId, nextPage + i), buffer, i * pageSize, pageSize);
-        if (!fromShadow[i]) {
+      for (int i = 0; i < runPages; i++)
+        if (!shadow.read(PageShadow.key(fileId, nextPage + i), buffer, i * pageSize, pageSize)) {
           if (firstUnshadowed < 0)
             firstUnshadowed = i;
           lastUnshadowed = i;
         }
-      }
 
       // 2. ONE BULK READ COVERING EVERY PAGE OF THE RUN NOT ALREADY RESOLVED. THE RANGE IS CONTIGUOUS EVEN WHEN IT
-      //    SPANS A SHADOWED PAGE IN THE MIDDLE: RE-READING THAT PAGE IS CHEAPER THAN SPLITTING THE I/O, AND ITS
-      //    BYTES ARE OVERWRITTEN FROM THE SHADOW AGAIN IN STEP 3
+      //    SPANS A PAGE THAT WAS ALREADY SHADOWED: RE-READING THAT PAGE IS CHEAPER THAN SPLITTING THE I/O, AND ITS
+      //    LIVE BYTES ARE OVERWRITTEN FROM THE SHADOW AGAIN IN STEP 3 - WHICH IS WHY STEP 3 MUST RE-PROBE EVERY
+      //    PAGE OF THE RUN, NOT ONLY THE ONES THAT WERE UNSHADOWED AT STEP 1
       if (firstUnshadowed >= 0) {
         final int readPages = lastUnshadowed - firstUnshadowed + 1;
         byteBuffer.clear();
@@ -431,11 +429,16 @@ public class PageSnapshot implements AutoCloseable {
         byteBuffer.clear();
       }
 
-      // 3. RE-PROBE: ANY PAGE THAT ENTERED THE SHADOW WHILE THE BULK READ WAS RUNNING WAS WRITTEN UNDERNEATH IT, SO
-      //    THE BYTES JUST READ MAY BE TORN. THE CAPTURED PRE-IMAGE IS THE t0 IMAGE, SO IT WINS
+      // 3. RE-PROBE EVERY PAGE OF THE RUN, UNCONDITIONALLY. TWO DISTINCT CASES NEED IT, AND GATING ON
+      //    !fromShadow[i] SILENTLY BROKE THE FIRST ONE:
+      //      a) A PAGE ALREADY SHADOWED AT STEP 1 THAT SITS INSIDE THE BULK-READ RANGE (ITS NEIGHBOURS WERE NOT
+      //         SHADOWED, SO THE RANGE SPANS IT). STEP 2 OVERWROTE ITS PRE-IMAGE WITH CURRENT, POST-t0 BYTES.
+      //         THIS IS THE COMMON CASE, NOT AN EXOTIC ONE: PAGES ARE SHADOWED IN WRITE ORDER, WHICH HAS NOTHING
+      //         TO DO WITH READ_RUN_PAGES BOUNDARIES.
+      //      b) A PAGE WRITTEN UNDERNEATH THE BULK READ, WHOSE BYTES MAY THEREFORE BE TORN.
+      //    A PAGE THAT IS IN NEITHER CASE IS NOT IN THE SHADOW AT ALL, SO THE PROBE IS A NO-OP ON IT
       for (int i = 0; i < runPages; i++)
-        if (!fromShadow[i])
-          shadow.read(PageShadow.key(fileId, nextPage + i), buffer, i * pageSize, pageSize);
+        shadow.read(PageShadow.key(fileId, nextPage + i), buffer, i * pageSize, pageSize);
 
       checkValid();
 
