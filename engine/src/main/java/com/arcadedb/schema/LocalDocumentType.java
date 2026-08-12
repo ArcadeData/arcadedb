@@ -200,12 +200,18 @@ public class LocalDocumentType implements DocumentType {
     final String oldName = name;
 
     final List<Bucket> removedBuckets = new ArrayList<>();
+    final List<TypeIndex> renamedIndexes = new ArrayList<>();
 
     try {
       for (Bucket bucket : buckets) {
         final String oldBucketName = bucket.getName();
 
-        ((LocalBucket) bucket).rename(newName);
+        final String newBucketName = LocalSchema.rebaseComponentName(oldBucketName, oldName, newName, schema.getEncoding());
+        if (newBucketName == null)
+          // Bucket attached with addBucket() under a name of its own: it does not follow the type name.
+          continue;
+
+        ((LocalBucket) bucket).rename(newBucketName);
 
         removedBuckets.add(bucket);
 
@@ -218,22 +224,43 @@ public class LocalDocumentType implements DocumentType {
       schema.types.remove(oldName);
       schema.types.put(newName, this);
 
-      for (TypeIndex idx : getAllIndexes(false))
+      // Registered before the call, not after: updateTypeName() walks the index's own per-bucket sub-indexes, so a
+      // failure part way through leaves that index half renamed and it has to be rolled back too.
+      for (TypeIndex idx : getAllIndexes(false)) {
+        renamedIndexes.add(idx);
         idx.updateTypeName(newName);
+      }
 
       schema.saveConfiguration();
 
-    } catch (IOException e) {
+      // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the buckets
+      // already renamed on disk with a schema.json that still names the old files.
+    } catch (IOException | SchemaException e) {
       name = oldName;
       schema.types.put(oldName, this);
       schema.types.remove(newName);
 
       boolean corrupted = false;
+
+      // Unwound in reverse: indexes were renamed last, so they are restored first. 'name' is already back to the
+      // old value above, which is what TypeIndex.updateTypeName() recomputes its logic name from.
+      for (TypeIndex idx : renamedIndexes) {
+        try {
+          idx.updateTypeName(oldName);
+        } catch (Exception ex) {
+          corrupted = true;
+        }
+      }
+
       for (Bucket bucket : removedBuckets) {
         try {
           final String newBucketName = bucket.getName();
-          final String oldBucketName = oldName + newBucketName.substring(newBucketName.lastIndexOf("_"));
-          ((LocalBucket) bucket).rename(oldBucketName);
+          final String restoredName = LocalSchema.rebaseComponentName(newBucketName, newName, oldName,
+              schema.getEncoding());
+          if (restoredName == null)
+            corrupted = true;
+          else
+            ((LocalBucket) bucket).rename(restoredName);
         } catch (IOException ex) {
           corrupted = true;
         }
