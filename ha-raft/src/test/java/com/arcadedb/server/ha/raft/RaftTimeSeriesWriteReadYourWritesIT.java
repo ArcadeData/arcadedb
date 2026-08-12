@@ -158,6 +158,54 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * Regression test for the second review round on this issue: the fix's first revision resolved
+   * {@code writeRequest.getTimeSeries().isEmpty()}'s 204 short-circuit response's bookmark by moving the
+   * database resolution ahead of the request-body/Snappy validation checks - which turned a
+   * nonexistent-database-plus-bad-body request into a 500 instead of 400, since
+   * {@code AbstractServerHttpHandler.handleRequest}'s catch chain has no arm for
+   * {@code DatabaseOperationException}. The final fix keeps those checks first and resolves the database
+   * only once the payload is known to decode, so this asserts both halves: the empty-write-request 204 now
+   * carries the bookmark, and a bad database name still surfaces as 400, not 500.
+   */
+  @Test
+  void prometheusEmptyWriteRequestStillEmitsBookmarkAndBadDatabaseStays400() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int leaderPort = 2480 + leaderIndex;
+    final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+
+    // Seed a committed index so the leader's lastAppliedIndex is >= 0 (emitCommitIndexBookmark is a no-op
+    // below that).
+    try (final RemoteDatabase setup = new RemoteDatabase("127.0.0.1", leaderPort, getDatabaseName(), "root", password)) {
+      setup.command("sql", "CREATE DOCUMENT TYPE PromEmptyWriteSeed");
+    }
+
+    // An empty WriteRequest (no time series) against the real database: the handler's isEmpty() short-circuit
+    // must still resolve the database first and carry the bookmark on its 204.
+    final byte[] emptyCompressed = Snappy.compress(new WriteRequest(List.of()).encode());
+    final HttpURLConnection emptyConnection = openPrometheusWriteConnection(leaderPort, password);
+    try (final OutputStream os = emptyConnection.getOutputStream()) {
+      os.write(emptyCompressed);
+      os.flush();
+    }
+    assertThat(emptyConnection.getResponseCode()).isEqualTo(204);
+    assertThat(emptyConnection.getHeaderField("X-ArcadeDB-Commit-Index"))
+        .as("The empty-write-request 204 must carry the bookmark too, not just the write-with-data path")
+        .isNotNull();
+
+    // A nonexistent database combined with an empty body must still surface as 400 - not the 500 that a
+    // premature getDatabase() resolution would produce (issue #5866, second review round).
+    final HttpURLConnection badDbEmptyBodyConnection = openPrometheusWriteConnectionForDatabase(leaderPort, password,
+        "this_database_does_not_exist");
+    try (final OutputStream os = badDbEmptyBodyConnection.getOutputStream()) {
+      os.flush();
+    }
+    assertThat(badDbEmptyBodyConnection.getResponseCode())
+        .as("A nonexistent database plus an empty body must stay 400, not fall through to a 500")
+        .isEqualTo(400);
+  }
+
   private HttpURLConnection openLineProtocolConnection(final int port, final String password) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:" + port + "/api/v1/ts/" + getDatabaseName() + "/write?precision=ms")
@@ -171,8 +219,13 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
   }
 
   private HttpURLConnection openPrometheusWriteConnection(final int port, final String password) throws Exception {
+    return openPrometheusWriteConnectionForDatabase(port, password, getDatabaseName());
+  }
+
+  private HttpURLConnection openPrometheusWriteConnectionForDatabase(final int port, final String password,
+      final String databaseName) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:" + port + "/api/v1/ts/" + getDatabaseName() + "/prom/write")
+        "http://127.0.0.1:" + port + "/api/v1/ts/" + databaseName + "/prom/write")
         .toURL()
         .openConnection();
     connection.setRequestMethod("POST");

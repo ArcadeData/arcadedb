@@ -70,6 +70,27 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
     checkAuthorizationOnDatabase(user, databaseParam.getFirst());
 
+    // These two checks stay ahead of resolving `database` on purpose: httpServer.getServer().getDatabase(...,
+    // allowLoad=false) throws DatabaseOperationException (a plain RuntimeException, not one of the specific
+    // arms AbstractServerHttpHandler.handleRequest's catch chain recognizes) when the database is absent or
+    // closed, which falls through to a 500 instead of a 400. Resolving `database` before these would turn a
+    // bad-database-name-plus-empty/corrupt-body request into a 500 - a regression an earlier revision of this
+    // fix introduced and review caught. Neither check needs the database, so they keep running first exactly
+    // as they did before this PR.
+    if (rawBytes == null || rawBytes.length == 0)
+      return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
+
+    // Snappy decompress
+    final byte[] decompressed;
+    try {
+      decompressed = Snappy.uncompress(rawBytes);
+    } catch (final Exception e) {
+      return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
+    }
+
+    // Decode protobuf WriteRequest
+    final WriteRequest writeRequest = WriteRequest.decode(decompressed);
+
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
     // Resolved as soon as the database is known - and before the empty-write-request short-circuit below -
@@ -79,19 +100,6 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // of how this request rolls back (issue #5866).
     final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
     try {
-      if (rawBytes == null || rawBytes.length == 0)
-        return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
-
-      // Snappy decompress
-      final byte[] decompressed;
-      try {
-        decompressed = Snappy.uncompress(rawBytes);
-      } catch (final Exception e) {
-        return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
-      }
-
-      // Decode protobuf WriteRequest
-      final WriteRequest writeRequest = WriteRequest.decode(decompressed);
       if (writeRequest.getTimeSeries().isEmpty())
         return new ExecutionResponse(204, "");
 
