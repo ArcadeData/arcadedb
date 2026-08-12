@@ -351,6 +351,46 @@ public class PaginatedComponentFile extends ComponentFile {
     }
   }
 
+  /**
+   * Reads a RUN of consecutive pages in one call into {@code buf} at its current position, which must have at least
+   * {@code pages * pageSize} bytes remaining. Unlike {@link #readPage} the buffer is NOT cleared, so several runs can
+   * be assembled into one larger buffer.
+   * <p>
+   * Used by the point-in-time snapshot reader ({@link PageSnapshot}, issue #6075) to keep the copy sequential: the
+   * copy-on-write shadow removes the need for a per-page interlock, so a megabyte can be read in one syscall instead
+   * of sixteen and the OS readahead works exactly as it did for the bulk {@code transferTo} the snapshot replaced.
+   */
+  public void readPages(final int fromPageNumber, final int pages, final ByteBuffer buf) throws IOException {
+    if (fromPageNumber < 0)
+      throw new IllegalArgumentException("Invalid page number to read: " + fromPageNumber);
+
+    final int expected = pages * pageSize;
+    if (buf.remaining() < expected)
+      throw new IllegalArgumentException(
+          "Buffer too small to read " + pages + " pages of file '" + getFileName() + "': " + buf.remaining() + " < " + expected);
+
+    final int limit = buf.limit();
+    buf.limit(buf.position() + expected);
+    channelLock.readLock().lock();
+    try {
+      if (channel == null)
+        throw new IllegalArgumentException(
+            "Cannot read pages from " + fromPageNumber + " because the file '" + getFileName() + "' is closed");
+
+      long pos = pageSize * (long) fromPageNumber;
+      while (buf.hasRemaining()) {
+        final int r = channel.read(buf, pos);
+        if (r < 0)
+          throw new IOException(
+              "Unexpected EOF reading " + pages + " pages from page " + fromPageNumber + " of file '" + getFileName() + "'");
+        pos += r;
+      }
+    } finally {
+      channelLock.readLock().unlock();
+      buf.limit(limit);
+    }
+  }
+
   public void readPage(final int pageNum, final ByteBuffer buf) throws IOException {
     channelLock.readLock().lock();
     try {

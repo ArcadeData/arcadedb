@@ -368,6 +368,18 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
+  /**
+   * Whether any page of the database is still anywhere in the flush pipeline. Used by the snapshot t0 barrier
+   * (#6075) to tell "the queue drained and stayed drained" from "commits landed between the drain and the
+   * suspension", in which case the barrier retries instead of stamping a t0 that is already behind.
+   */
+  boolean hasPendingPagesOfDatabase(final Database database) {
+    for (final PageId key : pageIndex.keySet())
+      if (database.equals(key.getDatabase()))
+        return true;
+    return false;
+  }
+
   public void waitForCurrentFlushToComplete(final Database database) throws InterruptedException {
     PagesToFlush current;
     while ((current = nextPagesToFlush.get()) != null && database.equals(current.database))

@@ -23,6 +23,7 @@ import com.arcadedb.integration.backup.IoThrottler;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
@@ -53,13 +54,22 @@ public class ZipStreamArchiveWriter implements BackupArchiveWriter {
 
   @Override
   public EntryStats addFile(final File inputFile) throws IOException {
-    final ZipEntry zipEntry = new ZipEntry(inputFile.getName());
+    try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
+      return addEntry(inputFile.getName(), inputFile.lastModified(), fileIn);
+    }
+  }
+
+  @Override
+  public EntryStats addEntry(final String name, final long lastModified, final InputStream input) throws IOException {
+    final ZipEntry zipEntry = new ZipEntry(name);
+    if (lastModified > 0)
+      zipEntry.setTime(lastModified);
     zipStream.putNextEntry(zipEntry);
 
     long uncompressedSize = 0L;
-    try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
+    try (final InputStream in = input) {
       int read;
-      while ((read = fileIn.read(buffer)) > 0) {
+      while ((read = in.read(buffer)) > 0) {
         throttler.throttle(read);
         zipStream.write(buffer, 0, read);
         uncompressedSize += read;

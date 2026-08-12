@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONObject;
@@ -38,6 +40,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
@@ -207,9 +210,33 @@ public class SnapshotHttpHandler implements HttpHandler {
       dbSuspendLock.lock();
       try {
         db.executeInReadLock(() -> {
-          // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
-          // perDatabaseSuspendLock additionally serializes same-database zip streams (see its comment).
-          db.getPageManager().suspendFlushAndExecute(db, () -> serveSnapshotZip(exchange, db, databaseName));
+          // #6075: stream the page files through a point-in-time snapshot. Shipping a multi-GB snapshot used to
+          // park the flush thread for the whole transfer, which is the longest-lived suspension in the product:
+          // dirty pages piled up until FLUSH_SUSPEND_MAX_DEFERRED_RAM and the leader's committers were throttled
+          // (issue #4728). The window costs one bounded drain instead, and the archive is exactly as consistent.
+          PageSnapshot snapshot = null;
+          if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED))
+            try {
+              snapshot = db.getPageManager().openSnapshot(db);
+            } catch (final PageSnapshotException e) {
+              // ONLY A FAILURE TO OPEN THE WINDOW CAN FALL BACK: ONE THAT FAILS MID-STREAM HAS ALREADY PUT BYTES ON
+              // THE WIRE, SO IT SURFACES AS A TRANSFER ERROR AND THE FOLLOWER RETRIES (THE MANIFEST CHECK OF #4831
+              // MAKES A TRUNCATED DOWNLOAD LOUD RATHER THAN SILENT)
+              LogManager.instance().log(this, Level.WARNING,
+                  "Point-in-time snapshot unusable for '%s' (%s): falling back to suspending the page flush", null,
+                  databaseName, e.getMessage());
+            }
+
+          if (snapshot != null)
+            try {
+              serveSnapshotZip(exchange, db, databaseName, snapshot);
+            } finally {
+              snapshot.close();
+            }
+          else
+            // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
+            // perDatabaseSuspendLock additionally serializes same-database zip streams (see its comment).
+            db.getPageManager().suspendFlushAndExecute(db, () -> serveSnapshotZip(exchange, db, databaseName, null));
           return null;
         });
       } finally {
@@ -311,7 +338,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     return null;
   }
 
-  private void serveSnapshotZip(final HttpServerExchange exchange, final DatabaseInternal db, final String databaseName) {
+  private void serveSnapshotZip(final HttpServerExchange exchange, final DatabaseInternal db, final String databaseName,
+      final PageSnapshot snapshot) {
     final long writeTimeoutMs = httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_WRITE_TIMEOUT);
     final AtomicBoolean completed = new AtomicBoolean(false);
 
@@ -349,10 +377,15 @@ public class SnapshotHttpHandler implements HttpHandler {
       if (schemaFile.exists())
         addFileToZip(zipOut, schemaFile, manifest);
 
-      final Collection<ComponentFile> files = db.getFileManager().getFiles();
-      for (final ComponentFile file : new ArrayList<>(files))
-        if (file != null)
-          addFileToZip(zipOut, file.getOSFile(), manifest);
+      if (snapshot != null)
+        for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
+          addStreamToZip(zipOut, file.fileName(), snapshot.newInputStream(file.fileId()), manifest);
+      else {
+        final Collection<ComponentFile> files = db.getFileManager().getFiles();
+        for (final ComponentFile file : new ArrayList<>(files))
+          if (file != null)
+            addFileToZip(zipOut, file.getOSFile(), manifest);
+      }
 
       // TimeSeries sealed-store files (.ts.sealed) use raw FileChannel I/O and are NOT registered with
       // the FileManager, so they are absent from getFiles(). Add them explicitly so a snapshot-syncing
@@ -370,7 +403,12 @@ public class SnapshotHttpHandler implements HttpHandler {
       // data and is needlessly re-installed from a full snapshot at the next cold bootstrap. The
       // LIVE counter is used because the leader's own on-disk copy is stale while the database is
       // open; it is read under the same suspendFlushAndExecute window as the data files above.
-      final long lastTxId = ((LocalDatabase) db.getEmbedded()).getLastTransactionId();
+      // From a window, the recorded t0 id is the one the shipped pages actually materialise, because the window
+      // opens on a fully drained flush queue - strictly better than the live counter, which can name a transaction
+      // whose pages are still in the queue.
+      final long lastTxId = snapshot != null ?
+          snapshot.getLastTxId() :
+          ((LocalDatabase) db.getEmbedded()).getLastTransactionId();
       if (lastTxId >= 0)
         addBytesToZip(zipOut, TransactionManager.LAST_TX_ID_FILE_NAME, longToBytes(lastTxId), manifest);
 
@@ -452,6 +490,23 @@ public class SnapshotHttpHandler implements HttpHandler {
     }
     zipOut.closeEntry();
     manifest.add(new SnapshotManager.ManifestEntry(inputFile.getName(), size, crc.getValue()));
+  }
+
+  /**
+   * Streams a point-in-time page file into the ZIP and appends its manifest record. The size and CRC are computed
+   * from the exact bytes streamed, so they describe what the follower receives.
+   */
+  private void addStreamToZip(final ZipOutputStream zipOut, final String name, final InputStream input,
+      final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
+    final ZipEntry entry = new ZipEntry(name);
+    zipOut.putNextEntry(entry);
+    final CRC32 crc = new CRC32();
+    final long size;
+    try (final InputStream in = input; final CheckedInputStream cis = new CheckedInputStream(in, crc)) {
+      size = cis.transferTo(zipOut);
+    }
+    zipOut.closeEntry();
+    manifest.add(new SnapshotManager.ManifestEntry(name, size, crc.getValue()));
   }
 
   /**
