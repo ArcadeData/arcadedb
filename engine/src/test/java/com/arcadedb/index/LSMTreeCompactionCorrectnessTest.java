@@ -44,9 +44,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (ADD, REMOVE, ADD of the same key+RID across pages) kept its pre-tombstone position and the reader, which
  * treats the LAST position as the newest entry, resolved the tombstone as the winner: the row vanished from the
  * index after compaction.</li>
- * <li>#4944: the cursor constructor left a cursor parked on a full-key tombstone alive but uncounted in
- * {@code validIterators}, while {@code next()} decrements the counter when any cursor is exhausted: a range scan
- * could stop with valid cursors still holding rows.</li>
+ * <li>#4944: the cursor constructor left a cursor parked on a full-key tombstone alive but uncounted by the
+ * live-source tracking of the day (a separately maintained counter, replaced by #5683 with a direct read of the
+ * page-cursor array), which could reach zero with valid cursors still holding rows: a range scan could stop
+ * early.</li>
  * <li>#4945: {@code get()} on a non-unique index resurrected a deleted RID when a per-RID tombstone and the
  * original ADD lived in different pages, because the {@code deletedRIDs} set was page-local instead of threaded
  * across pages and the compacted sub-index (like {@code removedKeys}).</li>
@@ -280,10 +281,11 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
   }
 
   // ---- #4944: a range scan must not be truncated when an older page's only in-range key is a full-key tombstone.
-  // The cursor constructor left a cursor parked on a full-key tombstone alive but NOT counted in validIterators,
-  // while next() decrements validIterators when ANY cursor is exhausted: the counter hit zero with valid cursors
-  // still holding rows, silently truncating the scan. Full-key tombstones come from Index.remove(keys) without a
-  // RID (public API, also used internally by the geospatial index). ----
+  // The cursor constructor left a cursor parked on a full-key tombstone alive but NOT counted by the live-source
+  // tracking of the day (a separately maintained counter, replaced by #5683 with a direct read of the page-cursor
+  // array): the counter hit zero with valid cursors still holding rows, silently truncating the scan. Full-key
+  // tombstones come from Index.remove(keys) without a RID (public API, also used internally by the geospatial
+  // index). ----
 
   @Test
   void rangeScanNotTruncatedByFullKeyTombstoneInOlderPage() {
