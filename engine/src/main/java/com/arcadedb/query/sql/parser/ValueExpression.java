@@ -108,7 +108,7 @@ public class ValueExpression extends Expression {
   }
 
   public ValueExpression copy() {
-    final ValueExpression result = new ValueExpression(-1);
+    final ValueExpression result = new ValueExpression(null);
     result.value = value;
     return result;
   }
