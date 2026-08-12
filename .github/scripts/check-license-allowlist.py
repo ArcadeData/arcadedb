@@ -39,8 +39,6 @@
 # Usage:
 #   check-license-allowlist.py <path-to-THIRD-PARTY.txt>
 #
-# @author Claude
-#
 import sys
 
 # Every family in CLAUDE.md's ALLOWED list, plus ISC (already used - org.mindrot:jbcrypt
