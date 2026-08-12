@@ -1406,6 +1406,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // This happens when vectors were added after the graph was last built and persisted.
           // On database restart, deltaVectors (volatile) are lost and graphState is set to IMMUTABLE,
           // so rebuildGraphBeforeSearch() never triggers. Search can only find nodes in the stale graph.
+          //
+          // This is a COUNT comparison, not a content one: a persisted graph whose node count merely happens to
+          // match the current live count is treated as up to date even if it was built for a different generation
+          // of the live set. A renumbering compaction (issue #5870) makes that coincidence more likely to matter,
+          // not less - every post-compaction generation's ids are densely [0, N), so two different generations of
+          // the same index are far more likely to independently land on matching lengths than the old sparse,
+          // monotonically-growing ids ever were. Whether a real crash window can pair a stale graph with a live
+          // set of the same size this way is tracked, not confirmed, in issue #6106.
           if (graphSize < rebuiltOrdinalToVectorId.length) {
             LogManager.instance().log(this, Level.INFO,
                 """

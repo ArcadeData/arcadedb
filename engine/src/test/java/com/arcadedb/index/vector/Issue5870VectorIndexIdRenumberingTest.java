@@ -167,6 +167,55 @@ class Issue5870VectorIndexIdRenumberingTest extends TestHelper {
     assertSearchWorks(survivorVertex, 0);
   }
 
+  /**
+   * Exercises the dense sequence from the insert side rather than only observing it through
+   * {@code getMaxVectorId()}: a compaction renumbers the live set to exactly {@code [0, VERTICES)}, and the next
+   * insert must mint id {@code VERTICES} - not collide with the vector that now legitimately holds
+   * {@code VERTICES - 1} (an off-by-one in the reset would do exactly that), and not merely resume from whatever
+   * the pre-compaction high-water mark used to be (which would still be correct but would defeat the point of
+   * renumbering: the id space would grow unboundedly again on the very first write after every compaction).
+   * <p>
+   * The insert runs after a {@link #reopenDatabase()}, not in the same session the compaction ran in: a write
+   * issued immediately after {@code COMPACT INDEX} in the same session does not reach the vector index at all,
+   * independently of this fix (confirmed by reverting it and reproducing the same symptom on unmodified code) -
+   * see issue #6105, filed separately. A reopen forces {@code loadVectorsFromPages} to recompute {@code nextId}
+   * from the (now dense) persisted file, which is the code path a real "compact, then restart, then keep
+   * writing" operational sequence actually takes, and it is what this test pins.
+   */
+  @Test
+  void insertingAfterARenumberingCompactionDoesNotCollideWithAnExistingId() {
+    createSchema();
+    insertVertices();
+
+    database.command("sql", "COMPACT INDEX `Doc[embedding]`");
+    assertThat(vectorIndex().getVectorIndex().getMaxVectorId()).as("the live set is dense after compaction")
+        .isEqualTo(VERTICES - 1);
+
+    reopenDatabase();
+
+    final RID ridHoldingTheHighestId = vectorIndex().getVectorIndex().getRid(VERTICES - 1);
+    assertThat(ridHoldingTheHighestId).isNotNull();
+
+    database.transaction(() -> database.command("sql", "INSERT INTO Doc SET id = ?, embedding = ?", "doc" + VERTICES,
+        embedding(VERTICES, 0)));
+
+    final RID[] newRidHolder = new RID[1];
+    database.transaction(() -> newRidHolder[0] = database.query("sql", "SELECT FROM Doc WHERE id = ?", "doc" + VERTICES)
+        .next().getIdentity().get());
+    final int[] newIds = vectorIndex().getVectorIndex().getVectorIdsForRid(newRidHolder[0]);
+    assertThat(newIds).as("exactly one id for the new vector").hasSize(1);
+    assertThat(newIds[0]).as("the next insert after a renumbering compaction must continue the dense sequence")
+        .isEqualTo(VERTICES);
+
+    assertThat(vectorIndex().getVectorIndex().getRid(VERTICES - 1))
+        .as("the new insert must not have overwritten the vector that already held id VERTICES-1")
+        .isEqualTo(ridHoldingTheHighestId);
+    assertThat(countLive()).as("both the pre-existing and the new vector must be live").isEqualTo(VERTICES + 1);
+
+    assertSearchWorks(VERTICES, 0);
+    assertSearchWorks(VERTICES / 2, 0);
+  }
+
   // ------------------------------------------------------------------------------------------------- helpers
 
   private void createSchema() {
