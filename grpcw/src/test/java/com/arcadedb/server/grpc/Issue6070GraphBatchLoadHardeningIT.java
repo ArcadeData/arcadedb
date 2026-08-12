@@ -491,6 +491,13 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
    * shared with the embedded server under test, so a capturing logger that only captured would silently swallow
    * anything the server logged while it was installed - including the diagnostics needed to understand a failure
    * inside that window. Tee-ing keeps the swap invisible to everything except the assertions.
+   * <p>
+   * <b>The swap is still global, and that bounds where this helper is usable.</b> It is sound here because
+   * these ITs run sequentially within one class and one forked JVM, so nothing else is logging into the capture
+   * window. Run this suite with cross-class parallelism in a shared JVM and a capture could pick up lines from
+   * unrelated concurrent activity - {@link #findWarning} would still match on the template, but a test asserting
+   * the ABSENCE of a warning could see another test's. Anything relying on that would need per-test isolation of
+   * the logger rather than a singleton swap.
    */
   private static final class CapturingLogger implements Logger {
 
