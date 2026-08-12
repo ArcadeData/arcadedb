@@ -73,6 +73,7 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
    * {@link UpdateExecutionPlan#executeInternal()} for the same pattern and its rationale.
    */
   public void executeInternal() throws CommandExecutionException {
+    executed = true;
     RuntimeException failure = null;
     try {
       while (true) {

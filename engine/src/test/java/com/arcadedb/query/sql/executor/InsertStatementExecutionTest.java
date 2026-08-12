@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.parser.InsertStatement;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -30,6 +31,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,6 +43,76 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class InsertStatementExecutionTest extends TestHelper {
   public InsertStatementExecutionTest() {
     autoStartTx = true;
+  }
+
+  @Test
+  void insertExecutionPlanRunsOnceWithPositionalParameters() {
+    assertInsertExecutionPlanRunsOnce(statement -> statement.execute(database, new Object[0], null, false));
+  }
+
+  @Test
+  void insertExecutionPlanRunsOnceWithNamedParameters() {
+    assertInsertExecutionPlanRunsOnce(statement -> statement.execute(database, Map.of(), null, false));
+  }
+
+  @Test
+  void insertExecutionPlanRunsOnceAfterReset() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final AtomicInteger executions = new AtomicInteger();
+    final InsertExecutionPlan executionPlan = countingExecutionPlan(context, executions);
+
+    executionPlan.reset(context);
+    final ResultSet result = executionPlan.fetchNext(1);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    assertThat(executions.get()).isEqualTo(1);
+  }
+
+  // ScriptLineStep.syncPull() also calls executeInternal() eagerly before fetchNext(), the same shape as
+  // InsertStatement.execute() - an INSERT run as a line of a batch script hits this path, not the other two.
+  @Test
+  void insertExecutionPlanRunsOnceInsideScriptLineStep() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final AtomicInteger executions = new AtomicInteger();
+    final InsertExecutionPlan executionPlan = countingExecutionPlan(context, executions);
+
+    final ScriptLineStep scriptLineStep = new ScriptLineStep(executionPlan, context);
+    final ResultSet result = scriptLineStep.syncPull(context, 1);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    assertThat(executions.get()).isEqualTo(1);
+  }
+
+  private void assertInsertExecutionPlanRunsOnce(final Function<InsertStatement, ResultSet> executeStatement) {
+    final AtomicInteger executions = new AtomicInteger();
+    final InsertStatement statement = new InsertStatement(-1) {
+      @Override
+      public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
+        return countingExecutionPlan(context, executions);
+      }
+    };
+
+    final ResultSet result = executeStatement.apply(statement);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    assertThat(executions.get()).isEqualTo(1);
+  }
+
+  private InsertExecutionPlan countingExecutionPlan(final CommandContext context, final AtomicInteger executions) {
+    final InsertExecutionPlan executionPlan = new InsertExecutionPlan(context);
+    executionPlan.chain(new AbstractExecutionStep(context) {
+      @Override
+      public ResultSet syncPull(final CommandContext context, final int nRecords) {
+        executions.incrementAndGet();
+        return new InternalResultSet();
+      }
+    });
+    return executionPlan;
   }
 
   @Test
