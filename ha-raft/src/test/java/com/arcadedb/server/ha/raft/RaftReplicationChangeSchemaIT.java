@@ -255,7 +255,7 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
       else
         assertThat(normalized)
             .withFailMessage("Server %s has different schema:\nFIRST:\n%s\nServer %s:\n%s",
-                entry.getKey(), first, entry.getKey(), entry.getValue())
+                entry.getKey(), first, entry.getKey(), normalized)
             .isEqualTo(first);
     }
   }
