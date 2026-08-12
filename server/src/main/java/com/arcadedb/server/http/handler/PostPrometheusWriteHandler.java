@@ -70,29 +70,31 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
     checkAuthorizationOnDatabase(user, databaseParam.getFirst());
 
-    if (rawBytes == null || rawBytes.length == 0)
-      return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
-
-    // Snappy decompress
-    final byte[] decompressed;
-    try {
-      decompressed = Snappy.uncompress(rawBytes);
-    } catch (final Exception e) {
-      return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
-    }
-
-    // Decode protobuf WriteRequest
-    final WriteRequest writeRequest = WriteRequest.decode(decompressed);
-    if (writeRequest.getTimeSeries().isEmpty())
-      return new ExecutionResponse(204, "");
-
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
-    // Resolved once so the bookmark can be emitted in the finally below even on a partial-write error:
-    // TimeSeriesShard.appendSamples commits its own shard transaction per series, so a series already
-    // appended before a later one throws is durable regardless of how this request rolls back (issue #5866).
+    // Resolved as soon as the database is known - and before the empty-write-request short-circuit below -
+    // so that response also carries the bookmark, matching PostTimeSeriesWriteHandler's behavior. The
+    // finally also covers a partial-write error: TimeSeriesShard.appendSamples commits its own shard
+    // transaction per series, so a series already appended before a later one throws is durable regardless
+    // of how this request rolls back (issue #5866).
     final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
     try {
+      if (rawBytes == null || rawBytes.length == 0)
+        return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
+
+      // Snappy decompress
+      final byte[] decompressed;
+      try {
+        decompressed = Snappy.uncompress(rawBytes);
+      } catch (final Exception e) {
+        return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
+      }
+
+      // Decode protobuf WriteRequest
+      final WriteRequest writeRequest = WriteRequest.decode(decompressed);
+      if (writeRequest.getTimeSeries().isEmpty())
+        return new ExecutionResponse(204, "");
+
       // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
       // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
       // shard writes by the time it returns. If a later series throws, the rollback here cannot undo the
