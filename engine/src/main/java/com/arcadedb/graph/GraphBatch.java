@@ -33,6 +33,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -206,8 +207,21 @@ public class GraphBatch implements AutoCloseable {
    */
   public static volatile IntConsumer TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK = null;
 
+  /**
+   * Test-only fault-injection hook. Invoked with a 1-based call number immediately before each
+   * {@code database.commit()} inside {@link #reclaimOrphanEdgeRecords} - both the {@code commitEvery}-driven
+   * commits and the final one. A test can throw on the SECOND call to simulate the cleanup after a failed flush
+   * itself failing partway, and verify that the reclaims an earlier commit already made durable stay counted as
+   * reclaimed rather than being rewritten as leaked (issue #6083 review cycle 1). Always {@code null} in
+   * production.
+   */
+  public static volatile IntConsumer TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK = null;
+
   /** Monotonic call counter feeding {@link #TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK}'s 1-based argument. */
   private final AtomicInteger outgoingEdgeCommitAttempt = new AtomicInteger(0);
+
+  /** Monotonic call counter feeding {@link #TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK}'s 1-based argument. */
+  private final AtomicInteger orphanReclaimCommitAttempt = new AtomicInteger(0);
 
   /** Monotonic call counter feeding {@link #TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK}'s 1-based argument. */
   private final AtomicInteger incomingEdgeCommitAttempt = new AtomicInteger(0);
@@ -339,6 +353,24 @@ public class GraphBatch implements AutoCloseable {
   private long totalEdgesCreated;
   private long totalFlushes;
   private long totalFlushTimeNs;
+  private long totalOrphanEdgeRecordsReclaimed;
+  private long totalOrphanEdgeRecordsLeaked;
+
+  /**
+   * Edges of the flush in progress whose connection to their SOURCE vertex has durably committed (issue #6083
+   * item 4). {@link #flush()} folds exactly this into {@link #totalEdgesCreated}, on the failure path as well as
+   * the success one, so the running count never claims an edge the graph does not hold - and, since #6083, never
+   * under-reports one it does. Reset at the top of every flush.
+   */
+  private int flushDurableOutEdges;
+
+  /**
+   * When the PARALLEL connect pass of the flush in progress failed, the {@code [from,to)} pairs into
+   * {@link #sortIndex} naming the edges it nevertheless connected durably; {@code null} otherwise. The failed
+   * buckets are wherever they are in the partition, so unlike the sequential path's durable prefix this cannot be
+   * expressed as a single bound. Read once by {@link #flush()} right after the pass returns.
+   */
+  private int[] flushDurableOutRanges;
 
   // --- Saved state for restore after close ---
   private final boolean savedReadYourWrites;
@@ -713,8 +745,20 @@ public class GraphBatch implements AutoCloseable {
     // database with the half-written batch visible to the next caller.
     final boolean startedTx = !database.isTransactionActive();
 
+    // Number of buffered edges this flush is about to write. Read after the buffer is reset below, so it cannot
+    // be replaced by edgeCount there.
+    final int bufferedEdges = edgeCount;
+
+    // How many of them are durably connected to their source vertex. Advanced by the connect pass itself, one
+    // durable commit at a time, so a flush that dies part-way reports what the graph actually holds rather than
+    // the whole flush or nothing (issue #6083 item 4).
+    flushDurableOutEdges = 0;
+    flushDurableOutRanges = null;
+
     try {
       // --- PHASE 1: Create edge records for edges that need them (non-light) ---
+      // Hoisted out of PHASE 1 so the failure paths in PHASE 3 can reclaim the records this flush created but
+      // never linked (issue #6083 item 2).
       final RID[] edgeRIDs = new RID[edgeCount];
       beginTx();
 
@@ -735,29 +779,66 @@ public class GraphBatch implements AutoCloseable {
       final int maxBucket = partitionBySourceBucket();
 
       // --- PHASE 3: Connect outgoing edges ---
+      //
+      // A failure here is CAPTURED rather than thrown (issue #6083 item 2), because part of the flush may already
+      // be durable and the rest of this method is what makes that part a whole edge. Everything PHASE 3 did not
+      // durably connect has had its edge record reclaimed by the time the capture happens; what remains is
+      // OUT-connected and still owes its IN back-pointer, which PHASE 4 below queues for it exactly as it does on
+      // the success path. Without that, a partially-failed flush left half-edges the integrity checker flags -
+      // the same reason close() drains the deferred IN buffer on the way out of a failed batch.
+      //
+      // durableOutRanges describes what survived, as [from,to) pairs into sortIndex; null means "all of it", the
+      // normal case, and keeps the success path free of the extra indirection.
+      RuntimeException connectFailure = null;
+      int[] durableOutRanges = null;
+
       if (parallelFlush) {
-        // Commit edge records to release page locks before parallel work
+        // Commit edge records to release page locks before parallel work. From here on the records exist
+        // durably whatever happens to the connect pass, which is why that pass reclaims its own failures.
         database.commit();
-        connectOutgoingEdgesParallel(edgeRIDs, maxBucket);
+        try {
+          connectOutgoingEdgesParallel(edgeRIDs, maxBucket);
+        } catch (final RuntimeException e) {
+          connectFailure = e;
+          durableOutRanges = flushDurableOutRanges;
+        }
       } else {
-        connectOutgoingEdgesSorted(edgeRIDs);
-        database.commit();
+        try {
+          // Commits internally, including the final one, and sets flushDurableOutEdges as it goes.
+          connectOutgoingEdgesSorted(edgeRIDs);
+        } catch (final RuntimeException e) {
+          // With commitEvery > 0 this pass commits several times inside one flush, and the FIRST of those
+          // commits also makes PHASE 1's edge records durable. Everything the pass had not linked by its last
+          // durable commit is therefore a record no vertex points at (issue #6083 item 2). With commitEvery == 0
+          // nothing committed, flushDurableOutEdges is still 0, and the rollback already undid the records -
+          // which is exactly what the guard inside reclaimOrphanEdgeRecords reads.
+          reclaimOrphanEdgeRecords(edgeRIDs, flushDurableOutEdges, bufferedEdges, flushDurableOutEdges > 0, e);
+          connectFailure = e;
+          durableOutRanges = new int[] { 0, flushDurableOutEdges };
+        }
       }
 
       // --- PHASE 4: Accumulate incoming edges in deferred buffer (array-only, no DB) ---
       if (bidirectional) {
-        accumulateIncomingEdges(edgeRIDs);
+        accumulateIncomingEdges(edgeRIDs, durableOutRanges);
 
         // Drain early once the buffer crosses the configured cap (issue #5664): left alone, the deferred
         // incoming-edge arrays (and the in-chunk RID cache they populate) grow with the FULL stream length,
         // not with batchSize, and connectDeferredIncomingEdges() would land as one unbounded pass at close().
         // Draining here amortizes that pass over the load instead. maxDeferredIncomingEdges=0 opts back into
         // the pre-#5664 behavior of deferring everything to close().
-        if (maxDeferredIncomingEdges > 0 && inEdgeCount >= maxDeferredIncomingEdges)
+        //
+        // Skipped when PHASE 3 failed: close() drains the buffer on its way out of a failed batch anyway, and
+        // draining here would replace the failure the caller has to see with whatever the drain hits.
+        if (connectFailure == null && maxDeferredIncomingEdges > 0 && inEdgeCount >= maxDeferredIncomingEdges)
           connectDeferredIncomingEdges();
       }
 
-      totalEdgesCreated += edgeCount;
+      if (connectFailure != null)
+        // Statistics and buffer reset are the catch block's job from here; it folds flushDurableOutEdges too.
+        throw connectFailure;
+
+      totalEdgesCreated += flushDurableOutEdges;
       totalFlushes++;
       totalFlushTimeNs += System.nanoTime() - startNs;
 
@@ -768,11 +849,173 @@ public class GraphBatch implements AutoCloseable {
     } catch (final RuntimeException e) {
       if (startedTx && database.isTransactionActive())
         database.rollback();
+
+      // A flush that died after PHASE 3 (in the deferred-incoming drain) still created every edge it counted:
+      // those are connected to their source vertex and reachable, they are only missing a back-pointer that
+      // close() drains separately. Counting them is right; the connect pass has already excluded whatever it
+      // failed to make durable (issue #6083 item 4).
+      totalEdgesCreated += flushDurableOutEdges;
+
       // Discard the buffered edges so a subsequent close() / flush() doesn't replay them.
       Arrays.fill(edgeProperties, 0, edgeProperties.length, null);
       edgeCount = 0;
       throw e;
     }
+  }
+
+  /**
+   * Deletes the edge records this flush created but never linked to their source vertex (issue #6083 item 2).
+   * <p>
+   * An edge is written in two steps that do not share a transaction: PHASE 1 creates the record, PHASE 3 links it
+   * into the source vertex's edge list. The parallel path has to commit between them (the edge-record pages must
+   * be released before the per-bucket tasks touch them) and the sequential path does so too whenever
+   * {@code commitEvery > 0}. So a connect pass that dies part-way leaves records that are durable and reachable
+   * from nothing: {@code countType()} counts them and no traversal finds them.
+   * <p>
+   * CHECK DATABASE does not rescue them. Its {@code checkEdges} pass does scan every edge record and probe both
+   * endpoints for a back-reference, but a miss only increments the aggregate {@code missingReferenceBack}
+   * counter - no warning naming the record, no entry in {@code corruptedRecords}, and therefore nothing for the
+   * {@code FIX} variant to delete. That same counter is raised by a perfectly healthy UNIDIRECTIONAL edge, which
+   * is legitimately absent from its target's IN list, so it cannot be read as an orphan count either. ({@code FIX}
+   * does reclaim orphaned edge SEGMENTS, but those are the internal linked-list chunks, not the edge records at
+   * issue here.) Nothing else will ever clean these up, so the flush cleans up after itself, before the failure
+   * propagates.
+   * <p>
+   * Deletion goes through {@code database.deleteRecord} rather than a direct bucket delete: an edge record may
+   * carry index entries (issue #4113) and EXTERNAL property values, and this flush creates them by two different
+   * routes - {@code createRecordsBulk} plus {@link #indexEdgeProperties} for a single-bucket flush, an ordinary
+   * {@code save()} for a multi-type one. The database's own delete path is the one inverse that is correct for
+   * both, for every index kind, without a second copy of the key-derivation logic to keep in step. It also walks
+   * the endpoints' edge lists looking for a back-reference that is not there, which is provably wasted work here;
+   * that cost is accepted for the correctness, and it is bounded because it only ever runs on a failed flush.
+   * <p>
+   * Best-effort by construction: whatever it cannot reclaim is logged and counted
+   * ({@link #getOrphanEdgeRecordsLeaked()}), never allowed to replace the failure the caller is already handling.
+   *
+   * @param edgeRIDs          RIDs assigned in PHASE 1, indexed by edge-buffer slot
+   * @param fromSortPos       first {@link #sortIndex} position to reclaim, inclusive
+   * @param toSortPos         last {@link #sortIndex} position to reclaim, exclusive
+   * @param recordsAreDurable whether PHASE 1's records outlived the failure. False when no commit intervened, in
+   *                          which case the rollback already removed them and deleting again would be an error
+   * @param cause             the failure being handled, for the log line only
+   */
+  private void reclaimOrphanEdgeRecords(final RID[] edgeRIDs, final int fromSortPos, final int toSortPos,
+      final boolean recordsAreDurable, final Throwable cause) {
+    if (!recordsAreDurable || fromSortPos >= toSortPos)
+      return;
+
+    // First position of the slice the current transaction covers. Everything before it has been through a
+    // commit that returned, so its outcome is durable and already folded into the totals; everything from here
+    // to toSortPos is still undecided. The catch block below needs it, so it lives outside the try.
+    int uncommittedFrom = fromSortPos;
+
+    try {
+      // The failed attempt's transaction, if one is still open, holds writes that were never committed and must
+      // not ride along with the deletions.
+      if (database.isTransactionActive())
+        database.rollback();
+
+      // Counted for the current transaction only and folded into the instance totals as each commit returns
+      // (issue #6083 review cycle 1). Deferring the fold to the end of the loop instead would discard the
+      // reclaims an earlier commit already made durable if a LATER commit in the same pass threw, and the catch
+      // block would then blame the whole range as leaked - under-reporting reclaims and double-counting records
+      // that are in fact gone, on the one path whose entire purpose is to leave an accurate count behind.
+      int pendingReclaimed = 0;
+      int pendingLeaked = 0;
+      int passReclaimed = 0;
+      int passLeaked = 0;
+      int inTx = 0;
+      beginTx();
+
+      for (int k = fromSortPos; k < toSortPos; k++) {
+        final int idx = sortIndex[k];
+        final RID edgeRID = edgeRIDs[idx];
+        // A lightweight edge never allocated a record (its RID carries the placeholder position -1), so an
+        // unconnected one leaves nothing behind to reclaim.
+        if (edgeIsLightweight[idx] || edgeRID == null || edgeRID.getPosition() < 0)
+          continue;
+
+        try {
+          database.deleteRecord(database.lookupByRID(edgeRID, true));
+          pendingReclaimed++;
+        } catch (final RecordNotFoundException e) {
+          // Already gone - the failure took it with it. Nothing to reclaim and nothing wrong.
+        } catch (final RuntimeException e) {
+          pendingLeaked++;
+          LogManager.instance().log(this, Level.WARNING,
+              "GraphBatch: cannot reclaim orphan edge record %s left by a failed flush: %s", null, edgeRID,
+              e.toString());
+        }
+
+        if (commitEvery > 0 && ++inTx >= commitEvery) {
+          fireBeforeOrphanReclaimCommitHook();
+          database.commit();
+          totalOrphanEdgeRecordsReclaimed += pendingReclaimed;
+          totalOrphanEdgeRecordsLeaked += pendingLeaked;
+          passReclaimed += pendingReclaimed;
+          passLeaked += pendingLeaked;
+          pendingReclaimed = 0;
+          pendingLeaked = 0;
+          uncommittedFrom = k + 1;
+          beginTx();
+          inTx = 0;
+        }
+      }
+
+      fireBeforeOrphanReclaimCommitHook();
+      database.commit();
+      totalOrphanEdgeRecordsReclaimed += pendingReclaimed;
+      totalOrphanEdgeRecordsLeaked += pendingLeaked;
+      passReclaimed += pendingReclaimed;
+      passLeaked += pendingLeaked;
+
+      if (passReclaimed > 0 || passLeaked > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphBatch: an edge flush failed (%s) after its edge records were committed; reclaimed %d record(s) that "
+                + "were left connected to no vertex, %d could not be removed", null,
+            cause != null ? cause.toString() : "unknown", passReclaimed, passLeaked);
+    } catch (final RuntimeException e) {
+      // The cleanup is a courtesy on a path that is already failing; the caller's exception is the one that
+      // describes what went wrong and it must be the one that propagates.
+      //
+      // Only the slice this transaction was covering is leaked. Anything before uncommittedFrom went through a
+      // commit that returned and has already been counted, so blaming the whole range here would both lose those
+      // reclaims and count records that are gone.
+      final int leakedNow = countOrphanCandidates(edgeRIDs, uncommittedFrom, toSortPos);
+      totalOrphanEdgeRecordsLeaked += leakedNow;
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphBatch: could not reclaim the orphan edge records left by a failed flush; run CHECK DATABASE and "
+              + "expect up to %d unreachable edge record(s)", e, leakedNow);
+      if (database.isTransactionActive())
+        try {
+          database.rollback();
+        } catch (final RuntimeException ignored) {
+          // Nothing further to attempt; the original failure is still the one that propagates.
+        }
+    }
+  }
+
+  /**
+   * Edges in {@code [fromSortPos, toSortPos)} that own a real edge record, and so leave one behind when they are
+   * not connected. Lightweight edges are excluded: their RID carries the placeholder position -1 and no record
+   * was ever allocated for them.
+   */
+  private int countOrphanCandidates(final RID[] edgeRIDs, final int fromSortPos, final int toSortPos) {
+    int candidates = 0;
+    for (int k = fromSortPos; k < toSortPos; k++) {
+      final int idx = sortIndex[k];
+      final RID edgeRID = edgeRIDs[idx];
+      if (!edgeIsLightweight[idx] && edgeRID != null && edgeRID.getPosition() >= 0)
+        candidates++;
+    }
+    return candidates;
+  }
+
+  /** Fires {@link #TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK}, if set, right before an orphan-reclaim commit. */
+  private void fireBeforeOrphanReclaimCommitHook() {
+    final IntConsumer hook = TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK;
+    if (hook != null)
+      hook.accept(orphanReclaimCommitAttempt.incrementAndGet());
   }
 
   /**
@@ -1229,10 +1472,32 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
-   * Returns the total number of edges created so far (including flushed).
+   * Number of edges durably connected to their source vertex so far.
+   * <p>
+   * EXACT since issue #6083 item 4, on a failed load as well as a successful one: it advances one durable commit
+   * at a time inside the connect pass rather than a whole flush at a time, so a load dying mid-flush reports the
+   * edges the graph actually holds instead of rounding the part-written flush down to zero. A caller reconciling
+   * a failed bulk load against this figure re-sends exactly what is missing - it no longer has to over-send a
+   * flush's worth of edges and rely on the duplicates being harmless.
    */
   public long getTotalEdgesCreated() {
     return totalEdgesCreated;
+  }
+
+  /**
+   * Edge records this batch created, failed to connect to any vertex, and deleted again (issue #6083 item 2).
+   * Non-zero only after a flush failed part-way.
+   */
+  public long getOrphanEdgeRecordsReclaimed() {
+    return totalOrphanEdgeRecordsReclaimed;
+  }
+
+  /**
+   * Edge records left connected to no vertex because the cleanup after a failed flush could not remove them
+   * (issue #6083 item 2). Non-zero means unreachable records are still in the database.
+   */
+  public long getOrphanEdgeRecordsLeaked() {
+    return totalOrphanEdgeRecordsLeaked;
   }
 
   /**
@@ -1379,76 +1644,120 @@ public class GraphBatch implements AutoCloseable {
     int i = 0;
     int edgesInBatch = 0;
 
-    while (i < edgeCount) {
-      final int idx = sortIndex[i];
-      final int srcBucket = edgeSrcBucketIds[idx];
-      final long srcPos = edgeSrcPositions[idx];
+    // getOrCreateOutSegmentDeferred/persistNewSegment/addEdgesToSegmentBulkLazy write deferredOutHead and
+    // outChunkRIDCache as they process a group, BEFORE the transaction holding that group's writes commits. If
+    // that commit never happens, the maps are left naming segment records the rollback undid - and
+    // batchUpdateVertexHeadChunks() at close() then stamps one of those dead RIDs onto the vertex, which CHECK
+    // DATABASE reports as "out edges record is not valid" and which no later read can follow.
+    //
+    // Exactly the hazard #5950 cycle 3 fixed for the IN direction (see connectIncomingEdgesSequential's
+    // inHeadUndoLog) and cycle 4 for the parallel OUT direction (the per-bucket local maps); this path was the
+    // one left. Same remedy: snapshot each touched vertex's PRE-slice deferredOutHead value once per slice, and
+    // on failure restore it exactly - "was absent" via remove(), "had segment X" back to X (issue #6083).
+    //
+    // LongObjectHashMap, not HashMap<Long, RID>: this is allocated on EVERY sequential flush and takes an entry
+    // per distinct source vertex in the slice, so it is exactly the shape the zero-boxing map exists for (~16
+    // bytes/entry against 72-90). A null VALUE is what "the vertex had no deferred head" is recorded as, which
+    // this map represents faithfully - occupancy lives in its key array, so containsKey() still answers true for
+    // a key put with a null value (issue #6083 review cycle 1).
+    final LongObjectHashMap<RID> outHeadUndoLog = new LongObjectHashMap<>();
 
-      // Collect all edges from the same source vertex
-      int j = i;
-      while (j < edgeCount) {
-        final int jIdx = sortIndex[j];
-        if (edgeSrcBucketIds[jIdx] != srcBucket || edgeSrcPositions[jIdx] != srcPos)
-          break;
-        j++;
-      }
+    try {
+      while (i < edgeCount) {
+        final int idx = sortIndex[i];
+        final int srcBucket = edgeSrcBucketIds[idx];
+        final long srcPos = edgeSrcPositions[idx];
 
-      // Pre-compute exact bytes needed for this group
-      final int groupSize = j - i;
-      ensureTmpArrays(groupSize);
-      int totalBytesNeeded = 0;
-      for (int k = 0; k < groupSize; k++) {
-        final int kIdx = sortIndex[i + k];
-        tmpEdgeBucketIds[k] = edgeRIDs[kIdx].getBucketId();
-        tmpEdgePositions[k] = edgeRIDs[kIdx].getPosition();
-        tmpVertexBucketIds[k] = edgeDstBucketIds[kIdx];
-        tmpVertexPositions[k] = edgeDstPositions[kIdx];
-        totalBytesNeeded += Binary.getNumberSpace(tmpEdgeBucketIds[k]) + Binary.getNumberSpace(tmpEdgePositions[k])
-            + Binary.getNumberSpace(tmpVertexBucketIds[k]) + Binary.getNumberSpace(tmpVertexPositions[k]);
-      }
+        // Collect all edges from the same source vertex
+        int j = i;
+        while (j < edgeCount) {
+          final int jIdx = sortIndex[j];
+          if (edgeSrcBucketIds[jIdx] != srcBucket || edgeSrcPositions[jIdx] != srcPos)
+            break;
+          j++;
+        }
 
-      // Get or create segment — deferred vertex update, no vertex load for known-new vertices
-      final long vertexKey = packVertexKey(srcBucket, srcPos);
-      final EdgeSegment outChunk = getOrCreateOutSegmentDeferred(srcBucket, srcPos, vertexKey, totalBytesNeeded);
+        // Pre-compute exact bytes needed for this group
+        final int groupSize = j - i;
+        ensureTmpArrays(groupSize);
+        int totalBytesNeeded = 0;
+        for (int k = 0; k < groupSize; k++) {
+          final int kIdx = sortIndex[i + k];
+          tmpEdgeBucketIds[k] = edgeRIDs[kIdx].getBucketId();
+          tmpEdgePositions[k] = edgeRIDs[kIdx].getPosition();
+          tmpVertexBucketIds[k] = edgeDstBucketIds[kIdx];
+          tmpVertexPositions[k] = edgeDstPositions[kIdx];
+          totalBytesNeeded += Binary.getNumberSpace(tmpEdgeBucketIds[k]) + Binary.getNumberSpace(tmpEdgePositions[k])
+              + Binary.getNumberSpace(tmpVertexBucketIds[k]) + Binary.getNumberSpace(tmpVertexPositions[k]);
+        }
 
-      // NOTE (edge-append merge): this bulk path intentionally neither tracks (trackEdgeAppend) nor poisons its
-      // chunk pages. Since #5596 that needs no side condition: the merge accepts a page only when EVERY byte this
-      // transaction wrote to it was declared replayable, and these bulk writes declare nothing - so a page this
-      // path touched can never be rebased, even if the same transaction also drove EdgeLinkedList.add on it.
-      // See docs/supernode.md §3.
-      if (lastSegmentPromoted) {
-        // #5667: the vertex is already a promoted super-node - route this group through the standard,
-        // MVCC-safe StripedEdgeList write path instead of the bulk segment path.
-        addGroupThroughStripedEdgeList(lastPromotedVertex, Vertex.DIRECTION.OUT, lastPromotedDirectory,
-            tmpEdgeBucketIds, tmpEdgePositions, tmpVertexBucketIds, tmpVertexPositions, groupSize);
-      } else if (lastSegmentIsNew) {
-        // New segment: fill FIRST, then persist ONCE (no updateRecord needed)
-        outChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
-            tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
-        persistNewSegment(outChunk, srcBucket, Vertex.DIRECTION.OUT, vertexKey);
-      } else {
-        // Existing segment: check if all edges fit
-        final int available = outChunk.getRecordSize() - outChunk.getUsed();
-        if (totalBytesNeeded <= available) {
+        // Get or create segment — deferred vertex update, no vertex load for known-new vertices
+        final long vertexKey = packVertexKey(srcBucket, srcPos);
+        // Snapshot BEFORE getOrCreateOutSegmentDeferred can mutate deferredOutHead for this vertex. A promoted
+        // vertex (below) touches neither map, so the snapshot is harmlessly unused in that case.
+        if (!outHeadUndoLog.containsKey(vertexKey))
+          outHeadUndoLog.put(vertexKey, deferredOutHead.get(vertexKey));
+        final EdgeSegment outChunk = getOrCreateOutSegmentDeferred(srcBucket, srcPos, vertexKey, totalBytesNeeded);
+
+        // NOTE (edge-append merge): this bulk path intentionally neither tracks (trackEdgeAppend) nor poisons its
+        // chunk pages. Since #5596 that needs no side condition: the merge accepts a page only when EVERY byte this
+        // transaction wrote to it was declared replayable, and these bulk writes declare nothing - so a page this
+        // path touched can never be rebased, even if the same transaction also drove EdgeLinkedList.add on it.
+        // See docs/supernode.md §3.
+        if (lastSegmentPromoted) {
+          // #5667: the vertex is already a promoted super-node - route this group through the standard,
+          // MVCC-safe StripedEdgeList write path instead of the bulk segment path.
+          addGroupThroughStripedEdgeList(lastPromotedVertex, Vertex.DIRECTION.OUT, lastPromotedDirectory,
+              tmpEdgeBucketIds, tmpEdgePositions, tmpVertexBucketIds, tmpVertexPositions, groupSize);
+        } else if (lastSegmentIsNew) {
+          // New segment: fill FIRST, then persist ONCE (no updateRecord needed)
           outChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
               tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
-          database.updateRecord(outChunk);
+          persistNewSegment(outChunk, srcBucket, Vertex.DIRECTION.OUT, vertexKey);
         } else {
-          // Slow path: existing segment overflows
-          addEdgesToSegmentBulkLazy(srcBucket, srcPos, Vertex.DIRECTION.OUT, outChunk, edgeRIDs, i, j, true);
+          // Existing segment: check if all edges fit
+          final int available = outChunk.getRecordSize() - outChunk.getUsed();
+          if (totalBytesNeeded <= available) {
+            outChunk.addManyAtEndDirect(tmpEdgeBucketIds, tmpEdgePositions,
+                tmpVertexBucketIds, tmpVertexPositions, 0, groupSize);
+            database.updateRecord(outChunk);
+          } else {
+            // Slow path: existing segment overflows
+            addEdgesToSegmentBulkLazy(srcBucket, srcPos, Vertex.DIRECTION.OUT, outChunk, edgeRIDs, i, j, true);
+          }
         }
+
+        edgesInBatch += groupSize;
+
+        // Periodic commit for very large flushes
+        if (commitEvery > 0 && edgesInBatch >= commitEvery) {
+          database.commit();
+          // Only AFTER the commit returns: sortIndex positions [0, j) are now durably linked, and this is what
+          // tells a failed flush which records it still has to reclaim and how many edges it may claim (issue
+          // #6083 items 2 and 4). The slice's head pointers are durable too, so its undo entries can go.
+          flushDurableOutEdges = j;
+          outHeadUndoLog.clear();
+          beginTx();
+          edgesInBatch = 0;
+        }
+
+        i = j;
       }
 
-      edgesInBatch += groupSize;
-
-      // Periodic commit for very large flushes
-      if (commitEvery > 0 && edgesInBatch >= commitEvery) {
-        database.commit();
-        beginTx();
-        edgesInBatch = 0;
-      }
-
-      i = j;
+      // Inside the try, unlike before issue #6083: a final commit that fails rolls back the last slice's
+      // segments too, and the undo log is the only thing that can take their RIDs back out of deferredOutHead.
+      database.commit();
+      flushDurableOutEdges = edgeCount;
+    } catch (final RuntimeException e) {
+      outHeadUndoLog.forEach((key, previous) -> {
+        if (previous == null)
+          deferredOutHead.remove(key);
+        else
+          deferredOutHead.put(key, previous);
+        // Just an accelerator cache - evicting is always safe, forces a deferredOutHead/disk fallback.
+        outChunkRIDCache.remove(key);
+      });
+      throw e;
     }
   }
 
@@ -1458,8 +1767,31 @@ public class GraphBatch implements AutoCloseable {
 
   /**
    * Accumulates incoming edge info from the current flush buffer into the deferred arrays.
+   *
+   * @param durableOutRanges {@code [from,to)} pairs into {@link #sortIndex} selecting the edges PHASE 3 durably
+   *                         connected to their source vertex, or {@code null} for the whole buffer - the normal
+   *                         case, where every edge was connected. A partially-failed flush passes only what
+   *                         survived, so the IN pass at {@link #close()} completes exactly those edges and never
+   *                         writes a back-pointer to an edge record the failure took away (issue #6083 item 2).
    */
-  private void accumulateIncomingEdges(final RID[] edgeRIDs) {
+  private void accumulateIncomingEdges(final RID[] edgeRIDs, final int[] durableOutRanges) {
+    if (durableOutRanges == null) {
+      accumulateIncomingEdgeRange(edgeRIDs, 0, edgeCount, false);
+      return;
+    }
+    for (int r = 0; r < durableOutRanges.length; r += 2)
+      accumulateIncomingEdgeRange(edgeRIDs, durableOutRanges[r], durableOutRanges[r + 1], true);
+  }
+
+  /**
+   * Appends one contiguous run of the flush buffer to the deferred incoming-edge arrays. Positions are read
+   * straight out of the buffer when {@code throughSortIndex} is false, and through {@link #sortIndex} when it is
+   * true - the two orders differ, but the drain re-sorts by destination bucket anyway, so only membership matters.
+   */
+  private void accumulateIncomingEdgeRange(final RID[] edgeRIDs, final int from, final int to,
+      final boolean throughSortIndex) {
+    if (from >= to)
+      return;
     // An earlier in-flush drain (issue #5664) frees these arrays at the end of connectDeferredIncomingEdges();
     // re-allocate at the same initial size the constructor would have used.
     if (inEdgeBucketIds == null) {
@@ -1472,11 +1804,12 @@ public class GraphBatch implements AutoCloseable {
       inDstPositions = new long[initialInCapacity];
     }
 
-    final int needed = inEdgeCount + edgeCount;
+    final int needed = inEdgeCount + (to - from);
     if (needed > inEdgeBucketIds.length)
       growIncomingBuffers(needed);
 
-    for (int i = 0; i < edgeCount; i++) {
+    for (int k = from; k < to; k++) {
+      final int i = throughSortIndex ? sortIndex[k] : k;
       final int pos = inEdgeCount;
       inEdgeBucketIds[pos] = edgeRIDs[i].getBucketId();
       inEdgePositions[pos] = edgeRIDs[i].getPosition();
@@ -1602,7 +1935,12 @@ public class GraphBatch implements AutoCloseable {
     // deferredInHead value (only once per vertex per slice) so a failure can restore it exactly -
     // "was absent" restores via remove(), "had segment X" restores X - before rethrowing (issue #5950
     // review cycle 3).
-    final Map<Long, RID> inHeadUndoLog = new HashMap<>();
+    //
+    // LongObjectHashMap for the same reason as the OUT side's outHeadUndoLog, and to keep the two identical
+    // structures from drifting apart: allocated per drain, one entry per distinct destination vertex in the
+    // slice, and a null value faithfully records "no deferred head" because occupancy lives in the key array
+    // (issue #6083 review cycle 1).
+    final LongObjectHashMap<RID> inHeadUndoLog = new LongObjectHashMap<>();
 
     try {
       while (i < count) {
@@ -1678,16 +2016,14 @@ public class GraphBatch implements AutoCloseable {
       database.commit();
       inEdgesResumeSortIndex = count;
     } catch (final RuntimeException e) {
-      for (final Map.Entry<Long, RID> undo : inHeadUndoLog.entrySet()) {
-        final long key = undo.getKey();
-        final RID previous = undo.getValue();
+      inHeadUndoLog.forEach((key, previous) -> {
         if (previous == null)
           deferredInHead.remove(key);
         else
           deferredInHead.put(key, previous);
         // Just an accelerator cache - evicting is always safe, forces a deferredInHead/disk fallback.
         inChunkRIDCache.remove(key);
-      }
+      });
       throw e;
     }
   }
@@ -2643,9 +2979,38 @@ public class GraphBatch implements AutoCloseable {
       bucketOutChunkCache.get(entry.getKey()).forEach(outChunkRIDCache::put);
     }
 
+    // Exactly the edges a completed bucket connected, counted whether or not a sibling bucket failed (issue
+    // #6083 item 4). A bucket is in this set only once its own transaction committed, so this never claims an
+    // edge a rollback took back.
+    int durable = 0;
+    for (final int bucketId : completedOutgoingBuckets)
+      durable += bucketCounts[bucketId];
+    flushDurableOutEdges = durable;
+    flushDurableOutRanges = null;
+
     final Throwable t = error.get();
-    if (t != null)
-      throw t instanceof RuntimeException ? (RuntimeException) t : new RuntimeException(t);
+    if (t == null)
+      return;
+
+    // Every edge record was made durable by the commit that preceded this dispatch, so a bucket that never
+    // committed leaves its records behind connected to nothing (issue #6083 item 2). Unlike the sequential
+    // path's failure these are not a suffix of the sort index - the buckets that failed are wherever they are -
+    // so walk the partition once, reclaiming the failed buckets and recording the surviving ones for the IN
+    // pass that flush() still owes them.
+    final int[] survivors = new int[completedOutgoingBuckets.size() * 2];
+    int survivorCount = 0;
+    for (int b = 0; b <= maxBucket; b++) {
+      if (bucketCounts[b] == 0)
+        continue;
+      if (completedOutgoingBuckets.contains(b)) {
+        survivors[survivorCount++] = bucketOffsets[b];
+        survivors[survivorCount++] = bucketOffsets[b + 1];
+      } else
+        reclaimOrphanEdgeRecords(edgeRIDs, bucketOffsets[b], bucketOffsets[b + 1], true, t);
+    }
+    flushDurableOutRanges = survivorCount == survivors.length ? survivors : Arrays.copyOf(survivors, survivorCount);
+
+    throw t instanceof RuntimeException ? (RuntimeException) t : new RuntimeException(t);
   }
 
   /**

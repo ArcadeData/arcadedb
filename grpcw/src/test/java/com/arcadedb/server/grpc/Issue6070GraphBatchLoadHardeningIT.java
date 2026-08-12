@@ -21,6 +21,9 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.DefaultLogger;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -38,9 +41,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -196,6 +203,46 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
   }
 
   /**
+   * A vertex buffer above the server-side cap is clamped, and the caller has to be told (issue #6083 item 1).
+   * <p>
+   * The cap itself is right - a caller-supplied buffer size must not be able to exhaust the server heap on one
+   * request - but it applied with no log line, so a caller who asked for more got something other than what it
+   * set and was never told, which reads as compliance. What is asserted here is the WARNING naming both the
+   * requested and the effective value; the clamp is not observable any other way on a load that succeeds, since
+   * the same vertices land whether they went in one buffer or many.
+   */
+  @Test
+  void warnsWhenTheRequestedVertexBatchSizeIsClamped() throws Exception {
+    final CapturingLogger logger = CapturingLogger.install();
+    try {
+      // Above GRAPH_BATCH_MAX_VERTEX_BUFFER (1,000,000). The load itself is tiny; only the option matters.
+      load(GraphBatchOptions.newBuilder().setVertexBatchSize(5_000_000).build(), 2);
+
+      assertThat(logger.findWarning("vertexBatchSize"))
+          .as("a clamped buffer must be reported, not applied silently").isNotNull();
+      assertThat(logger.findWarning("vertexBatchSize").args)
+          .as("the log line must name both the requested and the effective value")
+          .contains(5_000_000, 1_000_000);
+    } finally {
+      logger.uninstall();
+    }
+  }
+
+  /** The counterpart: a buffer inside the cap is applied verbatim and must produce no warning. */
+  @Test
+  void doesNotWarnWhenTheRequestedVertexBatchSizeIsHonoured() throws Exception {
+    final CapturingLogger logger = CapturingLogger.install();
+    try {
+      load(GraphBatchOptions.newBuilder().setVertexBatchSize(1_000).build(), 2);
+
+      assertThat(logger.findWarning("vertexBatchSize"))
+          .as("nothing was clamped, so there is nothing to report").isNull();
+    } finally {
+      logger.uninstall();
+    }
+  }
+
+  /**
    * A load that fails part-way is not rolled back, because the batch commits incrementally. The counters of
    * what is durable have to reach the caller, and a status carries no message, so they ride the trailers.
    */
@@ -278,10 +325,14 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
    * <p>
    * The failure is arranged where the previous test cannot reach: past the vertex phase, on the edge flush that
    * {@code close()} performs, by pointing an edge at a bucket that does not exist. The vertices are committed
-   * by then, so the trailer has to report some of the load as durable and none of the edges.
+   * by then, so the trailer has to report some of the load as durable.
+   * <p>
+   * Since issue #6083 this also pins the two properties that follow from the flush cleaning up after itself:
+   * the edge count is exact rather than a lower bound, and {@code countType} agrees with a traversal because no
+   * unconnected edge record is left behind.
    */
   @Test
-  void countsOnlyFlushedEdgesOnTheTrailerOfALoadThatFailsClosing() throws Exception {
+  void countsConnectedEdgesExactlyOnTheTrailerOfALoadThatFailsClosing() throws Exception {
     final AtomicReference<Throwable> errorRef = new AtomicReference<>();
     final CountDownLatch done = new CountDownLatch(1);
 
@@ -295,10 +346,10 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
       chunk.addRecords(vertex("e" + i));
 
     // Both edges are buffered and neither is flushed before close(). The second originates from a bucket that
-    // does not exist, and the outgoing side is written into the source vertex's own record, so the flush that
-    // close() runs fails there and takes the first edge of the same flush with it. (A bad destination would
-    // not do: the outgoing flush commits regardless and only the incoming connect fails afterwards, at which
-    // point those edges genuinely are created and counting them is right.)
+    // does not exist, so the flush that close() runs fails on it while the first edge, whose source bucket is a
+    // different one, is connected and committed by its own task. (A bad destination would not do: the outgoing
+    // flush commits regardless and only the incoming connect fails afterwards, at which point those edges
+    // genuinely are created and counting them is right.)
     chunk.addRecords(GraphBatchRecord.newBuilder()
         .setKind(GraphBatchRecord.Kind.EDGE)
         .setTypeName("Issue6070Link")
@@ -329,15 +380,24 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
     assertThat(countOf("Issue6070Node")).isEqualTo(4);
 
     // The invariant that matters, and the one this counter exists to keep: never claim an edge the graph does
-    // not hold. The flush died part-way, so one of the two edges had in fact been written by then, while the
-    // counter advances a whole flush at a time and so reports none. Under-reporting costs a caller a duplicate
-    // on an edge it re-sends; over-reporting costs it the edge, silently - and counting received records
-    // instead of flushed ones did exactly that here, claiming both.
+    // not hold. Over-reporting costs a caller the edge, silently - counting received records instead of
+    // connected ones did exactly that here, claiming both.
+    //
+    // Since issue #6083 the counter is EXACT rather than a lower bound: the connect pass advances it one durable
+    // commit at a time instead of a whole flush at a time, so the one edge that was in fact connected is
+    // reported as one rather than rounded down to zero. A caller reconciling against this re-sends exactly the
+    // edge that is missing.
     final long connected = connectedEdgeCount();
-    assertThat(partial.getEdgesCreated())
-        .as("the trailer must never report more edges than the graph actually holds")
-        .isLessThanOrEqualTo(connected);
-    assertThat(partial.getEdgesCreated()).as("no edge flush completed, so no edge is counted").isZero();
+    assertThat(connected).as("the task for the good edge's source bucket commits independently of the bad one")
+        .isEqualTo(1);
+    assertThat(partial.getEdgesCreated()).as("the trailer must report exactly the edges the graph holds")
+        .isEqualTo(connected);
+
+    // #6083 item 2: countType() may be used here now. It could not before - the failed flush left the doomed
+    // edge's RECORD behind, connected to no vertex, so countType() answered 2 while a traversal reached 1. The
+    // flush now reclaims the records it could not connect, which is what makes the two agree.
+    assertThat(countOf("Issue6070Link"))
+        .as("a failed flush must leave no edge record that no vertex points at").isEqualTo(connected);
   }
 
   private GraphBatchResult loadWithIdMappingPreference(final Boolean returnIdMapping, final int vertices)
@@ -370,12 +430,20 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
     return resultRef.get();
   }
 
+  /**
+   * Carries {@code tag} as well as {@code name} even though nothing here reads it: the tests share one server
+   * and one database, and {@link #honoursTheRequestedVertexBatchSize()} declares {@code tag} MANDATORY to arrange
+   * its failure. Whether that has already run depends on method order, so a vertex without it is a load that
+   * fails or not depending on which test went first. Setting it always makes every other test independent of
+   * that order, and it is harmless before the property exists.
+   */
   private GraphBatchRecord vertex(final String tempId) {
     return GraphBatchRecord.newBuilder()
         .setKind(GraphBatchRecord.Kind.VERTEX)
         .setTypeName("Issue6070Node")
         .setTempId(tempId)
         .putProperties("name", GrpcValue.newBuilder().setStringValue(tempId).build())
+        .putProperties("tag", GrpcValue.newBuilder().setStringValue(tempId).build())
         .build();
   }
 
@@ -412,6 +480,81 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
 
   private long countOf(final String typeName) {
     return getServerDatabase(0, getDatabaseName()).countType(typeName, true);
+  }
+
+  /**
+   * Captures ArcadeDB log records by swapping the global logger for the duration of a test, keeping the message
+   * template and its arguments UNSUBSTITUTED so an assertion can check the values the line was given rather
+   * than a formatted string.
+   * <p>
+   * Every record is also forwarded to a real {@link DefaultLogger}. The logger is a process-wide singleton
+   * shared with the embedded server under test, so a capturing logger that only captured would silently swallow
+   * anything the server logged while it was installed - including the diagnostics needed to understand a failure
+   * inside that window. Tee-ing keeps the swap invisible to everything except the assertions.
+   * <p>
+   * <b>The swap is still global, and that bounds where this helper is usable.</b> It is sound here because
+   * these ITs run sequentially within one class and one forked JVM, so nothing else is logging into the capture
+   * window. Run this suite with cross-class parallelism in a shared JVM and a capture could pick up lines from
+   * unrelated concurrent activity - {@link #findWarning} would still match on the template, but a test asserting
+   * the ABSENCE of a warning could see another test's. Anything relying on that would need per-test isolation of
+   * the logger rather than a singleton swap.
+   */
+  private static final class CapturingLogger implements Logger {
+
+    record Record(Level level, String message, List<Object> args) {
+    }
+
+    private final List<Record> records  = new CopyOnWriteArrayList<>();
+    private final Logger       delegate = new DefaultLogger();
+
+    static CapturingLogger install() {
+      final CapturingLogger logger = new CapturingLogger();
+      LogManager.instance().setLogger(logger);
+      return logger;
+    }
+
+    void uninstall() {
+      LogManager.instance().setLogger(new DefaultLogger());
+    }
+
+    /** The first WARNING whose template contains {@code needle}, or null. */
+    Record findWarning(final String needle) {
+      for (final Record r : records)
+        if (r.level() == Level.WARNING && r.message().contains(needle))
+          return r;
+      return null;
+    }
+
+    // Records directly rather than delegating to the varargs overload below: an Object[] of exactly these 17
+    // arguments matches the fixed-arity signature, so the delegation would resolve back to this method.
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
+        final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
+        final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
+        final Object arg15, final Object arg16, final Object arg17) {
+      record(level, message, Arrays.asList(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
+          arg12, arg13, arg14, arg15, arg16, arg17));
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8,
+          arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      record(level, message, args == null ? List.of() : Arrays.asList(args));
+      delegate.log(requester, level, message, exception, context, args);
+    }
+
+    private void record(final Level level, final String message, final List<Object> args) {
+      if (message != null)
+        records.add(new Record(level, message, args));
+    }
+
+    @Override
+    public void flush() {
+      delegate.flush();
+    }
   }
 
   private final class AuthClientInterceptor implements ClientInterceptor {
