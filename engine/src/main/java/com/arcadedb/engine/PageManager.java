@@ -256,8 +256,13 @@ public class PageManager extends LockContext {
    */
   private void shutdown() {
     // #6075: a snapshot window outliving the page manager would keep its shadow file and any file whose deletion it
-    // deferred alive forever. Consumers always close in a finally, so this only fires on an abnormal teardown.
-    final PageSnapshot[] leftovers = activeSnapshots;
+    // deferred alive forever. Consumers always close in a finally, so this only fires on an abnormal teardown - which
+    // is exactly the situation where a window could be mid-registration, so the read takes the registry lock rather
+    // than assuming the quiet teardown it is here to survive.
+    final PageSnapshot[] leftovers;
+    synchronized (snapshotRegistryLock) {
+      leftovers = activeSnapshots;
+    }
     if (leftovers != null) {
       LogManager.instance().log(this, Level.WARNING, "Closing %d snapshot window(s) still open at page manager shutdown",
           null, leftovers.length);
@@ -457,7 +462,14 @@ public class PageManager extends LockContext {
     }
   }
 
-  /** True while at least one point-in-time snapshot window is open on the database. */
+  /**
+   * True while at least one point-in-time snapshot window is open on the database: the public counterpart of
+   * {@link #isPageFlushingSuspended}, for embedders, diagnostics and tests that need to observe a window's lifetime.
+   * <p>
+   * Deliberately NOT consulted by the compaction guards. {@code LSMTreeIndex} and {@code LSMVectorIndex} still gate
+   * on {@code isPageFlushingSuspended}, which the snapshot path never sets - so compaction runs during a snapshot
+   * by construction rather than by a second check that could drift out of step with the first.
+   */
   public boolean isSnapshotWindowOpen(final Database database) {
     final PageSnapshot[] snapshots = activeSnapshots;
     if (snapshots == null)
