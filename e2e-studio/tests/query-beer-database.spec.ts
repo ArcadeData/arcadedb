@@ -53,8 +53,8 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     await page.locator('[data-testid="execute-query-button"]').click();
 
     // Wait for query results to load
-    await expect(page.getByText('Returned')).toBeVisible();
-    await expect(page.getByText('records in')).toBeVisible();
+    await expect(page.locator('.result-stats').getByText('Returned')).toBeVisible();
+    await expect(page.locator('.result-stats').getByText('records in')).toBeVisible();
 
     // Verify that 10 records were returned
     await expect(page.getByText('10', { exact: true }).first()).toBeVisible();
@@ -114,8 +114,8 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     await page.locator('[data-testid="execute-query-button"]').click();
 
     // Wait for query results to load
-    await expect(page.getByText('Returned')).toBeVisible();
-    await expect(page.getByText('records in')).toBeVisible();
+    await expect(page.locator('.result-stats').getByText('Returned')).toBeVisible();
+    await expect(page.locator('.result-stats').getByText('records in')).toBeVisible();
 
     // Verify that 1 record was returned
     await expect(page.getByText('1', { exact: true }).first()).toBeVisible();
