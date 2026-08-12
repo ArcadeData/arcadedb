@@ -157,6 +157,70 @@ class Issue6083OrphanEdgeRecordTest extends TestHelper {
   }
 
   /**
+   * The doubly-unlucky case: the flush fails, AND the cleanup after it fails partway through its own commits.
+   * <p>
+   * With {@code commitEvery > 0} the reclaim pass commits several times. Folding its counters into the totals
+   * only once, at the end, threw away the reclaims an earlier commit had already made durable when a later one
+   * threw, and the outer handler then blamed the whole range as leaked - under-reporting reclaims and counting
+   * records that were in fact already gone. Both counters must instead describe what the database really holds.
+   */
+  @Test
+  void aReclaimPassThatFailsPartwayKeepsWhatItAlreadyCommitted() {
+    final RID[] vertices = createVertices(6);
+
+    // Fail the SECOND reclaim commit: the first has then already durably deleted one orphan.
+    GraphBatch.TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK = attempt -> {
+      if (attempt == 2)
+        throw new IllegalStateException("Issue6083: simulated failure inside the orphan reclaim pass");
+    };
+
+    final GraphBatch batch;
+    try {
+      batch = GraphBatch.builder(database)
+          .withLightEdges(false)
+          .withParallelFlush(false)
+          // One record per reclaim transaction, so the pass needs several commits and the hook can fail a later
+          // one. It also makes the flush itself commit per group, so the good edges land durably first.
+          .withCommitEvery(1)
+          .build();
+
+      batch.newEdge(vertices[0], EDGE_TYPE, vertices[1], "tag", "good");
+      // Three doomed edges from the same missing bucket: all three are orphan candidates, so the reclaim pass
+      // has more than one commit to make and the injected failure lands in the middle of it.
+      for (int i = 0; i < 3; i++)
+        batch.newEdge(new RID(MISSING_BUCKET_ID, i), EDGE_TYPE, vertices[2 + i], "tag", "doomed" + i);
+
+      assertThatThrownBy(batch::close).isInstanceOf(RuntimeException.class);
+    } finally {
+      GraphBatch.TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK = null;
+    }
+
+    final long reclaimed = batch.getOrphanEdgeRecordsReclaimed();
+    final long leaked = batch.getOrphanEdgeRecordsLeaked();
+    final long stored = countType(EDGE_TYPE);
+    final long reachable = reachableEdgeCount();
+
+    // Precondition: the injected failure really did interrupt the pass after it had committed something.
+    assertThat(reclaimed).as("the first reclaim commit succeeded, so its record must stay counted as reclaimed")
+        .isPositive();
+    assertThat(leaked).as("the interrupted slice is what leaked").isPositive();
+
+    // The accounting must describe the database: every orphan is either reclaimed or still stored.
+    assertThat(stored - reachable).as("the records still connected to nothing are exactly the leaked ones")
+        .isEqualTo(leaked);
+    assertThat(reclaimed + leaked).as("every orphan candidate is accounted for exactly once, never twice")
+        .isEqualTo(3);
+
+    // This test deliberately leaves unreclaimed orphans behind - that is the state it exists to measure - and
+    // they trip the integrity check TestHelper runs after every test. Not because they are orphans (CHECK
+    // DATABASE has no finding for that, which is the whole premise of item 2) but because the bogus source
+    // bucket used to induce the failure makes them dangling links. Remove them so the shared teardown sees a
+    // clean database.
+    database.transaction(() -> database.command("sql", "DELETE FROM " + EDGE_TYPE + " WHERE tag LIKE 'doomed%'"));
+    assertThat(countType(EDGE_TYPE)).as("only the good edge is left after the cleanup").isEqualTo(reachable);
+  }
+
+  /**
    * The counter stays exact across a successful load too - the change for item 4 moved where it is incremented,
    * so this pins that the ordinary path still counts every edge exactly once.
    */

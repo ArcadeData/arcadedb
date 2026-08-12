@@ -207,8 +207,21 @@ public class GraphBatch implements AutoCloseable {
    */
   public static volatile IntConsumer TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK = null;
 
+  /**
+   * Test-only fault-injection hook. Invoked with a 1-based call number immediately before each
+   * {@code database.commit()} inside {@link #reclaimOrphanEdgeRecords} - both the {@code commitEvery}-driven
+   * commits and the final one. A test can throw on the SECOND call to simulate the cleanup after a failed flush
+   * itself failing partway, and verify that the reclaims an earlier commit already made durable stay counted as
+   * reclaimed rather than being rewritten as leaked (issue #6083 review cycle 1). Always {@code null} in
+   * production.
+   */
+  public static volatile IntConsumer TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK = null;
+
   /** Monotonic call counter feeding {@link #TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK}'s 1-based argument. */
   private final AtomicInteger outgoingEdgeCommitAttempt = new AtomicInteger(0);
+
+  /** Monotonic call counter feeding {@link #TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK}'s 1-based argument. */
+  private final AtomicInteger orphanReclaimCommitAttempt = new AtomicInteger(0);
 
   /** Monotonic call counter feeding {@link #TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK}'s 1-based argument. */
   private final AtomicInteger incomingEdgeCommitAttempt = new AtomicInteger(0);
@@ -891,14 +904,26 @@ public class GraphBatch implements AutoCloseable {
     if (!recordsAreDurable || fromSortPos >= toSortPos)
       return;
 
+    // First position of the slice the current transaction covers. Everything before it has been through a
+    // commit that returned, so its outcome is durable and already folded into the totals; everything from here
+    // to toSortPos is still undecided. The catch block below needs it, so it lives outside the try.
+    int uncommittedFrom = fromSortPos;
+
     try {
       // The failed attempt's transaction, if one is still open, holds writes that were never committed and must
       // not ride along with the deletions.
       if (database.isTransactionActive())
         database.rollback();
 
-      int reclaimed = 0;
-      int leaked = 0;
+      // Counted for the current transaction only and folded into the instance totals as each commit returns
+      // (issue #6083 review cycle 1). Deferring the fold to the end of the loop instead would discard the
+      // reclaims an earlier commit already made durable if a LATER commit in the same pass threw, and the catch
+      // block would then blame the whole range as leaked - under-reporting reclaims and double-counting records
+      // that are in fact gone, on the one path whose entire purpose is to leave an accurate count behind.
+      int pendingReclaimed = 0;
+      int pendingLeaked = 0;
+      int passReclaimed = 0;
+      int passLeaked = 0;
       int inTx = 0;
       beginTx();
 
@@ -912,40 +937,55 @@ public class GraphBatch implements AutoCloseable {
 
         try {
           database.deleteRecord(database.lookupByRID(edgeRID, true));
-          reclaimed++;
+          pendingReclaimed++;
         } catch (final RecordNotFoundException e) {
           // Already gone - the failure took it with it. Nothing to reclaim and nothing wrong.
         } catch (final RuntimeException e) {
-          leaked++;
+          pendingLeaked++;
           LogManager.instance().log(this, Level.WARNING,
               "GraphBatch: cannot reclaim orphan edge record %s left by a failed flush: %s", null, edgeRID,
               e.toString());
         }
 
         if (commitEvery > 0 && ++inTx >= commitEvery) {
+          fireBeforeOrphanReclaimCommitHook();
           database.commit();
+          totalOrphanEdgeRecordsReclaimed += pendingReclaimed;
+          totalOrphanEdgeRecordsLeaked += pendingLeaked;
+          passReclaimed += pendingReclaimed;
+          passLeaked += pendingLeaked;
+          pendingReclaimed = 0;
+          pendingLeaked = 0;
+          uncommittedFrom = k + 1;
           beginTx();
           inTx = 0;
         }
       }
 
+      fireBeforeOrphanReclaimCommitHook();
       database.commit();
+      totalOrphanEdgeRecordsReclaimed += pendingReclaimed;
+      totalOrphanEdgeRecordsLeaked += pendingLeaked;
+      passReclaimed += pendingReclaimed;
+      passLeaked += pendingLeaked;
 
-      totalOrphanEdgeRecordsReclaimed += reclaimed;
-      totalOrphanEdgeRecordsLeaked += leaked;
-
-      if (reclaimed > 0 || leaked > 0)
+      if (passReclaimed > 0 || passLeaked > 0)
         LogManager.instance().log(this, Level.WARNING,
             "GraphBatch: an edge flush failed (%s) after its edge records were committed; reclaimed %d record(s) that "
                 + "were left connected to no vertex, %d could not be removed", null,
-            cause != null ? cause.toString() : "unknown", reclaimed, leaked);
+            cause != null ? cause.toString() : "unknown", passReclaimed, passLeaked);
     } catch (final RuntimeException e) {
       // The cleanup is a courtesy on a path that is already failing; the caller's exception is the one that
       // describes what went wrong and it must be the one that propagates.
-      totalOrphanEdgeRecordsLeaked += toSortPos - fromSortPos;
+      //
+      // Only the slice this transaction was covering is leaked. Anything before uncommittedFrom went through a
+      // commit that returned and has already been counted, so blaming the whole range here would both lose those
+      // reclaims and count records that are gone.
+      final int leakedNow = countOrphanCandidates(edgeRIDs, uncommittedFrom, toSortPos);
+      totalOrphanEdgeRecordsLeaked += leakedNow;
       LogManager.instance().log(this, Level.WARNING,
           "GraphBatch: could not reclaim the orphan edge records left by a failed flush; run CHECK DATABASE and "
-              + "expect up to %d unreachable edge record(s)", e, toSortPos - fromSortPos);
+              + "expect up to %d unreachable edge record(s)", e, leakedNow);
       if (database.isTransactionActive())
         try {
           database.rollback();
@@ -953,6 +993,29 @@ public class GraphBatch implements AutoCloseable {
           // Nothing further to attempt; the original failure is still the one that propagates.
         }
     }
+  }
+
+  /**
+   * Edges in {@code [fromSortPos, toSortPos)} that own a real edge record, and so leave one behind when they are
+   * not connected. Lightweight edges are excluded: their RID carries the placeholder position -1 and no record
+   * was ever allocated for them.
+   */
+  private int countOrphanCandidates(final RID[] edgeRIDs, final int fromSortPos, final int toSortPos) {
+    int candidates = 0;
+    for (int k = fromSortPos; k < toSortPos; k++) {
+      final int idx = sortIndex[k];
+      final RID edgeRID = edgeRIDs[idx];
+      if (!edgeIsLightweight[idx] && edgeRID != null && edgeRID.getPosition() >= 0)
+        candidates++;
+    }
+    return candidates;
+  }
+
+  /** Fires {@link #TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK}, if set, right before an orphan-reclaim commit. */
+  private void fireBeforeOrphanReclaimCommitHook() {
+    final IntConsumer hook = TEST_BEFORE_ORPHAN_RECLAIM_COMMIT_HOOK;
+    if (hook != null)
+      hook.accept(orphanReclaimCommitAttempt.incrementAndGet());
   }
 
   /**
@@ -1591,7 +1654,13 @@ public class GraphBatch implements AutoCloseable {
     // inHeadUndoLog) and cycle 4 for the parallel OUT direction (the per-bucket local maps); this path was the
     // one left. Same remedy: snapshot each touched vertex's PRE-slice deferredOutHead value once per slice, and
     // on failure restore it exactly - "was absent" via remove(), "had segment X" back to X (issue #6083).
-    final Map<Long, RID> outHeadUndoLog = new HashMap<>();
+    //
+    // LongObjectHashMap, not HashMap<Long, RID>: this is allocated on EVERY sequential flush and takes an entry
+    // per distinct source vertex in the slice, so it is exactly the shape the zero-boxing map exists for (~16
+    // bytes/entry against 72-90). A null VALUE is what "the vertex had no deferred head" is recorded as, which
+    // this map represents faithfully - occupancy lives in its key array, so containsKey() still answers true for
+    // a key put with a null value (issue #6083 review cycle 1).
+    final LongObjectHashMap<RID> outHeadUndoLog = new LongObjectHashMap<>();
 
     try {
       while (i < edgeCount) {
@@ -1680,16 +1749,14 @@ public class GraphBatch implements AutoCloseable {
       database.commit();
       flushDurableOutEdges = edgeCount;
     } catch (final RuntimeException e) {
-      for (final Map.Entry<Long, RID> undo : outHeadUndoLog.entrySet()) {
-        final long key = undo.getKey();
-        final RID previous = undo.getValue();
+      outHeadUndoLog.forEach((key, previous) -> {
         if (previous == null)
           deferredOutHead.remove(key);
         else
           deferredOutHead.put(key, previous);
         // Just an accelerator cache - evicting is always safe, forces a deferredOutHead/disk fallback.
         outChunkRIDCache.remove(key);
-      }
+      });
       throw e;
     }
   }
@@ -1868,7 +1935,12 @@ public class GraphBatch implements AutoCloseable {
     // deferredInHead value (only once per vertex per slice) so a failure can restore it exactly -
     // "was absent" restores via remove(), "had segment X" restores X - before rethrowing (issue #5950
     // review cycle 3).
-    final Map<Long, RID> inHeadUndoLog = new HashMap<>();
+    //
+    // LongObjectHashMap for the same reason as the OUT side's outHeadUndoLog, and to keep the two identical
+    // structures from drifting apart: allocated per drain, one entry per distinct destination vertex in the
+    // slice, and a null value faithfully records "no deferred head" because occupancy lives in the key array
+    // (issue #6083 review cycle 1).
+    final LongObjectHashMap<RID> inHeadUndoLog = new LongObjectHashMap<>();
 
     try {
       while (i < count) {
@@ -1944,16 +2016,14 @@ public class GraphBatch implements AutoCloseable {
       database.commit();
       inEdgesResumeSortIndex = count;
     } catch (final RuntimeException e) {
-      for (final Map.Entry<Long, RID> undo : inHeadUndoLog.entrySet()) {
-        final long key = undo.getKey();
-        final RID previous = undo.getValue();
+      inHeadUndoLog.forEach((key, previous) -> {
         if (previous == null)
           deferredInHead.remove(key);
         else
           deferredInHead.put(key, previous);
         // Just an accelerator cache - evicting is always safe, forces a deferredInHead/disk fallback.
         inChunkRIDCache.remove(key);
-      }
+      });
       throw e;
     }
   }
