@@ -129,6 +129,40 @@ class Issue6083OrphanEdgeRecordTest extends TestHelper {
   }
 
   /**
+   * The parallel path reclaims per FAILED BUCKET, so more than one failing at once exercises the loop rather
+   * than a single iteration of it. Each bucket is an independent async transaction: one failing must not take a
+   * sibling's committed edges with it, and both failures must be reclaimed.
+   */
+  @Test
+  void aParallelFlushReclaimsEveryFailedBucketNotJustTheFirst() {
+    final RID[] vertices = createVertices(6);
+
+    final GraphBatch batch = GraphBatch.builder(database)
+        .withLightEdges(false)
+        .withParallelFlush(true)
+        .build();
+
+    batch.newEdge(vertices[0], EDGE_TYPE, vertices[1], "tag", "good-0");
+    batch.newEdge(vertices[1], EDGE_TYPE, vertices[2], "tag", "good-1");
+    // Two DISTINCT missing source buckets, so the partition puts them in two separate bucket tasks and two
+    // separate reclaim calls - one failing bucket would only prove the loop runs once.
+    batch.newEdge(new RID(MISSING_BUCKET_ID, 0L), EDGE_TYPE, vertices[3], "tag", "doomed-a");
+    batch.newEdge(new RID(MISSING_BUCKET_ID + 7, 0L), EDGE_TYPE, vertices[4], "tag", "doomed-b");
+
+    assertThatThrownBy(batch::close).isInstanceOf(RuntimeException.class);
+
+    final long reachable = reachableEdgeCount();
+
+    assertThat(batch.getOrphanEdgeRecordsReclaimed())
+        .as("both failed buckets must be reclaimed, not just the first one the loop reaches").isEqualTo(2);
+    assertThat(batch.getOrphanEdgeRecordsLeaked()).isZero();
+    assertThat(countType(EDGE_TYPE)).as("no unreachable edge record may survive either failure")
+        .isEqualTo(reachable);
+    assertThat(reachable).as("the buckets that succeeded keep their edges").isEqualTo(2);
+    assertThat(batch.getTotalEdgesCreated()).as("and only those are claimed").isEqualTo(reachable);
+  }
+
+  /**
    * A batch whose FIRST commit is the one that fails has nothing durable to reclaim: the rollback already
    * removed PHASE 1's records. The cleanup must not try to delete them again, and the counter must say zero.
    */

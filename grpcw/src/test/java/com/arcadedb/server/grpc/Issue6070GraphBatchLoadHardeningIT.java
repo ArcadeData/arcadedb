@@ -486,13 +486,19 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
    * Captures ArcadeDB log records by swapping the global logger for the duration of a test, keeping the message
    * template and its arguments UNSUBSTITUTED so an assertion can check the values the line was given rather
    * than a formatted string.
+   * <p>
+   * Every record is also forwarded to a real {@link DefaultLogger}. The logger is a process-wide singleton
+   * shared with the embedded server under test, so a capturing logger that only captured would silently swallow
+   * anything the server logged while it was installed - including the diagnostics needed to understand a failure
+   * inside that window. Tee-ing keeps the swap invisible to everything except the assertions.
    */
   private static final class CapturingLogger implements Logger {
 
     record Record(Level level, String message, List<Object> args) {
     }
 
-    private final List<Record> records = new CopyOnWriteArrayList<>();
+    private final List<Record> records  = new CopyOnWriteArrayList<>();
+    private final Logger       delegate = new DefaultLogger();
 
     static CapturingLogger install() {
       final CapturingLogger logger = new CapturingLogger();
@@ -522,12 +528,15 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
         final Object arg15, final Object arg16, final Object arg17) {
       record(level, message, Arrays.asList(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
           arg12, arg13, arg14, arg15, arg16, arg17));
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8,
+          arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
     }
 
     @Override
     public void log(final Object requester, final Level level, final String message, final Throwable exception,
         final String context, final Object... args) {
       record(level, message, args == null ? List.of() : Arrays.asList(args));
+      delegate.log(requester, level, message, exception, context, args);
     }
 
     private void record(final Level level, final String message, final List<Object> args) {
@@ -537,6 +546,7 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGraphServerTest {
 
     @Override
     public void flush() {
+      delegate.flush();
     }
   }
 
