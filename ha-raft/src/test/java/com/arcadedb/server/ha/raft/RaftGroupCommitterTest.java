@@ -29,10 +29,14 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
@@ -486,6 +490,70 @@ class RaftGroupCommitterTest {
       assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
           .isInstanceOf(QuorumNotReachedException.class);
     } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * Regression for issue #5848: {@code flushBatch} dispatches a whole batch concurrently but then
+   * awaits each reply SEQUENTIALLY with the FULL {@code quorumTimeout}, on the single flusher thread.
+   * A batch where several entries never reply (a stalled quorum) therefore wedges the flusher for
+   * {@code batch.size() x quorumTimeout} instead of the intended {@code quorumTimeout} batch deadline.
+   * <p>
+   * This test fills one batch with entries whose quorum never replies, then submits one more entry
+   * right after. With the bug, the flusher is still sequentially waiting out the stalled batch when
+   * that extra entry's OWN submitter-side {@code 2 x quorumTimeout} budget expires, so it gets
+   * cancelled while still sitting {@code PENDING} in the queue - it never even gets dispatched. With
+   * the fix, the flusher frees up within about one {@code quorumTimeout} of the stalled batch's
+   * dispatch (regardless of how many entries stalled), dispatches the extra entry normally, and it
+   * completes successfully. This holds regardless of how the racing stalled submissions happen to
+   * split across drainTo() calls, because either way the buggy code pays a full quorumTimeout per
+   * stalled entry before the flusher can loop back to the queue.
+   */
+  @Test
+  void stalledEntriesInOneBatchDoNotWedgeTheFlusherForTheNextEntry() throws Exception {
+    final long quorumTimeout = 250; // ms
+    final int stallCount = 5;
+
+    final RaftClientReply okReply = mock(RaftClientReply.class);
+    when(okReply.isSuccess()).thenReturn(true);
+    when(okReply.getLogIndex()).thenReturn(999L);
+
+    final AtomicInteger sendCount = new AtomicInteger();
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    when(client.async().send(any(Message.class))).thenAnswer(inv -> {
+      if (sendCount.incrementAndGet() <= stallCount)
+        return new CompletableFuture<RaftClientReply>(); // never completes: simulates a stalled quorum
+      return CompletableFuture.completedFuture(okReply);
+    });
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, quorumTimeout,
+        stallCount + 5, 1_000, 100, RaftGroupCommitter.DEFAULT_MESSAGE_SIZE_MAX, null);
+    final ExecutorService stallers = Executors.newFixedThreadPool(stallCount);
+    try {
+      // Fill (at least) one batch with entries whose quorum will never reply. Fire-and-forget: their
+      // own eventual outcome (indeterminate or cancelled) is not the focus of this test.
+      for (int i = 0; i < stallCount; i++)
+        stallers.submit(() -> {
+          try {
+            committer.submitAndWait(new byte[] { 1, 2, 3 });
+          } catch (final Exception ignored) {
+            // expected eventually
+          }
+        });
+
+      // Give the stalling entries time to enqueue. offer() is near-instant, so this margin is
+      // generous; it is well under the quorumTimeout the assertion below relies on.
+      Thread.sleep(150);
+
+      final AtomicLong index = new AtomicLong(-1);
+      assertThatCode(() -> index.set(committer.submitAndWait(new byte[] { 9, 9, 9 })))
+          .as("the flusher must free up within roughly one quorumTimeout - not stallCount x "
+              + "quorumTimeout - so this entry must be dispatched instead of cancelled while PENDING")
+          .doesNotThrowAnyException();
+      assertThat(index.get()).isEqualTo(999L);
+    } finally {
+      stallers.shutdownNow();
       committer.stop();
     }
   }
