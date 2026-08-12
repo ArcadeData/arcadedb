@@ -25,7 +25,6 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 
 import java.util.Iterator;
-import java.util.List;
 import java.util.NoSuchElementException;
 
 /**

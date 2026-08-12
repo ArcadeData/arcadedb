@@ -26,6 +26,7 @@ import com.arcadedb.partitioning.PartitioningTestFixture;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -289,7 +290,7 @@ class RidInScanOptimizationTest extends TestHelper {
 
     // Second execution: cache hit, reuses the exact same FetchFromRidsStep - one element is not a
     // RID at all. The record matching the other, valid element must still come back.
-    final ResultSet rs2 = database.query("sql", sql, java.util.Arrays.asList(doc2Rid, "not-a-rid"));
+    final ResultSet rs2 = database.query("sql", sql, Arrays.asList(doc2Rid, "not-a-rid"));
     assertThat(collectNames(rs2)).containsExactly("doc2");
   }
 
