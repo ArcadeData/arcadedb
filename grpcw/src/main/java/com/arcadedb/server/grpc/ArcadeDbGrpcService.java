@@ -2615,6 +2615,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   // --- 3) Client-streaming graph batch load ---
+
+  /**
+   * How a bulk-streaming RPC in this service reports a stream that failed with work already committed
+   * (issue #6083 item 5). Two RPCs here answered the same question differently with no stated rule, so a third
+   * had two precedents and no way to choose; this is that rule.
+   * <p>
+   * <b>A failed stream terminates with {@code onError}. Counters of what is already durable ride the trailers,
+   * not a terminal message.</b> That is what {@link #graphBatchLoad} does, via
+   * {@code GraphBatchProtocol.RESULT_TRAILER}. A failure IS a failure at the transport level: the caller keeps
+   * its status code and whatever generic error handling it already has, and a stream that committed half a load
+   * does not complete "successfully". Carrying the counters in the trailers is what keeps that from costing the
+   * caller the information it needs to reconcile.
+   * <p>
+   * {@link #insertStream} predates the rule and does the opposite - it reports through a terminal
+   * {@code InsertSummary} on the normal {@code onNext}/{@code onCompleted} path. It is left as it is because its
+   * summary is a per-chunk outcome report that a caller consumes on the success path too, so the failure case is
+   * not a separate channel there; changing it would break every existing caller for no gain. It is the exception,
+   * not a second precedent.
+   * <p>
+   * A NEW bulk-streaming RPC follows {@code graphBatchLoad}.
+   */
   @Override
   public StreamObserver<GraphBatchChunk> graphBatchLoad(final StreamObserver<GraphBatchResult> resp) {
     final ServerCallStreamObserver<GraphBatchResult> call = (ServerCallStreamObserver<GraphBatchResult>) resp;
@@ -2690,8 +2711,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             dbRef.set(db);
             final GraphBatchOptions options = chunk.hasOptions() ? chunk.getOptions() : null;
             if (options != null) {
-              if (options.getVertexBatchSize() > 0)
-                vertexBatchSize[0] = Math.min(options.getVertexBatchSize(), GRAPH_BATCH_MAX_VERTEX_BUFFER);
+              if (options.getVertexBatchSize() > 0) {
+                final int requested = options.getVertexBatchSize();
+                vertexBatchSize[0] = Math.min(requested, GRAPH_BATCH_MAX_VERTEX_BUFFER);
+                if (vertexBatchSize[0] != requested)
+                  LogManager.instance().log(this, Level.WARNING,
+                      "graphBatchLoad: requested vertexBatchSize %d exceeds the server-side cap, clamping to %d",
+                      null, requested, vertexBatchSize[0]);
+              }
               if (options.hasReturnIdMapping())
                 returnIdMapping[0] = options.getReturnIdMapping();
             }
