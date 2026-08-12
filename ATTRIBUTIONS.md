@@ -265,6 +265,25 @@ plugin; not on the core/server compile classpath.
 | org.jetbrains.kotlin | kotlin-stdlib | 2.2.21 | Apache 2.0 | https://kotlinlang.org/ |
 | org.jetbrains | annotations | 13.0 | Apache 2.0 | https://github.com/JetBrains/java-annotations |
 
+### Transitive Dependencies Found by the #5651 License Audit
+
+Not declared directly in any module's `pom.xml`; pulled in transitively and missing from this
+document until the Maven-wide allow-list check (`.github/scripts/check-license-allowlist.py`)
+was added and run against the full reactor for the first time.
+
+| Group ID | Artifact ID | License | Pulled in via | Homepage |
+|----------|-------------|---------|----------------|----------|
+| org.mozilla | rhino | MPL-2.0 | io.swagger:swagger-parser (API documentation tooling) | https://mozilla.github.io/rhino/ |
+| org.mindrot | jbcrypt | ISC | org.apache.tinkerpop:gremlin-groovy (optional Gremlin module) | https://github.com/djmdjm/jBCrypt |
+| javax.annotation | javax.annotation-api | CDDL 1.1 + GPLv2 with classpath exception | not individually traced; a common transitive dependency of javax/jakarta-based libraries in the graph | http://jcp.org/en/jsr/detail?id=250 |
+| jakarta.annotation | jakarta.annotation-api | EPL 2.0 / GPL-2.0 WITH Classpath-exception-2.0 (dual; EPL 2.0 selected) | not individually traced; a common transitive dependency of jakarta-based libraries in the graph | https://projects.eclipse.org/projects/ee4j.ca |
+
+**License Note:** MPL-2.0 and CDDL are permitted here under CLAUDE.md's "for libraries only,
+unmodified" carve-out (the same one LGPL 2.1+ already had). `jakarta.annotation-api` is dual
+EPL-2.0/GPL-2.0+CPE; EPL-2.0 was already allowed outright, so the GPL option is moot.
+`javax.annotation-api`'s CDDL/GPLv2 dual license is the standard `javax.*`-API license; the
+classpath exception on its GPL option is what makes it safe to depend on.
+
 ---
 
 ## Test Dependencies
@@ -286,6 +305,8 @@ These dependencies are used only for testing and are not included in production 
 | com.jayway.jsonpath | json-path | 2.10.0 | Apache 2.0 | https://github.com/json-path/JsonPath |
 | com.github.docker-java | docker-java-api | 3.7.0 | Apache 2.0 | https://github.com/docker-java/docker-java |
 | net.bytebuddy | byte-buddy | 1.18.3 | Apache 2.0 | https://bytebuddy.net/ |
+| org.openjdk.jmh | jmh-core | 1.37 | GPL-2.0 WITH Classpath-exception-2.0 | https://openjdk.java.net/projects/code-tools/jmh/ |
+| org.openjdk.jmh | jmh-generator-annprocess | 1.37 | GPL-2.0 WITH Classpath-exception-2.0 | https://openjdk.java.net/projects/code-tools/jmh/ |
 
 ---
 
