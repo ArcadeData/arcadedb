@@ -162,6 +162,9 @@ public class ArcadeDBServer {
   private              MeterRegistry metricsRegistry;
   private              MeterRegistry metricsLoggingRegistry;
   private              JvmGcMetrics  metricsJvmGc;
+  // Holds the per-follower gauge refresh scheduler open; must be closed on stop or the daemon
+  // thread it starts leaks one instance per restart (issue #5850).
+  private              HAReplicationMetrics haReplicationMetrics;
 //  private             ServerMonitor                         serverMonitor;
 
   static {
@@ -624,8 +627,11 @@ public class ArcadeDBServer {
     // queries) - exposes arcadedb.engine.* gauges read live from the Profiler on each scrape.
     new EngineMetricsBinder().bindTo(Metrics.globalRegistry);
     // HA replication health (heartbeat lag + replication lag) sourced live from the HA plugin -
-    // exposes arcadedb.ha.* gauges; harmless no-op (all -1/0) when HA is disabled.
-    new HAReplicationMetrics(this).bindTo(Metrics.globalRegistry);
+    // exposes arcadedb.ha.* gauges; harmless no-op (all -1/0) when HA is disabled. Kept in a field
+    // and closed in stopMetrics(), or the per-follower gauge refresh scheduler it starts leaks one
+    // daemon thread per restart (issue #5850).
+    haReplicationMetrics = new HAReplicationMetrics(this);
+    haReplicationMetrics.bindTo(Metrics.globalRegistry);
     QueryMetricsRecorder.Holder.register(new MicrometerQueryMetricsRecorder());
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
@@ -647,6 +653,10 @@ public class ArcadeDBServer {
     if (metricsJvmGc != null) {
       CodeUtils.executeIgnoringExceptions(metricsJvmGc::close, "Error on closing the JVM GC metrics", false);
       metricsJvmGc = null;
+    }
+    if (haReplicationMetrics != null) {
+      CodeUtils.executeIgnoringExceptions(haReplicationMetrics::close, "Error on closing the HA replication metrics", false);
+      haReplicationMetrics = null;
     }
     if (metricsLoggingRegistry != null) {
       removeMeterRegistry(metricsLoggingRegistry);
