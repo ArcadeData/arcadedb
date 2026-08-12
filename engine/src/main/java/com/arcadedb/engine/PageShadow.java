@@ -44,12 +44,17 @@ import java.util.logging.Level;
  * shadowed pages is 16 MB of index. Keys pack {@code fileId} and {@code pageNumber} into one {@code long} and are
  * therefore always non-negative, which frees {@code -1} as the empty slot marker.
  * <p>
- * <b>Concurrency.</b> Every public method is serialized on this instance. The capture side is called from inside
- * {@code PageManager.concurrentPageAccess}'s per-page write slot, so two threads never capture the SAME page, but
- * they do capture different pages concurrently and a snapshot reader probes the index in parallel. The monitor is
- * also what publishes a stored pre-image to that reader: {@link #store} copies the bytes and inserts the index entry
- * under it, {@link #read} looks the entry up under it, so a reader that observes the entry is guaranteed to observe
- * the complete bytes. That ordering is what lets {@link PageSnapshot} read runs of pages in bulk with no per-page
+ * <b>Concurrency.</b> The index is serialized on this instance, but the I/O is deliberately NOT: the capture side is
+ * called from inside {@code PageManager.concurrentPageAccess}'s per-page write slot, so two threads never capture the
+ * SAME page but they do capture different pages concurrently, and holding one monitor across a spill write would put
+ * every writer of the database behind one thread's disk write for the whole window. {@link #store} therefore reserves
+ * its spill offset under the monitor, writes at that absolute position outside it (positional
+ * {@link FileChannel#write} is thread safe and the offsets are disjoint by construction), and only then publishes the
+ * index entry; {@link #read} resolves the slot under the monitor and copies outside it.
+ * <p>
+ * That publication order is also what makes the reader safe: the bytes are complete before the entry exists, and
+ * {@link #read} looks the entry up under the same monitor, so a reader that observes an entry is guaranteed to
+ * observe the complete pre-image. It is what lets {@link PageSnapshot} read runs of pages in bulk with no per-page
  * lock at all, re-checking the shadow afterwards for anything a writer touched underneath it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -102,43 +107,60 @@ final class PageShadow implements AutoCloseable {
    * @return {@code false} when the configured cap would be breached: the caller must invalidate the whole window
    *     (challenge C4 - a shadow that silently stops capturing would produce a torn snapshot).
    */
-  synchronized boolean store(final long key, final byte[] content, final int length) throws IOException {
-    if (closed)
-      return false;
-    if (lookup(key) != NOT_FOUND)
-      // ALREADY CAPTURED BY AN EARLIER WRITE TO THE SAME PAGE: THE FIRST PRE-IMAGE IS THE SNAPSHOT ONE, KEEP IT
-      return true;
+  boolean store(final long key, final byte[] content, final int length) throws IOException {
+    final FileChannel channel;
+    final long offset;
 
-    if (maxTotalBytes > 0 && ramBytes + spillBytes + length > maxTotalBytes)
-      return false;
+    synchronized (this) {
+      if (closed)
+        return false;
+      if (lookup(key) != NOT_FOUND)
+        // ALREADY CAPTURED BY AN EARLIER WRITE TO THE SAME PAGE: THE FIRST PRE-IMAGE IS THE SNAPSHOT ONE, KEEP IT
+        return true;
 
-    final long slot;
-    if (ramBytes + length <= maxRAMBytes) {
-      final byte[] copy = new byte[length];
-      System.arraycopy(content, 0, copy, 0, length);
-      if (ramCount == ramSlots.length) {
-        final byte[][] larger = new byte[ramSlots.length * 2][];
-        System.arraycopy(ramSlots, 0, larger, 0, ramCount);
-        ramSlots = larger;
+      if (maxTotalBytes > 0 && ramBytes + spillBytes + length > maxTotalBytes)
+        return false;
+
+      if (ramBytes + length <= maxRAMBytes) {
+        final byte[] copy = new byte[length];
+        System.arraycopy(content, 0, copy, 0, length);
+        if (ramCount == ramSlots.length) {
+          final byte[][] larger = new byte[ramSlots.length * 2][];
+          System.arraycopy(ramSlots, 0, larger, 0, ramCount);
+          ramSlots = larger;
+        }
+        ramSlots[ramCount] = copy;
+        insert(key, ramCount++);
+        ramBytes += length;
+        return true;
       }
-      ramSlots[ramCount] = copy;
-      slot = ramCount++;
-      ramBytes += length;
-    } else {
+
       if (spillChannel == null)
         spillChannel = FileChannel.open(spillFile.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.READ,
             StandardOpenOption.WRITE);
-
-      final ByteBuffer buffer = ByteBuffer.wrap(content, 0, length);
-      long pos = spillBytes;
-      while (buffer.hasRemaining())
-        pos += spillChannel.write(buffer, pos);
-
-      slot = -(spillBytes + 1);
+      channel = spillChannel;
+      // RESERVE THE RANGE, SO CONCURRENT SPILLS GET DISJOINT OFFSETS AND THE CAP ACCOUNTING STAYS EXACT EVEN WHILE
+      // THE WRITES THEMSELVES ARE IN FLIGHT
+      offset = spillBytes;
       spillBytes += length;
     }
 
-    insert(key, slot);
+    // OUTSIDE THE MONITOR: ONE THREAD'S DISK WRITE MUST NOT BLOCK EVERY OTHER WRITER OF THE DATABASE FROM SHADOWING
+    // AN UNRELATED PAGE. A FAILURE HERE LEAVES A HOLE IN THE SPILL FILE AND NO INDEX ENTRY, AND THE CALLER
+    // INVALIDATES THE WHOLE WINDOW - WHICH IS CORRECT, SINCE THAT PAGE'S PRE-IMAGE IS GONE
+    final ByteBuffer buffer = ByteBuffer.wrap(content, 0, length);
+    long pos = offset;
+    while (buffer.hasRemaining())
+      pos += channel.write(buffer, pos);
+
+    synchronized (this) {
+      // UNREACHABLE IN PRACTICE - PageSnapshot.close() DRAINS THE IN-FLIGHT CAPTURES BEFORE CLOSING THE SHADOW - AND
+      // DELIBERATELY NOT REPORTED AS A CAP BREACH: NOBODY WILL EVER READ A WINDOW THAT IS BEING CLOSED
+      if (closed)
+        return true;
+      // PUBLISHED ONLY NOW: A READER THAT SEES THE ENTRY IS GUARANTEED TO SEE THE COMPLETE BYTES
+      insert(key, -(offset + 1));
+    }
     return true;
   }
 
@@ -148,27 +170,36 @@ final class PageShadow implements AutoCloseable {
    * @return {@code false} when the page is not in the shadow, in which case the on-disk image is still the snapshot
    *     one and the caller reads it from the data file.
    */
-  synchronized boolean read(final long key, final byte[] dst, final int dstOffset, final int length) throws IOException {
-    if (closed)
-      return false;
+  boolean read(final long key, final byte[] dst, final int dstOffset, final int length) throws IOException {
+    final long slot;
+    final byte[] ramContent;
+    final FileChannel channel;
 
-    final long slot = lookup(key);
-    if (slot == NOT_FOUND)
-      return false;
+    synchronized (this) {
+      if (closed)
+        return false;
 
-    if (slot >= 0) {
-      final byte[] content = ramSlots[(int) slot];
-      if (content.length != length)
+      slot = lookup(key);
+      if (slot == NOT_FOUND)
+        return false;
+
+      // A STORED PRE-IMAGE IS IMMUTABLE, SO BOTH THE byte[] AND THE SPILL RANGE CAN BE COPIED OUTSIDE THE MONITOR
+      ramContent = slot >= 0 ? ramSlots[(int) slot] : null;
+      channel = spillChannel;
+    }
+
+    if (ramContent != null) {
+      if (ramContent.length != length)
         throw new IOException(
-            "Shadowed page size mismatch: expected " + length + " bytes, the pre-image holds " + content.length);
-      System.arraycopy(content, 0, dst, dstOffset, length);
+            "Shadowed page size mismatch: expected " + length + " bytes, the pre-image holds " + ramContent.length);
+      System.arraycopy(ramContent, 0, dst, dstOffset, length);
       return true;
     }
 
     final ByteBuffer buffer = ByteBuffer.wrap(dst, dstOffset, length);
     long pos = -(slot + 1);
     while (buffer.hasRemaining()) {
-      final int r = spillChannel.read(buffer, pos);
+      final int r = channel.read(buffer, pos);
       if (r < 0)
         throw new IOException("Unexpected EOF reading the snapshot shadow file '" + spillFile.getName() + "' at " + pos);
       pos += r;

@@ -250,6 +250,27 @@ public class FileManager {
     this.droppedFileHandler = handler;
   }
 
+  @FunctionalInterface
+  public interface FileSetOperation<T> {
+    T execute() throws IOException;
+  }
+
+  /**
+   * Runs {@code operation} holding the monitor {@link #dropFile} and {@link #getOrCreateFile} take, so the registered
+   * file set cannot change underneath it.
+   * <p>
+   * The snapshot t0 barrier (issue #6075) uses this to close a TOCTOU window that would otherwise defeat the whole
+   * deferred-deletion mechanism: it lists the files it is about to snapshot and only THEN publishes the window, and
+   * {@code PageManager.deferFileDrop} keeps a dropped file alive only for windows that are already published. A
+   * {@code dropFile} landing in that gap - which index compaction can do at any moment, since it takes no database
+   * lock - would delete a file the snapshot had just claimed. Holding this monitor across list-and-publish makes the
+   * two mutually exclusive. Lock ORDER matters and is the same on both paths: this monitor first, then
+   * {@code PageManager}'s snapshot registry lock.
+   */
+  public synchronized <T> T executeWithFileSetLocked(final FileSetOperation<T> operation) throws IOException {
+    return operation.execute();
+  }
+
   public void dropFile(final int fileId) throws IOException {
     final ComponentFile file;
     synchronized (this) {

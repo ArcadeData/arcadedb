@@ -389,7 +389,12 @@ public class PageManager extends LockContext {
         try {
           lock();
           try {
-            return registerSnapshot(buildSnapshot(database));
+            // LIST THE FILES AND PUBLISH THE WINDOW AS ONE ATOMIC STEP AGAINST FileManager.dropFile. Without this a
+            // file dropped in the gap - which index compaction can do at any moment, taking no database lock - would
+            // be physically deleted, because deferFileDrop only protects windows that are already published, and the
+            // snapshot would then be holding a closed channel
+            return database.getFileManager()
+                .executeWithFileSetLocked(() -> registerSnapshot(buildSnapshot(database)));
           } finally {
             unlock();
           }
@@ -481,7 +486,7 @@ public class PageManager extends LockContext {
       if (pageSize <= 0)
         continue;
       files.add(new PageSnapshot.SnapshotFile(paginated.getFileId(), paginated, pageSize, (int) paginated.getTotalPages(),
-          paginated.getFileName(), paginated.getOSFile().lastModified()));
+          paginated.getFileName()));
     }
 
     final ContextConfiguration configuration = database.getConfiguration();

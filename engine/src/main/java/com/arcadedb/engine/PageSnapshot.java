@@ -90,10 +90,20 @@ public class PageSnapshot implements AutoCloseable {
   }
 
   /** One page file as it stood at t0: the page count is what makes appended pages need no shadow (challenge C7). */
-  public record SnapshotFile(int fileId, PaginatedComponentFile file, int pageSize, int pageCount, String fileName,
-                             long lastModified) {
+  public record SnapshotFile(int fileId, PaginatedComponentFile file, int pageSize, int pageCount, String fileName) {
     public long size() {
       return (long) pageSize * pageCount;
+    }
+
+    /**
+     * Modification timestamp for the archive entry header. Read lazily, on the consumer's thread, rather than
+     * captured at t0: it is a {@code stat()} per file and the t0 barrier holds the page-manager lock and the
+     * transaction manager's apply lock exclusively, so on a database with many buckets and indexes stat-ing all of
+     * them there would stretch the one stall this design is supposed to keep bounded. Nothing depends on the value
+     * being the t0 one, and a file dropped since then is still on disk (its deletion is deferred to the close).
+     */
+    public long lastModified() {
+      return file.getOSFile().lastModified();
     }
   }
 
@@ -409,7 +419,15 @@ public class PageSnapshot implements AutoCloseable {
         byteBuffer.clear();
         byteBuffer.limit((lastUnshadowed + 1) * pageSize);
         byteBuffer.position(firstUnshadowed * pageSize);
-        snapshotFile.file().readPages(nextPage + firstUnshadowed, readPages, byteBuffer);
+        try {
+          snapshotFile.file().readPages(nextPage + firstUnshadowed, readPages, byteBuffer);
+        } catch (final IllegalArgumentException e) {
+          // readPages REPORTS A CLOSED FILE THIS WAY. THE WINDOW KEEPS ITS FILES ALIVE (DROPS ARE DEFERRED), SO THIS
+          // MEANS THE DATABASE ITSELF WENT AWAY UNDERNEATH THE READER - A SNAPSHOT-INTEGRITY FAILURE, NOT A DISK
+          // ERROR, SO IT IS REPORTED AS ONE AND THE CONSUMER CAN FALL BACK INSTEAD OF FAILING OUTRIGHT
+          invalidate(STATUS.FAILED, "file '" + snapshotFile.fileName() + "' is no longer readable: " + e.getMessage());
+          checkValid();
+        }
         byteBuffer.clear();
       }
 

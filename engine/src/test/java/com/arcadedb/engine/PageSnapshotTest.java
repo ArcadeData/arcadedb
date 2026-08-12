@@ -376,6 +376,57 @@ class PageSnapshotTest extends TestHelper {
   }
 
   /**
+   * The window between listing the files a snapshot covers and publishing the window has to be closed, or a file
+   * dropped inside it is physically deleted even though the snapshot has already claimed it - and the reader then
+   * holds a closed channel. Index compaction drops files without taking any database lock, so this is a live race,
+   * not a theoretical one. The drops here run against a snapshot barrier over and over to exercise the interleaving.
+   */
+  @Test
+  void aFileDroppedWhileAWindowIsOpeningIsNeverDeletedUnderIt() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManager pageManager = db.getPageManager();
+
+    final int rounds = 30;
+    for (int i = 0; i < rounds; i++) {
+      final String typeName = "Racy" + i;
+      database.getSchema().createDocumentType(typeName);
+      final int round = i;
+      database.transaction(() -> {
+        for (int r = 0; r < 50; r++)
+          database.newDocument(typeName).set("id", round * 1000 + r).save();
+      });
+    }
+    pageManager.waitAllPagesOfDatabaseAreFlushed(db);
+
+    final AtomicReference<Exception> dropperFailure = new AtomicReference<>();
+    for (int i = 0; i < rounds; i++) {
+      final String typeName = "Racy" + i;
+      final Thread dropper = new Thread(() -> {
+        try {
+          database.getSchema().dropType(typeName);
+        } catch (final Exception e) {
+          dropperFailure.compareAndSet(null, e);
+        }
+      }, "snapshot-race-dropper-" + i);
+      dropper.setDaemon(true);
+      dropper.start();
+
+      try (final PageSnapshot snapshot = pageManager.openSnapshot(db)) {
+        // EVERY FILE THE WINDOW CLAIMED MUST STILL BE READABLE, WHETHER OR NOT THE DROP LANDED INSIDE THE BARRIER
+        for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
+          assertThat(snapshot.calculateChecksum(file.fileId())).as("file %s of round %d", file.fileName(), 0)
+              .isNotNegative();
+        assertThat(snapshot.getStatus()).isEqualTo(PageSnapshot.STATUS.ACTIVE);
+      }
+
+      dropper.join(30_000);
+      assertThat(dropperFailure.get()).isNull();
+    }
+
+    assertThat(database.countType(TYPE, false)).isEqualTo(2_000);
+  }
+
+  /**
    * Challenge C8: the shadow is pure scratch, so a crash mid-window leaves an orphan file which the next open must
    * delete. It must also never be mistaken for a data file, which is why its extension is absent from
    * {@code LocalDatabase.SUPPORTED_FILE_EXT}.

@@ -34,7 +34,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -68,6 +71,8 @@ class Issue6075SnapshotBackupIT {
   @AfterEach
   void clean() {
     GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.reset();
+    GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM.reset();
+    GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE.reset();
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
     FileUtils.deleteRecursively(new File(RESTORED_PATH));
     new File(BACKUP_FILE).delete();
@@ -128,6 +133,81 @@ class Issue6075SnapshotBackupIT {
 
     assertThat(withoutSnapshot).as("the fallback path must still suspend flushing for the whole backup").isGreaterThan(0.9);
     assertThat(withSnapshot).as("a snapshot backup must not hold the flush suspension for its duration").isLessThan(0.5);
+  }
+
+  /**
+   * The reliability story of the snapshot path is that a window which cannot hold its point in time does NOT produce
+   * a torn archive: the whole backup restarts on the suspend-and-freeze path, which throttles writers but always
+   * completes. A streamed archive cannot be repaired in place, so this is a restart of `writeArchive` against the
+   * same file, and it has to be exercised end to end rather than only at the `PageSnapshot` level.
+   * <p>
+   * The shadow cap is set to 1 MB - a handful of 64 KB pages - while a writer rewrites the whole 10 MB dataset in a
+   * loop, so the window is certain to overflow while the (throttled) backup is still reading.
+   */
+  @Test
+  void aShadowOverflowMidBackupFallsBackAndStillProducesARestorableArchive() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+    GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM.setValue(1);
+    GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE.setValue(1);
+
+    final PrintStream originalOut = System.out;
+    final ByteArrayOutputStream captured = new ByteArrayOutputStream();
+
+    try (final Database database = createDatabase()) {
+      final AtomicBoolean running = new AtomicBoolean(true);
+      final AtomicReference<Exception> writerFailure = new AtomicReference<>();
+      final CountDownLatch warmedUp = new CountDownLatch(1);
+
+      final Thread writer = new Thread(() -> {
+        int round = 0;
+        while (running.get()) {
+          final int current = round++;
+          try {
+            // A FULL REWRITE PASS DIRTIES EVERY PAGE OF THE DATASET, SO THE 1 MB SHADOW IS BLOWN THROUGH AT ONCE
+            database.transaction(() -> database.iterateType(TYPE, false).forEachRemaining(
+                record -> record.asDocument().modify().set("payload", "overflow-" + current + "-" + "y".repeat(500)).save()));
+            warmedUp.countDown();
+          } catch (final Exception e) {
+            writerFailure.compareAndSet(null, e);
+            return;
+          }
+        }
+      }, "backup-overflow-writer");
+      writer.setDaemon(true);
+      writer.start();
+
+      try {
+        assertThat(warmedUp.await(60, TimeUnit.SECONDS)).isTrue();
+
+        System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+        try {
+          new Backup(database, BACKUP_FILE).setVerboseLevel(0).setMaxMBPerSecond(2).backupDatabase();
+        } finally {
+          System.setOut(originalOut);
+        }
+
+        running.set(false);
+        writer.join(60_000);
+        assertThat(writerFailure.get()).isNull();
+
+        assertThat(captured.toString(StandardCharsets.UTF_8))
+            .as("the overflow must have driven the documented fallback, not merely been survived")
+            .contains("Point-in-time snapshot unusable");
+
+        assertThat(new File(BACKUP_FILE)).exists();
+        new Restore(BACKUP_FILE, RESTORED_PATH).setVerboseLevel(0).restoreDatabase();
+
+        try (final Database restored = new DatabaseFactory(RESTORED_PATH).open()) {
+          assertThat(restored.command("sql", "check database").nextIfAvailable().<Long>getProperty("totalErrors")).isZero();
+          assertThat(restored.countType(TYPE, false)).isEqualTo(RECORDS);
+        }
+      } finally {
+        System.setOut(originalOut);
+        running.set(false);
+        writer.join(60_000);
+      }
+    }
+    TestHelper.checkActiveDatabases();
   }
 
   private double measureSuspendedFraction(final boolean snapshot) throws Exception {
