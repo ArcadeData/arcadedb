@@ -247,7 +247,6 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public void updateTypeName(final String newTypeName) {
     final String oldTypeName = metadata.typeName;
-    metadata.typeName = newTypeName;
     if (mutable != null) {
       try {
         // Rename through the component so the component name and the FileManager map follow the file. A null result
@@ -260,6 +259,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         throw new SchemaException("Error on renaming index file for index '" + name + "'", e);
       }
     }
+    // Only once the file actually moved: on failure the caller reverts the type to its old name, and metadata
+    // already pointing at the new one would leave the index disagreeing with both the type and the file.
+    metadata.typeName = newTypeName;
   }
 
   @Override
