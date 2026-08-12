@@ -227,6 +227,29 @@ class CallStepWriteProcedureAutoCommitTest {
     }
   }
 
+  /**
+   * The one branch combination in {@code executeProcedure} not otherwise exercised:
+   * {@code OPTIONAL CALL} to a write procedure that fails validation, with no explicit transaction open.
+   * The {@code catch (Exception e)} branch both rolls back (autoCommit's own guard) and returns
+   * {@code null} instead of rethrowing (OPTIONAL's suppression) - must do both, not just one. Per OPTIONAL
+   * semantics (matching {@code OPTIONAL MATCH}), the failed call still yields exactly one row with every
+   * YIELD field {@code null}, rather than zero rows.
+   */
+  @Test
+  void optionalCallToFailingWriteProcedureSuppressesErrorAndLeavesNoDanglingTransaction() {
+    assertThat(database.isTransactionActive()).isFalse();
+
+    try (final ResultSet rs = database.command("opencypher",
+        "OPTIONAL CALL merge.node([], {}, {}) YIELD node RETURN node")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Object node = rs.next().getProperty("node");
+      assertThat(node).isNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
   @Test
   void unknownPropertiesPolicyStillThrowsWithNoExplicitTransaction() {
     database.begin();
