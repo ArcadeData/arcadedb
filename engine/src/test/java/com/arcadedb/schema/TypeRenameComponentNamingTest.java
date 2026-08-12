@@ -149,6 +149,56 @@ class TypeRenameComponentNamingTest extends TestHelper {
     });
   }
 
+  /**
+   * A bucket whose own name merely starts with the type name is not derived from it. Only
+   * {@code <encodedType>_<something>} is, so the boundary has to be the '_' and not a bare prefix match, otherwise
+   * renaming "Order" would rewrite an attached "OrderArchive" into "OrdersArchive".
+   */
+  @Test
+  void renameTypeLeavesAloneACustomBucketSharingTheTypeNamePrefix() {
+    database.transaction(() -> database.getSchema().createDocumentType("Order", 1));
+    database.transaction(() -> database.getSchema().getType("Order")
+        .addBucket(database.getSchema().createBucket("OrderArchive")));
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO BUCKET:OrderArchive SET p1 = 'a'");
+      database.command("sql", "INSERT INTO Order SET p1 = 'b'");
+    });
+
+    database.getSchema().getType("Order").rename("Orders");
+
+    final var bucketNames = database.getSchema().getType("Orders").getBuckets(false).stream().map(b -> b.getName()).toList();
+    assertThat(bucketNames).containsExactlyInAnyOrder("Orders_0", "OrderArchive");
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.getSchema().existsBucket("OrderArchive")).isTrue();
+    assertThat(database.countType("Orders", true)).isEqualTo(2L);
+  }
+
+  /** The HASH index rename path is separate from the LSM one and had no coverage. */
+  @Test
+  void renameTypeWithHashIndexKeepsIndexUsableAfterReopen() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Ha_shed", 1).createProperty("code", Type.STRING);
+      database.getSchema().buildTypeIndex("Ha_shed", new String[] { "code" })
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(true).create();
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newDocument("Ha_shed").set("code", "c" + i).save();
+    });
+
+    database.getSchema().getType("Ha_shed").rename("hash.renamed");
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.countType("hash.renamed", true)).isEqualTo(10L);
+    database.transaction(() -> assertThat(
+        database.query("sql", "select from `hash.renamed` where code = 'c7'").stream().count()).isEqualTo(1L));
+  }
+
   @Test
   void renameTypeWithIndexKeepsIndexUsableAfterReopen() {
     database.getSchema().createVertexType("In_Dexed", 1).createProperty("code", Type.STRING)

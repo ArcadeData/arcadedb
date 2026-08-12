@@ -598,7 +598,14 @@ public class LocalSchema implements Schema {
   public static String rebaseComponentName(final String componentName, final String oldTypeName, final String newTypeName,
       final String encoding) {
     final String oldPrefix = FileUtils.encode(oldTypeName, encoding);
-    if (!componentName.startsWith(oldPrefix))
+
+    // Every derived name is '<encodedTypeName>_<something>': '_<index>' for a bucket, plus '_out_edges'/'_in_edges'
+    // or '_<timestamp>' for what hangs off it. Requiring the '_' is what separates a derived name from an attached
+    // bucket that merely happens to start with the type name, e.g. "OrderArchive" on type "Order": a bare prefix
+    // match would rebase that one too, which is the same infer-the-boundary-from-content mistake this method exists
+    // to remove.
+    if (componentName.length() <= oldPrefix.length() || !componentName.startsWith(oldPrefix)
+        || componentName.charAt(oldPrefix.length()) != '_')
       return null;
 
     return FileUtils.encode(newTypeName, encoding) + componentName.substring(oldPrefix.length());

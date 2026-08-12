@@ -29,6 +29,7 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -618,7 +619,10 @@ public class HashIndex implements IndexInternal {
         if (newComponentName != null)
           bucket.rename(newComponentName);
       } catch (final IOException e) {
-        throw new IndexException("Error on renaming index file for hash index '" + name + "'", e);
+        // SchemaException, matching LSMTreeIndex.updateTypeName(): this runs inside LocalDocumentType.rename(),
+        // whose rollback catches IOException and SchemaException. An IndexException (a sibling, not a subclass)
+        // would escape that rollback and leave the renamed files behind an unsaved schema.
+        throw new SchemaException("Error on renaming index file for hash index '" + name + "'", e);
       }
     }
   }
