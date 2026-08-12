@@ -151,6 +151,71 @@ class Issue687ClassCastEdgeCheckTest extends TestHelper {
     assertThat((Long) verify.get("totalWarnings")).as("database must be clean after FIX").isEqualTo(0L);
   }
 
+  /**
+   * Compound-corruption regression for the catch-scope point raised in review: a GENUINELY corrupt edge
+   * (its {@code getIn()} does not match the vertex whose list it is in) shares that vertex's adjacency
+   * list with a SEPARATE, merely-dangling entry (a plain vertex where an edge RID is expected). Resolving
+   * the mismatch triggers the "CHECK ALL INCOMING EDGES" rescan, which walks every entry in the list -
+   * including the dangling one - and hits its raw {@code asEdge(true)} call, throwing a
+   * {@link ClassCastException} for THAT entry while the mismatched edge is still being processed.
+   * <p>
+   * That stray exception must NOT be caught by the handler meant for {@code edgeRID} resolving to a
+   * non-edge (it is a different RID that failed, mid-rescan): the mismatched edge is real corruption and
+   * must still end up in {@code corruptedRecords}, while the dangling entry's bystander record must still
+   * never be flagged corrupt. See {@code asEdgeOrDanglingEntry}/{@code DanglingEdgeListEntryException} in
+   * {@link GraphDatabaseChecker}.
+   */
+  @Test
+  void classCastDuringSiblingRescanDoesNotMaskAGenuinelyCorruptEdge() {
+    final RID[] ids = buildCompoundCorruptionScenario();
+    final RID mismatchedEdge = ids[1];
+    final RID bystander = ids[2];
+
+    final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database).checkVertices(VERTEX_TYPE, false, 0);
+
+    @SuppressWarnings("unchecked")
+    final Collection<RID> corrupted = (Collection<RID>) stats.get("corruptedRecords");
+    assertThat(corrupted).as("the genuinely mismatched edge must still be flagged corrupt despite the sibling cast failure")
+        .contains(mismatchedEdge);
+    assertThat(corrupted).as("the dangling entry's bystander record must never be flagged corrupt").doesNotContain(bystander);
+  }
+
+  /**
+   * Builds: a hub vertex whose IN list holds (1) a real edge from {@code source} to some OTHER vertex
+   * (mismatched: {@code edge.getIn()} != hub, wired into the hub's list anyway) and (2) a dangling entry
+   * pointing at a plain bystander vertex. Returns {hubRid, mismatchedEdgeRid, bystanderRid}.
+   */
+  private RID[] buildCompoundCorruptionScenario() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType(VERTEX_TYPE, 1);
+      database.getSchema().createEdgeType(EDGE_TYPE, 1);
+    });
+
+    final RID[] ids = new RID[3];
+    database.transaction(() -> {
+      final Vertex hub = database.newVertex(VERTEX_TYPE).set("name", "hub").save();
+      final Vertex wrongTarget = database.newVertex(VERTEX_TYPE).set("role", "wrongTarget").save();
+      final Vertex source = database.newVertex(VERTEX_TYPE).set("role", "source").save();
+
+      // Genuine edge, but its IN endpoint is NOT the hub: this must stay flagged corrupt.
+      final Edge mismatchedEdge = source.newEdge(EDGE_TYPE, wrongTarget);
+
+      final VertexInternal hubInternal = (VertexInternal) hub.getIdentity().asVertex(true);
+      final EdgeLinkedList hubInList = ((DatabaseInternal) database).getGraphEngine()
+          .getOrCreateEdgeList(hubInternal, Vertex.DIRECTION.IN);
+      hubInList.add(mismatchedEdge.getIdentity(), source.getIdentity());
+
+      // A separate dangling entry: a plain vertex where an edge RID is expected.
+      final Vertex bystander = database.newVertex(VERTEX_TYPE).set("role", "bystander").save();
+      hubInList.add(bystander.getIdentity(), hub.getIdentity());
+
+      ids[0] = hub.getIdentity();
+      ids[1] = mismatchedEdge.getIdentity();
+      ids[2] = bystander.getIdentity();
+    });
+    return ids;
+  }
+
   /** Injects one corrupt IN-list entry on the hub: edgeRID = a plain vertex (not an edge). Returns that vertex RID. */
   private RID injectClassCastEntry(final RID hubRid) {
     final RID[] bystander = new RID[1];

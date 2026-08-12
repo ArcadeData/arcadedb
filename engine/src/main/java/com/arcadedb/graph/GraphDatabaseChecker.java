@@ -604,6 +604,30 @@ public class GraphDatabaseChecker {
     report.warn("edge " + rid + " could not be read during the edge-list rebuild, skipping it (error: " + describe(error) + ")");
   }
 
+  /**
+   * Marks a {@link ClassCastException} thrown specifically by casting THIS list entry's {@code edgeRID} to an
+   * {@code Edge} (a vertex wrongly linked into the adjacency list by an older build), as distinct from a
+   * {@code ClassCastException} that can be thrown later in the same {@code try} block while processing a
+   * DIFFERENT RID - the sibling-entry rescan ({@code nextEntry.getFirst().asEdge(true)}) or the far-vertex
+   * resolution ({@code edge.getIn()/getOut().asVertex(false)}). Only the former means "this list entry is
+   * simply dangling, the record it points at is fine": the latter means some OTHER record is unreadable while
+   * {@code edgeRID} itself already cast to a real edge, which is genuine corruption and must keep falling into
+   * the generic handler that flags the record for deletion in FIX mode.
+   */
+  private static final class DanglingEdgeListEntryException extends RuntimeException {
+    DanglingEdgeListEntryException(final ClassCastException cause) {
+      super(cause);
+    }
+  }
+
+  private static Edge asEdgeOrDanglingEntry(final RID edgeRID) {
+    try {
+      return edgeRID.asEdge(true);
+    } catch (final ClassCastException e) {
+      throw new DanglingEdgeListEntryException(e);
+    }
+  }
+
   private void checkIncomingEdges(boolean fix, Vertex vertex, RID vertexIdentity, Set<RID> reconnectInEdges,
       Set<RID> reconnectOutEdges, Map<RID, Long> missingReferences, Map<RID, String> missingReferenceErrors,
       CheckReport report) {
@@ -668,7 +692,7 @@ public class GraphDatabaseChecker {
                 continue;
 
               try {
-                final Edge edge = edgeRID.asEdge(true);
+                final Edge edge = asEdgeOrDanglingEntry(edgeRID);
 
                 VertexInternal inVertex = null;
 
@@ -786,18 +810,21 @@ public class GraphDatabaseChecker {
                 report.corrupt(edgeRID);
                 removeEntry = true;
                 ++report.invalidLinks;
-              } catch (final ClassCastException e) {
-                // The RID resolves to a record that is NOT an edge (e.g. a vertex wrongly linked into this
-                // adjacency list by an older build): the record loaded fine, only the (Edge) cast failed.
+              } catch (final DanglingEdgeListEntryException e) {
+                // edgeRID ITSELF resolves to a record that is NOT an edge (e.g. a vertex wrongly linked into
+                // this adjacency list by an older build): the record loaded fine, only the (Edge) cast failed.
                 // Drop just the dangling LIST entry and NEVER schedule the pointed-to record for deletion:
                 // fix mode raw-deletes every corruptedRecords RID with bucket.deleteRecord, which would
                 // destroy that valid record and bypass graph-aware cleanup (a deleted vertex would leave its
                 // OWN edges dangling, cascading the damage). Report it and repair the list, nothing else.
-                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
+                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e.getCause()) + ")"
+                        + (fix ? ", dropping the dangling list entry (record preserved)" : ""));
                 removeEntry = true;
                 ++report.invalidLinks;
               } catch (final Exception e) {
-                // UNKNOWN ERROR ON LOADING
+                // UNKNOWN ERROR ON LOADING - also catches a ClassCastException thrown while processing a
+                // DIFFERENT RID than edgeRID (the sibling-entry rescan or the far-vertex resolution above):
+                // edgeRID itself already cast fine, so this IS genuine corruption, not a dangling list entry.
                 report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
                 report.corrupt(edgeRID);
                 removeEntry = true;
@@ -915,7 +942,7 @@ public class GraphDatabaseChecker {
                   continue;
                 }
 
-                final Edge edge = edgeRID.asEdge(true);
+                final Edge edge = asEdgeOrDanglingEntry(edgeRID);
 
                 if (edge.getIn() == null || !edge.getIn().isValid()) {
                   report.warn("edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
@@ -1032,18 +1059,21 @@ public class GraphDatabaseChecker {
                 report.corrupt(edgeRID);
                 removeEntry = true;
                 ++report.invalidLinks;
-              } catch (final ClassCastException e) {
-                // The RID resolves to a record that is NOT an edge (e.g. a vertex wrongly linked into this
-                // adjacency list by an older build): the record loaded fine, only the (Edge) cast failed.
+              } catch (final DanglingEdgeListEntryException e) {
+                // edgeRID ITSELF resolves to a record that is NOT an edge (e.g. a vertex wrongly linked into
+                // this adjacency list by an older build): the record loaded fine, only the (Edge) cast failed.
                 // Drop just the dangling LIST entry and NEVER schedule the pointed-to record for deletion:
                 // fix mode raw-deletes every corruptedRecords RID with bucket.deleteRecord, which would
                 // destroy that valid record and bypass graph-aware cleanup (a deleted vertex would leave its
                 // OWN edges dangling, cascading the damage). Report it and repair the list, nothing else.
-                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
+                report.warn("edge " + edgeRID + " error on loading (error: " + describe(e.getCause()) + ")"
+                        + (fix ? ", dropping the dangling list entry (record preserved)" : ""));
                 removeEntry = true;
                 ++report.invalidLinks;
               } catch (final Exception e) {
-                // UNKNOWN ERROR ON LOADING
+                // UNKNOWN ERROR ON LOADING - also catches a ClassCastException thrown while processing a
+                // DIFFERENT RID than edgeRID (the sibling-entry rescan or the far-vertex resolution above):
+                // edgeRID itself already cast fine, so this IS genuine corruption, not a dangling list entry.
                 report.warn("edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
                 report.corrupt(edgeRID);
                 removeEntry = true;
