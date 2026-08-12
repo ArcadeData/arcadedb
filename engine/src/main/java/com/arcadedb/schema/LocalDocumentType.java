@@ -200,6 +200,7 @@ public class LocalDocumentType implements DocumentType {
     final String oldName = name;
 
     final List<Bucket> removedBuckets = new ArrayList<>();
+    final List<TypeIndex> renamedIndexes = new ArrayList<>();
 
     try {
       for (Bucket bucket : buckets) {
@@ -223,8 +224,12 @@ public class LocalDocumentType implements DocumentType {
       schema.types.remove(oldName);
       schema.types.put(newName, this);
 
-      for (TypeIndex idx : getAllIndexes(false))
+      // Registered before the call, not after: updateTypeName() walks the index's own per-bucket sub-indexes, so a
+      // failure part way through leaves that index half renamed and it has to be rolled back too.
+      for (TypeIndex idx : getAllIndexes(false)) {
+        renamedIndexes.add(idx);
         idx.updateTypeName(newName);
+      }
 
       schema.saveConfiguration();
 
@@ -236,6 +241,17 @@ public class LocalDocumentType implements DocumentType {
       schema.types.remove(newName);
 
       boolean corrupted = false;
+
+      // Unwound in reverse: indexes were renamed last, so they are restored first. 'name' is already back to the
+      // old value above, which is what TypeIndex.updateTypeName() recomputes its logic name from.
+      for (TypeIndex idx : renamedIndexes) {
+        try {
+          idx.updateTypeName(oldName);
+        } catch (Exception ex) {
+          corrupted = true;
+        }
+      }
+
       for (Bucket bucket : removedBuckets) {
         try {
           final String newBucketName = bucket.getName();

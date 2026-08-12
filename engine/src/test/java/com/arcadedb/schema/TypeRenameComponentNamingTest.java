@@ -20,12 +20,20 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Renaming a type re-derives the file name of every component it owns. That used to be done by guessing where
@@ -217,6 +225,87 @@ class TypeRenameComponentNamingTest extends TestHelper {
     assertThat(database.countType("idx.renamed", true)).isEqualTo(10L);
     database.transaction(() -> assertThat(
         database.query("sql", "select from `idx.renamed` where code = 'c7'").stream().count()).isEqualTo(1L));
+  }
+
+  /**
+   * The bucket loop rolls back what it renamed, and so must the index loop that runs after it. With two indexes, a
+   * failure on the second used to leave the first one's file renamed on disk and its {@code metadata.typeName}
+   * already flipped, while the type itself reverted, so the schema and the files disagreed.
+   * <p>
+   * The failure is injected by parking a directory on the path the last index's file is about to move to:
+   * {@code Files.move} cannot replace a directory, so it raises the {@code IOException} the rename path wraps.
+   */
+  @Test
+  void aFailedIndexRenameRollsBackTheIndexesAlreadyRenamed() throws IOException {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("Multi", 1);
+      type.createProperty("p1", Type.STRING);
+      type.createProperty("p2", Type.STRING);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p1");
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p2");
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newDocument("Multi").set("p1", "a" + i).set("p2", "b" + i).save();
+    });
+
+    final List<TypeIndex> indexes = new ArrayList<>(database.getSchema().getType("Multi").getAllIndexes(false));
+    assertThat(indexes).as("two indexes are needed for a mid-loop failure").hasSize(2);
+
+    // Block the LAST index the rename loop will reach, so at least one earlier index is renamed before the failure.
+    final File databaseDirectory = new File(database.getDatabasePath());
+    final String blockedComponent = indexes.getLast().getIndexesOnBuckets()[0].getName();
+    final File blockedFile = fileStartingWith(databaseDirectory, blockedComponent + ".");
+    final File parked = new File(databaseDirectory,
+        blockedFile.getName().replace("Multi_0_", "renamed.Multi_0_"));
+    assertThat(parked.mkdir()).as("fault injection: park a directory on the target path").isTrue();
+
+    final Map<String, Long> filesBefore = componentFileSizes(databaseDirectory);
+
+    try {
+      assertThatThrownBy(() -> database.getSchema().getType("Multi").rename("renamed.Multi"))
+          .isInstanceOf(SchemaException.class);
+
+      // The type and every component it owns are back where they started.
+      assertThat(database.getSchema().existsType("Multi")).isTrue();
+      assertThat(database.getSchema().existsType("renamed.Multi")).isFalse();
+      assertThat(componentFileSizes(databaseDirectory))
+          .as("every component file is back under its original name").isEqualTo(filesBefore);
+    } finally {
+      parked.delete();
+    }
+
+    // And the type still works, before and after a reopen.
+    assertThat(database.countType("Multi", true)).isEqualTo(10L);
+    database.transaction(() -> {
+      assertThat(database.query("sql", "select from Multi where p1 = 'a3'").stream().count()).isEqualTo(1L);
+      assertThat(database.query("sql", "select from Multi where p2 = 'b4'").stream().count()).isEqualTo(1L);
+    });
+
+    reopen();
+
+    assertThat(database.countType("Multi", true)).isEqualTo(10L);
+    database.transaction(() -> {
+      assertThat(database.query("sql", "select from Multi where p1 = 'a3'").stream().count()).isEqualTo(1L);
+      assertThat(database.query("sql", "select from Multi where p2 = 'b4'").stream().count()).isEqualTo(1L);
+    });
+  }
+
+  private static File fileStartingWith(final File directory, final String prefix) {
+    for (final File f : directory.listFiles())
+      if (f.isFile() && f.getName().startsWith(prefix))
+        return f;
+    throw new AssertionError("No component file starting with '" + prefix + "' in " + directory);
+  }
+
+  /** Name -> size for every component file, so a rollback that left a file renamed shows up as a key difference. */
+  private static Map<String, Long> componentFileSizes(final File directory) {
+    final Map<String, Long> files = new TreeMap<>();
+    for (final File f : directory.listFiles())
+      if (f.isFile() && !f.getName().endsWith(".json") && !f.getName().endsWith(".bin") && !f.getName().endsWith(".wal")
+          && !f.getName().endsWith(".lck"))
+        files.put(f.getName(), f.length());
+    return files;
   }
 
   private void createVertexTypeWithRecords(final String typeName, final int records) {
