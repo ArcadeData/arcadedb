@@ -725,7 +725,31 @@ cannot reach the database it asked for is answered about that database rather th
 
 [#6070](https://github.com/ArcadeData/arcadedb/issues/6070)
 
-## The full backup is several times faster, and the flush-suspension window it opens is proportionally shorter (#6072)
+## Full backup is up to 27x faster, and throttles writers for 23x less time (#6072)
+
+**A full backup of a 1.25 GB database went from 18.9 seconds to 0.68 seconds - 27x - for an archive 7.5%
+larger.** On the same hardware the throughput scales almost linearly with the thread count, and the CPU spent
+is unchanged: the extra threads buy wall-clock, not work.
+
+| | before | after (8 threads) |
+|---|---|---|
+| Backup duration, 1.25 GB database | 18.9 s | **0.68 s** (27x) |
+| Effective throughput | 68 MB/s | **1,876 MB/s** |
+| Archive size | 323 MB | 348 MB (+7.5%) |
+| Writer throughput *during* the backup | 6,809 rec/s (4.3% of normal) | **123,192 rec/s (77%)** |
+| How long writers stay throttled | 48.6 s | **2.1 s** (23x less) |
+
+The last two rows are the ones that matter most in production, and they are why this is worth more than the
+headline number suggests. A backup does not merely take time, it *costs* the writers running alongside it:
+for its whole duration they are throttled. Shrinking the backup shrinks that window by the same factor, so the
+write work a single backup displaces drops by roughly 97x.
+
+The 27x is the eight-thread measurement. The default thread count is half the available processors capped at
+8, so what a given machine sees scales with it: about 4x on two cores, 8x on four, 15x on eight, and the full
+27x from sixteen cores up. All of these numbers come from `BackupCompressionBenchmark` in the integration
+module - they are measurements, not estimates, and the benchmark is in the tree so they can be reproduced.
+
+### What was slow
 
 `FullBackupFormat` streamed every database file into a ZIP at `setLevel(9)`, on the calling thread. Deflate at
 level 9 sustains roughly 20-40 MB/s on one core, so the backup was CPU bound long before it was I/O bound, and
