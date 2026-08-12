@@ -273,6 +273,27 @@ class RidInScanOptimizationTest extends TestHelper {
   }
 
   @Test
+  void ridInListWithOneUnresolvableElementStillMatchesTheResolvableOnesOnCacheReuse() {
+    // A cache-hit re-execution has no scan fallback left (unlike the build-time shape check in
+    // SelectExecutionPlanner.extractRidEqualityOrInList): one bad element in an otherwise-valid list
+    // must not silently drop the matches that ARE real RIDs.
+    final String sql = "SELECT FROM Doc WHERE @rid IN ?";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // First execution: every element resolves, so the plan is built AND cached as FetchFromRidsStep.
+    final ResultSet rs1 = database.query("sql", sql, List.of(doc0Rid, doc1Rid));
+    final ExecutionPlan plan1 = rs1.getExecutionPlan().orElseThrow();
+    assertThat(findStep(plan1, FetchFromRidsStep.class)).isNotNull();
+    assertThat(collectNames(rs1)).containsExactlyInAnyOrder("doc0", "doc1");
+    assertThat(db.getExecutionPlanCache().contains(sql)).isTrue();
+
+    // Second execution: cache hit, reuses the exact same FetchFromRidsStep - one element is not a
+    // RID at all. The record matching the other, valid element must still come back.
+    final ResultSet rs2 = database.query("sql", sql, java.util.Arrays.asList(doc2Rid, "not-a-rid"));
+    assertThat(collectNames(rs2)).containsExactly("doc2");
+  }
+
+  @Test
   void ridInListEmptyThenNonEmptyBoundParameterAcrossCachedReuseStaysCorrect() {
     // Pins the EmptyStep-caching hazard: the old code short-circuited an empty resolved RID list to
     // a non-cacheable EmptyStep at build time. The new code must never bake "this execution's RIDs

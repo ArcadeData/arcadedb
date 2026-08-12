@@ -67,8 +67,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
     if (ridCondition != null && iterator == null) {
-      final List<RID> resolved = SelectExecutionPlanner.extractRidEqualityOrInList(ridCondition, context);
-      this.rids = resolved == null ? List.of() : resolved;
+      this.rids = SelectExecutionPlanner.resolveRidEqualityOrInListAtRuntime(ridCondition, context);
       iterator = this.rids.iterator();
     }
     return new ResultSet() {

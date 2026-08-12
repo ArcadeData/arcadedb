@@ -2060,20 +2060,21 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also {@code IN (<RID list>)}
-   * and {@code IN <bind parameter>}) and resolves the RID(s) against {@code context}. Returns
-   * {@code null} if {@code expr} isn't one of these shapes, or if any element can't be resolved to a
-   * RID given {@code context} (e.g. it's computed from a per-record field). Returns an empty list if
-   * the condition can never match any record (empty IN-list, or a bind parameter bound to null).
-   * {@code @rid NOT IN [...]} is deliberately not handled here: excluding a RID set still requires
-   * scanning every other record of the type, which this optimization cannot help with.
+   * Build-time-only: recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also
+   * {@code IN (<RID list>)} and {@code IN <bind parameter>}) and resolves the RID(s) against
+   * {@code context}, purely to decide whether {@code expr} is one of these shapes at all. Returns
+   * {@code null} if {@code expr} isn't one of these shapes, or if ANY element can't be resolved to a
+   * RID given this particular build's {@code context} (e.g. a per-record field, or one bad element
+   * mixed into an otherwise-valid list) - the caller ({@link #handleTypeWithRidFilter}) then falls
+   * back to a normal scan, which evaluates the {@code IN}/{@code =} condition itself and handles a
+   * partially-resolvable list correctly on its own. Returns an empty list if the condition can never
+   * match any record (empty IN-list, or a bind parameter bound to null). {@code @rid NOT IN [...]}
+   * is deliberately not handled here: excluding a RID set still requires scanning every other record
+   * of the type, which this optimization cannot help with.
    * <p>
-   * Called from two places: {@link #handleTypeWithRidFilter} at plan-build time, only to decide
-   * whether {@code expr} is one of these shapes at all (the caller falls back to the normal scan
-   * path if not, which still evaluates correctly); and {@link FetchFromRidsStep#syncPull} on every
-   * pull of the resulting step's execution, re-resolving against that execution's own live
-   * {@code context} so the step - and the whole plan - stays safe to reuse from
-   * {@code db.getExecutionPlanCache()} with different bound parameters (issue #5855).
+   * Do NOT call this from {@link FetchFromRidsStep#syncPull} - once the plan has committed to a
+   * {@code FetchFromRidsStep}, there is no scan fallback left, so "abort the whole list to null on
+   * one bad element" is wrong there. Use {@link #resolveRidEqualityOrInListAtRuntime} instead.
    */
   static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
     if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
@@ -2120,6 +2121,64 @@ public class SelectExecutionPlanner {
       if (rid == null)
         return null;
       rids.add(rid);
+    }
+    return new ArrayList<>(rids);
+  }
+
+  /**
+   * Runtime counterpart of {@link #extractRidEqualityOrInList}, called from
+   * {@link FetchFromRidsStep#syncPull} on every pull of a {@code FetchFromRidsStep} built from a
+   * {@code @rid = ?} / {@code @rid IN ?} condition, re-resolving against that execution's own live
+   * {@code context} so the step - and the whole plan - stays safe to reuse from
+   * {@code db.getExecutionPlanCache()} with different bound parameters (issue #5855).
+   * <p>
+   * Unlike the build-time method, there is no scan fallback left once a plan has committed to this
+   * step, so an {@code IN}-list element that fails to resolve to a RID is skipped rather than
+   * aborting the whole result to empty - mirroring what a normal per-record {@code IN} scan does
+   * with a non-RID element (it simply never matches). An exception thrown while evaluating the
+   * right-hand expression is a genuine execution-time error at this point (not "unknowable at plan
+   * time" the way it is in the build-time method) and is left to propagate.
+   */
+  static List<RID> resolveRidEqualityOrInListAtRuntime(final BooleanExpression expr, final CommandContext context) {
+    if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
+        && RID_PROPERTY.equalsIgnoreCase(bc.getLeft().toString())) {
+      final RID rid = extractRidValue(bc.getRight(), context);
+      return rid == null ? List.of() : List.of(rid);
+    }
+
+    if (!(expr instanceof InCondition in) || in.not || !RID_PROPERTY.equalsIgnoreCase(in.getLeft().toString()))
+      return List.of();
+
+    final Object rawValue;
+    if (in.right instanceof List<?> list) {
+      final List<Object> values = new ArrayList<>(list.size());
+      for (final Object item : list)
+        values.add(item instanceof Expression itemExpr ? extractRidValue(itemExpr, context) : item);
+      rawValue = values;
+    } else if (in.getRightMathExpression() != null) {
+      rawValue = in.getRightMathExpression().execute((Result) null, context);
+    } else if (in.getRightParam() != null) {
+      rawValue = in.getRightParam().getValue(context.getInputParameters());
+    } else
+      return List.of();
+
+    if (rawValue == null)
+      return List.of(); // WHERE @rid IN <null> matches nothing
+
+    // Same dedup rationale as extractRidEqualityOrInList; unresolvable elements are skipped instead
+    // of aborting the whole list, matching how a normal IN scan treats a non-RID element (no match
+    // for that element, not a failure of the whole condition).
+    final Set<RID> rids = new LinkedHashSet<>();
+    if (rawValue instanceof Iterable<?> iterable) {
+      for (final Object item : iterable) {
+        final RID rid = toRid(item, context);
+        if (rid != null)
+          rids.add(rid);
+      }
+    } else {
+      final RID rid = toRid(rawValue, context);
+      if (rid != null)
+        rids.add(rid);
     }
     return new ArrayList<>(rids);
   }
