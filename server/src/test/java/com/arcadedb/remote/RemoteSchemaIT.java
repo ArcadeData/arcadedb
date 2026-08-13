@@ -142,7 +142,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
       try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final DocumentType type = database.getSchema().createDocumentType("BucketDoc");
-        final String bucketName = type.getBuckets(false).getFirst().getName();
+        final String bucketName = type.getBuckets(false).get(0).getName();
 
         // Fresh instance again to make sure the accessor itself loads the schema.
         try (final RemoteDatabase fresh = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",

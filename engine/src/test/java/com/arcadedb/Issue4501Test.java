@@ -161,7 +161,7 @@ public class Issue4501Test extends TestHelper {
 
   // Injects a dangling entry into a bucket sub-index: key -> RID located in a bucket that does not exist.
   private void injectDanglingEntry(final TypeIndex index, final String key) {
-    final IndexInternal bucketIndex = index.getSubIndexes().getFirst();
+    final IndexInternal bucketIndex = index.getSubIndexes().get(0);
     database.begin();
     bucketIndex.put(new Object[] { key }, new RID[] { DANGLING_RID });
     database.commit();

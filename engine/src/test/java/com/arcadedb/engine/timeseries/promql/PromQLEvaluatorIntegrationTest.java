@@ -86,13 +86,13 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     final PromQLExpr rateExpr = new PromQLParser("rate(sparse_counter[5m])").parse();
     final PromQLResult.InstantVector rateIv = (PromQLResult.InstantVector) evaluator.evaluateInstant(rateExpr, 300000L);
     assertThat(rateIv.samples()).hasSize(1);
-    assertThat(rateIv.samples().getFirst().value()).isCloseTo(0.6667, within(0.001));
+    assertThat(rateIv.samples().get(0).value()).isCloseTo(0.6667, within(0.001));
 
     // increase = rate * range = 200 (the old code returned the raw 100).
     final PromQLExpr incExpr = new PromQLParser("increase(sparse_counter[5m])").parse();
     final PromQLResult.InstantVector incIv = (PromQLResult.InstantVector) evaluator.evaluateInstant(incExpr, 300000L);
     assertThat(incIv.samples()).hasSize(1);
-    assertThat(incIv.samples().getFirst().value()).isCloseTo(200.0, within(0.1));
+    assertThat(incIv.samples().get(0).value()).isCloseTo(200.0, within(0.1));
   }
 
   @Test
