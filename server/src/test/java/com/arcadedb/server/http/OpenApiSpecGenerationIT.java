@@ -43,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -379,10 +380,13 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   /**
-   * Every operation the specification must document, as "METHOD path". Deliberately exhaustive and
-   * deliberately hand-written: a list derived from the specification under test would assert nothing.
+   * Every core/AI operation the specification must document, as "METHOD path" - everything
+   * registered through {@code HttpServer.setupRoutes()}'s own {@code RoutingHandler}s. Verified
+   * directly against the server's actual registered routes in
+   * {@link #coreOperationsMatchTheServersActualRegisteredRoutes()} (issue #4896); this hand-written
+   * list still backs the broader spec self-consistency check below it.
    */
-  private static final List<String> EXPECTED_OPERATIONS = List.of(
+  private static final List<String> EXPECTED_CORE_OPERATIONS = List.of(
       // Core
       "GET /api/v1/server", "POST /api/v1/server",
       "GET /api/v1/ready", "GET /api/v1/health",
@@ -413,12 +417,23 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
       "GET /api/v1/ts/{database}/prom/api/v1/labels",
       "GET /api/v1/ts/{database}/prom/api/v1/label/{name}/values",
       "GET /api/v1/ts/{database}/prom/api/v1/series",
-      // MCP
-      "POST /api/v1/mcp", "GET /api/v1/mcp/config", "POST /api/v1/mcp/config",
       // AI
       "GET /api/v1/ai/config", "POST /api/v1/ai/activate", "POST /api/v1/ai/chat",
       "POST /api/v1/ai/analyze-profiler", "GET /api/v1/ai/chats",
-      "GET /api/v1/ai/chats/{id}", "PUT /api/v1/ai/chats/{id}", "DELETE /api/v1/ai/chats/{id}",
+      "GET /api/v1/ai/chats/{id}", "PUT /api/v1/ai/chats/{id}", "DELETE /api/v1/ai/chats/{id}");
+
+  /**
+   * Operations contributed by plugins that register routes directly on the outer {@code PathHandler}
+   * rather than through a {@code RoutingHandler} (MCP, ha-raft, metrics). Forward drift (a real
+   * registered route missing from here) is verified per-plugin-module instead, because ha-raft and
+   * metrics are not even loaded by this test server - see
+   * {@code RaftHAPluginRegisteredRoutesMatchApiSpecTest},
+   * {@code PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest},
+   * {@code MCPPluginRegisteredRoutesMatchApiSpecTest}.
+   */
+  private static final List<String> EXPECTED_MCP_AND_PLUGIN_OPERATIONS = List.of(
+      // MCP
+      "POST /api/v1/mcp", "GET /api/v1/mcp/config", "POST /api/v1/mcp/config",
       // Plugin-contributed
       "GET /prometheus",
       "GET /api/v1/cluster", "POST /api/v1/cluster/peer", "DELETE /api/v1/cluster/peer/{peerId}",
@@ -426,6 +441,9 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
       "POST /api/v1/cluster/verify/{database}", "POST /api/v1/cluster/resync/{database}",
       "POST /api/v1/cluster/bootstrap-state",
       "GET /api/v1/ha/snapshot/{database}", "GET /api/v1/ha/snapshot/{database}/checksums");
+
+  private static final List<String> EXPECTED_OPERATIONS =
+      Stream.concat(EXPECTED_CORE_OPERATIONS.stream(), EXPECTED_MCP_AND_PLUGIN_OPERATIONS.stream()).toList();
 
   private static List<String> declaredOperations(final OpenAPI openAPI) {
     final List<String> declared = new ArrayList<>();
@@ -465,6 +483,41 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
     assertThat(declared)
         .as("operations in the specification with no registered handler: reverse drift")
         .containsExactlyInAnyOrderElementsOf(EXPECTED_OPERATIONS);
+  }
+
+  /**
+   * Structural anti-drift check (issue #4896): compares the server's ACTUAL registered core routes
+   * against the live spec directly, not a second hand-maintained list. A route added to
+   * HttpServer.setupRoutes() without a matching *ApiSpec entry fails this test even if
+   * EXPECTED_CORE_OPERATIONS above is never touched - the gap the hand-list-only version of this
+   * check could not catch, because two independently hand-maintained lists can stay in sync with
+   * each other while both silently omit a real route.
+   */
+  @Test
+  void coreOperationsMatchTheServersActualRegisteredRoutes() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    // MCP, ha-raft and metrics register directly on the outer PathHandler rather than through a
+    // RoutingHandler, and ha-raft/metrics are not even loaded by this test server - they are
+    // verified separately, per-plugin-module. Excluded by exact "METHOD path" match, not by path
+    // alone, so a hypothetical future core route that happened to reuse one of these paths under a
+    // different method would still be checked here rather than silently skipped.
+    final Set<String> pluginAndMcpOperations = Set.copyOf(EXPECTED_MCP_AND_PLUGIN_OPERATIONS);
+
+    final List<String> declaredCore = declaredOperations(openAPI).stream()
+        .filter(operation -> !pluginAndMcpOperations.contains(operation))
+        .toList();
+
+    final List<String> actualCore = getServer(0).getHttpServer().getRegisteredRoutes().stream()
+        .map(route -> route.method() + " " + route.path())
+        // deliberately undocumented, see specDoesNotDocumentItselfOrTheWebSocketUpgrade below and
+        // OpenApiSpecGenerator.generateSpec()'s own comment on the same exclusions
+        .filter(operation -> !operation.equals("GET /api/v1/openapi.json") && !operation.equals("GET /api/v1/docs"))
+        .toList();
+
+    assertThat(actualCore)
+        .as("HttpServer registers a core route the specification does not document, or vice versa")
+        .containsExactlyInAnyOrderElementsOf(declaredCore);
   }
 
   @Test

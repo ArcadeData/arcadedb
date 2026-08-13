@@ -24,6 +24,8 @@ import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.responses.ApiResponses;
 
+import java.util.Set;
+
 /**
  * Documents the Model Context Protocol endpoint and its configuration. The protocol endpoint carries
  * JSON-RPC 2.0 envelopes whose method set belongs to the MCP specification rather than to this API,
@@ -34,6 +36,15 @@ import io.swagger.v3.oas.models.responses.ApiResponses;
  * it field by field, and is restricted to the root user.
  */
 public class McpApiSpec implements OpenApiContributor {
+
+  /**
+   * The Model Context Protocol routes {@code MCPPlugin} registers, mirrored here because that
+   * module cannot declare its own (same constraint as {@code PluginApiSpec}'s {@code HA_RAFT_PATHS},
+   * see that class's Javadoc). Verified against the plugin's actual {@code registerAPI} output by
+   * {@code MCPPluginRegisteredRoutesMatchApiSpecTest} in the mcp module, and against
+   * {@link #contribute} by {@code ApiSpecPathConstantsTest} (issue #4896).
+   */
+  public static final Set<String> MCP_PATHS = Set.of("/api/v1/mcp", "/api/v1/mcp/config");
 
   private static final String MCP_PLUGIN_REQUIRED =
       "Requires MCPPlugin: present in every standard distribution, absent from a custom build that excludes the MCP module.";
