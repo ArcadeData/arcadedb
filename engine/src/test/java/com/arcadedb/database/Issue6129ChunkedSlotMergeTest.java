@@ -397,8 +397,10 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().createDocumentType("Holder", 1).createProperty("v", Type.STRING);
       placeholder[0] = database.newDocument("Holder").set("v", "p").save().getIdentity();
-      fillFirstPage("Holder");
     });
+    // Since #6149 a page with a free tail lends the spilling record the few bytes a chunk header needs, so a
+    // placeholder is only produced on a page with NO free tail left at all: seal page 0 to get one.
+    sealFirstPage("Holder");
 
     // Page 0 cannot host 20 KB and the record's own 9 bytes cannot hold a chunk header: the slot becomes a placeholder
     // POINTER and the content goes to the page that has room for it.
@@ -629,16 +631,29 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
    * shows up as a RID position that is not the previous one plus one (a new page restarts at a multiple of the page's
    * slot count).
    */
-  private void fillFirstPage(final String typeName) {
+  private RID fillFirstPage(final String typeName) {
     final String filler = "f".repeat(8 * 1024);
-    long previous = -1;
+    RID previous = null;
     for (int i = 0; i < 64; i++) {
-      final long position = database.newDocument(typeName).set("v", filler).save().getIdentity().getPosition();
-      if (previous > -1 && position != previous + 1)
-        return;
-      previous = position;
+      final RID rid = database.newDocument(typeName).set("v", filler).save().getIdentity();
+      if (previous != null && rid.getPosition() != previous.getPosition() + 1)
+        return previous;
+      previous = rid;
     }
     throw new AssertionError("Page 0 of " + typeName + " did not fill up");
+  }
+
+  /**
+   * Leaves page 0 with a free tail of exactly ZERO bytes, the only page shape that still forces a record too small to
+   * host a chunk header into a placeholder (#6149). Inserts cannot produce it - the allocator always keeps a spare
+   * margin for growth - but a spill can: the head chunk of a record that outgrows its page while being the LAST
+   * record of that page takes the record's own footprint plus the whole free tail, so the page ends exactly at its
+   * maximum content size.
+   */
+  private void sealFirstPage(final String typeName) {
+    final RID[] last = new RID[1];
+    database.transaction(() -> last[0] = fillFirstPage(typeName));
+    database.transaction(() -> last[0].asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
   }
 
   /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
