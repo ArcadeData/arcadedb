@@ -1351,3 +1351,141 @@ future change adding a level arrives as a red build naming the cap rather than a
 repair someone is running against a damaged production database.
 
 [#6136](https://github.com/ArcadeData/arcadedb/issues/6136)
+
+## Schema-WAL instalments: an incremental file split, a diagnostic for what a lost leadership leaves behind, and per-database metrics (#6142, #6143, #6144)
+
+Three follow-ups filed against #6136, which made a schema session ship its buffered WAL in ordered *instalments*
+instead of holding the whole payload - for an index rebuild, roughly the whole rebuilt index - in leader heap.
+
+### The per-instalment rescan is gone (#6142)
+
+Every instalment has to answer one question: which files has this session created that the followers have not been
+told about yet? It answered it by walking the whole of `FileManager.getRecordedChanges()` and filtering out what it
+had already shipped, which is O(instalments x file changes). That never mattered for the caller instalments exist
+for - an index rebuild records one or two file changes however many instalments its WAL volume produces - but a DDL
+that creates many files through the same buffered path would make both factors grow together, on the leader, while
+it holds the database write lock.
+
+The split is now carried forward instead of re-derived: `FileManager` keeps the session's creates as a consumable
+queue that `drainRecordedCreates()` hands over, so a whole session costs one pass over its file creations. An index
+into the cumulative list would not have worked - `dropFile` removes the cancelled create from the middle of it, so a
+saved position stops meaning what it meant - and the queue mirrors the cumulative log at every site that touches a
+create, including that cancellation and the post-rename name refresh of #4083.
+
+### The files a lost leadership leaves behind can now be found (#6143)
+
+A session that fails after shipping an instalment retires what those instalments announced. That works while the
+node still leads. It cannot once leadership has moved - failover, a brief partition, a manual step-down, all
+ordinary Raft events - because a node that lost the term can no longer submit anything. The removal fails, and the
+files stay on the other nodes referenced by nothing. Nothing reads them, so this costs disk rather than
+correctness, but only the node that FAILED logged anything about it, and the nodes actually holding them said
+nothing at all.
+
+`CHECK DATABASE` now reports them as `unreferencedFiles`, a result key of its own, and every node publishes its own
+count as the `arcadedb.ha.schema.unreferenced_files` gauge - which is the one that matters under HA, since the check
+itself runs on the leader for a replicated database. It **reports only**, in both modes: a file whose reference the
+walk cannot follow would be data, and reclaiming disk is not worth that risk.
+
+A result key rather than a warning, deliberately. A warning in this checker means the data is suspect, and an
+unreferenced file is not a defect in the data: nothing is corrupt, nothing is lost, and supported operations produce
+the state (a bucket created with `CREATE BUCKET` and not yet given to a type is exactly this shape, and so is the
+file left behind by an index construction that refused its own arguments). Folding it into `warnings` would also
+redefine what a clean database is for every caller that reads an empty warning list as the definition.
+
+The classification therefore refuses to guess. It proves three shapes - a file the file manager holds with no
+schema component at all (what an abandoned instalment leaves on a follower while it runs), a bucket no type claims,
+and an automatic index no type references (what an abandoned rebuild leaves) - and treats everything else as
+claimed without checking: the dictionary, a compacted sub-index, a bloom filter, a vector index's graph file, the
+time-series internals, a manual index, and the edge-list buckets `GraphEngine` reaches by deriving their names from
+the vertex bucket's own. A diagnostic that cries orphan over a healthy database is worse than none, because the
+obvious response to it is to delete something; the guard against that is a test that builds one of everything and
+demands silence, before and after a reopen.
+
+The compensation's own failure branch is now covered too. It needed a step-down to land between an instalment and
+the unwind, so it was previously reasoned about rather than tested; the removal is now submitted through an
+injectable submitter and reports what it did, and a submitter that throws is - as far as this code can tell -
+exactly a node that has lost the term.
+
+### Instalments are measurable, per database (#6144)
+
+The count was a JVM-wide `AtomicLong` whose only consumer was a test, and the per-instalment detail was a
+detailed-level HA log line, which an operator debugging "every write on this database stalled for a while" could
+only enable by reproducing the stall.
+
+Instalments are now counted and **timed** per database and exported as `arcadedb.ha.schema.instalments`,
+`arcadedb.ha.schema.instalment_time_ms` and `arcadedb.ha.schema.instalment_max_time_ms`, tagged
+`database=<name>`. The duration is the number that matters: each instalment is a quorum round trip taken while the
+database write lock is held, so it is what a stalled writer is waiting on and what eats into the
+`arcadedb.ha.quorumTimeout` budget - and the max is what separates 200 fast round trips from 3 that each waited on
+a slow quorum member. A session that shipped instalments also logs one INFO line summarising how many and how long,
+so the common case is visible with no metrics backend at all.
+
+[#6142](https://github.com/ArcadeData/arcadedb/issues/6142)
+[#6143](https://github.com/ArcadeData/arcadedb/issues/6143)
+[#6144](https://github.com/ArcadeData/arcadedb/issues/6144)
+## A property `DEFAULT` is now compiled and validated once, at DDL time (#6134)
+
+A `String` default value was stored verbatim by `Property.setDefaultValue()` and evaluated as an SQL expression by
+`Property.getDefaultValue()`. Nothing validated it in between, and the evaluation swallowed every exception with a
+bare `// IGNORE IT` that fell through to returning the expression's own source text. Three things followed from that.
+
+**A default that does not parse was silently stored as its own source text.** `DEFAULT this is (not parseable` became
+the literal string `this is (not parseable` on *every record of the type* - no error at DDL time, no error at insert
+time, no log line. A typo in a `CREATE PROPERTY ... DEFAULT` quietly populated a whole type with garbage.
+
+**A bare identifier silently became `null`, forever.** `DEFAULT active` - the obvious thing to type for a literal -
+parses fine as a field reference, and the expression is always executed against `(Record) null`, so it resolved to
+nothing on every insert. The literal has to be written `DEFAULT 'active'`. This interacted badly with validation: a
+`NOTNULL` property whose default evaluated to null had the property *set* to null and was then rejected with "cannot
+be null", an error pointing at the caller's data rather than at the broken schema default that caused it.
+
+**The expression was re-parsed on every single record create.** ~3 µs per defaulted `STRING` property, per record: a
+1M-record bulk load into a type with three defaulted properties spent ~9 s re-parsing the same three constant
+expressions a million times each, on the insert hot path.
+
+The expression is now compiled once, in `setDefaultValue()`, and the compiled form is what each record evaluates. The
+compiled **expression** is cached, never the evaluated result, so `DEFAULT sysdate()` still produces a fresh value per
+record. Because it is compiled at DDL time it is also *validated* at DDL time: an unparseable default and a bare
+identifier are both rejected outright, with a message that says which one it is and, for the identifier, how to quote
+it. An expression that parses but cannot be evaluated against a null record - `DEFAULT @rid` - now raises on insert
+instead of writing its own source text into the record.
+
+An existing database whose `schema.json` already holds such a default still opens: the schema load path logs a warning
+naming the property and keeps the pre-#6134 behaviour for it rather than refusing to hydrate the schema. `ALTER
+PROPERTY ... DEFAULT` can repair it, because it no longer evaluates the outgoing default to report it.
+
+### One rule for applying defaults, and it is "a null default fills in nothing"
+
+The rule was written twice - in `LocalDatabase.setDefaultValues`, for every record create, and in `ApplyDefaultsStep`,
+for the SQL insert plan and `UPDATE ... APPLY DEFAULTS` - and the two disagreed. `ApplyDefaultsStep` guarded with
+`if (defValue != null)`; `setDefaultValues` set unconditionally, and since it runs *after* the execution plan its
+unguarded version always won. Both now call `DocumentType.applyDefaultValues()`, and the surviving rule is the guarded
+one: a default that evaluates to `null` leaves the property untouched instead of setting it to `null`.
+
+This is a visible change. A property whose default evaluates to null - `DEFAULT null`, or a legacy bare identifier -
+is now **absent** from the record rather than present-with-`null`, so `has()` returns false and the key stays out of
+the serialized document. In exchange, `NOTNULL` stops firing on it, and a `MANDATORY` property with such a default now
+fails as "is mandatory, but not found", pointing at the schema gap that is actually there.
+
+### Schema metadata reports the definition, not an evaluation of it
+
+`SELECT FROM schema:types`, the server's schema info endpoint and the Cypher meta procedures all called
+`getDefaultValue()`, which evaluates. Two things were wrong with that. The `DEFAULT_NOT_SET` sentinel leaked straight
+through it, so every property *without* a default was reported with `"default": "<DEFAULT_NOT_SET>"` - including in
+Studio's schema table. And a `sysdate()` default was reported as a timestamp snapshot taken when the row was fetched,
+rather than as the expression that was declared.
+
+There is now a separate `Property.getDefaultValueDefinition()`, which returns what the schema holds - `'active'`,
+`sysdate()`, the text a `DEFAULT` clause would take back - and never evaluates anything. Every metadata path uses it;
+only the write paths evaluate. `getDefaultValue()` no longer hands out the sentinel either: with no default defined it
+returns `null`.
+
+### The OrientDB importer bridges the two meanings of a default
+
+OrientDB stores a property default as a plain value, so a bare `active` there means the literal string. The importer
+passed it through unchanged, which under the old behaviour produced a property whose default silently evaluated to
+null on every imported record, and under the new one would be rejected. It now imports the value as written when that
+is a valid ArcadeDB default expression - `sysdate()`, numbers, already-quoted strings keep their meaning - and quotes
+it as a string literal otherwise, logging which defaults it had to translate.
+
+[#6134](https://github.com/ArcadeData/arcadedb/issues/6134)

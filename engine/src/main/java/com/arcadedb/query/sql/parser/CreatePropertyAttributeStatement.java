@@ -89,7 +89,13 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
         throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
       }
     } catch (final Exception e) {
-      throw new CommandExecutionException("Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue, e);
+      // The cause's message is carried in the text and not just in the chain: this is what a client sees over HTTP,
+      // and for a rejected DEFAULT (issue #6134) it is the half that says what is wrong and how to write it instead.
+      // A cause with no message (an NPE, say) contributes nothing, so it is left off rather than rendered as ": null".
+      throw new CommandExecutionException(
+          "Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue + (e.getMessage() == null ?
+              "" :
+              ": " + e.getMessage()), e);
     }
     return attrValue;
   }

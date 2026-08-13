@@ -91,9 +91,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   protected static final int                       PAGE_RECORD_TABLE_OFFSET         =
           PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
   private static final   int                       DEF_MAX_RECORDS_IN_PAGE          = 2048;
-  private static final   int                       MINIMUM_RECORD_SIZE              = 5;    // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER AND 1ST CHUCK FOR MULTI-PAGE CONTENT
-  private static final   long                      RECORD_PLACEHOLDER_CONTENT       =
-          MINIMUM_RECORD_SIZE * -1L;    // < -5 FOR SURROGATE RECORDS
+  /**
+   * Every record is padded to at least this many bytes of content, because the size a slot stores doubles as the
+   * marker namespace: a placeholder CONTENT record stores its size NEGATED, so a record shorter than 5 bytes would
+   * write a -1..-4 that {@link #RECORD_PLACEHOLDER_POINTER} (-1), {@link #FIRST_CHUNK} (-2) and
+   * {@link #NEXT_CHUNK} (-3) already own. Hence {@link #RECORD_PLACEHOLDER_CONTENT} = -5: anything below it is a
+   * size, anything above it is a marker.
+   * <p>
+   * It says nothing about how much room a record needs to SPILL - that is
+   * {@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}, and the two are independent. (The comment that used to sit here
+   * conflated them, claiming a record "cannot be < 13 bytes in case of update and placeholder".)
+   */
+  private static final   int                       MINIMUM_RECORD_SIZE              = 5;
+  /** Boundary between the size of a placeholder content record (stored negated, so &lt; -5) and the markers above it. */
+  private static final   long                      RECORD_PLACEHOLDER_CONTENT       = MINIMUM_RECORD_SIZE * -1L;
+  /**
+   * Bytes a slot needs to host the HEAD chunk of a multi-page record: the {@link #FIRST_CHUNK} marker (budgeted at
+   * 2 bytes), the chunk size and the pointer to the next chunk, plus at least one byte of content. A slot that
+   * cannot reach it is the only case left where a record that outgrows its page still spills into a placeholder
+   * instead of a chunk chain (#6149).
+   * <p>
+   * <b>The 2 budgeted for the marker is deliberately more than the 1 byte {@code writeNumber} really spends on
+   * {@link #FIRST_CHUNK}, and that does not put this constant at odds with the {@code Binary.getNumberSpace} the
+   * replay measures.</b> Both sides target the same TOTAL footprint, never the marker on its own:
+   * {@code writeMultiPageRecord} derives {@code chunkSize} from the room it is given minus the marker it actually
+   * wrote, so the spare byte simply becomes chunk content ({@code 14 - 1 - 4 - 8 = 1} byte of content), and
+   * {@code rebaseRecordOnPage} re-derives the same 14 as {@code getNumberSpace(FIRST_CHUNK) + body.length}, the
+   * body being the chunk image those very bytes produced. Raising the budget only makes the head chunk carry one
+   * more byte of content; it can never make the two sides disagree.
+   */
+  private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
   /** No fingerprint could be taken of a record's chunk-chain tail: see {@link #chunkChainTailFingerprint(RID)}. */
   public static final    long                      NO_CHUNK_TAIL_FINGERPRINT        = 0L;
   /** The record has no chunk beyond its head: a real value, distinct from "unknown". */
@@ -1733,12 +1760,29 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int slotFootprint = (int) (rs[0] + rs[1]);
         int roomForTheChunk = slotFootprint;
         final int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+        final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, existingPos, rs);
+        final int freeTailInPage = page.getMaxContentSize() - pageOccupiedInBytes;
         if (lastRecordPositionInPage == existingPos)
-          roomForTheChunk += page.getMaxContentSize() - getPageOccupiedInBytes(page, lastRecordPositionInPage, existingPos, rs);
+          roomForTheChunk += freeTailInPage;
 
+        // The REAL marker cost, not the 2 bytes MINIMUM_SPACE_FOR_FIRST_CHUNK budgets for it - and the two agree,
+        // because both sides size the whole footprint rather than the marker alone (see that constant's javadoc).
         final int markerSize = Binary.getNumberSpace(FIRST_CHUNK);
-        if (markerSize + body.length > roomForTheChunk)
+        // #6149: the write may have reached the chunk-header minimum by enlarging the slot through the in-page
+        // shift. Re-do exactly that here - the records that follow merely move, and their offsets are recomputed
+        // from THIS page, like the growth replay above. The decision runs through the SAME
+        // slotEnlargementForChunkHead the write used, so the two can only differ in what they feed it: the slot
+        // footprint is pinned by the pre-image just checked, while the free tail is not, and a committed page that
+        // can no longer spare it sends the transaction to a normal retry.
+        final int enlargement = slotEnlargementForChunkHead(markerSize + body.length, roomForTheChunk, freeTailInPage,
+                lastRecordPositionInPage == existingPos);
+        if (enlargement < 0)
           return false;
+        if (enlargement > 0) {
+          shiftFollowingRecordsRight(page, recordCountInPage, existingPos + slotFootprint, pageOccupiedInBytes,
+                  enlargement);
+          updatePageStatistics(pageNumber, freeTailInPage, -enlargement);
+        }
 
         // The check above budgeted the marker at getNumberSpace(); the write below is the only other place that
         // decides how many bytes it takes. They agree by construction (writeNumber writes exactly that many), and a
@@ -2216,13 +2260,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage,
                   recordSize);
-          int availableSpaceInCurrentPage = (int) (recordSize[0] + recordSize[1]);
+          final int slotFootprint = (int) (recordSize[0] + recordSize[1]);
+          final int freeTailInPage = page.getMaxContentSize() - pageOccupiedInBytes;
+          int availableSpaceInCurrentPage = slotFootprint;
           if (lastRecordPositionInPage == recordPositionInPage)
             // SINCE IT'S THE LAST RECORD IN THE PAGE, GET ALSO THE REST OF THE SPACE AVAILABLE IN THE PAGE
-            availableSpaceInCurrentPage += page.getMaxContentSize() - pageOccupiedInBytes;
+            availableSpaceInCurrentPage += freeTailInPage;
+
+          // #6149: the slot is too small to host a chunk header, which is the ONLY thing that still makes a record
+          // spill into a placeholder - the pre-chunk mechanism, the one shape the disjoint-slot merge cannot replay
+          // (the pointer rewrite changes two pages at once) and the one behind the silent lost update of #6141.
+          // Reaching this branch means the page could not host the record's FULL new size, which says nothing about
+          // the handful of bytes that separate a 9-byte slot from a chunk header: ask for them through the same
+          // in-page shift a growth uses. The decision itself lives in slotEnlargementForChunkHead, shared with the
+          // commit-time replay so the two cannot drift apart.
+          final int slotEnlargement = slotEnlargementForChunkHead(MINIMUM_SPACE_FOR_FIRST_CHUNK,
+                  availableSpaceInCurrentPage, freeTailInPage, lastRecordPositionInPage == recordPositionInPage);
+          if (slotEnlargement > 0)
+            availableSpaceInCurrentPage += slotEnlargement;
 
           // TODO: LOOK FOR 1/2 OF THE RECORD SIZE
-          if (availableSpaceInCurrentPage < 2 + LONG_SERIALIZED_SIZE + INT_SERIALIZED_SIZE) {
+          if (availableSpaceInCurrentPage < MINIMUM_SPACE_FOR_FIRST_CHUNK) {
             // The slot becomes a placeholder POINTER to a record created on another page: two pages change together
             // and the slot stops holding record content at all, so no merge can replay it from this page alone.
             if (slotCandidate)
@@ -2247,6 +2305,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // one-off cost: a transaction whose spill loses the race retries and spills again, so on a contended page
             // the records that have to spill can starve instead of converging.
             final boolean spillRebasable = growBaseBody != null && !slotTx.isSlotRebasePagePoisoned(fileId, pageId);
+
+            if (slotEnlargement > 0) {
+              // #6149: make the slot reach the chunk-header minimum. Declared under the same coverage as the head
+              // chunk itself: the replay of a spilled-to-chunk slot re-does this shift on the committed page.
+              //
+              // This span is deliberately CLOSED before writeMultiPageRecord opens its own, rather than left open
+              // around both the way growRecordInPage wraps its shift and its write in one. The difference matters:
+              // when the chunk chain comes back to this very page, writeMultiPageRecord writes a CONTINUATION chunk
+              // onto it through inline record-table writes it does not wrap in a coverage span of their own - it
+              // poisons the page instead. Those writes would inherit an outer span left open here and be declared
+              // slot-merge replayable, which they are not. Do not merge the two spans.
+              final int shiftCoverage = page.beginCoveredWrite(spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+              try {
+                shiftFollowingRecordsRight(page, recordCountInPage, recordPositionInPage + slotFootprint,
+                        pageOccupiedInBytes, slotEnlargement);
+              } finally {
+                page.endCoveredWrite(shiftCoverage);
+              }
+              updatePageStatistics(pageId, freeTailInPage, -slotEnlargement);
+            }
 
             writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceInCurrentPage,
                     spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0);
@@ -3376,7 +3454,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Byte the used content of a bucket page ends at: the position right after the last record it stores, and therefore
+   * The byte at which a bucket page's used content ends: the position right after the last record it stores, and therefore
    * the start of its free tail. Resolves the real size of that last record for every marker shape it can have (plain
    * record, placeholder pointer, placeholder content, multi-page chunk).
    *
@@ -3442,30 +3520,94 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return false;
 
     // THERE IS SPACE LEFT IN THE PAGE, SHIFT ON THE RIGHT THE EXISTENT RECORDS
-    if (lastRecordPositionInPage != recordPositionInPage) {
+    if (lastRecordPositionInPage != recordPositionInPage)
       // NOT LAST RECORD IN PAGE, SHIFT NEXT RECORDS
-      final int from = (int) (recordPositionInPage + recordSize[0] + recordSize[1]);
-
-      page.move(from, from + additionalSpaceNeeded, pageOccupiedInBytes - from);
-
-      // TODO: CALCULATE THE REAL SIZE TO COMPACT DELETED RECORDS/PLACEHOLDERS
-      for (int pos = 0; pos < recordCountInPage; ++pos) {
-        final int nextRecordPosInPage = getRecordPositionInPage(page, pos);
-        if (nextRecordPosInPage != 0 &&//
-                nextRecordPosInPage >= from &&//
-                nextRecordPosInPage <= pageOccupiedInBytes)
-          page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE,
-                  nextRecordPosInPage + additionalSpaceNeeded);
-
-        assert nextRecordPosInPage + additionalSpaceNeeded < page.getMaxContentSize();
-      }
-    }
+      shiftFollowingRecordsRight(page, recordCountInPage, (int) (recordPositionInPage + recordSize[0] + recordSize[1]),
+              pageOccupiedInBytes, additionalSpaceNeeded);
 
     recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * contentSize : contentSize);
     page.writeByteArray((int) (recordPositionInPage + recordSize[1]), content, contentOffset, contentSize);
 
     updatePageStatistics(pageNumber, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
     return true;
+  }
+
+  /**
+   * How many bytes the in-page shift has to claim so a slot holding {@code roomAlreadyAvailable} bytes can host a
+   * chunk head of {@code roomRequired} (#6149). The single place that decision is made: the spill in
+   * {@link #updateRecordInternal} asks for {@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}, its commit-time replay in
+   * {@link #rebaseRecordOnPage} asks for the exact size of the head chunk it has to put back, and because both go
+   * through here they cannot drift apart on the margin or on the last-record rule - which is what lets the replay
+   * reproduce the write's shift rather than merely resemble it.
+   * <p>
+   * Only the MISSING bytes are ever claimed: a head chunk's footprint is fixed for the life of the record
+   * ({@code updateMultiPageRecord} rewrites only inside it), so a bigger bite would deny page space to every other
+   * record on the page for good.
+   *
+   * @param roomRequired         bytes the chunk head needs in total, marker included.
+   * @param roomAlreadyAvailable bytes the slot may already use: its own footprint, plus the page's free tail when it
+   *                             is the last record.
+   * @param freeTailInPage       unused bytes between the end of the page's last record and its maximum content size.
+   * @param isLastRecordInPage   whether the slot is the last record of the page. Then there is nothing after it to
+   *                             move, and its free tail is already counted in {@code roomAlreadyAvailable}.
+   *
+   * @return 0 when the slot is already big enough and no shift is needed; a positive count of bytes to shift by; or
+   * -1 when the page cannot provide them, which sends the caller to the placeholder fallback (write) or to a plain
+   * retry (replay). The margin is the one {@link #growRecordInPage} keeps - the shift must leave at least one spare
+   * byte - so a growth and a spill judge the same page identically.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static int slotEnlargementForChunkHead(final int roomRequired, final int roomAlreadyAvailable,
+                                                 final int freeTailInPage, final boolean isLastRecordInPage) {
+    if (roomAlreadyAvailable >= roomRequired)
+      return 0;
+
+    final int missing = roomRequired - roomAlreadyAvailable;
+    if (isLastRecordInPage || missing >= freeTailInPage)
+      return -1;
+
+    return missing;
+  }
+
+  /**
+   * Moves everything stored from {@code from} onwards {@code additionalSpaceNeeded} bytes to the right and fixes the
+   * slot-table offsets of the records that moved, enlarging by that much the footprint of the record that ends at
+   * {@code from}. Every other slot keeps its record - and therefore its RID, which is the slot index and not the
+   * offset - so this is a single-slot change as far as the disjoint-slot merge is concerned (#5279): the replay
+   * re-does it on the newer committed page from that page's own slot table.
+   * <p>
+   * The caller must have checked the page has the bytes ({@code additionalSpaceNeeded} strictly below the free tail)
+   * and must declare the write coverage: this method only moves bytes.
+   *
+   * @param page                  the page to re-flow.
+   * @param recordCountInPage     number of slot-table entries to walk when fixing the offsets that moved.
+   * @param from                  first byte to move: the end of the growing record's current footprint.
+   * @param pageOccupiedInBytes   the byte at which the page's used content ends (see {@link #getPageOccupiedInBytes}).
+   * @param additionalSpaceNeeded bytes to move by, which the caller has proved the page's free tail can absorb.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private void shiftFollowingRecordsRight(final MutablePage page, final short recordCountInPage, final int from,
+                                          final int pageOccupiedInBytes, final int additionalSpaceNeeded) throws IOException {
+    page.move(from, from + additionalSpaceNeeded, pageOccupiedInBytes - from);
+
+    // TODO: CALCULATE THE REAL SIZE TO COMPACT DELETED RECORDS/PLACEHOLDERS
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int nextRecordPosInPage = getRecordPositionInPage(page, pos);
+      if (nextRecordPosInPage != 0 &&//
+              nextRecordPosInPage >= from &&//
+              nextRecordPosInPage <= pageOccupiedInBytes) {
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE,
+                nextRecordPosInPage + additionalSpaceNeeded);
+
+        // The invariant this states is about the records that MOVED: each one must still start inside the page.
+        // It used to sit outside this branch, where it also ran for every slot left alone - vacuously true for them
+        // (their offset is below `from`, and a freed slot reads 0), so it asserted nothing while looking like it
+        // did. Harmless while one method owned it; worth stating precisely now that three call sites share it.
+        assert nextRecordPosInPage + additionalSpaceNeeded < page.getMaxContentSize();
+      }
+    }
   }
 
   /**

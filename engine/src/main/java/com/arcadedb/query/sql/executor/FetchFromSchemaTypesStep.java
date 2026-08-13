@@ -158,8 +158,13 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                   propRes.setProperty("min", property.getMin());
                 if (property.getMax() != null)
                   propRes.setProperty("max", property.getMax());
-                if (property.getDefaultValue() != null)
-                  propRes.setProperty("default", property.getDefaultValue());
+                // Issue #6134: the DEFINITION, not the evaluated value. Schema metadata must report what was declared -
+                // `sysdate()`, not a snapshot of when the row was fetched - and evaluating here made a single broken
+                // default (or a plain property, whose unset sentinel used to leak out as "<DEFAULT_NOT_SET>") corrupt
+                // or break the listing of the whole schema.
+                final Object defaultValue = property.getDefaultValueDefinition();
+                if (defaultValue != null)
+                  propRes.setProperty("default", defaultValue);
                 if (property.getRegexp() != null)
                   propRes.setProperty("regexp", property.getRegexp());
 

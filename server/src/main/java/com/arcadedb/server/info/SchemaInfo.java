@@ -84,8 +84,9 @@ public class SchemaInfo {
           propJson.put("readonly", true);
         if (prop.isNotNull())
           propJson.put("notNull", true);
-        if (prop.getDefaultValue() != null)
-          propJson.put("default", prop.getDefaultValue());
+        // Issue #6134: the definition, not the evaluated value - this is schema metadata, not a record being written.
+        if (prop.getDefaultValueDefinition() != null)
+          propJson.put("default", prop.getDefaultValueDefinition());
         if (prop.getMin() != null)
           propJson.put("min", prop.getMin());
         if (prop.getMax() != null)
