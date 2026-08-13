@@ -945,7 +945,7 @@ public class TransactionContext implements Transaction {
 
       LogManager.instance().log(this, Level.FINE,
           "Retrying lock acquisition after compaction migrated file '%d' to '%d' (attempt %d/%d, threadId=%d)", missingFile, migrated,
-          attempt + 1, MAX_LOCK_MIGRATION_RETRIES, Thread.currentThread().threadId());
+          attempt + 1, MAX_LOCK_MIGRATION_RETRIES, Thread.currentThread().getId());
 
       // RE-RESOLVE THE MIGRATED FILE ID AND RETRY TRANSPARENTLY. IntHashSet has no remove(), so rebuild the set
       // replacing the migrated id (rare path: only taken when a compaction raced this commit).
