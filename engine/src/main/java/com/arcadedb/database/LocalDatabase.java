@@ -1140,17 +1140,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
 
     if (record instanceof MutableDocument doc) {
-      // #6120: and the index entries, likewise. Without this the restored record is returned by a full scan but
-      // not by any index-resolved query, and a UNIQUE index never learns the key came back - so a later restore
-      // or insert could hand the same key to a second record unchallenged. Deliberately the same call
-      // createRecordNoLock makes: a restored record is indexed exactly like an inserted one, duplicate rejection
-      // included.
-      indexer.createDocument(doc, doc.getType(), bucket);
-
       // The record did not exist before this transaction, so for a rollback it is a NEW record: keep it out of
       // the reload loop and reset its identity to provisional (#4562, #4940) rather than leaving a dangling RID
       // on the caller's object.
+      //
+      // Registered BEFORE indexing, matching createRecordNoLock's order: indexer.createDocument can throw inline
+      // (Index.put -> checkIsValid on a dropped/invalidated index, or convertKeys on a key it cannot coerce), and
+      // registering after would skip the rollback identity reset on exactly those paths. Note this is NOT the
+      // unique-constraint path - a duplicate key is detected at commit, by which point both calls have run.
       transaction.registerNewRecord(record);
+
+      // #6120: the index entries. Without this the restored record is returned by a full scan but not by any
+      // index-resolved query, and a UNIQUE index never learns the key came back - so a later restore or insert
+      // could hand the same key to a second record unchallenged. Deliberately the same call createRecordNoLock
+      // makes: a restored record is indexed exactly like an inserted one, duplicate rejection included.
+      indexer.createDocument(doc, doc.getType(), bucket);
     }
 
     ((RecordInternal) record).unsetDirty();
