@@ -323,15 +323,94 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
   }
 
   /**
-   * A long, contended run where the records keep growing round after round until they no longer fit their page and
-   * spill into placeholders and chunk chains: whatever mix of rebases, poisoned pages and retries that produces, the
-   * final content of every record must be exactly what was last written and the database must be structurally sound.
+   * The guarantee #5279 actually makes, at the shape that stresses it hardest: every round makes every record LONGER
+   * while all of them still fit their single shared page, so every write goes through the in-page growth branch and
+   * the disjoint-slot merge has to absorb all of it. Records are owned per thread, so with attempts=1 the conflict
+   * count must be exactly zero - a single conflict here means a growth stopped being rebasable.
+   * <p>
+   * The layout assertion afterwards is what keeps the zero from being accidental: if the payloads had outgrown the
+   * page, the records would have spilled into placeholders or chunk chains, whose updates are NOT rebasable, and the
+   * zero would then be luck rather than the merge doing its job.
+   */
+  @Test
+  void growingUpdatesThatStayInsideTheirPageNeverConflict() throws Exception {
+    final int threadCount = 8;
+    final int recordsPerThread = 5;
+    final int rounds = 8;
+
+    final RID[][] owned = new RID[threadCount][recordsPerThread];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("InPageGrowing", 1).createProperty("payload", Type.STRING);
+      for (int t = 0; t < threadCount; t++)
+        for (int r = 0; r < recordsPerThread; r++)
+          owned[t][r] = database.newDocument("InPageGrowing").set("payload", "t" + t + "-r" + r).save().getIdentity();
+    });
+
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final AtomicInteger conflicts = new AtomicInteger();
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> threads = new ArrayList<>();
+
+    for (int t = 0; t < threadCount; t++) {
+      final int id = t;
+      final Thread thread = new Thread(() -> {
+        try {
+          start.await();
+          for (int round = 0; round < rounds; round++)
+            for (int i = 0; i < recordsPerThread; i++) {
+              final RID rid = owned[id][i];
+              final String payload = inPagePayloadOf(id, i, round);
+              try {
+                database.transaction(() -> rid.asDocument(true).modify().set("payload", payload).save(), true, 1);
+              } catch (final ConcurrentModificationException e) {
+                conflicts.incrementAndGet();
+              }
+            }
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "in-page-growing-" + t);
+      threads.add(thread);
+      thread.start();
+    }
+
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+
+    if (!errors.isEmpty())
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+
+    assertThat(conflicts.get()).as("growing a record inside its own page must commute with writes to other slots").isZero();
+
+    final Map<String, Object> layout = bucketStats("InPageGrowing");
+    assertThat((Long) layout.get("totalPlaceholderRecords")).as("the records must never have left their page").isZero();
+    assertThat((Long) layout.get("totalMultiPageRecords")).isZero();
+
+    database.transaction(() -> {
+      for (int t = 0; t < threadCount; t++)
+        for (int i = 0; i < recordsPerThread; i++)
+          assertThat(owned[t][i].asDocument(true).getString("payload")).isEqualTo(inPagePayloadOf(t, i, rounds - 1));
+    });
+  }
+
+  /**
+   * The other side of the same run: the records keep growing until they no longer fit their page and spill into
+   * placeholders and chunk chains, whose updates no merge can replay - so on a single-bucket type every one of them
+   * poisons the shared page and the eight threads serialize behind it. Conflicts are EXPECTED here (#6127 item 3, the
+   * re-triage of what used to look like a flake): what the test pins down is that a retry always converges, that the
+   * final content of every record is exactly what was last written, and that the database stays structurally sound.
+   * <p>
+   * Hence the explicit retry budget: the {@code TX_RETRIES} default of 3 is sized for incidental contention, not for
+   * a shape where every write on the page is structurally unmergeable and only one of eight can win a round. #6129
+   * tracks extending the slot merge to those shapes, which is what would make the default enough here.
    */
   @Test
   void growingUpdatesUnderContentionKeepTheDatabaseConsistent() throws Exception {
     final int threadCount = 8;
     final int recordsPerThread = 5;
     final int rounds = 8;
+    final int attempts = 50;
 
     final RID[][] owned = new RID[threadCount][recordsPerThread];
     database.transaction(() -> {
@@ -354,9 +433,9 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
             for (int i = 0; i < recordsPerThread; i++) {
               final RID rid = owned[id][i];
               final String payload = payloadOf(id, i, round);
-              // Retries are allowed here: what matters is that a retry converges and never corrupts the page. The
-              // value depends only on (thread, record, round), so a retry rewrites exactly the same content.
-              database.transaction(() -> rid.asDocument(true).modify().set("payload", payload).save());
+              // What matters is that a retry converges and never corrupts the page. The value depends only on
+              // (thread, record, round), so a retry rewrites exactly the same content.
+              database.transaction(() -> rid.asDocument(true).modify().set("payload", payload).save(), true, attempts);
             }
         } catch (final Throwable e) {
           errors.add(e);
@@ -372,6 +451,12 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
 
     if (!errors.isEmpty())
       throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
+
+    // The premise of the test: the records really did outgrow their page. Without this the run above would be the
+    // in-page case again, and the retry budget would be excusing a contention regime that never happened.
+    final Map<String, Object> layout = bucketStats("Growing");
+    assertThat((Long) layout.get("totalPlaceholderRecords") + (Long) layout.get("totalMultiPageRecords")).as(
+        "the payloads must have outgrown their page: " + layout).isPositive();
 
     database.transaction(() -> {
       assertThat(database.countType("Growing", false)).isEqualTo((long) threadCount * recordsPerThread);
@@ -395,6 +480,14 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
    */
   private static String payloadOf(final int threadId, final int record, final int round) {
     return "t" + threadId + "-r" + record + "-round" + round + "-" + "x".repeat(400 * (round + 1));
+  }
+
+  /**
+   * The same growing shape kept small enough that all 40 records still share one 64 KB page at the last round, so
+   * every update stays on the in-page growth branch.
+   */
+  private static String inPagePayloadOf(final int threadId, final int record, final int round) {
+    return "t" + threadId + "-r" + record + "-round" + round + "-" + "x".repeat(100 * (round + 1));
   }
 
   /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */

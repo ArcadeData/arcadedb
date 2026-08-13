@@ -1004,6 +1004,70 @@ had.
 
 [#6116](https://github.com/ArcadeData/arcadedb/issues/6116)
 
+## `RESTORE DOCUMENT/VERTEX/EDGE` now applies the type's schema and fires the create events (#6127)
+
+`RESTORE` deliberately did less than a normal create: it skipped `setDefaultValues()` and `validate()`, and it
+fired no create event. The reasoning was that an emergency repair must never be blocked - its most common form is a
+structure-only shell restore with no `SET` clause at all, recovering a RID that other records still reference, and
+a mandatory-property check would refuse exactly that.
+
+The trade-off does not hold up. A record written past its own `MANDATORY`/`NOTNULL` constraints is **frozen**:
+`updateRecord` validates too, so every later UPDATE of it throws until the missing property is supplied. And
+nothing downstream catches it - `CHECK DATABASE` is a structural check (page layout, record markers, graph
+adjacency, index entries) and never evaluates schema constraints. So the permissive path was not buying a usable
+record, it was buying a record you could look at and not touch, with no diagnostic anywhere.
+
+`RESTORE` is now indistinguishable from an `INSERT` at a fixed RID:
+
+- declared default values are applied;
+- the record is validated, and a restore that would violate the type is refused instead of persisted;
+- the create events fire - both the database-level listeners and the per-type `RecordEventsRegistry` - so anything
+  that rebuilds derived state from create events no longer silently drifts after a repair.
+
+On a type with mandatory properties the structure-only form now needs them supplied explicitly:
+
+```sql
+RESTORE VERTEX Person RID #12:7 SET name = '<unknown>'
+```
+
+which makes the placeholder value the operator's choice rather than a hole in the record. `GraphEngine.restoreVertexAt`,
+which builds a property-less shell by design, is subject to the same rule and raises `ValidationException` on such a type.
+
+One intentional difference from `createRecordNoLock` remains, in the other direction: a `beforeCreate` listener that
+vetoes the write makes `RESTORE` **raise** rather than return quietly. A repair that reports success without writing
+the record is the one outcome this statement must never produce.
+
+If you have an `afterCreate` trigger on a **graph** type, note two interleavings that were previously impossible,
+because RESTORE fired no events at all.
+
+`RESTORE EDGE` does not reconnect adjacency - in the case it repairs, a raw record delete never touched the
+neighbours, so the endpoints still reference the RID - which means the event now fires on an edge whose endpoints'
+adjacency lists the statement has not written. A trigger that assumes "create event fired, therefore both endpoints
+already list this edge", which holds for `Vertex.newEdge`, does not hold on this path.
+
+`RESTORE VERTEX` fires the event on the bare vertex, before it rebuilds adjacency from the surviving edges. That is
+the INSERT-parity ordering rather than a gap in it - a vertex a plain INSERT creates has no edges either - but it
+means a trigger deriving something from adjacency (a degree counter, say) sees zero and is never notified of the
+reconnection that follows, since reconnecting adjacency writes no records and so raises no event of its own. Drive
+such a trigger from the statement's `reconnectedOutEdges`/`reconnectedInEdges` result instead.
+
+### `Issue5279ConcurrentUpdateTest` re-triaged: a contention regime, not a flake
+
+`growingUpdatesUnderContentionKeepTheDatabaseConsistent` had been written off as a chronic flake. It is neither
+flaky nor a hole in the slot-merge logic. Instrumenting a failing run: 146 successful slot rebases, 30 records
+spilling out of their page, 16 `ConcurrentModificationException`s reaching the retry loop, 5 of 8 threads out of
+the default 3 retries. While the payloads still fit the shared 64 KB page the disjoint-slot merge absorbs
+everything; once they outgrow it every record becomes a multi-page chunk record whose updates no merge can replay,
+so eight threads on a single-bucket type serialize with one winner per round. With a larger budget every run
+converges, `CHECK DATABASE` is clean and every record holds its last written value.
+
+The test now states that contract instead of hiding it: a new `growingUpdatesThatStayInsideTheirPageNeverConflict`
+asserts **zero** conflicts at `attempts=1` for the whole in-page growth phase (and proves it stayed in-page by
+checking the bucket layout), while the spill-out case keeps an explicit retry budget and asserts convergence plus
+structural soundness. [#6129](https://github.com/ArcadeData/arcadedb/issues/6129) tracks extending the slot merge
+to chunked and placeholder records, which is what would make the `TX_RETRIES` default enough there.
+
+[#6127](https://github.com/ArcadeData/arcadedb/issues/6127)
 ## The snapshot shadow cap sizes itself, the t0 barrier stops retrying, and two smaller loose ends (#6125)
 
 Four items the benchmarks of #6116 turned up. None was a correctness bug; two of them contradict an assumption
