@@ -2510,6 +2510,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           database.getTransaction().setUseWAL(false);
         };
 
+        // Flipped the moment the manifest certifies the committed pages. Everything after that point - the
+        // OnDiskGraphIndex reload, the PQ persist - is about making THIS session faster, not about what is on
+        // disk, so a failure there must not un-certify a graph that committed correctly and cost the next open a
+        // rebuild it does not need.
+        boolean graphCertified = false;
+
         try {
           gf.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback, earlyPq, earlyPqVectors);
 
@@ -2534,6 +2540,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // commit and never before: a manifest that outlived a persist which did not complete would be the one
           // thing able to certify a graph nobody built.
           writeGraphManifest(gf, finalActiveVectorIds);
+          graphCertified = true;
 
           // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so the
           // current session benefits from inline vector storage immediately. This is safe because
@@ -2587,7 +2594,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // touched a page), a partial rewrite whose earlier chunks already committed, or anything between - so the
           // manifest has to refuse it. Leaving no manifest instead would read as "unverifiable" on the next open
           // and fall back to the node-count comparison, which is what issue #6106 is about.
-          gf.getManifest().markUnusable("graph persist failed: " + e);
+          //
+          // Unless the graph already got its manifest: past that point the pages are a committed generation the
+          // manifest correctly describes, and a PQ or reload failure says nothing about them.
+          //
+          // writeGraph() marks its own failures the same way before rethrowing, so this repeats that one small
+          // write when the failure came from in there. Cheap, and on a path already logged as SEVERE.
+          if (!graphCertified)
+            gf.getManifest().markUnusable("graph persist failed: " + e);
           LogManager.instance().log(this, Level.SEVERE,
               "PERSIST: Failed to persist graph for %s (nodes=%d, storeVectorsInGraph=%b, txStatus=%s): %s - %s",
               indexName,
@@ -2686,6 +2700,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Refuses whatever is on the graph pages after a build that did not finish. The alternative - leaving no
+   * manifest - reads as "persisted by an older version" on the next open and falls back to the node-count
+   * comparison, which is exactly the check issue #6106 replaces.
+   *
+   * @param cause what went wrong; recorded in the manifest for a human, nothing reads it back
+   */
+  private void markGraphManifestUnusable(final Exception cause) {
+    if (graphFile != null)
+      graphFile.getManifest().markUnusable("index build failed: " + cause);
+  }
+
+  /**
    * Records, next to the graph pages that have just been committed, which records that graph was built over
    * (issue #6106). Call this only after the commit: the manifest is the one thing able to certify a graph, so it
    * must never outlive a persist that did not complete.
@@ -2698,18 +2724,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param persistedTo            the component the graph was written to
    * @param graphOrdinalToVectorId ordinal &rarr; vector id array the graph was built with
    */
-  /**
-   * Refuses whatever is on the graph pages after a build that did not finish. The alternative - leaving no
-   * manifest - reads as "persisted by an older version" on the next open and falls back to the node-count
-   * comparison, which is exactly the check issue #6106 replaces.
-   *
-   * @param cause what went wrong; recorded in the manifest for a human, nothing reads it back
-   */
-  private void markGraphManifestUnusable(final Exception cause) {
-    if (graphFile != null)
-      graphFile.getManifest().markUnusable("index build failed: " + cause);
-  }
-
   private void writeGraphManifest(final LSMVectorIndexGraphFile persistedTo, final int[] graphOrdinalToVectorId) {
     if (persistedTo == null || graphOrdinalToVectorId == null || graphOrdinalToVectorId.length == 0)
       return;
