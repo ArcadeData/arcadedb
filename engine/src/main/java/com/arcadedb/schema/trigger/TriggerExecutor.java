@@ -19,6 +19,7 @@
 package com.arcadedb.schema.trigger;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
@@ -39,6 +40,27 @@ public interface TriggerExecutor {
    * @return true to continue the operation, false to abort it
    */
   boolean execute(Database database, Record record, Record oldRecord);
+
+  /**
+   * Execute the trigger action for a {@code BEFORE READ} trigger, which is given the RID of the record about to be
+   * read and no record at all.
+   * <p>
+   * Separate from {@link #execute} because that timing structurally cannot supply a record: the hook fires from
+   * inside {@code LocalBucket.getRecordInternal}, and materialising the record from there re-enters the very read
+   * that fired it. The adapter used to do that and made every read of the triggered type fail with a
+   * {@code StackOverflowError}.
+   * <p>
+   * The default routes to {@link #execute} with no record, so an executor that predates this method still runs its
+   * body; the executors shipped here override it to bind the RID under {@code rid}/{@code $rid} instead.
+   *
+   * @param database The database instance where the read is occurring
+   * @param rid      Identity of the record about to be read
+   *
+   * @return true to continue the read, false to abort it
+   */
+  default boolean executeBeforeRead(final Database database, final RID rid) {
+    return execute(database, null, null);
+  }
 
   /**
    * Clean up any resources held by this executor (e.g., script engines).

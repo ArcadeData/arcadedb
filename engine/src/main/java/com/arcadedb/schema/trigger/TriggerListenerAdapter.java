@@ -72,16 +72,30 @@ public class TriggerListenerAdapter implements
     return true;
   }
 
+  /**
+   * The one timing that is handed a RID rather than a record, and that cannot be worked around.
+   * <p>
+   * This hook fires from the top of {@code LocalBucket.getRecordInternal}, i.e. from inside the read, before the
+   * record exists. It used to call {@code rid.asDocument()} to get one - which re-entered that same read, fired this
+   * hook again, and recursed until the stack ran out: creating {@code BEFORE READ} trigger made every read of its
+   * type fail with a {@code StackOverflowError} wrapped in {@code DatabaseOperationException}. The DDL succeeded, so
+   * the type simply became unreadable.
+   * <p>
+   * The trigger is therefore given the identity alone. It can veto by returning false (the bucket surfaces that as
+   * {@code RecordNotFoundException}), but it cannot see content - a trigger that needs content wants
+   * {@code AFTER READ}, which receives the materialised record.
+   * <p>
+   * No {@link #matchesType} call, and its absence is deliberate rather than an oversight: it is not skipped, it is
+   * ALREADY DONE. {@code LocalSchema.registerTriggerListener} registers this adapter on the TYPE's
+   * {@code RecordEventsRegistry}, and {@code getRecordInternal} resolves the type from the RID's bucket id and fires
+   * only that type's registry - so a listener never sees a RID from another type's bucket. Re-checking it here is
+   * what forced the record to be loaded in the first place.
+   */
   @Override
   public boolean onBeforeRead(final RID rid) {
     if (trigger.getTiming() == Trigger.TriggerTiming.BEFORE &&
         trigger.getEvent() == Trigger.TriggerEvent.READ) {
-      // For BEFORE READ, we receive only the RID, so we need to load the record
-      // This is a limitation noted in the implementation plan
-      final Record record = rid.asDocument();
-      if (matchesType(record)) {
-        return executor.execute(database, record, null);
-      }
+      return executor.executeBeforeRead(database, rid);
     }
     return true;
   }

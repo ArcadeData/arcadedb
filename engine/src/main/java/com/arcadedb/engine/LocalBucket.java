@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -1015,16 +1016,64 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Fires the BEFORE READ listeners of the database and of the RID's type, and refuses to fire them AGAIN while one
+   * of them is running on this thread.
+   * <p>
+   * The re-entrancy is not hypothetical: this dispatch happens from inside the read, so a listener that loads
+   * anything at all re-enters {@link #getRecordInternal} and fires itself. Without the guard that recursion ends in
+   * a {@code StackOverflowError} - which is exactly what a {@code BEFORE READ} trigger used to do, and what the
+   * body of any READ trigger can still ask for, since that body is arbitrary SQL or JavaScript and
+   * {@code SELECT FROM SameType} is a reasonable thing to write in one.
+   * <p>
+   * The rule the guard implements is the ordinary one: a listener's own reads do not fire listeners. It costs
+   * nothing when nobody is listening - the two {@code hasBeforeReadListeners()} probes are field reads, and the
+   * thread-local is not touched at all in that case, which is every read on a database with no read listener.
+   * <p>
+   * The flag lives on {@code DatabaseContextTL} rather than in a thread-local of its own so that it is scoped per
+   * DATABASE as well as per thread; see the field's javadoc for why that distinction matters.
+   */
+  private boolean fireBeforeReadEvents(final RID rid) {
+    final RecordEventsRegistry databaseEvents = (RecordEventsRegistry) database.getEvents();
+    final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+    final RecordEventsRegistry typeEvents = type != null ? (RecordEventsRegistry) type.getEvents() : null;
+
+    if (!databaseEvents.hasBeforeReadListeners() && (typeEvents == null || !typeEvents.hasBeforeReadListeners()))
+      return true;
+
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(
+        database.getDatabasePath());
+    if (context == null)
+      // No context on this thread for this database, so there is no re-entrancy to track. Reads reach a bucket
+      // through the database, which establishes one, so this is the defensive branch rather than a live path.
+      return dispatchBeforeRead(rid, databaseEvents, typeEvents);
+
+    if (context.isFiringReadEvents())
+      // A listener is reading. Let the read through untouched - vetoing it here would break the listener's own
+      // query, and firing again is the recursion this exists to stop.
+      return true;
+
+    context.setFiringReadEvents(true);
+    try {
+      return dispatchBeforeRead(rid, databaseEvents, typeEvents);
+    } finally {
+      context.setFiringReadEvents(false);
+    }
+  }
+
+  private boolean dispatchBeforeRead(final RID rid, final RecordEventsRegistry databaseEvents,
+      final RecordEventsRegistry typeEvents) {
+    if (!databaseEvents.onBeforeRead(rid))
+      return false;
+    return typeEvents == null || typeEvents.onBeforeRead(rid);
+  }
+
+  /**
    * The caller should call @{@link DatabaseInternal#invokeAfterReadEvents(Record)} after created the record and manage the result correctly.
    */
   public Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent) {
     // INVOKE EVENT CALLBACKS
-    if (!((RecordEventsRegistry) database.getEvents()).onBeforeRead(rid))
+    if (!fireBeforeReadEvents(rid))
       return null;
-    final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
-    if (type != null)
-      if (!((RecordEventsRegistry) type.getEvents()).onBeforeRead(rid))
-        return null;
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);

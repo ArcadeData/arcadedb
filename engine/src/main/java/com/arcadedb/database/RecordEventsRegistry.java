@@ -188,6 +188,19 @@ public class RecordEventsRegistry implements RecordEvents {
     return true;
   }
 
+  /**
+   * Whether anything is listening, so a caller can skip the re-entrancy bookkeeping around the dispatch entirely
+   * when nothing would fire. O(1) on the copy-on-write list, and the overwhelmingly common answer is false.
+   */
+  public boolean hasBeforeReadListeners() {
+    return !beforeReadListeners.isEmpty();
+  }
+
+  /** See {@link #hasBeforeReadListeners()}. */
+  public boolean hasAfterReadListeners() {
+    return !afterReadListeners.isEmpty();
+  }
+
   public boolean onBeforeRead(final RID rid) {
     if (beforeReadListeners.isEmpty())
       return true;

@@ -19,6 +19,7 @@
 package com.arcadedb.schema.trigger;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 
@@ -80,6 +81,22 @@ public class JavaClassTriggerExecutor implements TriggerExecutor {
   public boolean execute(final Database database, final Record record, final Record oldRecord) {
     try {
       return instance.execute(database, record, oldRecord);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error executing Java trigger '%s' (class: %s): %s", e, triggerName, className, e.getMessage());
+      throw new TriggerExecutionException(
+          "Java trigger '" + triggerName + "' (class: " + className + ") failed: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Routes to {@link JavaTrigger#executeBeforeRead}, which is the RID-only hook - see
+   * {@link TriggerExecutor#executeBeforeRead} for why that timing has no record to give.
+   */
+  @Override
+  public boolean executeBeforeRead(final Database database, final RID rid) {
+    try {
+      return instance.executeBeforeRead(database, rid);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Error executing Java trigger '%s' (class: %s): %s", e, triggerName, className, e.getMessage());

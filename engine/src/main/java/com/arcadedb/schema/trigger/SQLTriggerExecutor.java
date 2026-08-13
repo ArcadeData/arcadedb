@@ -19,6 +19,7 @@
 package com.arcadedb.schema.trigger;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 
@@ -54,6 +55,27 @@ public class SQLTriggerExecutor implements TriggerExecutor {
 
       // Execute SQL with context parameters. Triggers run on every matching record; closing the
       // ResultSet releases the per-call execution plan and avoids per-record state accumulation.
+      database.command("sql", sql, params).close();
+      return true;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
+      throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * A BEFORE READ trigger has no record to bind - see {@link TriggerExecutor#executeBeforeRead}. The identity is
+   * bound instead, so the body can still address WHICH record is being read; {@code record}/{@code $record} are
+   * deliberately absent rather than null, so a body that expects them fails visibly instead of silently seeing
+   * nothing.
+   */
+  @Override
+  public boolean executeBeforeRead(final Database database, final RID rid) {
+    try {
+      final Map<String, Object> params = new HashMap<>();
+      params.put("rid", rid);
+      params.put("$rid", rid);
+
       database.command("sql", sql, params).close();
       return true;
     } catch (final Exception e) {

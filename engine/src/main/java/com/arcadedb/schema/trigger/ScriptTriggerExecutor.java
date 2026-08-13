@@ -19,6 +19,7 @@
 package com.arcadedb.schema.trigger;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
@@ -106,6 +107,39 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
           GraalPolyglotEngine.endUserMessage(e, true));
       throw new TriggerExecutionException("JavaScript trigger '" + triggerName + "' failed: " +
           GraalPolyglotEngine.endUserMessage(e, true), e);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error executing JavaScript trigger '%s': %s", e, triggerName,
+          e.getMessage());
+      throw new TriggerExecutionException("JavaScript trigger '" + triggerName + "' failed: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * A BEFORE READ trigger has no record to bind - see {@link TriggerExecutor#executeBeforeRead}. The identity is
+   * bound instead, so the script can still address WHICH record is being read; {@code record}/{@code $record} are
+   * deliberately not set, so a script that expects them fails visibly instead of silently seeing nothing.
+   */
+  @Override
+  public boolean executeBeforeRead(final Database database, final RID rid) {
+    try {
+      if (scriptEngine == null) {
+        scriptEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+            .setLanguage("js")
+            .setAllowedPackages(ALLOWED_PACKAGES)
+            .build();
+      }
+
+      scriptEngine.setAttribute("rid", rid);
+      scriptEngine.setAttribute("$rid", rid);
+
+      final Value result = scriptEngine.eval(script);
+
+      return result == null || !result.isBoolean() || result.asBoolean();
+    } catch (final PolyglotException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error executing JavaScript trigger '%s': %s", e, triggerName,
+          GraalPolyglotEngine.endUserMessage(e, true));
+      throw new TriggerExecutionException(
+          "JavaScript trigger '" + triggerName + "' failed: " + GraalPolyglotEngine.endUserMessage(e, true), e);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing JavaScript trigger '%s': %s", e, triggerName,
           e.getMessage());

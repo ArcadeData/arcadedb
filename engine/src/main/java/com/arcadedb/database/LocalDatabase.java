@@ -2288,19 +2288,45 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     FileUtils.writeFile(configurationFile, configuration.toJSON());
   }
 
+  /**
+   * Fires the AFTER READ listeners, under the same re-entrancy guard as the BEFORE READ ones - see
+   * {@code LocalBucket.fireBeforeReadEvents}, which owns the explanation.
+   * <p>
+   * This side receives the materialised record, so it does not have to load anything itself and the shipped trigger
+   * adapter never did. The body of an {@code AFTER READ} trigger is arbitrary SQL or JavaScript though, and one that
+   * reads its own type re-enters the read that fired it exactly as the before side would. ONE flag covers both
+   * directions because it answers one question - "is a read listener running on this thread for this database?" -
+   * and while one is, no read event of either kind should fire.
+   */
   @Override
   public Record invokeAfterReadEvents(Record record) {
+    final DocumentType recordType = record instanceof Document document ? document.getType() : null;
+    final RecordEventsRegistry typeEvents = recordType != null ? (RecordEventsRegistry) recordType.getEvents() : null;
+
+    if (!events.hasAfterReadListeners() && (typeEvents == null || !typeEvents.hasAfterReadListeners()))
+      return record;
+
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    if (context == null)
+      return dispatchAfterRead(record, typeEvents);
+
+    if (context.isFiringReadEvents())
+      return record;
+
+    context.setFiringReadEvents(true);
+    try {
+      return dispatchAfterRead(record, typeEvents);
+    } finally {
+      context.setFiringReadEvents(false);
+    }
+  }
+
+  private Record dispatchAfterRead(Record record, final RecordEventsRegistry typeEvents) {
     // INVOKE EVENT CALLBACKS
     record = events.onAfterRead(record);
     if (record == null)
       return null;
-    if (record instanceof Document document) {
-      final DocumentType type = document.getType();
-      if (type != null) {
-        return ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
-      }
-    }
-    return record;
+    return typeEvents != null ? typeEvents.onAfterRead(record) : record;
   }
 
   private void lockDatabase() {
