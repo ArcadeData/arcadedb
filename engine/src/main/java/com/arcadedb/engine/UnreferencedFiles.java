@@ -112,6 +112,15 @@ public class UnreferencedFiles {
    * finding is never built here: it is a {@code Supplier} this consumer simply does not call. Free in the common
    * case, where there is nothing to describe, and it keeps a node that IS leaking files from paying for strings
    * every refresh throws away.
+   * <p>
+   * The walk itself is NOT memoized, and the whole of it - including rebuilding the claimed-file set - runs on every
+   * refresh. That is deliberate for a diagnostic reading live state, and it is in-memory work with no I/O, but it
+   * does scale with the schema: one {@code getFileIds()} per index, each taking that index's read lock. Should a
+   * database with tens of thousands of components ever make that visible, the gate is
+   * {@code (FileManager.getModificationCount(), schema version)} - between them those two cover every way the answer
+   * can change, since a file this walk would newly report appeared either as a file (the first) or as a schema
+   * change that stopped claiming one (the second). Recorded rather than implemented: a cached count that goes stale
+   * is a worse diagnostic than a slightly expensive one.
    */
   public static long count(final DatabaseInternal database) {
     final long[] count = { 0 };
