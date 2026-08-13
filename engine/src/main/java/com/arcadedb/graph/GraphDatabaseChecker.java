@@ -616,32 +616,7 @@ public class GraphDatabaseChecker {
       progressComplete();
 
       if (fix) {
-        // ORDER IS LOAD-BEARING (issue #6136). The chains are dropped FIRST: getOrCreateEdgeList appends to whatever
-        // head pointer it finds, so re-linking a vertex whose unreadable chain is still attached would append to the
-        // damaged list instead of building a fresh one. Then the surviving edge records are collected, and only then
-        // is anything written into a list - by which point every list that is being rebuilt is empty.
-        applyPendingChainResets(plan, report);
-
-        if (!plan.reconnectOutEdges.isEmpty() || !plan.reconnectInEdges.isEmpty())
-          collectEdgesToReconnect(plan, report);
-
-        // Both kinds of link land through the same loop: an entry rebuilt from a surviving edge record and a
-        // back-reference the far vertex was missing are the same write - add (edge, other endpoint) to a list.
-        // They are counted and reported apart, see RepairPlan.
-        final long rebuiltOut = applyPendingLinks(plan.rebuiltOutLinks, Vertex.DIRECTION.OUT, null, report);
-        if (rebuiltOut > 0)
-          report.warn("reconnected " + rebuiltOut + " outgoing edges");
-
-        final long rebuiltIn = applyPendingLinks(plan.rebuiltInLinks, Vertex.DIRECTION.IN, null, report);
-        if (rebuiltIn > 0)
-          report.warn("reconnected " + rebuiltIn + " incoming edges");
-
-        final long backRefs = applyPendingLinks(plan.backRefOutLinks, Vertex.DIRECTION.OUT, plan.reconnectOutEdges, report)
-            + applyPendingLinks(plan.backRefInLinks, Vertex.DIRECTION.IN, plan.reconnectInEdges, report);
-        if (backRefs > 0)
-          report.warn("re-linked " + backRefs + " edges that were not connected from the other side");
-
-        reconnectedEdges = rebuiltOut + rebuiltIn + backRefs;
+        reconnectedEdges = applyRepairPlan(plan, report);
 
         for (final RID rid : report.corruptedRecords) {
           if (rid == null)
@@ -696,6 +671,42 @@ public class GraphDatabaseChecker {
     }
 
     return stats;
+  }
+
+  /**
+   * Performs every repair the vertex scan planned, in the ONE order that is correct (issue #6136).
+   * <p>
+   * ORDER IS LOAD-BEARING. The chains are dropped FIRST: {@code getOrCreateEdgeList} appends to whatever head
+   * pointer it finds, so re-linking a vertex whose unreadable chain is still attached would append to the damaged
+   * list instead of building a fresh one. Then the surviving edge records are collected, and only then is anything
+   * written into a list - by which point every list being rebuilt is empty.
+   * <p>
+   * Both kinds of link go through the same apply loop, because an entry rebuilt from a surviving edge record and a
+   * back-reference the far vertex was missing are the same write: add (edge, other endpoint) to a list. They are
+   * counted and reported apart for the reason given on {@link RepairPlan}.
+   *
+   * @return how many adjacency entries were re-linked, of either kind
+   */
+  private long applyRepairPlan(final RepairPlan plan, final CheckReport report) {
+    applyPendingChainResets(plan, report);
+
+    if (!plan.reconnectOutEdges.isEmpty() || !plan.reconnectInEdges.isEmpty())
+      collectEdgesToReconnect(plan, report);
+
+    final long rebuiltOut = applyPendingLinks(plan.rebuiltOutLinks, Vertex.DIRECTION.OUT, null, report);
+    if (rebuiltOut > 0)
+      report.warn("reconnected " + rebuiltOut + " outgoing edges");
+
+    final long rebuiltIn = applyPendingLinks(plan.rebuiltInLinks, Vertex.DIRECTION.IN, null, report);
+    if (rebuiltIn > 0)
+      report.warn("reconnected " + rebuiltIn + " incoming edges");
+
+    final long backRefs = applyPendingLinks(plan.backRefOutLinks, Vertex.DIRECTION.OUT, plan.reconnectOutEdges, report)
+        + applyPendingLinks(plan.backRefInLinks, Vertex.DIRECTION.IN, plan.reconnectInEdges, report);
+    if (backRefs > 0)
+      report.warn("re-linked " + backRefs + " edges that were not connected from the other side");
+
+    return rebuiltOut + rebuiltIn + backRefs;
   }
 
   /**
