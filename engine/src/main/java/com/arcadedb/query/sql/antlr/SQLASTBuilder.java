@@ -2687,6 +2687,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitUnary(final SQLParser.UnaryContext ctx) {
+    if (ctx.MINUS() != null) {
+      final BaseExpression longMinValue = tryFoldLongMinValueLiteral(ctx);
+      if (longMinValue != null)
+        return longMinValue;
+    }
+
     final MathExpression innerExpr = (MathExpression) visit(ctx.mathExpression());
 
     if (ctx.PLUS() != null) {
@@ -2714,6 +2720,43 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     throw new CommandSQLParsingException("Unknown unary operator");
+  }
+
+  /**
+   * Folds a directly-negated integer literal (optionally {@code L}/{@code l}-suffixed) whose bare magnitude
+   * overflows {@code long} on its own into a single {@code Long.MIN_VALUE} literal - the standard
+   * two's-complement-minimum hazard, since {@link #visitIntegerLiteral} otherwise converts the magnitude before
+   * the enclosing unary minus is applied. Returns {@code null} for every other shape, letting the ordinary
+   * {@code 0 - X} handling in {@link #visitUnary} run instead.
+   */
+  private BaseExpression tryFoldLongMinValueLiteral(final SQLParser.UnaryContext ctx) {
+    if (!(ctx.mathExpression() instanceof final SQLParser.BaseContext baseCtx))
+      return null;
+    if (!(baseCtx.baseExpression() instanceof final SQLParser.IntegerLiteralContext intCtx))
+      return null;
+
+    final String originalText = intCtx.INTEGER_LITERAL().getText();
+    final String text = (originalText.endsWith("L") || originalText.endsWith("l"))
+        ? originalText.substring(0, originalText.length() - 1) : originalText;
+
+    for (int i = 0; i < text.length(); i++)
+      if (!Character.isDigit(text.charAt(i)))
+        return null; // hex/octal-shaped: not the plain-decimal shape we fold here
+
+    try {
+      Long.parseLong(text);
+      return null; // magnitude fits on its own: let the existing 0 - X handling run as before
+    } catch (final NumberFormatException magnitudeOverflow) {
+      // only Long.MIN_VALUE's magnitude can still be represented once the sign is folded in;
+      // anything larger is a genuine overflow and keeps raising the original error
+      try {
+        final BaseExpression baseExpr = new BaseExpression(-1);
+        baseExpr.number = new PInteger(-1).setValue(Long.parseLong("-" + text));
+        return baseExpr;
+      } catch (final NumberFormatException stillInvalid) {
+        throw new CommandSQLParsingException("Invalid integer: " + originalText);
+      }
+    }
   }
 
   /**
