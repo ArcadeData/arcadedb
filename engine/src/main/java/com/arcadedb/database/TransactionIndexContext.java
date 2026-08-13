@@ -268,6 +268,14 @@ public class TransactionIndexContext {
     return total;
   }
 
+  /**
+   * Looks a lane up by its KEY, which is the name the index answered to when the lane was opened - not necessarily
+   * the name it answers to now. Correct for every caller today: only {@code LSMVectorIndex} renames itself and it
+   * never reaches here (the read-your-own-writes callers are {@code HashIndex}, {@code LSMTreeIndex} and
+   * {@code LSMTreeIndexCursor}, none of which rename), and each of them passes its OWN unchanging name. An index
+   * type that gains a rename - i.e. one that starts calling {@code LocalSchema.indexRenamed} - has to reach its
+   * lane through {@link #laneIndexName} instead, or it reproduces issue #6105 here.
+   */
   public int getTotalEntriesByIndex(final String indexName) {
     final List<IndexKey> unordered = unorderedEntries.get(indexName);
     if (unordered != null)
@@ -551,6 +559,7 @@ public class TransactionIndexContext {
     indexPerLane.clear();
   }
 
+  /** Looks a lane up by its KEY, with the same caveat as {@link #getTotalEntriesByIndex}. */
   public TreeMap<ComparableKey, Map<IndexKey, IndexKey>> getIndexKeys(final String indexName) {
     return indexEntries.get(indexName);
   }
