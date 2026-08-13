@@ -9,7 +9,8 @@ message says the class was fixed "even though nothing in `src/main` currently bi
 that was the residual bug. `ArcadeDBServer.startMetrics()` called
 `new HAReplicationMetrics(this).bindTo(Metrics.globalRegistry)` and discarded the instance
 immediately; nothing in production ever called `close()`, so the daemon thread named
-`arcadedb-ha-follower-metrics` (and the `ScheduledExecutorService` behind it) outlived every
+`arcadedb-ha-follower-metrics` - renamed `arcadedb-ha-metrics-refresh` in #6144, when the same tick took on the
+per-database gauges too - (and the `ScheduledExecutorService` behind it) outlived every
 server stop/restart cycle.
 
 ## Fix

@@ -20,9 +20,11 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.engine.UnreferencedFiles;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import org.apache.ratis.client.RaftClient;
@@ -85,6 +87,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -2400,6 +2403,59 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           peerId, matchIndex, nextIndex, lag, lastContactMs, status, laggingForMs));
     }
     return samples;
+  }
+
+  /**
+   * Per-database schema-WAL instalment counters (issue #6144). Reported on EVERY node, not just the
+   * leader, for the same reason the phase-2 holds below are: the instalments a node shipped while it
+   * was the leader are what explain a stall its writers saw, and that question outlives the term.
+   * <p>
+   * Skips databases that are not currently in memory ({@code allowLoad=false}): a metrics refresh must
+   * not turn into a database-open workload, and a database nobody has opened has shipped nothing.
+   */
+  public List<HAReplicationStatsProvider.SchemaInstalmentSample> getSchemaInstalmentSamples() {
+    final List<HAReplicationStatsProvider.SchemaInstalmentSample> samples = new ArrayList<>();
+    forEachOpenReplicatedDatabase((name, db) -> samples.add(new HAReplicationStatsProvider.SchemaInstalmentSample(
+        name, db.getSchemaWalInstalmentsShipped(), db.getSchemaWalInstalmentTotalTimeMs(),
+        db.getSchemaWalInstalmentMaxTimeMs())));
+    return samples;
+  }
+
+  /**
+   * Per-database count of files this node holds that no schema component claims (issue #6143). The
+   * node that LOST leadership mid-session is the only one that logs the files it could not retire;
+   * this is how the nodes still holding them say so, which is what makes the SEVERE line actionable
+   * without reading a data directory by hand.
+   */
+  public List<HAReplicationStatsProvider.UnreferencedFilesSample> getUnreferencedFilesSamples() {
+    final List<HAReplicationStatsProvider.UnreferencedFilesSample> samples = new ArrayList<>();
+    forEachOpenReplicatedDatabase((name, db) -> samples.add(
+        new HAReplicationStatsProvider.UnreferencedFilesSample(name, UnreferencedFiles.count(db))));
+    return samples;
+  }
+
+  /**
+   * Visits every non-reserved database this server currently holds OPEN, as its Raft wrapper. Shared by the two
+   * per-database metric collectors above so they agree on which databases exist and neither of them can open one.
+   * A database being concurrently dropped or unloaded is skipped rather than allowed to fail the whole refresh.
+   */
+  private void forEachOpenReplicatedDatabase(final BiConsumer<String, RaftReplicatedDatabase> visitor) {
+    if (arcadeServer == null)
+      return;
+
+    for (final String dbName : arcadeServer.getDatabaseNames()) {
+      if (ArcadeDBServer.isReservedDatabaseName(dbName))
+        continue;
+      try {
+        final ServerDatabase db = arcadeServer.getDatabase(dbName, false, false);
+        if (db != null && db.getWrappedDatabaseInstance() instanceof RaftReplicatedDatabase replicated)
+          visitor.accept(dbName, replicated);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.FINE,
+            "Skipping per-database HA metrics for '%s' (likely being dropped or unloaded): %s", dbName,
+            e.getMessage());
+      }
+    }
   }
 
   /**
