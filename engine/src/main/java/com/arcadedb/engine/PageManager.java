@@ -95,6 +95,12 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
+  // #6116: the three snapshot totals below are exported as Prometheus counters together with the ones above, and
+  // carry the same never-decrease requirement. They are JVM-wide like the rest of this class, so a database close
+  // does not step them back.
+  private final    AtomicLong                        totalSnapshotWindowsOpened            = new AtomicLong();
+  private final    AtomicLong                        totalSnapshotWindowsInvalidated       = new AtomicLong();
+  private final    AtomicLong                        totalSnapshotPreImagesCaptured        = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
   // LIFECYCLE INVARIANT (#5070): flushThread and readCache are written only under LIFECYCLE_LOCK
   // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
@@ -159,6 +165,26 @@ public class PageManager extends LockContext {
     public long evictionRuns;
     public long pagesEvicted;
     public int  readCachePages;
+    /**
+     * #6116: the point-in-time snapshot windows (#6075) as an operator sees them. The five instantaneous readings go
+     * up AND down with the lifetime of a window, so they are gauges; the three totals below them are counters. A
+     * window whose shadow approaches {@code arcadedb.pageSnapshotMaxSize} is about to be invalidated and force its
+     * backup onto the writer-throttling fallback path, which is precisely the event an operator must be able to see
+     * coming rather than read about afterwards in the log.
+     */
+    public int    snapshotWindowsOpen;
+    public long   snapshotShadowedPages;
+    public long   snapshotShadowBytes;
+    public long   snapshotShadowSpilledBytes;
+    /** How full the fullest open window's shadow is, as a percentage of {@code arcadedb.pageSnapshotMaxSize}. */
+    public double snapshotShadowUsagePerc;
+    /** Age of the OLDEST open window, in milliseconds: a window that never closes is a leak, not a slow backup. */
+    public long   snapshotOldestWindowMillis;
+    public long   snapshotWindowsOpened;
+    public long   snapshotWindowsInvalidated;
+    public long   snapshotPreImagesCaptured;
+    /** See {@link PageManager#getDeferredRAMBytes()} (#6087): dirty pages held in RAM by a flush suspension. */
+    public long   deferredRAMBytes;
   }
 
   private PageManager() {
@@ -579,6 +605,7 @@ public class PageManager extends LockContext {
       updated[updated.length - 1] = snapshot;
       activeSnapshots = updated;
     }
+    totalSnapshotWindowsOpened.incrementAndGet();
     return snapshot;
   }
 
@@ -652,6 +679,9 @@ public class PageManager extends LockContext {
       }
 
       snapshot.storePreImage(fileId, pageNumber, preImage, pageSize);
+      // #6116: THE COPY-ON-WRITE WORK A WINDOW IS COSTING, AS A RATE. ONE ATOMIC INCREMENT NEXT TO A PAGE READ AND A
+      // PAGE COPY, AND ONLY WHEN A WINDOW IS OPEN AND STILL NEEDS THIS PAGE
+      totalSnapshotPreImagesCaptured.incrementAndGet();
     }
   }
 
@@ -1009,7 +1039,52 @@ public class PageManager extends LockContext {
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.evictionRuns = evictionRuns.get();
     stats.pagesEvicted = pagesEvicted.get();
+    stats.snapshotWindowsOpened = totalSnapshotWindowsOpened.get();
+    stats.snapshotWindowsInvalidated = totalSnapshotWindowsInvalidated.get();
+    stats.snapshotPreImagesCaptured = totalSnapshotPreImagesCaptured.get();
+    stats.deferredRAMBytes = getDeferredRAMBytes();
+    collectSnapshotGauges(stats);
     return stats;
+  }
+
+  /**
+   * Fills in the per-window readings of {@link PPageManagerStats} from the currently open snapshot windows (#6116).
+   * <p>
+   * Reads the published array ONCE, without the registry lock: a window that closes underneath this reports its last
+   * values, which is what any sampled gauge does. The shadow accessors take the shadow's own monitor, which the
+   * capture path also holds for the duration of one page copy - at the one-per-scrape rate this is called at, that
+   * is immaterial, but it is the reason this is not called from anywhere hotter than a metrics scrape.
+   */
+  private void collectSnapshotGauges(final PPageManagerStats stats) {
+    final PageSnapshot[] snapshots = activeSnapshots;
+    if (snapshots == null)
+      return;
+
+    final long now = System.currentTimeMillis();
+    long oldestOpenedOn = Long.MAX_VALUE;
+    for (final PageSnapshot snapshot : snapshots) {
+      ++stats.snapshotWindowsOpen;
+      stats.snapshotShadowedPages += snapshot.getShadowedPages();
+      final long shadowBytes = snapshot.getShadowSizeInBytes();
+      stats.snapshotShadowBytes += shadowBytes;
+      stats.snapshotShadowSpilledBytes += snapshot.getShadowSpilledBytes();
+
+      final long maxBytes = snapshot.getShadowMaxSizeInBytes();
+      if (maxBytes > 0)
+        // THE MAXIMUM, NOT THE AVERAGE: WHAT MATTERS IS HOW CLOSE THE CLOSEST WINDOW IS TO BREACHING, BECAUSE THAT
+        // IS THE ONE WHOSE BACKUP IS ABOUT TO RESTART ON THE SUSPEND-AND-FREEZE PATH
+        stats.snapshotShadowUsagePerc = Math.max(stats.snapshotShadowUsagePerc, 100.0 * shadowBytes / maxBytes);
+
+      oldestOpenedOn = Math.min(oldestOpenedOn, snapshot.getOpenedOn());
+    }
+
+    if (oldestOpenedOn != Long.MAX_VALUE)
+      stats.snapshotOldestWindowMillis = Math.max(0L, now - oldestOpenedOn);
+  }
+
+  /** Counts a window that lost its point in time (cap breach or I/O error): the fallback-path early warning. */
+  void incrementSnapshotWindowsInvalidated() {
+    totalSnapshotWindowsInvalidated.incrementAndGet();
   }
 
   public void removePageFromCache(final PageId pageId) {

@@ -99,10 +99,42 @@ public final class EngineMetricsBinder implements MeterBinder {
     counter(registry, "arcadedb.engine.queries", "Queries executed", "queries");
     counter(registry, "arcadedb.engine.commands", "Commands executed", "commands");
 
+    // #6116: the copy-on-write work an open snapshot window (#6075) is doing, and how often a window loses its point
+    // in time. An invalidated window is invisible from the outside - its consumer restarts on the suspend-and-freeze
+    // path and still completes - so without this counter the only trace of a backup that fell back to throttling the
+    // writers is a WARNING in the log.
+    counter(registry, "arcadedb.engine.snapshot.windows.opened", "Point-in-time snapshot windows opened",
+        "snapshotWindowsOpened");
+    counter(registry, "arcadedb.engine.snapshot.windows.invalidated",
+        "Snapshot windows that lost their point in time (shadow cap breach or I/O error)", "snapshotWindowsInvalidated");
+    counter(registry, "arcadedb.engine.snapshot.preimages.captured",
+        "Page pre-images copied into a snapshot shadow", "snapshotPreImagesCaptured");
+
     // Instantaneous readings: these go up AND down, so they are the only ones that stay gauges.
     gauge(registry, "arcadedb.engine.wal.files", "WAL files", "walTotalFiles");
     gauge(registry, "arcadedb.engine.files.open", "Open file descriptors", "totalOpenFiles");
     gauge(registry, "arcadedb.engine.databases", "Open databases", "totalDatabases");
+
+    // #6116: per-window state, so every one of these returns to zero when the last window closes - gauges, not
+    // counters (#5636). The usage percentage is the alertable one: a window that reaches 100% of
+    // arcadedb.pageSnapshotMaxSize is invalidated, and its backup restarts on the path that throttles writers.
+    gauge(registry, "arcadedb.engine.snapshot.windows.open", "Point-in-time snapshot windows currently open",
+        "snapshotWindowsOpen");
+    gauge(registry, "arcadedb.engine.snapshot.shadow.pages", "Pages held in the open snapshot shadows",
+        "snapshotShadowedPages");
+    gauge(registry, "arcadedb.engine.snapshot.shadow.bytes", "Bytes held in the open snapshot shadows, RAM plus spill",
+        "snapshotShadowSize");
+    gauge(registry, "arcadedb.engine.snapshot.shadow.spilled.bytes", "Snapshot shadow bytes spilled to disk",
+        "snapshotShadowSpilledSize");
+    gauge(registry, "arcadedb.engine.snapshot.shadow.usage.percent",
+        "Fullest open shadow as a percentage of arcadedb.pageSnapshotMaxSize", "snapshotShadowUsagePerc");
+    gauge(registry, "arcadedb.engine.snapshot.window.age.ms", "Age of the oldest open snapshot window",
+        "snapshotOldestWindowAge");
+
+    // #6087: the companion reading for the OTHER path. While a reader freezes the files with a flush suspension,
+    // dirty pages pile up here; crossing arcadedb.flushSuspendMaxDeferredRAM throttles committing threads outright.
+    gauge(registry, "arcadedb.engine.flush.deferred.bytes", "Dirty page bytes deferred by a flush suspension",
+        "deferredRAM");
   }
 
   /**
@@ -151,6 +183,11 @@ public final class EngineMetricsBinder implements MeterBinder {
           return nested.getLong("space", 0L);
         if (nested.has("value"))
           return nested.getLong("value", 0L);
+        // A percentage is the one stat shape that is genuinely fractional, so it is read as a double: rounding it to
+        // a long would flatten every reading below 1% to zero, and "the shadow is at 0%" is exactly the wrong thing
+        // to tell an operator watching it fill (#6116).
+        if (nested.has("perc"))
+          return nested.getDouble("perc", 0d);
         return 0d;
       }
       if (value instanceof Number n)
