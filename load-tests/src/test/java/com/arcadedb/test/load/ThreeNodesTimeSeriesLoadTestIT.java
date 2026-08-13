@@ -68,8 +68,8 @@ class ThreeNodesTimeSeriesLoadTestIT extends ContainersTestTemplate {
     // Ingest wrapper (parameter protocol) targets node 0 and writes auto-forward to the leader;
     // reader/asserter wrappers always use HTTP, one per node (mirrors ThreeNodesLoadTestIT).
     // try-with-resources so all four connections close even if an assertion below fails.
-    try (final TimeSeriesDatabaseWrapper ingest = new TimeSeriesDatabaseWrapper(servers.getFirst(), protocol);
-        final TimeSeriesDatabaseWrapper r0 = new TimeSeriesDatabaseWrapper(servers.getFirst(), Protocol.SQL_HTTP);
+    try (final TimeSeriesDatabaseWrapper ingest = new TimeSeriesDatabaseWrapper(servers.get(0), protocol);
+        final TimeSeriesDatabaseWrapper r0 = new TimeSeriesDatabaseWrapper(servers.get(0), Protocol.SQL_HTTP);
         final TimeSeriesDatabaseWrapper r1 = new TimeSeriesDatabaseWrapper(servers.get(1), Protocol.SQL_HTTP);
         final TimeSeriesDatabaseWrapper r2 = new TimeSeriesDatabaseWrapper(servers.get(2), Protocol.SQL_HTTP)) {
 
@@ -94,7 +94,7 @@ class ThreeNodesTimeSeriesLoadTestIT extends ContainersTestTemplate {
       for (int t = 0; t < NUM_THREADS; t++) {
         final int threadIndex = t;
         executor.submit(() -> {
-          final TimeSeriesDatabaseWrapper w = new TimeSeriesDatabaseWrapper(servers.getFirst(), protocol);
+          final TimeSeriesDatabaseWrapper w = new TimeSeriesDatabaseWrapper(servers.get(0), protocol);
           try {
             final long base = 1_000_000_000L + threadIndex * 100_000_000L;
             w.ingestSeries("sensor-" + threadIndex, "region-" + (threadIndex % 3), base, POINTS_PER_THREAD);

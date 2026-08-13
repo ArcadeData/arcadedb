@@ -45,7 +45,7 @@ class SingleServerTimeSeriesLoadTestIT extends ContainersTestTemplate {
   @EnumSource(TimeSeriesDatabaseWrapper.Protocol.class)
   void singleServerTimeSeriesLoadTest(final TimeSeriesDatabaseWrapper.Protocol protocol) throws Exception {
     createArcadeContainer("arcade", network);
-    final ServerWrapper server = startContainers().getFirst();
+    final ServerWrapper server = startContainers().get(0);
 
     // try-with-resources so the admin connection is closed even if an assertion below fails.
     try (final TimeSeriesDatabaseWrapper admin = new TimeSeriesDatabaseWrapper(server, protocol)) {
