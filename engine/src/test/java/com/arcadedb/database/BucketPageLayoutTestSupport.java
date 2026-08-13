@@ -77,12 +77,23 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
    * <p>
    * Must be called OUTSIDE a transaction: the fill has to be committed before the record that seals the page is
    * grown, so the spill sees the page the fill produced.
+   * <p>
+   * The postcondition is checked here rather than left to the callers: the sealing record must really have SPILLED,
+   * because the spill is the only thing that eats the free tail. Should a page-geometry change ever let 70 KB stay
+   * in the page, every test built on this fixture would otherwise go on passing while quietly testing a page that
+   * still has room - the failure would surface as six confusing assertions elsewhere instead of one here.
    *
    * @return the RID of the record that seals the page, so a caller can free the tail again by deleting it.
    */
   protected RID sealFirstPage(final String typeName) {
     final RID last = fillFirstPage(typeName);
     database.transaction(() -> last.asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
+
+    final Map<String, Object> layout = bucketStats(typeName);
+    assertThat((Long) layout.get("totalMultiPageRecords"))
+        .as("sealing page 0 of " + typeName + " requires the last record to spill into chunks, taking the free tail "
+            + "with it - it did not: " + layout)
+        .isPositive();
     return last;
   }
 

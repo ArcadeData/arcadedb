@@ -3405,7 +3405,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Byte the used content of a bucket page ends at: the position right after the last record it stores, and therefore
+   * The byte at which a bucket page's used content ends: the position right after the last record it stores, and therefore
    * the start of its free tail. Resolves the real size of that last record for every marker shape it can have (plain
    * record, placeholder pointer, placeholder content, multi-page chunk).
    *
@@ -3534,7 +3534,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @param page                  the page to re-flow.
    * @param recordCountInPage     number of slot-table entries to walk when fixing the offsets that moved.
    * @param from                  first byte to move: the end of the growing record's current footprint.
-   * @param pageOccupiedInBytes   byte the used content of the page ends at (see {@link #getPageOccupiedInBytes}).
+   * @param pageOccupiedInBytes   the byte at which the page's used content ends (see {@link #getPageOccupiedInBytes}).
    * @param additionalSpaceNeeded bytes to move by, which the caller has proved the page's free tail can absorb.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
