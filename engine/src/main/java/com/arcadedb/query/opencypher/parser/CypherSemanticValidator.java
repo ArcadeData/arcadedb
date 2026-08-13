@@ -23,6 +23,8 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
 import java.util.*;
 
@@ -224,9 +226,16 @@ public class CypherSemanticValidator {
       case FOREACH -> forget(((ForeachClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
       case CALL -> {
         final CallClause callClause = entry.getTypedClause();
-        if (callClause.hasYield())
-          for (final CallClause.YieldItem item : callClause.getYieldItems())
-            forget(item.getOutputName(), scope, declaredHere);
+        if (callClause.hasYield()) {
+          if (callClause.isYieldAll()) {
+            final List<String> yieldAllFields = resolveYieldAllFieldNames(callClause);
+            if (yieldAllFields != null)
+              for (final String field : yieldAllFields)
+                forget(field, scope, declaredHere);
+          } else
+            for (final CallClause.YieldItem item : callClause.getYieldItems())
+              forget(item.getOutputName(), scope, declaredHere);
+        }
       }
       case SUBQUERY -> {
         // What a nested CALL subquery returns enters this scope under a kind this phase does not track back through
@@ -353,6 +362,27 @@ public class CypherSemanticValidator {
   private static void forget(final String name, final Map<String, VarType> scope, final Set<String> declaredHere) {
     scope.remove(name);
     declaredHere.remove(name);
+  }
+
+  /**
+   * Resolves the concrete field names a {@code CALL proc() YIELD *} puts into scope (issue #6148).
+   * <p>
+   * {@code YIELD *} carries no {@link CallClause.YieldItem}s of its own ({@link CallClause#getYieldItems()} is
+   * empty even though {@link CallClause#isYieldAll()} is true), so the three CALL-handling switches in this class
+   * cannot learn what it exports the same way they learn from an explicit {@code YIELD a, b}. What it exports is
+   * exactly the calling procedure's declared {@link CypherProcedure#getYieldFields()} - the same registry
+   * {@code CallStep} consults to run the call - so this looks the procedure up there rather than guessing.
+   * <p>
+   * Returns {@code null}, not an empty list, when the name does not resolve to a registered procedure (a custom
+   * {@code DEFINE FUNCTION}, an arbitrary SQL function, or a genuinely unknown name): none of those have a
+   * statically declared output signature, so callers fall back to today's behavior for them instead of treating an
+   * unresolvable {@code YIELD *} as exporting nothing.
+   */
+  private static List<String> resolveYieldAllFieldNames(final CallClause callClause) {
+    if (!callClause.isYieldAll())
+      return null;
+    final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+    return procedure != null ? procedure.getYieldFields() : null;
   }
 
   // ==============================
@@ -641,9 +671,15 @@ public class CypherSemanticValidator {
         case CALL:
           // Procedure CALL with YIELD — exported yield variables enter scope
           final CallClause callClause = entry.getTypedClause();
-          if (callClause != null && callClause.hasYield())
-            for (final CallClause.YieldItem item : callClause.getYieldItems())
-              scope.add(item.getOutputName());
+          if (callClause != null && callClause.hasYield()) {
+            if (callClause.isYieldAll()) {
+              final List<String> yieldAllFields = resolveYieldAllFieldNames(callClause);
+              if (yieldAllFields != null)
+                scope.addAll(yieldAllFields);
+            } else
+              for (final CallClause.YieldItem item : callClause.getYieldItems())
+                scope.add(item.getOutputName());
+          }
           break;
         case SUBQUERY:
           // CALL { ... RETURN x AS y } — exported return variables enter outer scope
@@ -1835,10 +1871,17 @@ public class CypherSemanticValidator {
       }
       case CALL -> {
         final CallClause callClause = entry.getTypedClause();
-        if (callClause.hasYield())
-          for (final CallClause.YieldItem item : callClause.getYieldItems())
-            if (item.getOutputName() != null)
+        if (callClause.hasYield()) {
+          if (callClause.isYieldAll()) {
+            final List<String> yieldAllFields = resolveYieldAllFieldNames(callClause);
+            if (yieldAllFields != null && !yieldAllFields.isEmpty())
               return true;
+          } else {
+            for (final CallClause.YieldItem item : callClause.getYieldItems())
+              if (item.getOutputName() != null)
+                return true;
+          }
+        }
       }
       case SUBQUERY -> {
         // What a CALL { } subquery returns becomes an ordinary variable of the enclosing scope, exactly like WITH.
