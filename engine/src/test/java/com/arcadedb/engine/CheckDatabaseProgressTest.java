@@ -76,7 +76,7 @@ class CheckDatabaseProgressTest extends TestHelper {
 
     assertThat(emissions).isNotEmpty();
 
-    final int totalSteps = emissions.getFirst().totalSteps;
+    final int totalSteps = emissions.get(0).totalSteps;
     // 1 edge type + 2 vertex types + 1 document type + buckets + external + indexes = 7 (no fix, no compress).
     assertThat(totalSteps).isEqualTo(7);
 
@@ -99,7 +99,7 @@ class CheckDatabaseProgressTest extends TestHelper {
         "Checking vertices 'Company'", "Checking documents 'Note'" }) {
       final List<Emission> step = emissions.stream().filter(e -> e.stepName.equals(expectedStep)).toList();
       assertThat(step).as("emissions for step '" + expectedStep + "'").isNotEmpty();
-      final Emission last = step.getLast();
+      final Emission last = step.get(step.size() - 1);
       assertThat(last.total).isGreaterThan(0);
       assertThat(last.done).isEqualTo(last.total);
     }
@@ -116,7 +116,7 @@ class CheckDatabaseProgressTest extends TestHelper {
         .check();
 
     // FULL-SCOPE FIX ADDS THE ORPHAN-RECLAIM (#5375) AND "Rebuilding indexes" STEPS: 7 + 2.
-    assertThat(emissions.getFirst().totalSteps).isEqualTo(9);
+    assertThat(emissions.get(0).totalSteps).isEqualTo(9);
     assertThat(emissions.stream().anyMatch(e -> e.stepName.startsWith("Reclaiming orphaned edge segments"))).isTrue();
     assertThat(emissions.stream().anyMatch(e -> e.stepName.startsWith("Rebuilding indexes"))).isTrue();
   }

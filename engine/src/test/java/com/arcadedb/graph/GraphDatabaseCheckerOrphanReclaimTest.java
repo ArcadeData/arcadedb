@@ -330,7 +330,7 @@ class GraphDatabaseCheckerOrphanReclaimTest extends TestHelper {
     database.transaction(() -> {
       assertThat(hubRid.asVertex(true).countEdges(Vertex.DIRECTION.IN, EDGE_TYPE)).isEqualTo(degree);
       // The old head chunk survived: orphaned but not reclaimed.
-      assertThat(((DatabaseInternal) database).lookupByRID(oldChunks.getFirst(), true)).isNotNull();
+      assertThat(((DatabaseInternal) database).lookupByRID(oldChunks.get(0), true)).isNotNull();
     });
   }
 }

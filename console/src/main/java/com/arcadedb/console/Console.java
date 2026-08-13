@@ -886,7 +886,7 @@ public class Console {
       final List<JSONObject> operations = ((RemoteDatabase) databaseProxy).getProgress();
       if (operations.isEmpty())
         return null;
-      final JSONObject op = operations.getFirst();
+      final JSONObject op = operations.get(0);
       return formatProgressLine(op.getString("operation", ""), op.getString("stepName", ""),
           op.getInt("stepIndex", 0), op.getInt("totalSteps", 0), op.getInt("percentage", -1));
     }
@@ -894,7 +894,7 @@ public class Console {
     final List<OperationProgress> operations = OperationProgressRegistry.instance().getOperations(databaseProxy.getName());
     if (operations.isEmpty())
       return null;
-    final OperationProgress op = operations.getFirst();
+    final OperationProgress op = operations.get(0);
     return formatProgressLine(op.getOperation(), op.getStepName(), op.getStepIndex(), op.getTotalSteps(), op.getPercentage());
   }
 
