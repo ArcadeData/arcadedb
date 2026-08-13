@@ -83,7 +83,7 @@ public class RestoreEdgeStatement extends SimpleExecStatement {
     RestoreStatementSupport.applyBody(shell, insertBody, context);
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
-    final RID restoredRid = RestoreStatementSupport.restoreRecordAndUpdateCount(database, bucket, rid.getPosition(), shell);
+    final RID restoredRid = database.restoreRecord(shell, bucket, rid.getPosition());
 
     final ResultInternal result = new ResultInternal(database);
     result.setProperty("operation", "restore edge");

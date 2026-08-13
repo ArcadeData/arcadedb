@@ -1144,6 +1144,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (lastRecordPositionInPage < contentHeaderSize)
       // A LIVE SLOT POINTING INSIDE THE PAGE HEADER: THERE IS NO RECORD THERE, THE RECORD TABLE IS CORRUPTED. FAIL
       // LOUDLY INSTEAD OF DERIVING AN INSERTION OFFSET FROM HEADER BYTES AND OVERWRITING THE SLOT TABLE (#6096).
+      // Unreachable through today's two callers - both derive the argument from getLastRecordPositionInPage(),
+      // whose getRecordPositionInPage() already rejects a non-zero entry below contentHeaderSize with an
+      // IOException. It is kept because this method is what a third caller would reuse, and a caller deriving the
+      // offset its own way is precisely how #6096 happened: guarding here makes contentEndOffset() safe to reuse
+      // on its own terms rather than only in the company of the current two. Mirrors getPageOccupiedInBytes().
       throw new DatabaseOperationException(
           "Invalid record position " + lastRecordPositionInPage + " in page " + page.getPageId() + " of bucket '" + componentName
               + "'");

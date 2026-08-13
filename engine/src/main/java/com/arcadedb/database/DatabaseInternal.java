@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
@@ -129,6 +130,31 @@ public interface DatabaseInternal extends Database {
   void createRecord(Record record, String bucketName);
 
   void createRecordNoLock(Record record, String bucketName, boolean discardRecordAfter);
+
+  /**
+   * Emergency repair: recreates {@code record} at {@code position} in {@code bucket}, i.e. at the exact RID a
+   * deleted record used to hold, so existing references to that RID stay valid. Behind {@code RESTORE
+   * DOCUMENT/VERTEX/EDGE} and {@link GraphEngine#restoreVertexAt}.
+   * <p>
+   * {@link com.arcadedb.engine.LocalBucket#restoreRecordAtPosition} performs only the physical page write, exactly
+   * like bucket-level create/delete. Everything a create folds on top of that page write - the transaction's cached
+   * bucket record-count delta that {@code count(*)} reads (#6069), the transaction record cache, and the record's
+   * index entries (#6120) - is the caller's job, and having each RESTORE call site do it by hand is how both of
+   * those were missed. It lives here, next to {@code createRecordNoLock}, so there is one place to forget.
+   * <p>
+   * Follows {@code createRecordNoLock}'s transaction contract: it joins the caller's transaction, and on a database
+   * with {@code setAutoTransaction(true)} it wraps itself in an implicit one rather than throwing - RESTORE must not
+   * be the one statement that behaves differently from an INSERT for those callers. {@code record} must not already
+   * be persistent.
+   * <p>
+   * It deliberately does NOT apply two things a create does, because RESTORE is admin repair rather than user DML:
+   * {@code validate()}/default values (a mandatory-property check would block a structure-only shell restore exactly
+   * when the emergency repair is needed) and the create events (firing user-authored triggers during a repair is a
+   * far larger behavioural surface than recreating one record).
+   *
+   * @return the RID the record was restored at, always {@code bucket}'s file id at {@code position}
+   */
+  RID restoreRecord(Record record, LocalBucket bucket, long position);
 
   void updateRecord(Record record);
 

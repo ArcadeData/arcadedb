@@ -1114,6 +1114,87 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public RID restoreRecord(final Record record, final LocalBucket bucket, final long position) {
+    if (record.getIdentity() != null)
+      throw new IllegalArgumentException(
+          "Cannot restore record " + record.getIdentity() + " because it is already persistent");
+
+    if (mode == ComponentFile.MODE.READ_ONLY)
+      throw new DatabaseIsReadOnlyException("Cannot restore a record");
+
+    // Restoring into an infrastructure bucket would recreate a serializer payload blob as if it were a user record,
+    // corrupting the schema's accounting of which records are real - same reason createRecordNoLock refuses it.
+    if (bucket.getPurpose() != LocalBucket.Purpose.PRIMARY)
+      throw new IllegalArgumentException(
+          "Bucket '" + bucket.getName() + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be restored into");
+
+    // Auto-transaction parity with createRecordNoLock: on a database opened with setAutoTransaction(true) a plain
+    // INSERT wraps itself in a transaction, and RESTORE must not be the one statement that throws instead. Without
+    // it, both paths still fail identically outside a transaction (autoTransaction defaults to false).
+    // The implicit transaction is opened AND committed inside the SAME read lock the restore write holds, the way
+    // createRecord wraps all of createRecordNoLock. Committing after releasing it would leave a window - unique in
+    // this class - for an executeInWriteLock caller (drop(), close()) to interleave between the physical page write
+    // and the commit that persists it.
+    return executeInReadLock(() -> {
+      boolean success = false;
+      final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
+      try {
+        final RID restoredRid = restoreRecordInTransaction(record, bucket, position);
+        success = true;
+        return restoredRid;
+      } finally {
+        if (implicitTransaction) {
+          if (success)
+            wrappedDatabaseInstance.commit();
+          else
+            wrappedDatabaseInstance.rollback();
+        }
+      }
+    });
+  }
+
+  private RID restoreRecordInTransaction(final Record record, final LocalBucket bucket, final long position) {
+    final RID rid = bucket.restoreRecordAtPosition(position, record);
+
+    final TransactionContext transaction = getTransaction();
+    transaction.updateRecordInCache(record);
+    // #6069: restoreRecordAtPosition does the physical page write only, so fold the same +1 on the cached bucket
+    // record-count delta that count(*) reads and a normal create applies.
+    transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
+
+    // Same reason createRecordNoLock poisons it: a restored edge chunk or stripe directory is absent from the
+    // committed version of its page, so replaying this transaction's appends against that page at commit would
+    // target the wrong bytes. No current caller restores one - every RESTORE arm passes a document/vertex/edge
+    // shell - but this is a general Record-typed primitive on a shared interface, and a future caller should get
+    // the correct behaviour rather than a silent gap. (restoreRecordAtPosition already poisons the SLOT merge;
+    // this is the separate commutative edge-append merge.)
+    if (record instanceof MutableEdgeSegment || record instanceof StripeDirectory)
+      transaction.poisonEdgeAppendPage(record.getIdentity());
+
+    if (record instanceof MutableDocument doc) {
+      // The record did not exist before this transaction, so for a rollback it is a NEW record: keep it out of
+      // the reload loop and reset its identity to provisional (#4562, #4940) rather than leaving a dangling RID
+      // on the caller's object.
+      //
+      // Registered BEFORE indexing, matching createRecordNoLock's order: indexer.createDocument can throw inline
+      // (Index.put -> checkIsValid on a dropped/invalidated index, or convertKeys on a key it cannot coerce), and
+      // registering after would skip the rollback identity reset on exactly those paths. Note this is NOT the
+      // unique-constraint path - a duplicate key is detected at commit, by which point both calls have run.
+      transaction.registerNewRecord(record);
+
+      // #6120: the index entries. Without this the restored record is returned by a full scan but not by any
+      // index-resolved query, and a UNIQUE index never learns the key came back - so a later restore or insert
+      // could hand the same key to a second record unchallenged. Deliberately the same call createRecordNoLock
+      // makes: a restored record is indexed exactly like an inserted one, duplicate rejection included.
+      indexer.createDocument(doc, doc.getType(), bucket);
+    }
+
+    ((RecordInternal) record).unsetDirty();
+
+    return rid;
+  }
+
+  @Override
   public void updateRecord(final Record record) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");

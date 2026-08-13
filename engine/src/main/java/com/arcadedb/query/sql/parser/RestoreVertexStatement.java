@@ -73,7 +73,7 @@ public class RestoreVertexStatement extends SimpleExecStatement {
     RestoreStatementSupport.applyBody(shell, insertBody, context);
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
-    final RID restoredRid = RestoreStatementSupport.restoreRecordAndUpdateCount(database, bucket, rid.getPosition(), shell);
+    final RID restoredRid = database.restoreRecord(shell, bucket, rid.getPosition());
 
     final Set<RID> asSet = Set.of(restoredRid);
     final long[] counts = database.getGraphEngine().reconnectEdgesFromSurvivors(asSet, asSet);
