@@ -150,7 +150,7 @@ class EdgeAppendMergeConcurrentStressTest extends TestHelper {
     if (!errors.isEmpty()) {
       for (final Throwable e : errors)
         e.printStackTrace();
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
     }
 
     final int expected = THREADS * EDGES_PER_THREAD - removed.get();

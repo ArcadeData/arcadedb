@@ -173,8 +173,8 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges;
 
     if (!errors.isEmpty()) {
-      errors.getFirst().printStackTrace();
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      errors.get(0).printStackTrace();
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
     }
     assertThat(merges).as("edge-append rebase must actually have fired").isGreaterThan(0);
 

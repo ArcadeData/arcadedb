@@ -130,8 +130,8 @@ class EdgeAppendMergeMultiPageChunkTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty()) {
-      errors.getFirst().printStackTrace();
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      errors.get(0).printStackTrace();
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
     }
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges;
