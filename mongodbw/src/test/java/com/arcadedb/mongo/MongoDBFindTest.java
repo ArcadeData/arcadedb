@@ -88,7 +88,7 @@ public class MongoDBFindTest extends BaseGraphServerTest {
       client.getDatabase(getDatabaseName()).getCollection("LateType").find().into(all);
 
       assertThat(all).hasSize(1);
-      assertThat(all.getFirst().getInteger("value")).isEqualTo(42);
+      assertThat(all.get(0).getInteger("value")).isEqualTo(42);
     }
   }
 
