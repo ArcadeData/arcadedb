@@ -143,6 +143,13 @@ public class DoWhen implements CypherProcedure {
    * parses into a non-read-only statement, and an argument the parser could not resolve to a literal at all.
    * A blank branch runs nothing ({@link #execute} returns an empty stream for it) and a non-string literal is
    * rejected by {@code extractString} before any branch runs.
+   * <p>
+   * The parse here is deliberately recursive and it terminates. A branch string may itself contain
+   * {@code CALL apoc.do.when(...)}, so this reaches {@code SimpleCypherStatement}'s constructor, its
+   * {@code anyWriteProcedureCall}, and back into this method. Each step strictly consumes one level of the
+   * literal nesting written into the query text, which is finite and in practice shallow - every level has to
+   * escape the quoting of the level around it, so the text grows exponentially in the depth. The parser used is
+   * a fresh instance and holds no state shared with the parse in progress around it.
    */
   private static boolean branchMayWrite(final Object branchQuery) {
     if (branchQuery == null)

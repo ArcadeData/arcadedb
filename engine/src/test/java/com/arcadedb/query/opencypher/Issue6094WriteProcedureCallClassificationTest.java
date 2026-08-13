@@ -256,6 +256,22 @@ class Issue6094WriteProcedureCallClassificationTest {
     assertThat(isIdempotent("CALL apoc.do.when(false, 'RETURN 1 AS x', 1, {}) YIELD value RETURN value")).isTrue();
   }
 
+  /**
+   * A branch string may itself be a {@code do.when} call, so classification recurses: parse the branch, which
+   * builds a statement, which classifies its own CALL, which parses that call's branches. It terminates on the
+   * nesting actually written in the text, and the verdict must still travel all the way out - a write buried two
+   * levels down is a write.
+   */
+  @Test
+  void doWhenNestedInsideADoWhenBranchIsClassifiedThroughBothLevels() {
+    assertThat(isIdempotent(
+        "CALL apoc.do.when(true, \"CALL apoc.do.when(true, 'RETURN 1 AS x', '', {}) YIELD value RETURN value\", '', {}) "
+            + "YIELD value RETURN value")).isTrue();
+    assertThat(isIdempotent(
+        "CALL apoc.do.when(true, \"CALL apoc.do.when(true, 'CREATE (n:Person) RETURN n', '', {}) YIELD value RETURN value\", "
+            + "'', {}) YIELD value RETURN value")).isFalse();
+  }
+
   // ---------------------------------------------------------------------------------------------------------
   // Consequences
   // ---------------------------------------------------------------------------------------------------------
