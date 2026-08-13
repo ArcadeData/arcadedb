@@ -1463,7 +1463,11 @@ public class GraphDatabaseChecker {
       database.commit();
 
     } finally {
-      // Both kinds of repair this run performed: records removed, plus dangling adjacency entries pruned (#6128).
+      // Same sum as the vertex arm, and prunedDanglingEntries is structurally ZERO here: pruning happens in
+      // checkIncomingEdges/checkOutgoingEdges, which only checkVertices calls. Kept rather than simplified to
+      // autoFix.get() so the two arms report autoFix identically, and so an edge arm that one day does prune -
+      // #5777 is about exactly this arm's handling of endpoints - cannot silently stop counting it. Do not read
+      // it as evidence that this arm prunes today.
       stats.put("autoFix", autoFix.get() + report.prunedDanglingEntries);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
@@ -1540,6 +1544,13 @@ public class GraphDatabaseChecker {
      * alongside the records actually deleted, because both are repairs the run performed and {@code autoFix} is the
      * one number an operator reads to decide whether it did anything. Lives here rather than as another parameter
      * for the same reason the counters above do: every helper that prunes needs it and nothing else does.
+     * <p>
+     * So {@code autoFix} counts REPAIR ACTIONS, not corruption instances, and the difference is visible: one edge
+     * that is both listed in an adjacency chain and corrupt as a record contributes a prune AND a delete, because
+     * those are two distinct writes to two distinct pages. An operator reading the number as "how many broken
+     * things were there" will over-count; it answers "how many repairs did this run perform". The alternative -
+     * counting defects instead - would need the arms to agree on what one defect IS across a dangling entry, a
+     * corrupt record and a rebuilt chain, which they cannot without collapsing information the warnings carry.
      */
     long                        prunedDanglingEntries;
     final int                   maxWarnings;
