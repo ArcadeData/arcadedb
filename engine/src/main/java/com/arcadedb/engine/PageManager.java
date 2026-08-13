@@ -445,6 +445,12 @@ public class PageManager extends LockContext {
    * awaited, parking the asynchronous path on a BATCH boundary - a batch is one transaction's pages, so a snapshot
    * taken between batches can never hold half a transaction.</li>
    * </ol>
+   * <b>Nothing inside those locks may block on the filesystem</b>, for the same reason - which is why the shadow's
+   * spill directory is resolved, and the room on that volume read, back in step 1: {@code mkdirs} and
+   * {@code getUsableSpace} are unbounded blocking calls, and {@code arcadedb.pageSnapshotSpillPath} exists precisely
+   * to name a volume that is not the database's own. What is left inside is arithmetic over the t0 file list, plus
+   * the one {@code channel.size()} per file that is definitionally part of t0.
+   * <p>
    * <b>Everything in step 4 shares one hard {@link #SNAPSHOT_BARRIER_MAX_MILLIS} deadline</b>, because the lock it
    * holds is JVM-wide: the waits those three steps use elsewhere are uncapped (the in-flight batch wait polls until
    * a synchronous {@code file.write} returns) or capped only by the 60 s progress-based flush timeout, and either
@@ -526,6 +532,14 @@ public class PageManager extends LockContext {
               "Snapshot of database '%s': the flush queue did not drain within the timeout, the snapshot point may be behind the last committed transaction",
               null, database.getName());
 
+        // RESOLVE THE SHADOW'S SPILL LOCATION AND THE ROOM ON THAT VOLUME HERE, WHILE NOTHING IS LOCKED. BOTH ARE
+        // BLOCKING FILESYSTEM CALLS - isDirectory/mkdirs AND getUsableSpace - AND arcadedb.pageSnapshotSpillPath IS
+        // MEANT TO POINT AT ANOTHER VOLUME, WHICH IN A REAL DEPLOYMENT MAY WELL BE NETWORK-ATTACHED. NEITHER CAN BE
+        // BOUNDED BY A DEADLINE, SO RUNNING THEM UNDER THE JVM-WIDE LOCK WOULD REINTRODUCE EXACTLY THE STALL THE
+        // REST OF THIS BARRIER EXISTS TO REMOVE. WHAT STAYS INSIDE THE LOCK IS PURE ARITHMETIC OVER THE t0 FILE LIST
+        final File spillDirectory = snapshotSpillDirectory(database);
+        final long spillVolumeUsableSpace = spillDirectory.getUsableSpace();
+
         // ONE BUDGET FOR THE WHOLE LOCKED SECTION BELOW, NOT ONE PER STEP: WHAT HAS TO BE BOUNDED IS THE TOTAL TIME
         // THE JVM-WIDE LOCK IS HELD, AND THREE INDEPENDENT CEILINGS WOULD MULTIPLY IT
         final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
@@ -577,8 +591,8 @@ public class PageManager extends LockContext {
             // file dropped in the gap - which index compaction can do at any moment, taking no database lock - would
             // be physically deleted, because deferFileDrop only protects windows that are already published, and the
             // snapshot would then be holding a closed channel
-            return database.getFileManager()
-                .executeWithFileSetLocked(() -> registerSnapshot(buildSnapshot(database)));
+            return database.getFileManager().executeWithFileSetLocked(
+                () -> registerSnapshot(buildSnapshot(database, spillDirectory, spillVolumeUsableSpace)));
           } finally {
             unlock();
           }
@@ -668,7 +682,14 @@ public class PageManager extends LockContext {
     }
   }
 
-  private PageSnapshot buildSnapshot(final DatabaseInternal database) throws IOException {
+  /**
+   * @param spillDirectory          resolved by {@link #snapshotSpillDirectory}, and the usable space on it read,
+   *                                BEFORE the barrier took its locks: both are unbounded blocking filesystem calls
+   *                                on a volume the operator may have pointed elsewhere (#6125).
+   * @param spillVolumeUsableSpace  bytes still usable there at that moment, {@code <= 0} when it could not be read.
+   */
+  private PageSnapshot buildSnapshot(final DatabaseInternal database, final File spillDirectory,
+      final long spillVolumeUsableSpace) throws IOException {
     final List<PageSnapshot.SnapshotFile> files = new ArrayList<>();
     for (final ComponentFile file : database.getFileManager().getFiles()) {
       // A null slot is a dropped file id and a not-yet-opened one is the reserved slot of a file id that has been
@@ -694,9 +715,9 @@ public class PageManager extends LockContext {
 
     final ContextConfiguration configuration = database.getConfiguration();
     final long maxRAM = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM) * 1024 * 1024;
-    final File spillFile = new File(snapshotSpillDirectory(database),
+    final File spillFile = new File(spillDirectory,
         "snapshot-" + snapshotCounter.incrementAndGet() + "." + PageSnapshot.SHADOW_FILE_EXT);
-    final long maxSize = snapshotMaxShadowSize(configuration, files, spillFile.getParentFile());
+    final long maxSize = snapshotMaxShadowSize(configuration, files, spillVolumeUsableSpace);
 
     return new PageSnapshot(database, this, database.getTransactionManager().getLastTransactionId(), files,
         new PageShadow(spillFile, maxRAM, maxSize));
@@ -706,6 +727,10 @@ public class PageManager extends LockContext {
    * Where this window's shadow spills once its RAM budget is exhausted: {@code arcadedb.pageSnapshotSpillPath} when
    * set, the database directory otherwise (#6125). A shadow can grow to the size of the database, so on a volume
    * sized for the data alone it competes for space with the very files it is protecting.
+   * <p>
+   * Called from OUTSIDE the barrier's locks on purpose: {@code isDirectory} and {@code mkdirs} are blocking
+   * filesystem calls that no deadline can bound, and the whole point of this setting is to name a volume that is not
+   * the database's own - plausibly a network-attached one.
    */
   private File snapshotSpillDirectory(final DatabaseInternal database) {
     final String configured = database.getConfiguration().getValueAsString(GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH);
@@ -713,7 +738,10 @@ public class PageManager extends LockContext {
       return new File(database.getDatabasePath());
 
     final File directory = new File(configured.trim());
-    if (!directory.isDirectory() && !directory.mkdirs()) {
+    // THE isDirectory RE-CHECK IS NOT REDUNDANT: TWO WINDOWS OPENING AT ONCE AGAINST A NOT-YET-EXISTING DIRECTORY
+    // BOTH CALL mkdirs, AND THE LOSER GETS false FOR A DIRECTORY THAT NOW EXISTS. WITHOUT IT THAT WINDOW WOULD
+    // SPILL INTO THE DATABASE DIRECTORY INSTEAD, WHICH IS THE ONE THING THIS SETTING EXISTS TO AVOID
+    if (!directory.isDirectory() && !directory.mkdirs() && !directory.isDirectory()) {
       LogManager.instance().log(this, Level.WARNING,
           "Cannot use '%s' as the snapshot shadow spill directory (%s): falling back to the database directory", null,
           directory, GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.getKey());
@@ -735,9 +763,16 @@ public class PageManager extends LockContext {
    * The flat 1 GB default this replaces was measured to be undersized for what it protects: on a 128 MB database
    * under a flat-out writer the shadow reached 100% of the database size, so ANY fixed number is simply the database
    * size above which backups silently start falling back to throttling the writers.
+   * <p>
+   * Pure arithmetic, deliberately: the free space it works from was read before the barrier took its locks, because
+   * {@code getUsableSpace()} is a blocking filesystem call and this runs inside them.
+   *
+   * @param spillVolumeUsableSpace bytes usable on the spill volume, {@code <= 0} when it could not be read - which
+   *                               {@code File.getUsableSpace()} also answers for a path it cannot interrogate, so it
+   *                               is not an error signal and must not be read as "no room"
    */
   private static long snapshotMaxShadowSize(final ContextConfiguration configuration,
-      final List<PageSnapshot.SnapshotFile> files, final File spillDirectory) {
+      final List<PageSnapshot.SnapshotFile> files, final long spillVolumeUsableSpace) {
     final long configured = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE);
     if (configured >= 0)
       return configured * 1024 * 1024;
@@ -746,13 +781,12 @@ public class PageManager extends LockContext {
     for (final PageSnapshot.SnapshotFile file : files)
       databaseSize += file.size();
 
-    final long usable = spillDirectory.getUsableSpace();
-    // getUsableSpace() answers 0 when the path cannot be interrogated (it is not an error signal, and a 0 cap would
-    // mean "uncapped" here): fall back to the provable ceiling alone rather than to no cap at all
-    if (usable <= 0)
+    // WITH NO USABLE READING, FALL BACK TO THE PROVABLE CEILING ALONE RATHER THAN TO NO CAP AT ALL - A 0 CAP MEANS
+    // "UNCAPPED" TO THE SHADOW
+    if (spillVolumeUsableSpace <= 0)
       return databaseSize;
 
-    return Math.min(databaseSize, usable / SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR);
+    return Math.min(databaseSize, spillVolumeUsableSpace / SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR);
   }
 
   private PageSnapshot registerSnapshot(final PageSnapshot snapshot) {

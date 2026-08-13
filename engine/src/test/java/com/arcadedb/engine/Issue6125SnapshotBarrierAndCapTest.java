@@ -139,6 +139,43 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
   }
 
   /**
+   * The spill directory is created if it is not there yet, and a path that cannot be one degrades to the database
+   * directory instead of failing the backup. Both branches run BEFORE the barrier takes its locks (they are
+   * unbounded blocking filesystem calls), so they are also the reason the cap arithmetic that consumes them is pure.
+   */
+  @Test
+  void theSpillDirectoryIsCreatedOnDemandAndAnUnusableOneDegradesToTheDatabaseDirectory(@TempDir final Path tempDir)
+      throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM.setValue(0);
+
+    final File notYetThere = tempDir.resolve("nested/spill").toFile();
+    assertThat(notYetThere).doesNotExist();
+    GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.setValue(notYetThere.getAbsolutePath());
+
+    try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+      rewriteEveryRecord("created-on-demand");
+      assertThat(snapshot.getShadowSpilledBytes()).isPositive();
+      assertThat(shadowFilesIn(notYetThere)).as("the directory must have been created and used").isNotEmpty();
+    }
+
+    // A PLAIN FILE CANNOT BE A DIRECTORY, SO THIS EXERCISES THE FALLBACK. A MISCONFIGURED SPILL PATH MUST COST A
+    // WARNING AND THE OLD LOCATION, NEVER THE BACKUP ITSELF
+    final File notADirectory = tempDir.resolve("this-is-a-file").toFile();
+    assertThat(notADirectory.createNewFile()).isTrue();
+    GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.setValue(notADirectory.getAbsolutePath());
+
+    try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+      rewriteEveryRecord("fallen-back");
+      assertThat(snapshot.getStatus()).as("a misconfigured spill path must not break the window")
+          .isEqualTo(PageSnapshot.STATUS.ACTIVE);
+      assertThat(snapshot.getShadowSpilledBytes()).isPositive();
+      assertThat(shadowFilesIn(new File(db.getDatabasePath())))
+          .as("the shadow must have fallen back to the database directory").isNotEmpty();
+    }
+  }
+
+  /**
    * The property the whole barrier exists for, asserted end to end and on CONTENT rather than on a counter: a record
    * committed immediately before the window opens, while four threads commit continuously around it, must be
    * findable in the point-in-time image of the page files, and no barrier may report itself unable to prove the
