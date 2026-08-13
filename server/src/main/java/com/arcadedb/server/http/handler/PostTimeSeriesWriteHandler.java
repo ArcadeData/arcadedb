@@ -30,6 +30,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -129,146 +130,153 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
-    // Get precision from query parameter
-    final Deque<String> precisionParam = exchange.getQueryParameters().get("precision");
-    final Precision precision = precisionParam != null && !precisionParam.isEmpty()
-        ? Precision.fromString(precisionParam.getFirst())
-        : Precision.NANOSECONDS;
-
-    if (rawPayload == null || rawPayload.isBlank())
-      return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
-
-    // Parse line protocol
-    final List<Sample> samples = LineProtocolParser.parse(rawPayload, precision);
-    if (samples.isEmpty())
-      return new ExecutionResponse(204, "");
-
-    // Group by measurement, then append each group as ONE batch. Appending sample-by-sample would open a
-    // shard transaction per sample; on a Raft HA leader every one of those is a replicated quorum round
-    // trip, serialized behind the per-shard append lock, so ingest rate collapses to one sample per
-    // round trip. Grouping first keeps the cost proportional to the number of measurements, not samples.
-    // LinkedHashMap/LinkedHashSet preserve first-occurrence order, so the drop sets and their reported
-    // order stay identical to a straight pass over the samples.
-    final Set<String> unknownTypes = new LinkedHashSet<>();
-    final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
-    final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
-
-    for (final Sample sample : samples) {
-      final String measurement = sample.getMeasurement();
-
-      if (unknownTypes.contains(measurement) || nonTimeSeriesTypes.contains(measurement))
-        continue;
-
-      final MeasurementBatch batch = byMeasurement.get(measurement);
-      if (batch != null) {
-        batch.samples().add(sample);
-        continue;
-      }
-
-      if (!database.getSchema().existsType(measurement)) {
-        unknownTypes.add(measurement);
-        continue;
-      }
-
-      final DocumentType docType = database.getSchema().getType(measurement);
-      if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
-        nonTimeSeriesTypes.add(measurement);
-        continue;
-      }
-
-      final MeasurementBatch created = new MeasurementBatch(tsType, new ArrayList<>());
-      created.samples().add(sample);
-      byMeasurement.put(measurement, created);
-    }
-
-    int inserted = 0;
-    // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
-    // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
-    // shard writes by the time it returns. If a later measurement throws, the rollback here cannot undo
-    // the measurements already written - the same partial-write shape the 400 response below reports,
-    // now at measurement rather than sample granularity.
-    database.begin();
+    // Resolved once so the bookmark can be emitted in the finally below regardless of which return path is
+    // taken - including the partial-write 400, whose already-inserted samples are durable (issue #5866).
+    final HAReplicatedDatabase haDb = resolveHAReplicatedDatabase(database);
     try {
-      for (final MeasurementBatch batch : byMeasurement.values()) {
-        final TimeSeriesEngine engine = batch.type().getEngine();
-        final List<ColumnDefinition> columns = batch.type().getTsColumns();
-        final List<Sample> group = batch.samples();
-        final int count = group.size();
+      // Get precision from query parameter
+      final Deque<String> precisionParam = exchange.getQueryParameters().get("precision");
+      final Precision precision = precisionParam != null && !precisionParam.isEmpty()
+          ? Precision.fromString(precisionParam.getFirst())
+          : Precision.NANOSECONDS;
 
-        final long[] timestamps = new long[count];
-        final Object[][] columnValues = new Object[columns.size() - 1][count]; // exclude timestamp
+      if (rawPayload == null || rawPayload.isBlank())
+        return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
-        for (int s = 0; s < count; s++) {
-          final Sample sample = group.get(s);
-          timestamps[s] = sample.getTimestampMs();
+      // Parse line protocol
+      final List<Sample> samples = LineProtocolParser.parse(rawPayload, precision);
+      if (samples.isEmpty())
+        return new ExecutionResponse(204, "");
 
-          int colIdx = 0;
-          for (int i = 0; i < columns.size(); i++) {
-            final ColumnDefinition col = columns.get(i);
-            if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-              continue;
+      // Group by measurement, then append each group as ONE batch. Appending sample-by-sample would open a
+      // shard transaction per sample; on a Raft HA leader every one of those is a replicated quorum round
+      // trip, serialized behind the per-shard append lock, so ingest rate collapses to one sample per
+      // round trip. Grouping first keeps the cost proportional to the number of measurements, not samples.
+      // LinkedHashMap/LinkedHashSet preserve first-occurrence order, so the drop sets and their reported
+      // order stay identical to a straight pass over the samples.
+      final Set<String> unknownTypes = new LinkedHashSet<>();
+      final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
+      final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
 
-            Object value;
-            if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-              value = sample.getTags().get(col.getName());
-            else
-              value = sample.getFields().get(col.getName());
+      for (final Sample sample : samples) {
+        final String measurement = sample.getMeasurement();
 
-            columnValues[colIdx][s] = value;
-            colIdx++;
-          }
+        if (unknownTypes.contains(measurement) || nonTimeSeriesTypes.contains(measurement))
+          continue;
+
+        final MeasurementBatch batch = byMeasurement.get(measurement);
+        if (batch != null) {
+          batch.samples().add(sample);
+          continue;
         }
 
-        engine.appendBatch(timestamps, columnValues);
-        inserted += count;
-      }
-      database.commit();
-    } catch (final Exception e) {
-      database.rollback();
-      throw e;
-    }
+        if (!database.getSchema().existsType(measurement)) {
+          unknownTypes.add(measurement);
+          continue;
+        }
 
-    if (!unknownTypes.isEmpty())
-      LogManager.instance().log(this, Level.WARNING,
-          "Skipped line protocol samples for unknown timeseries type(s): %s", null, unknownTypes);
+        final DocumentType docType = database.getSchema().getType(measurement);
+        if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+          nonTimeSeriesTypes.add(measurement);
+          continue;
+        }
 
-    if (!nonTimeSeriesTypes.isEmpty())
-      LogManager.instance().log(this, Level.WARNING,
-          "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
-
-    // Any dropped sample is a partial write: matching InfluxDB, return 400 naming the dropped
-    // measurements (with written/dropped counts) even when some samples were inserted, so the client
-    // is not told 204 "all good" while data was silently discarded (issue #5036). The samples that did
-    // insert are already committed above - this is a partial-write signal, not a full rollback.
-    // `dropped` counts individual samples (samples.size() - inserted), consistent with `written`
-    // (inserted samples); every parsed sample is either inserted or skipped into one of the drop sets.
-    final int dropped = samples.size() - inserted;
-    if (dropped > 0) {
-      final StringBuilder msg = new StringBuilder("partial write: ");
-      if (!unknownTypes.isEmpty())
-        msg.append("unknown timeseries type(s): ").append(String.join(", ", unknownTypes))
-            .append(" (create the type first with CREATE TIMESERIES TYPE).");
-      if (!nonTimeSeriesTypes.isEmpty()) {
-        if (!unknownTypes.isEmpty())
-          msg.append(" ");
-        msg.append("non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes))
-            .append(" (only TIMESERIES types can receive line protocol data).");
+        final MeasurementBatch created = new MeasurementBatch(tsType, new ArrayList<>());
+        created.samples().add(sample);
+        byMeasurement.put(measurement, created);
       }
 
-      final JSONObject error = new JSONObject();
-      error.put("error", msg.toString());
-      final String correlationId = getCorrelationId(exchange);
-      if (correlationId != null && !correlationId.isEmpty())
-        error.put("requestId", correlationId);
-      error.put("written", inserted);
-      error.put("dropped", dropped);
+      int inserted = 0;
+      // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
+      // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
+      // shard writes by the time it returns. If a later measurement throws, the rollback here cannot undo
+      // the measurements already written - the same partial-write shape the 400 response below reports,
+      // now at measurement rather than sample granularity.
+      database.begin();
+      try {
+        for (final MeasurementBatch batch : byMeasurement.values()) {
+          final TimeSeriesEngine engine = batch.type().getEngine();
+          final List<ColumnDefinition> columns = batch.type().getTsColumns();
+          final List<Sample> group = batch.samples();
+          final int count = group.size();
+
+          final long[] timestamps = new long[count];
+          final Object[][] columnValues = new Object[columns.size() - 1][count]; // exclude timestamp
+
+          for (int s = 0; s < count; s++) {
+            final Sample sample = group.get(s);
+            timestamps[s] = sample.getTimestampMs();
+
+            int colIdx = 0;
+            for (int i = 0; i < columns.size(); i++) {
+              final ColumnDefinition col = columns.get(i);
+              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+                continue;
+
+              Object value;
+              if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+                value = sample.getTags().get(col.getName());
+              else
+                value = sample.getFields().get(col.getName());
+
+              columnValues[colIdx][s] = value;
+              colIdx++;
+            }
+          }
+
+          engine.appendBatch(timestamps, columnValues);
+          inserted += count;
+        }
+        database.commit();
+      } catch (final Exception e) {
+        database.rollback();
+        throw e;
+      }
+
       if (!unknownTypes.isEmpty())
-        error.put("unknownTypes", new JSONArray(unknownTypes));
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipped line protocol samples for unknown timeseries type(s): %s", null, unknownTypes);
+
       if (!nonTimeSeriesTypes.isEmpty())
-        error.put("nonTimeSeriesTypes", new JSONArray(nonTimeSeriesTypes));
-      return new ExecutionResponse(400, error.toString());
-    }
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
 
-    return new ExecutionResponse(204, "");
+      // Any dropped sample is a partial write: matching InfluxDB, return 400 naming the dropped
+      // measurements (with written/dropped counts) even when some samples were inserted, so the client
+      // is not told 204 "all good" while data was silently discarded (issue #5036). The samples that did
+      // insert are already committed above - this is a partial-write signal, not a full rollback.
+      // `dropped` counts individual samples (samples.size() - inserted), consistent with `written`
+      // (inserted samples); every parsed sample is either inserted or skipped into one of the drop sets.
+      final int dropped = samples.size() - inserted;
+      if (dropped > 0) {
+        final StringBuilder msg = new StringBuilder("partial write: ");
+        if (!unknownTypes.isEmpty())
+          msg.append("unknown timeseries type(s): ").append(String.join(", ", unknownTypes))
+              .append(" (create the type first with CREATE TIMESERIES TYPE).");
+        if (!nonTimeSeriesTypes.isEmpty()) {
+          if (!unknownTypes.isEmpty())
+            msg.append(" ");
+          msg.append("non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes))
+              .append(" (only TIMESERIES types can receive line protocol data).");
+        }
+
+        final JSONObject error = new JSONObject();
+        error.put("error", msg.toString());
+        final String correlationId = getCorrelationId(exchange);
+        if (correlationId != null && !correlationId.isEmpty())
+          error.put("requestId", correlationId);
+        error.put("written", inserted);
+        error.put("dropped", dropped);
+        if (!unknownTypes.isEmpty())
+          error.put("unknownTypes", new JSONArray(unknownTypes));
+        if (!nonTimeSeriesTypes.isEmpty())
+          error.put("nonTimeSeriesTypes", new JSONArray(nonTimeSeriesTypes));
+        return new ExecutionResponse(400, error.toString());
+      }
+
+      return new ExecutionResponse(204, "");
+    } finally {
+      emitCommitIndexBookmark(exchange, haDb);
+    }
   }
 }
