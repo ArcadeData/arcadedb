@@ -1048,6 +1048,11 @@ public class DatabaseChecker {
    * the warning says. Same shape as the COMPRESS caveat above, and the reason both are stated rather than left to
    * surprise someone.
    * <p>
+   * The SCAN always runs, and only the log line honours {@code verboseLevel}: the result key has to be truthful on
+   * every run, because a caller reading {@code unreferencedFiles} as empty must be able to conclude there are none
+   * rather than that the run was quiet. It is in-memory with no I/O, so running it unconditionally costs nothing
+   * worth gating.
+   * <p>
    * No progress step: it reads in-memory registries with no I/O, so it is over before a poller could observe it,
    * and giving it one would change the step plan every existing progress test asserts.
    */

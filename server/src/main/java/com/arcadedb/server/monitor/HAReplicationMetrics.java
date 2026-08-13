@@ -246,7 +246,10 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
       refresh.run(); // publish an initial (possibly empty) set immediately
 
     final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-      final Thread t = new Thread(r, "arcadedb-ha-follower-metrics");
+      // Named for what it drives rather than for the first thing that needed it: since #6144 the same tick also
+      // refreshes the per-database schema-instalment and unreferenced-file gauges, and a thread dump that still
+      // said "follower" would send whoever is debugging those to the wrong place.
+      final Thread t = new Thread(r, "arcadedb-ha-metrics-refresh");
       t.setDaemon(true);
       return t;
     });
