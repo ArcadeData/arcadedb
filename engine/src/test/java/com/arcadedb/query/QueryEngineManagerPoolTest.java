@@ -88,7 +88,7 @@ class QueryEngineManagerPoolTest {
   @AfterEach
   void poolMustNotBeLeftSaturated() throws Exception {
     final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-    final long callerThreadId = Thread.currentThread().threadId();
+    final long callerThreadId = Thread.currentThread().getId();
     final long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(WORKER_PIN_TIMEOUT_SECONDS);
 
     // Retried rather than judged on a single sample. A saturation test's finally releases the pinned
@@ -102,7 +102,7 @@ class QueryEngineManagerPoolTest {
         throw new AssertionError("pool left saturated: the canary was still being redirected to the caller thread after "
             + WORKER_PIN_TIMEOUT_SECONDS + "s, so a test leaked a pinned worker and poisoned the shared pool");
 
-      final Future<Long> canary = executor.submit(() -> Thread.currentThread().threadId());
+      final Future<Long> canary = executor.submit(() -> Thread.currentThread().getId());
       final long ranOnThreadId;
       try {
         ranOnThreadId = canary.get(remainingMs, TimeUnit.MILLISECONDS);
