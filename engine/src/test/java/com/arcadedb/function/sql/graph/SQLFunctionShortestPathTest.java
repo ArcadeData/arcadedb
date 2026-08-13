@@ -229,9 +229,9 @@ class SQLFunctionShortestPathTest {
 
       // expected: [a-rid, edge-rid, b-rid]
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(verts[0].getIdentity());
+      assertThat(result.get(0)).isEqualTo(verts[0].getIdentity());
       assertThat(result.get(1)).isEqualTo(edgeRid[0]);
-      assertThat(result.getLast()).isEqualTo(verts[1].getIdentity());
+      assertThat(result.get(result.size() - 1)).isEqualTo(verts[1].getIdentity());
     });
   }
 
@@ -264,9 +264,9 @@ class SQLFunctionShortestPathTest {
 
       // expected: [b-rid, edge-rid, a-rid]
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(verts[1].getIdentity());
+      assertThat(result.get(0)).isEqualTo(verts[1].getIdentity());
       assertThat(result.get(1)).isEqualTo(edgeRid[0]);
-      assertThat(result.getLast()).isEqualTo(verts[0].getIdentity());
+      assertThat(result.get(result.size() - 1)).isEqualTo(verts[0].getIdentity());
     });
   }
 
@@ -298,9 +298,9 @@ class SQLFunctionShortestPathTest {
 
       // expected: [b-rid, edge-rid, a-rid]
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(verts[1].getIdentity());
+      assertThat(result.get(0)).isEqualTo(verts[1].getIdentity());
       assertThat(result.get(1)).isEqualTo(edgeRid[0]);
-      assertThat(result.getLast()).isEqualTo(verts[0].getIdentity());
+      assertThat(result.get(result.size() - 1)).isEqualTo(verts[0].getIdentity());
     });
   }
 
