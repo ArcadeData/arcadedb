@@ -78,7 +78,7 @@ class Issue5269FileAccessRefreshIT {
       database.getSchema().createDocumentType("SecretType");
 
       final ServerSecurityDatabaseUser dbu = SECURITY.getUser("reader").getDatabaseUser(database);
-      final int firstBucketId = database.getSchema().getType("SecretType").getBuckets(false).getFirst().getFileId();
+      final int firstBucketId = database.getSchema().getType("SecretType").getBuckets(false).get(0).getFileId();
       assertThat(dbu.requestAccessOnFile(firstBucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
           .as("reader must be denied on the type's original bucket (mapped at type creation)").isFalse();
 
