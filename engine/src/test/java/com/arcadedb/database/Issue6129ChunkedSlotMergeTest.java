@@ -19,11 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.TestHelper;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue6129ChunkedSlotMergeTest extends TestHelper {
+class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
   private static final int THREADS            = 8;
   private static final int RECORDS_PER_THREAD = 5;
   private static final int ROUNDS             = 8;
@@ -626,56 +622,4 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
     return marker + "-" + "x".repeat(spilledPayloadSize + 1_500 * round - marker.length() - 1);
   }
 
-  /**
-   * Fills page 0 of a single-bucket type until a record no longer fits it: the next insert lands on another page, which
-   * shows up as a RID position that is not the previous one plus one (a new page restarts at a multiple of the page's
-   * slot count).
-   */
-  private RID fillFirstPage(final String typeName) {
-    final String filler = "f".repeat(8 * 1024);
-    RID previous = null;
-    for (int i = 0; i < 64; i++) {
-      final RID rid = database.newDocument(typeName).set("v", filler).save().getIdentity();
-      if (previous != null && rid.getPosition() != previous.getPosition() + 1)
-        return previous;
-      previous = rid;
-    }
-    throw new AssertionError("Page 0 of " + typeName + " did not fill up");
-  }
-
-  /**
-   * Leaves page 0 with a free tail of exactly ZERO bytes, the only page shape that still forces a record too small to
-   * host a chunk header into a placeholder (#6149). Inserts cannot produce it - the allocator always keeps a spare
-   * margin for growth - but a spill can: the head chunk of a record that outgrows its page while being the LAST
-   * record of that page takes the record's own footprint plus the whole free tail, so the page ends exactly at its
-   * maximum content size.
-   */
-  private void sealFirstPage(final String typeName) {
-    final RID[] last = new RID[1];
-    database.transaction(() -> last[0] = fillFirstPage(typeName));
-    database.transaction(() -> last[0].asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
-  }
-
-  /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
-  private Map<String, Object> bucketStats(final String typeName) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
-    final Map<String, Object>[] stats = new Map[1];
-    database.transaction(() -> stats[0] = bucket.check(0, false));
-    return stats[0];
-  }
-
-  private void checkDatabase() {
-    try (final ResultSet rs = database.command("SQL", "check database")) {
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        assertThat(numberProperty(row, "totalErrors")).as("check database: " + row.toJSON()).isZero();
-        assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
-      }
-    }
-  }
-
-  private static long numberProperty(final Result row, final String name) {
-    final Object value = row.getProperty(name);
-    return value == null ? 0L : ((Number) value).longValue();
-  }
 }

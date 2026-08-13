@@ -19,12 +19,8 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.TestHelper;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5279ConcurrentUpdateTest extends TestHelper {
+class Issue5279ConcurrentUpdateTest extends BucketPageLayoutTestSupport {
   private boolean savedSlotMerge;
 
   @BeforeEach
@@ -464,13 +460,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
           assertThat(owned[t][i].asDocument(true).getString("payload")).isEqualTo(payloadOf(t, i, rounds - 1));
     });
 
-    try (final ResultSet rs = database.command("SQL", "check database")) {
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        assertThat(numberProperty(row, "totalErrors")).as("check database: " + row.toJSON()).isZero();
-        assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
-      }
-    }
+    checkDatabase();
   }
 
   /**
@@ -487,12 +477,6 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
    */
   private static String inPagePayloadOf(final int threadId, final int record, final int round) {
     return "t" + threadId + "-r" + record + "-round" + round + "-" + "x".repeat(100 * (round + 1));
-  }
-
-  /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */
-  private static long numberProperty(final Result row, final String name) {
-    final Object value = row.getProperty(name);
-    return value == null ? 0L : ((Number) value).longValue();
   }
 
   /**
@@ -573,51 +557,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
     // The new content record is chunked, next to the one that sealed page 0.
     assertThat((Long) rebuilt.get("totalMultiPageRecords")).isEqualTo(2L);
 
-    try (final ResultSet rs = database.command("SQL", "check database")) {
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        assertThat(numberProperty(row, "totalErrors")).as("check database: " + row.toJSON()).isZero();
-        assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
-      }
-    }
-  }
-
-  /**
-   * Fills page 0 of a single-bucket type until a record no longer fits it: the next insert lands on another page,
-   * which shows up as a RID position that is not the previous one plus one (a new page restarts at a multiple of
-   * the page's slot count).
-   */
-  private RID fillFirstPage(final String typeName) {
-    final String filler = "f".repeat(8 * 1024);
-    RID previous = null;
-    for (int i = 0; i < 64; i++) {
-      final RID rid = database.newDocument(typeName).set("v", filler).save().getIdentity();
-      if (previous != null && rid.getPosition() != previous.getPosition() + 1)
-        return previous;
-      previous = rid;
-    }
-    throw new AssertionError("Page 0 of " + typeName + " did not fill up");
-  }
-
-  /**
-   * Leaves page 0 with a free tail of exactly ZERO bytes, the only page shape that still forces a record too small to
-   * host a chunk header into a placeholder (#6149). Inserts cannot produce it - the allocator always keeps a spare
-   * margin for growth - but a spill can: the head chunk of a record that outgrows its page while being the LAST
-   * record of that page takes the record's own footprint plus the whole free tail, so the page ends exactly at its
-   * maximum content size.
-   */
-  private void sealFirstPage(final String typeName) {
-    final RID[] last = new RID[1];
-    database.transaction(() -> last[0] = fillFirstPage(typeName));
-    database.transaction(() -> last[0].asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
-  }
-
-  /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
-  private Map<String, Object> bucketStats(final String typeName) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
-    final Map<String, Object>[] stats = new Map[1];
-    database.transaction(() -> stats[0] = bucket.check(0, false));
-    return stats[0];
+    checkDatabase();
   }
 
   /**

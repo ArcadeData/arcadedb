@@ -19,11 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.TestHelper;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue6149PlaceholderPrefersChunksTest extends TestHelper {
+class Issue6149PlaceholderPrefersChunksTest extends BucketPageLayoutTestSupport {
   /**
    * The issue itself: a 9-byte record on a page that cannot host its new 20 KB value, but has kilobytes of free tail.
    * Before the fix the slot became a placeholder POINTER; now it is grown by the handful of bytes a chunk header
@@ -292,64 +288,4 @@ class Issue6149PlaceholderPrefersChunksTest extends TestHelper {
     return "p" + index + "-" + "z".repeat(4 * 1024 + index);
   }
 
-  /**
-   * Fills page 0 of a single-bucket type until a record no longer fits it: the next insert lands on another page,
-   * which shows up as a RID position that is not the previous one plus one.
-   *
-   * @return the RID of the last record that landed on page 0.
-   */
-  private RID fillFirstPage(final String typeName) {
-    final String filler = "f".repeat(8 * 1024);
-    final RID[] result = new RID[1];
-    database.transaction(() -> {
-      RID previous = null;
-      for (int i = 0; i < 64; i++) {
-        final RID rid = database.newDocument(typeName).set("v", filler).save().getIdentity();
-        if (previous != null && rid.getPosition() != previous.getPosition() + 1) {
-          result[0] = previous;
-          return;
-        }
-        previous = rid;
-      }
-      throw new AssertionError("Page 0 of " + typeName + " did not fill up");
-    });
-    return result[0];
-  }
-
-  /**
-   * Leaves page 0 with a free tail of exactly ZERO bytes - the only shape that still forces a placeholder. Inserts
-   * cannot produce it ({@code getAvailableSpaceInPage} keeps a spare margin for growth), but a spill can: the head
-   * chunk of a record that outgrows its page while being the LAST record of that page is given the record's own
-   * footprint plus the whole free tail, so the page ends exactly at its maximum content size.
-   *
-   * @return the RID of the record that seals the page, so a test can free the tail again by deleting it.
-   */
-  private RID sealFirstPage(final String typeName) {
-    final RID last = fillFirstPage(typeName);
-    database.transaction(() -> last.asDocument(true).modify().set("v", "s".repeat(200 * 1024)).save());
-    return last;
-  }
-
-  /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
-  private Map<String, Object> bucketStats(final String typeName) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
-    final Map<String, Object>[] stats = new Map[1];
-    database.transaction(() -> stats[0] = bucket.check(0, false));
-    return stats[0];
-  }
-
-  private void checkDatabase() {
-    try (final ResultSet rs = database.command("SQL", "check database")) {
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        assertThat(numberProperty(row, "totalErrors")).as("check database: " + row.toJSON()).isZero();
-        assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
-      }
-    }
-  }
-
-  private static long numberProperty(final Result row, final String name) {
-    final Object value = row.getProperty(name);
-    return value == null ? 0L : ((Number) value).longValue();
-  }
 }
