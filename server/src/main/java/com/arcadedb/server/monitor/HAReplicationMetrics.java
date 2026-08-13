@@ -237,6 +237,11 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * Each refresh is guarded SEPARATELY, so a failing one cannot take its siblings' turn with it either.
    */
   private void startMultiGaugeRefresh(final Runnable... refreshes) {
+    // A second bindTo() on the same instance used to overwrite the field and leak the first scheduler's thread for
+    // the life of the process. Nothing calls it twice today - the binder is created per plugin start - but the leak
+    // was silent and this costs one line.
+    close();
+
     for (final Runnable refresh : refreshes)
       refresh.run(); // publish an initial (possibly empty) set immediately
 

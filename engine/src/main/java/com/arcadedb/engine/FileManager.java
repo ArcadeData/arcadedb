@@ -449,6 +449,13 @@ public class FileManager {
    * Records a file creation in the active session, in both of the forms a consumer can ask for it: the cumulative
    * {@link #recordedChanges} log and the consumable {@link #unshippedCreates} queue (issue #6142). Called from the
    * two {@code getOrCreateFile} overloads while they hold this monitor, so the two views cannot disagree.
+   * <p>
+   * EVERY CREATE MUST COME THROUGH HERE. A new creation path that appends to {@code recordedChanges} directly would
+   * leave the queue short by exactly that file, and the symptom is not local: the instalment that should have
+   * announced it never does, the followers never create it, and the pages that land in it afterwards are applied
+   * against a file only the leader has. Adding an entry to the cumulative log is therefore not a substitute for
+   * calling this method, and there is deliberately no other writer of either structure ({@link #dropFile} records
+   * the matching removal, and nothing outside this class mutates them).
    */
   private void recordCreate(final ComponentFile file) {
     if (recordedChanges == null)
