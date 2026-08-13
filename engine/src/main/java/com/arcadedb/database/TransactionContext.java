@@ -71,6 +71,32 @@ public class TransactionContext implements Transaction {
   // compactions across all indexes of a multi-indexed type; exhausting it signals a real concurrency problem.
   private static final int                           MAX_LOCK_MIGRATION_RETRIES = 10;
 
+  // The SHAPE a slot tracked by the disjoint-slot merge has (#6129), kept per slot in SlotRebaseBuffer: the replay
+  // checks the marker on the committed page against it, because the very same bytes mean a different record depending
+  // on the marker that precedes them.
+  /** A plain in-place record: {@code [varint size][content]}. The only shape the merge knew before #6129. */
+  public static final byte SLOT_KIND_RECORD                  = 0;
+  /**
+   * The CONTENT record a placeholder pointer points at, on its own page: {@code [varint -size][content]}. It is a
+   * single-slot write exactly like a plain record - the pointer on the owner page is not touched by an update that
+   * stays on this page - it just carries a negative size marker (#6129).
+   */
+  public static final byte SLOT_KIND_PLACEHOLDER_CONTENT     = 1;
+  /**
+   * The head chunk of a multi-page record: {@code [varint FIRST_CHUNK][int chunkSize][long nextChunk][chunkSize
+   * bytes]}. Its footprint on the page was fixed when the record spilled and never grows again, so an update rewrites
+   * only the bytes of its own slot; the tracked images are the chunk header plus its content, from the size field on
+   * (the marker itself never changes). Every other page of the chain is poisoned by its writer (#6129).
+   */
+  public static final byte SLOT_KIND_FIRST_CHUNK             = 2;
+  /**
+   * The one shape whose two images differ: the SPILL of a plain record that no longer fits its page into the head of
+   * a chunk chain. The pre-image is the plain record's content, the final image is the chunk header + content, and
+   * the replay checks that the committed slot still holds the plain record AND that the room the spill used (the
+   * record's own footprint, plus the free tail of the page when it is the last record) is still there (#6129).
+   */
+  public static final byte SLOT_KIND_RECORD_SPILLED_TO_CHUNK = 3;
+
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
   // Per-tx record-count delta per bucket. Single-threaded (HashMap was used, not ConcurrentHashMap),
@@ -112,6 +138,11 @@ public class TransactionContext implements Transaction {
   // non-rebasable write to it (delete, multi-page/placeholder record, a record spilled out of the page) poisons it.
   private       Map<Long, SlotRebaseBuffer>          slotRebaseByPage;
   private       LongHashSet                          slotRebasePoisonedPages;
+  // #6129: per updated record that outgrew its page, the fingerprint of its chunk chain PAST the head chunk, taken
+  // when the record was taken for update. The head chunk is the only part of such a record that lives on the page the
+  // slot merge replays, so this is what tells the commit that the rest of the record is still the one it read.
+  // Only records that really are chunk chains get an entry, so an ordinary update costs nothing but the marker read.
+  private       Map<RID, Long>                       chunkTailFingerprints;
   private       boolean                              slotMerge;
   // #5279: the insert slots this transaction claimed on EXISTING bucket pages, so concurrent inserts into the same
   // page get different slots (hence different RIDs) and commute instead of conflicting. Held in parallel primitive
@@ -464,8 +495,23 @@ public class TransactionContext implements Transaction {
 
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
-    if (updatedRecords.put(record.getIdentity(), record) == null)
-      ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
+    if (updatedRecords.put(record.getIdentity(), record) == null) {
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+      final MutablePage recordPage = bucket.fetchPageInTransaction(rid);
+      if (slotMerge) {
+        // #6129: same moment, and the same reason, as the page pinned right above - it is the view of the record this
+        // update is based on. For a record that outgrew its page only its HEAD chunk lives on that page, so the
+        // fingerprint of the rest of the chain is what lets the commit tell whether it is still updating the record it
+        // read. Without it the merge could replay the head chunk of a record somebody else has meanwhile rewritten
+        // past that chunk, and silently drop their write.
+        final long fingerprint = bucket.chunkChainTailFingerprint(rid, recordPage);
+        if (fingerprint != LocalBucket.NO_CHUNK_TAIL_FINGERPRINT) {
+          if (chunkTailFingerprints == null)
+            chunkTailFingerprints = new HashMap<>();
+          chunkTailFingerprints.put(rid, fingerprint);
+        }
+      }
+    }
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
   }
@@ -888,6 +934,28 @@ public class TransactionContext implements Transaction {
     // slots holding a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
     // transaction stays an insert (base absent) rather than being mistaken for an in-place update.
     private final Set<Integer>         insertedSlots = new HashSet<>();
+    // slot -> what SHAPE the two images above describe (#6129). Only present for the shapes that are not a plain
+    // in-place record: the replay has to check the committed marker against it, because the very same bytes mean a
+    // different record depending on the marker that precedes them. Absent entry = SLOT_KIND_RECORD, which is why this
+    // one map - unlike its neighbours above - is allocated only if a page ever holds a shape that is not that: on
+    // everything but a bucket of outgrown records, it never is.
+    private       Map<Integer, Byte>   kinds;
+
+    private byte kindOf(final int slot) {
+      if (kinds == null)
+        return SLOT_KIND_RECORD;
+      final Byte kind = kinds.get(slot);
+      return kind == null ? SLOT_KIND_RECORD : kind;
+    }
+
+    private void trackKind(final int slot, final byte kind) {
+      if (kind == SLOT_KIND_RECORD)
+        // The default: recording it would allocate the map for every page the merge tracks, to say nothing.
+        return;
+      if (kinds == null)
+        kinds = new HashMap<>();
+      kinds.put(slot, kind);
+    }
   }
 
   /**
@@ -895,6 +963,26 @@ public class TransactionContext implements Transaction {
    */
   public boolean isSlotMergeEnabled() {
     return slotMerge;
+  }
+
+  /**
+   * Tells whether the chunk chain of {@code rid} still holds, past its head chunk, exactly what it held when this
+   * transaction took the record for update (#6129). The head chunk is the only part of a multi-page record that lives
+   * on the page the slot merge would replay, so it is the only part the pre-image check can see; this is what closes
+   * the rest of the record. A {@code false} keeps the page on the ordinary retry path, which is what used to happen
+   * unconditionally.
+   *
+   * @param current the fingerprint of the chain as it is NOW, computed by the caller with the same function used at
+   *                {@link #addUpdatedRecord(Record)} time.
+   */
+  public boolean isChunkChainTailUnchanged(final RID rid, final long current) {
+    if (chunkTailFingerprints == null)
+      return false;
+    final Long captured = chunkTailFingerprints.get(rid);
+    // Absent means either that this update never went through addUpdatedRecord (no "before" to compare with) or that
+    // the record was not a chunk chain then, and {@code current} is NO_CHUNK_TAIL_FINGERPRINT when the walk could not
+    // complete: none of those may vouch for the tail.
+    return captured != null && captured == current;
   }
 
   /**
@@ -962,6 +1050,13 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    if (buffer.kindOf(slot) != SLOT_KIND_RECORD) {
+      // An insert replays as a plain record write into a free slot, so it cannot follow a write of another shape on
+      // the same slot (which would have left a pre-image the insert does not check). Cannot happen today - the
+      // writers of those shapes poison the page - and poisoning here keeps it that way.
+      poisonSlotRebasePage(fileId, pageNumber);
+      return;
+    }
     if (buffer.finalBody.containsKey(slot) && buffer.finalBody.get(slot) == null && !buffer.insertedSlots.contains(slot)) {
       // DELETE followed by an INSERT on the SAME slot within one transaction. LocalBucket.getFreeSpaceInPage never
       // hands back a slot this transaction has just freed (guarded by
@@ -984,9 +1079,12 @@ public class TransactionContext implements Transaction {
    * pre-image) so the rebase can distinguish a false page conflict (a concurrent write to another slot) from a
    * true one (a concurrent write to THIS record). No-op when the feature is off or the page is poisoned. The caller
    * passes the already-computed page/slot so no schema lookup happens per write.
+   *
+   * @param kind which of the three slot shapes the two images describe (see {@code SLOT_KIND_*}): the replay checks
+   *             the committed marker against it, so a slot whose shape changed under us is a conflict, not a merge.
    */
   public void trackRebasableUpdate(final int fileId, final int pageNumber, final int slot, final byte[] baseBody,
-      final byte[] finalBody) {
+      final byte[] finalBody, final byte kind) {
     if (!slotMerge)
       return;
     final long key = packPageKey(fileId, pageNumber);
@@ -995,6 +1093,15 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    if (buffer.finalBody.containsKey(slot) && buffer.kindOf(slot) != kind) {
+      // The slot CHANGED SHAPE inside this transaction (a record that spilled into a chunk chain, a placeholder
+      // rebuilt as a plain record): the pre-image kept for the first write no longer describes what the second one
+      // started from, so the two writes cannot be replayed as one. The writers of those transitions poison the page
+      // themselves - this is the belt that keeps a future one from silently mis-merging.
+      poisonSlotRebasePage(fileId, pageNumber);
+      return;
+    }
+    buffer.trackKind(slot, kind);
     final byte[] prevFinal = buffer.finalBody.put(slot, finalBody);
     long delta = finalBody.length - (prevFinal != null ? prevFinal.length : 0);
     // First-touch base wins: a second in-tx update must still diff against the COMMITTED pre-image, not the
@@ -1022,6 +1129,13 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    if (buffer.kindOf(slot) != SLOT_KIND_RECORD) {
+      // Only the delete of a PLAIN in-place record is replayable (#5569): the caller keeps every other shape
+      // poisoning its page, so reaching here after this transaction tracked the slot as a placeholder content or a
+      // chunk head means the two writes no longer describe one replayable change.
+      poisonSlotRebasePage(fileId, pageNumber);
+      return;
+    }
     // A null final image marks the slot as deleted. The image the slot held so far (if any) is released.
     final byte[] prevFinal = buffer.finalBody.put(slot, null);
     long delta = -(prevFinal != null ? prevFinal.length : 0);
@@ -1228,7 +1342,7 @@ public class TransactionContext implements Transaction {
       }
 
       final byte[] baseBody = insertedHere ? null : buffer.baseBody.get(slot);
-      if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody))
+      if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody, buffer.kindOf(slot)))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
     }
@@ -1309,6 +1423,7 @@ public class TransactionContext implements Transaction {
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
     slotRebaseTrackedBytes = 0;
+    chunkTailFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
@@ -1893,6 +2008,7 @@ public class TransactionContext implements Transaction {
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
     slotRebaseTrackedBytes = 0;
+    chunkTailFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
