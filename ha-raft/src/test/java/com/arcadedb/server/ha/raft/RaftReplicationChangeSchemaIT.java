@@ -19,13 +19,9 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.index.Index;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
@@ -33,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -45,9 +42,10 @@ import static org.assertj.core.api.Assertions.fail;
  */
 class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
 
-  private int                 leaderIndex;
-  private Database[]          databases;
-  private Map<String, String> schemaFiles;
+  private static final Pattern SCHEMA_VERSION_FIELD = Pattern.compile("\"schemaVersion\":\\d+");
+
+  private int                  leaderIndex;
+  private Map<Integer, String> schemaFiles;
 
   @Override
   protected int getServerCount() {
@@ -56,85 +54,133 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
 
   @Test
   void schemaChangesReplicate() throws Exception {
-    databases = new Database[getServerCount()];
     schemaFiles = new LinkedHashMap<>(getServerCount());
 
     // Find the leader - all schema changes must be issued on the leader for Raft replication
-    leaderIndex = -1;
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader()) {
-        leaderIndex = i;
-        break;
-      }
-    }
+    leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("Expected to find a Raft leader").isGreaterThanOrEqualTo(0);
 
+    // Every database handle below is resolved fresh inside withResyncRetry() rather than cached
+    // once up front in a databases[] array: a snapshot-reinstall resync on any follower closes and
+    // replaces its Database instance mid-test, and a handle cached before that point throws
+    // DatabaseIsClosedException on next use - the #5977 stale-handle pattern already documented on
+    // BaseRaftHATest and fixed the same way in RaftReplicationMaterializedViewIT (#5668).
+    //
+    // Each withResyncRetry() call below wraps exactly one mutating statement. withResyncRetry()
+    // retries its whole lambda from scratch on DatabaseIsClosedException, so a lambda bundling two
+    // mutations would risk re-running the first (already-applied) mutation against a fresh handle
+    // if only the second one hit the resync window - trading the stale-handle flake for a rarer
+    // "already exists" one. Keeping one statement per call keeps every retry idempotent.
+
+    // Preserve pre-existing per-server safety net: nothing before this point should leave a
+    // transaction open on any server, but commit defensively if one is, same as the original
+    // databases[] setup loop did before the withResyncRetry conversion.
     for (int i = 0; i < getServerCount(); i++) {
-      databases[i] = getServer(i).getDatabase(getDatabaseName());
-      if (databases[i].isTransactionActive())
-        databases[i].commit();
+      final int serverIndex = i;
+      withResyncRetry(serverIndex, db -> {
+        if (db.isTransactionActive())
+          db.commit();
+        return null;
+      });
     }
 
     // CREATE NEW TYPE on the leader
-    final VertexType type1 = databases[leaderIndex].getSchema().createVertexType("RaftRuntimeVertex0");
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().createVertexType("RaftRuntimeVertex0");
+      return null;
+    });
     testOnAllServers(database -> isInSchemaFile(database, "RaftRuntimeVertex0"));
 
     // CREATE NEW PROPERTY
-    type1.createProperty("nameNotFoundInDictionary", Type.STRING);
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().getType("RaftRuntimeVertex0").createProperty("nameNotFoundInDictionary", Type.STRING);
+      return null;
+    });
     testOnAllServers(database -> isInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // CREATE NEW BUCKET and add to type
-    final Bucket newBucket = databases[leaderIndex].getSchema().createBucket("raftNewBucket");
-    type1.addBucket(newBucket);
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().createBucket("raftNewBucket");
+      return null;
+    });
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().getType("RaftRuntimeVertex0").addBucket(db.getSchema().getBucketByName("raftNewBucket"));
+      return null;
+    });
     testOnAllServers(database -> isInSchemaFile(database, "raftNewBucket"));
 
     // Verify in-memory schema on all servers after replication
-    for (final Database database : databases)
-      assertThat(database.getSchema().existsBucket("raftNewBucket"))
-          .as("All servers should have bucket raftNewBucket in memory").isTrue();
+    for (int i = 0; i < getServerCount(); i++) {
+      final boolean exists = withResyncRetry(i, db -> db.getSchema().existsBucket("raftNewBucket"));
+      assertThat(exists).as("All servers should have bucket raftNewBucket in memory").isTrue();
+    }
 
     // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
     // Non-leader index: find any follower
     final int followerIndex = (leaderIndex + 1) % getServerCount();
-    assertThatThrownBy(() -> databases[followerIndex].getSchema().createVertexType("RaftRuntimeVertex1"))
-        .isInstanceOf(ServerIsNotTheLeaderException.class);
+    assertThatThrownBy(() -> withResyncRetry(followerIndex, db -> {
+      db.getSchema().createVertexType("RaftRuntimeVertex1");
+      return null;
+    })).isInstanceOf(ServerIsNotTheLeaderException.class);
     testOnAllServers(database -> isNotInSchemaFile(database, "RaftRuntimeVertex1"));
 
     // DROP PROPERTY
-    type1.dropProperty("nameNotFoundInDictionary");
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().getType("RaftRuntimeVertex0").dropProperty("nameNotFoundInDictionary");
+      return null;
+    });
     testOnAllServers(database -> isNotInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // REMOVE BUCKET FROM TYPE THEN DROP BUCKET
-    databases[leaderIndex].getSchema().getType("RaftRuntimeVertex0").removeBucket(
-        databases[leaderIndex].getSchema().getBucketByName("raftNewBucket"));
-    databases[leaderIndex].getSchema().dropBucket("raftNewBucket");
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().getType("RaftRuntimeVertex0").removeBucket(db.getSchema().getBucketByName("raftNewBucket"));
+      return null;
+    });
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().dropBucket("raftNewBucket");
+      return null;
+    });
     testOnAllServers(database -> isNotInSchemaFile(database, "raftNewBucket"));
 
     // Verify bucket is gone from all servers' in-memory schema
-    for (final Database database : databases)
-      assertThat(database.getSchema().existsBucket("raftNewBucket"))
-          .as("All servers should not have bucket raftNewBucket after drop").isFalse();
+    for (int i = 0; i < getServerCount(); i++) {
+      final boolean exists = withResyncRetry(i, db -> db.getSchema().existsBucket("raftNewBucket"));
+      assertThat(exists).as("All servers should not have bucket raftNewBucket after drop").isFalse();
+    }
 
     // DROP TYPE
-    databases[leaderIndex].getSchema().dropType("RaftRuntimeVertex0");
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().dropType("RaftRuntimeVertex0");
+      return null;
+    });
     testOnAllServers(database -> isNotInSchemaFile(database, "RaftRuntimeVertex0"));
 
     // CREATE INDEXED TYPE
-    final VertexType indexedType = databases[leaderIndex].getSchema().createVertexType("RaftIndexedVertex0");
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().createVertexType("RaftIndexedVertex0");
+      return null;
+    });
     testOnAllServers(database -> isInSchemaFile(database, "RaftIndexedVertex0"));
 
-    final Property indexedProperty = indexedType.createProperty("propertyIndexed", Type.INTEGER);
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().getType("RaftIndexedVertex0").createProperty("propertyIndexed", Type.INTEGER);
+      return null;
+    });
     testOnAllServers(database -> isInSchemaFile(database, "propertyIndexed"));
 
-    final Index idx = indexedProperty.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    final String indexName = withResyncRetry(leaderIndex, db ->
+        db.getSchema().getType("RaftIndexedVertex0").getProperty("propertyIndexed")
+            .createIndex(Schema.INDEX_TYPE.LSM_TREE, true).getName());
     testOnAllServers(database -> isInSchemaFile(database, "\"RaftIndexedVertex0\""));
     testOnAllServers(database -> isInSchemaFile(database, "\"indexes\":{\"RaftIndexedVertex0_"));
 
     // Write some data to the indexed type via the leader
-    databases[leaderIndex].transaction(() -> {
-      for (int i = 0; i < 10; i++)
-        databases[leaderIndex].newVertex("RaftIndexedVertex0").set("propertyIndexed", i).save();
+    withResyncRetry(leaderIndex, db -> {
+      db.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          db.newVertex("RaftIndexedVertex0").set("propertyIndexed", i).save();
+      });
+      return null;
     });
 
     // TODO: a follower's commit() call with duplicate unique-key values should throw
@@ -144,13 +190,18 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
     // indicating a production bug in the index replication path. Covered by RaftIndexOperations3ServersIT.
 
     // DROP INDEX
-    databases[leaderIndex].getSchema().dropIndex(idx.getName());
-    testOnAllServers(database -> isNotInSchemaFile(database, idx.getName()));
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().dropIndex(indexName);
+      return null;
+    });
+    testOnAllServers(database -> isNotInSchemaFile(database, indexName));
 
     // CREATE NEW TYPE IN TRANSACTION
-    databases[leaderIndex].transaction(() ->
-        assertThatCode(
-            () -> databases[leaderIndex].getSchema().createVertexType("RaftRuntimeVertexTx0")).doesNotThrowAnyException());
+    withResyncRetry(leaderIndex, db -> {
+      db.transaction(() ->
+          assertThatCode(() -> db.getSchema().createVertexType("RaftRuntimeVertexTx0")).doesNotThrowAnyException());
+      return null;
+    });
     testOnAllServers(database -> isInSchemaFile(database, "RaftRuntimeVertexTx0"));
   }
 
@@ -160,10 +211,11 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(i);
 
     schemaFiles.clear();
-    for (final Database database : databases) {
+    for (int i = 0; i < getServerCount(); i++) {
+      final int serverIndex = i;
       try {
-        final String result = callback.call(database);
-        schemaFiles.put(database.getDatabasePath(), result);
+        final String result = withResyncRetry(serverIndex, callback::call);
+        schemaFiles.put(serverIndex, result);
       } catch (final Exception e) {
         fail("", e);
       }
@@ -196,14 +248,26 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
   private void checkSchemaFilesAreTheSameOnAllServers() {
     assertThat(schemaFiles.size()).isEqualTo(getServerCount());
     String first = null;
-    for (final Map.Entry<String, String> entry : schemaFiles.entrySet()) {
+    for (final Map.Entry<Integer, String> entry : schemaFiles.entrySet()) {
+      final String normalized = normalizeSchemaVersion(entry.getValue());
       if (first == null)
-        first = entry.getValue();
+        first = normalized;
       else
-        assertThat(entry.getValue())
-            .withFailMessage("Server %s has different schema:\nFIRST:\n%s\n%s:\n%s",
-                entry.getKey(), first, entry.getKey(), entry.getValue())
+        assertThat(normalized)
+            .withFailMessage("Server %s has different schema:\nFIRST:\n%s\nServer %s:\n%s",
+                entry.getKey(), first, entry.getKey(), normalized)
             .isEqualTo(first);
     }
+  }
+
+  // "schemaVersion" (LocalSchema.versionSerial) is a per-node local write counter, incremented on every
+  // local saveConfiguration() call - including the extra local save a bootstrap snapshot-reinstall
+  // triggers on top of the copied schema file. It is not part of what Raft guarantees is identical
+  // across replicas, so two servers can legitimately hold byte-identical schema *content* while
+  // disagreeing on this one counter. Strip it before the cross-server equality check, or the check
+  // asserts an invariant the system never promised and fails intermittently depending on whether a
+  // resync happened to run during the test.
+  private static String normalizeSchemaVersion(final String schemaJson) {
+    return SCHEMA_VERSION_FIELD.matcher(schemaJson).replaceAll("\"schemaVersion\":0");
   }
 }
