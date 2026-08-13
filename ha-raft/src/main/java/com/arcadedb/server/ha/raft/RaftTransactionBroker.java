@@ -299,6 +299,19 @@ public class RaftTransactionBroker {
   }
 
   /**
+   * How much RAW payload a producer should accumulate before shipping it, for the two that build their WAL
+   * incrementally: {@code runWithCompactionReplication}, which chunks a compacted file as it serializes it, and
+   * {@code flushSchemaWalBufferIfFull}, which ships a schema session's buffered WAL in instalments (#6136).
+   * <p>
+   * Half the entry cap, so a chunk still fits after the per-WAL framing and the header the codec adds, with the
+   * floor keeping it usable when the cap is configured very small in a test. Shared rather than written twice
+   * because the two producers must not drift apart if the policy is ever retuned.
+   */
+  long walChunkBudget() {
+    return Math.max(1024L, maxEntrySize() / 2);
+  }
+
+  /**
    * Replicates an install-database entry so replicas create or snapshot-sync the database.
    */
   public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot) {

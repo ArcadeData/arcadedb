@@ -1262,6 +1262,14 @@ All three are always present, zero included. The first is named `removedRecords`
 because the result already carries `totalDeletedRecords` - records found in the DELETED state by the bucket scan,
 nothing to do with repair - and a key one word away from it would read as its non-total sibling.
 
+**One key pair is gone, which is a non-additive change to that map.** `GraphDatabaseChecker.checkVertices` used to
+put the `List<Edge>` of reconnected edges under `outEdgesToReconnect`/`inEdgesToReconnect`; both keys are removed
+and `reconnectedEdges` carries the count instead. Nothing in the repository read them, and they never reached the
+`CHECK DATABASE` command result at all - `DatabaseChecker.updateStats` folds only `Long` values - so an operator
+reading the SQL output never saw them. Only a caller invoking `checkVertices` directly as an API could have, and
+holding a fully materialised `Edge` per reconnected entry was one of the unbounded-heap sources this change exists
+to remove, so they are not coming back.
+
 ### The transaction-nesting headroom, measured rather than assumed
 
 #6136 also reported the FIX path as sitting exactly on `DatabaseContext`'s hardcoded limit of 3 nested

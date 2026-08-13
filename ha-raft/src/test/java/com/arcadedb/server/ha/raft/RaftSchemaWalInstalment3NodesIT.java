@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.index.Index;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Tag;
@@ -88,10 +89,9 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
 
     final DatabaseInternal leaderDb = wrapped(leaderIndex);
 
-    leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
-    leaderDb.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".name STRING");
-    leaderDb.command("sql",
-        "CREATE INDEX `" + INDEX_NAME + "` ON " + TYPE_NAME + "(name) NOTUNIQUE");
+    ddlOnLeader("CREATE DOCUMENT TYPE " + TYPE_NAME);
+    ddlOnLeader("CREATE PROPERTY " + TYPE_NAME + ".name STRING");
+    ddlOnLeader("CREATE INDEX `" + INDEX_NAME + "` ON " + TYPE_NAME + "(name) NOTUNIQUE");
 
     // A payload per record so the index build has real page volume to buffer.
     final String payload = "x".repeat(400);
@@ -159,9 +159,9 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
 
-    final DatabaseInternal leaderDb = wrapped(leaderIndex);
-    leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+    ddlOnLeader("CREATE DOCUMENT TYPE " + TYPE_NAME);
 
+    final DatabaseInternal leaderDb = wrapped(leaderIndex);
     final long instalmentsBefore = RaftReplicatedDatabase.getSchemaWalInstalmentsShipped();
     final int[] abandonedFileId = { -1 };
 
@@ -205,6 +205,30 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
   }
 
   // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Runs a DDL statement on whichever node is leader RIGHT NOW, re-resolving on the way.
+   * <p>
+   * {@code findLeaderIndex()} answers for the moment it is called, and an election can land between that answer and
+   * the next statement - schema changes must run on the leader, so the statement then fails with
+   * {@code ServerIsNotTheLeaderException} during setup and the test reports a flake that says nothing about what it
+   * is testing. It is a {@code NeedRetryException} precisely because retrying is the designed response.
+   */
+  private void ddlOnLeader(final String sql) throws InterruptedException {
+    ServerIsNotTheLeaderException lastError = null;
+    for (int attempt = 0; attempt < 20; attempt++) {
+      final int leaderIndex = findLeaderIndex();
+      if (leaderIndex >= 0)
+        try {
+          wrapped(leaderIndex).command("sql", sql);
+          return;
+        } catch (final ServerIsNotTheLeaderException e) {
+          lastError = e;
+        }
+      Thread.sleep(500);
+    }
+    throw lastError != null ? lastError : new IllegalStateException("no leader to run '" + sql + "' on");
+  }
 
   private DatabaseInternal wrapped(final int serverIndex) {
     return ((DatabaseInternal) getServerDatabase(serverIndex, getDatabaseName())).getWrappedDatabaseInstance();

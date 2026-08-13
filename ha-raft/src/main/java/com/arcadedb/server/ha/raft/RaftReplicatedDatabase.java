@@ -182,9 +182,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private static final class SchemaInstalmentState {
     /**
-     * Raw buffered bytes at which the next instalment goes out: half the maximum replicated entry size, the same
-     * expression {@code runWithCompactionReplication} uses for its own chunk budget. Zero until the session's
-     * FIRST buffered commit resolves it.
+     * Raw buffered bytes at which the next instalment goes out: {@code RaftTransactionBroker.walChunkBudget()},
+     * shared with the compaction path so the two cannot drift apart. Zero until the session's FIRST BUFFERED
+     * commit resolves it.
      * <p>
      * Resolved once, and lazily, for two different reasons. Once, because it cannot change under a session and the
      * alternative puts a {@code requireRaftServer().getTransactionBroker()} hop on every batch commit of an index
@@ -1806,11 +1806,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private void flushSchemaWalBufferIfFull() {
     final SchemaInstalmentState state = schemaInstalments.get();
-    if (state == null)
+    // bufferedBytes == 0 covers BOTH "nothing buffered yet" and "just flushed", and is tested before the threshold
+    // is resolved rather than after. This method runs after EVERY commit inside the session, including ones that
+    // buffered nothing (commit1stPhase returning null), so resolving first would call requireRaftServer() on a
+    // no-op commit - the case the lazy resolution exists to keep working while the Raft server is transiently
+    // absent. Zero bytes can never reach a positive threshold anyway, so nothing is lost by leaving early.
+    if (state == null || state.bufferedBytes == 0)
       return;
 
     if (state.threshold == 0)
-      state.threshold = Math.max(1024L, requireRaftServer().getTransactionBroker().maxEntrySize() / 2);
+      state.threshold = requireRaftServer().getTransactionBroker().walChunkBudget();
 
     if (state.bufferedBytes < state.threshold)
       return;
@@ -1966,7 +1971,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // #4743: chunked against the maximum replicated entry size so a big compacted index does not
       // produce one oversized Raft entry (which would make the leader step down, over and over).
       final RaftTransactionBroker broker = requireRaftServer().getTransactionBroker();
-      final long walChunkBudget = Math.max(1024L, broker.maxEntrySize() / 2);
+      final long walChunkBudget = broker.walChunkBudget();
       for (final int fileId : addFiles.keySet())
         appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas, 0);
 

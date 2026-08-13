@@ -504,7 +504,7 @@ public class GraphDatabaseChecker {
    * without paying a full type scan - the strict delete path in {@code GraphEngine.deleteVertex} names this
    * command in its error message.
    * <p>
-   * The edge-record scan inside {@link #reconnectEdges} is NOT scoped: rebuilding an adjacency means finding
+   * The edge-record scan inside {@link #collectEdgesToReconnect} is NOT scoped: rebuilding an adjacency means finding
    * every surviving edge that points at the vertex, and no index maps endpoints back to edges. So the scoped run
    * saves the vertex passes, not the edge pass.
    * <p>
@@ -651,14 +651,7 @@ public class GraphDatabaseChecker {
       database.commit();
 
     } finally {
-      // Both kinds of repair this run performed: records removed, plus dangling adjacency entries pruned (#6128).
-      stats.put("autoFix", autoFix.get() + report.prunedDanglingEntries);
-      // The breakdown behind that sum, plus the repair kind it never included (issue #6136, item 3). autoFix keeps
-      // its meaning for every existing reader; these say which arms it decomposes into and add the one that was
-      // only ever visible in the warnings.
-      stats.put("removedRecords", autoFix.get());
-      stats.put("prunedDanglingEntries", report.prunedDanglingEntries);
-      stats.put("reconnectedEdges", reconnectedEdges);
+      putRepairCounters(stats, autoFix.get(), report.prunedDanglingEntries, reconnectedEdges);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("duplicateLightEdges", report.duplicateLightEdges);
@@ -1607,14 +1600,9 @@ public class GraphDatabaseChecker {
       // checkIncomingEdges/checkOutgoingEdges, which only checkVertices calls. Kept rather than simplified to
       // autoFix.get() so the two arms report autoFix identically, and so an edge arm that one day does prune -
       // #5777 is about exactly this arm's handling of endpoints - cannot silently stop counting it. Do not read
-      // it as evidence that this arm prunes today.
-      stats.put("autoFix", autoFix.get() + report.prunedDanglingEntries);
-      // The same breakdown the vertex arm publishes (issue #6136, item 3), so a reader never has to know which arm
-      // produced a number. reconnectedEdges is structurally zero here for the reason prunedDanglingEntries is:
+      // it as evidence that this arm prunes today. reconnectedEdges is structurally zero here for the same reason:
       // this arm plans no re-links.
-      stats.put("removedRecords", autoFix.get());
-      stats.put("prunedDanglingEntries", report.prunedDanglingEntries);
-      stats.put("reconnectedEdges", 0L);
+      putRepairCounters(stats, autoFix.get(), report.prunedDanglingEntries, 0L);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("invalidLinks", report.invalidLinks);
@@ -1627,6 +1615,26 @@ public class GraphDatabaseChecker {
     }
 
     return stats;
+  }
+
+  /**
+   * Publishes what a repair run did: the {@code autoFix} total both arms have always reported, plus the per-kind
+   * breakdown behind it (issue #6136, item 3).
+   * <p>
+   * {@code autoFix} keeps its meaning for every existing reader - it is the count of repair ACTIONS, records
+   * removed plus dangling adjacency entries pruned - and the breakdown says which arms it decomposes into.
+   * {@code reconnectedEdges} is deliberately OUTSIDE that sum: a rebuilt chain has never contributed to
+   * {@code autoFix}, and folding it in would change every number a current run reports.
+   * <p>
+   * One helper rather than the same four lines in both arms, so a reader never has to check whether they still
+   * agree - the drift the {@code #5777} comment in {@code checkEdges} is guarding against from the other side.
+   */
+  private static void putRepairCounters(final Map<String, Object> stats, final long removedRecords,
+      final long prunedDanglingEntries, final long reconnectedEdges) {
+    stats.put("autoFix", removedRecords + prunedDanglingEntries);
+    stats.put("removedRecords", removedRecords);
+    stats.put("prunedDanglingEntries", prunedDanglingEntries);
+    stats.put("reconnectedEdges", reconnectedEdges);
   }
 
   /**
