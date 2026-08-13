@@ -487,12 +487,24 @@ class RaftGroupCommitter {
     // ReplicationDispatchedTimeoutException (indeterminate outcome, issue #4790): the originator then
     // marks the transaction for local apply instead of rolling back and origin-skipping a write the
     // rest of the cluster keeps - the silent leader divergence behind issue #4743's bulk-load churn.
+    //
+    // quorumTimeout is a deadline for the WHOLE batch, not a fresh budget per entry: every future was
+    // already dispatched above, concurrently, before this loop starts. Awaiting each one with its own
+    // full quorumTimeout turns a stalled quorum into a batch.size() x quorumTimeout stall on this
+    // single flusher thread instead of the intended quorumTimeout (issue #5848). Take one deadline
+    // before the loop and derive each wait from what remains of it. A negative/zero remaining budget
+    // is safe to pass straight through: CompletableFuture#get(timeout, unit) checks completion BEFORE
+    // looking at the timeout, so an already-replied entry still completes instantly instead of being
+    // punished for sharing a batch with slower entries; only a not-yet-done future turns that into an
+    // immediate TimeoutException.
+    final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(quorumTimeout);
     for (int i = 0; i < batch.size(); i++) {
       if (futures[i] == null)
         continue;
 
       try {
-        final RaftClientReply reply = futures[i].get(quorumTimeout, TimeUnit.MILLISECONDS);
+        final long remainingNanos = deadlineNanos - System.nanoTime();
+        final RaftClientReply reply = futures[i].get(remainingNanos, TimeUnit.NANOSECONDS);
         if (!reply.isSuccess()) {
           final String err = reply.getException() != null ? reply.getException().getMessage() : "replication failed";
           if (isClientClosed(reply.getException()))
