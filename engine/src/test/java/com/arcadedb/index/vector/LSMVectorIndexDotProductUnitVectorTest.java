@@ -69,7 +69,7 @@ class LSMVectorIndexDotProductUnitVectorTest extends TestHelper {
       assertThat(unitLengthWarnings(warnings))
           .as("a DOT_PRODUCT build over vectors that are not unit length must warn (captured=%s)", warnings)
           .hasSize(1);
-      assertThat(unitLengthWarnings(warnings).getFirst())
+      assertThat(unitLengthWarnings(warnings).get(0))
           .as("the warning must name the index and say what to do about it")
           .contains("DOT_PRODUCT").contains("COSINE").contains(index.getName());
 

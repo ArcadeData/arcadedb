@@ -327,8 +327,8 @@ class CheckDatabaseSinglePassTest extends TestHelper {
 
     final List<Emission> step = emissions.stream().filter(e -> e.stepName.equals(stepName)).toList();
     assertThat(step).as("emissions for step '%s'", stepName).isNotEmpty();
-    assertThat(step.getFirst().total).as("step '%s' must budget ONE pass per record", stepName).isEqualTo(records);
-    assertThat(step.getLast().done).as("step '%s' must reach its budget", stepName).isEqualTo(records);
+    assertThat(step.get(0).total).as("step '%s' must budget ONE pass per record", stepName).isEqualTo(records);
+    assertThat(step.get(step.size() - 1).done).as("step '%s' must reach its budget", stepName).isEqualTo(records);
   }
 
   private void createGraph(final int people) {

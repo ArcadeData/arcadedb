@@ -471,7 +471,7 @@ class Issue5725GhostEdgeOnAppendRaceTest extends TestHelper {
    * precisely between the two phases.
    */
   private BeforeRecordReadListener injectOnceOnFirstSrcRead(final Runnable injection) {
-    final int srcBucketId = database.getSchema().getType("Src").getBuckets(false).getFirst().getFileId();
+    final int srcBucketId = database.getSchema().getType("Src").getBuckets(false).get(0).getFileId();
     final Thread armedBy = Thread.currentThread();
     final boolean[] fired = new boolean[1];
     return rid -> {

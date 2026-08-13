@@ -73,7 +73,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   @Override
   public void close() {
     if (!steps.isEmpty())
-      steps.getLast().close();
+      steps.get(steps.size() - 1).close();
   }
 
   @Override

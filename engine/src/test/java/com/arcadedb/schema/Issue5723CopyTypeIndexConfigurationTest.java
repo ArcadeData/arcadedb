@@ -284,7 +284,7 @@ class Issue5723CopyTypeIndexConfigurationTest extends TestHelper {
   }
 
   private IndexInternal subIndexOf(final String typeName) {
-    return ((TypeIndex) indexOf(typeName)).getSubIndexes().getFirst();
+    return ((TypeIndex) indexOf(typeName)).getSubIndexes().get(0);
   }
 
   private FullTextIndexMetadata fullTextMetadataOf(final String typeName) {

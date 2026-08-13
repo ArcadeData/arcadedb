@@ -124,7 +124,7 @@ class Issue5694GhostEdgePruneCallerTransactionTest extends TestHelper {
     createSchema();
     final RID hubRID = createHub();
     final List<RID> edges = createEdges(hubRID, 3);
-    ghostEdgeRecord(edges.getFirst());
+    ghostEdgeRecord(edges.get(0));
 
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     database.begin();
@@ -140,7 +140,7 @@ class Issue5694GhostEdgePruneCallerTransactionTest extends TestHelper {
     database.transaction(() -> assertThat(inChunkEntries(hubRID))
         .as("the reference to the ghost must still be in the edge list: the caller's transaction is not the "
             + "place to repair the graph")
-        .contains(edges.getFirst()));
+        .contains(edges.get(0)));
   }
 
   private void assertPromotedToSuperNode(final RID hubRID) {
