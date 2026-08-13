@@ -448,9 +448,15 @@ public enum GlobalConfiguration {
       issue #4743. Above min(arcadedb.ha.appendBufferSize, arcadedb.ha.grpcMessageSizeMax) the entry is rejected with \
       ReplicatedEntryTooLargeException - not a NeedRetryException, so nothing retries it - and a repair that had run \
       for hours was rolled back whole. Counted in PAGES rather than records because pages are what the entry \
-      contains: how many records a repair touched says nothing about how many distinct pages it dirtied. The default \
-      of 256 stays well under the 32MB appendBufferSize default even at the 64KB bucket page size and before the WAL \
-      is compressed. Raising it lowers commit overhead on an embedded database at the cost of bigger transactions; 0 \
+      contains: how many records a repair touched says nothing about how many distinct pages it dirtied. Sizing the \
+      default of 256, without rounding the arithmetic in its own favour: 256 pages at the 64KB bucket default is \
+      16MB of PAGES, half the 32MB appendBufferSize default, which is margin rather than comfort once the soft \
+      ceiling below is taken into account. The entry itself is far smaller in practice - the WAL carries each \
+      page's CHANGED RANGE rather than the whole page, and is compressed on top of that, so a repair reconnecting \
+      1500 edges was measured well under 128KB - but that is a property of typical repairs, not a bound. If a \
+      deployment raises the bucket page size or lowers appendBufferSize, re-check this against BOTH rather than \
+      trusting the default. Raising it lowers commit overhead on an embedded database at the cost of bigger \
+      transactions; 0 \
       disables batching entirely, restoring the all-or-nothing repair semantics of a single transaction. \
       ALSO BOUNDS CHECK DATABASE ... COMPRESS, whose per-transaction page count was a hardcoded 10 - one Raft round \
       trip per ten pages, which on a replicated database of any size does not finish; COMPRESS keeps that 10 when \

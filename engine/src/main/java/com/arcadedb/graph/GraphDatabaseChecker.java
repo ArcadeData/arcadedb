@@ -318,6 +318,15 @@ public class GraphDatabaseChecker {
    * about how many distinct pages it dirtied. {@code TransactionContext.getModifiedPages()} counts both modified
    * and newly-created pages, which is exactly what the WAL will hold.
    * <p>
+   * PRECONDITION ON CALL SITES, because the budget silently stops bounding anything if it is broken: whatever a
+   * call site does between two checks must land in {@code modifiedPages}/{@code newPages} by the time the next
+   * check runs. Pending INDEX entries do not - {@code TransactionContext} keeps {@code indexChanges} separately
+   * (its own {@code hasChanges()} ORs the two) and materialises them into pages only in {@code commit1stPhase},
+   * which is after this check. Every current call site is safe on that count: a raw {@code bucket.deleteRecord}
+   * and an {@code getOrCreateEdgeList(...).add(...)} maintain no type index. A future call site that performs
+   * index-maintained updates would accumulate a backlog invisible here and could overshoot the budget by the whole
+   * of it, so bound that by entry count as well before adding one.
+   * <p>
    * WHAT THIS CHANGES, stated plainly because it is a semantic change and not only a performance one: a repair is
    * no longer all-or-nothing. A failure part-way through now leaves the earlier batches committed. That is the
    * behaviour a multi-type run has always had - {@code check()} commits each type before starting the next - so
