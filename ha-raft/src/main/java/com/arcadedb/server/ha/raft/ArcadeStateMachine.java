@@ -26,6 +26,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -1673,15 +1674,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Creates new database files for each entry in {@code filesToAdd} that does not already exist.
    * Skips files that are already registered in the file manager or already present on disk with
    * non-zero content (idempotent re-apply after a crash before the applied-index was persisted).
+   * <p>
+   * A file id already registered under a DIFFERENT name is not that same idempotent case: the two
+   * names cannot both be legitimate replays of this entry, so it means this node's file-id space has
+   * diverged from the leader's (issue #6063) - for example, a first-formation bootstrap peer whose
+   * local copy of a database was locally fresher than the cluster's chosen baseline and was therefore
+   * left alone by {@link #applyBootstrapFingerprintEntry} rather than reinstalled, but whose file ids
+   * were assigned by an independent history and can collide with a later, ordinary replicated schema
+   * change (e.g. the bucket a brand new type creates). Silently skipping such a collision would leave
+   * the new component never actually created on this node while the schema entry is merged anyway,
+   * so the type is later dropped from the schema silently on load ("Cannot find bucket ..., removing
+   * it from type configuration") - the type count divergence {@code DatabaseComparator} reports.
+   * Throwing here instead routes through {@link #applyWithRetry}'s generic {@code RuntimeException}
+   * handling straight to {@link #handleUnexpectedApplyError}, which quarantines the database and
+   * triggers a full snapshot resync - replacing this node's whole file-id space rather than trying to
+   * reconcile it entry by entry.
    */
   private void createNewFiles(final DatabaseInternal db, final Map<Integer, String> filesToAdd) throws IOException {
     final String databasePath = db.getDatabasePath();
     for (final Map.Entry<Integer, String> fileEntry : filesToAdd.entrySet()) {
       final int fileId = fileEntry.getKey();
       final String fileName = fileEntry.getValue();
-      // Skip if already registered in memory (idempotent)
-      if (db.getFileManager().existsFile(fileId))
+      // Skip if already registered in memory (idempotent) - but only when it is truly the same file
+      if (db.getFileManager().existsFile(fileId)) {
+        final String existingName = db.getFileManager().getFile(fileId).getFileName();
+        if (!existingName.equals(fileName))
+          throw new SchemaException(
+              "File id " + fileId + " for database '" + db.getName() + "' already names '" + existingName
+                  + "' locally but a committed schema change expects it to name '" + fileName
+                  + "' - this node's file-id space has diverged from the leader's");
         continue;
+      }
       // Skip if the file already exists on disk with data (crash-safe: the prior run created it)
       final File osFile = new File(databasePath + File.separator + fileName);
       if (osFile.exists() && osFile.length() > 0)
