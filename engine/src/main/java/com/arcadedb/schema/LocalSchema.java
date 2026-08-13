@@ -122,7 +122,11 @@ public class LocalSchema implements Schema {
   // ({@link #indexRenamed}), and an AUTOMATIC compaction runs on the async executor - a thread the writer whose
   // commit then has to see the new key never synchronizes with. Under a plain HashMap that publication rested on
   // whichever file lock the two sides happened to share, which is not a guarantee anyone should have to reconstruct.
-  // Null keys and values never reach it: every name is either generated here or guarded by the accessors below.
+  // Null keys and values never reach it, which is what makes the map type safe to change: the accessors below
+  // (existsIndex, getIndexByName, dropIndexInternal, checkIndexIsNotBackingAConstraint) null-guard the one name a
+  // caller supplies, and the three places that touch this field directly rather than through them pass a name that
+  // cannot be null - LocalDocumentType uses the TypeIndex's own name, and ManualIndexBuilder.create() rejects a null
+  // one up front, it being the only route by which a caller-supplied name reaches this map unmediated.
   protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
