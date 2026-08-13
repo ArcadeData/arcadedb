@@ -1551,15 +1551,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             removeFiles.put(c.fileId, c.fileName);
         }
 
-      // Reconcile what the instalments already shipped (issue #6136). A file an instalment created is not
-      // re-announced - it exists on the followers - and, more importantly, one the session went on to DROP has to
-      // be retired explicitly: FileManager.dropFile cancels the recorded create when both happen inside one
-      // session, so without this the file would survive on the followers and nowhere else.
       final SchemaInstalmentState instalmentState = schemaInstalments.get();
-      if (instalmentState != null && !instalmentState.shippedFiles.isEmpty())
-        for (final Map.Entry<Integer, String> shipped : instalmentState.shippedFiles.entrySet())
-          if (addFiles.remove(shipped.getKey()) == null)
-            removeFiles.putIfAbsent(shipped.getKey(), shipped.getValue());
+      reconcileInstalmentFiles(instalmentState, addFiles, removeFiles);
 
       if (schemaChanged)
         serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
@@ -1611,6 +1604,26 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
     }
+  }
+
+  /**
+   * Folds what the instalments already shipped into the session's FINAL file maps (issue #6136).
+   * <p>
+   * A file an instalment created is not re-announced - it exists on the followers already. More importantly, one
+   * the session went on to DROP has to be retired explicitly: {@code FileManager.dropFile} CANCELS the recorded
+   * create when both happen inside one session, so the final entry would say nothing about a file the followers
+   * were told to create, and it would survive there and nowhere else.
+   * <p>
+   * A no-op when no instalment went out, which is every session small enough to ship in one entry.
+   */
+  private static void reconcileInstalmentFiles(final SchemaInstalmentState state, final Map<Integer, String> addFiles,
+      final Map<Integer, String> removeFiles) {
+    if (state == null || state.shippedFiles.isEmpty())
+      return;
+
+    for (final Map.Entry<Integer, String> shipped : state.shippedFiles.entrySet())
+      if (addFiles.remove(shipped.getKey()) == null)
+        removeFiles.putIfAbsent(shipped.getKey(), shipped.getValue());
   }
 
   /**
