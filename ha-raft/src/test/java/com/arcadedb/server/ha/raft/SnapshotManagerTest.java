@@ -23,6 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -81,22 +82,16 @@ class SnapshotManagerTest {
     assertThat(checksums).containsOnlyKeys("database.json");
   }
 
+  /**
+   * #6125: {@code findDifferingFiles} was removed rather than wired into the resync path, and these two tests -
+   * its only callers - went with it. What replaces them is the guarantee that nothing has quietly grown a
+   * file-level diff back: resync ships the whole database, and an incremental one belongs at the page level
+   * (#6115), where the manifest and the page image come from the same window.
+   */
   @Test
-  void findDifferingFiles() {
-    final Map<String, Long> leader = Map.of("file1", 100L, "file2", 200L, "file3", 300L);
-    final Map<String, Long> replica = Map.of("file1", 100L, "file2", 999L);
-
-    final var differing = SnapshotManager.findDifferingFiles(leader, replica);
-
-    assertThat(differing).containsExactlyInAnyOrder("file2", "file3");
-  }
-
-  @Test
-  void noDifferencesWhenIdentical() {
-    final Map<String, Long> checksums = Map.of("a", 1L, "b", 2L);
-
-    final var differing = SnapshotManager.findDifferingFiles(checksums, checksums);
-
-    assertThat(differing).isEmpty();
+  void noFileLevelDiffHelperIsExposed() {
+    assertThat(SnapshotManager.class.getDeclaredMethods())
+        .as("a whole-file diff cannot be the basis of resync: see the class comment")
+        .noneMatch(method -> method.getName().toLowerCase(Locale.ROOT).contains("differing"));
   }
 }

@@ -95,12 +95,24 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
-  // #6116: the three snapshot totals below are exported as Prometheus counters together with the ones above, and
+  // #6116: the snapshot totals below are exported as Prometheus counters together with the ones above, and
   // carry the same never-decrease requirement. They are JVM-wide like the rest of this class, so a database close
   // does not step them back.
   private final    AtomicLong                        totalSnapshotWindowsOpened            = new AtomicLong();
   private final    AtomicLong                        totalSnapshotWindowsInvalidated       = new AtomicLong();
   private final    AtomicLong                        totalSnapshotPreImagesCaptured        = new AtomicLong();
+  // #6125: the two halves of totalSnapshotWindowsInvalidated. A cap breach is a TUNING problem (raise
+  // PAGE_SNAPSHOT_MAX_SIZE, or give the spill volume room); a capture failure is a DISK problem. Both force the
+  // consumer onto the writer-throttling fallback, so one summed counter cannot tell an operator which lever to pull.
+  private final    AtomicLong                        totalSnapshotWindowsOverflowed        = new AtomicLong();
+  private final    AtomicLong                        totalSnapshotWindowsFailed            = new AtomicLong();
+  // #6125: the t0 barrier is the one stall this design still has, so it is measured like a Micrometer timer - a
+  // count and a summed duration, whose ratio is the average, plus the high-water mark a percentile cannot be
+  // reconstructed from a scalar snapshot.
+  private final    AtomicLong                        totalSnapshotBarriers                 = new AtomicLong();
+  private final    AtomicLong                        totalSnapshotBarrierMillis            = new AtomicLong();
+  private final    AtomicLong                        maxSnapshotBarrierMillis              = new AtomicLong();
+  private final    AtomicLong                        totalSnapshotBarriersInexact          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
   // LIFECYCLE INVARIANT (#5070): flushThread and readCache are written only under LIFECYCLE_LOCK
   // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
@@ -139,8 +151,21 @@ public class PageManager extends LockContext {
    */
   private static final ThreadLocal<byte[]> PRE_IMAGE_BUFFER = ThreadLocal.withInitial(() -> new byte[0]);
 
-  /** How many times the t0 barrier retries when commits slip in between the full drain and the suspension. */
-  private static final int SNAPSHOT_BARRIER_ATTEMPTS = 3;
+  /**
+   * Hard wall-clock budget of the t0 barrier's second drain (#6125). That drain runs with the JVM-wide page-manager
+   * lock held and normally has nothing to do - the first, lock-free drain already emptied the pipeline - so this is
+   * not a wait it is expected to use. It is a ceiling on how long a wedged flush thread can hold the global lock,
+   * which the progress-based {@code arcadedb.flushAllPagesTimeout} (60 s by default) would not bound acceptably
+   * here: every committer of every database in the JVM waits behind it.
+   */
+  private static final long SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS = 2_000;
+
+  /**
+   * Fraction of the space still usable on the spill volume that the automatically sized shadow cap may claim
+   * (#6125). Half, so a window can never be the reason a database runs out of disk: what remains still covers the
+   * archive the backup is writing and the ordinary growth of the database while the window is open.
+   */
+  private static final int SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR = 2;
 
   @ExcludeFromJacocoGeneratedReport
   public interface ConcurrentPageAccessCallback {
@@ -182,7 +207,31 @@ public class PageManager extends LockContext {
     public long   snapshotOldestWindowMillis;
     public long   snapshotWindowsOpened;
     public long   snapshotWindowsInvalidated;
+    /**
+     * #6125: the two halves of {@link #snapshotWindowsInvalidated}. Overflowed means the shadow hit
+     * {@code arcadedb.pageSnapshotMaxSize} and is answered by raising it (or by giving the spill volume room, since
+     * the automatic sizing measures against the free space there); failed means a pre-image could not be read or
+     * written and is answered by looking at the disk. Both end in the same fallback, so the summed counter alone
+     * tells an operator that a backup started throttling the writers but not which lever to pull.
+     */
+    public long   snapshotWindowsOverflowed;
+    public long   snapshotWindowsFailed;
     public long   snapshotPreImagesCaptured;
+    /**
+     * #6125: the t0 barrier, measured the way a Micrometer timer is - a count and a summed duration, so
+     * {@code rate(millis)/rate(count)} is the average - plus the high-water mark, which a scalar snapshot cannot
+     * otherwise carry. The barrier is the ONLY stall left in the snapshot path, so it is the one reading that says
+     * whether opening a window is costing a writer anything.
+     */
+    public long   snapshotBarriers;
+    public long   snapshotBarrierMillis;
+    public long   snapshotBarrierMaxMillis;
+    /**
+     * Barriers that could not prove the flush pipeline was empty at t0, so the snapshot point may sit slightly
+     * behind the last committed transaction. Since #6125 no commit can cause this - the drain runs with the
+     * publication locks held - so a non-zero value means index compaction was feeding the pipeline throughout.
+     */
+    public long   snapshotBarriersInexact;
     /** See {@link PageManager#getDeferredRAMBytes()} (#6087): dirty pages held in RAM by a flush suspension. */
     public long   deferredRAMBytes;
   }
@@ -377,21 +426,37 @@ public class PageManager extends LockContext {
    * each by the mechanism that already serializes it:
    * <ol>
    * <li>{@link #waitAllPagesOfDatabaseAreFlushed} drains the flush queue COMPLETELY - not just the in-flight batch
-   * the way {@code waitForCurrentFlushToComplete} does - so every committed transaction is materialised. This is
-   * what makes t0 a genuine, recent transaction boundary and closes the recency gap the suspension left (a restored
-   * backup could be a few hundred transactions behind backup start).</li>
-   * <li>The flush thread is then suspended and its in-flight batch awaited, so the asynchronous path is parked on a
-   * BATCH boundary. That granularity matters: a batch is one transaction's pages, so a snapshot taken between
-   * batches can never hold half a transaction. If commits slipped in between the drain and the suspension, the
-   * suspension is released (which flushes what it deferred) and the barrier retries.</li>
+   * the way {@code waitForCurrentFlushToComplete} does. This first drain takes no lock: it is the bulk of the work
+   * and there is no reason to make anyone wait for it.</li>
    * <li>The transaction manager's apply lock is taken exclusively, which excludes Raft and crash-recovery replay -
    * the one writer that goes to the files outside the flush pipeline ({@code writePageWithLock}). Applies are
    * serialised on the state machine thread, so this is a single bounded wait.</li>
-   * <li>The global page-manager lock is taken, which excludes synchronous commits: they publish their pages from
-   * {@link #publishPages}, which holds it for the whole write.</li>
+   * <li>The global page-manager lock is taken. {@link #publishPages} holds it across BOTH halves of publication -
+   * the synchronous page write and the {@code scheduleFlushOfPages} enqueue - so from here on no committer can put
+   * a page on disk OR into the flush pipeline.</li>
+   * <li>The drain is repeated, now under those locks. It is guaranteed to converge because nothing can feed the
+   * pipeline any more, and it is normally instant because step 1 already emptied it; what it covers is exactly the
+   * commits that landed between step 1 and step 2. It is nevertheless bounded by a hard
+   * {@link #SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS} deadline rather than by the progress-based flush timeout, because the
+   * lock it holds is JVM-wide. The flush thread is then suspended and its in-flight batch awaited, parking the
+   * asynchronous path on a BATCH boundary - a batch is one transaction's pages, so a snapshot taken between batches
+   * can never hold half a transaction.</li>
    * </ol>
    * Only then are the per-file page counts and {@code lastTxId} recorded and the window published. Doing these in
    * the other order produces subtly torn snapshots that pass tests and fail in production.
+   * <p>
+   * <b>Why the drain moved inside the locks</b> (#6125). It used to run entirely outside them, which left a gap
+   * between "the pipeline is empty" and "the flush thread is suspended" that a commit could land in; the barrier
+   * coped by re-checking and retrying up to three times, and gave up after that with a t0 that could sit behind the
+   * last committed transaction. Measured, that retry - not the flush-queue depth, which stays near zero on an SSD -
+   * was the whole cost of the barrier: tens of milliseconds under sustained writes against 13 us idle. Holding the
+   * publication lock across the residual drain removes the gap by construction, so the barrier is single-pass and
+   * {@code lastTxId} is exact. Exactness matters beyond tidiness: the HA snapshot ship writes it into the
+   * {@code last-tx-id.bin} recency marker the follower is judged by, and a marker naming a transaction whose pages
+   * were still queued claims data the archive does not contain.
+   * <p>
+   * The obvious inversion does NOT work and must not be reintroduced: suspending the flush thread before the drain
+   * makes the drain unable to ever complete, because a suspended thread defers batches instead of writing them.
    * <p>
    * The tempting alternative - a shared read lock on the write path so the flip can take the exclusive side - is
    * correct but adds a permanent cost to the hot path that no flag can turn off. Do not.
@@ -410,6 +475,7 @@ public class PageManager extends LockContext {
    *     was deferred for it are released there.
    */
   public PageSnapshot openSnapshot(final DatabaseInternal database) {
+    final long beginTime = System.currentTimeMillis();
     try {
       return openSnapshotInternal(database);
     } catch (final PageSnapshotException e) {
@@ -419,7 +485,18 @@ public class PageManager extends LockContext {
       throw new PageSnapshotException("Interrupted while opening a snapshot of database '" + database.getName() + "'", e);
     } catch (final Exception e) {
       throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName() + "'", e);
+    } finally {
+      // #6125: TIMED EVEN WHEN THE BARRIER THROWS - A BARRIER THAT FAILS SLOWLY IS EXACTLY AS MUCH OF A STALL AS ONE
+      // THAT SUCCEEDS SLOWLY, AND ITS CONSUMER STILL FALLS BACK TO THE PATH THAT THROTTLES WRITERS
+      recordSnapshotBarrier(System.currentTimeMillis() - beginTime);
     }
+  }
+
+  /** Feeds the timer over the t0 barrier: a count, a summed duration and the high-water mark (#6125). */
+  private void recordSnapshotBarrier(final long elapsedMillis) {
+    totalSnapshotBarriers.incrementAndGet();
+    totalSnapshotBarrierMillis.addAndGet(elapsedMillis);
+    maxSnapshotBarrierMillis.accumulateAndGet(elapsedMillis, Math::max);
   }
 
   private PageSnapshot openSnapshotInternal(final DatabaseInternal database) throws IOException, InterruptedException {
@@ -431,44 +508,43 @@ public class PageManager extends LockContext {
     synchronized (snapshotBarrierLock(database)) {
       boolean suspended = false;
       try {
-        for (int attempt = 1; ; ++attempt) {
-          if (!waitAllPagesOfDatabaseAreFlushed(database))
-            LogManager.instance().log(this, Level.WARNING,
-                "Snapshot of database '%s': the flush queue did not drain within the timeout, the snapshot point may be behind the last committed transaction",
-                null, database.getName());
-
-          thread.setSuspended(database, true);
-          suspended = true;
-          thread.waitForCurrentFlushToComplete(database);
-
-          if (!thread.hasPendingPagesOfDatabase(database))
-            // CLEAN: THE QUEUE DRAINED AND STAYED DRAINED ACROSS THE SUSPENSION, SO t0 IS A GENUINE, CURRENT
-            // TRANSACTION BOUNDARY
-            break;
-
-          if (attempt >= SNAPSHOT_BARRIER_ATTEMPTS) {
-            // GAVE UP: SUSTAINED WRITE PRESSURE KEPT LANDING COMMITS BETWEEN THE DRAIN AND THE SUSPENSION. THE
-            // SNAPSHOT IS STILL CONSISTENT - IT IS TAKEN ON A BATCH BOUNDARY EITHER WAY - JUST AS SLIGHTLY BEHIND
-            // THE LAST COMMIT AS THE SUSPEND-AND-FREEZE PATH ALWAYS WAS. LOGGED BECAUSE "t0 IS A REAL TRANSACTION
-            // BOUNDARY" IS ONE OF THIS DESIGN'S CLAIMS, AND THE DEGRADED CASE MUST BE OBSERVABLE RATHER THAN ONLY
-            // INFERABLE FROM BEHAVIOUR
-            LogManager.instance().log(this, Level.WARNING,
-                "Snapshot of database '%s': the flush pipeline still had pending pages after %d barrier attempts, so the snapshot point may be slightly behind the last committed transaction. Sustained write pressure, not an error",
-                null, database.getName(), attempt);
-            break;
-          }
-
-          // COMMITS LANDED BETWEEN THE DRAIN AND THE SUSPENSION. RELEASING THE SUSPENSION FLUSHES WHAT IT DEFERRED,
-          // SO THE RETRY STARTS FROM A CLEANER PIPELINE
-          thread.setSuspended(database, false);
-          suspended = false;
-        }
+        // STEP 1: THE BULK DRAIN, DELIBERATELY OUTSIDE EVERY LOCK. IT IS THE LONG PART, AND MAKING COMMITTERS WAIT
+        // FOR IT WOULD BE THE STALL THIS DESIGN EXISTS TO REMOVE
+        if (!waitAllPagesOfDatabaseAreFlushed(database))
+          LogManager.instance().log(this, Level.WARNING,
+              "Snapshot of database '%s': the flush queue did not drain within the timeout, the snapshot point may be behind the last committed transaction",
+              null, database.getName());
 
         final ReentrantReadWriteLock applyLock = database.getTransactionManager().getApplyLock();
         applyLock.writeLock().lock();
         try {
           lock();
           try {
+            // STEP 2: THE RESIDUAL DRAIN, WITH PUBLICATION EXCLUDED. publishPages HOLDS THIS SAME LOCK ACROSS BOTH
+            // THE SYNCHRONOUS PAGE WRITE AND THE FLUSH ENQUEUE, SO NOTHING CAN FEED THE PIPELINE WHILE WE HOLD IT
+            // AND THIS CONVERGES BY CONSTRUCTION. IT COVERS EXACTLY THE COMMITS THAT LANDED SINCE STEP 1, WHICH IS
+            // WHY THE RETRY LOOP OF #6075 IS GONE (#6125)
+            if (!thread.waitPendingPagesOfDatabaseUntil(database, SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS))
+              LogManager.instance().log(this, Level.WARNING,
+                  "Snapshot of database '%s': the flush pipeline did not settle within %d ms under the publication lock, the snapshot point may be behind the last committed transaction",
+                  null, database.getName(), SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS);
+
+            thread.setSuspended(database, true);
+            suspended = true;
+            thread.waitForCurrentFlushToComplete(database);
+
+            if (thread.hasPendingPagesOfDatabase(database)) {
+              // NO COMMIT CAN CAUSE THIS ANY MORE, SO THE ONLY REMAINING FEEDER IS INDEX COMPACTION, WHICH SCHEDULES
+              // ASYNCHRONOUS WRITES WITHOUT GOING THROUGH publishPages. THOSE ARE HARMLESS FOR CONSISTENCY - THEY GO
+              // TO PAGES BEYOND THE t0 PAGE COUNT OF A FILE BEING BUILT, AND ANY THAT DID NOT WOULD BE SHADOWED LIKE
+              // ANY OTHER WRITE - BUT THEY DO MEAN THE PIPELINE IS NOT PROVABLY EMPTY, SO SAY SO RATHER THAN LET AN
+              // OPERATOR INFER IT FROM BEHAVIOUR
+              totalSnapshotBarriersInexact.incrementAndGet();
+              LogManager.instance().log(this, Level.FINE,
+                  "Snapshot of database '%s': the flush pipeline still holds pages no committer can have queued (index compaction), so the snapshot point may be slightly behind the last committed transaction",
+                  null, database.getName());
+            }
+
             // LIST THE FILES AND PUBLISH THE WINDOW AS ONE ATOMIC STEP AGAINST FileManager.dropFile. Without this a
             // file dropped in the gap - which index compaction can do at any moment, taking no database lock - would
             // be physically deleted, because deferFileDrop only protects windows that are already published, and the
@@ -590,12 +666,65 @@ public class PageManager extends LockContext {
 
     final ContextConfiguration configuration = database.getConfiguration();
     final long maxRAM = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM) * 1024 * 1024;
-    final long maxSize = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE) * 1024 * 1024;
-    final File spillFile = new File(database.getDatabasePath(),
+    final File spillFile = new File(snapshotSpillDirectory(database),
         "snapshot-" + snapshotCounter.incrementAndGet() + "." + PageSnapshot.SHADOW_FILE_EXT);
+    final long maxSize = snapshotMaxShadowSize(configuration, files, spillFile.getParentFile());
 
     return new PageSnapshot(database, this, database.getTransactionManager().getLastTransactionId(), files,
         new PageShadow(spillFile, maxRAM, maxSize));
+  }
+
+  /**
+   * Where this window's shadow spills once its RAM budget is exhausted: {@code arcadedb.pageSnapshotSpillPath} when
+   * set, the database directory otherwise (#6125). A shadow can grow to the size of the database, so on a volume
+   * sized for the data alone it competes for space with the very files it is protecting.
+   */
+  private File snapshotSpillDirectory(final DatabaseInternal database) {
+    final String configured = database.getConfiguration().getValueAsString(GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH);
+    if (configured == null || configured.isBlank())
+      return new File(database.getDatabasePath());
+
+    final File directory = new File(configured.trim());
+    if (!directory.isDirectory() && !directory.mkdirs()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot use '%s' as the snapshot shadow spill directory (%s): falling back to the database directory", null,
+          directory, GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.getKey());
+      return new File(database.getDatabasePath());
+    }
+    return directory;
+  }
+
+  /**
+   * The cap on this window's shadow, in bytes (#6125).
+   * <p>
+   * A positive {@code arcadedb.pageSnapshotMaxSize} is an absolute number of MB and 0 means uncapped, both unchanged.
+   * The default -1 sizes it here instead, from the two quantities that actually bound the shadow:
+   * <ul>
+   * <li>the t0 size of the page files, which the shadow provably cannot exceed - it holds ONE pre-image per page that
+   * existed at t0, and pages appended after t0 need none (challenge C7);</li>
+   * <li>half the space still usable on the spill volume, so a window can never be the reason the disk fills.</li>
+   * </ul>
+   * The flat 1 GB default this replaces was measured to be undersized for what it protects: on a 128 MB database
+   * under a flat-out writer the shadow reached 100% of the database size, so ANY fixed number is simply the database
+   * size above which backups silently start falling back to throttling the writers.
+   */
+  private static long snapshotMaxShadowSize(final ContextConfiguration configuration,
+      final List<PageSnapshot.SnapshotFile> files, final File spillDirectory) {
+    final long configured = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE);
+    if (configured >= 0)
+      return configured * 1024 * 1024;
+
+    long databaseSize = 0;
+    for (final PageSnapshot.SnapshotFile file : files)
+      databaseSize += file.size();
+
+    final long usable = spillDirectory.getUsableSpace();
+    // getUsableSpace() answers 0 when the path cannot be interrogated (it is not an error signal, and a 0 cap would
+    // mean "uncapped" here): fall back to the provable ceiling alone rather than to no cap at all
+    if (usable <= 0)
+      return databaseSize;
+
+    return Math.min(databaseSize, usable / SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR);
   }
 
   private PageSnapshot registerSnapshot(final PageSnapshot snapshot) {
@@ -1041,7 +1170,13 @@ public class PageManager extends LockContext {
     stats.pagesEvicted = pagesEvicted.get();
     stats.snapshotWindowsOpened = totalSnapshotWindowsOpened.get();
     stats.snapshotWindowsInvalidated = totalSnapshotWindowsInvalidated.get();
+    stats.snapshotWindowsOverflowed = totalSnapshotWindowsOverflowed.get();
+    stats.snapshotWindowsFailed = totalSnapshotWindowsFailed.get();
     stats.snapshotPreImagesCaptured = totalSnapshotPreImagesCaptured.get();
+    stats.snapshotBarriers = totalSnapshotBarriers.get();
+    stats.snapshotBarrierMillis = totalSnapshotBarrierMillis.get();
+    stats.snapshotBarrierMaxMillis = maxSnapshotBarrierMillis.get();
+    stats.snapshotBarriersInexact = totalSnapshotBarriersInexact.get();
     stats.deferredRAMBytes = getDeferredRAMBytes();
     collectSnapshotGauges(stats);
     return stats;
@@ -1082,9 +1217,17 @@ public class PageManager extends LockContext {
       stats.snapshotOldestWindowMillis = Math.max(0L, now - oldestOpenedOn);
   }
 
-  /** Counts a window that lost its point in time (cap breach or I/O error): the fallback-path early warning. */
-  void incrementSnapshotWindowsInvalidated() {
+  /**
+   * Counts a window that lost its point in time: the fallback-path early warning. The total is kept alongside the
+   * per-reason split (#6125) rather than derived from it, so a future invalidation reason that forgets to extend the
+   * split still shows up in the total an operator alerts on.
+   */
+  void incrementSnapshotWindowsInvalidated(final PageSnapshot.STATUS reason) {
     totalSnapshotWindowsInvalidated.incrementAndGet();
+    if (reason == PageSnapshot.STATUS.OVERFLOWED)
+      totalSnapshotWindowsOverflowed.incrementAndGet();
+    else if (reason == PageSnapshot.STATUS.FAILED)
+      totalSnapshotWindowsFailed.incrementAndGet();
   }
 
   public void removePageFromCache(final PageId pageId) {
