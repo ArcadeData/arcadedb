@@ -28,6 +28,7 @@ import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.responses.ApiResponses;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Documents the routes contributed by server plugins rather than by {@code HttpServer} itself: the
@@ -54,6 +55,27 @@ import java.util.List;
  * specification, which needs no new dependency because the assertion can compare plain path strings.
  */
 public class PluginApiSpec implements OpenApiContributor {
+
+  /**
+   * The Raft high-availability cluster management and snapshot routes {@code RaftHAPlugin}
+   * registers, mirrored here because that module cannot declare its own (see the class Javadoc
+   * above). Verified against the plugin's actual {@code registerAPI} output by
+   * {@code RaftHAPluginRegisteredRoutesMatchApiSpecTest} in the ha-raft module, and against
+   * {@link #contribute} by {@code ApiSpecPathConstantsTest} (issue #4896).
+   */
+  public static final Set<String> HA_RAFT_PATHS = Set.of(
+      "/api/v1/cluster", "/api/v1/cluster/peer", "/api/v1/cluster/peer/{peerId}",
+      "/api/v1/cluster/leader", "/api/v1/cluster/stepdown", "/api/v1/cluster/leave",
+      "/api/v1/cluster/verify/{database}", "/api/v1/cluster/resync/{database}",
+      "/api/v1/cluster/bootstrap-state",
+      "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
+
+  /**
+   * The Prometheus scrape route {@code PrometheusMetricsPlugin} registers, mirrored here for the
+   * same reason as {@link #HA_RAFT_PATHS}. Verified against the plugin's actual {@code registerAPI}
+   * output by {@code PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest} in the metrics module.
+   */
+  public static final Set<String> METRICS_PATHS = Set.of("/prometheus");
 
   private static final String RAFT_REQUIRED =
       "Requires RaftHAPlugin: the route is registered on every server, but answers only where high availability is configured.";

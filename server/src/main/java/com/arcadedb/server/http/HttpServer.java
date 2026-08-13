@@ -83,7 +83,6 @@ import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.UndertowOptions;
 import io.undertow.server.HttpHandler;
-import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
@@ -100,7 +99,9 @@ import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -125,6 +126,7 @@ public class HttpServer implements ServerPlugin {
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
   private          int                    httpsPortListening = -1;
+  private volatile List<RouteRecordingRoutingHandler.RouteDescriptor> registeredRoutes = List.of();
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -213,7 +215,7 @@ public class HttpServer implements ServerPlugin {
 
   private PathHandler setupRoutes() {
     final PathHandler routes = new PathHandler();
-    final RoutingHandler basicRoutes = Handlers.routing();
+    final RouteRecordingRoutingHandler basicRoutes = new RouteRecordingRoutingHandler();
 
     routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
     routes.addPrefixPath("/api/v1", basicRoutes
@@ -265,7 +267,8 @@ public class HttpServer implements ServerPlugin {
     final var aiConfig = server.getAiConfiguration();
     final var chatStorage = new ChatStorage(server.getRootPath());
     final var aiChatsHandler = new AiChatsHandler(this, chatStorage);
-    routes.addPrefixPath("/api/v1/ai", Handlers.routing()//
+    final RouteRecordingRoutingHandler aiRoutes = new RouteRecordingRoutingHandler();
+    routes.addPrefixPath("/api/v1/ai", aiRoutes//
         .get("/config", new AiConfigHandler(this, aiConfig))//
         .post("/activate", new AiActivateHandler(this, aiConfig))//
         .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage))//
@@ -286,7 +289,31 @@ public class HttpServer implements ServerPlugin {
       plugin.registerAPI(this, routes);
     }
 
+    registeredRoutes = mergeWithPrefix("/api/v1", basicRoutes, "/api/v1/ai", aiRoutes);
+
     return routes;
+  }
+
+  private static List<RouteRecordingRoutingHandler.RouteDescriptor> mergeWithPrefix(final String basicPrefix,
+      final RouteRecordingRoutingHandler basicRoutes, final String aiPrefix, final RouteRecordingRoutingHandler aiRoutes) {
+    final List<RouteRecordingRoutingHandler.RouteDescriptor> merged = new ArrayList<>();
+    for (final RouteRecordingRoutingHandler.RouteDescriptor route : basicRoutes.getRegisteredRoutes())
+      merged.add(new RouteRecordingRoutingHandler.RouteDescriptor(route.method(), basicPrefix + route.path()));
+    for (final RouteRecordingRoutingHandler.RouteDescriptor route : aiRoutes.getRegisteredRoutes())
+      merged.add(new RouteRecordingRoutingHandler.RouteDescriptor(route.method(), aiPrefix + route.path()));
+    return List.copyOf(merged);
+  }
+
+  /**
+   * The (method, full path) of every core route this server actually registered in
+   * {@link #setupRoutes()} - everything wired through its internal {@code RoutingHandler}s, not
+   * routes a plugin's {@code registerAPI} adds directly to the outer {@code PathHandler} (see
+   * {@code PluginApiSpec} and {@code McpApiSpec} for those). Used by {@code OpenApiSpecGenerationIT}
+   * to verify the OpenAPI specification against what the server actually registers, instead of a
+   * second hand-maintained list (issue #4896).
+   */
+  List<RouteRecordingRoutingHandler.RouteDescriptor> getRegisteredRoutes() {
+    return registeredRoutes;
   }
 
   private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
