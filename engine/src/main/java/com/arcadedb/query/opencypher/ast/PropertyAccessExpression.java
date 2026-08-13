@@ -110,17 +110,22 @@ public class PropertyAccessExpression implements Expression {
     try {
       record = rid.getRecord();
     } catch (final RecordNotFoundException e) {
-      throw new CommandExecutionException(
-          "TypeError: Cannot access property '" + propertyName + "' on " + rid +
-          ": the linked record does not exist");
+      throw new CommandExecutionException(brokenLinkMessage(rid, propertyName, "the linked record does not exist"));
     }
 
     if (!(record instanceof Document document))
-      throw new CommandExecutionException(
-          "TypeError: Cannot access property '" + propertyName + "' on " + rid +
-          ": the linked record has no properties");
+      throw new CommandExecutionException(brokenLinkMessage(rid, propertyName, "the linked record has no properties"));
 
     return TemporalUtil.convertFromStorage(document.get(propertyName));
+  }
+
+  /**
+   * Keeps the two broken-link failures on one wording. The RID takes the place the generic sibling messages give to the
+   * base type's class name: with the record gone, the link itself is the only thing left that identifies what could not
+   * be read, and it is what a caller needs to find the property still holding it.
+   */
+  private static String brokenLinkMessage(final RID rid, final String propertyName, final String reason) {
+    return "TypeError: Cannot access property '" + propertyName + "' on " + rid + ": " + reason;
   }
 
   @Override

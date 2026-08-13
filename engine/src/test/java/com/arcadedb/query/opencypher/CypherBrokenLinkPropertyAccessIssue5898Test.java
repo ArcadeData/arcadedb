@@ -24,6 +24,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -135,6 +136,36 @@ class CypherBrokenLinkPropertyAccessIssue5898Test {
     });
   }
 
+  @Test
+  void chainedAccessOnEdgeLinkReadsThroughTheLink() {
+    createHolderLinkingToEdge();
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (holder:T {role: 'holder'}) RETURN holder.ref.id AS referencedId")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Object referencedId = rs.next().getProperty("referencedId");
+        assertThat(referencedId).as("a LINK to an edge is a live, property-bearing record").isNotNull();
+        assertThat(((Number) referencedId).intValue()).isEqualTo(77);
+      }
+    });
+  }
+
+  @Test
+  void variableBoundAccessOnEdgeLinkReadsThroughTheLink() {
+    createHolderLinkingToEdge();
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (holder:T {role: 'holder'}) WITH holder.ref AS r RETURN r.id AS referencedId")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Object referencedId = rs.next().getProperty("referencedId");
+        assertThat(referencedId).as("a LINK to an edge is a live, property-bearing record").isNotNull();
+        assertThat(((Number) referencedId).intValue()).isEqualTo(77);
+      }
+    });
+  }
+
   /**
    * Persists a holder vertex whose {@code ref} property is a LINK to a vertex that is then deleted,
    * leaving the RID dangling. The delete runs in its own transaction so the value read back is a
@@ -166,6 +197,36 @@ class CypherBrokenLinkPropertyAccessIssue5898Test {
       final MutableVertex holder = database.newVertex("T");
       holder.set("role", "holder");
       holder.set("ref", docRid);
+      holder.save();
+    });
+  }
+
+  /**
+   * Persists a holder vertex whose {@code ref} property is a LINK to an edge. An edge is stored differently from a
+   * vertex or a plain document, so it gets its own fixture instead of being covered by analogy: what the fix relies on
+   * is that all three are {@link com.arcadedb.database.Document}s, and only running one proves it.
+   */
+  private void createHolderLinkingToEdge() {
+    database.transaction(() -> {
+      database.getSchema().getOrCreateVertexType("T");
+      database.getSchema().getOrCreateEdgeType("E");
+    });
+
+    database.transaction(() -> {
+      final MutableVertex from = database.newVertex("T");
+      from.set("role", "from");
+      from.save();
+
+      final MutableVertex to = database.newVertex("T");
+      to.set("role", "to");
+      to.save();
+
+      final MutableEdge edge = from.newEdge("E", to, "id", 77);
+      edge.save();
+
+      final MutableVertex holder = database.newVertex("T");
+      holder.set("role", "holder");
+      holder.set("ref", edge.getIdentity());
       holder.save();
     });
   }
