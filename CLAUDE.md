@@ -62,9 +62,24 @@ General design principles:
 
 ## Build and Development Commands
 
-Standard Maven and npm invocations apply. The non-obvious one:
+Standard Maven and npm invocations apply. The non-obvious ones, each of which silently produces a *meaningless
+green or spuriously red* run rather than an error that tells you what you did wrong:
 
 - **Run unit tests**: `mvn verify` (use `verify`/`install`, not bare `mvn test`, for a full reactor run: the `arcadedb-gremlin-it` module consumes `arcadedb-gremlin`'s package-phase artifacts (the `shaded` uber-jar and `tests` test-jar), which a `test`-phase build never produces)
+- **Testing a subset of modules needs `-am`**: `mvn -o -pl server -am test`, not `mvn -o -pl server test`. Without
+  `-am` the module is the whole reactor, so it resolves `arcadedb-engine` and friends from `~/.m2` instead of from
+  your working tree, and can run against an artifact that predates your edits. If you added or renamed a method this
+  surfaces as a `NoSuchMethodError`; **if you only changed behaviour it surfaces as nothing at all** and the run tells
+  you precisely nothing. Installing first (`mvn install -DskipTests`) is not a reliable substitute - it has been
+  observed still resolving a stale artifact
+- **To skip a slow or flaky class, use `-DexcludedGroups`, never `-Dtest='!Foo'`**: the `@Tag` lanes (`benchmark`,
+  `slow`, `vector`) exist for this, e.g. `-DexcludedGroups=benchmark,vector`. Passing `-Dtest` in any form *replaces*
+  Surefire's default include patterns, which drags `*IT` classes into the `test` phase, where they run without the
+  Failsafe setup their fixtures need and fail by the hundred
+- **Server tests bind fixed ports** (2480 and up). Anything already listening - a server left running by an IDE, a
+  previous run, another agent - takes the requests instead, and the failures read as authentication errors
+  (`403`, "Too many failed authentication attempts") rather than as a port conflict. Check with
+  `lsof -nP -iTCP:2480 -sTCP:LISTEN` before believing a wall of red in the `server` module
 
 ## Development Guidelines
 
