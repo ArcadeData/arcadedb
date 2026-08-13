@@ -149,6 +149,13 @@ class Issue6149PlaceholderPrefersChunksTest extends TestHelper {
    * produce (the allocator always leaves a spare margin) but a spill can - the head chunk of a record that outgrows
    * its page takes its slot's footprint PLUS the whole tail, ending the page exactly at its maximum content size.
    * A 9-byte record on such a page has nowhere to find a chunk header, so it must still become a placeholder.
+   * <p>
+   * This is what covers the refusal arm of the enlargement test, {@code missing >= freeTailInPage}, at
+   * {@code freeTailInPage == 0}. The neighbouring values (a tail that EXISTS but is smaller than the five-odd
+   * bytes needed) run the identical comparison with different operands, and cannot be built through the public
+   * API: a tail of 1..7 bytes needs byte-exact control of the page geometry, while inserts always leave at least
+   * {@code SPARE_SPACE_FOR_GROWTH} (32) bytes and a spill always takes the tail down to exactly 0. A test that
+   * guessed at those bytes would assert its own arithmetic rather than the engine's.
    */
   @Test
   void aSmallRecordSpillingOutOfASealedPageStillFallsBackToAPlaceholder() {

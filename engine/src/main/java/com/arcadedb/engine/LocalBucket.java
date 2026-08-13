@@ -90,9 +90,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   protected static final int                       PAGE_RECORD_TABLE_OFFSET         =
           PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
   private static final   int                       DEF_MAX_RECORDS_IN_PAGE          = 2048;
-  private static final   int                       MINIMUM_RECORD_SIZE              = 5;    // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER AND 1ST CHUCK FOR MULTI-PAGE CONTENT
-  private static final   long                      RECORD_PLACEHOLDER_CONTENT       =
-          MINIMUM_RECORD_SIZE * -1L;    // < -5 FOR SURROGATE RECORDS
+  /**
+   * Every record is padded to at least this many bytes of content, because the size a slot stores doubles as the
+   * marker namespace: a placeholder CONTENT record stores its size NEGATED, so a record shorter than 5 bytes would
+   * write a -1..-4 that {@link #RECORD_PLACEHOLDER_POINTER} (-1), {@link #FIRST_CHUNK} (-2) and
+   * {@link #NEXT_CHUNK} (-3) already own. Hence {@link #RECORD_PLACEHOLDER_CONTENT} = -5: anything below it is a
+   * size, anything above it is a marker.
+   * <p>
+   * It says nothing about how much room a record needs to SPILL - that is
+   * {@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}, and the two are independent. (The comment that used to sit here
+   * conflated them, claiming a record "cannot be < 13 bytes in case of update and placeholder".)
+   */
+  private static final   int                       MINIMUM_RECORD_SIZE              = 5;
+  /** Boundary between the size of a placeholder content record (stored negated, so &lt; -5) and the markers above it. */
+  private static final   long                      RECORD_PLACEHOLDER_CONTENT       = MINIMUM_RECORD_SIZE * -1L;
   /**
    * Bytes a slot needs to host the HEAD chunk of a multi-page record: the {@link #FIRST_CHUNK} marker (budgeted at
    * 2 bytes), the chunk size and the pointer to the next chunk, plus at least one byte of content. A slot that
