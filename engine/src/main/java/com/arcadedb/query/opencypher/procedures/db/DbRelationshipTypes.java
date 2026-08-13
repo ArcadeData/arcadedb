@@ -39,7 +39,7 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DbRelationshipTypes implements CypherProcedure {
-  public static final String NAME = "db.relationshiptypes";
+  public static final String NAME = "db.relationshipTypes";
 
   @Override
   public String getName() {

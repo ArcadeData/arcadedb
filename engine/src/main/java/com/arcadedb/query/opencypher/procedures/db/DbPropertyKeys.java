@@ -40,7 +40,7 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DbPropertyKeys implements CypherProcedure {
-  public static final String NAME = "db.propertykeys";
+  public static final String NAME = "db.propertyKeys";
 
   @Override
   public String getName() {
