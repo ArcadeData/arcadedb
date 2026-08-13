@@ -40,6 +40,7 @@ import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -149,6 +150,11 @@ class SQLMethodTransformTest {
       @Override
       public long getSize() {
         return 0L;
+      }
+
+      @Override
+      public RID restoreRecord(final Record record, final LocalBucket bucket, final long position) {
+        return null;
       }
 
       @Override

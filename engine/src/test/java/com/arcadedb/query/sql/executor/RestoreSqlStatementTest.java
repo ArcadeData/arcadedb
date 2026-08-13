@@ -23,8 +23,14 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
 
@@ -296,6 +302,131 @@ class RestoreSqlStatementTest extends TestHelper {
     assertThat(countByQuery()).isEqualTo(1);
   }
 
+  @Test
+  void restoreDocumentReindexesTheRestoredRecord() {
+    // #6120: RESTORE put the record back in its bucket but never re-added its index entries, so a query resolved
+    // through an index missed it while a full scan returned it - the same "wrong answer indistinguishable from a
+    // right one" shape as #6069/#6096, but on every indexed query instead of on a counter.
+    final String type = "IndexedLog";
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType(type, 1);
+      t.createProperty("k", Type.STRING);
+      t.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
+    });
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(type).set("k", "a").save().getIdentity());
+    database.transaction(() -> database.command("sql", "DELETE FROM " + rid[0]));
+    database.transaction(() -> database.command("sql", "RESTORE DOCUMENT " + type + " RID " + rid[0] + " SET k = 'a'"));
+
+    assertThat(countByIndexedLookup(type)).as("indexed lookup must see the restored record").isEqualTo(1);
+    assertThat(countByScan(type)).isEqualTo(1);
+
+    reopenDatabase();
+
+    assertThat(countByIndexedLookup(type)).isEqualTo(1);
+    assertThat(countByScan(type)).isEqualTo(1);
+  }
+
+  @Test
+  void restoreDocumentEnforcesTheUniqueIndexOnTheRestoredKey() {
+    // #6120: with the restored record indexed, a restore that would introduce a duplicate on a UNIQUE index is
+    // rejected the same way an INSERT of that key is, instead of silently creating a second record carrying a key
+    // the index believes belongs to another one.
+    final String type = "UniqueLog";
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType(type, 1);
+      t.createProperty("k", Type.STRING);
+      t.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
+    });
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> {
+      rid[0] = database.newDocument(type).set("k", "a").save().getIdentity();
+      database.newDocument(type).set("k", "b").save();
+    });
+
+    database.transaction(() -> database.command("sql", "DELETE FROM " + rid[0]));
+
+    // 'b' is still live and owned by another record: restoring the freed slot under that key must be refused.
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "RESTORE DOCUMENT " + type + " RID " + rid[0] + " SET k = 'b'"))).isInstanceOf(
+        DuplicatedKeyException.class);
+
+    // The original key is free, so the very same restore under 'a' must succeed.
+    database.transaction(() -> database.command("sql", "RESTORE DOCUMENT " + type + " RID " + rid[0] + " SET k = 'a'"));
+    assertThat(countByIndexedLookup(type)).isEqualTo(1);
+  }
+
+  @Test
+  void restoreVertexReindexesTheRestoredRecord() {
+    // #6120 on the RESTORE VERTEX arm, which additionally rewires the surviving edges: the reconnected vertex must
+    // also be findable through its own index, not just through a full scan and its edges.
+    final String type = "IndexedPerson";
+    database.transaction(() -> {
+      final VertexType t = database.getSchema().createVertexType(type, 1);
+      t.createProperty("name", Type.STRING);
+      t.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    });
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newVertex(type).set("name", "hub").save().getIdentity());
+    database.transaction(() -> database.command("sql", "DELETE FROM " + rid[0]));
+    database.transaction(() -> database.command("sql", "RESTORE VERTEX " + type + " RID " + rid[0] + " SET name = 'hub'"));
+
+    assertThat(countByIndexedLookup(type, "name", "hub")).isEqualTo(1);
+    assertThat(countByScan(type)).isEqualTo(1);
+  }
+
+  @Test
+  void restoreEdgeReindexesTheRestoredRecord() {
+    // #6120 on the RESTORE EDGE arm: an edge property index is maintained exactly like a document one.
+    final String type = "IndexedKnows";
+    database.transaction(() -> {
+      final EdgeType t = database.getSchema().createEdgeType(type, 1);
+      t.createProperty("since", Type.STRING);
+      t.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "since");
+    });
+
+    final RID[] v1 = new RID[1];
+    final RID[] v2 = new RID[1];
+    final RID[] edgeRid = new RID[1];
+    database.transaction(() -> {
+      final var a = database.newVertex(VERTEX_TYPE).set("name", "a").save();
+      final var b = database.newVertex(VERTEX_TYPE).set("name", "b").save();
+      v1[0] = a.getIdentity();
+      v2[0] = b.getIdentity();
+      edgeRid[0] = a.newEdge(type, b).set("since", "2020").save().getIdentity();
+    });
+
+    database.transaction(() -> database.command("sql", "DELETE FROM " + edgeRid[0]));
+    database.transaction(() -> database.command("sql",
+        "RESTORE EDGE " + type + " RID " + edgeRid[0] + " FROM " + v1[0] + " TO " + v2[0] + " SET since = '2020'"));
+
+    assertThat(countByIndexedLookup(type, "since", "2020")).isEqualTo(1);
+  }
+
+  private long countByIndexedLookup(final String type) {
+    return countByIndexedLookup(type, "k", "a");
+  }
+
+  private long countByIndexedLookup(final String type, final String property, final String value) {
+    try (ResultSet rs = database.query("sql", "SELECT FROM " + type + " WHERE " + property + " = '" + value + "'")) {
+      return rs.stream().count();
+    }
+  }
+
+  private long countByScan(final String type) {
+    long scanned = 0;
+    try (ResultSet rs = database.query("sql", "SELECT FROM " + type)) {
+      while (rs.hasNext()) {
+        rs.next();
+        scanned++;
+      }
+    }
+    return scanned;
+  }
+
   private long countByQuery() {
     try (ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + DOC_TYPE)) {
       return rs.next().<Number>getProperty("c").longValue();
@@ -303,14 +434,7 @@ class RestoreSqlStatementTest extends TestHelper {
   }
 
   private long countByScan() {
-    long scanned = 0;
-    try (ResultSet rs = database.query("sql", "SELECT FROM " + DOC_TYPE)) {
-      while (rs.hasNext()) {
-        rs.next();
-        scanned++;
-      }
-    }
-    return scanned;
+    return countByScan(DOC_TYPE);
   }
 
   @Test

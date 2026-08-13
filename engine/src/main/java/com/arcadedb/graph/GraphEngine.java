@@ -440,11 +440,10 @@ public class GraphEngine {
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(targetRid.getBucketId());
     final MutableVertex shell = database.newVertex(typeName);
-    bucket.restoreRecordAtPosition(targetRid.getPosition(), shell);
-    // #6069: restoreRecordAtPosition only does the physical page write, same as bucket create/delete; the caller
-    // owns folding the transaction's cached bucket record-count delta by the same +1 a normal create applies (see
-    // LocalDatabase.createRecord / RestoreStatementSupport.restoreRecordAndUpdateCount for the SQL-statement path).
-    database.getTransaction().updateBucketRecordDelta(bucket.getFileId(), +1);
+    // The physical page write plus everything a create folds on top of it: the bucket record-count delta count(*)
+    // reads (#6069), the transaction record cache, and the index entries (#6120). The SQL RESTORE statements go
+    // through the same call - that shared bookkeeping is why it lives on the database and not at each call site.
+    database.restoreRecord(shell, bucket, targetRid.getPosition());
 
     final Set<RID> asSet = Set.of(targetRid);
     final long[] counts = reconnectEdgesFromSurvivors(asSet, asSet);

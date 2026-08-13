@@ -44,6 +44,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
@@ -931,6 +932,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
     proxied.createRecordNoLock(record, bucketName, discardRecordAfter);
+  }
+
+  @Override
+  public RID restoreRecord(final Record record, final LocalBucket bucket, final long position) {
+    return proxied.restoreRecord(record, bucket, position);
   }
 
   @Override

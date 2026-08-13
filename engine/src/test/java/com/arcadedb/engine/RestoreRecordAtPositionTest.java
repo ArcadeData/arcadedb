@@ -24,6 +24,9 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
@@ -169,6 +172,120 @@ class RestoreRecordAtPositionTest extends TestHelper {
       assertThat(database.lookupByRID(rid[1], true).asDocument().getString("name")).isEqualTo("restored-middle");
       assertThat(countByScan(bucket)).isEqualTo(1);
     });
+  }
+
+  @Test
+  void restoreRecordReindexesTheRestoredRecord() {
+    // #6120: the Java-API arm of the index fold. DatabaseInternal.restoreRecord is what the SQL RESTORE statements
+    // and GraphEngine.restoreVertexAt now both call; calling it directly with a populated record is the only way to
+    // observe the index entries from Java, because restoreVertexAt restores a property-less shell and a null-valued
+    // indexed property produces no index entry on ANY path, insert included.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final String type = "IndexedRestoreTarget";
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType(type, 1);
+      t.createProperty("k", com.arcadedb.schema.Type.STRING);
+      t.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
+    });
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(type).set("k", "a").save().getIdentity());
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
+    database.transaction(() -> database.lookupByRID(rid[0], false).asDocument().delete());
+    assertThat(indexedLookup(type)).as("the delete must clear the index entry first").isEqualTo(0);
+
+    database.transaction(() -> {
+      final MutableDocument shell = database.newDocument(type).set("k", "a");
+      assertThat(db.restoreRecord(shell, bucket, rid[0].getPosition())).isEqualTo(rid[0]);
+    });
+
+    assertThat(indexedLookup(type)).as("indexed lookup must see the restored record").isEqualTo(1);
+
+    reopenDatabase();
+
+    assertThat(indexedLookup(type)).isEqualTo(1);
+  }
+
+  @Test
+  void restoreJoinsAnImplicitTransactionWhenAutoTransactionIsOn() {
+    // PR #6123 review: createRecordNoLock wraps itself in an implicit transaction when the database was opened with
+    // setAutoTransaction(true), while restoreRecord called getTransaction() directly and threw. RESTORE must not be
+    // the one statement that behaves differently from an INSERT for those callers.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("name", "auto").save().getIdentity());
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
+    database.transaction(() -> database.lookupByRID(rid[0], false).asDocument().delete());
+
+    database.setAutoTransaction(true);
+    try {
+      // No explicit begin(): the implicit transaction must be opened AND committed by the restore itself.
+      final MutableDocument shell = database.newDocument(DOC_TYPE).set("name", "restored-auto");
+      assertThat(db.restoreRecord(shell, bucket, rid[0].getPosition())).isEqualTo(rid[0]);
+    } finally {
+      database.setAutoTransaction(false);
+    }
+
+    reopenDatabase();
+
+    database.transaction(
+        () -> assertThat(database.lookupByRID(rid[0], true).asDocument().getString("name")).isEqualTo("restored-auto"));
+  }
+
+  @Test
+  void restoreRefusesAnAlreadyPersistentRecord() {
+    // PR #6123 review: createRecordNoLock rejects a persistent record up front; restoreRecord did not, so a misuse
+    // would silently overwrite the identity of a live record instead of failing.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("name", "live").save().getIdentity());
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument persistent = database.lookupByRID(rid[0], true).asDocument().modify();
+      db.restoreRecord(persistent, bucket, rid[0].getPosition());
+    })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("already persistent");
+
+    database.transaction(() -> assertThat(database.lookupByRID(rid[0], true).asDocument().getString("name")).isEqualTo("live"));
+  }
+
+  @Test
+  void rollingBackARestoreLeavesNoDanglingIdentityOnTheShell() {
+    // A restored record did not exist before its transaction, so on rollback it is a NEW record: the shell must come
+    // back provisional (#4562/#4940 semantics, which a create gets via registerNewRecord) rather than keeping a RID
+    // that no longer resolves, and neither the record nor its index entry may survive the rollback.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final String type = "RolledBackRestore";
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType(type, 1);
+      t.createProperty("k", com.arcadedb.schema.Type.STRING);
+      t.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
+    });
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(type).set("k", "a").save().getIdentity());
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
+    database.transaction(() -> database.lookupByRID(rid[0], false).asDocument().delete());
+
+    final MutableDocument shell = database.newDocument(type).set("k", "a");
+    database.begin();
+    db.restoreRecord(shell, bucket, rid[0].getPosition());
+    assertThat(shell.getIdentity()).isEqualTo(rid[0]);
+    database.rollback();
+
+    assertThat(shell.getIdentity()).as("a rolled-back restore must leave the shell provisional").isNull();
+    assertThat(indexedLookup(type)).isEqualTo(0);
+    database.transaction(() -> assertThat(bucket.existsRecord(rid[0])).isFalse());
+  }
+
+  private long indexedLookup(final String type) {
+    try (ResultSet rs = database.query("sql", "SELECT FROM " + type + " WHERE k = 'a'")) {
+      return rs.stream().count();
+    }
   }
 
   private long countByScan(final LocalBucket bucket) {

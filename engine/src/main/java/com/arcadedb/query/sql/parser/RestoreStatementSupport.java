@@ -18,11 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -33,20 +29,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 final class RestoreStatementSupport {
   private RestoreStatementSupport() {
-  }
-
-  /**
-   * Restores {@code record} at {@code position} in {@code bucket} and folds the transaction's cached bucket
-   * record-count delta by the same +1 a normal {@code createRecord} applies (see
-   * {@code LocalDatabase.createRecord}). {@link LocalBucket#restoreRecordAtPosition} only performs the physical
-   * page write and, like bucket-level create/delete, leaves this logical bookkeeping to the caller - every RESTORE
-   * statement wants it, so it lives here once instead of being repeated (and forgotten, #6069) at each call site.
-   */
-  static RID restoreRecordAndUpdateCount(final DatabaseInternal database, final LocalBucket bucket, final long position,
-      final Record record) {
-    final RID restoredRid = bucket.restoreRecordAtPosition(position, record);
-    database.getTransaction().updateBucketRecordDelta(bucket.getFileId(), +1);
-    return restoredRid;
   }
 
   /**
