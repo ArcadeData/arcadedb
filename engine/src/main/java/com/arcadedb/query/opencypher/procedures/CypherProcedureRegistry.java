@@ -21,6 +21,10 @@ package com.arcadedb.query.opencypher.procedures;
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexVectorQueryNodes;
+import com.arcadedb.query.opencypher.procedures.db.DbLabels;
+import com.arcadedb.query.opencypher.procedures.db.DbPropertyKeys;
+import com.arcadedb.query.opencypher.procedures.db.DbRelationshipTypes;
+import com.arcadedb.query.opencypher.procedures.db.DbSchemaVisualization;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAPSP;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAStar;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAdamicAdar;
@@ -388,6 +392,11 @@ public final class CypherProcedureRegistry {
 
   private static void registerDbProcedures() {
     register(new DbIndexVectorQueryNodes());
+    register(new DbLabels());
+    register(new DbRelationshipTypes());
+    register(new DbPropertyKeys());
+    register(new DbSchemaVisualization("db.schema"));
+    register(new DbSchemaVisualization("db.schema.visualization"));
   }
 
   private static void registerMetaProcedures() {

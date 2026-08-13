@@ -33,22 +33,15 @@ import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.*;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -61,11 +54,10 @@ import java.util.stream.Stream;
  * CALL functionName() YIELD result
  * </pre>
  * <p>
- * Maps Cypher procedure names to ArcadeDB SQL functions:
- * - db.labels() -> returns all type names
- * - db.relationshipTypes() -> returns all edge type names
- * - db.propertyKeys() -> returns all property keys
- * - Any SQL function can be called directly
+ * Resolution order: registered {@link CypherProcedure} (built-in Neo4j-compatible procedures like
+ * {@code db.labels()} and {@code merge.node()} are registered here too, see {@link CypherProcedureRegistry}),
+ * then a registered {@link StatelessFunction}, then a {@code DEFINE FUNCTION} library function, then any
+ * ArcadeDB SQL function.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -284,42 +276,28 @@ public class CallStep extends AbstractExecutionStep {
       args.add(evaluator.evaluate(argExpr, inputRow, context));
     }
 
-    // Handle built-in Cypher procedures
-    switch (procedureName.toLowerCase(Locale.ROOT)) {
-      case "db.labels":
-        return getLabels(context);
-      case "db.relationshiptypes":
-        return getRelationshipTypes(context);
-      case "db.propertykeys":
-        return getPropertyKeys(context);
-      case "db.schema":
-      case "db.schema.visualization":
-        return getSchemaVisualization(context);
-      default:
-        // Check the procedure registry first
-        final CypherProcedure procedure = CypherProcedureRegistry.get(procedureName);
-        if (procedure != null) {
-          return executeProcedure(procedure, args.toArray(), inputRow, context);
-        }
+    // Check the procedure registry first (built-in Neo4j-compatible procedures like db.labels() are registered
+    // here too, so their declared yield fields are available to CypherSemanticValidator for YIELD * - issue #6148)
+    final CypherProcedure procedure = CypherProcedureRegistry.get(procedureName);
+    if (procedure != null)
+      return executeProcedure(procedure, args.toArray(), inputRow, context);
 
-        // Check the function registry
-        final StatelessFunction function = CypherFunctionRegistry.get(procedureName);
-        if (function != null) {
-          return executeFunction(function, args.toArray(), context);
-        }
+    // Check the function registry
+    final StatelessFunction function = CypherFunctionRegistry.get(procedureName);
+    if (function != null)
+      return executeFunction(function, args.toArray(), context);
 
-        // Try to call as custom function (DEFINE FUNCTION) first
-        if (!namespace.isEmpty()) {
-          final Object customResult = callCustomFunction(namespace, simpleName, args, context);
-          if (customResult != null)
-            return customResult;
-        }
-
-        // Fall back to ArcadeDB SQL function (try full name first, e.g. "vector.neighbors", then simple name)
-        if (functionFactory.getSQLFunctionFactory().hasFunction(procedureName))
-          return callSQLFunction(procedureName, args, context);
-        return callSQLFunction(simpleName, args, context);
+    // Try to call as custom function (DEFINE FUNCTION) first
+    if (!namespace.isEmpty()) {
+      final Object customResult = callCustomFunction(namespace, simpleName, args, context);
+      if (customResult != null)
+        return customResult;
     }
+
+    // Fall back to ArcadeDB SQL function (try full name first, e.g. "vector.neighbors", then simple name)
+    if (functionFactory.getSQLFunctionFactory().hasFunction(procedureName))
+      return callSQLFunction(procedureName, args, context);
+    return callSQLFunction(simpleName, args, context);
   }
 
   /**
@@ -451,74 +429,6 @@ public class CallStep extends AbstractExecutionStep {
         return null;
       throw new CommandExecutionException("Error executing custom function: " + libraryName + "." + functionName, e);
     }
-  }
-
-  /**
-   * Returns all vertex type names.
-   */
-  private List<Map<String, Object>> getLabels(final CommandContext context) {
-    final List<Map<String, Object>> results = new ArrayList<>();
-    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (type instanceof VertexType && !type.getName().contains("~")) {
-        results.add(CollectionUtils.singletonMap("label", type.getName()));
-      }
-    }
-    return results;
-  }
-
-  /**
-   * Returns all edge type names.
-   */
-  private List<Map<String, Object>> getRelationshipTypes(final CommandContext context) {
-    final List<Map<String, Object>> results = new ArrayList<>();
-    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (type instanceof EdgeType && !type.getName().contains("~")) {
-        results.add(CollectionUtils.singletonMap("relationshipType", type.getName()));
-      }
-    }
-    return results;
-  }
-
-  /**
-   * Returns all property keys across all types.
-   */
-  private List<Map<String, Object>> getPropertyKeys(final CommandContext context) {
-    final Set<String> propertyKeys = new HashSet<>();
-    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (!type.getName().contains("~")) {
-        for (final String propName : type.getPropertyNames()) {
-          propertyKeys.add(propName);
-        }
-      }
-    }
-    final List<Map<String, Object>> results = new ArrayList<>();
-    for (final String key : propertyKeys) {
-      results.add(CollectionUtils.singletonMap("propertyKey", key));
-    }
-    return results;
-  }
-
-  /**
-   * Returns schema visualization data.
-   */
-  private List<Map<String, Object>> getSchemaVisualization(final CommandContext context) {
-    final List<Map<String, Object>> results = new ArrayList<>();
-    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (type.getName().contains("~"))
-        continue;
-      final Map<String, Object> typeInfo = new HashMap<>();
-      typeInfo.put("name", type.getName());
-      if (type instanceof VertexType) {
-        typeInfo.put("type", "node");
-      } else if (type instanceof EdgeType) {
-        typeInfo.put("type", "relationship");
-      } else {
-        typeInfo.put("type", "document");
-      }
-      typeInfo.put("properties", new ArrayList<>(type.getPropertyNames()));
-      results.add(typeInfo);
-    }
-    return results;
   }
 
   /**
