@@ -33,7 +33,13 @@ from pathlib import Path
 
 def is_stability_only(rule: dict) -> bool:
     """True when a rule reports outdatedness and nothing else."""
-    tags = rule.get("properties", {}).get("tags", [])
+    # `or {}` rather than a get() default: a rule carrying an explicit "properties": null is valid
+    # JSON, and get("properties", {}) returns the null rather than the default for it. Reading tags
+    # off that raises, which - given the step is continue-on-error - would silently pass the whole
+    # unfiltered report through, the one outcome the "keep anything unreadable" rule is meant to
+    # avoid stating and then not delivering.
+    properties = rule.get("properties") or {}
+    tags = properties.get("tags") if isinstance(properties, dict) else None
     if not isinstance(tags, list):
         return False
     return "stability" in tags and "security" not in tags
@@ -54,6 +60,11 @@ def filter_run(run: dict) -> tuple[int, int, int, int]:
     # Results reference their rule by array position as well as by id. Rebuilding the array
     # invalidates every one of those positions, so they are remapped from the id - a result whose
     # id is not in the report at all keeps whatever it had, since it is not ours to renumber.
+    #
+    # Rule ids are assumed unique, which they are in Meterian's output (64 rules, 64 distinct ids
+    # in the committed fixture) and which SARIF requires. Were two kept rules ever to share one,
+    # the later would win here and results meaning the earlier would be remapped onto it - but at
+    # that point the id no longer identifies a rule and the report is already ambiguous.
     index_by_id = {r.get("id"): i for i, r in enumerate(kept_rules) if isinstance(r, dict)}
 
     results = run.get("results", []) or []
@@ -64,11 +75,17 @@ def filter_run(run: dict) -> tuple[int, int, int, int]:
             continue
         if result.get("ruleId") in dropped_ids:
             continue
-        rule_ref = result.get("rule")
-        if isinstance(rule_ref, dict) and "index" in rule_ref:
-            new_index = index_by_id.get(result.get("ruleId"))
-            if new_index is not None:
+        new_index = index_by_id.get(result.get("ruleId"))
+        if new_index is not None:
+            # SARIF spells the position two ways and a report may use either: nested under
+            # result.rule (what GitHub emits when it normalises a report) or as a top-level
+            # result.ruleIndex. Both are remapped, or the shape this script does not happen to
+            # look at is exactly the one that keeps a stale index.
+            rule_ref = result.get("rule")
+            if isinstance(rule_ref, dict) and "index" in rule_ref:
                 rule_ref["index"] = new_index
+            if "ruleIndex" in result:
+                result["ruleIndex"] = new_index
         kept_results.append(result)
 
     run["tool"]["driver"]["rules"] = kept_rules

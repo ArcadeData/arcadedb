@@ -879,6 +879,68 @@ else
     fail "filters every run, not just the first" "got: $counts"
 fi
 
+# An explicit "properties": null is valid JSON and reads back as null rather than as a missing
+# key, so the tag lookup has to cope with it. Getting this wrong throws, and because the workflow
+# step is continue-on-error that would quietly ship the whole unfiltered report.
+cat >"$work/null-properties.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Meterian","rules":[
+  {"id":"N1","properties":null},
+  {"id":"S1","properties":{"tags":["stability"]}},
+  {"id":"V1","properties":{"tags":["security"]}}
+]}},"results":[
+  {"ruleId":"N1","message":{"text":"no metadata"}},
+  {"ruleId":"S1","message":{"text":"outdated"}},
+  {"ruleId":"V1","message":{"text":"vuln"}}
+]}]}
+JSON
+expect "survives a rule with an explicit null properties" 0 "1 stability" \
+    "$SCRIPTS/filter-meterian-sarif.py" "$work/null-properties.sarif"
+
+counts="$(sarif_counts "$work/null-properties.sarif")"
+if [[ $counts == "2 2" ]]; then
+    pass "keeps a rule whose tags cannot be read"
+else
+    fail "keeps a rule whose tags cannot be read" "got: $counts"
+fi
+
+# SARIF spells the rule position two ways: nested under result.rule, and as a top-level
+# result.ruleIndex. A report using the second form must be remapped too - a stale index there is
+# the same misattribution the nested case is guarded against.
+cat >"$work/top-level-index.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Meterian","rules":[
+  {"id":"S1","properties":{"tags":["stability"]}},
+  {"id":"S2","properties":{"tags":["stability"]}},
+  {"id":"V1","properties":{"tags":["security"]}}
+]}},"results":[
+  {"ruleId":"S1","ruleIndex":0,"message":{"text":"outdated"}},
+  {"ruleId":"S2","ruleIndex":1,"message":{"text":"outdated"}},
+  {"ruleId":"V1","ruleIndex":2,"message":{"text":"vuln"}}
+]}]}
+JSON
+"$SCRIPTS/filter-meterian-sarif.py" "$work/top-level-index.sarif" >/dev/null
+# The index is bounds-checked before it is dereferenced: a stale one usually points past the end
+# of the shortened array, and an IndexError here would abort the whole harness instead of failing
+# this one check.
+remapped="$(python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+run = doc["runs"][0]
+rules, results = run["tool"]["driver"]["rules"], run["results"]
+bad = []
+for r in results:
+    if "ruleIndex" not in r:
+        continue
+    idx = r["ruleIndex"]
+    if not (0 <= idx < len(rules)) or rules[idx]["id"] != r["ruleId"]:
+        bad.append(r["ruleId"])
+print(",".join(bad) if bad else "consistent")
+' "$work/top-level-index.sarif")"
+if [[ $remapped == "consistent" ]]; then
+    pass "remaps a top-level result.ruleIndex"
+else
+    fail "remaps a top-level result.ruleIndex" "misattributed: $remapped"
+fi
+
 # A scan that produced no report must not turn the upload step red: the workflow already treats
 # the upload as best-effort, and the filter has to keep that contract.
 expect "treats a missing report as nothing to do" 0 "nothing to filter" \
