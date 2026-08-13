@@ -61,7 +61,7 @@ class OperationProgressRegistryTest {
       // SNAPSHOT BY DATABASE, oldest first.
       final List<OperationProgress> ops = registry.getOperations("testdb-progress");
       assertThat(ops).hasSize(1);
-      assertThat(ops.getFirst().getId()).isEqualTo(op.getId());
+      assertThat(ops.get(0).getId()).isEqualTo(op.getId());
       assertThat(registry.getOperations("some-other-db")).isEmpty();
 
       // JSON SHAPE consumed by the HTTP endpoint and the pollers.

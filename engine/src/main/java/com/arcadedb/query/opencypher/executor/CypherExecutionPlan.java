@@ -1813,7 +1813,7 @@ public class CypherExecutionPlan {
       final String indexedType = physicalPlan.getAnchor().getIndex().getTypeName();
       if (indexedTarget.hasProperties() || indexedTarget.hasDynamicLabels()
           || indexedTarget.getLabels().size() != 1 || indexedType == null
-          || !indexedType.equals(indexedTarget.getLabels().getFirst()))
+          || !indexedType.equals(indexedTarget.getLabels().get(0)))
         return false;
     }
 
