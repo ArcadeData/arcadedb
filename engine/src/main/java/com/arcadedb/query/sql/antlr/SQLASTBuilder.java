@@ -2750,8 +2750,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // only Long.MIN_VALUE's magnitude can still be represented once the sign is folded in;
       // anything larger is a genuine overflow and keeps raising the original error
       try {
-        final BaseExpression baseExpr = new BaseExpression(-1);
-        baseExpr.number = new PInteger(-1).setValue(Long.parseLong("-" + text));
+        final BaseExpression baseExpr = new BaseExpression();
+        baseExpr.number = new PInteger().setValue(Long.parseLong("-" + text));
         return baseExpr;
       } catch (final NumberFormatException stillInvalid) {
         throw new CommandSQLParsingException("Invalid integer: " + originalText);
