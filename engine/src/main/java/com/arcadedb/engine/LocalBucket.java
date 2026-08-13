@@ -42,6 +42,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
+import com.arcadedb.utility.LongHashSet;
 
 import java.io.IOException;
 import java.util.*;
@@ -98,7 +99,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   long                      EMPTY_CHUNK_TAIL_FINGERPRINT     = 1L;
   private static final   long                      FNV_OFFSET_BASIS                 = 0xcbf29ce484222325L;
   private static final   long                      FNV_PRIME                        = 0x100000001b3L;
-  private static final   int                       MAX_CHUNKS_TO_FINGERPRINT        = 1_000_000;
+  private static final   int                       CHUNKS_BEFORE_LOOP_DETECTION     = 64;
   private static final   long                      MINIMUM_SPACE_LEFT_IN_PAGE       = 50L;
   private static final   int                       MAX_PAGES_GATHER_STATS           = 100;
   private static final   long                      MAX_TIMEOUT_GATHER_STATS         = 5000L;
@@ -511,6 +512,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return NO_CHUNK_TAIL_FINGERPRINT;
 
       final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+      if (page == null)
+        return NO_CHUNK_TAIL_FINGERPRINT;
       final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
       if (recordPositionInPage == 0)
         return NO_CHUNK_TAIL_FINGERPRINT;
@@ -523,9 +526,29 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return chunkChainTailFingerprint(page, (int) (recordPositionInPage + recordSize[1]));
     } catch (final Exception e) {
       // A chain that cannot be walked (a page that is gone, a broken pointer) simply cannot be vouched for.
-      LogManager.instance().log(this, Level.FINE, "Unable to fingerprint the chunk chain of record %s", e, rid);
-      return NO_CHUNK_TAIL_FINGERPRINT;
+      return unwalkableChunkChain(e, rid);
     }
+  }
+
+  /**
+   * The one outcome both fingerprint walks share: the chain could not be read, so there is nothing to compare against
+   * and the head chunk stays unmergeable. Failing closed is always safe here, which is exactly why the catch that
+   * leads to it must not become a place a real defect can hide: the assertion draws the line between "this database's
+   * chain is broken" - which this method exists to tolerate, as {@link #findBrokenChunkChain} does - and a bug in the
+   * walk itself, which under {@code -ea} (surefire's default) fails a test loudly instead of degrading into a page
+   * that is silently never merged. It costs nothing in a production JVM, where the tolerance is unconditional.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private long unwalkableChunkChain(final Exception e, final Object walked) {
+    // Deliberately named, rather than a positive list of what corrupted bytes may raise: the walk reads sizes and
+    // offsets straight out of the page, so an I/O or bounds failure is data talking and must stay tolerated, while
+    // neither of these two can come from the page content once the walk has checked for a page that is gone.
+    assert !(e instanceof NullPointerException || e instanceof ClassCastException) :
+        "the chunk-chain fingerprint must only ever fail on an unreadable chain: " + e;
+
+    LogManager.instance().log(this, Level.FINE, "Unable to fingerprint the chunk chain of %s", e, walked);
+    return NO_CHUNK_TAIL_FINGERPRINT;
   }
 
   /**
@@ -538,9 +561,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     try {
       return walkChunkChainTail(headChunkPage, headChunkHeaderPos);
     } catch (final Exception e) {
-      LogManager.instance()
-              .log(this, Level.FINE, "Unable to fingerprint the chunk chain rooted on page %s", e, headChunkPage.getPageId());
-      return NO_CHUNK_TAIL_FINGERPRINT;
+      return unwalkableChunkChain(e, headChunkPage.getPageId());
     }
   }
 
@@ -553,12 +574,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     long fingerprint = FNV_OFFSET_BASIS;
     byte[] scratch = null;
     final int totalPages = getTotalPages();
+    // Exact loop detection, as in findBrokenChunkChain and for the same reason: a chain can legitimately hold more
+    // chunks than the bucket has pages (chunks share pages after reuse), so any count-based bound either bails on a
+    // valid chain or lets a corrupted one walk for a very long time first. Revisiting a pointer is the only certain
+    // loop signal, and a chain that never revisits one is finite by construction. Allocated only if the chain turns
+    // out to be long: a record of a handful of chunks - which is what every realistic one is - walks allocation-free.
+    LongHashSet visitedChunks = null;
 
-    // A chain can legitimately hold more chunks than the bucket has pages (chunks share pages after reuse), so the
-    // bound is deliberately loose: it exists only to stop a corrupted chain from looping here forever.
     for (int chunk = 0; pointer > 0; ++chunk) {
-      if (chunk > MAX_CHUNKS_TO_FINGERPRINT)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+      if (chunk >= CHUNKS_BEFORE_LOOP_DETECTION) {
+        if (visitedChunks == null)
+          visitedChunks = new LongHashSet();
+        if (!visitedChunks.add(pointer))
+          return NO_CHUNK_TAIL_FINGERPRINT;
+      }
 
       final int chunkPageId = (int) (pointer / maxRecordsInPage);
       final int chunkPositionInPage = (int) (pointer % maxRecordsInPage);
@@ -566,6 +595,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return NO_CHUNK_TAIL_FINGERPRINT;
 
       final BasePage chunkPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
+      if (chunkPage == null)
+        // The page the chain points at is gone: nothing to vouch for.
+        return NO_CHUNK_TAIL_FINGERPRINT;
       final int chunkPositionInPageOffset = getRecordPositionInPage(chunkPage, chunkPositionInPage);
       if (chunkPositionInPageOffset == 0)
         return NO_CHUNK_TAIL_FINGERPRINT;
@@ -596,10 +628,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return fingerprint == NO_CHUNK_TAIL_FINGERPRINT ? EMPTY_CHUNK_TAIL_FINGERPRINT : fingerprint;
   }
 
-  private static long fnv1a(long fingerprint, final long value) {
+  /** Folds the 8 bytes of {@code value} into {@code fingerprint}, least significant first. */
+  private static long fnv1a(final long fingerprint, final long value) {
+    long folded = fingerprint;
     for (int shift = 0; shift < 64; shift += 8)
-      fingerprint = (fingerprint ^ ((value >>> shift) & 0xFFL)) * FNV_PRIME;
-    return fingerprint;
+      folded = (folded ^ ((value >>> shift) & 0xFFL)) * FNV_PRIME;
+    return folded;
   }
 
   public void fetchPageInTransaction(final RID rid) throws IOException {
