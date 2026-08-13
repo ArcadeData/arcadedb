@@ -65,11 +65,18 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   private LSMVectorIndex mainIndex;
 
   /**
+   * Says which records the graph on these pages was built over. The graph itself is addressed by ordinal and carries
+   * nothing that identifies them, so this is what makes reusing it safe (issue #6106).
+   */
+  private final LSMVectorIndexGraphManifest manifest;
+
+  /**
    * Constructor for creating a new graph file
    */
   protected LSMVectorIndexGraphFile(final DatabaseInternal database, final String name, final String filePath,
                                     final ComponentFile.MODE mode, final int pageSize) throws IOException {
     super(database, name, filePath, FILE_EXT, mode, pageSize, CURRENT_VERSION);
+    this.manifest = new LSMVectorIndexGraphManifest(getOSFile().getAbsolutePath());
   }
 
   /**
@@ -78,6 +85,14 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   protected LSMVectorIndexGraphFile(final DatabaseInternal database, final String name, final String filePath, final int id,
                                     final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
+    this.manifest = new LSMVectorIndexGraphManifest(getOSFile().getAbsolutePath());
+  }
+
+  /**
+   * @return the sidecar recording which records the persisted graph was built over
+   */
+  public LSMVectorIndexGraphManifest getManifest() {
+    return manifest;
   }
 
   @Override
@@ -174,6 +189,12 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
+
+    // The pages about to be overwritten are the ones the current manifest vouches for, and the write commits in
+    // chunks, so from here until the caller has committed there is no generation of the graph anything can promise.
+    // Dropping the manifest first is what makes an interrupted persist leave "no manifest" - read as "rebuild" -
+    // rather than a half-written graph the previous manifest still appears to describe (issue #6106).
+    manifest.invalidate();
 
     try {
       if (chunkSizeMB > 0 && chunkCallback != null) {

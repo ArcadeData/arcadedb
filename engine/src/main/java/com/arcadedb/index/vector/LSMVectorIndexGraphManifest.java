@@ -1,0 +1,206 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.vector;
+
+import com.arcadedb.database.RID;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONObject;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.function.IntFunction;
+import java.util.logging.Level;
+
+/**
+ * Sidecar of a persisted JVector graph recording <b>which</b> vectors that graph was built over, not merely how
+ * many.
+ * <p>
+ * The graph itself stores topology addressed by ordinal; the mapping from an ordinal to a record lives outside it,
+ * recomputed from the location index every time the graph is loaded. Reusing a persisted graph is therefore only
+ * safe while that mapping is the one the graph was built with, and until issue #6106 the only thing checked was the
+ * node count. A count cannot tell two generations apart: since the renumbering compaction of issue #5870 every
+ * generation's live ids are densely {@code [0, N)}, so a graph built over one set of records and a live set holding
+ * a different set of the same size look identical to a count comparison. The graph is then reused with ordinals
+ * resolving to records its nodes were never built from, and searches answer with wrong-but-plausible neighbours
+ * rather than failing.
+ * <p>
+ * What the fingerprint covers is the ordinal &rarr; record correspondence: the vector id <b>and</b> the RID at each
+ * ordinal, in ordinal order. Fingerprinting the ids alone would not help, because dense {@code [0, N)} is exactly
+ * what two different generations both produce; it is the records behind those ids that differ.
+ * <p>
+ * Like {@link LSMVectorIndexPQFile} this is a plain file rather than a paginated component: it is a few dozen bytes
+ * read once per graph load and rewritten once per graph persist, and keeping it out of the page system means it can
+ * be removed before the graph pages are touched and written only after they are committed. That order is what makes
+ * the check safe under a crash - an interrupted persist leaves no manifest at all, and "no manifest" is never read
+ * as "the graph matches".
+ *
+ * @author Roberto Franchini (r.franchini@arcadedata.com)
+ */
+public class LSMVectorIndexGraphManifest {
+  public static final  String FILE_EXT         = "vecgraphfp";
+  static final         int    FORMAT_VERSION   = 1;
+  private static final long   FNV_OFFSET_BASIS = 0xcbf29ce484222325L;
+  private static final long   FNV_PRIME        = 0x100000001b3L;
+
+  /**
+   * What a persisted manifest says about the graph next to it.
+   *
+   * @param formatVersion version of this file's own layout
+   * @param vectorCount   number of ordinals the graph was built over
+   * @param fingerprint   fingerprint of the ordinal &rarr; (vector id, RID) correspondence
+   */
+  public record Content(int formatVersion, int vectorCount, long fingerprint) {
+  }
+
+  private final Path path;
+
+  LSMVectorIndexGraphManifest(final String graphFilePath) {
+    this.path = Path.of(graphFilePath + "." + FILE_EXT);
+  }
+
+  /**
+   * Fingerprint of the ordinal &rarr; record correspondence a graph is built over: for every ordinal, the vector id
+   * and the RID it resolves to. FNV-1a over the whole sequence, the same construction
+   * {@code LocalBucket.chunkChainTailFingerprint} uses.
+   * <p>
+   * An ordinal whose RID cannot be resolved contributes a distinct marker rather than being skipped: skipping would
+   * make an unresolvable ordinal invisible, so a live set that lost exactly that record would fingerprint the same.
+   *
+   * @param vectorIds    the ordinal &rarr; vector id array, in ordinal order
+   * @param ridOfVector  resolves a vector id to its RID, or {@code null} when the location is gone
+   */
+  public static long fingerprintOf(final int[] vectorIds, final IntFunction<RID> ridOfVector) {
+    long hash = FNV_OFFSET_BASIS;
+    hash = mixInt(hash, vectorIds.length);
+    for (final int vectorId : vectorIds) {
+      hash = mixInt(hash, vectorId);
+      final RID rid = ridOfVector.apply(vectorId);
+      if (rid == null) {
+        hash = mixInt(hash, -1);
+        hash = mixLong(hash, -1L);
+      } else {
+        hash = mixInt(hash, rid.getBucketId());
+        hash = mixLong(hash, rid.getPosition());
+      }
+    }
+    return hash;
+  }
+
+  private static long mixInt(long hash, final int value) {
+    for (int shift = 24; shift >= 0; shift -= 8) {
+      hash ^= (value >>> shift) & 0xFFL;
+      hash *= FNV_PRIME;
+    }
+    return hash;
+  }
+
+  private static long mixLong(long hash, final long value) {
+    for (int shift = 56; shift >= 0; shift -= 8) {
+      hash ^= (value >>> shift) & 0xFFL;
+      hash *= FNV_PRIME;
+    }
+    return hash;
+  }
+
+  public Path getFilePath() {
+    return path;
+  }
+
+  public boolean exists() {
+    return Files.exists(path);
+  }
+
+  /**
+   * Drops the manifest. Called before the graph pages are rewritten, so that a persist interrupted half way leaves
+   * a graph nothing vouches for instead of a graph the previous manifest still appears to describe.
+   */
+  public void invalidate() {
+    try {
+      Files.deleteIfExists(path);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not remove the vector graph manifest '%s': %s", path,
+          e.getMessage());
+    }
+  }
+
+  /**
+   * Records the correspondence the just-committed graph was built over. Written through a temporary file so a
+   * crash mid-write cannot leave a truncated manifest that reads as a valid one.
+   */
+  public void write(final int vectorCount, final long fingerprint) {
+    final Path temporary = path.resolveSibling(path.getFileName() + ".tmp");
+    try {
+      final Path parent = path.getParent();
+      if (parent != null && !Files.exists(parent))
+        Files.createDirectories(parent);
+
+      final JSONObject json = new JSONObject();
+      json.put("formatVersion", FORMAT_VERSION);
+      json.put("vectorCount", vectorCount);
+      // As a string: a 64-bit fingerprint is not representable in the double a JSON number decodes to.
+      json.put("fingerprint", Long.toString(fingerprint));
+
+      Files.writeString(temporary, json.toString(), StandardCharsets.UTF_8);
+      try {
+        Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } catch (final Exception e) {
+      // A missing manifest only costs a rebuild on the next load, so this must never fail a graph persist.
+      LogManager.instance().log(this, Level.WARNING, "Could not write the vector graph manifest '%s': %s", path,
+          e.getMessage());
+      try {
+        Files.deleteIfExists(temporary);
+      } catch (final IOException ignored) {
+        // NOTHING ELSE TO DO
+      }
+    }
+  }
+
+  /**
+   * @return what the manifest on disk says, or {@code null} when there is none, it cannot be read, or it was
+   * written by a layout this build does not know
+   */
+  public Content read() {
+    if (!Files.exists(path))
+      return null;
+
+    try {
+      final JSONObject json = new JSONObject(Files.readString(path, StandardCharsets.UTF_8));
+      final int formatVersion = json.getInt("formatVersion", -1);
+      if (formatVersion != FORMAT_VERSION) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector graph manifest '%s' has format version %d, expected %d: ignoring it", path, formatVersion,
+            FORMAT_VERSION);
+        return null;
+      }
+      return new Content(formatVersion, json.getInt("vectorCount", -1),
+          Long.parseLong(json.getString("fingerprint", "0")));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not read the vector graph manifest '%s': %s", path,
+          e.getMessage());
+      return null;
+    }
+  }
+}

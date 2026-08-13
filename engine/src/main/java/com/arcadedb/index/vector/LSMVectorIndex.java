@@ -1402,24 +1402,57 @@ public class LSMVectorIndex implements Index, IndexInternal {
               "Loaded graph from disk for index: %s, graphSize=%d, ordinalToVectorIdLength=%d, vectorIndexSize=%d",
               indexName, graphSize, rebuiltOrdinalToVectorId.length, vectorIndex.size());
 
-          // CRITICAL FIX FOR #3722: Check if persisted graph is stale (has fewer vectors than currently active).
-          // This happens when vectors were added after the graph was last built and persisted.
-          // On database restart, deltaVectors (volatile) are lost and graphState is set to IMMUTABLE,
-          // so rebuildGraphBeforeSearch() never triggers. Search can only find nodes in the stale graph.
+          // CRITICAL FIX FOR #3722: a persisted graph with fewer nodes than there are active vectors is stale -
+          // vectors were added after it was last built and persisted. On database restart deltaVectors (volatile)
+          // are lost and graphState is set to IMMUTABLE, so rebuildGraphBeforeSearch() never triggers and search
+          // can only find nodes in the stale graph.
           //
-          // This is a COUNT comparison, not a content one: a persisted graph whose node count merely happens to
-          // match the current live count is treated as up to date even if it was built for a different generation
-          // of the live set. A renumbering compaction (issue #5870) makes that coincidence more likely to matter,
-          // not less - every post-compaction generation's ids are densely [0, N), so two different generations of
-          // the same index are far more likely to independently land on matching lengths than the old sparse,
-          // monotonically-growing ids ever were. Whether a real crash window can pair a stale graph with a live
-          // set of the same size this way is tracked, not confirmed, in issue #6106.
-          if (graphSize < rebuiltOrdinalToVectorId.length) {
+          // ISSUE #6106: that comparison is about how MANY vectors there are, and reusing the graph needs to know
+          // WHICH ones. The graph is addressed by ordinal, and ordinal i means a record only through the array
+          // rebuilt just above; pair a graph with an array from another generation of the live set and every node
+          // answers for a record it was never built from - a wrong-but-plausible result, not a failure. Counts
+          // cannot separate the two: since the renumbering compaction of issue #5870 every generation's ids are
+          // densely [0, N), so two generations holding different records routinely produce arrays of identical
+          // length. The manifest written next to the graph records the correspondence itself, and comparing
+          // against it is what makes the reuse safe rather than merely plausible.
+          final LSMVectorIndexGraphManifest.Content persistedManifest = graphFile.getManifest().read();
+
+          final String staleReason;
+          if (persistedManifest == null) {
+            // No manifest: a graph persisted by a version older than this check, or one whose persist was
+            // interrupted before it could write one. Judge it the historical way, by node count, rather than
+            // forcing every existing index to rebuild on the first open after an upgrade - but widen the
+            // comparison to ANY difference, because a graph larger than the live set lines its ordinals up no
+            // better than a smaller one: everything past the end of the rebuilt array is dropped as out of
+            // bounds, and everything before it can still address the wrong record.
+            staleReason = graphSize != rebuiltOrdinalToVectorId.length ?
+                "it has no manifest and holds %d nodes against %d active vectors".formatted(graphSize,
+                    rebuiltOrdinalToVectorId.length) :
+                null;
+            if (staleReason == null)
+              LogManager.instance().log(this, Level.WARNING,
+                  "Vector index %s is reusing a persisted graph that carries no manifest: its %d nodes match the "
+                      + "live vector count, but nothing on disk says they describe these records (issue #6106). "
+                      + "The next graph persist writes one; REBUILD INDEX forces it now",
+                  indexName, graphSize);
+          } else if (persistedManifest.vectorCount() != rebuiltOrdinalToVectorId.length
+              || persistedManifest.fingerprint() != LSMVectorIndexGraphManifest.fingerprintOf(
+              rebuiltOrdinalToVectorId, vectorIndex::getRid)) {
+            staleReason = "it was built over %d records the manifest fingerprints as %s, not over the %d now live".formatted(
+                persistedManifest.vectorCount(), Long.toHexString(persistedManifest.fingerprint()),
+                rebuiltOrdinalToVectorId.length);
+          } else if (graphSize != rebuiltOrdinalToVectorId.length) {
+            // The manifest agrees with the live set but the pages do not: a truncated or otherwise damaged
+            // persist. Nothing here can repair it, so rebuild.
+            staleReason = "the pages hold %d nodes while its manifest and the live set both say %d".formatted(
+                graphSize, rebuiltOrdinalToVectorId.length);
+          } else
+            staleReason = null;
+
+          if (staleReason != null) {
             LogManager.instance().log(this, Level.INFO,
-                """
-                Persisted graph is stale for index %s: graph has %d nodes but %d active vectors exist - \
-                rebuilding from scratch (fixes issue #3722: missing vectors after database restart)""",
-                indexName, graphSize, rebuiltOrdinalToVectorId.length);
+                "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
+                indexName, staleReason);
             // Don't use the stale graph — fall through to buildGraphFromScratch() below
           } else {
             // Graph is up to date — use it
@@ -2493,6 +2526,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
                     indexName);
           }
 
+          // Only now that the pages are committed may the manifest vouch for them (issue #6106). Written after the
+          // commit and never before: a manifest that outlived a persist which did not complete would be the one
+          // thing able to certify a graph nobody built.
+          writeGraphManifest(gf, finalActiveVectorIds);
+
           // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so the
           // current session benefits from inline vector storage immediately. This is safe because
           // the transaction has been committed above, so all graph pages are flushed and visible.
@@ -2635,6 +2673,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
             + "defined only for normalized vectors, so search quality is degraded: normalize the vectors on ingest or "
             + "recreate the index with COSINE. This is reported once per index",
         indexName, nonUnit, sampled, nonUnit * 100 / sampled);
+  }
+
+  /**
+   * Records, next to the graph pages that have just been committed, which records that graph was built over
+   * (issue #6106). Call this only after the commit: the manifest is the one thing able to certify a graph, so it
+   * must never outlive a persist that did not complete.
+   * <p>
+   * The RIDs come from the live location index rather than from the build snapshot because a vector id's RID is
+   * fixed for the life of that id - an update issues a new id rather than re-pointing an existing one - so the two
+   * cannot disagree. An id whose location has since gone reads as absent here and is equally absent from the array
+   * the load path rebuilds, which makes the graph fail the check and be rebuilt: the conservative direction.
+   *
+   * @param persistedTo            the component the graph was written to
+   * @param graphOrdinalToVectorId ordinal &rarr; vector id array the graph was built with
+   */
+  private void writeGraphManifest(final LSMVectorIndexGraphFile persistedTo, final int[] graphOrdinalToVectorId) {
+    if (persistedTo == null || graphOrdinalToVectorId == null || graphOrdinalToVectorId.length == 0)
+      return;
+
+    persistedTo.getManifest().write(graphOrdinalToVectorId.length,
+        LSMVectorIndexGraphManifest.fingerprintOf(graphOrdinalToVectorId, vectorIndex::getRid));
   }
 
   private long getTxChunkSize() {
@@ -5707,6 +5766,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final File graphIndexFile = graphFile.getOSFile();
         if (graphIndexFile.exists())
           graphIndexFile.delete();
+        // And the sidecar that describes it: left behind, it would be read as vouching for whatever graph file a
+        // later index happened to create under the same name (issue #6106).
+        graphFile.getManifest().invalidate();
       }
 
       // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
@@ -5861,6 +5923,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // PHASE 4: Final commit and mark READY
             if (startedTransaction)
               db.getWrappedDatabaseInstance().commit();
+
+            // buildGraphWithChunking() rewrites the graph pages inside this transaction, which drops the manifest;
+            // only here, past the commit, is there a persisted graph to vouch for again (issue #6106).
+            writeGraphManifest(graphFile, ordinalToVectorId);
 
             persistBuildState(BUILD_STATE.READY);
 
