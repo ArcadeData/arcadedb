@@ -25,8 +25,9 @@ import java.util.List;
 
 /**
  * coll.pairsMin(list) - Returns the consecutive-element pairs of a list, e.g. {@code coll.pairsMin([1, 2, 3])}
- * returns {@code [[1, 2], [2, 3]]}. Unlike {@code coll.pairs}, the trailing incomplete pair is dropped instead of
- * being padded with {@code null}, so a list of fewer than two elements yields an empty list.
+ * returns {@code [[1, 2], [2, 3]]}. Where APOC's {@code apoc.coll.pairs} pads the trailing incomplete pair with
+ * {@code null}, this one drops it, so a list of fewer than two elements yields an empty list. Only the dropping
+ * variant is implemented here; there is no {@code coll.pairs} in this engine.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

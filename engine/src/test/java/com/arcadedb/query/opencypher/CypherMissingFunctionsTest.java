@@ -474,13 +474,18 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
+  @SuppressWarnings("unchecked")
   void collPairsMinDropsTheTrailingIncompletePair() {
-    // This is the whole difference from coll.pairs: no [3, null] tail is appended.
+    // This is the whole difference from APOC's coll.pairs: no [3, null] tail is appended. Assert the last pair
+    // specifically, so this stays a check on the tail rather than a restatement of collPairsMin()'s size check.
     final ResultSet rs = database.query("opencypher", "RETURN coll.pairsMin([1, 2, 3]) AS result");
     assertThat(rs.hasNext()).isTrue();
-    @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
-    assertThat(result).hasSize(2);
+
+    final List<Object> last = (List<Object>) result.get(result.size() - 1);
+    assertThat(last).doesNotContainNull();
+    assertThat(((Number) last.get(0)).longValue()).isEqualTo(2L);
+    assertThat(((Number) last.get(1)).longValue()).isEqualTo(3L);
   }
 
   @Test
