@@ -22,7 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
@@ -32,9 +32,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.util.HashSet;
+import java.nio.file.Files;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -81,7 +80,7 @@ class Issue6116ChecksumsPointInTimeTest {
 
       final Map<String, Long> live = SnapshotManager.computeFileChecksums(dbDir);
       try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
-        final Map<String, Long> viaSnapshot = SnapshotManager.computeFileChecksums(dbDir, snapshot, pageFileNames(db));
+        final Map<String, Long> viaSnapshot = SnapshotManager.computeFileChecksums(dbDir, snapshot);
         assertThat(viaSnapshot).isEqualTo(live);
       }
     }
@@ -98,14 +97,14 @@ class Issue6116ChecksumsPointInTimeTest {
       final File dbDir = new File(db.getDatabasePath());
 
       try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
-        final Map<String, Long> t0 = SnapshotManager.computeFileChecksums(dbDir, snapshot, pageFileNames(db));
+        final Map<String, Long> t0 = SnapshotManager.computeFileChecksums(dbDir, snapshot);
         assertThat(t0).isNotEmpty();
 
         database.transaction(() -> database.iterateType(TYPE, false).forEachRemaining(
             record -> record.asDocument().modify().set("payload", "rewritten-" + "y".repeat(300)).save()));
         db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
-        assertThat(SnapshotManager.computeFileChecksums(dbDir, snapshot, pageFileNames(db)))
+        assertThat(SnapshotManager.computeFileChecksums(dbDir, snapshot))
             .as("the window must keep answering with its t0 image").isEqualTo(t0);
         assertThat(SnapshotManager.computeFileChecksums(dbDir))
             .as("a live read of the same directory must have changed, or the assertion above proves nothing")
@@ -114,6 +113,39 @@ class Issue6116ChecksumsPointInTimeTest {
         // THE SCRATCH SPILL FILE OF THE OPEN WINDOW LIVES IN THIS VERY DIRECTORY AND IS NOT PART OF THE DATABASE:
         // CHECKSUMMING IT WOULD REPORT A FILE NO PEER HAS
         assertThat(t0.keySet()).noneMatch(name -> name.endsWith("." + PageSnapshot.SHADOW_FILE_EXT));
+      }
+    }
+  }
+
+  /**
+   * A page file that appears in the directory but not in the window was created after t0 - index compaction does
+   * exactly this during a backup, and it does it WITHOUT the database write lock, so it can happen at any point
+   * while this endpoint is reading. It must be left out, not CRC'd live: a torn checksum of a file being written is
+   * worse than an absent one in a map whose only purpose is to be compared with another node's.
+   * <p>
+   * Deciding that by extension rather than by asking the FileManager for its current file list is what makes this
+   * race-free: a name set captured before the directory listing can already be out of date by the time the listing
+   * runs.
+   */
+  @Test
+  void aPageFileThatAppearsAfterT0IsLeftOutWhileANonPageFileIsStillRead() throws Exception {
+    try (final Database database = createDatabase()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final File dbDir = new File(db.getDatabasePath());
+
+      try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+        // APPEARING UNDER THE READER, AFTER t0, EXACTLY AS A COMPACTED INDEX FILE DOES
+        Files.writeString(new File(dbDir, "Latecomer_9.1.64." + LocalBucket.BUCKET_EXT).toPath(), "post-t0 bytes");
+        Files.writeString(new File(dbDir, "operator-notes.txt").toPath(), "not a page file");
+
+        final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(dbDir, snapshot);
+
+        assertThat(checksums).doesNotContainKey("Latecomer_9.1.64." + LocalBucket.BUCKET_EXT);
+        assertThat(checksums).as("a file the snapshot never covered is still read live, as it always was")
+            .containsKey("operator-notes.txt");
+        // THE CONTROL: WITHOUT A WINDOW THERE IS NO POINT IN TIME TO BE OUTSIDE OF, SO BOTH ARE READ
+        assertThat(SnapshotManager.computeFileChecksums(dbDir))
+            .containsKey("Latecomer_9.1.64." + LocalBucket.BUCKET_EXT);
       }
     }
   }
@@ -243,14 +275,6 @@ class Issue6116ChecksumsPointInTimeTest {
     } finally {
       handler.close();
     }
-  }
-
-  private static Set<String> pageFileNames(final DatabaseInternal db) {
-    final Set<String> names = new HashSet<>();
-    for (final ComponentFile file : db.getFileManager().getFiles())
-      if (file != null)
-        names.add(file.getFileName());
-    return names;
   }
 
   private Database createDatabase() {

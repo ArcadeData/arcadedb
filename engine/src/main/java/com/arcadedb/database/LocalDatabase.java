@@ -164,6 +164,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       HashIndexBucket.UNIQUE_INDEX_EXT,
       HashIndexBucket.NOTUNIQUE_INDEX_EXT);
 
+  /**
+   * True when {@code fileName}'s extension is one the {@link FileManager} treats as a component file, i.e. one whose
+   * content a point-in-time page snapshot (#6075) covers. The extension is taken from the NAME, never the path, so a
+   * database directory containing a dot does not confuse it - the same rule
+   * {@code FileManager.scanDirectoryForComponentFiles} applies when deciding what to register.
+   * <p>
+   * Exposed (#6116) so a reader walking the database DIRECTORY rather than the registered files - the HA
+   * {@code /checksums} endpoint - can tell a page file from a configuration or time-series file by name alone. The
+   * obvious alternative, asking the {@code FileManager} which files it currently has registered, is a moving target:
+   * index compaction creates and drops component files WITHOUT the database write lock, so a set captured a moment
+   * earlier can miss a file that is already on disk.
+   */
+  public static boolean isComponentFileName(final String fileName) {
+    final int lastDot = fileName.lastIndexOf('.');
+    return lastDot >= 0 && SUPPORTED_FILE_EXT.contains(fileName.substring(lastDot + 1));
+  }
+
   public final       AtomicLong                                indexCompactions          = new AtomicLong();
   protected final    String                                    name;
   protected final    ComponentFile.MODE                        mode;

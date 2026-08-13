@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -26,11 +27,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.zip.CRC32;
 
 /**
@@ -122,7 +121,7 @@ public final class SnapshotManager {
    * @throws IOException if a file cannot be read
    */
   public static Map<String, Long> computeFileChecksums(final File directory) throws IOException {
-    return computeFileChecksums(directory, null, Set.of());
+    return computeFileChecksums(directory, null);
   }
 
   /**
@@ -137,22 +136,26 @@ public final class SnapshotManager {
    * {@code schema.json}, the {@code .ts.sealed} time-series stores, the {@code last-tx-id.bin} marker. Those are
    * read raw, as before; the database read lock the caller holds is what makes that safe, and is unchanged.
    * <p>
-   * A page file the FileManager has registered but the window does not carry was created after t0, so it has no
-   * point-in-time content to report: it is skipped rather than read live, which is the same rule
-   * {@code PostVerifyDatabaseHandler} follows by iterating the window's own file list. Reading it live would put a
-   * torn CRC of a file being actively written into a map whose whole purpose is to be compared with another node's.
+   * A page file the window does not carry was created after t0, so it has no point-in-time content to report: it is
+   * skipped rather than read live, which is the same rule {@code PostVerifyDatabaseHandler} follows by iterating the
+   * window's own file list. Reading it live would put a torn CRC of a file being actively written into a map whose
+   * whole purpose is to be compared with another node's.
+   * <p>
+   * "Is this a page file" is decided from the NAME ({@link LocalDatabase#isComponentFileName}) rather than by asking
+   * the {@code FileManager} what it currently has registered. The registry is a moving target even under the
+   * database read lock this runs beneath: index compaction creates and drops component files without the write
+   * lock, so a name set captured a moment before the directory listing can miss a file that is already on disk -
+   * and that file would then be CRC'd live, which is precisely the case being excluded.
    *
-   * @param directory     the database directory to scan
-   * @param snapshot      the open window to serve page files from, or {@code null} to read everything live
-   * @param pageFileNames names of the page files currently registered with the FileManager, used to tell a file
-   *                      created after t0 from one the snapshot simply does not cover
+   * @param directory the database directory to scan
+   * @param snapshot  the open window to serve page files from, or {@code null} to read everything live
    *
    * @return a map of file name to CRC32 checksum value
    *
    * @throws IOException if a file cannot be read
    */
-  public static Map<String, Long> computeFileChecksums(final File directory, final PageSnapshot snapshot,
-      final Collection<String> pageFileNames) throws IOException {
+  public static Map<String, Long> computeFileChecksums(final File directory, final PageSnapshot snapshot)
+      throws IOException {
     final Map<String, Long> checksums = new HashMap<>();
     final File[] files = directory.listFiles(File::isFile);
     if (files == null)
@@ -179,8 +182,9 @@ public final class SnapshotManager {
         continue;
       }
 
-      if (snapshot != null && pageFileNames.contains(name))
-        // A PAGE FILE CREATED AFTER t0: IT HAS NO POINT-IN-TIME CONTENT, SO IT IS ABSENT RATHER THAN TORN
+      if (snapshot != null && LocalDatabase.isComponentFileName(name))
+        // A PAGE FILE THE WINDOW DOES NOT CARRY WAS CREATED AFTER t0 (INDEX COMPACTION DOES THIS DURING A BACKUP):
+        // IT HAS NO POINT-IN-TIME CONTENT, SO IT IS ABSENT RATHER THAN TORN
         continue;
 
       final CRC32 crc = new CRC32();

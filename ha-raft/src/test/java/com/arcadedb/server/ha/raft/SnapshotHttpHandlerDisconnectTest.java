@@ -66,4 +66,23 @@ class SnapshotHttpHandlerDisconnectTest {
   void nullIsNotAClientDisconnect() {
     assertThat(SnapshotHttpHandler.isClientDisconnect(null)).isFalse();
   }
+
+  /**
+   * #6116: the {@code /checksums} 500 body reports the DEEPEST cause. {@code executeInReadLock} rewraps every
+   * checked exception into {@code ArcadeDBException("Error in execution in lock", cause)}, so reporting the
+   * top-level message would answer a real "permission denied on file X" with a sentence about a lock.
+   */
+  @Test
+  void theChecksumsFailureMessageComesFromTheDeepestCause() {
+    final Throwable wrapped = new RuntimeException("Error in execution in lock",
+        new IOException("Permission denied: /data/mydb/Doc_0.1.64.bucket"));
+    assertThat(SnapshotHttpHandler.rootCauseMessage(wrapped))
+        .isEqualTo("Permission denied: /data/mydb/Doc_0.1.64.bucket");
+  }
+
+  @Test
+  void aFailureWithNoMessageStillReportsSomething() {
+    assertThat(SnapshotHttpHandler.rootCauseMessage(new RuntimeException(new NullPointerException())))
+        .isEqualTo("java.lang.NullPointerException");
+  }
 }

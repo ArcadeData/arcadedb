@@ -278,7 +278,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       exchange.getResponseSender().send(response.toString());
     } catch (final Exception e) {
       exchange.setStatusCode(500);
-      exchange.getResponseSender().send("Error computing checksums: " + e.getMessage());
+      exchange.getResponseSender().send("Error computing checksums: " + rootCauseMessage(e));
     } finally {
       dbSuspendLock.unlock();
     }
@@ -290,9 +290,9 @@ public class SnapshotHttpHandler implements HttpHandler {
    * This endpoint was the last reader in the product still freezing the data files with
    * {@code suspendFlushAndExecute} after #6075 migrated the backup, the HA verify and the HA snapshot ship: it
    * reads the database DIRECTORY rather than the registered page files, so it needed the directory-oriented shape
-   * of {@link SnapshotManager#computeFileChecksums(File, PageSnapshot, Collection)} rather than the verify
-   * handler's file-list one. It is a rarely called diagnostic, but on a large database it reads every byte of
-   * every file, so on the old path it throttled the leader's committers for its whole duration.
+   * of {@link SnapshotManager#computeFileChecksums(File, PageSnapshot)} rather than the verify handler's file-list
+   * one. It is a rarely called diagnostic, but on a large database it reads every byte of every file, so on the old
+   * path it throttled the leader's committers for its whole duration.
    * <p>
    * Falls back to the suspension exactly as the other consumers do: a window that cannot be opened must degrade to
    * a slower answer, never to no answer. Package-private so the two paths can be driven from a test without an
@@ -305,7 +305,7 @@ public class SnapshotHttpHandler implements HttpHandler {
     db.executeInReadLock(() -> {
       if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
         try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
-          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir, snapshot, registeredPageFileNames(db)));
+          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir, snapshot));
           return null;
         } catch (final PageSnapshotException e) {
           // THE WINDOW LOST ITS POINT IN TIME (SHADOW CAP BREACH, I/O ERROR): NOTHING HAS BEEN PUT IN THE RESPONSE
@@ -342,16 +342,16 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   /**
-   * Names of the page files the FileManager currently has registered. Used to tell a page file created after the
-   * snapshot's t0 - which has no point-in-time content and is therefore left out - from the config and time-series
-   * files the window never covered, which are still read raw.
+   * Message of the deepest cause, for the 500 body. {@code executeInReadLock} rewraps anything that is not a
+   * {@link RuntimeException} into {@code ArcadeDBException("Error in execution in lock", cause)}, whose own message
+   * says nothing about what actually failed - so reporting {@code e.getMessage()} would answer a genuine
+   * "permission denied on file X" with "Error in execution in lock". The cause chain still carries the real one.
    */
-  private static Collection<String> registeredPageFileNames(final DatabaseInternal db) {
-    final Set<String> names = new HashSet<>();
-    for (final ComponentFile file : db.getFileManager().getFiles())
-      if (file != null)
-        names.add(file.getFileName());
-    return names;
+  static String rootCauseMessage(final Throwable error) {
+    Throwable deepest = error;
+    while (deepest.getCause() != null && deepest.getCause() != deepest)
+      deepest = deepest.getCause();
+    return deepest.getMessage() != null ? deepest.getMessage() : deepest.toString();
   }
 
   /**
