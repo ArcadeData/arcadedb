@@ -159,7 +159,12 @@ class CheckDatabaseTest extends TestHelper {
       final Result row = result.next();
 
       assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
-      assertThat((Long) row.getProperty("autoFix")).isEqualTo(1);
+      // TWO repairs for one deleted edge record, and 2 is the honest number: the edge was referenced from the OUT
+      // list of its source and the IN list of its target, and FIX prunes both dangling entries. It matches the
+      // invalidLinks = 2 this same run reports just below. It used to read 1, which counted something that never
+      // happened - the attempted delete of the edge RID, which is already gone and always raises
+      // RecordNotFoundException - while counting neither entry that was actually pruned (issue #6128).
+      assertThat((Long) row.getProperty("autoFix")).isEqualTo(2);
       assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
       assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 2);
       assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 2);
