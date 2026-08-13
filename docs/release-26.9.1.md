@@ -921,3 +921,85 @@ source file's modification time - which is the more useful of the two, and was a
 archive written with `arcadedb.backup.compressionThreads = 0`.
 
 [#6075](https://github.com/ArcadeData/arcadedb/issues/6075)
+
+## The snapshot backup, measured; an open window is now visible in the metrics; the HA `/checksums` endpoint stops freezing the files (#6116)
+
+Three loose ends left behind by the point-in-time snapshot of #6075.
+
+### The benchmarks #6075 asked for
+
+`Issue6075SnapshotBackupIT` measured the suspension fraction and nothing else. Two harnesses now cover the rest:
+`PageSnapshotOverheadBenchmark` (engine) for the write path, the t0 barrier, the flush-thread drain rate and the
+`TransactionManager` apply lock, and `PageSnapshotBackupBenchmark` (integration) for what a running backup does to
+the writers beside it, shaped like the #6072 harness so the two sets of numbers can be read together. Both are
+`@Tag("benchmark")`, so neither runs in CI.
+
+Two of the numbers they produce are worth stating here, because both correct something the #6075 write-up asserted:
+
+- **The t0 barrier is not "a few ms" under load.** With no concurrent writer it is 13-120 us. With one to eight
+  writer threads committing continuously it runs to tens of milliseconds, occasionally past 100 ms, and the driver
+  is not the flush-queue depth (which stays small) but the barrier RETRYING: it drains the queue in full, and a
+  commit landing between that drain and the flush-thread suspension makes it start over. It is still bounded, still
+  vastly better than a suspension held for the whole backup, and still the only stall in the design - but its size
+  is now known rather than assumed.
+- **The copy-on-write shadow can reach the size of the database.** During a throttled backup of a 128 MB database,
+  the shadow peaked at 37% of it with a writer pausing 100 ms between transactions, 84% at 20 ms, and 100% with a
+  writer running flat out - it holds the pre-image of every page dirtied while the window is open, so a hot
+  database rewrites all of them. The 1 GB `arcadedb.pageSnapshotMaxSize` default is therefore not the generous
+  ceiling it looks like: on a database much beyond a gigabyte under a heavy write load, expect the window to breach
+  it and the backup to restart on the suspend-and-freeze path. Raise it (or accept the fallback) accordingly - and
+  the new `arcadedb_engine_snapshot_shadow_usage_percent` gauge below is how to tell which of the two you are
+  heading for.
+
+The writer-impact comparison itself, on a 128 MB database rebuilt before each run, with a mixed insert/update load
+and the backup throttled to 32 MB/s, counting only the commits that fall inside the backup window:
+
+| | rec/s inside the window | of the no-backup baseline | peak deferred RAM |
+|---|---|---|---|
+| no backup running | 193,854 | - | 0 |
+| backup, snapshot path | 185,120 | **95.5%** | **0** |
+| backup, suspend-and-freeze | 5,274 | 2.7% | 513 MB |
+
+513 MB is `arcadedb.flushSuspendMaxDeferredRAM` reached, which is the point at which committing threads stop being
+merely slowed and start being throttled outright. On the snapshot path the deferred-RAM gauge never leaves zero -
+the claim #6075 rested on, stated as a measurement rather than as a design argument.
+
+### An open window is now visible
+
+`PageManager.getStats()` gained the snapshot readings, so they reach both Prometheus (through
+`EngineMetricsBinder`) and Studio's server page (through `Profiler`, which renders every stat it publishes). Per
+the counter/gauge distinction of #5636, the per-window state is gauges and only the JVM-wide totals are counters:
+
+| Metric | Type | |
+|---|---|---|
+| `arcadedb_engine_snapshot_windows_open` | gauge | windows open right now |
+| `arcadedb_engine_snapshot_shadow_pages` | gauge | pages held in their shadows |
+| `arcadedb_engine_snapshot_shadow_bytes` | gauge | bytes held, RAM plus spill |
+| `arcadedb_engine_snapshot_shadow_spilled_bytes` | gauge | of which spilled to disk |
+| `arcadedb_engine_snapshot_shadow_usage_percent` | gauge | the fullest window against `pageSnapshotMaxSize` |
+| `arcadedb_engine_snapshot_window_age_ms` | gauge | age of the oldest open window |
+| `arcadedb_engine_snapshot_windows_opened_total` | counter | windows opened |
+| `arcadedb_engine_snapshot_windows_invalidated_total` | counter | windows that lost their point in time |
+| `arcadedb_engine_snapshot_preimages_captured_total` | counter | pre-images copied |
+| `arcadedb_engine_flush_deferred_bytes` | gauge | dirty bytes deferred by a flush suspension (#6087) |
+
+The alertable ones are the usage percentage and the invalidation counter. A window that breaches its cap is
+invalidated and its consumer falls back to the suspend-and-freeze path, which still completes - so before this, a
+backup that had quietly gone back to throttling every writer on the server left no trace except a WARNING in the
+log.
+
+### `GET /api/v1/ha/snapshot/{db}/checksums` no longer suspends flushing
+
+The last writer-throttling reader in the product. #6075 migrated the backup, the HA verify and the HA snapshot
+ship but left this one on `suspendFlushAndExecute`, because it reads the database DIRECTORY rather than the
+registered page files and so needed a different shape. It now takes each page file's content from a window and
+reads everything the window does not cover - `database.json`, `schema.json`, the `.ts.sealed` time-series stores -
+raw, as before, under the same database read lock. A page file created after t0 is left out rather than read live,
+matching what the verify endpoint reports; the checksums are byte-for-byte the ones a peer still on the fallback
+path computes, so a migrated leader does not report every file as differing.
+
+One transient file was being checksummed that should not have been: the `.pshadow` scratch of an open snapshot
+window lives in the database directory, so any node that happened to have a backup running reported a file no peer
+had.
+
+[#6116](https://github.com/ArcadeData/arcadedb/issues/6116)

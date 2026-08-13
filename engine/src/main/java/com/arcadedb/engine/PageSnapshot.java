@@ -190,6 +190,15 @@ public class PageSnapshot implements AutoCloseable {
     return shadow.getSpilledBytes();
   }
 
+  /**
+   * The {@code arcadedb.pageSnapshotMaxSize} cap this window's shadow was opened with, in bytes. Exposed so a monitor
+   * can report the headroom left before the window is invalidated and its consumer forced onto the
+   * suspend-and-freeze path (#6116), rather than only reporting the breach after the fact.
+   */
+  public long getShadowMaxSizeInBytes() {
+    return shadow.getMaxSizeInBytes();
+  }
+
   public long getOpenedOn() {
     return openedOn;
   }
@@ -333,6 +342,9 @@ public class PageSnapshot implements AutoCloseable {
     if (status == STATUS.ACTIVE) {
       status = newStatus;
       invalidReason = reason;
+      // #6116: A CONSUMER THAT FALLS BACK STILL COMPLETES, SO THIS IS INVISIBLE OUTSIDE THE LOG UNLESS IT IS COUNTED.
+      // COUNTED HERE RATHER THAN AT THE CALL SITES SO NO FUTURE INVALIDATION REASON CAN FORGET TO
+      pageManager.incrementSnapshotWindowsInvalidated();
       LogManager.instance().log(this, Level.WARNING,
           "Snapshot of database '%s' is no longer usable (%s): %s. Readers will fail and can fall back to suspending the page flush",
           null, database.getName(), newStatus, reason);

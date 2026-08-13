@@ -214,6 +214,11 @@ final class PageShadow implements AutoCloseable {
     return spillBytes;
   }
 
+  /** The cap {@link #getSizeInBytes()} is measured against, so a monitor can report the headroom left (#6116). */
+  long getMaxSizeInBytes() {
+    return maxTotalBytes;
+  }
+
   @Override
   public synchronized void close() {
     if (closed)

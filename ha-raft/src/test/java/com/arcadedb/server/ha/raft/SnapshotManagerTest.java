@@ -61,6 +61,26 @@ class SnapshotManagerTest {
     assertThat(checksums.get("a.dat")).isNotEqualTo(checksums.get("b.dat"));
   }
 
+  /**
+   * #6116: the transient files a checksum comparison must not see. The {@code .pshadow} entry is the newest of them
+   * and the easiest to miss - it is the copy-on-write scratch of an open snapshot window (#6075), it lives in the
+   * database directory, and its content is whatever pages happened to be dirtied, so a node that has one and a node
+   * that does not would be reported as inconsistent for no reason at all.
+   */
+  @Test
+  void transientFilesAreNotChecksummed(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    Files.writeString(tempDir.resolve("txlog_0.wal"), "wal");
+    Files.writeString(tempDir.resolve("schema.prev.json"), "{}");
+    Files.writeString(tempDir.resolve("database.lock"), "");
+    Files.writeString(tempDir.resolve("txlog_1.corrupt"), "corrupt");
+    Files.writeString(tempDir.resolve("snapshot-1.pshadow"), "shadow");
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
+
+    assertThat(checksums).containsOnlyKeys("database.json");
+  }
+
   @Test
   void findDifferingFiles() {
     final Map<String, Long> leader = Map.of("file1", 100L, "file2", 200L, "file3", 300L);
