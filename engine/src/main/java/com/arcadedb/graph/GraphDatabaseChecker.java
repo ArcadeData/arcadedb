@@ -342,6 +342,19 @@ public class GraphDatabaseChecker {
    * <p>
    * A SOFT ceiling: the check happens between units, so a transaction can exceed the budget by whatever the unit in
    * flight dirties. Leave headroom when tuning it close to the replicated-entry limit.
+   * <p>
+   * WHY THIS WORKS UNDER AN OUTER TRANSACTION, which is the linchpin and not obvious: {@code CHECK DATABASE} runs
+   * through the HTTP handler, which wraps the command in its own transaction, so these are NESTED begin/commit
+   * pairs. They are not savepoints. {@code DatabaseContext.DatabaseContextTL.pushTransaction} gives each one a
+   * genuinely separate {@code TransactionContext}, and {@code commit()} runs the full
+   * {@code commit1stPhase}/{@code commit2ndPhase} on THAT context - a real WAL write and, under HA, a real
+   * replication round trip. If nesting deferred the write to the outermost commit instead, this whole change would
+   * be inert: the repair would still reach Raft as one entry.
+   * <p>
+   * FAILURE PATH: a batch commit that throws propagates to the caller and leaves no transaction open on the
+   * thread - {@code commit()} disposes its context even when the write fails, so the checker does not have to roll
+   * back after it. Batches already committed stay committed, which is the semantic change stated above. Pinned by
+   * {@code CheckDatabaseRepairBatchFailureTest}.
    */
   private void commitRepairBatchIfFull() {
     if (repairBatchPages <= 0)
