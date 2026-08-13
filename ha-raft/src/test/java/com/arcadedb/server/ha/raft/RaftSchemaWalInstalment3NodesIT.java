@@ -108,14 +108,14 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
       assertThat(awaitIndexEntriesOn(i, RECORDS))
           .as("server %d must hold the whole index before the rebuild", i).isEqualTo(RECORDS);
 
-    final long instalmentsBefore = RaftReplicatedDatabase.getSchemaWalInstalmentsShipped();
+    final long instalmentsBefore = instalmentsShippedBy(leaderDb);
 
     try (final ResultSet rs = leaderDb.command("sql", "REBUILD INDEX `" + INDEX_NAME + "`")) {
       assertThat(rs.hasNext()).as("REBUILD INDEX must return a result").isTrue();
       rs.next();
     }
 
-    assertThat(RaftReplicatedDatabase.getSchemaWalInstalmentsShipped() - instalmentsBefore)
+    assertThat(instalmentsShippedBy(leaderDb) - instalmentsBefore)
         .as("the rebuild must have shipped its buffered WAL incrementally rather than holding all of it: without "
             + "instalments this assertion is the only thing that fails, and every other one below passes on the "
             + "old code")
@@ -162,7 +162,7 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
     ddlOnLeader("CREATE DOCUMENT TYPE " + TYPE_NAME);
 
     final DatabaseInternal leaderDb = wrapped(leaderIndex);
-    final long instalmentsBefore = RaftReplicatedDatabase.getSchemaWalInstalmentsShipped();
+    final long instalmentsBefore = instalmentsShippedBy(leaderDb);
     final int[] abandonedFileId = { -1 };
 
     // A DDL session that creates a file, ships more than one instalment's worth of WAL, then fails the way a
@@ -185,8 +185,12 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("simulated mid-build failure");
 
-    assertThat(RaftReplicatedDatabase.getSchemaWalInstalmentsShipped() - instalmentsBefore)
+    assertThat(instalmentsShippedBy(leaderDb) - instalmentsBefore)
         .as("the session must actually have shipped an instalment, or this test proves nothing").isPositive();
+    assertThat(((RaftReplicatedDatabase) leaderDb).getSchemaWalInstalmentTotalTimeMs())
+        .as("the instalments must be TIMED as well as counted (issue #6144): the elapsed time is what a stalled "
+            + "writer on this database is waiting on, and it is the number the metric exports")
+        .isNotNegative();
     assertThat(abandonedFileId[0]).as("the session must have created a file to abandon").isNotNegative();
 
     waitForAllServers();
@@ -228,6 +232,14 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
       Thread.sleep(500);
     }
     throw lastError != null ? lastError : new IllegalStateException("no leader to run '" + sql + "' on");
+  }
+
+  /**
+   * The instalment counter is PER DATABASE (issue #6144), so it is read from the database that ships them rather
+   * than from a JVM-wide static - which, on a multi-database server, would answer for every database at once.
+   */
+  private long instalmentsShippedBy(final DatabaseInternal db) {
+    return ((RaftReplicatedDatabase) db).getSchemaWalInstalmentsShipped();
   }
 
   private DatabaseInternal wrapped(final int serverIndex) {

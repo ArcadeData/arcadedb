@@ -146,6 +146,9 @@ public class DatabaseChecker {
     result.put("reconnectedEdges", 0L);
     result.put("invalidLinks", 0L);
     result.put("warnings", new LinkedHashSet<>());
+    // Issue #6143: files this node holds that no schema component claims. Report-only, always present so a clean
+    // run says "none" rather than saying nothing, and empty under a RECORD scope, which cannot answer the question.
+    result.put("unreferencedFiles", new LinkedHashSet<String>());
     result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
     result.put("corruptedRecords", new LinkedHashSet<>());
     result.put("corruptedIndexes", new LinkedHashSet<>());
@@ -255,6 +258,8 @@ public class DatabaseChecker {
       checkExternalProperties();
 
       corruptMetadataIndexes = checkIndexes();
+
+      checkUnreferencedFiles();
     }
 
     final Set<Integer> affectedBuckets = new HashSet<>();
@@ -1007,6 +1012,39 @@ public class DatabaseChecker {
     if (stepTotal > 0)
       stepDone = stepTotal;
     progressCallback.onProgress(currentStepName, currentStep, totalSteps, stepDone, stepTotal > 0 ? stepTotal : stepDone);
+  }
+
+  /**
+   * Reports the paginated files this node holds that no schema component claims (issue #6143).
+   * <p>
+   * It NEVER removes them, in either mode - see {@link UnreferencedFiles} for why a file whose reference this walk
+   * cannot follow must not be deleted to reclaim disk. The finding is a pointer for an operator, who removes them
+   * with the node stopped.
+   * <p>
+   * The principal producer is a replicated schema session that shipped instalments and then lost leadership: it can
+   * no longer submit the compensating removal, so the files its instalments created stay on the other nodes with
+   * nothing referencing them. Only the node that ran the session logs anything about it, and this check runs on the
+   * LEADER for a replicated database, so a clean result here does not certify the followers - the same caveat
+   * {@code checkedNodeScope} already carries for the rest of the run. Each node also publishes its own count as the
+   * {@code arcadedb.ha.schema.unreferenced_files} gauge, which is how an operator finds the node that holds them.
+   * <p>
+   * No progress step: it reads in-memory registries with no I/O, so it is over before a poller could observe it,
+   * and giving it one would change the step plan every existing progress test asserts.
+   */
+  private void checkUnreferencedFiles() {
+    final List<UnreferencedFiles.UnreferencedFile> unreferenced = UnreferencedFiles.scan(database);
+    if (unreferenced.isEmpty())
+      return;
+
+    final LinkedHashSet<String> reported = (LinkedHashSet<String>) result.get("unreferencedFiles");
+    for (final UnreferencedFiles.UnreferencedFile file : unreferenced)
+      reported.add(file.toString());
+
+    addWarning(unreferenced.size() + " file(s) on this node are referenced by no schema component and nothing will "
+        + "reclaim them: " + reported + ". They are inert - no query, index or replication path reads a file the "
+        + "schema does not reference - so this costs disk only, and this check does not remove them. A schema change "
+        + "interrupted after creating them is the usual cause; a bucket created with CREATE BUCKET and never given "
+        + "to a type is the other, and is not a defect. Remove them with the server stopped, after a backup");
   }
 
   /** Detects (and on FIX deletes) external-property records that are no longer referenced by any primary record. */

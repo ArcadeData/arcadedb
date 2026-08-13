@@ -80,6 +80,39 @@ public interface HAReplicationStatsProvider {
   }
 
   /**
+   * What one database's schema sessions have cost in instalment round trips (issue #6144). A schema session that
+   * buffers more WAL than one Raft entry can carry - principally an index rebuild, including the one
+   * {@code CHECK DATABASE FIX} performs - ships it in instalments, and each instalment is a quorum round trip taken
+   * WHILE THE DATABASE WRITE LOCK IS HELD. That is an accepted trade against the leader holding a whole rebuilt
+   * index in heap, but until this was exported the only signal was a detailed-level HA log line, which an operator
+   * debugging "every write on this database stalled for a while" could only enable by reproducing the stall.
+   * <p>
+   * Per database rather than per node: the counters mean nothing aggregated over a multi-database server, where
+   * "which database stalled its writers" is the question.
+   *
+   * @param database     the database these counters describe
+   * @param instalments  instalments shipped since the database was opened
+   * @param totalTimeMs  total milliseconds spent inside those round trips - the write-lock time they added
+   * @param maxTimeMs    the longest single instalment, which is what separates many fast round trips from a few
+   *                     that each waited on a slow quorum member
+   */
+  record SchemaInstalmentSample(String database, long instalments, long totalTimeMs, long maxTimeMs) {
+  }
+
+  /**
+   * Unreferenced paginated files this node holds, per database (issue #6143). A schema session that ships
+   * instalments and then loses leadership cannot send its own compensating removal, so the files its instalments
+   * created stay on the other nodes with nothing referencing them. Nothing reads them - the impact is wasted disk -
+   * but until this was exported an operator could only find them by reading the data directory by hand, and only
+   * the node that ran the session logs anything at all.
+   *
+   * @param database          the database these files belong to
+   * @param unreferencedFiles how many files this node holds that no schema component claims
+   */
+  record UnreferencedFilesSample(String database, long unreferencedFiles) {
+  }
+
+  /**
    * Returns a live snapshot of replication health. Called on each metrics scrape, so implementations
    * must be cheap and non-blocking.
    */
@@ -98,6 +131,24 @@ public interface HAReplicationStatsProvider {
    * reads the leader's already-maintained replication bookkeeping.
    */
   default List<FollowerSample> getFollowerSamples() {
+    return List.of();
+  }
+
+  /**
+   * Returns one sample per open replicated database (issue #6144), or empty when HA is disabled. Cheap and
+   * non-blocking - it reads counters the schema path already maintains. Unlike the follower samples this is
+   * meaningful on every node: a node that was leader when it shipped instalments keeps its counters afterwards.
+   */
+  default List<SchemaInstalmentSample> getSchemaInstalmentSamples() {
+    return List.of();
+  }
+
+  /**
+   * Returns one sample per open database naming how many paginated files this node holds that no schema component
+   * claims (issue #6143), or empty when HA is disabled. Walks the file list, so it is O(files) per call and is
+   * refreshed on a timer rather than on every scrape.
+   */
+  default List<UnreferencedFilesSample> getUnreferencedFilesSamples() {
     return List.of();
   }
 }

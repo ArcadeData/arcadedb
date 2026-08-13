@@ -24,6 +24,8 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesSample;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -100,7 +102,10 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
         .register(registry);
 
     bindPendingPhase2Gauges(registry);
-    bindPerFollowerGauges(registry);
+
+    // One scheduler for every re-registering MultiGauge on this binder, rather than one each: they all refresh at
+    // the same cadence and none of them blocks, so a second thread would buy nothing.
+    startMultiGaugeRefresh(bindPerFollowerGauges(registry), bindPerDatabaseGauges(registry));
   }
 
   /**
@@ -135,7 +140,7 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * membership changes (peers added/removed). Only meaningful on the leader. The 5s cadence matches
    * the leader's lag monitor, so the per-peer gauges and the cluster status table stay in step.
    */
-  private void bindPerFollowerGauges(final MeterRegistry registry) {
+  private Runnable bindPerFollowerGauges(final MeterRegistry registry) {
     final MultiGauge lastContact = MultiGauge.builder("arcadedb.ha.follower.last_contact_ms")
         .description("Per-follower ms since the leader last exchanged an RPC with it (tag peer=<id>). "
             + "Approaching arcadedb.ha.electionTimeoutMin means that node is about to trigger an election.")
@@ -165,14 +170,75 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
       }
     };
 
-    refresh.run(); // publish an initial (possibly empty) set immediately
+    return refresh;
+  }
+
+  /**
+   * Registers the per-database gauges: what a schema session's WAL instalments have cost (issue #6144) and how many
+   * files this node holds that no schema component claims (issue #6143).
+   * <p>
+   * Tagged {@code database=<name>} because neither number means anything aggregated over a multi-database server -
+   * "which database stalls its writers while it ships instalments" and "which database is leaking files" are the
+   * questions, and a single JVM-wide counter cannot answer either. Refreshed on the shared timer rather than read
+   * per scrape: the unreferenced-files count walks the file list, and a scrape is not the place to pay for that.
+   */
+  private Runnable bindPerDatabaseGauges(final MeterRegistry registry) {
+    final MultiGauge instalments = MultiGauge.builder("arcadedb.ha.schema.instalments")
+        .description("Schema-WAL instalments this database has shipped since it opened (tag database=<name>). "
+            + "Non-zero means a schema session - typically an index rebuild, including the one CHECK DATABASE FIX "
+            + "performs - was too large for one Raft entry and shipped incrementally.")
+        .register(registry);
+    final MultiGauge instalmentTime = MultiGauge.builder("arcadedb.ha.schema.instalment_time_ms")
+        .description("Total ms this database spent shipping schema-WAL instalments (tag database=<name>). Each one "
+            + "is a quorum round trip taken with the database write lock held, so this is write-lock time every "
+            + "other writer on the database waited out.")
+        .baseUnit("milliseconds")
+        .register(registry);
+    final MultiGauge instalmentMaxTime = MultiGauge.builder("arcadedb.ha.schema.instalment_max_time_ms")
+        .description("Longest single schema-WAL instalment for this database (tag database=<name>). Separates many "
+            + "fast round trips from a few that each waited on a slow quorum member; approaching "
+            + "arcadedb.ha.quorumTimeout means one of them nearly timed out.")
+        .baseUnit("milliseconds")
+        .register(registry);
+    final MultiGauge unreferencedFiles = MultiGauge.builder("arcadedb.ha.schema.unreferenced_files")
+        .description("Paginated files this node holds that no schema component claims (tag database=<name>). "
+            + "Nothing reads them, so this is wasted disk rather than a correctness problem; the usual cause is a "
+            + "schema session that shipped instalments and lost leadership before it could retire them. "
+            + "CHECK DATABASE names them.")
+        .register(registry);
+
+    return () -> {
+      try {
+        final List<SchemaInstalmentSample> schemaSamples = schemaInstalmentSamples();
+        instalments.register(schemaSamples.stream()
+            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.instalments())).toList(), true);
+        instalmentTime.register(schemaSamples.stream()
+            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.totalTimeMs())).toList(), true);
+        instalmentMaxTime.register(schemaSamples.stream()
+            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.maxTimeMs())).toList(), true);
+
+        unreferencedFiles.register(unreferencedFilesSamples().stream()
+            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.unreferencedFiles())).toList(), true);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Failed to refresh per-database HA gauges: %s", e.getMessage());
+      }
+    };
+  }
+
+  /** Publishes an initial set immediately, then re-registers every {@code refresh} on one shared daemon timer. */
+  private void startMultiGaugeRefresh(final Runnable... refreshes) {
+    for (final Runnable refresh : refreshes)
+      refresh.run(); // publish an initial (possibly empty) set immediately
 
     final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
       final Thread t = new Thread(r, "arcadedb-ha-follower-metrics");
       t.setDaemon(true);
       return t;
     });
-    scheduler.scheduleAtFixedRate(refresh, 5, 5, TimeUnit.SECONDS);
+    scheduler.scheduleAtFixedRate(() -> {
+      for (final Runnable refresh : refreshes)
+        refresh.run();
+    }, 5, 5, TimeUnit.SECONDS);
     followerMetricsScheduler = scheduler;
   }
 
@@ -200,6 +266,22 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
     for (final ServerPlugin plugin : server.getPlugins())
       if (plugin instanceof HAReplicationStatsProvider provider)
         return provider.getFollowerSamples();
+    return List.of();
+  }
+
+  /** Per-database schema-instalment samples from the started HA plugin, or empty when HA is disabled. */
+  private List<SchemaInstalmentSample> schemaInstalmentSamples() {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof HAReplicationStatsProvider provider)
+        return provider.getSchemaInstalmentSamples();
+    return List.of();
+  }
+
+  /** Per-database unreferenced-file counts from the started HA plugin, or empty when HA is disabled. */
+  private List<UnreferencedFilesSample> unreferencedFilesSamples() {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof HAReplicationStatsProvider provider)
+        return provider.getUnreferencedFilesSamples();
     return List.of();
   }
 }

@@ -114,6 +114,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.IntPredicate;
 import java.util.function.Function;
@@ -163,13 +164,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private static final ThreadLocal<SchemaInstalmentState>                schemaInstalments      = new ThreadLocal<>();
   /**
-   * How many schema-WAL instalments this JVM has shipped since it started (issue #6136). A process-wide
-   * observability counter, not per-database state: the question it answers - "did a schema session have to ship
-   * its WAL incrementally, and how often?" - is asked of a node, and a leader runs one such session at a time
-   * anyway. Zero on a node that never crossed the threshold, which is every node until an index is rebuilt or a
-   * DDL callback writes more than half a Raft entry's worth of pages.
+   * Schema-WAL instalments this DATABASE has shipped since it was opened, and what they cost (issues #6136, #6144).
+   * <p>
+   * PER DATABASE, not per JVM, which is the whole reason these are instance fields: a multi-database server would
+   * otherwise report one number for every database on it, and "which database stalls its writers while it ships"
+   * is precisely the question being asked. Exported as Micrometer gauges tagged {@code database=<name>} through
+   * {@code RaftHAServer.getSchemaInstalmentSamples()}.
+   * <p>
+   * DURATION is the number that matters more than the count. Each instalment is a quorum round trip taken while the
+   * database write lock is held (see {@link #flushSchemaWalBufferIfFull}), so it is what a stalled writer is waiting
+   * on and what eats into the {@code arcadedb.ha.quorumTimeout} budget; a count alone cannot tell 200 fast
+   * instalments from 3 that each waited on a slow quorum member, which is why the max is kept alongside the total.
+   * <p>
+   * Zero on a node that never crossed the threshold, which is every node until an index is rebuilt or a DDL callback
+   * writes more than half a Raft entry's worth of pages. Monotonic for the life of the open database and reset by a
+   * close/reopen, like every other counter on this instance.
    */
-  private static final AtomicLong                                        schemaInstalmentsShipped = new AtomicLong();
+  private final        AtomicLong                                        schemaInstalmentsShipped = new AtomicLong();
+  private final        AtomicLong                                        schemaInstalmentTotalMs  = new AtomicLong();
+  private final        AtomicLong                                        schemaInstalmentMaxMs    = new AtomicLong();
 
   /**
    * Bookkeeping for a {@code recordFileChanges} session that ships its WAL incrementally (issue #6136).
@@ -210,6 +223,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
      * chunk created.
      */
     private int                        instalments;
+    /**
+     * Milliseconds this session spent inside {@code replicateSchemaInstalment}, for the end-of-session summary
+     * (issue #6144). Session-scoped rather than read off the database counters, which are cumulative and would
+     * describe every session since the database opened.
+     */
+    private long                       elapsedMs;
   }
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
@@ -1632,6 +1651,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // retire the instalments' files. Decide deliberately which side of it your code belongs on rather than
       // dropping it in above.
       published = true;
+
+      // Issue #6144: one INFO line for a session that had to ship incrementally, so the common case is visible with
+      // no metrics backend at all and without first turning on detailed HA logging - which, for a stall, means
+      // reproducing it. Only sessions that shipped print anything, so an ordinary DDL stays silent. Deliberately
+      // BELOW the assignment above: it is a diagnostic, and one that threw before it would send the finally block
+      // into retiring files that are in fact published.
+      if (shippedInstalments > 0)
+        LogManager.instance().log(this, Level.INFO,
+            "Schema session on database '%s' shipped its WAL in %d instalment(s) totalling %d ms, each of them a "
+                + "quorum round trip taken with the database write lock held (every writer on this database waits "
+                + "them out). Lower arcadedb.ha.appendBufferSize multiplies them, raising it makes each one bigger",
+            null, getName(), shippedInstalments, instalmentState.elapsedMs);
+
       return result;
     } finally {
       if (!published)
@@ -1707,56 +1739,110 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * leadership per instalment would narrow the window without closing it (leadership can move between the check
    * and the submit), and a node that is no longer leader has no way to make the cluster do anything. The real fix
    * is for the new leader to reclaim unreferenced files, which is a garbage-collection feature this database does
-   * not have. Tracked as issue #6143, along with the fact that this SEVERE branch is reasoned about rather than
-   * covered - the step-down has to land between an instalment and the unwind to reach it.
+   * not have. Tracked as issue #6143, together with the diagnostic that lets an operator FIND those files on the
+   * nodes still holding them - {@code CHECK DATABASE} names them and every node publishes its own count as the
+   * {@code arcadedb.ha.schema.unreferenced_files} gauge - since only this node logs anything about them.
    */
-  private void retireAbandonedInstalments(final SchemaInstalmentState state) {
-    if (state == null || state.instalments == 0)
-      return;
+  private InstalmentRetirement retireAbandonedInstalments(final SchemaInstalmentState state) {
+    if (state == null)
+      return InstalmentRetirement.NOTHING_SHIPPED;
+
+    return retireAbandonedInstalments(this, getName(), state.instalments, state.shippedFiles,
+        proxied.getFileManager()::existsFile,
+        filesToRemove -> requireRaftServer().getTransactionBroker().replicateSchema(getName(), "",
+            Collections.emptyMap(), filesToRemove, Collections.emptyList(), Collections.emptyList()),
+        this::isLeader);
+  }
+
+  /**
+   * The compensation itself, with everything it touches passed in (issue #6143).
+   * <p>
+   * Split from the method above and made static so the branch that MATTERS most can be tested at all: a submitter
+   * that throws is a node that lost leadership mid-session, and reproducing that on a real cluster needs a step-down
+   * to land between an instalment and the unwind. It reports what it did through the return value rather than only
+   * through the log, so a test asserts behaviour instead of scraping messages - and a caller could act on it.
+   *
+   * @param logContext    what the log lines are attributed to, so they still read as coming from the database
+   * @param existsLocally answers whether THIS node still holds a given file id, the rule the whole method turns on
+   * @param submitter     replicates the removal; the only thing here that can fail
+   * @param stillLeader   used solely to phrase the failure, never to decide anything
+   */
+  static InstalmentRetirement retireAbandonedInstalments(final Object logContext, final String databaseName,
+      final int instalments, final Map<Integer, String> shippedFiles, final IntPredicate existsLocally,
+      final SchemaRetirementSubmitter submitter, final BooleanSupplier stillLeader) {
+    if (instalments == 0)
+      return InstalmentRetirement.NOTHING_SHIPPED;
 
     // Only what the leader has already let go of - see the javadoc: retiring a file the leader kept would turn an
     // agreed state into a diverged one.
     final Map<Integer, String> toRetire = new LinkedHashMap<>();
     final Map<Integer, String> keptByLeader = new LinkedHashMap<>();
-    partitionAbandonedFiles(state.shippedFiles, proxied.getFileManager()::existsFile, toRetire, keptByLeader);
+    partitionAbandonedFiles(shippedFiles, existsLocally, toRetire, keptByLeader);
 
     if (!keptByLeader.isEmpty())
-      LogManager.instance().log(this, Level.WARNING,
+      LogManager.instance().log(logContext, Level.WARNING,
           "Schema session on database '%s' failed after shipping %d instalment(s); file(s) %s exist on every node "
               + "but no schema references them, because the change was never published. Left in place: this node "
-              + "holds them too, so the cluster is consistent", null, getName(), state.instalments,
+              + "holds them too, so the cluster is consistent", null, databaseName, instalments,
           keptByLeader.values());
 
     if (toRetire.isEmpty()) {
-      if (keptByLeader.isEmpty())
+      if (keptByLeader.isEmpty()) {
         // WAL-only instalments: those pages went to files that already existed and the leader committed them
         // locally before buffering, so there is nothing to undo. Still reported, because an interrupted
         // replicated session is not a normal event.
-        LogManager.instance().log(this, Level.WARNING,
+        LogManager.instance().log(logContext, Level.WARNING,
             "Schema session on database '%s' failed after shipping %d WAL instalment(s); they created no file, so "
-                + "there is nothing to retire on the other nodes", null, getName(), state.instalments);
-      return;
+                + "there is nothing to retire on the other nodes", null, databaseName, instalments);
+        return InstalmentRetirement.NOTHING_TO_RETIRE;
+      }
+      return InstalmentRetirement.KEPT_BY_THIS_NODE;
     }
 
     try {
-      requireRaftServer().getTransactionBroker().replicateSchema(getName(), "", Collections.emptyMap(), toRetire,
-          Collections.emptyList(), Collections.emptyList());
+      submitter.retire(toRetire);
 
-      LogManager.instance().log(this, Level.WARNING,
+      LogManager.instance().log(logContext, Level.WARNING,
           "Schema session on database '%s' failed after shipping %d instalment(s); retired the %d file(s) they had "
-              + "created on the other nodes, matching this node: %s", null, getName(), state.instalments,
+              + "created on the other nodes, matching this node: %s", null, databaseName, instalments,
           toRetire.size(), toRetire.values());
+
+      return InstalmentRetirement.RETIRED;
 
     } catch (final Exception e) {
       // Names the leadership case, because it is both the likeliest cause and the one where "retry the operation"
       // is the wrong advice: this node cannot make the cluster do anything any more, so the files stay until
-      // somebody removes them.
-      LogManager.instance().log(this, Level.SEVERE,
+      // somebody removes them. It also names how to find them, because the nodes that HOLD them log nothing.
+      LogManager.instance().log(logContext, Level.SEVERE,
           "Schema session on database '%s' failed after shipping %d instalment(s) AND the compensating removal "
               + "could not be replicated%s. The other nodes are holding file(s) this node does not have and nothing "
-              + "will reclaim them: %s. Remove them manually once the cluster is healthy", e, getName(),
-          state.instalments, isLeader() ? "" : " because this node is no longer the leader", toRetire.values());
+              + "will reclaim them: %s. Run CHECK DATABASE, or read the arcadedb.ha.schema.unreferenced_files "
+              + "gauge, on each node to find them, and remove them once the cluster is healthy", e, databaseName,
+          instalments, stillLeader.getAsBoolean() ? "" : " because this node is no longer the leader",
+          toRetire.values());
+
+      return InstalmentRetirement.NOT_REPLICATED;
     }
+  }
+
+  /** What one compensation run did. Returned rather than only logged so the failure branches can be tested. */
+  enum InstalmentRetirement {
+    /** No instalment went out, so nothing on any other node is waiting to be undone. */
+    NOTHING_SHIPPED,
+    /** Instalments went out but created no file: their pages landed in files that already existed everywhere. */
+    NOTHING_TO_RETIRE,
+    /** Every announced file is still here, so both sides agree and retiring would be the divergence. */
+    KEPT_BY_THIS_NODE,
+    /** The other nodes were told to drop what this node no longer has. */
+    RETIRED,
+    /** The removal could not be replicated - typically lost leadership. The files stay until an operator acts. */
+    NOT_REPLICATED
+  }
+
+  /** Replicates the compensating removal. Separate from the broker so a test can make it fail (issue #6143). */
+  @FunctionalInterface
+  interface SchemaRetirementSubmitter {
+    void retire(Map<Integer, String> filesToRemove) throws Exception;
   }
 
   /**
@@ -1843,18 +1929,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // Only the files created since the previous instalment: an already-announced one exists on the followers, and
     // re-announcing it would make createNewFiles run over a file that is being written into.
     //
-    // This re-reads the WHOLE recorded-changes list per instalment, so it is O(instalments x file changes). Fine
-    // for the caller this exists for - an index rebuild records one or two file changes however many instalments
-    // its WAL volume produces, so the second factor does not grow with the first. A future DDL that creates MANY
-    // files through this buffered path would make it quadratic and should carry the shipped/unshipped split
-    // forward instead; an index into the list is not that, since dropFile removes entries from the middle of it.
-    // Tracked as issue #6142.
-    final Map<Integer, String> newFiles = new LinkedHashMap<>();
-    final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
-    if (changes != null)
-      for (final FileManager.FileChange c : changes)
-        if (c.create && !state.shippedFiles.containsKey(c.fileId))
-          newFiles.put(c.fileId, c.fileName);
+    // The split is carried FORWARD by the file manager rather than re-derived here (issue #6142): this used to walk
+    // the whole cumulative recorded-changes list on every instalment and filter it against shippedFiles, which is
+    // O(instalments x file changes) - harmless for an index rebuild, which records one or two file changes however
+    // many instalments its WAL volume produces, but quadratic for a DDL that creates many files through this same
+    // buffered path. Draining a queue makes the whole session cost one pass over its creations. An index into the
+    // cumulative list would NOT have worked: FileManager.dropFile removes the cancelled create from the middle of
+    // it, so a saved position stops meaning what it meant.
+    final Map<Integer, String> newFiles = proxied.getFileManager().drainRecordedCreates();
 
     final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
     final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
@@ -1872,7 +1954,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     ++state.instalments;
     schemaInstalmentsShipped.incrementAndGet();
 
-    broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
+    // Timed because the elapsed time IS the cost of this design (issue #6144): submitAndWait is a quorum round trip
+    // taken while the database write lock is held, so this interval is what every other writer on the database is
+    // waiting out. Measured around the send alone - the bookkeeping above and the buffer drain below are local.
+    final long startedAtNanos = System.nanoTime();
+    try {
+      broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
+    } finally {
+      // In a finally so a failed instalment is counted too: an instalment that timed out against a slow quorum
+      // member held the write lock for the whole timeout, which is exactly the event an operator is looking for.
+      final long elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000;
+      state.elapsedMs += elapsedMs;
+      schemaInstalmentTotalMs.addAndGet(elapsedMs);
+      schemaInstalmentMaxMs.accumulateAndGet(elapsedMs, Math::max);
+    }
 
     // The WAL buffer, by contrast, is drained only AFTER the entry is committed: it holds the ONLY copy of those
     // pages that can reach a follower, so clearing it before a failure would turn a replication error into silent
@@ -1908,9 +2003,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         toRetire.put(shipped.getKey(), shipped.getValue());
   }
 
-  /** Schema-WAL instalments shipped by this JVM since it started - see {@link #schemaInstalmentsShipped}. */
-  public static long getSchemaWalInstalmentsShipped() {
+  /** Schema-WAL instalments this database has shipped since it opened - see {@link #schemaInstalmentsShipped}. */
+  public long getSchemaWalInstalmentsShipped() {
     return schemaInstalmentsShipped.get();
+  }
+
+  /** Milliseconds this database spent shipping schema-WAL instalments, write lock held throughout (issue #6144). */
+  public long getSchemaWalInstalmentTotalTimeMs() {
+    return schemaInstalmentTotalMs.get();
+  }
+
+  /** The longest single instalment this database has shipped, in milliseconds (issue #6144). */
+  public long getSchemaWalInstalmentMaxTimeMs() {
+    return schemaInstalmentMaxMs.get();
   }
 
   @Override
