@@ -127,6 +127,23 @@ public class DatabaseChecker {
       LogManager.instance().log(this, Level.INFO, "Integrity check of database '%s' started", null, database.getName());
 
     result.put("autoFix", 0L);
+    // Issue #6136 (3): the breakdown behind autoFix, seeded so the three keys are always present rather than
+    // appearing only on the runs that happened to perform that kind of repair.
+    //
+    // autoFix stays the ACTION count it has always been - removedRecords + prunedDanglingEntries - because
+    // existing readers and existing tests depend on it, and because "how many defects were there" is not a
+    // question the arms can answer jointly: one edge that is both listed in an adjacency chain and corrupt as a
+    // record is one defect, two repairs, two writes to two distinct pages. reconnectedEdges is NOT in the sum, for
+    // the same backward-compatibility reason - a rebuilt chain has never contributed to autoFix and making it do
+    // so would change every existing number. Read the three together to learn what a run did.
+    //
+    // "removedRecords" rather than the "deletedRecords" the issue proposed, deliberately: the result already
+    // carries "totalDeletedRecords", which counts records found in the DELETED state by the bucket scan and has
+    // nothing to do with repair, and a key differing from it by one word would read as its non-total sibling. This
+    // one is the count of "deletedRecordsAfterFix", the list of what this run actually took out.
+    result.put("removedRecords", 0L);
+    result.put("prunedDanglingEntries", 0L);
+    result.put("reconnectedEdges", 0L);
     result.put("invalidLinks", 0L);
     result.put("warnings", new LinkedHashSet<>());
     result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
@@ -557,14 +574,13 @@ public class DatabaseChecker {
   }
 
   /**
-   * Removes the records this pass flagged corrupted, counting them into {@code autoFix}.
+   * Removes the records this pass flagged corrupted, counting them into {@code autoFix} and {@code removedRecords}.
    * <p>
-   * NOT quite what {@code GraphDatabaseChecker}'s vertex and edge arms count, and the difference is deliberate:
-   * they call {@code autoFix.incrementAndGet()} BEFORE attempting the delete, so a record they then fail to remove
-   * is still reported as fixed. This one counts a repair only once the delete and its counter delta have both
-   * succeeded, and counts nothing for a record that was already gone. If the two are ever unified, unify them
-   * towards THIS one: {@code autoFix} is what an operator reads to decide whether the run did anything, and a
-   * number that includes failed deletes cannot answer that.
+   * Counts a repair only once the delete and its counter delta have both succeeded, and counts nothing for a record
+   * that was already gone. {@code GraphDatabaseChecker}'s vertex and edge arms used to differ here - they counted
+   * BEFORE attempting the delete, so a record they then failed to remove was still reported as fixed - and #6128
+   * aligned them on this one: {@code autoFix} is what an operator reads to decide whether the run did anything, and
+   * a number that includes failed deletes cannot answer that.
    * <p>
    * This is not merely tidiness, and it is not optional. A corrupted record's RID goes into
    * {@code corruptedRecords}, which is what {@link #check()} turns into {@code affectedBuckets}, and every index on
@@ -598,6 +614,9 @@ public class DatabaseChecker {
         // counts depending on the scope it was asked for.
         database.getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
         result.put("autoFix", (Long) result.get("autoFix") + 1);
+        // The per-kind arm of the same repair (issue #6136, item 3): this arm only ever deletes, so its whole
+        // contribution to autoFix is a deleted record.
+        result.put("removedRecords", (Long) result.get("removedRecords") + 1);
         // Same reason as mergeDeletedRecords: a removal nobody lists cannot be audited.
         ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).add(rid);
       } catch (final RecordNotFoundException e) {
