@@ -44,6 +44,20 @@ import java.util.Set;
  * <p>
  * Restores graph STRUCTURE only: the vertex's original property values are not recoverable from its edges. SET or
  * CONTENT lets the caller supply them if known from another source (a backup, an application log, ...).
+ * <p>
+ * The type's schema applies in full (#6127): declared default values are set, the vertex is validated, and the
+ * create events fire, exactly as for an INSERT. On a type with MANDATORY properties a bare structure-only restore is
+ * therefore refused until SET/CONTENT supplies them - the placeholder value has to be the operator's explicit
+ * choice, because a vertex written past its own constraints could not be updated afterwards either.
+ * <p>
+ * The create events fire on the bare vertex, BEFORE the adjacency rebuild below - deliberately, and this is the
+ * INSERT-parity behaviour rather than a gap in it: a vertex a plain INSERT creates has no edges either, and firing
+ * the event later would move it out of the read lock that {@code restoreRecord} holds for exactly the whole
+ * create sequence, and would make the vertex arm's event ordering differ from the document and edge arms. The
+ * consequence to know about is that an afterCreate trigger deriving something from adjacency (a degree counter,
+ * say) sees zero here and is never notified of the reconnection that follows, because reconnecting adjacency
+ * writes no records and so raises no event of its own. Such a trigger has to be driven from the statement's
+ * {@code reconnectedOutEdges}/{@code reconnectedInEdges} result instead.
  */
 public class RestoreVertexStatement extends SimpleExecStatement {
   public Identifier targetType;

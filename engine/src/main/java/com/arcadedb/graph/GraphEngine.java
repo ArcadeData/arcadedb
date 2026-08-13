@@ -39,6 +39,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -429,6 +430,14 @@ public class GraphEngine {
    * edges and are not set here (the caller may set them afterward if known from another source). Refuses if the
    * slot is occupied (see {@link LocalBucket#restoreRecordAtPosition}) or if {@code typeName} does not own
    * {@code targetRid}'s bucket.
+   * <p>
+   * The type's schema applies in full (#6127, see {@link DatabaseInternal#restoreRecord}), so on a type with
+   * MANDATORY properties the property-less shell this builds is refused with a {@link ValidationException}: use
+   * {@code RESTORE VERTEX ... SET ...} instead, which lets the caller supply them.
+   * <p>
+   * The create events therefore fire on the bare vertex, before {@link #reconnectEdgesFromSurvivors} runs - see
+   * {@code RestoreVertexStatement}'s javadoc for why that ordering is deliberate and what it means for a trigger
+   * that derives anything from adjacency.
    */
   public Vertex restoreVertexAt(final RID targetRid, final String typeName) {
     final DocumentType type = database.getSchema().getType(typeName);
