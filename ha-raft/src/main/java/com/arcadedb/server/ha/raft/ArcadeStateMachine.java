@@ -212,6 +212,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // flagged re-download actually lands; it is cleared only by a resync that restored the state, never
   // by merely starting one.
   private final AtomicLong    staleSnapshotAppliedFloor  = new AtomicLong(-1);
+  // Wall-clock of the last retry submitted by retryUnfilledSnapshotGap(); 0 = none since the floor was
+  // last cleared. Throttles the HealthMonitor-driven backstop, which ticks far more often than a full
+  // multi-database resync costs.
+  private final AtomicLong    lastStaleSnapshotRetryMs   = new AtomicLong();
   // Set to true after applyTransaction hits a genuinely unrecoverable, node-wide condition: a JVM
   // Error (OOM, StackOverflow - the JVM itself is unstable), an unknown committed entry type (#4798,
   // rolling-upgrade safety), or an unexpected error on an entry with no single target database
@@ -2570,9 +2574,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       resolveStaleSnapshotFloorAfterResync();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Snapshot resync failed", e);
-      // The node is still short of the entries the marker claims, so the read floor stays. Re-arm the
-      // request instead of leaving it cleared: the next leader change (or the HealthMonitor backstop)
-      // retries, rather than clamping reads until a restart (issue #6111).
+      // The node is still short of the entries the marker claims, so the read floor stays and the
+      // request is re-armed rather than left cleared: a later leader change picks it up. The retry that
+      // does NOT depend on an election is retryUnfilledSnapshotGap(), driven by the HealthMonitor tick -
+      // note that recoverFromPersistentLag() cannot serve here, because the re-armed flag makes
+      // isSnapshotDownloadPending() true and both it and isFollowerLaggingBeyond() then stand down
+      // (issue #6111).
       if (staleSnapshotAppliedFloor.get() >= 0)
         needsSnapshotDownload.set(true);
     } finally {
@@ -2610,6 +2617,55 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void clearStaleSnapshotFloor() {
     staleSnapshotAppliedFloor.set(-1);
+    lastStaleSnapshotRetryMs.set(0);
+  }
+
+  /**
+   * Periodic backstop for an unfilled stale-snapshot gap (issue #6111), driven by the
+   * {@link HealthMonitor} tick. Re-submits {@link #triggerSnapshotDownload()} while a read floor is
+   * still outstanding and no download is running, so a node whose first attempt failed (leader HTTP
+   * port unreachable while Raft gRPC is fine, disk full, leader not yet known) recovers on its own
+   * instead of staying clamped and not-ready until the next leader election.
+   * <p>
+   * The existing stale-follower backstop cannot cover this: it is driven by
+   * {@code commitIndex - appliedIndex}, and Ratis derives the applied index from the very marker that
+   * is ahead, so a node with an open gap reports zero lag. {@link #recoverFromPersistentLag()} would
+   * also refuse anyway, because {@link #isSnapshotDownloadPending()} stays true while the request is
+   * re-armed.
+   * <p>
+   * Throttled to one attempt per {@link #computeSnapshotWatchdogTimeoutMs()} so a persistently failing
+   * download is not retried on every tick: a full resync pulls every database from the leader, and the
+   * HealthMonitor ticks far more often than that costs.
+   */
+  public void retryUnfilledSnapshotGap() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || server == null || raftHA.isLeader())
+      return;
+    final long floor = staleSnapshotAppliedFloor.get();
+    if (floor < 0)
+      return; // no unfilled gap
+    if (snapshotDownloadInProgress.get())
+      return; // one is genuinely running; it will clear the floor or re-arm the request
+    if (raftHA.getLeaderHttpAddress() == null)
+      return; // nowhere to download from yet; notifyLeaderChanged() drives the first attempt
+
+    final long now = System.currentTimeMillis();
+    final long retryIntervalMs = computeSnapshotWatchdogTimeoutMs();
+    final long previous = lastStaleSnapshotRetryMs.get();
+    if (previous != 0 && now - previous < retryIntervalMs)
+      return;
+    if (!lastStaleSnapshotRetryMs.compareAndSet(previous, now))
+      return; // another tick won the throttle slot
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Snapshot marker is still ahead of the applied state (read floor=%d) with no download in flight: "
+            + "retrying the resync from the leader (issue #6111)", floor);
+    try {
+      lifecycleExecutor.submit(this::triggerSnapshotDownload);
+    } catch (final RejectedExecutionException ree) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot schedule the stale-snapshot resync retry: executor is shut down", ree);
+    }
   }
 
   /**

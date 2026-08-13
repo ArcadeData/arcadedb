@@ -27,6 +27,7 @@ import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.RaftStorage;
+import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -39,6 +40,8 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -356,8 +359,175 @@ class Issue6111StaleSnapshotReadFloorTest {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // The retry backstop: an unfilled gap must not need a leader election to recover
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The lag-driven backstop is structurally blind here - Ratis reports the marker index as applied, so a
+   * node with an open gap shows zero lag - and a re-armed {@code needsSnapshotDownload} additionally
+   * makes {@code isSnapshotDownloadPending()} true, which stands {@code recoverFromPersistentLag()} and
+   * {@code isFollowerLaggingBeyond()} down. So the {@link HealthMonitor} must drive a dedicated hook, or
+   * a node whose download keeps failing stays clamped until an election happens.
+   */
+  @Test
+  void healthMonitorTickDrivesTheUnfilledGapRetry() {
+    final AtomicInteger retries = new AtomicInteger();
+    final HealthMonitor.HealthTarget target = new HealthMonitor.HealthTarget() {
+      @Override
+      public LifeCycle.State getRaftLifeCycleState() {
+        return LifeCycle.State.RUNNING;
+      }
+
+      @Override
+      public boolean isShutdownRequested() {
+        return false;
+      }
+
+      @Override
+      public void restartRatisIfNeeded() {
+      }
+
+      @Override
+      public void retryUnfilledSnapshotGap() {
+        retries.incrementAndGet();
+      }
+    };
+
+    final HealthMonitor monitor = new HealthMonitor(target, 1_000L, 0L, 0L, false, 0);
+    monitor.tick();
+    monitor.tick();
+
+    assertThat(retries.get()).as("every health tick offers the unfilled-gap retry").isEqualTo(2);
+  }
+
+  /** No gap outstanding: the backstop must not touch anything. */
+  @Test
+  void retryIsANoOpWithoutAnOutstandingFloor(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    sm.setRaftHAServer(followerRaftHAServerMock());
+    try {
+      sm.retryUnfilledSnapshotGap();
+      assertThat(readLastRetryMs(sm)).as("nothing was submitted").isZero();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /** A download that is genuinely running will resolve or re-arm the request itself; do not pile on. */
+  @Test
+  void retryIsANoOpWhileADownloadIsRunning(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    sm.setRaftHAServer(followerRaftHAServerMock());
+    try {
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+      setAtomicBoolean(sm, "snapshotDownloadInProgress", true);
+
+      sm.retryUnfilledSnapshotGap();
+
+      assertThat(readLastRetryMs(sm)).as("the in-flight download owns this resync").isZero();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * The case the backstop exists for: a floor left behind by a failed download, nothing running, a
+   * leader reachable. The retry must fire - and reach {@code triggerSnapshotDownload()}, which with no
+   * databases present completes and clears the floor.
+   */
+  @Test
+  void retryFiresAndResolvesTheFloorWhenNothingIsRunning(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    sm.setRaftHAServer(followerRaftHAServerMock());
+    try {
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+
+      sm.retryUnfilledSnapshotGap();
+
+      assertThat(readLastRetryMs(sm)).as("a retry was submitted").isNotZero();
+      // The submission runs on the single-threaded lifecycleExecutor; give it a bounded moment.
+      for (int i = 0; i < 100 && sm.getStaleSnapshotAppliedFloor() >= 0; i++)
+        Thread.sleep(20);
+      assertThat(sm.getStaleSnapshotAppliedFloor())
+          .as("the retry really reached triggerSnapshotDownload(), which resolved the floor")
+          .isEqualTo(-1L);
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * A full resync pulls every database from the leader while the HealthMonitor ticks every few seconds,
+   * so a persistently failing download must not be retried on every tick.
+   */
+  @Test
+  void retryIsThrottledBetweenAttempts(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    sm.setRaftHAServer(followerRaftHAServerMock());
+    try {
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+      // A retry that has just been attempted, as a previous tick would have left it.
+      final long justNow = System.currentTimeMillis();
+      setLastRetryMs(sm, justNow);
+
+      sm.retryUnfilledSnapshotGap();
+
+      assertThat(readLastRetryMs(sm))
+          .as("within the retry interval the tick is swallowed, leaving the previous attempt's stamp")
+          .isEqualTo(justNow);
+      assertThat(sm.getStaleSnapshotAppliedFloor())
+          .as("and no download ran, so the floor still stands")
+          .isEqualTo(PERSISTED_APPLIED);
+    } finally {
+      sm.close();
+    }
+  }
+
+  /** Nowhere to download from yet: the first attempt belongs to {@code notifyLeaderChanged()}. */
+  @Test
+  void retryIsANoOpWhileNoLeaderIsKnown(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    final RaftHAServer mockRaft = mock(RaftHAServer.class); // getLeaderHttpAddress() defaults to null
+    sm.setRaftHAServer(mockRaft);
+    try {
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+
+      sm.retryUnfilledSnapshotGap();
+
+      assertThat(readLastRetryMs(sm)).isZero();
+    } finally {
+      sm.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------------------------
+
+  private static RaftHAServer followerRaftHAServerMock() {
+    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    when(mockRaft.isLeader()).thenReturn(false);
+    when(mockRaft.getLeaderHttpAddress()).thenReturn("localhost:2480");
+    return mockRaft;
+  }
+
+  private static long readLastRetryMs(final ArcadeStateMachine sm) throws Exception {
+    final Field f = ArcadeStateMachine.class.getDeclaredField("lastStaleSnapshotRetryMs");
+    f.setAccessible(true);
+    return ((AtomicLong) f.get(sm)).get();
+  }
+
+  private static void setLastRetryMs(final ArcadeStateMachine sm, final long value) throws Exception {
+    final Field f = ArcadeStateMachine.class.getDeclaredField("lastStaleSnapshotRetryMs");
+    f.setAccessible(true);
+    ((AtomicLong) f.get(sm)).set(value);
+  }
+
+  private static void setAtomicBoolean(final ArcadeStateMachine sm, final String name, final boolean value) throws Exception {
+    final Field f = ArcadeStateMachine.class.getDeclaredField(name);
+    f.setAccessible(true);
+    ((AtomicBoolean) f.get(sm)).set(value);
+  }
 
   /**
    * A real (unstarted) {@link ArcadeDBServer} rooted at {@code tempDir} so the state machine can resolve
