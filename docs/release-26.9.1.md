@@ -1053,6 +1053,15 @@ lock (after the apply lock, in the order it already used) and repeats the drain 
 pipeline while the lock is held, so that second drain is guaranteed to converge, and it is normally instant because
 a first, lock-free drain has already emptied the pipeline. The retry loop and `SNAPSHOT_BARRIER_ATTEMPTS` are gone.
 
+Everything the barrier does under that lock shares one hard 5 s budget, because the lock is JVM-wide and the waits
+those steps use elsewhere are either uncapped (the wait for the in-flight flush batch polls until a synchronous
+`file.write` returns) or capped only by the 60 s progress-based `arcadedb.flushAllPagesTimeout` - either of which
+would let one sick disk stall every committer in the process. Exhausting it is handled per step according to what it
+costs: a pipeline that has not drained only means t0 may sit slightly behind the last commit, which is logged and
+accepted, while a suspension that cannot be acquired or an in-flight batch that has not landed abandons the window
+outright and the consumer falls back to the suspend-and-freeze path - slower for one database rather than briefly
+fatal for all of them.
+
 Exactness matters beyond tidiness: the HA snapshot ship writes `lastTxId` into the `last-tx-id.bin` recency marker
 a follower is judged by at cold bootstrap, and a marker naming a transaction whose pages were still queued claims
 data the archive does not contain.

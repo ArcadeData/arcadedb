@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.schema.DocumentType;
 
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6125, items 1 and 2: the shadow cap sizes itself from the thing it actually bounds, and the t0 barrier is
@@ -238,6 +240,69 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     assertThat(failure.get()).isNull();
     // THE PAIRED ASSERTION: THE PUBLICATION WAS BLOCKED, NOT BROKEN, SO THIS CANNOT PASS BY NOTHING EVER HAPPENING
     assertThat(published.get()).as("releasing the lock must let the very same publication through").isTrue();
+  }
+
+  /**
+   * The other half of holding the JVM-wide lock across the barrier: everything done under it has to be BOUNDED, or
+   * the lock that makes the drain converge becomes a way for one sick disk to stall every committer in the process.
+   * <p>
+   * The review of #6126 caught exactly this: the residual drain was capped but the wait for the in-flight flush
+   * batch was not, and that wait polls until a synchronous {@code file.write} returns. Here an in-flight batch is
+   * fabricated and never completes - the shape a wedged disk presents - and the barrier has to give the window up
+   * within its budget and let go of the lock, rather than hold it until the write lands.
+   */
+  @Test
+  void aFlushThatNeverCompletesFailsTheBarrierInsteadOfHoldingTheGlobalLockForever() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManager pageManager = db.getPageManager();
+    final PageManagerFlushThread flushThread = pageManager.getFlushThread();
+    assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+
+    final int fileId = db.getSchema().getType(TYPE).getBuckets(false).getFirst().getFileId();
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
+    final MutablePage page = pageManager.getImmutablePage(new PageId(db, fileId, 0), file.getPageSize(), false, true)
+        .modify();
+
+    // AN IN-FLIGHT BATCH OF THIS DATABASE THAT NEVER FINISHES. NOT IN pageIndex, SO BOTH DRAINS STILL SEE AN EMPTY
+    // PIPELINE AND THE BARRIER REACHES THE WAIT UNDER TEST. THE FLUSH THREAD ONLY TOUCHES nextPagesToFlush WHEN IT
+    // POLLS A REAL BATCH, AND THIS DATABASE IS QUIET, SO THE FABRICATED VALUE STANDS
+    flushThread.nextPagesToFlush.set(new PageManagerFlushThread.PagesToFlush(new ArrayList<>(List.of(page))));
+    try {
+      final long begin = System.currentTimeMillis();
+      assertThatThrownBy(() -> pageManager.openSnapshot(db))
+          .as("the barrier must abandon the window rather than wait out a flush that never lands")
+          .isInstanceOf(PageSnapshotException.class);
+      final long elapsed = System.currentTimeMillis() - begin;
+
+      // BOTH ENDS MATTER. The upper bound is the property under test - generous enough for a loaded CI runner, far
+      // below the forever the unbounded wait would have taken. The lower one keeps the test honest: it proves the
+      // barrier really did block on the fabricated batch and time out, rather than failing instantly for some
+      // unrelated reason that would make the ceiling assertion pass vacuously
+      assertThat(elapsed).as("the barrier must block on the in-flight batch and then give up within its budget")
+          .isBetween(1_000L, 60_000L);
+
+      // AND IT MUST HAVE LET GO: A FAILED BARRIER THAT KEPT THE GLOBAL LOCK WOULD BE WORSE THAN THE HANG IT REPLACES
+      final AtomicBoolean acquired = new AtomicBoolean();
+      final Thread other = new Thread(() -> pageManager.executeInLock(() -> {
+        acquired.set(true);
+        return null;
+      }), "issue6125-lock-probe");
+      other.setDaemon(true);
+      other.start();
+      other.join(10_000);
+      assertThat(acquired.get()).as("the page-manager lock must be free again after a failed barrier").isTrue();
+
+      // THE SUSPENSION IT TOOK ON THE WAY IN MUST BE RELEASED TOO, OR THE DATABASE STAYS FROZEN FOR EVERY WRITER
+      assertThat(pageManager.isPageFlushingSuspended(db)).isFalse();
+    } finally {
+      flushThread.nextPagesToFlush.set(null);
+    }
+
+    // THE PAIRED ASSERTION: WITH THE FABRICATED BATCH GONE, THE VERY SAME CALL SUCCEEDS - SO THE FAILURE ABOVE WAS
+    // THE WAIT UNDER TEST AND NOT A DATABASE LEFT BROKEN BY THE FIXTURE
+    try (final PageSnapshot snapshot = pageManager.openSnapshot(db)) {
+      assertThat(snapshot.getStatus()).isEqualTo(PageSnapshot.STATUS.ACTIVE);
+    }
   }
 
   /** The one stall the snapshot path still has is now reported rather than only logged when it goes wrong. */

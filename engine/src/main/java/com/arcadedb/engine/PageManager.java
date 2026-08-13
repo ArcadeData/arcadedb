@@ -152,13 +152,18 @@ public class PageManager extends LockContext {
   private static final ThreadLocal<byte[]> PRE_IMAGE_BUFFER = ThreadLocal.withInitial(() -> new byte[0]);
 
   /**
-   * Hard wall-clock budget of the t0 barrier's second drain (#6125). That drain runs with the JVM-wide page-manager
-   * lock held and normally has nothing to do - the first, lock-free drain already emptied the pipeline - so this is
-   * not a wait it is expected to use. It is a ceiling on how long a wedged flush thread can hold the global lock,
-   * which the progress-based {@code arcadedb.flushAllPagesTimeout} (60 s by default) would not bound acceptably
-   * here: every committer of every database in the JVM waits behind it.
+   * Hard wall-clock budget for EVERYTHING the t0 barrier does with the JVM-wide page-manager lock held (#6125): the
+   * residual drain, the suspension acquisition and the wait for the in-flight flush batch. It is a ceiling on how
+   * long a wedged flush thread or a concurrent resume can stall every committer of every database in the JVM, which
+   * neither the progress-based {@code arcadedb.flushAllPagesTimeout} (60 s) nor the uncapped waits those steps use
+   * elsewhere would bound acceptably here.
+   * <p>
+   * It is not a wait the barrier is expected to use: the first, lock-free drain has already emptied the pipeline, so
+   * all three steps normally return on their first check. Sized with a hundredfold margin over the one legitimately
+   * slow case - a single large transaction's batch reaching the disk - so that exhausting it means something is
+   * genuinely wrong rather than merely busy.
    */
-  private static final long SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS = 2_000;
+  private static final long SNAPSHOT_BARRIER_MAX_MILLIS = 5_000;
 
   /**
    * Fraction of the space still usable on the spill volume that the automatically sized shadow cap may claim
@@ -436,12 +441,18 @@ public class PageManager extends LockContext {
    * a page on disk OR into the flush pipeline.</li>
    * <li>The drain is repeated, now under those locks. It is guaranteed to converge because nothing can feed the
    * pipeline any more, and it is normally instant because step 1 already emptied it; what it covers is exactly the
-   * commits that landed between step 1 and step 2. It is nevertheless bounded by a hard
-   * {@link #SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS} deadline rather than by the progress-based flush timeout, because the
-   * lock it holds is JVM-wide. The flush thread is then suspended and its in-flight batch awaited, parking the
-   * asynchronous path on a BATCH boundary - a batch is one transaction's pages, so a snapshot taken between batches
-   * can never hold half a transaction.</li>
+   * commits that landed between step 1 and step 2. The flush thread is then suspended and its in-flight batch
+   * awaited, parking the asynchronous path on a BATCH boundary - a batch is one transaction's pages, so a snapshot
+   * taken between batches can never hold half a transaction.</li>
    * </ol>
+   * <b>Everything in step 4 shares one hard {@link #SNAPSHOT_BARRIER_MAX_MILLIS} deadline</b>, because the lock it
+   * holds is JVM-wide: the waits those three steps use elsewhere are uncapped (the in-flight batch wait polls until
+   * a synchronous {@code file.write} returns) or capped only by the 60 s progress-based flush timeout, and either
+   * would let one sick disk stall every committer of every database in the process. Exhausting the budget is handled
+   * per step according to what it costs: a pipeline that has not drained only means t0 may sit slightly behind the
+   * last commit, which is logged and accepted, while a suspension that cannot be acquired or an in-flight batch that
+   * has not landed abandons the window outright - the batch is half-written by definition - and the consumer falls
+   * back to the suspend-and-freeze path, which is slower for one database rather than briefly fatal for all of them.
    * Only then are the per-file page counts and {@code lastTxId} recorded and the window published. Doing these in
    * the other order produces subtly torn snapshots that pass tests and fail in production.
    * <p>
@@ -515,6 +526,10 @@ public class PageManager extends LockContext {
               "Snapshot of database '%s': the flush queue did not drain within the timeout, the snapshot point may be behind the last committed transaction",
               null, database.getName());
 
+        // ONE BUDGET FOR THE WHOLE LOCKED SECTION BELOW, NOT ONE PER STEP: WHAT HAS TO BE BOUNDED IS THE TOTAL TIME
+        // THE JVM-WIDE LOCK IS HELD, AND THREE INDEPENDENT CEILINGS WOULD MULTIPLY IT
+        final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
+
         final ReentrantReadWriteLock applyLock = database.getTransactionManager().getApplyLock();
         applyLock.writeLock().lock();
         try {
@@ -524,14 +539,27 @@ public class PageManager extends LockContext {
             // THE SYNCHRONOUS PAGE WRITE AND THE FLUSH ENQUEUE, SO NOTHING CAN FEED THE PIPELINE WHILE WE HOLD IT
             // AND THIS CONVERGES BY CONSTRUCTION. IT COVERS EXACTLY THE COMMITS THAT LANDED SINCE STEP 1, WHICH IS
             // WHY THE RETRY LOOP OF #6075 IS GONE (#6125)
-            if (!thread.waitPendingPagesOfDatabaseUntil(database, SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS))
+            if (!thread.waitPendingPagesOfDatabaseUntil(database, deadline))
+              // NOT FATAL: A SNAPSHOT TAKEN OVER A STILL-QUEUED BATCH IS CONSISTENT, JUST POSSIBLY BEHIND - THE
+              // BATCH BOUNDARY IS GUARANTEED BY THE SUSPENSION BELOW, NOT BY THIS DRAIN
               LogManager.instance().log(this, Level.WARNING,
                   "Snapshot of database '%s': the flush pipeline did not settle within %d ms under the publication lock, the snapshot point may be behind the last committed transaction",
-                  null, database.getName(), SNAPSHOT_BARRIER_DRAIN_MAX_MILLIS);
+                  null, database.getName(), SNAPSHOT_BARRIER_MAX_MILLIS);
 
-            thread.setSuspended(database, true);
+            if (!thread.trySuspendUntil(database, deadline))
+              // A CONCURRENT RESUME IS FLUSHING ITS DEFERRED BACKLOG (UP TO flushSuspendMaxDeferredRAM) AND WOULD
+              // KEEP EVERY COMMITTER IN THE JVM WAITING BEHIND THIS LOCK. GIVE THE WINDOW UP INSTEAD: THE CONSUMER
+              // FALLS BACK TO SUSPEND-AND-FREEZE, WHICH IS SLOWER FOR ONE DATABASE RATHER THAN BRIEFLY FATAL FOR ALL
+              throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName()
+                  + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
+                  + " ms because another suspender is still resuming");
             suspended = true;
-            thread.waitForCurrentFlushToComplete(database);
+
+            if (!thread.waitForCurrentFlushToCompleteUntil(database, deadline))
+              // FATAL, UNLIKE THE DRAIN ABOVE: THE IN-FLIGHT BATCH IS HALF-WRITTEN BY DEFINITION, SO t0 WOULD HOLD
+              // HALF A TRANSACTION. A WRITE THAT HAS NOT RETURNED IN THIS LONG IS A SICK DISK, NOT A BUSY ONE
+              throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName()
+                  + "': the in-flight page flush did not complete within " + SNAPSHOT_BARRIER_MAX_MILLIS + " ms");
 
             if (thread.hasPendingPagesOfDatabase(database)) {
               // NO COMMIT CAN CAUSE THIS ANY MORE, SO THE ONLY REMAINING FEEDER IS INDEX COMPACTION, WHICH SCHEDULES
