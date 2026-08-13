@@ -135,6 +135,29 @@ class Issue6144SchemaInstalmentMetricsTest {
     }
   }
 
+  /**
+   * The per-database gauges share one scheduled task with the per-follower ones, and
+   * {@code scheduleAtFixedRate} cancels a task PERMANENTLY the first time it throws - no further execution, ever,
+   * and nothing says so. A refresh that fails must therefore cost only its own gauges, or one bad tick would freeze
+   * every gauge on this binder for the rest of the process.
+   */
+  @Test
+  void aFailingRefreshCostsOnlyItsOwnGauges() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getPlugins()).thenReturn(List.of());
+
+    final boolean[] laterRefreshRan = { false };
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.runGuarded(() -> {
+        throw new StackOverflowError("a refresh blew up");
+      }, () -> laterRefreshRan[0] = true);
+    }
+
+    assertThat(laterRefreshRan[0])
+        .as("the refreshes after a failing one must still run, and the failure must not leave the tick")
+        .isTrue();
+  }
+
   private static double gauge(final SimpleMeterRegistry registry, final String name, final String database) {
     return registry.get(name).tags(Tags.of("database", database)).gauge().value();
   }

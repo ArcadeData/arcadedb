@@ -225,7 +225,17 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
     };
   }
 
-  /** Publishes an initial set immediately, then re-registers every {@code refresh} on one shared daemon timer. */
+  /**
+   * Publishes an initial set immediately, then re-registers every {@code refresh} on one shared daemon timer.
+   * <p>
+   * EVERY RUN IS GUARDED, and that is what makes sharing one task safe. {@code scheduleAtFixedRate} cancels a task
+   * PERMANENTLY the first time it throws - no further execution, ever, and nothing says so - so one refresh throwing
+   * would silently freeze every gauge on this binder for the rest of the process, including the follower-lag ones
+   * that have nothing to do with it. The refreshes each catch {@code Exception} themselves today; the guard here
+   * catches {@link Throwable} because it is the one that must not be conditional on a future refresh remembering to
+   * write its own, and because "this metric stopped updating" is a strictly worse outcome than a logged failure.
+   * Each refresh is guarded SEPARATELY, so a failing one cannot take its siblings' turn with it either.
+   */
   private void startMultiGaugeRefresh(final Runnable... refreshes) {
     for (final Runnable refresh : refreshes)
       refresh.run(); // publish an initial (possibly empty) set immediately
@@ -235,11 +245,24 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
       t.setDaemon(true);
       return t;
     });
-    scheduler.scheduleAtFixedRate(() -> {
-      for (final Runnable refresh : refreshes)
-        refresh.run();
-    }, 5, 5, TimeUnit.SECONDS);
+    scheduler.scheduleAtFixedRate(() -> runGuarded(refreshes), 5, 5, TimeUnit.SECONDS);
     followerMetricsScheduler = scheduler;
+  }
+
+  /**
+   * One tick: every refresh runs, and a failing one costs only its own gauges. Extracted from the scheduling above
+   * so the guarantee can be tested without waiting out a tick.
+   */
+  // @VisibleForTesting
+  void runGuarded(final Runnable... refreshes) {
+    for (final Runnable refresh : refreshes)
+      try {
+        refresh.run();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.WARNING,
+            "A HA metrics refresh failed; the gauges it publishes keep their previous values and the next tick "
+                + "will try again: %s", t.toString());
+      }
   }
 
   /**
