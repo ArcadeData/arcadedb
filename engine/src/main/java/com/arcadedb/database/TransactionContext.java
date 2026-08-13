@@ -71,6 +71,32 @@ public class TransactionContext implements Transaction {
   // compactions across all indexes of a multi-indexed type; exhausting it signals a real concurrency problem.
   private static final int                           MAX_LOCK_MIGRATION_RETRIES = 10;
 
+  // The SHAPE a slot tracked by the disjoint-slot merge has (#6129), kept per slot in SlotRebaseBuffer: the replay
+  // checks the marker on the committed page against it, because the very same bytes mean a different record depending
+  // on the marker that precedes them.
+  /** A plain in-place record: {@code [varint size][content]}. The only shape the merge knew before #6129. */
+  public static final byte SLOT_KIND_RECORD                  = 0;
+  /**
+   * The CONTENT record a placeholder pointer points at, on its own page: {@code [varint -size][content]}. It is a
+   * single-slot write exactly like a plain record - the pointer on the owner page is not touched by an update that
+   * stays on this page - it just carries a negative size marker (#6129).
+   */
+  public static final byte SLOT_KIND_PLACEHOLDER_CONTENT     = 1;
+  /**
+   * The head chunk of a multi-page record: {@code [varint FIRST_CHUNK][int chunkSize][long nextChunk][chunkSize
+   * bytes]}. Its footprint on the page was fixed when the record spilled and never grows again, so an update rewrites
+   * only the bytes of its own slot; the tracked images are the chunk header plus its content, from the size field on
+   * (the marker itself never changes). Every other page of the chain is poisoned by its writer (#6129).
+   */
+  public static final byte SLOT_KIND_FIRST_CHUNK             = 2;
+  /**
+   * The one shape whose two images differ: the SPILL of a plain record that no longer fits its page into the head of
+   * a chunk chain. The pre-image is the plain record's content, the final image is the chunk header + content, and
+   * the replay checks that the committed slot still holds the plain record AND that the room the spill used (the
+   * record's own footprint, plus the free tail of the page when it is the last record) is still there (#6129).
+   */
+  public static final byte SLOT_KIND_RECORD_SPILLED_TO_CHUNK = 3;
+
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
   // Per-tx record-count delta per bucket. Single-threaded (HashMap was used, not ConcurrentHashMap),
@@ -918,29 +944,6 @@ public class TransactionContext implements Transaction {
       return kind == null ? SLOT_KIND_RECORD : kind;
     }
   }
-
-  /** A plain in-place record: {@code [varint size][content]}. The only shape the merge knew before #6129. */
-  public static final byte SLOT_KIND_RECORD              = 0;
-  /**
-   * The CONTENT record a placeholder pointer points at, on its own page: {@code [varint -size][content]}. It is a
-   * single-slot write exactly like a plain record - the pointer on the owner page is not touched by an update that
-   * stays on this page - it just carries a negative size marker (#6129).
-   */
-  public static final byte SLOT_KIND_PLACEHOLDER_CONTENT = 1;
-  /**
-   * The head chunk of a multi-page record: {@code [varint FIRST_CHUNK][int chunkSize][long nextChunk][chunkSize
-   * bytes]}. Its footprint on the page was fixed when the record spilled and never grows again, so an update rewrites
-   * only the bytes of its own slot; the tracked images are the chunk header plus its content, from the size field on
-   * (the marker itself never changes). Every other page of the chain is poisoned by its writer (#6129).
-   */
-  public static final byte SLOT_KIND_FIRST_CHUNK         = 2;
-  /**
-   * The one shape whose two images differ: the SPILL of a plain record that no longer fits its page into the head of
-   * a chunk chain. The pre-image is the plain record's content, the final image is the chunk header + content, and
-   * the replay checks that the committed slot still holds the plain record AND that the room the spill used (the
-   * record's own footprint, plus the free tail of the page when it is the last record) is still there (#6129).
-   */
-  public static final byte SLOT_KIND_RECORD_SPILLED_TO_CHUNK = 3;
 
   /**
    * Tells whether the disjoint-slot page merge is enabled for this transaction.
