@@ -434,14 +434,7 @@ class RestoreSqlStatementTest extends TestHelper {
   }
 
   private long countByScan() {
-    long scanned = 0;
-    try (ResultSet rs = database.query("sql", "SELECT FROM " + DOC_TYPE)) {
-      while (rs.hasNext()) {
-        rs.next();
-        scanned++;
-      }
-    }
-    return scanned;
+    return countByScan(DOC_TYPE);
   }
 
   @Test
