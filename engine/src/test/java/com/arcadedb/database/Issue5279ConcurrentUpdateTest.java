@@ -19,12 +19,8 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.TestHelper;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5279ConcurrentUpdateTest extends TestHelper {
+class Issue5279ConcurrentUpdateTest extends BucketPageLayoutTestSupport {
   private boolean savedSlotMerge;
 
   @BeforeEach
@@ -464,13 +460,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
           assertThat(owned[t][i].asDocument(true).getString("payload")).isEqualTo(payloadOf(t, i, rounds - 1));
     });
 
-    try (final ResultSet rs = database.command("SQL", "check database")) {
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        assertThat(numberProperty(row, "totalErrors")).as("check database: " + row.toJSON()).isZero();
-        assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
-      }
-    }
+    checkDatabase();
   }
 
   /**
@@ -489,12 +479,6 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
     return "t" + threadId + "-r" + record + "-round" + round + "-" + "x".repeat(100 * (round + 1));
   }
 
-  /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */
-  private static long numberProperty(final Result row, final String name) {
-    final Object value = row.getProperty(name);
-    return value == null ? 0L : ((Number) value).longValue();
-  }
-
   /**
    * The one update shape that reaches the growth branch WITHOUT being a plain record: a slot holding a placeholder
    * POINTER whose content record cannot absorb the new value either, so the content is deleted and the slot is
@@ -508,6 +492,10 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
     final String big = "b".repeat(30 * 1024);
     final String huge = "h".repeat(70 * 1024);
 
+    // Same LENGTH as the value the neighbour starts from: page 0 is sealed below, so the concurrent write must be an
+    // in-place overwrite - a growth would have to spill out of the page itself and stop being a plain neighbour.
+    final String neighbourRewritten = "N".repeat(19);
+
     final RID[] placeholder = new RID[1];
     final RID[] neighbour = new RID[1];
 
@@ -516,9 +504,11 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
       // Both tiny and both on page 0; the placeholder one is written FIRST so it is never the last record of the
       // page (a last record would be grown into the free tail instead of being turned into a placeholder).
       placeholder[0] = database.newDocument("Holder").set("v", "p").save().getIdentity();
-      neighbour[0] = database.newDocument("Holder").set("v", "n").save().getIdentity();
-      fillFirstPage("Holder");
+      neighbour[0] = database.newDocument("Holder").set("v", "n".repeat(19)).save().getIdentity();
     });
+    // Since #6149 a page with a free tail lends the spilling record the few bytes a chunk header needs, so a
+    // placeholder is only produced on a page with NO free tail left at all: seal page 0 to get one.
+    sealFirstPage("Holder");
 
     // Page 0 can no longer host 30 KB and the record's own 9 bytes cannot hold a chunk header: it becomes a
     // placeholder POINTER to a content record on another page.
@@ -526,7 +516,10 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
     final Map<String, Object> layout = bucketStats("Holder");
     assertThat((Long) layout.get("totalPlaceholderRecords")).as("the slot must hold a placeholder pointer, not chunks")
         .isEqualTo(1L);
-    assertThat((Long) layout.get("totalMultiPageRecords")).isZero();
+    // The only chunked record so far is the one that sealed page 0: the 30 KB value went into a placeholder CONTENT
+    // record, which is a plain record on a page of its own.
+    assertThat((Long) layout.get("totalMultiPageRecords")).isEqualTo(1L);
+    assertThat((Long) layout.get("totalSurrogateRecords")).isEqualTo(1L);
 
     // Our transaction rebuilds that placeholder: 70 KB does not fit ANY page, so the content record cannot grow
     // either and the whole slot is rebuilt (old content deleted, new chunked placeholder created).
@@ -535,7 +528,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
 
     // Somebody else commits a change to the co-located record, bumping page 0's version.
     final Thread other = new Thread(
-        () -> database.transaction(() -> neighbour[0].asDocument(true).modify().set("v", "neighbour rewritten").save()));
+        () -> database.transaction(() -> neighbour[0].asDocument(true).modify().set("v", neighbourRewritten).save()));
     other.start();
     other.join();
 
@@ -554,47 +547,17 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
 
     database.transaction(() -> {
       assertThat(placeholder[0].asDocument(true).getString("v")).isEqualTo(huge);
-      assertThat(neighbour[0].asDocument(true).getString("v")).isEqualTo("neighbour rewritten");
+      assertThat(neighbour[0].asDocument(true).getString("v")).isEqualTo(neighbourRewritten);
     });
 
     // The content record was really REBUILT (the old one deleted and a chunked one created), which is what proves
     // the update went through the placeholder-pointer fall-through and not through an in-place content update.
     final Map<String, Object> rebuilt = bucketStats("Holder");
     assertThat((Long) rebuilt.get("totalPlaceholderRecords")).isEqualTo(1L);
-    assertThat((Long) rebuilt.get("totalMultiPageRecords")).isEqualTo(1L);
+    // The new content record is chunked, next to the one that sealed page 0.
+    assertThat((Long) rebuilt.get("totalMultiPageRecords")).isEqualTo(2L);
 
-    try (final ResultSet rs = database.command("SQL", "check database")) {
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        assertThat(numberProperty(row, "totalErrors")).as("check database: " + row.toJSON()).isZero();
-        assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
-      }
-    }
-  }
-
-  /**
-   * Fills page 0 of a single-bucket type until a record no longer fits it: the next insert lands on another page,
-   * which shows up as a RID position that is not the previous one plus one (a new page restarts at a multiple of
-   * the page's slot count).
-   */
-  private void fillFirstPage(final String typeName) {
-    final String filler = "f".repeat(8 * 1024);
-    long previous = -1;
-    for (int i = 0; i < 64; i++) {
-      final long position = database.newDocument(typeName).set("v", filler).save().getIdentity().getPosition();
-      if (previous > -1 && position != previous + 1)
-        return;
-      previous = position;
-    }
-    throw new AssertionError("Page 0 of " + typeName + " did not fill up");
-  }
-
-  /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
-  private Map<String, Object> bucketStats(final String typeName) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).get(0);
-    final Map<String, Object>[] stats = new Map[1];
-    database.transaction(() -> stats[0] = bucket.check(0, false));
-    return stats[0];
+    checkDatabase();
   }
 
   /**

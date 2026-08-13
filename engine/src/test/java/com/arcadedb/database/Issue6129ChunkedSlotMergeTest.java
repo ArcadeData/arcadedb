@@ -19,11 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.TestHelper;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue6129ChunkedSlotMergeTest extends TestHelper {
+class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
   private static final int THREADS            = 8;
   private static final int RECORDS_PER_THREAD = 5;
   private static final int ROUNDS             = 8;
@@ -397,8 +393,10 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().createDocumentType("Holder", 1).createProperty("v", Type.STRING);
       placeholder[0] = database.newDocument("Holder").set("v", "p").save().getIdentity();
-      fillFirstPage("Holder");
     });
+    // Since #6149 a page with a free tail lends the spilling record the few bytes a chunk header needs, so a
+    // placeholder is only produced on a page with NO free tail left at all: seal page 0 to get one.
+    sealFirstPage("Holder");
 
     // Page 0 cannot host 20 KB and the record's own 9 bytes cannot hold a chunk header: the slot becomes a placeholder
     // POINTER and the content goes to the page that has room for it.
@@ -624,43 +622,4 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
     return marker + "-" + "x".repeat(spilledPayloadSize + 1_500 * round - marker.length() - 1);
   }
 
-  /**
-   * Fills page 0 of a single-bucket type until a record no longer fits it: the next insert lands on another page, which
-   * shows up as a RID position that is not the previous one plus one (a new page restarts at a multiple of the page's
-   * slot count).
-   */
-  private void fillFirstPage(final String typeName) {
-    final String filler = "f".repeat(8 * 1024);
-    long previous = -1;
-    for (int i = 0; i < 64; i++) {
-      final long position = database.newDocument(typeName).set("v", filler).save().getIdentity().getPosition();
-      if (previous > -1 && position != previous + 1)
-        return;
-      previous = position;
-    }
-    throw new AssertionError("Page 0 of " + typeName + " did not fill up");
-  }
-
-  /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
-  private Map<String, Object> bucketStats(final String typeName) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
-    final Map<String, Object>[] stats = new Map[1];
-    database.transaction(() -> stats[0] = bucket.check(0, false));
-    return stats[0];
-  }
-
-  private void checkDatabase() {
-    try (final ResultSet rs = database.command("SQL", "check database")) {
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        assertThat(numberProperty(row, "totalErrors")).as("check database: " + row.toJSON()).isZero();
-        assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
-      }
-    }
-  }
-
-  private static long numberProperty(final Result row, final String name) {
-    final Object value = row.getProperty(name);
-    return value == null ? 0L : ((Number) value).longValue();
-  }
 }
