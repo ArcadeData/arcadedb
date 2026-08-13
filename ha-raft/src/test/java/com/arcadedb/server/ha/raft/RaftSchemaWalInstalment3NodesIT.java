@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6136 (1): an index rebuild on the leader used to buffer its WHOLE WAL in leader heap.
@@ -56,8 +57,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("slow")
 class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
-  private static final String TYPE_NAME  = "InstalmentDoc";
-  private static final String INDEX_NAME = "instalmentIdxName";
+  private static final String TYPE_NAME        = "InstalmentDoc";
+  private static final String INDEX_NAME       = "instalmentIdxName";
+  private static final String ABANDONED_BUCKET = "instalment_abandoned";
   /**
    * Comfortably more than one {@code IndexBuilder.BUILD_BATCH_SIZE} (5000), so the rebuild produces several
    * buffered WAL entries rather than one - which is what there is to ship in instalments in the first place.
@@ -137,6 +139,71 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
     assertClusterConsistency();
   }
 
+  /**
+   * The risk instalments introduce, and the compensation that pays for it.
+   * <p>
+   * Before them, the whole buffered WAL sat in leader heap and NOTHING reached a follower until the
+   * {@code recordFileChanges} callback returned, so a build that threw part-way left the followers untouched. Now
+   * the files an instalment announced are already there, and the entry that would have published or retired them
+   * is never sent, because it lives after the line that threw - and every instalment chunk is marked
+   * {@code moreChunksFollow}, so there is no signal a follower could act on by itself.
+   * <p>
+   * This reproduces exactly the shape the principal caller produces: {@code BucketIndexBuilder.create()} drops the
+   * half-built index from its own error handler, so the leader lets the file go and only the followers are left
+   * holding it. The assertion is the invariant that matters - EVERY node agrees on whether the file exists - not
+   * merely "the followers dropped it", because a compensation that retired a file the leader had KEPT would
+   * satisfy the narrow assertion while creating the divergence the retirement exists to prevent.
+   */
+  @Test
+  void aSessionThatFailsAfterAnInstalmentRetiresWhatItAnnounced() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+
+    final DatabaseInternal leaderDb = wrapped(leaderIndex);
+    leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+
+    final long instalmentsBefore = RaftReplicatedDatabase.getSchemaWalInstalmentsShipped();
+    final int[] abandonedFileId = { -1 };
+
+    // A DDL session that creates a file, ships more than one instalment's worth of WAL, then fails the way a
+    // half-way index build does: it lets its own file go before the exception leaves the callback.
+    assertThatThrownBy(() -> leaderDb.recordFileChanges(() -> {
+      leaderDb.getSchema().createBucket(ABANDONED_BUCKET);
+      abandonedFileId[0] = leaderDb.getSchema().getBucketByName(ABANDONED_BUCKET).getFileId();
+
+      final String payload = "y".repeat(400);
+      for (int batch = 0; batch < 8; batch++) {
+        leaderDb.begin();
+        for (int i = 0; i < 500; i++)
+          leaderDb.newDocument(TYPE_NAME).set("name", "abandoned" + batch + "_" + i).set("payload", payload).save();
+        leaderDb.commit();
+      }
+
+      leaderDb.getSchema().dropBucket(ABANDONED_BUCKET);
+      throw new IllegalStateException("simulated mid-build failure");
+    })).as("the failure must reach the caller unchanged, not be swallowed or replaced by the compensation")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("simulated mid-build failure");
+
+    assertThat(RaftReplicatedDatabase.getSchemaWalInstalmentsShipped() - instalmentsBefore)
+        .as("the session must actually have shipped an instalment, or this test proves nothing").isPositive();
+    assertThat(abandonedFileId[0]).as("the session must have created a file to abandon").isNotNegative();
+
+    waitForAllServers();
+
+    final boolean onLeader = fileExistsOn(leaderIndex, abandonedFileId[0]);
+    assertThat(onLeader).as("the callback dropped the bucket, so this node must not have the file").isFalse();
+
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      assertThat(awaitFileExistsOn(server, abandonedFileId[0], onLeader))
+          .as("server %d must agree with the node that ran the DDL about file %d: an instalment announced it and "
+              + "nothing ever published it, so a follower left holding it leaks a file no schema references",
+              server, abandonedFileId[0])
+          .isEqualTo(onLeader);
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
 
   private DatabaseInternal wrapped(final int serverIndex) {
@@ -159,6 +226,17 @@ class RaftSchemaWalInstalment3NodesIT extends BaseRaftHATest {
 
   private long awaitIndexEntriesOn(final int serverIndex, final long expected) throws InterruptedException {
     return awaitValue(expected, () -> indexEntriesOn(serverIndex));
+  }
+
+  /** Whether the paginated file is present in one server's FileManager, which is what an instalment created. */
+  private boolean fileExistsOn(final int serverIndex, final int fileId) {
+    return withResyncRetry(serverIndex,
+        db -> ((DatabaseInternal) db).getFileManager().existsFile(fileId));
+  }
+
+  private boolean awaitFileExistsOn(final int serverIndex, final int fileId, final boolean expected)
+      throws InterruptedException {
+    return awaitValue(expected ? 1 : 0, () -> fileExistsOn(serverIndex, fileId) ? 1 : 0) == 1;
   }
 
   private long countByNameOn(final int serverIndex, final String name) {
