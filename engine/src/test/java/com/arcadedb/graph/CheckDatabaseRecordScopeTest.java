@@ -494,6 +494,79 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
     }
   }
 
+  /**
+   * A scoped FIX that DELETES a corrupted record must leave the bucket's cached record count telling the truth.
+   * <p>
+   * {@code LocalBucket.deleteRecord} does not touch {@code cachedRecordCount} - the counter {@code count(*)} and
+   * {@code countType()} read instead of scanning - so every caller that deletes through it owes the matching
+   * {@code updateBucketRecordDelta(-1)}. The graph arms did not pay it, and the type-wide run hid that: its
+   * {@code checkBuckets} pass recomputes every bucket counter afterwards, which happens to repair the drift. The
+   * RECORD scope deliberately skips the database-wide passes, so nothing repaired it there and the type kept
+   * over-reporting the deleted record for good.
+   * <p>
+   * Asserted against a real scan rather than a literal, so this pins the two ANSWERS AGREEING rather than one
+   * arithmetic result: {@code count(@rid)} scans and is ground truth, {@code countType} reads the counter.
+   */
+  @Test
+  void aRecordScopedFixKeepsTheCachedRecordCountConsistent() {
+    createSchema();
+
+    final RID[] victim = new RID[1];
+    database.transaction(() -> {
+      database.newVertex("Src").set("name", "keep-me").save();
+      final MutableVertex v = database.newVertex("Src").set("name", "corrupt-me");
+      v.save();
+      victim[0] = v.getIdentity();
+    });
+
+    // PRECONDITION: the counter is right BEFORE the repair, so a mismatch afterwards is the repair's doing and not
+    // a counter that was already adrift.
+    assertThat(database.countType("Src", false)).as("baseline cached count").isEqualTo(2L);
+    assertThat(scanCountOf("Src")).as("baseline scan").isEqualTo(2L);
+
+    corruptRecordTypeByte(victim[0]);
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + victim[0] + " FIX")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(longProperty(rs.next(), "autoFix")).as("the corrupted vertex must actually have been removed")
+          .isGreaterThan(0L);
+    }
+
+    assertThat(scanCountOf("Src")).as("the corrupted vertex is really gone").isEqualTo(1L);
+    assertThat(database.countType("Src", false))
+        .as("count(*) reads the cached counter and must agree with the scan after a scoped repair")
+        .isEqualTo(scanCountOf("Src"));
+  }
+
+  /** The edge arm of {@link #aRecordScopedFixKeepsTheCachedRecordCountConsistent}: same deletion, same rule. */
+  @Test
+  void aRecordScopedEdgeFixKeepsTheCachedRecordCountConsistent() {
+    createSchema();
+    final RID hub = createHub();
+    final List<RID> edges = createEdges(hub, 2);
+
+    assertThat(database.countType("LINK", false)).as("baseline cached count").isEqualTo(2L);
+
+    corruptRecordTypeByte(edges.getFirst());
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + edges.getFirst() + " FIX")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(longProperty(rs.next(), "autoFix")).as("the corrupted edge must actually have been removed")
+          .isGreaterThan(0L);
+    }
+
+    assertThat(database.countType("LINK", false))
+        .as("count(*) reads the cached counter and must agree with the scan after a scoped repair")
+        .isEqualTo(scanCountOf("LINK"));
+  }
+
+  /** Ground truth: {@code count(@rid)} scans, unlike {@code count(*)} which reads the cached bucket counter. */
+  private long scanCountOf(final String typeName) {
+    try (final ResultSet rs = database.command("sql", "SELECT count(@rid) AS c FROM `" + typeName + "`")) {
+      return ((Number) rs.next().getProperty("c")).longValue();
+    }
+  }
+
   /** Runs a non-fixing check and returns its corrupted-record total, asserting the record was named in a warning. */
   private long corruptedReportedBy(final String command, final RID rid) {
     try (final ResultSet rs = database.command("sql", command)) {

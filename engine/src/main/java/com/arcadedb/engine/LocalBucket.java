@@ -377,6 +377,38 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     deleteRecordInternal(rid, false, false, force);
   }
 
+  /**
+   * Deletes a record an integrity check has already judged beyond repair, escalating to {@link #deleteRecord(RID,
+   * boolean) force} only for the one failure that force exists to clear: a structurally broken chunk chain.
+   * <p>
+   * The escalation is GATED on {@link #isChunkChainBroken}, not unconditional, and that is the whole point of this
+   * method. A {@link ConcurrentModificationException} from a plain delete does not prove corruption - the same
+   * page-version validation fails when concurrent writes touch OTHER records sharing the chain's pages, so on a
+   * busy bucket it is ordinary contention, and forcing through it would orphan chunks and skip index cleanup for a
+   * healthy record. The version-blind structural probe is what tells the two apart; it is the same discriminator
+   * {@code LocalDatabase.deleteRecord} uses for the tolerant path, and a transient conflict still propagates as
+   * the retry signal it is.
+   * <p>
+   * Deliberately does NOT consult {@code DELETE_TOLERATE_BROKEN_CHAIN}: that setting governs whether an ORDINARY
+   * delete may force through, and its own documentation states that CHECK DATABASE FIX is unaffected by it either
+   * way, so a broken record is never permanently stuck. {@link #check} already force-deletes such a record on the
+   * bucket-wide pass; this is the same guarantee for the callers that reach one record directly, which is what the
+   * RECORD-scoped check does after skipping the bucket-wide passes.
+   * <p>
+   * Note for the caller: like both {@code deleteRecord} overloads, this does NOT maintain {@code cachedRecordCount}
+   * - the counter {@code count(*)} answers from. Pair it with {@code updateBucketRecordDelta(fileId, -1)}.
+   */
+  public void deleteCorruptedRecord(final RID rid) {
+    try {
+      deleteRecord(rid);
+    } catch (final ConcurrentModificationException e) {
+      if (!isChunkChainBroken(rid))
+        // CONTENTION, not corruption: preserve the NeedRetryException semantics so the caller can retry.
+        throw e;
+      deleteRecord(rid, true);
+    }
+  }
+
   @Override
   public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);

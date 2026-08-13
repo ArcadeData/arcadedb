@@ -90,6 +90,39 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
     assertThat(row.<Collection<?>>getProperty("warnings").toString()).doesNotContain("broken multi-page chunk chain");
   }
 
+  /**
+   * The same removal through {@code CHECK DATABASE RECORD <rid> FIX}. The scope matters here in a way it does not
+   * for any other corruption shape: the force-delete that clears a broken chain lives in {@code LocalBucket.check},
+   * reached from {@code DatabaseChecker.checkBuckets} - one of the database-wide passes the RECORD scope
+   * deliberately skips. So the scoped run met the record only through the vertex arm, whose plain
+   * {@code bucket.deleteRecord} raises the #4932 retry signal on the broken link, reported it as "Cannot fix the
+   * record ...: error on delete" and left it in place. It stayed reachable by a full-scope run, so nothing was
+   * permanently stuck, but the operator who reached for the narrow tool was told the repair had failed with no
+   * indication that the wide one would work.
+   * <p>
+   * The scoped arms now force through a chain that {@code isChunkChainBroken} confirms is structurally broken,
+   * which is the same discriminator {@code LocalDatabase.deleteRecord} uses to tell corruption from contention -
+   * and NOT an unconditional force, which would also fire on a healthy record whose page merely lost a version
+   * race, discarding its index cleanup.
+   */
+  @Test
+  void checkDatabaseRecordScopedFixRemovesBrokenMultiPageRecord() {
+    final RID broken = createBrokenMultiPageVertex();
+
+    assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken))
+        .as("precondition: the broken record is there to begin with").isTrue();
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + broken + " FIX")) {
+      final Result row = rs.next();
+      assertThat(row.<Collection<String>>getProperty("warnings").toString())
+          .as("the scoped repair must not report a failed delete: %s", row.toJSON())
+          .doesNotContain("error on delete");
+    }
+
+    assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken))
+        .as("the RECORD scope must remove a broken-chain record, like the full-scope run does").isFalse();
+  }
+
   @Test
   void forceDeleteRemovesBrokenMultiPageRecordWhilePlainDeleteRetries() {
     final RID broken = createBrokenMultiPageVertex();
