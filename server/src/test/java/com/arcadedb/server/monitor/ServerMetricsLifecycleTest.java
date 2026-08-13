@@ -121,10 +121,10 @@ class ServerMetricsLifecycleTest extends StaticBaseServerTest {
 
   @Test
   void followerMetricsSchedulerThreadStopsWhenTheServerStops() {
-    // HAReplicationMetrics.bindPerFollowerGauges() starts a daemon thread named
-    // "arcadedb-ha-follower-metrics" to refresh the per-follower MultiGauges every 5s (issue #5850).
-    // Nothing in production called close() on the binder, so the thread outlived the server that
-    // started it; a restart therefore leaked one more.
+    // HAReplicationMetrics starts a daemon thread named "arcadedb-ha-metrics-refresh" to re-register every
+    // MultiGauge on the binder each 5s (issue #5850; renamed from "...-follower-metrics" in #6144, when the same
+    // tick took on the per-database gauges as well). Nothing in production called close() on the binder, so the
+    // thread outlived the server that started it; a restart therefore leaked one more.
     final ArcadeDBServer server = startServer(0);
 
     assertThat(followerMetricsThreadIsAlive())
@@ -207,6 +207,6 @@ class ServerMetricsLifecycleTest extends StaticBaseServerTest {
 
   private static boolean followerMetricsThreadIsAlive() {
     return Thread.getAllStackTraces().keySet().stream()
-        .anyMatch(t -> "arcadedb-ha-follower-metrics".equals(t.getName()) && t.isAlive());
+        .anyMatch(t -> "arcadedb-ha-metrics-refresh".equals(t.getName()) && t.isAlive());
   }
 }

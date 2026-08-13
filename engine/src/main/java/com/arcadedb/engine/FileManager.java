@@ -25,7 +25,9 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,6 +50,21 @@ public class FileManager {
   // whether a schema change still needs replicating; a stale read there loses the change silently (#5728).
   private volatile     List<FileChange>                          recordedChanges   = null;
   private volatile     Thread                                    recordingThread   = null;
+  /**
+   * The creates of the active session that no caller has consumed yet, in registration order (issue #6142).
+   * <p>
+   * Same events as the {@code create} entries of {@link #recordedChanges}, carried as a CONSUMABLE queue rather than
+   * as a cumulative log. A replicator that ships a session's payload in instalments has to answer "what was created
+   * since my last instalment?" on every one of them, and deriving that from the cumulative list is O(instalments x
+   * file changes) - fine for a session that creates one or two files however much WAL it produces, quadratic for a
+   * DDL that creates many. An index into the list is NOT the alternative: {@link #dropFile} removes the cancelled
+   * create from the MIDDLE of it, so a saved position does not stay meaningful.
+   * <p>
+   * Kept in step with {@code recordedChanges} at every site that touches a create - registration, the
+   * drop-cancels-create rule, and the post-rename name refresh - so the two never tell different stories about the
+   * same file id. {@code null} exactly when no session is open.
+   */
+  private volatile     Map<Integer, String>                      unshippedCreates  = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
   /**
    * Decides whether the physical deletion of a dropped file has to be DEFERRED because a point-in-time snapshot
@@ -175,6 +192,7 @@ public class FileManager {
     }
 
     recordedChanges = new ArrayList<>();
+    unshippedCreates = new LinkedHashMap<>();
     recordingThread = Thread.currentThread();
     LogManager.instance().log(this, Level.FINE,
         "startRecordingChanges: new session begun on thread '%s'", null, Thread.currentThread().getName());
@@ -198,6 +216,33 @@ public class FileManager {
     return recordedChanges;
   }
 
+  /**
+   * Hands over the creates recorded since the previous call and starts a fresh batch (issue #6142).
+   * <p>
+   * The incremental counterpart of {@link #getRecordedChanges()} for a caller that ships the session's payload in
+   * instalments: each call answers "created since your last one", so a whole session costs one pass over its file
+   * creations rather than one pass per instalment. See {@link #unshippedCreates} for why re-deriving it from the
+   * cumulative list, or indexing into that list, is not equivalent.
+   * <p>
+   * CONSUMING, so exactly one consumer per session may call it - today that is the HA schema-instalment producer -
+   * and the returned map is the caller's to keep. What it hands over is what the followers must be told to create
+   * BEFORE the pages of this instalment land in them; the cumulative list stays untouched and still describes the
+   * whole session, which is what the session's final entry is built from.
+   *
+   * @return the creates, in registration order; empty when no session is open or nothing was created since the
+   *     previous call
+   */
+  public synchronized Map<Integer, String> drainRecordedCreates() {
+    final Map<Integer, String> drained = unshippedCreates;
+    if (drained == null || drained.isEmpty())
+      // A fresh empty map is not installed on the null branch: no session is open, so there is nothing to collect
+      // into and startRecordingChanges will install one when there is.
+      return Collections.emptyMap();
+
+    unshippedCreates = new LinkedHashMap<>();
+    return drained;
+  }
+
   public synchronized void stopRecordingChanges() {
     if (recordedChanges != null && Logger.getLogger(getClass().getName()).isLoggable(Level.FINE)) {
       final StringBuilder dump = new StringBuilder();
@@ -211,6 +256,7 @@ public class FileManager {
           null, Thread.currentThread().getName(), recordedChanges.size(), dump.toString());
     }
     recordedChanges = null;
+    unshippedCreates = null;
     recordingThread = null;
   }
 
@@ -296,6 +342,13 @@ public class FileManager {
 
         final FileChange entry = new FileChange(false, fileId, file.getFileName());
         if (recordedChanges != null) {
+          // Mirrors the cancellation below on the consumable queue (issue #6142). Unconditional because the two
+          // outcomes need the same thing: a create still queued is cancelled, and one already drained - or one from
+          // before the session - is simply not there. What an instalment ALREADY announced is not this map's
+          // business; the shipper keeps its own record of that so the session's final entry can retire it.
+          if (unshippedCreates != null)
+            unshippedCreates.remove(fileId);
+
           if (recordedChanges.remove(entry)) {
             LogManager.instance().log(this, Level.FINE,
                 "dropFile fileId=%d cancels prior CREATE entry (componentName='%s', fileName='%s')",
@@ -369,13 +422,7 @@ public class FileManager {
 
       file = new PaginatedComponentFile(filePath, mode);
       registerFile(file);
-
-      if (recordedChanges != null) {
-        recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
-        LogManager.instance().log(this, Level.FINE,
-            "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
-            null, file.getFileId(), file.getFileName(), file.getComponentName());
-      }
+      recordCreate(file);
 
       return file;
     }
@@ -391,17 +438,36 @@ public class FileManager {
       if (file == null) {
         file = new PaginatedComponentFile(filePath, mode);
         registerFile(file);
-
-        if (recordedChanges != null) {
-          recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
-          LogManager.instance().log(this, Level.FINE,
-              "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
-              null, file.getFileId(), file.getFileName(), file.getComponentName());
-        }
+        recordCreate(file);
       }
 
       return file;
     }
+  }
+
+  /**
+   * Records a file creation in the active session, in both of the forms a consumer can ask for it: the cumulative
+   * {@link #recordedChanges} log and the consumable {@link #unshippedCreates} queue (issue #6142). Called from the
+   * two {@code getOrCreateFile} overloads while they hold this monitor, so the two views cannot disagree.
+   * <p>
+   * EVERY CREATE MUST COME THROUGH HERE. A new creation path that appends to {@code recordedChanges} directly would
+   * leave the queue short by exactly that file, and the symptom is not local: the instalment that should have
+   * announced it never does, the followers never create it, and the pages that land in it afterwards are applied
+   * against a file only the leader has. Adding an entry to the cumulative log is therefore not a substitute for
+   * calling this method, and there is deliberately no other writer of either structure ({@link #dropFile} records
+   * the matching removal, and nothing outside this class mutates them).
+   */
+  private void recordCreate(final ComponentFile file) {
+    if (recordedChanges == null)
+      return;
+
+    recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
+    if (unshippedCreates != null)
+      unshippedCreates.put(file.getFileId(), file.getFileName());
+
+    LogManager.instance().log(this, Level.FINE,
+        "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
+        null, file.getFileId(), file.getFileName(), file.getComponentName());
   }
 
   public synchronized int newFileId() {
@@ -446,14 +512,30 @@ public class FileManager {
    * path carries the temp-suffixed file name in {@code addFiles} while the schema JSON captured
    * post-rename references the stripped name; the follower then creates the file under the wrong
    * name and emits "Cannot find indexes ..." warnings on schema reload (issue #4083).
+   * <p>
+   * SYNCHRONIZED like every other mutation of the session's two structures. It used to rely on "only the recording
+   * thread ever reaches here", which is true of its single caller ({@code PaginatedComponent.removeTempSuffix}) but
+   * is not something the next caller has to notice - and {@code unshippedCreates} (issue #6142) is a plain
+   * {@link LinkedHashMap}, so getting that wrong would corrupt a map rather than merely read one stale. Taking the
+   * monitor here cannot deadlock: this method touches maps only, the paths that hold this monitor across I/O
+   * ({@link #dropFile}) take file locks UNDER it, and the caller holds none of its own - {@code rename} released
+   * the component's channel lock before returning.
    */
-  public void refreshRecordedFileName(final ComponentFile file) {
+  public synchronized void refreshRecordedFileName(final ComponentFile file) {
     if (recordedChanges == null || file == null)
       return;
     final int fileId = file.getFileId();
     final String currentFullName = file.getFileName();
     if (currentFullName == null)
       return;
+
+    // The consumable queue carries the same names and is read at flush time, so it needs the rename too or an
+    // instalment would announce the pre-rename name for a file the schema JSON names post-rename - the divergence
+    // this method exists to prevent (issue #4083), just on the incremental path (issue #6142).
+    final Map<Integer, String> queued = unshippedCreates;
+    if (queued != null)
+      queued.replace(fileId, currentFullName);
+
     for (int i = 0; i < recordedChanges.size(); i++) {
       final FileChange c = recordedChanges.get(i);
       if (c.fileId == fileId && !currentFullName.equals(c.fileName)) {

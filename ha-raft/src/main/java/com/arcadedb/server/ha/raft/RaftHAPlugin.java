@@ -267,6 +267,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public List<SchemaInstalmentSample> getSchemaInstalmentSamples() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getSchemaInstalmentSamples() : List.of();
+  }
+
+  @Override
+  public List<UnreferencedFilesSample> getUnreferencedFilesSamples() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getUnreferencedFilesSamples() : List.of();
+  }
+
+  @Override
   public String getLeaderName() {
     return raftHAServer != null ? raftHAServer.getLeaderName() : null;
   }

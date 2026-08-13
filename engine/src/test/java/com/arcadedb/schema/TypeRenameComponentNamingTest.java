@@ -28,8 +28,8 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -260,7 +260,7 @@ class TypeRenameComponentNamingTest extends TestHelper {
         blockedFile.getName().replace("Multi_0_", "renamed.Multi_0_"));
     assertThat(parked.mkdir()).as("fault injection: park a directory on the target path").isTrue();
 
-    final Map<String, Long> filesBefore = componentFileSizes(databaseDirectory);
+    final Set<String> filesBefore = componentFileNames(databaseDirectory);
 
     try {
       assertThatThrownBy(() -> database.getSchema().getType("Multi").rename("renamed.Multi"))
@@ -269,7 +269,7 @@ class TypeRenameComponentNamingTest extends TestHelper {
       // The type and every component it owns are back where they started.
       assertThat(database.getSchema().existsType("Multi")).isTrue();
       assertThat(database.getSchema().existsType("renamed.Multi")).isFalse();
-      assertThat(componentFileSizes(databaseDirectory))
+      assertThat(componentFileNames(databaseDirectory))
           .as("every component file is back under its original name").isEqualTo(filesBefore);
     } finally {
       parked.delete();
@@ -299,12 +299,18 @@ class TypeRenameComponentNamingTest extends TestHelper {
   }
 
   /** Name -> size for every component file, so a rollback that left a file renamed shows up as a key difference. */
-  private static Map<String, Long> componentFileSizes(final File directory) {
-    final Map<String, Long> files = new TreeMap<>();
+  /**
+   * The component file NAMES, which is what a rename rollback is judged on. It used to carry each file's LENGTH as
+   * well, and that made the assertion race the page flush: a bucket whose dirty page has not reached disk yet is 0
+   * bytes at the "before" snapshot and one page long once anything flushes it, so an assertion about names failed
+   * over a size nobody had asked about. Reproduced on CI as a lone failure in an 11801-test run.
+   */
+  private static Set<String> componentFileNames(final File directory) {
+    final Set<String> files = new TreeSet<>();
     for (final File f : directory.listFiles())
       if (f.isFile() && !f.getName().endsWith(".json") && !f.getName().endsWith(".bin") && !f.getName().endsWith(".wal")
           && !f.getName().endsWith(".lck"))
-        files.put(f.getName(), f.length());
+        files.add(f.getName());
     return files;
   }
 
