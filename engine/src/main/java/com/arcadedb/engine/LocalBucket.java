@@ -498,9 +498,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * <p>
    * It walks the chain through the transaction, so a chunk this transaction has already rewritten is fingerprinted as
    * this transaction sees it, and it never allocates per chunk: one page-sized scratch buffer is reused for the whole
-   * chain. A 64-bit FNV-1a over (chunk RID, chunk size, chunk content) - not a cryptographic digest: an adversarial
-   * collision is not in scope here, an accidental one has a ~2^-64 chance of costing a lost update on a record two
-   * transactions are rewriting at the same time.
+   * chain.
+   * <p>
+   * What goes into it is (chunk RID, chunk size, chunk content) for every chunk of the tail, which makes the identity
+   * it establishes stronger than "the same bytes": two states with the same fingerprint hold byte-identical chunks at
+   * the same slots. That is what makes an ABA on a continuation slot - a chunk freed and its slot reused meanwhile -
+   * a non-event: a concurrent transaction that ended up reproducing this exact tail reproduced this exact record
+   * content, so there is no write of theirs left to drop.
+   * <p>
+   * A 64-bit FNV-1a, not a cryptographic digest. An ACCIDENTAL collision has a ~2^-64 chance of costing a lost update
+   * on a record two transactions are rewriting at the same time. A DELIBERATE one buys its author nothing: both
+   * colliding tails are content of the same record, so engineering one requires write access to that record - and
+   * whoever has it can already overwrite it by committing last, which is the very outcome the collision would
+   * produce. There is no third party whose data a collision could reach.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -1667,11 +1677,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (lastRecordPositionInPage == existingPos)
           roomForTheChunk += page.getMaxContentSize() - getPageOccupiedInBytes(page, lastRecordPositionInPage, existingPos, rs);
 
-        if (Binary.getNumberSpace(FIRST_CHUNK) + body.length > roomForTheChunk)
+        final int markerSize = Binary.getNumberSpace(FIRST_CHUNK);
+        if (markerSize + body.length > roomForTheChunk)
           return false;
 
-        final int markerSize = page.writeNumber(existingPos, FIRST_CHUNK);
-        page.writeByteArray(existingPos + markerSize, body, 0, body.length);
+        // The check above budgeted the marker at getNumberSpace(); the write below is the only other place that
+        // decides how many bytes it takes. They agree by construction (writeNumber writes exactly that many), and a
+        // future divergence would place the body past the room just proved - a silent overwrite of the next record
+        // rather than a refusal, which is precisely the failure this assertion exists to make loud under -ea.
+        final int markerSizeWritten = page.writeNumber(existingPos, FIRST_CHUNK);
+        assert markerSizeWritten == markerSize :
+            "the chunk marker took " + markerSizeWritten + " bytes where " + markerSize + " were budgeted";
+
+        page.writeByteArray(existingPos + markerSizeWritten, body, 0, body.length);
         return true;
       }
 
