@@ -1351,3 +1351,70 @@ future change adding a level arrives as a red build naming the cap rather than a
 repair someone is running against a damaged production database.
 
 [#6136](https://github.com/ArcadeData/arcadedb/issues/6136)
+
+## A property `DEFAULT` is now compiled and validated once, at DDL time (#6134)
+
+A `String` default value was stored verbatim by `Property.setDefaultValue()` and evaluated as an SQL expression by
+`Property.getDefaultValue()`. Nothing validated it in between, and the evaluation swallowed every exception with a
+bare `// IGNORE IT` that fell through to returning the expression's own source text. Three things followed from that.
+
+**A default that does not parse was silently stored as its own source text.** `DEFAULT this is (not parseable` became
+the literal string `this is (not parseable` on *every record of the type* - no error at DDL time, no error at insert
+time, no log line. A typo in a `CREATE PROPERTY ... DEFAULT` quietly populated a whole type with garbage.
+
+**A bare identifier silently became `null`, forever.** `DEFAULT active` - the obvious thing to type for a literal -
+parses fine as a field reference, and the expression is always executed against `(Record) null`, so it resolved to
+nothing on every insert. The literal has to be written `DEFAULT 'active'`. This interacted badly with validation: a
+`NOTNULL` property whose default evaluated to null had the property *set* to null and was then rejected with "cannot
+be null", an error pointing at the caller's data rather than at the broken schema default that caused it.
+
+**The expression was re-parsed on every single record create.** ~3 µs per defaulted `STRING` property, per record: a
+1M-record bulk load into a type with three defaulted properties spent ~9 s re-parsing the same three constant
+expressions a million times each, on the insert hot path.
+
+The expression is now compiled once, in `setDefaultValue()`, and the compiled form is what each record evaluates. The
+compiled **expression** is cached, never the evaluated result, so `DEFAULT sysdate()` still produces a fresh value per
+record. Because it is compiled at DDL time it is also *validated* at DDL time: an unparseable default and a bare
+identifier are both rejected outright, with a message that says which one it is and, for the identifier, how to quote
+it. An expression that parses but cannot be evaluated against a null record - `DEFAULT @rid` - now raises on insert
+instead of writing its own source text into the record.
+
+An existing database whose `schema.json` already holds such a default still opens: the schema load path logs a warning
+naming the property and keeps the pre-#6134 behaviour for it rather than refusing to hydrate the schema. `ALTER
+PROPERTY ... DEFAULT` can repair it, because it no longer evaluates the outgoing default to report it.
+
+### One rule for applying defaults, and it is "a null default fills in nothing"
+
+The rule was written twice - in `LocalDatabase.setDefaultValues`, for every record create, and in `ApplyDefaultsStep`,
+for the SQL insert plan and `UPDATE ... APPLY DEFAULTS` - and the two disagreed. `ApplyDefaultsStep` guarded with
+`if (defValue != null)`; `setDefaultValues` set unconditionally, and since it runs *after* the execution plan its
+unguarded version always won. Both now call `DocumentType.applyDefaultValues()`, and the surviving rule is the guarded
+one: a default that evaluates to `null` leaves the property untouched instead of setting it to `null`.
+
+This is a visible change. A property whose default evaluates to null - `DEFAULT null`, or a legacy bare identifier -
+is now **absent** from the record rather than present-with-`null`, so `has()` returns false and the key stays out of
+the serialized document. In exchange, `NOTNULL` stops firing on it, and a `MANDATORY` property with such a default now
+fails as "is mandatory, but not found", pointing at the schema gap that is actually there.
+
+### Schema metadata reports the definition, not an evaluation of it
+
+`SELECT FROM schema:types`, the server's schema info endpoint and the Cypher meta procedures all called
+`getDefaultValue()`, which evaluates. Two things were wrong with that. The `DEFAULT_NOT_SET` sentinel leaked straight
+through it, so every property *without* a default was reported with `"default": "<DEFAULT_NOT_SET>"` - including in
+Studio's schema table. And a `sysdate()` default was reported as a timestamp snapshot taken when the row was fetched,
+rather than as the expression that was declared.
+
+There is now a separate `Property.getDefaultValueDefinition()`, which returns what the schema holds - `'active'`,
+`sysdate()`, the text a `DEFAULT` clause would take back - and never evaluates anything. Every metadata path uses it;
+only the write paths evaluate. `getDefaultValue()` no longer hands out the sentinel either: with no default defined it
+returns `null`.
+
+### The OrientDB importer bridges the two meanings of a default
+
+OrientDB stores a property default as a plain value, so a bare `active` there means the literal string. The importer
+passed it through unchanged, which under the old behaviour produced a property whose default silently evaluated to
+null on every imported record, and under the new one would be rejected. It now imports the value as written when that
+is a valid ArcadeDB default expression - `sysdate()`, numbers, already-quoted strings keep their meaning - and quotes
+it as a string literal otherwise, logging which defaults it had to translate.
+
+[#6134](https://github.com/ArcadeData/arcadedb/issues/6134)

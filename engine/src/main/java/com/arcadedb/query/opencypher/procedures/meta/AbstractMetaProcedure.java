@@ -49,8 +49,10 @@ public abstract class AbstractMetaProcedure implements CypherProcedure {
       propMap.put("type", property.getType().name());
       propMap.put("mandatory", property.isMandatory());
       propMap.put("readOnly", property.isReadonly());
-      if (property.getDefaultValue() != null) {
-        propMap.put("defaultValue", property.getDefaultValue());
+      // Issue #6134: the definition, not the evaluated value - this is schema metadata, not a record being written.
+      final Object defaultValue = property.getDefaultValueDefinition();
+      if (defaultValue != null) {
+        propMap.put("defaultValue", defaultValue);
       }
       properties.add(propMap);
     }

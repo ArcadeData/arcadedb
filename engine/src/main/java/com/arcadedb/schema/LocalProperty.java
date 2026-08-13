@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
@@ -45,13 +46,18 @@ public class LocalProperty extends AbstractProperty {
     checkForSchemaMutation();
     final Database database = owner.getSchema().getEmbedded().getDatabase();
 
-    // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
     final Object convertedValue = defaultValue instanceof String ?
         defaultValue :
         Type.convert(database, defaultValue, type.javaDefaultType);
 
-    if (!Objects.equals(this.defaultValue, convertedValue)) {
-      this.defaultValue = convertedValue;
+    // ISSUE #6134: COMPILE AND VALIDATE THE EXPRESSION HERE, ONCE, RATHER THAN RE-PARSING IT ON EVERY RECORD CREATE.
+    // THIS THROWS ON A DEFAULT THAT COULD ONLY EVER PRODUCE GARBAGE, SO IT RUNS BEFORE ANY STATE IS TOUCHED: A REJECTED
+    // DEFAULT MUST LEAVE THE PROPERTY EXACTLY AS IT WAS.
+    final Expression compiled = compileDefaultValue(convertedValue);
+
+    if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
+      // ONE PUBLICATION, SO NO READER CAN SEE THE NEW VALUE WITH THE OLD (OR NO) COMPILED EXPRESSION
+      this.defaultValue = new DefaultValue(convertedValue, compiled);
 
       // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
       final Set<String> propertiesWithDefaultDefined = new HashSet<>(((LocalDocumentType) owner).propertiesWithDefaultDefined);
