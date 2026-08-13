@@ -192,8 +192,10 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     // The pages about to be overwritten are the ones the current manifest vouches for, and the write commits in
     // chunks, so from here until the caller has committed there is no generation of the graph anything can promise.
-    // Dropping the manifest first is what makes an interrupted persist leave "no manifest" - read as "rebuild" -
-    // rather than a half-written graph the previous manifest still appears to describe (issue #6106).
+    // Dropping the manifest FIRST is what keeps a half-written graph from being described by the manifest of the
+    // one it is replacing (issue #6106). A process killed anywhere in here therefore leaves no manifest at all,
+    // which the load path reads as "cannot be verified" and judges by node count - so any failure this method can
+    // still observe replaces it with a manifest that refuses the pages outright (see the catch below).
     manifest.invalidate();
 
     try {
@@ -293,6 +295,11 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       }
 
     } catch (final Exception e) {
+      // The caller rolls back and carries on without a persisted graph. Whatever the rollback leaves on these
+      // pages - the previous generation untouched, or a partial rewrite whose earlier chunks already committed -
+      // nothing here knows which, so the manifest must refuse them rather than be simply absent: absent means
+      // "unverifiable", and unverifiable falls back to the node count this whole mechanism replaces (issue #6106).
+      manifest.markUnusable("graph persist failed: " + e);
       LogManager.instance().log(this, Level.SEVERE, "Error writing graph to pages: %s", e, e.getMessage());
       throw new IndexException("Error writing graph to pages", e);
     }

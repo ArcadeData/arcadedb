@@ -1429,12 +1429,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 "it has no manifest and holds %d nodes against %d active vectors".formatted(graphSize,
                     rebuiltOrdinalToVectorId.length) :
                 null;
-            if (staleReason == null)
+            if (staleReason == null) {
+              // Also counted, not only logged: a WARNING is easy to miss, and "is this index still on the weaker
+              // comparison?" is a question an operator should be able to ask the stats rather than the log file.
+              metrics.incrementUnverifiedGraphReuses();
               LogManager.instance().log(this, Level.WARNING,
                   "Vector index %s is reusing a persisted graph that carries no manifest: its %d nodes match the "
                       + "live vector count, but nothing on disk says they describe these records (issue #6106). "
                       + "The next graph persist writes one; REBUILD INDEX forces it now",
                   indexName, graphSize);
+            }
           } else if (persistedManifest.vectorCount() != rebuiltOrdinalToVectorId.length
               || persistedManifest.fingerprint() != LSMVectorIndexGraphManifest.fingerprintOf(
               rebuiltOrdinalToVectorId, vectorIndex::getRid)) {
@@ -2578,6 +2582,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // Ignore rollback errors
             }
           }
+          // This method swallows the failure and lets the index keep running without a persisted graph, so what is
+          // left on the pages outlives this process. It could be the previous generation intact (the write never
+          // touched a page), a partial rewrite whose earlier chunks already committed, or anything between - so the
+          // manifest has to refuse it. Leaving no manifest instead would read as "unverifiable" on the next open
+          // and fall back to the node-count comparison, which is what issue #6106 is about.
+          gf.getManifest().markUnusable("graph persist failed: " + e);
           LogManager.instance().log(this, Level.SEVERE,
               "PERSIST: Failed to persist graph for %s (nodes=%d, storeVectorsInGraph=%b, txStatus=%s): %s - %s",
               indexName,
@@ -2688,6 +2698,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param persistedTo            the component the graph was written to
    * @param graphOrdinalToVectorId ordinal &rarr; vector id array the graph was built with
    */
+  /**
+   * Refuses whatever is on the graph pages after a build that did not finish. The alternative - leaving no
+   * manifest - reads as "persisted by an older version" on the next open and falls back to the node-count
+   * comparison, which is exactly the check issue #6106 replaces.
+   *
+   * @param cause what went wrong; recorded in the manifest for a human, nothing reads it back
+   */
+  private void markGraphManifestUnusable(final Exception cause) {
+    if (graphFile != null)
+      graphFile.getManifest().markUnusable("index build failed: " + cause);
+  }
+
   private void writeGraphManifest(final LSMVectorIndexGraphFile persistedTo, final int[] graphOrdinalToVectorId) {
     if (persistedTo == null || graphOrdinalToVectorId == null || graphOrdinalToVectorId.length == 0)
       return;
@@ -5938,6 +5960,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             if (startedTransaction && db.getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
               db.getWrappedDatabaseInstance().rollback();
 
+            markGraphManifestUnusable(e);
             persistBuildState(BUILD_STATE.INVALID);
 
             LogManager.instance().log(this, Level.SEVERE,
@@ -5949,6 +5972,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             if (startedTransaction && db.getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
               db.getWrappedDatabaseInstance().rollback();
 
+            markGraphManifestUnusable(e);
             persistBuildState(BUILD_STATE.INVALID);
 
             LogManager.instance().log(this, Level.SEVERE,

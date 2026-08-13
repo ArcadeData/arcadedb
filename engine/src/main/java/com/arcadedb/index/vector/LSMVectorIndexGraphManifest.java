@@ -63,10 +63,18 @@ public class LSMVectorIndexGraphManifest {
   private static final long   FNV_PRIME        = 0x100000001b3L;
 
   /**
+   * {@code vectorCount} of a manifest that deliberately describes nothing. No live set can ever have a negative
+   * size, so a manifest carrying this always fails the comparison and always forces a rebuild - which is how a
+   * failed graph persist says "whatever is on these pages, do not trust it" without relying on the count
+   * comparison the absence of a manifest falls back to.
+   */
+  static final int UNUSABLE_VECTOR_COUNT = -1;
+
+  /**
    * What a persisted manifest says about the graph next to it.
    *
    * @param formatVersion version of this file's own layout
-   * @param vectorCount   number of ordinals the graph was built over
+   * @param vectorCount   number of ordinals the graph was built over, or {@link #UNUSABLE_VECTOR_COUNT}
    * @param fingerprint   fingerprint of the ordinal &rarr; (vector id, RID) correspondence
    */
   public record Content(int formatVersion, int vectorCount, long fingerprint) {
@@ -144,10 +152,36 @@ public class LSMVectorIndexGraphManifest {
   }
 
   /**
+   * Says that whatever is on the graph pages describes nothing this index can use, so the next load rebuilds
+   * instead of judging the pages by their node count.
+   * <p>
+   * This is what a FAILED graph persist leaves behind. Deleting the manifest would not do: the load path reads an
+   * absent manifest as "persisted by an older version" and falls back to the count comparison - the very
+   * comparison this class exists to replace - so a persist that died after {@link #invalidate()} but before it
+   * damaged anything would silently downgrade a perfectly good index to the weak check. Refusing the pages
+   * outright costs one rebuild, and only after an event that is already logged as SEVERE.
+   *
+   * @param reason human-readable note stored in the file; nothing reads it back
+   */
+  public void markUnusable(final String reason) {
+    write(UNUSABLE_VECTOR_COUNT, 0L, reason);
+  }
+
+  /**
    * Records the correspondence the just-committed graph was built over. Written through a temporary file so a
    * crash mid-write cannot leave a truncated manifest that reads as a valid one.
    */
   public void write(final int vectorCount, final long fingerprint) {
+    write(vectorCount, fingerprint, null);
+  }
+
+  /**
+   * The temporary file is derived from the manifest's own name, so two writers on the SAME index would race on it.
+   * They cannot: every graph persist for an index runs under {@code LSMVectorIndex.graphBuildLock}, which
+   * serialises graph builds per index, and the manifest is written from inside that persist. A future change that
+   * lifts that serialisation has to give this a per-writer name.
+   */
+  private void write(final int vectorCount, final long fingerprint, final String reason) {
     final Path temporary = path.resolveSibling(path.getFileName() + ".tmp");
     try {
       final Path parent = path.getParent();
@@ -159,6 +193,8 @@ public class LSMVectorIndexGraphManifest {
       json.put("vectorCount", vectorCount);
       // As a string: a 64-bit fingerprint is not representable in the double a JSON number decodes to.
       json.put("fingerprint", Long.toString(fingerprint));
+      if (reason != null)
+        json.put("reason", reason);
 
       Files.writeString(temporary, json.toString(), StandardCharsets.UTF_8);
       try {

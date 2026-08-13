@@ -156,6 +156,68 @@ class Issue6106StaleVectorGraphTest extends TestHelper {
   }
 
   /**
+   * A graph persist that fails leaves pages nobody can describe: the write drops the manifest before touching a
+   * page, and the rollback may or may not have put the previous generation back. Leaving no manifest at all would
+   * read as "persisted by an older version" on the next open and fall back to the node count - so a failed persist
+   * writes a manifest that refuses the pages instead. Without that, an index that had a verified graph is silently
+   * demoted to the weaker comparison by a failure that never damaged anything.
+   */
+  @Test
+  void aFailedPersistLeavesAManifestThatRefusesTheGraphRatherThanNoneAtAll() throws Exception {
+    createSchema(database);
+    insertDocs(database, 0, LIVE);
+    buildAndPersistGraph();
+
+    final String databasePath = database.getDatabasePath();
+    database.close();
+
+    // What LSMVectorIndexGraphFile.writeGraph() and LSMVectorIndex.build() leave behind when they fail: the graph
+    // pages are whatever the rollback made of them - here, still perfectly valid - and the manifest refuses them.
+    new LSMVectorIndexGraphManifest(graphFileIn(databasePath).getPath()).markUnusable("simulated persist failure");
+
+    database = factory.open();
+
+    final int selfRetrieved = countDocsThatAreTheirOwnNearestNeighbour(liveDocIds());
+
+    assertThat(vectorIndex().getStats().get("graphRebuildCount"))
+        .as("a graph a failed persist could not vouch for must be rebuilt, not judged by its node count")
+        .isEqualTo(1L);
+    assertThat(vectorIndex().getStats().get("unverifiedGraphReuses"))
+        .as("and it must not be counted as an unverified reuse either: it was not reused").isEqualTo(0L);
+    assertThat(selfRetrieved).as("the rebuilt graph answers correctly: %d of %d found", selfRetrieved, LIVE)
+        .isGreaterThanOrEqualTo(LIVE * 99 / 100);
+  }
+
+  /**
+   * The one case that still rides on the node count is a graph with no manifest at all - written by a version older
+   * than this mechanism, or restored from a backup, which does not carry the sidecar. It is reused, because the
+   * alternative is a full rebuild of every existing index on the first open after an upgrade, and the reuse is
+   * counted so an operator can ask the stats rather than grep the log for the WARNING.
+   */
+  @Test
+  void aGraphWithNoManifestIsReusedButCounted() {
+    createSchema(database);
+    insertDocs(database, 0, LIVE);
+    buildAndPersistGraph();
+
+    final String databasePath = database.getDatabasePath();
+    database.close();
+
+    assertThat(new File(manifestOf(databasePath).toString()).delete())
+        .as("remove the sidecar, leaving the graph the way a pre-manifest version wrote it").isTrue();
+
+    database = factory.open();
+
+    final int selfRetrieved = countDocsThatAreTheirOwnNearestNeighbour(liveDocIds());
+
+    assertThat(vectorIndex().getStats().get("graphRebuildCount"))
+        .as("its node count matches, so it is reused rather than rebuilt").isEqualTo(0L);
+    assertThat(vectorIndex().getStats().get("unverifiedGraphReuses"))
+        .as("but the index has to say it is running on the weaker comparison").isEqualTo(1L);
+    assertThat(selfRetrieved).as("%d of %d found", selfRetrieved, LIVE).isGreaterThanOrEqualTo(LIVE * 99 / 100);
+  }
+
+  /**
    * The fingerprint has to cover the RIDs and not only the vector ids: dense {@code [0, N)} is precisely the id list
    * that every generation of a compacted index produces, so ids alone cannot tell two of them apart.
    */
