@@ -203,7 +203,7 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("email", "K" + "x".repeat(64) + String.format("%08d", i)).save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     final LSMTreeIndex bucketIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
     assertThat(bucketIndex.getMutableIndex().getTotalPages()).as("mutable index must exceed the 1 MiB compaction budget")
         .isGreaterThan(4);

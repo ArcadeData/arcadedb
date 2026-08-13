@@ -86,7 +86,7 @@ class Issue5214MultiSeriesRangeTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("email", key(i)).save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     final LSMTreeIndex bucketIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
 
     assertThat(((IndexInternal) typeIndex).scheduleCompaction()).as("compaction scheduled").isTrue();
@@ -198,7 +198,7 @@ class Issue5214MultiSeriesRangeTest extends TestHelper {
       }
     }
     assertThat(keys).hasSize(HI + 1);
-    assertThat(keys.getFirst()).isEqualTo(key(HI));
-    assertThat(keys.getLast()).isEqualTo(key(0));
+    assertThat(keys.get(0)).isEqualTo(key(HI));
+    assertThat(keys.get(keys.size() - 1)).isEqualTo(key(0));
   }
 }
