@@ -257,6 +257,68 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
   }
 
   /**
+   * The same tail-only interleaving under REPEATABLE_READ, where the fingerprint is NOT what catches it and something
+   * else has to. Under that isolation level {@code TransactionContext.getPage} caches the pages it reads for the
+   * transaction, so the two fingerprint walks - the one taken when the record is taken for update and the one at
+   * commit - both read the transaction's own cached copies and agree however the record changed meanwhile.
+   * <p>
+   * What makes that safe is the same caching: the continuation chunks are then held at the version they had when the
+   * transaction read them, so rewriting them at commit takes stale pages into the modified set and the ordinary
+   * page-version check refuses them. Under READ_COMMITTED (the default) those pages are instead loaded fresh under the
+   * commit lock and cannot fail that check - which is exactly why the fingerprint has to exist there. Two isolation
+   * levels, two different mechanisms, one guarantee; this pins the half that has no fingerprint behind it.
+   */
+  @Test
+  void aTailOnlyChangeToTheSameChunkedRecordStillConflictsUnderRepeatableRead() throws Exception {
+    final String committed = "z".repeat(200 * 1024) + "O";
+    final String mine = "z".repeat(200 * 1024) + "M";
+    final String theirs = "z".repeat(200 * 1024) + "T";
+
+    final RID[] chunked = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("TailRR", 1).createProperty("v", Type.STRING);
+      chunked[0] = database.newDocument("TailRR").set("v", "c".repeat(1024)).save().getIdentity();
+      fillFirstPage("TailRR");
+    });
+    database.transaction(() -> chunked[0].asDocument(true).modify().set("v", committed).save());
+    assertThat((Long) bucketStats("TailRR").get("totalMultiPageRecords")).isEqualTo(1L);
+
+    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      database.begin();
+      chunked[0].asDocument(true).modify().set("v", mine).save();
+
+      final List<Throwable> otherErrors = new CopyOnWriteArrayList<>();
+      final Thread other = new Thread(() -> {
+        try {
+          database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+          database.transaction(() -> chunked[0].asDocument(true).modify().set("v", theirs).save(), true, 1);
+        } catch (final Throwable e) {
+          otherErrors.add(e);
+        }
+      });
+      other.start();
+      other.join();
+      assertThat(otherErrors).isEmpty();
+
+      try {
+        database.commit();
+        throw new AssertionError("Expected a conflict on the tail of the very same record under REPEATABLE_READ");
+      } catch (final ConcurrentModificationException expected) {
+        // correct: the chain pages this transaction cached are stale, and the page-version check refuses them
+      } finally {
+        if (database.isTransactionActive())
+          database.rollback();
+      }
+    } finally {
+      database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    }
+
+    database.transaction(() -> assertThat(chunked[0].asDocument(true).getString("v")).isEqualTo(theirs));
+    checkDatabase();
+  }
+
+  /**
    * The other way the tail of a record can move under a transaction: not its bytes but its SHAPE - the concurrent
    * writer makes the record LONGER, so the chain grows a chunk at its end.
    * <p>
