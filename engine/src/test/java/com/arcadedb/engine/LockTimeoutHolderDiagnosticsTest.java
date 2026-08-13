@@ -44,7 +44,7 @@ class LockTimeoutHolderDiagnosticsTest extends TestHelper {
   @Test
   void lockTimeoutMessageNamesTheHolder() {
     final DocumentType type = database.getSchema().createDocumentType("Locked");
-    final int fileId = type.getBuckets(false).getFirst().getFileId();
+    final int fileId = type.getBuckets(false).get(0).getFileId();
 
     final TransactionManager txManager = ((DatabaseInternal) database).getTransactionManager();
 
@@ -67,7 +67,7 @@ class LockTimeoutHolderDiagnosticsTest extends TestHelper {
   @Test
   void lockStatsAreReadableFromTheTransactionManager() {
     final DocumentType type = database.getSchema().createDocumentType("Observed");
-    final int fileId = type.getBuckets(false).getFirst().getFileId();
+    final int fileId = type.getBuckets(false).get(0).getFileId();
 
     final TransactionManager txManager = ((DatabaseInternal) database).getTransactionManager();
 
@@ -92,7 +92,7 @@ class LockTimeoutHolderDiagnosticsTest extends TestHelper {
   @Test
   void diagnosticsDoNotChangeTheOutcomeWhenTheLockIsFree() {
     final DocumentType type = database.getSchema().createDocumentType("Free");
-    final int fileId = type.getBuckets(false).getFirst().getFileId();
+    final int fileId = type.getBuckets(false).get(0).getFileId();
 
     final TransactionManager txManager = ((DatabaseInternal) database).getTransactionManager();
 

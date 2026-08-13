@@ -67,7 +67,7 @@ class CreateTypeCustomMetadataTest extends TestHelper {
         "CREATE DOCUMENT TYPE derived IF NOT EXISTS EXTENDS base BUCKETS 2 PAGESIZE 262144 CUSTOM a = 1, b = 'two'");
 
     final DocumentType type = database.getSchema().getType("derived");
-    assertThat(type.getSuperTypes().getFirst().getName()).isEqualTo("base");
+    assertThat(type.getSuperTypes().get(0).getName()).isEqualTo("base");
     assertThat(type.getBuckets(false).size()).isEqualTo(2);
     assertThat(type.getCustomValue("a")).isEqualTo(1);
     assertThat(type.getCustomValue("b")).isEqualTo("two");

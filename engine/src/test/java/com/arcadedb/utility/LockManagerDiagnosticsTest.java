@@ -132,7 +132,7 @@ class LockManagerDiagnosticsTest {
     // The snapshot is handed to diagnostics code and may outlive the transaction; it must carry a
     // rendered owner, not a live reference to a Thread or session.
     lockManager.tryLock("file-147", "tx-A", 1_000);
-    final LockManager.LockStats stats = lockManager.statsSnapshot().getFirst();
+    final LockManager.LockStats stats = lockManager.statsSnapshot().get(0);
     assertThat(stats.owner()).isInstanceOf(String.class);
   }
 }
