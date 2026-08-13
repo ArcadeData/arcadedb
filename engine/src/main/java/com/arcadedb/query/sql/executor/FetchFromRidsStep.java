@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.BooleanExpression;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -30,24 +31,44 @@ import java.util.NoSuchElementException;
  * Created by luigidellaquila on 22/07/16.
  */
 public class FetchFromRidsStep extends AbstractExecutionStep {
-  private final Iterable<RID> rids;
-  private       Iterator<RID> iterator;
-  private       Result        nextResult = null;
+  private       Iterable<RID>     rids;
+  // Set only by the cache-friendly constructor used by SelectExecutionPlanner.handleTypeWithRidFilter
+  // (WHERE @rid = ? / @rid IN ?, see issue #5855). When non-null, `rids` above is re-resolved lazily
+  // against the live CommandContext on the first pull of every execution instead of being baked in
+  // at plan-build time, mirroring how FetchFromTypeWithFilterStep re-evaluates its WhereClause. This
+  // is what makes the step - and therefore the whole plan - safely reusable from the execution plan
+  // cache across executions bound to different RIDs.
+  private final BooleanExpression ridCondition;
+  private       Iterator<RID>     iterator;
+  private       Result            nextResult = null;
 
   public FetchFromRidsStep(final Iterable<RID> rids, final CommandContext context) {
     super(context);
     this.rids = rids;
+    this.ridCondition = null;
     reset();
   }
 
+  FetchFromRidsStep(final BooleanExpression ridCondition, final CommandContext context) {
+    super(context);
+    this.ridCondition = ridCondition;
+  }
+
   public void reset() {
-    iterator = rids.iterator();
+    // With a ridCondition, defer re-resolution to the first pull of the (re)started execution, so it
+    // uses that execution's own live CommandContext/bound parameters rather than whichever context
+    // reset() happens to be called without.
+    iterator = ridCondition == null ? rids.iterator() : null;
     nextResult = null;
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
+    if (ridCondition != null && iterator == null) {
+      this.rids = SelectExecutionPlanner.resolveRidEqualityOrInListAtRuntime(ridCondition, context);
+      iterator = this.rids.iterator();
+    }
     return new ResultSet() {
       int internalNext = 0;
 
@@ -106,6 +127,19 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + rids;
+    return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent) + "  "
+        + (ridCondition != null ? ridCondition : rids);
+  }
+
+  @Override
+  public boolean canBeCached() {
+    return ridCondition != null;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    if (ridCondition == null)
+      throw new UnsupportedOperationException();
+    return new FetchFromRidsStep(ridCondition, context);
   }
 }
