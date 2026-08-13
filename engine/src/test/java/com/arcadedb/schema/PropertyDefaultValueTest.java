@@ -247,6 +247,30 @@ class PropertyDefaultValueTest extends TestHelper {
   }
 
   /**
+   * The null rule has to survive a round trip through schema.json. Every SQL path stores a default as the expression's
+   * source text - {@code DEFAULT null} is the four-character string, not a Java null - so reloading recompiles it to
+   * the same null-literal expression and the property stays absent rather than reappearing as present-with-null.
+   */
+  @Test
+  void aNullEvaluatingDefaultSurvivesAReopen() {
+    database.command("sql", "CREATE DOCUMENT TYPE Probe");
+    database.command("sql", "CREATE PROPERTY Probe.nullDefault STRING (DEFAULT null)");
+    database.command("sql", "CREATE PROPERTY Probe.other STRING (DEFAULT 'ok')");
+
+    reopenDatabase();
+
+    final DocumentType type = database.getSchema().getType("Probe");
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).contains("nullDefault", "other");
+    assertThat(type.getProperty("nullDefault").getDefaultValue()).isNull();
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      assertThat(doc.has("nullDefault")).isFalse();
+      assertThat(doc.getString("other")).isEqualTo("ok");
+    });
+  }
+
+  /**
    * The SQL insert path (which runs {@code ApplyDefaultsStep}) and the engine path (which runs
    * {@code LocalDatabase.setDefaultValues}) must agree on the null rule.
    */
