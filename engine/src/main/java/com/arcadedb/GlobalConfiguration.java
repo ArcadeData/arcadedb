@@ -439,6 +439,33 @@ public enum GlobalConfiguration {
       Larger values reduce commit overhead on single-node setups at the cost of bigger transactions.""",
       Integer.class, 1000),
 
+  CHECK_DATABASE_REPAIR_BATCH_PAGES("arcadedb.checkDatabaseRepairBatchPages", SCOPE.DATABASE,
+      """
+      Number of modified pages CHECK DATABASE ... FIX accumulates before committing its repair and opening the next \
+      transaction. Same rationale as arcadedb.truncateBatchSize, and the same failure it avoids (issue #6128): the \
+      repair of one type - every reconnected edge and every deleted record - used to be a SINGLE transaction, which \
+      in HA is a SINGLE Raft log entry, and a transaction entry has no splitter the way a schema entry has had since \
+      issue #4743. Above min(arcadedb.ha.appendBufferSize, arcadedb.ha.grpcMessageSizeMax) the entry is rejected with \
+      ReplicatedEntryTooLargeException - not a NeedRetryException, so nothing retries it - and a repair that had run \
+      for hours was rolled back whole. Counted in PAGES rather than records because pages are what the entry \
+      contains: how many records a repair touched says nothing about how many distinct pages it dirtied. Sizing the \
+      default of 256, without rounding the arithmetic in its own favour: 256 pages at the 64KB bucket default is \
+      16MB of PAGES, half the 32MB appendBufferSize default, which is margin rather than comfort once the soft \
+      ceiling below is taken into account. The entry itself is far smaller in practice - the WAL carries each \
+      page's CHANGED RANGE rather than the whole page, and is compressed on top of that, so a repair reconnecting \
+      1500 edges was measured well under 128KB - but that is a property of typical repairs, not a bound. If a \
+      deployment raises the bucket page size or lowers appendBufferSize, re-check this against BOTH rather than \
+      trusting the default. Raising it lowers commit overhead on an embedded database at the cost of bigger \
+      transactions; 0 \
+      disables batching entirely, restoring the all-or-nothing repair semantics of a single transaction. \
+      ALSO BOUNDS CHECK DATABASE ... COMPRESS, whose per-transaction page count was a hardcoded 10 - one Raft round \
+      trip per ten pages, which on a replicated database of any size does not finish; COMPRESS keeps that 10 when \
+      this is set to 0, since one transaction over every page in the database helps nobody. \
+      A SOFT ceiling, not a hard cap: the budget is checked between units of repair work, so a transaction can \
+      exceed it by whatever the unit in flight dirties (reconnecting one very wide adjacency list, or a hub record \
+      spanning several pages). Leave headroom when picking a value close to the replicated-entry limit.""",
+      Integer.class, 256),
+
   PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
 
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
