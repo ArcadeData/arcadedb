@@ -29,11 +29,13 @@ import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Regression tests for the lifecycle of the server-side Micrometer subsystem.
@@ -118,6 +120,25 @@ class ServerMetricsLifecycleTest extends StaticBaseServerTest {
   }
 
   @Test
+  void followerMetricsSchedulerThreadStopsWhenTheServerStops() {
+    // HAReplicationMetrics.bindPerFollowerGauges() starts a daemon thread named
+    // "arcadedb-ha-follower-metrics" to refresh the per-follower MultiGauges every 5s (issue #5850).
+    // Nothing in production called close() on the binder, so the thread outlived the server that
+    // started it; a restart therefore leaked one more.
+    final ArcadeDBServer server = startServer(0);
+
+    assertThat(followerMetricsThreadIsAlive())
+        .as("start() must launch the per-follower HA gauge refresh thread").isTrue();
+
+    server.stop();
+
+    await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+        assertThat(followerMetricsThreadIsAlive())
+            .as("stop() must shut down the per-follower HA gauge refresh thread, "
+                + "or it leaks one daemon thread per restart").isFalse());
+  }
+
+  @Test
   void metricsSurviveWhileAnotherServerInTheSameJvmIsRunning() {
     final ArcadeDBServer first = startServer(0);
     final ArcadeDBServer second = startServer(1);
@@ -182,5 +203,10 @@ class ServerMetricsLifecycleTest extends StaticBaseServerTest {
 
   private static List<MeterRegistry> registries() {
     return new ArrayList<>(Metrics.globalRegistry.getRegistries());
+  }
+
+  private static boolean followerMetricsThreadIsAlive() {
+    return Thread.getAllStackTraces().keySet().stream()
+        .anyMatch(t -> "arcadedb-ha-follower-metrics".equals(t.getName()) && t.isAlive());
   }
 }
