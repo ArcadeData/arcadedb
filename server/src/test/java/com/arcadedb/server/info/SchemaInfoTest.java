@@ -56,6 +56,48 @@ class SchemaInfoTest extends BaseGraphServerTest {
     assertThat(vertexType.has("properties")).isTrue();
   }
 
+  /**
+   * Issue #6134: the schema document reports the DEFINITION of a property default, never an evaluation of it. The
+   * "not set" sentinel used to leak out of {@code getDefaultValue()} here, so every property without a default was
+   * described with {@code "default": "<DEFAULT_NOT_SET>"}, and a {@code sysdate()} default was described as a
+   * timestamp snapshot taken when the document was built rather than as the expression that was declared.
+   */
+  @Test
+  void propertyDefaultsAreDescribedByTheirDefinition() {
+    final ServerDatabase database = getServer(0).getDatabase(getDatabaseName());
+    database.command("sql", "CREATE DOCUMENT TYPE DefaultProbe");
+    database.command("sql", "CREATE PROPERTY DefaultProbe.plain STRING");
+    database.command("sql", "CREATE PROPERTY DefaultProbe.status STRING (DEFAULT 'active')");
+    database.command("sql", "CREATE PROPERTY DefaultProbe.createdOn DATETIME (DEFAULT sysdate())");
+
+    final JSONArray types = SchemaInfo.toJSON(database, getDatabaseName()).getJSONArray("types");
+
+    JSONObject probe = null;
+    for (int i = 0; i < types.length(); i++)
+      if ("DefaultProbe".equals(types.getJSONObject(i).getString("name", null)))
+        probe = types.getJSONObject(i);
+
+    assertThat(probe).isNotNull();
+
+    final JSONArray properties = probe.getJSONArray("properties");
+    JSONObject plain = null, status = null, createdOn = null;
+    for (int i = 0; i < properties.length(); i++) {
+      final JSONObject property = properties.getJSONObject(i);
+      switch (property.getString("name", "")) {
+      case "plain" -> plain = property;
+      case "status" -> status = property;
+      case "createdOn" -> createdOn = property;
+      }
+    }
+
+    assertThat(plain).isNotNull();
+    assertThat(plain.has("default")).as("a property without a default must not be described with one").isFalse();
+    assertThat(status).isNotNull();
+    assertThat(status.getString("default")).isEqualTo("'active'");
+    assertThat(createdOn).isNotNull();
+    assertThat(createdOn.getString("default")).isEqualTo("sysdate()");
+  }
+
   @Test
   void resolvingForAUserRejectsAnUnknownDatabase() {
     assertThatThrownBy(() -> SchemaInfo.forUser(getServer(0), rootUser(), "doesNotExist"))

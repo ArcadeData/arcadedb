@@ -92,7 +92,6 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
-import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -2849,20 +2848,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void setDefaultValues(final Record record) {
-    if (record instanceof MutableDocument doc) {
-      final DocumentType type = doc.getType();
-
-      final Set<String> propertiesWithDefaultDefined = type.getPolymorphicPropertiesWithDefaultDefined();
-
-      for (final String pName : propertiesWithDefaultDefined) {
-        final Object pValue = doc.get(pName);
-        if (pValue == null) {
-          final Property p = type.getPolymorphicProperty(pName);
-          Object defValue = p.getDefaultValue();
-          doc.set(pName, defValue);
-        }
-      }
-    }
+    // The rule lives in DocumentType.applyDefaultValues, shared with ApplyDefaultsStep, so the two cannot diverge
+    // again on what a null-evaluating default means (issue #6134).
+    if (record instanceof MutableDocument doc)
+      doc.getType().applyDefaultValues(doc);
   }
 
   /**

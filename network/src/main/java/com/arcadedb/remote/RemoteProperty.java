@@ -121,7 +121,9 @@ public class RemoteProperty extends AbstractProperty {
     if (entry.containsKey("compression"))
       compression = (String) entry.get("compression");
     if (entry.containsKey("default"))
-      defaultValue = entry.get("default");
+      // No compiled expression: the server sends the definition and the remote side only reports it back, having no
+      // embedded database to evaluate an SQL expression against.
+      setDefaultValueDefinition(entry.get("default"));
     if (entry.containsKey("regexp"))
       regexp = (String) entry.get("regexp");
     if (entry.containsKey("custom"))

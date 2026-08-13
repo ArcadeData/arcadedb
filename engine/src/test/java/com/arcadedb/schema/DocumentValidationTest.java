@@ -237,7 +237,10 @@ class DocumentValidationTest extends TestHelper {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.string STRING (mandatory true, notnull true, default \"Hi\")");
-    database.command("sql", "create property Validation.dat DATETIME (mandatory true, default null)");
+    // Issue #6134: a default that evaluates to null fills in nothing, so the property is left absent rather than
+    // explicitly set to null - which means it can no longer satisfy MANDATORY either, hence no `mandatory true` here.
+    // See nullDefaultCannotSatisfyAMandatoryProperty().
+    database.command("sql", "create property Validation.dat DATETIME (default null)");
 
     assertThat(clazz.getProperty("string").getDefaultValue()).isEqualTo("Hi");
     assertThat(clazz.getProperty("dat").getDefaultValue()).isNull();
@@ -246,7 +249,7 @@ class DocumentValidationTest extends TestHelper {
       final MutableDocument d = database.newDocument("Validation");
       d.save();
       assertThat(d.get("string")).isEqualTo("Hi");
-      assertThat(d.get("dat")).isNull();
+      assertThat(d.has("dat")).isFalse();
 
       final ResultSet resultSet = database.command("sql", "insert into Validation set string = null");
 
@@ -254,9 +257,23 @@ class DocumentValidationTest extends TestHelper {
       final Result result = resultSet.next();
 
       assertThat(result.<String>getProperty("string")).isEqualTo("Hi");
-      assertThat(result.hasProperty("dat")).isTrue();
-      assertThat(result.<String>getProperty("dat")).isNull();
+      assertThat(result.hasProperty("dat")).isFalse();
     });
+  }
+
+  /**
+   * Issue #6134: a MANDATORY property whose DEFAULT evaluates to null is not filled in by the default, so the record is
+   * rejected as missing the property. It used to be accepted with the property present and null - and a NOTNULL
+   * property in the same shape was rejected with "cannot be null", an error pointing at the caller's data rather than
+   * at the schema default that actually caused it.
+   */
+  @Test
+  void nullDefaultCannotSatisfyAMandatoryProperty() {
+    database.getSchema().createDocumentType("Validation");
+    database.command("sql", "create property Validation.dat DATETIME (mandatory true, default null)");
+
+    database.transaction(() -> assertThatThrownBy(() -> database.newDocument("Validation").save()).isInstanceOf(
+        ValidationException.class).hasMessageContaining("Validation.dat").hasMessageContaining("mandatory"));
   }
 
   @Test

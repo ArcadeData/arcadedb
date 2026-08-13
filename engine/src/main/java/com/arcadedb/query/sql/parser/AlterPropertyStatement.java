@@ -101,7 +101,10 @@ public class AlterPropertyStatement extends DDLStatement {
         oldValue = property.getMin();
         property.setMin("" + finalValue);
       } else if ("default".equalsIgnoreCase(setting)) {
-        oldValue = property.getDefaultValue();
+        // Issue #6134: report the definition rather than evaluating the outgoing default. Evaluating it would make
+        // ALTER PROPERTY - the one statement that can repair a broken default - fail on exactly the schemas that
+        // need repairing.
+        oldValue = property.getDefaultValueDefinition();
         property.setDefaultValue("" + finalValue);
       } else if ("regexp".equalsIgnoreCase(setting)) {
         oldValue = property.getRegexp();

@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
@@ -45,13 +46,19 @@ public class LocalProperty extends AbstractProperty {
     checkForSchemaMutation();
     final Database database = owner.getSchema().getEmbedded().getDatabase();
 
-    // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
     final Object convertedValue = defaultValue instanceof String ?
         defaultValue :
         Type.convert(database, defaultValue, type.javaDefaultType);
 
-    if (!Objects.equals(this.defaultValue, convertedValue)) {
-      this.defaultValue = convertedValue;
+    // Compiled once here rather than on every record create, and before any state is touched, so a rejected default
+    // leaves the property exactly as it was. Before the "did it change?" check and not inside it: a default persisted
+    // by an earlier release is loaded without validation, so re-setting one to the same invalid text is the one case
+    // where new == old and the caller still has to be told it is invalid.
+    final Expression compiled = compileDefaultValue(convertedValue, database);
+
+    if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
+      // One publication, so no reader can see the new value with the old (or no) compiled expression.
+      this.defaultValue = new DefaultValue(convertedValue, compiled);
 
       // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
       final Set<String> propertiesWithDefaultDefined = new HashSet<>(((LocalDocumentType) owner).propertiesWithDefaultDefined);

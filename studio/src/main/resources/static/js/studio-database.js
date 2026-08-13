@@ -3863,10 +3863,12 @@ function renderProperties(row, results) {
     panelHtml += "<td>" + (property.notNull ? true : false) + "</td>";
     panelHtml += "<td>" + (property.hidden ? true : false) + "</td>";
     panelHtml += "<td>" + (property.readOnly ? true : false) + "</td>";
-    panelHtml += "<td>" + (property["default"] != null ? property["default"] : "") + "</td>";
-    panelHtml += "<td>" + (property.min != null ? property.min : "") + "</td>";
-    panelHtml += "<td>" + (property.max != null ? property.max : "") + "</td>";
-    panelHtml += "<td>" + (property.regexp != null ? property.regexp : "") + "</td>";
+    // Escaped like the compression/tooltip cells above: these four are free-form schema text (a DEFAULT is now the
+    // SQL expression's own source, and a REGEXP is arbitrary), so they cannot be interpolated into the row markup raw.
+    panelHtml += "<td>" + (property["default"] != null ? escapeHtml(property["default"]) : "") + "</td>";
+    panelHtml += "<td>" + (property.min != null ? escapeHtml(property.min) : "") + "</td>";
+    panelHtml += "<td>" + (property.max != null ? escapeHtml(property.max) : "") + "</td>";
+    panelHtml += "<td>" + (property.regexp != null ? escapeHtml(property.regexp) : "") + "</td>";
 
     let totalIndexes = 0;
     if (row.indexes != null && row.indexes.length > 0) {

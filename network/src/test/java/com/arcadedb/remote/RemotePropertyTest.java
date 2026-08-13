@@ -128,12 +128,32 @@ class RemotePropertyTest {
   @Test
   void reloadWithDefault() {
     final Map<String, Object> entry = new HashMap<>();
-    entry.put("default", 42); // Use a non-String default to avoid expression parsing
+    entry.put("default", 42);
 
     property.reload(entry);
 
-    // Use reflection to verify the value was set without triggering expression parsing
-    assertThat(property).extracting("defaultValue").isEqualTo(42);
+    assertThat(property.getDefaultValueDefinition()).isEqualTo(42);
+  }
+
+  /**
+   * Issue #6134: the server sends the DEFINITION of a default, and a remote property has no embedded database to
+   * evaluate an SQL expression against, so it reports it back verbatim rather than trying to.
+   */
+  @Test
+  void reloadWithExpressionDefaultReportsItVerbatim() {
+    final Map<String, Object> entry = new HashMap<>();
+    entry.put("default", "sysdate()");
+
+    property.reload(entry);
+
+    assertThat(property.getDefaultValueDefinition()).isEqualTo("sysdate()");
+    assertThat(property.getDefaultValue()).isEqualTo("sysdate()");
+  }
+
+  @Test
+  void defaultValueIsNullWhenNoneWasSent() {
+    assertThat(property.getDefaultValueDefinition()).isNull();
+    assertThat(property.getDefaultValue()).isNull();
   }
 
   @Test
@@ -175,7 +195,7 @@ class RemotePropertyTest {
     entry.put("min", "1");
     entry.put("max", "999");
     entry.put("hidden", true);
-    entry.put("default", 10); // Use non-String to avoid expression parsing
+    entry.put("default", 10);
     entry.put("regexp", "\\d+");
     entry.put("custom", customValues);
 
@@ -188,7 +208,7 @@ class RemotePropertyTest {
     assertThat(property.getMin()).isEqualTo("1");
     assertThat(property.getMax()).isEqualTo("999");
     assertThat(property.isHidden()).isTrue();
-    assertThat(property).extracting("defaultValue").isEqualTo(10);
+    assertThat(property.getDefaultValueDefinition()).isEqualTo(10);
     assertThat(property.getRegexp()).isEqualTo("\\d+");
     assertThat(property.getCustomValue("customKey")).isEqualTo("customValue");
   }

@@ -27,11 +27,13 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -1175,8 +1177,11 @@ public class OrientDBImporter {
         if (orientdbProperty.regexp != null)
           property.setRegexp(orientdbProperty.regexp);
 
-        if (orientdbProperty.defaultValue != null)
-          property.setDefaultValue(orientdbProperty.defaultValue);
+        if (orientdbProperty.defaultValue != null && setImportedDefaultValue(property, orientdbProperty.defaultValue))
+          logger.logLine(2,
+              "- Imported the default value '%s' of '%s.%s' as a string literal, because OrientDB stores a default as a"
+                  + " plain value while ArcadeDB evaluates it as an SQL expression", orientdbProperty.defaultValue,
+              t.getName(), entry.getKey());
 
       } catch (final Exception e) {
         logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'",
@@ -1188,6 +1193,25 @@ public class OrientDBImporter {
 
     logger.logLine(2, "- Created type '%s' which extends from %s with the following properties %s", className,
         classInfo.superClasses, classInfo.properties);
+  }
+
+  /**
+   * OrientDB stores a property default as a plain value, so a bare {@code active} means the literal string "active".
+   * ArcadeDB evaluates a String default as an SQL expression, where a bare token is a field reference and is rejected
+   * (issue #6134). Import it as written first, so {@code sysdate()}, numbers and already-quoted strings keep their
+   * meaning, and fall back to quoting it as a string literal, which is what OrientDB means by a bare token. Before
+   * #6134 such a default was accepted and then silently evaluated to null on every record of the imported type.
+   *
+   * @return true if the value had to be quoted as a string literal to be accepted
+   */
+  static boolean setImportedDefaultValue(final Property property, final Object defaultValue) {
+    try {
+      property.setDefaultValue(defaultValue);
+      return false;
+    } catch (final SchemaException e) {
+      property.setDefaultValue("\"" + BaseExpression.encode(defaultValue.toString()) + "\"");
+      return true;
+    }
   }
 
   private int getClassType(final List<String> list) {

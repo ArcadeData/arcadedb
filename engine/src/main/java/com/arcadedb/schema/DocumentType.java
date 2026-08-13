@@ -68,6 +68,27 @@ public interface DocumentType {
 
   Set<String> getPolymorphicPropertiesWithDefaultDefined();
 
+  /**
+   * Fills in this type's (polymorphic) default values on the properties of {@code document} that are null or missing.
+   * <p>
+   * Issue #6134: this is the single definition of the rule. It used to be written twice - once in
+   * {@code LocalDatabase.setDefaultValues}, for every record create, and once in {@code ApplyDefaultsStep}, for
+   * {@code UPDATE ... APPLY DEFAULTS} and the SQL insert plan - and the two disagreed on what to do when the default
+   * evaluates to {@code null}. A default that yields {@code null} fills in nothing, so the property is left untouched
+   * rather than explicitly set to {@code null}: {@code has()} stays false and the key stays out of the serialized
+   * record. That also keeps {@code NOTNULL} pointing at the real gap, since {@code DocumentValidator} only raises
+   * "cannot be null" for a property that is present.
+   */
+  default void applyDefaultValues(final MutableDocument document) {
+    for (final String propertyName : getPolymorphicPropertiesWithDefaultDefined()) {
+      if (document.get(propertyName) == null) {
+        final Object defaultValue = getPolymorphicProperty(propertyName).getDefaultValue();
+        if (defaultValue != null)
+          document.set(propertyName, defaultValue);
+      }
+    }
+  }
+
   DocumentType addSuperType(String superName);
 
   DocumentType addSuperType(DocumentType superType);
