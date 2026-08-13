@@ -72,7 +72,10 @@ import java.util.stream.StreamSupport;
  * {@value #CHUNK_SIZE} ids are live, against ~90 bytes per entry for the map, so the crossover is at about 30 live
  * ids per chunk - <b>roughly 23% density</b>. Monotonic id assignment keeps a real workload far above that; a live
  * set genuinely scattered across a large id space would fall below it. Making the id space dense by construction -
- * renumbering during the data file rewrite - is the structural fix and is tracked separately in issue #5870.
+ * renumbering every entry during the data file rewrite, in {@code LSMVectorIndex.rewriteDataFileWithLiveEntries} -
+ * is the structural fix for the residual partially-drained band, and issue #5870 is where it happens: after every
+ * compaction the live set occupies exactly {@code [0, size())} and this class sees the renumbered ids the same way
+ * it sees any other id, through {@link #addOrUpdate}.
  *
  * <h2>Concurrency</h2>
  * Writers serialize on a single monitor; every read is lock-free and weakly consistent, matching what the
@@ -238,8 +241,11 @@ public class VectorLocationIndex {
    * workload and is enough to know whether a persisted graph carries stale ordinals.
    * <p>
    * The array is sized by the highest id handed out since the last {@link #clear()}, not by the number of live
-   * vectors: ids are preserved across a compaction rather than renumbered. Every graph rebuild (and therefore every
-   * compaction) releases it, so it grows only across the writes between two rebuilds.
+   * vectors. Every graph rebuild (and therefore every compaction) releases it - this class is always rebuilt fresh
+   * by {@code LSMVectorIndex.publishLocationIndex} rather than refilled in place - so it grows only across the
+   * writes between two rebuilds, and a compaction that renumbers the live set (issue #5870) starts the next one
+   * from empty exactly like a compaction that does not: no tombstone bit, and no on-disk tombstone entry, survives
+   * a rebuild to be paired with whatever live vector a reissued id now belongs to.
    * <p>
    * Writes are serialized on this object; reads are lock-free over a volatile array snapshot. Every mutation
    * republishes {@code bits} even when it did not resize the array: setting a bit is a plain array store, and a

@@ -428,8 +428,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * Rewrite the index data file keeping only the live entries, and swap it in: this is what a compaction of an
-   * LSM_VECTOR index is. Entries are copied verbatim (the quantized payload is never re-quantized) and keep their
-   * vector id, so no id is reused and the graph ordinals rebuilt right after stay valid.
+   * LSM_VECTOR index is. The quantized payload is never re-quantized, but the vector id IS reissued: every entry is
+   * renumbered densely from 0, in ascending old-id order, so the id space is dense by construction after every
+   * compaction instead of merely bounding the partially drained band trailing the live region (issue #5870). The
+   * graph ordinals rebuilt right after read the reassigned ids off the same {@code liveEntries} objects, so they
+   * stay valid without a second pass.
    * <p>
    * The whole rewrite runs under the index write lock. A compaction is an explicit maintenance operation, its cost
    * is one sequential pass over the live vectors, and blocking writers for it is the price of not having to
@@ -437,9 +440,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * Both old files - the previous data file and the legacy compacted component, if the index still has one - are
    * dropped afterwards, leaving the index with a single data file. That is what actually returns the space to the
-   * filesystem: leaving the old file behind was why compaction used to make the index bigger, not smaller.
+   * filesystem: leaving the old file behind was why compaction used to make the index bigger, not smaller. It is
+   * also what makes the renumbering safe with respect to tombstones: every on-disk tombstone for an id being
+   * discarded or reissued lived only in one of these two files, and {@link #publishLocationIndex} discards the
+   * in-memory {@code DeletedIds} bitset the same way on every rebuild, so no stale "deleted" answer for an old id
+   * survives to be paired with the live vector that now holds the same (reissued) number.
    *
-   * @param liveEntries the live set, re-pointed in place at the new file
+   * @param liveEntries the live set, re-pointed and renumbered in place at the new file
    *
    * @return true when the file was actually rewritten and the location index re-published with it, false when the
    * rewrite was skipped
@@ -493,7 +500,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           throw new IllegalStateException(
               "Cannot compact vector index '" + indexName + "': cannot lock the new file " + newFileId);
 
-        // Copy the live entries, in vector id order, into freshly built pages of the new file.
+        // Copy the live entries, in vector id order, into freshly built pages of the new file. They are also
+        // RENUMBERED here, densely from 0: this is the one moment in the index's life where reissuing every id
+        // costs nothing extra, since the whole live set is already being walked and rewritten (issue #5870). Ids
+        // are handed out in ascending old-id order, which preserves the relative order #4581's ordinal map depends
+        // on and guarantees newId <= oldId for every entry (N distinct non-negative integers sorted ascending are
+        // each >= their rank), so a renumbered entry is never bigger on disk than the one it replaces.
         final List<VectorEntryForGraphBuild> sorted = new ArrayList<>(liveEntries);
         sorted.sort((a, b) -> Integer.compare(a.vectorId, b.vectorId));
 
@@ -504,18 +516,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int pageNum = -1;
         int freeContent = 0;
         int entriesInPage = 0;
+        int denseId = 0;
         final byte[] buffer = new byte[maxEntryLength(sorted)];
 
         for (final VectorEntryForGraphBuild entry : sorted) {
+          final int oldVectorId = entry.vectorId;
+          final int newVectorId = denseId++;
+          // The vector id is the leading varint of the on-disk entry (LSMVectorIndexPageParser), so a renumbering
+          // has to re-encode it - a verbatim byte copy would keep shipping the old id. The rest of the entry (RID,
+          // deleted flag, quantization payload) is untouched and copied as-is.
+          final int oldIdSize = Binary.getNumberSpace(oldVectorId);
+          final int newIdSize = Binary.getNumberSpace(newVectorId);
+          final int restLength = entry.entryLength - oldIdSize;
+          final int newEntryLength = newIdSize + restLength;
+
           // Every entry came off a page of this same size, so it fits in a fresh one. Check it anyway: if a future
           // change ever let the pages shrink under an existing index, the loop below would create a new page and
           // then write straight past its end, and a compaction that silently corrupts is the worst possible one.
-          if (entry.entryLength > pageSizeContent)
+          if (newEntryLength > pageSizeContent)
             throw new IndexException(
-                "Cannot compact vector index '" + indexName + "': entry of vector " + entry.vectorId + " is "
-                    + entry.entryLength + " bytes and does not fit in a " + pageSizeContent + " byte page");
+                "Cannot compact vector index '" + indexName + "': entry of vector " + oldVectorId + " is "
+                    + newEntryLength + " bytes and does not fit in a " + pageSizeContent + " byte page");
 
-          if (page == null || page.getMaxContentSize() - freeContent < entry.entryLength) {
+          if (page == null || page.getMaxContentSize() - freeContent < newEntryLength) {
             if (page != null) {
               // Seal the page just filled: only the last page of the file stays open for new writes.
               page.writeByte(OFFSET_MUTABLE, (byte) 0);
@@ -530,18 +553,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
           }
 
           readRawEntry(entry, buffer);
-          page.writeByteArray(freeContent, buffer, 0, entry.entryLength);
+          page.writeNumber(freeContent, newVectorId);
+          page.writeByteArray(freeContent + newIdSize, buffer, oldIdSize, restLength);
 
-          // Re-point the entry at its new home before anything downstream reads it back.
+          // Re-point the entry at its new home and its new id before anything downstream reads it back.
           entry.absoluteFileOffset = (long) pageNum * pageSize + BasePage.PAGE_HEADER_SIZE + freeContent;
           entry.isCompacted = false;
+          entry.vectorId = newVectorId;
 
-          freeContent += entry.entryLength;
+          freeContent += newEntryLength;
           entriesInPage++;
           page.writeInt(OFFSET_FREE_CONTENT, freeContent);
           page.writeInt(OFFSET_NUM_ENTRIES, entriesInPage);
         }
         newPages.add(page); // the last page stays mutable: new vectors append to it
+
+        // The live set now occupies exactly ids [0, denseId), so the dense count IS the next id to hand out: future
+        // inserts continue the dense sequence instead of resuming from whatever the pre-compaction high-water mark
+        // was, which is what keeps the id space dense rather than merely bounding the partially drained band
+        // (issue #5870). Set before publishLocationIndex(), which reads this field back below.
+        nextId.set(denseId);
 
         final List<MutablePage> versionedPages = new ArrayList<>(newPages.size());
         for (final MutablePage p : newPages) {
@@ -690,6 +721,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
     // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
+    // A renumbering compaction (issue #5870) already reset `nextId` to the dense live count before calling this,
+    // so on that path the two operands are equal and the max is a no-op - the dense count IS the carried sequence.
     rebuilt.setNextId(Math.max(rebuilt.getNextId(), nextId.get()));
     vectorIndex = rebuilt;
   }
@@ -743,7 +776,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Used to avoid race conditions with concurrent VectorLocationIndex modifications.
    */
   private static class VectorEntryForGraphBuild {
-    final int vectorId;
+    // Not final: a compaction renumbers the live set densely from 0 (issue #5870), reassigning this in place so
+    // every reader of the same liveEntries collection - including the caller that fed it in - observes the new id.
+    int       vectorId;
     final RID rid;
     // Not final: a compaction rewrites the data file underneath the live set and re-points these at the new file.
     boolean   isCompacted;
@@ -1371,6 +1406,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // This happens when vectors were added after the graph was last built and persisted.
           // On database restart, deltaVectors (volatile) are lost and graphState is set to IMMUTABLE,
           // so rebuildGraphBeforeSearch() never triggers. Search can only find nodes in the stale graph.
+          //
+          // This is a COUNT comparison, not a content one: a persisted graph whose node count merely happens to
+          // match the current live count is treated as up to date even if it was built for a different generation
+          // of the live set. A renumbering compaction (issue #5870) makes that coincidence more likely to matter,
+          // not less - every post-compaction generation's ids are densely [0, N), so two different generations of
+          // the same index are far more likely to independently land on matching lengths than the old sparse,
+          // monotonically-growing ids ever were. Whether a real crash window can pair a stale graph with a live
+          // set of the same size this way is tracked, not confirmed, in issue #6106.
           if (graphSize < rebuiltOrdinalToVectorId.length) {
             LogManager.instance().log(this, Level.INFO,
                 """
