@@ -749,6 +749,147 @@ expect "accepts a real reactor-wide report (422 dependencies, snapshotted 2026-0
     "$ALLOWLIST" "$SCRIPTS/tests/fixtures/THIRD-PARTY-reactor-2026-08-11.txt"
 
 echo
+echo "filter-meterian-sarif.py"
+
+FIXTURE_SARIF="$SCRIPTS/tests/fixtures/meterian-main-2026-08-13.sarif"
+
+# Counts a SARIF's rules and results, as "<rules> <results>", summed across every run.
+sarif_counts() {
+    python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+rules = sum(len(r.get("tool", {}).get("driver", {}).get("rules", [])) for r in doc.get("runs", []))
+results = sum(len(r.get("results", [])) for r in doc.get("runs", []))
+print(rules, results)
+' "$1"
+}
+
+# The snapshot is the point of the check: 65 real findings from the 2026-08-13 scan of main,
+# 46 of them "[stability] ... is outdated" and 19 tagged security. Filtering must leave exactly
+# the 19 security findings and the 18 rules they reference (safe-buffer carries two results).
+cp "$FIXTURE_SARIF" "$work/real.sarif"
+expect "filters the real 2026-08-13 scan of main" 0 "46 stability" \
+    "$SCRIPTS/filter-meterian-sarif.py" "$work/real.sarif"
+
+counts="$(sarif_counts "$work/real.sarif")"
+if [[ $counts == "18 19" ]]; then
+    pass "leaves 18 rules and 19 results"
+else
+    fail "leaves 18 rules and 19 results" "got: $counts"
+fi
+
+# Every survivor must be a security finding - the filter must never strip one.
+survivors="$(python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+bad = [r["id"] for run in doc["runs"] for r in run["tool"]["driver"]["rules"]
+       if "security" not in r.get("properties", {}).get("tags", [])]
+print(",".join(bad) if bad else "clean")
+' "$work/real.sarif")"
+if [[ $survivors == "clean" ]]; then
+    pass "every surviving rule is tagged security"
+else
+    fail "every surviving rule is tagged security" "non-security survivors: $survivors"
+fi
+
+# The trap this script exists to avoid: results reference their rule by array position as well as
+# by id, so dropping rules without remapping result.rule.index silently reattributes findings to
+# whatever rule slid into that slot. Pin the linkage by id, not by trusting the index.
+mismatch="$(python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+bad = []
+for run in doc["runs"]:
+    rules = run["tool"]["driver"]["rules"]
+    for res in run["results"]:
+        idx = res.get("rule", {}).get("index")
+        if idx is None:
+            continue
+        if not (0 <= idx < len(rules)) or rules[idx]["id"] != res["ruleId"]:
+            bad.append(res["ruleId"])
+print(",".join(bad) if bad else "consistent")
+' "$work/real.sarif")"
+if [[ $mismatch == "consistent" ]]; then
+    pass "remaps result.rule.index to the surviving rule array"
+else
+    fail "remaps result.rule.index to the surviving rule array" "misattributed: $mismatch"
+fi
+
+# Filtering an already-filtered report must be a no-op, so a re-run cannot compound.
+cp "$work/real.sarif" "$work/idempotent.sarif"
+"$SCRIPTS/filter-meterian-sarif.py" "$work/idempotent.sarif" >/dev/null
+if cmp -s "$work/real.sarif" "$work/idempotent.sarif"; then
+    pass "is idempotent"
+else
+    fail "is idempotent" "second pass changed the report"
+fi
+
+# Meterian's own upload has no result.rule.index at all (GitHub adds it when it normalises the
+# report). The filter must handle both shapes, so cover the bare one explicitly.
+cat >"$work/no-index.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Meterian","rules":[
+  {"id":"S1","properties":{"tags":["stability"]}},
+  {"id":"V1","properties":{"tags":["CWE-1104","security","vulnerability"]}}
+]}},"results":[
+  {"ruleId":"S1","message":{"text":"outdated"}},
+  {"ruleId":"V1","message":{"text":"vulnerable"}}
+]}]}
+JSON
+expect "handles a report with no result.rule.index" 0 "1 stability" \
+    "$SCRIPTS/filter-meterian-sarif.py" "$work/no-index.sarif"
+
+counts="$(sarif_counts "$work/no-index.sarif")"
+if [[ $counts == "1 1" ]]; then
+    pass "keeps the security finding when there is no rule index"
+else
+    fail "keeps the security finding when there is no rule index" "got: $counts"
+fi
+
+# Defensive: a rule carrying both tags is a security finding first. Dropping it because it also
+# says "stability" would lose a real vulnerability, so the filter keeps it.
+cat >"$work/both-tags.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Meterian","rules":[
+  {"id":"B1","properties":{"tags":["stability","security"]}}
+]}},"results":[{"ruleId":"B1","message":{"text":"both"}}]}]}
+JSON
+"$SCRIPTS/filter-meterian-sarif.py" "$work/both-tags.sarif" >/dev/null
+counts="$(sarif_counts "$work/both-tags.sarif")"
+if [[ $counts == "1 1" ]]; then
+    pass "keeps a rule tagged both stability and security"
+else
+    fail "keeps a rule tagged both stability and security" "got: $counts"
+fi
+
+# A multi-run report must be filtered in every run, not just the first.
+cat >"$work/multi-run.sarif" <<'JSON'
+{"version":"2.1.0","runs":[
+ {"tool":{"driver":{"name":"Meterian","rules":[{"id":"S1","properties":{"tags":["stability"]}}]}},
+  "results":[{"ruleId":"S1","message":{"text":"outdated"}}]},
+ {"tool":{"driver":{"name":"Meterian","rules":[
+   {"id":"S2","properties":{"tags":["stability"]}},
+   {"id":"V2","properties":{"tags":["security"]}}]}},
+  "results":[{"ruleId":"S2","message":{"text":"outdated"}},{"ruleId":"V2","message":{"text":"vuln"}}]}
+]}
+JSON
+"$SCRIPTS/filter-meterian-sarif.py" "$work/multi-run.sarif" >/dev/null
+counts="$(sarif_counts "$work/multi-run.sarif")"
+if [[ $counts == "1 1" ]]; then
+    pass "filters every run, not just the first"
+else
+    fail "filters every run, not just the first" "got: $counts"
+fi
+
+# A scan that produced no report must not turn the upload step red: the workflow already treats
+# the upload as best-effort, and the filter has to keep that contract.
+expect "treats a missing report as nothing to do" 0 "nothing to filter" \
+    "$SCRIPTS/filter-meterian-sarif.py" "$work/does-not-exist.sarif"
+
+# Malformed input is a real error - failing loudly beats uploading a mangled report.
+printf 'not json at all\n' >"$work/broken.sarif"
+expect "rejects a malformed report" 2 "not valid JSON" \
+    "$SCRIPTS/filter-meterian-sarif.py" "$work/broken.sarif"
+
+echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"
     exit 1
