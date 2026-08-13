@@ -211,6 +211,9 @@ public abstract class AbstractProperty implements Property {
     final String message =
         "Invalid default value `" + text + "` on property '" + owner.getName() + "." + name + "' because " + reason;
 
+    // EVERY REJECTION LEAVES THIS METHOD AS A SchemaException, WHATEVER THE PARSER THREW: THE catch ABOVE TURNS ANY
+    // Exception INTO A `reason` FIRST. OrientDBImporter.setImportedDefaultValue CATCHES EXACTLY THIS TYPE TO DECIDE
+    // WHETHER TO RETRY THE VALUE QUOTED, SO THE SINGLE EXIT MATTERS - DO NOT LET ANOTHER TYPE ESCAPE FROM HERE.
     if (owner.getSchema().getEmbedded().isSchemaLoaded())
       throw new SchemaException(message);
 
@@ -219,8 +222,9 @@ public abstract class AbstractProperty implements Property {
         ". Every new record will keep receiving the expression's own source text as its value" :
         ". Every new record will keep leaving the property unset"));
 
-    // A BARE IDENTIFIER STILL COMPILES, AND KEEPING IT PRESERVES THE PRE-#6134 null; AN UNPARSEABLE ONE HAS NOTHING TO
-    // KEEP, AND THE null RETURNED HERE IS WHAT MAKES getDefaultValue() FALL BACK TO THE SOURCE TEXT, AS IT USED TO.
+    // REACHED ONLY ON THE LENIENT PATH - THE STRICT ONE THREW ABOVE - AND `compiled` CARRIES THE OUTCOME OF THE TWO
+    // REJECTION KINDS: A BARE IDENTIFIER STILL COMPILES, AND KEEPING IT PRESERVES THE PRE-#6134 null; AN UNPARSEABLE
+    // ONE IS null HERE, WHICH IS WHAT MAKES getDefaultValue() FALL BACK TO THE SOURCE TEXT, AS IT USED TO.
     return compiled;
   }
 

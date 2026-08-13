@@ -77,6 +77,21 @@ class OrientDBImporterDefaultValueTest {
     });
   }
 
+  /**
+   * The fallback keys off {@code SchemaException}, so it has to cover the rejection kind that originates as a parser
+   * exception deep inside ANTLR, not only the bare-identifier one that is rejected without anything being thrown.
+   * {@code compileDefaultValue} funnels both into the same single exit; this pins that.
+   */
+  @Test
+  void aValueThatCannotBeParsedAtAllIsAlsoImportedAsAStringLiteral() {
+    assertThat(setImportedDefaultValue(type.createProperty("note", Type.STRING), "this is (not parseable")).isTrue();
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Imported").save();
+      assertThat(doc.getString("note")).isEqualTo("this is (not parseable");
+    });
+  }
+
   @Test
   void aQuoteInTheValueIsEscapedRatherThanClosingTheLiteral() {
     assertThat(setImportedDefaultValue(type.createProperty("quote", Type.STRING), "say \"hi\"")).isTrue();
