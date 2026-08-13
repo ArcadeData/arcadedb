@@ -52,8 +52,18 @@ import java.util.logging.Level;
  * Like {@link LSMVectorIndexPQFile} this is a plain file rather than a paginated component: it is a few dozen bytes
  * read once per graph load and rewritten once per graph persist, and keeping it out of the page system means it can
  * be removed before the graph pages are touched and written only after they are committed. That order is what makes
- * the check safe under a crash - an interrupted persist leaves no manifest at all, and "no manifest" is never read
- * as "the graph matches".
+ * the check safe under a crash: a persist that fails observably replaces the manifest with one that refuses the
+ * pages ({@link #markUnusable}), and a process killed outright leaves none at all, which the load path treats as
+ * "cannot be verified" rather than as "the graph matches".
+ * <p>
+ * <b>This class holds no lock of its own, and callers must not write one manifest concurrently.</b> Each call is
+ * individually atomic - the file is written under a per-write temporary name and moved into place - so a reader can
+ * never see a half-written manifest. What is not defended here is the ORDER of two concurrent persists of the same
+ * index: whichever moves last wins, and if that is not the one whose pages are on disk, the manifest certifies the
+ * wrong generation. The engine serialises those persists today ({@code LSMVectorIndex.graphBuildLock} on the
+ * rebuild path, the index write lock plus the {@code INDEX_STATUS} gate on the {@code build()} path), and anything
+ * that changes either has to keep that true - moving the serialisation in here would only turn an ordering problem
+ * into a shorter ordering problem, since the pages and the manifest are written at different times by design.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
@@ -194,7 +204,8 @@ public class LSMVectorIndexGraphManifest {
       // A process killed between the write and the move leaves its temporary behind. Nothing reads one - the
       // extension is not a component one, so no scan opens it - but nothing would ever remove it either, and an
       // index rebuilt often enough would quietly litter the database directory. Sweeping here keeps at most one
-      // generation of leftovers around, without a lifecycle of its own.
+      // generation of leftovers around, without a lifecycle of its own. It is one directory listing per graph
+      // persist, an operation that has just walked every live vector twice.
       deleteLeftoverTemporaries(parent);
 
       final JSONObject json = new JSONObject();
