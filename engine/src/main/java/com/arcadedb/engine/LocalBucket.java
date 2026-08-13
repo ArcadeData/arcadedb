@@ -3495,8 +3495,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * ({@code updateMultiPageRecord} rewrites only inside it), so a bigger bite would deny page space to every other
    * record on the page for good.
    *
+   * @param roomRequired         bytes the chunk head needs in total, marker included.
    * @param roomAlreadyAvailable bytes the slot may already use: its own footprint, plus the page's free tail when it
    *                             is the last record.
+   * @param freeTailInPage       unused bytes between the end of the page's last record and its maximum content size.
    * @param isLastRecordInPage   whether the slot is the last record of the page. Then there is nothing after it to
    *                             move, and its free tail is already counted in {@code roomAlreadyAvailable}.
    *
@@ -3529,8 +3531,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * The caller must have checked the page has the bytes ({@code additionalSpaceNeeded} strictly below the free tail)
    * and must declare the write coverage: this method only moves bytes.
    *
-   * @param from                 first byte to move: the end of the growing record's current footprint.
-   * @param pageOccupiedInBytes  byte the used content of the page ends at (see {@link #getPageOccupiedInBytes}).
+   * @param page                  the page to re-flow.
+   * @param recordCountInPage     number of slot-table entries to walk when fixing the offsets that moved.
+   * @param from                  first byte to move: the end of the growing record's current footprint.
+   * @param pageOccupiedInBytes   byte the used content of the page ends at (see {@link #getPageOccupiedInBytes}).
+   * @param additionalSpaceNeeded bytes to move by, which the caller has proved the page's free tail can absorb.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -3543,11 +3548,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int nextRecordPosInPage = getRecordPositionInPage(page, pos);
       if (nextRecordPosInPage != 0 &&//
               nextRecordPosInPage >= from &&//
-              nextRecordPosInPage <= pageOccupiedInBytes)
+              nextRecordPosInPage <= pageOccupiedInBytes) {
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE,
                 nextRecordPosInPage + additionalSpaceNeeded);
 
-      assert nextRecordPosInPage + additionalSpaceNeeded < page.getMaxContentSize();
+        // The invariant this states is about the records that MOVED: each one must still start inside the page.
+        // It used to sit outside this branch, where it also ran for every slot left alone - vacuously true for them
+        // (their offset is below `from`, and a freed slot reads 0), so it asserted nothing while looking like it
+        // did. Harmless while one method owned it; worth stating precisely now that three call sites share it.
+        assert nextRecordPosInPage + additionalSpaceNeeded < page.getMaxContentSize();
+      }
     }
   }
 
