@@ -1138,8 +1138,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * beforeCreate listeners (#6127 review): aiming at a RID that is still live is the likeliest mistake to make with
    * this statement, and it used to be the only error a restore could return - reporting a mandatory-property
    * violation instead would send the caller off to fix the wrong thing. That early call is a diagnostic ordering
-   * only; this remains the authoritative check because {@code restoreRecordAtPosition} runs it again on the page it
-   * is about to write, inside the same transaction.
+   * only: it does not license the write, because {@code restoreRecordAtPosition} repeats this check on the page it
+   * is about to write, inside the same transaction, and that later call is the one the write depends on.
    *
    * @return the page holding the target slot, already fetched for modification.
    *

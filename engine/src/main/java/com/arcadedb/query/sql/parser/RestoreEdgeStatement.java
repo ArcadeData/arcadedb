@@ -44,7 +44,13 @@ import java.util.Objects;
  * edge to a missing vertex is not what this statement is for (see RESTORE VERTEX first in that case).
  * <p>
  * The type's schema applies in full (#6127): declared default values are set, the edge is validated, and the create
- * events fire, exactly as for an INSERT.
+ * events fire.
+ * <p>
+ * One caveat specific to the edge arm, for anyone writing an afterCreate trigger on an edge type: because no
+ * adjacency reconnection follows, the event fires on an edge record whose endpoints' adjacency lists this statement
+ * has not touched. In the case this repairs they still reference the RID and the graph is whole, but a trigger that
+ * assumes "create event fired therefore both endpoints already list this edge" - true of {@code Vertex.newEdge},
+ * which writes the adjacency itself - does not hold here.
  */
 public class RestoreEdgeStatement extends SimpleExecStatement {
   public Identifier targetType;

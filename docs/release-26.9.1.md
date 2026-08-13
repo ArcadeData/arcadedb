@@ -1037,6 +1037,12 @@ One intentional difference from `createRecordNoLock` remains, in the other direc
 vetoes the write makes `RESTORE` **raise** rather than return quietly. A repair that reports success without writing
 the record is the one outcome this statement must never produce.
 
+If you have an `afterCreate` trigger on an **edge** type, note one interleaving that was previously impossible.
+`RESTORE EDGE` does not reconnect adjacency - in the case it repairs, a raw record delete never touched the
+neighbours, so the endpoints still reference the RID - which means the event now fires on an edge whose endpoints'
+adjacency lists the statement has not written. A trigger that assumes "create event fired, therefore both endpoints
+already list this edge", which holds for `Vertex.newEdge`, does not hold on this path.
+
 ### `Issue5279ConcurrentUpdateTest` re-triaged: a contention regime, not a flake
 
 `growingUpdatesUnderContentionKeepTheDatabaseConsistent` had been written off as a chronic flake. It is neither
