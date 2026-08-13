@@ -698,7 +698,7 @@ public class SelectExecutionPlanner {
     extractSubQueries(info);
     if (info.projection != null && info.projection.isExpand()) {
       info.expand = true;
-      final ProjectionItem expandItem = info.projection.getItems().getFirst();
+      final ProjectionItem expandItem = info.projection.getItems().get(0);
       if (expandItem.getAlias() != null)
         info.expandAlias = expandItem.getAlias().getStringValue();
       info.projection = info.projection.getExpandContent();
