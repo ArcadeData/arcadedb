@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -54,8 +56,7 @@ public class PropertyAccessExpression implements Expression {
     if (variable instanceof RID rid) {
       // Lazy vertex resolution: algorithm procedures store RIDs to avoid loading all vertices upfront.
       // Only resolve to Document when a property is actually accessed.
-      final Object rawValue = rid.asVertex().get(propertyName);
-      return TemporalUtil.convertFromStorage(rawValue);
+      return readLinkedProperty(rid, propertyName);
     } else if (variable instanceof Document) {
       final Object rawValue = ((Document) variable).get(propertyName);
       return TemporalUtil.convertFromStorage(rawValue);
@@ -81,6 +82,45 @@ public class PropertyAccessExpression implements Expression {
     throw new CommandExecutionException(
         "TypeError: Cannot access property '" + propertyName + "' on " +
         variable.getClass().getSimpleName() + " value");
+  }
+
+  /**
+   * Reads {@code propertyName} through a persisted LINK, shared by this (variable-bound) access path and the chained
+   * access path in {@code CypherExpressionBuilder.ChainedPropertyAccessExpression} so both dereference a RID identically.
+   * <p>
+   * The RID is resolved to a {@link Document} rather than to a {@code Vertex}: every property-bearing record - vertex,
+   * edge or plain document - is a {@code Document}, and the caller's adjacent {@code instanceof Document} branch already
+   * reads a live value of any of those three shapes the same way, so a LINK to a non-vertex record is not an error. It
+   * also removes the {@code ClassCastException} that {@code RID.asVertex()} turned into a {@link RecordNotFoundException}.
+   * <p>
+   * What remains a failure is a RID that resolves to nothing, typically because the referenced record was deleted and
+   * nothing rewrote the property holding the link. That is reported as a {@link CommandExecutionException} carrying the
+   * same {@code TypeError: Cannot access property '<name>' on ...} wording the callers use for every other base type
+   * they cannot read a property from, so the query fails the way a Cypher type error fails instead of letting an
+   * engine-level {@link RecordNotFoundException} escape the query engine (issue #5898).
+   * <p>
+   * The {@code RecordNotFoundException} is deliberately NOT kept as the cause: {@code AbstractServerHttpHandler}
+   * classifies a {@code CommandExecutionException} by {@code getCause()} when there is one, so attaching it would route
+   * the response through the catch-all arm ("Error on transaction commit") instead of the Cypher-error arm ("Cannot
+   * execute command"), i.e. re-introduce the very message this fix removes. Nothing is lost - the RID and the reason
+   * are both in the message.
+   */
+  public static Object readLinkedProperty(final RID rid, final String propertyName) {
+    final Record record;
+    try {
+      record = rid.getRecord();
+    } catch (final RecordNotFoundException e) {
+      throw new CommandExecutionException(
+          "TypeError: Cannot access property '" + propertyName + "' on " + rid +
+          ": the linked record does not exist");
+    }
+
+    if (!(record instanceof Document document))
+      throw new CommandExecutionException(
+          "TypeError: Cannot access property '" + propertyName + "' on " + rid +
+          ": the linked record has no properties");
+
+    return TemporalUtil.convertFromStorage(document.get(propertyName));
   }
 
   @Override
