@@ -59,9 +59,10 @@ public class TransactionIndexContext {
    * would discard it under the rule that drops the lanes of indexes dropped mid-transaction (TYPE DROP): the record
    * is written, the index entry is silently lost.
    * <p>
-   * Holding the reference makes the lane's identity independent of the name. The "was it dropped?" test stays a
-   * schema lookup, but of the index's CURRENT name, so a renamed index is kept and a genuinely dropped one is still
-   * discarded.
+   * Holding the reference lets the lane ask the index what it is called now instead of assuming it is still called
+   * what it was called then. Everything else is unchanged: the current name goes to the same schema lookup as
+   * before, so a renamed index is kept, a genuinely dropped one is still discarded, and the schema stays the sole
+   * authority on which object that name resolves to (see {@link #laneIndexName} for why that distinction matters).
    */
   private final Map<String, IndexInternal>                                   indexPerLane     = new HashMap<>();
 
@@ -216,18 +217,36 @@ public class TransactionIndexContext {
   }
 
   /**
-   * The index a lane belongs to: the reference captured when the lane was opened, falling back to a lookup by name
-   * for lanes restored wholesale by {@link #setKeys}, which carry no reference. See {@link #indexPerLane}.
+   * The name a lane's index answers to NOW: the current name of the reference captured when the lane was opened,
+   * falling back to the lane's own key for lanes restored wholesale by {@link #setKeys}, which carry no reference.
+   * See {@link #indexPerLane}.
    * <p>
-   * That fallback is not a residual hole. {@code setKeys} is only used by {@code TransactionContext.commitFromReplica},
-   * and a replica never renames a vector index behind its own back: {@code LSMVectorIndex.isCompactionAllowedOnThisNode}
-   * refuses to schedule a compaction on anything but a standalone database or the current leader, so a follower's copy
-   * is renamed only when it adopts the component the leader shipped it - which arrives through the schema update, not
-   * concurrently with a replicated commit it is already applying.
+   * The captured reference is used to find the NAME, never as the index to operate on. Those are not always the same
+   * object: a wrapper index queues its entries under the index it wraps - {@code LSMTreeFullTextIndex} tokenizes text
+   * and calls through to its {@code LSMTreeIndex}, which is what reaches {@code addIndexKeyLock} - while the schema
+   * registers the WRAPPER under that same name. Replaying through the captured inner index instead of the registered
+   * wrapper would quietly change which implementation of {@code putReplay}/{@code removeReplay},
+   * {@code getAssociatedBucketId} and {@code getFileIds} the commit uses. So this fix moves only the one thing that
+   * was wrong - the name being looked up - and leaves the schema the sole authority on what that name resolves to.
+   * <p>
+   * That also means an index dropped and re-created under the same name inside one transaction resolves to the new
+   * one, exactly as it did before this fix: no behaviour of that (already ill-defined) sequence is changed here.
+   * <p>
+   * The {@code setKeys} fallback is not a residual hole either. {@code setKeys} is only used by
+   * {@code TransactionContext.commitFromReplica}, and a replica never renames a vector index behind its own back:
+   * {@code LSMVectorIndex.isCompactionAllowedOnThisNode} refuses to schedule a compaction on anything but a standalone
+   * database or the current leader, and an explicit {@code COMPACT INDEX} is a DDL statement a follower forwards to
+   * the leader. A follower's copy is renamed only when it adopts the component the leader shipped it, which arrives
+   * through the schema update rather than concurrently with a replicated commit it is already applying.
    */
-  private IndexInternal resolveIndex(final String laneName) {
+  private String laneIndexName(final String laneName) {
     final IndexInternal index = indexPerLane.get(laneName);
-    return index != null ? index : (IndexInternal) database.getSchema().getIndexByName(laneName);
+    return index != null ? index.getName() : laneName;
+  }
+
+  /** The index a lane belongs to, as the schema currently resolves it. See {@link #laneIndexName}. */
+  private IndexInternal resolveIndex(final String laneName) {
+    return (IndexInternal) database.getSchema().getIndexByName(laneIndexName(laneName));
   }
 
   /**
@@ -236,8 +255,7 @@ public class TransactionIndexContext {
    * (TYPE DROP) is still reported as gone.
    */
   private boolean laneIndexStillExists(final String laneName) {
-    final IndexInternal index = indexPerLane.get(laneName);
-    return database.getSchema().existsIndex(index != null ? index.getName() : laneName);
+    return database.getSchema().existsIndex(laneIndexName(laneName));
   }
 
   public int getTotalEntries() {
