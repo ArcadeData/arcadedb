@@ -49,7 +49,7 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     db.transaction(() -> db.newDocument("FlushDoc").set("v", 1).save());
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
-    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("FlushDoc").getBuckets(false).getFirst();
+    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("FlushDoc").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     final int pageSize = bucket.getPageSize();
     final int pageNum = bucket.getTotalPages();
@@ -106,7 +106,7 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     db.transaction(() -> db.newDocument("FlushDoc").set("v", 1).save());
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
-    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("FlushDoc").getBuckets(false).getFirst();
+    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("FlushDoc").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     final int pageSize = bucket.getPageSize();
     final int pageNum = bucket.getTotalPages();
@@ -174,7 +174,7 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     db.transaction(() -> db.newDocument("FlushDoc").set("v", 1).save());
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
-    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("FlushDoc").getBuckets(false).getFirst();
+    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("FlushDoc").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     final int pageSize = bucket.getPageSize();
     final int pageNum = bucket.getTotalPages();
