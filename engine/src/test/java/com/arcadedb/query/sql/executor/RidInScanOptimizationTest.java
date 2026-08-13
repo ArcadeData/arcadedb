@@ -19,12 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.partitioning.PartitioningTestFixture;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,6 +62,17 @@ class RidInScanOptimizationTest extends TestHelper {
 
       otherTypeRid = database.newDocument("Other").set("name", "other0").save().getIdentity();
     });
+
+    // The type creations above invalidate the execution plan cache, stamping
+    // ExecutionPlanCache.lastInvalidation with System.currentTimeMillis(). SelectExecutionPlanner's
+    // cache-put guard (createExecutionPlan) rejects a plan whose own planningStart timestamp isn't
+    // strictly greater than that invalidation stamp. On a fast/warmed-up JVM the setup above and a
+    // test's first query can land in the same millisecond tick, so a plan that is legitimately built
+    // after the invalidation gets skipped anyway - this only matters here because #5855 is what makes
+    // these @rid plans cacheable in the first place. Not a bug in the fix; just avoid racing the clock.
+    final long setupMillis = System.currentTimeMillis();
+    while (System.currentTimeMillis() == setupMillis)
+      Thread.onSpinWait();
   }
 
   @Test
@@ -214,6 +227,106 @@ class RidInScanOptimizationTest extends TestHelper {
     }
     rs.close();
     assertThat(count).isEqualTo(4);
+  }
+
+  @Test
+  void ridEqualityBoundParameterPlanIsCacheableAndReresolvesOnReuse() {
+    // Issue #5855: before this fix, FetchFromRidsStep baked the resolved RID into the step at
+    // plan-build time and never overrode canBeCached()/copy(), so the whole plan was never put in
+    // db.getExecutionPlanCache(). A "get by id" query executed repeatedly with different bound
+    // RIDs must re-plan from scratch every time it happened.
+    final String sql = "SELECT FROM Doc WHERE @rid = ?";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final ResultSet rs1 = database.query("sql", sql, doc0Rid);
+    final ExecutionPlan plan1 = rs1.getExecutionPlan().orElseThrow();
+    assertThat(findStep(plan1, FetchFromRidsStep.class)).isNotNull();
+    assertThat(((InternalExecutionPlan) plan1).canBeCached()).as("plan built for @rid = ? must now be cacheable").isTrue();
+    assertThat(collectNames(rs1)).containsExactly("doc0");
+
+    assertThat(db.getExecutionPlanCache().contains(sql)).as("plan must actually be in the execution plan cache").isTrue();
+
+    // Same statement text, a DIFFERENT bound RID: a stale cached plan would either return doc0
+    // again (the RID baked in from the first build) or nothing at all.
+    final ResultSet rs2 = database.query("sql", sql, doc1Rid);
+    assertThat(collectNames(rs2)).containsExactly("doc1");
+
+    final ResultSet rs3 = database.query("sql", sql, doc2Rid);
+    assertThat(collectNames(rs3)).containsExactly("doc2");
+  }
+
+  @Test
+  void ridInListBoundParameterPlanIsCacheableAndReresolvesOnReuse() {
+    final String sql = "SELECT FROM Doc WHERE @rid IN ?";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final ResultSet rs1 = database.query("sql", sql, List.of(doc0Rid, doc1Rid));
+    final ExecutionPlan plan1 = rs1.getExecutionPlan().orElseThrow();
+    assertThat(findStep(plan1, FetchFromRidsStep.class)).isNotNull();
+    assertThat(((InternalExecutionPlan) plan1).canBeCached()).isTrue();
+    assertThat(collectNames(rs1)).containsExactlyInAnyOrder("doc0", "doc1");
+
+    assertThat(db.getExecutionPlanCache().contains(sql)).isTrue();
+
+    // Reused plan, bound to a completely different RID list.
+    final ResultSet rs2 = database.query("sql", sql, List.of(doc2Rid));
+    assertThat(collectNames(rs2)).containsExactly("doc2");
+  }
+
+  @Test
+  void ridInListWithOneUnresolvableElementStillMatchesTheResolvableOnesOnCacheReuse() {
+    // A cache-hit re-execution has no scan fallback left (unlike the build-time shape check in
+    // SelectExecutionPlanner.extractRidEqualityOrInList): one bad element in an otherwise-valid list
+    // must not silently drop the matches that ARE real RIDs.
+    final String sql = "SELECT FROM Doc WHERE @rid IN ?";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // First execution: every element resolves, so the plan is built AND cached as FetchFromRidsStep.
+    final ResultSet rs1 = database.query("sql", sql, List.of(doc0Rid, doc1Rid));
+    final ExecutionPlan plan1 = rs1.getExecutionPlan().orElseThrow();
+    assertThat(findStep(plan1, FetchFromRidsStep.class)).isNotNull();
+    assertThat(collectNames(rs1)).containsExactlyInAnyOrder("doc0", "doc1");
+    assertThat(db.getExecutionPlanCache().contains(sql)).isTrue();
+
+    // Second execution: cache hit, reuses the exact same FetchFromRidsStep - one element is not a
+    // RID at all. The record matching the other, valid element must still come back.
+    final ResultSet rs2 = database.query("sql", sql, Arrays.asList(doc2Rid, "not-a-rid"));
+    assertThat(collectNames(rs2)).containsExactly("doc2");
+  }
+
+  @Test
+  void ridInListEmptyThenNonEmptyBoundParameterAcrossCachedReuseStaysCorrect() {
+    // Pins the EmptyStep-caching hazard: the old code short-circuited an empty resolved RID list to
+    // a non-cacheable EmptyStep at build time. The new code must never bake "this execution's RIDs
+    // happen to be empty" into a plan that a later, differently-bound execution can reuse.
+    final String sql = "SELECT FROM Doc WHERE @rid IN ?";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final ResultSet rs1 = database.query("sql", sql, List.of());
+    assertThat(rs1.hasNext()).isFalse();
+    rs1.close();
+
+    assertThat(db.getExecutionPlanCache().contains(sql)).as("even a build that resolves to zero RIDs must be cacheable").isTrue();
+
+    final ResultSet rs2 = database.query("sql", sql, List.of(doc0Rid));
+    assertThat(collectNames(rs2)).containsExactly("doc0");
+  }
+
+  @Test
+  void ridEqualityBoundParameterCombinesWithRemainingFilterAcrossCachedReuse() {
+    final String sql = "SELECT FROM Doc WHERE @rid = ? AND active = true";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // doc0 is active: matches.
+    final ResultSet rs1 = database.query("sql", sql, doc0Rid);
+    assertThat(collectNames(rs1)).containsExactly("doc0");
+    assertThat(db.getExecutionPlanCache().contains(sql)).isTrue();
+
+    // doc1 is NOT active: the remaining filter chained after the reused, cached FetchFromRidsStep
+    // must still be re-evaluated correctly.
+    final ResultSet rs2 = database.query("sql", sql, doc1Rid);
+    assertThat(rs2.hasNext()).isFalse();
+    rs2.close();
   }
 
   private static List<String> collectNames(final ResultSet rs) {

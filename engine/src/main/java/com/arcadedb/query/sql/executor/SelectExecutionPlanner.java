@@ -2026,20 +2026,27 @@ public class SelectExecutionPlanner {
 
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
       final BooleanExpression expr = andBlock.getSubBlocks().get(i);
-      final List<RID> rids = extractRidEqualityOrInList(expr, context);
-      if (rids == null)
-        continue;
+      if (extractRidEqualityOrInList(expr, context) == null)
+        continue; // not one of the @rid = <RID> / @rid IN [<RID list>] shapes
 
-      if (rids.isEmpty()) {
-        // The RID list is definitely empty (e.g. an empty IN-list or a null bind parameter):
-        // no record can match, whatever the remaining conditions are.
-        plan.chain(new EmptyStep(context));
-        info.whereClause = null;
-        info.flattenedWhereClause = null;
-        return true;
-      }
+      // Known tradeoff: this shape check runs against THIS build's bound value, and its true/false
+      // outcome (not the resolved RIDs themselves, which are re-resolved per execution below) is
+      // what the cached plan commits to. An atypical first bind that fails to resolve here (e.g. a
+      // null @rid, or one bad element in an IN-list) permanently locks that statement text into the
+      // scan fallback until the next cache invalidation, even though later executions bind good
+      // RIDs. Not a correctness issue - the scan still evaluates the condition correctly - just a
+      // missed optimization for that call pattern.
 
-      plan.chain(new FetchFromRidsStep(rids, context));
+      // Deliberately do NOT bake the RID(s) resolved above into the fetch step: this build may run
+      // once per statement text and get reused later, with different bound parameters, straight from
+      // db.getExecutionPlanCache() (see ExecutionPlanCache.get()'s InternalExecutionPlan.copy(context)).
+      // FetchFromRidsStep(BooleanExpression, CommandContext) re-resolves ridCondition lazily against
+      // each execution's own live context instead, keeping this whole plan cacheable. That includes
+      // whatever this particular build's RIDs resolved to being empty (e.g. a null-bound parameter):
+      // baking THAT into a cached plan would be just as wrong for a later, differently-bound
+      // execution - see EmptyStep.canBeCached()'s "DON'T TOUCH" comment for exactly this hazard, and
+      // issue #5855.
+      plan.chain(new FetchFromRidsStep(expr, context));
       plan.chain(new FilterByTypeStep(identifier, context));
 
       final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
@@ -2061,17 +2068,23 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also {@code IN (<RID list>)}
-   * and {@code IN <bind parameter>}) and resolves the RID(s) at plan time. Returns {@code null} if
-   * {@code expr} isn't one of these shapes, or if any element can't be resolved to a RID at plan
-   * time (e.g. it's computed from a per-record field) - the caller falls back to the normal scan
-   * in that case, which still evaluates correctly. Returns an empty list if the condition can
-   * never match any record (empty IN-list, or a bind parameter bound to null) so the caller can
-   * short-circuit to no results. {@code @rid NOT IN [...]} is deliberately not handled here:
-   * excluding a RID set still requires scanning every other record of the type, which this
-   * optimization cannot help with.
+   * Build-time-only: recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also
+   * {@code IN (<RID list>)} and {@code IN <bind parameter>}) and resolves the RID(s) against
+   * {@code context}, purely to decide whether {@code expr} is one of these shapes at all. Returns
+   * {@code null} if {@code expr} isn't one of these shapes, or if ANY element can't be resolved to a
+   * RID given this particular build's {@code context} (e.g. a per-record field, or one bad element
+   * mixed into an otherwise-valid list) - the caller ({@link #handleTypeWithRidFilter}) then falls
+   * back to a normal scan, which evaluates the {@code IN}/{@code =} condition itself and handles a
+   * partially-resolvable list correctly on its own. Returns an empty list if the condition can never
+   * match any record (empty IN-list, or a bind parameter bound to null). {@code @rid NOT IN [...]}
+   * is deliberately not handled here: excluding a RID set still requires scanning every other record
+   * of the type, which this optimization cannot help with.
+   * <p>
+   * Do NOT call this from {@link FetchFromRidsStep#syncPull} - once the plan has committed to a
+   * {@code FetchFromRidsStep}, there is no scan fallback left, so "abort the whole list to null on
+   * one bad element" is wrong there. Use {@link #resolveRidEqualityOrInListAtRuntime} instead.
    */
-  private static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
+  static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
     if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
         && RID_PROPERTY.equalsIgnoreCase(bc.getLeft().toString())) {
       final RID rid = extractRidValue(bc.getRight(), context);
@@ -2082,22 +2095,13 @@ public class SelectExecutionPlanner {
       return null;
 
     final Object rawValue;
-    if (in.right instanceof List<?> list) {
-      final List<Object> values = new ArrayList<>(list.size());
-      for (final Object item : list)
-        values.add(item instanceof Expression itemExpr ? extractRidValue(itemExpr, context) : item);
-      rawValue = values;
-    } else if (in.getRightMathExpression() != null) {
-      try {
-        rawValue = in.getRightMathExpression().execute((Result) null, context);
-      } catch (final Exception e) {
-        return null; // not resolvable at plan time (e.g. references a per-record field)
-      }
-    } else if (in.getRightParam() != null) {
-      rawValue = in.getRightParam().getValue(context.getInputParameters());
-    } else
+    try {
+      rawValue = resolveInRightHandRawValue(in, context);
+    } catch (final Exception e) {
+      return null; // not resolvable at plan time (e.g. references a per-record field)
+    }
+    if (rawValue == NOT_A_RESOLVABLE_RID_SHAPE)
       return null; // subquery on the right: not a plan-time-resolvable RID list
-
     if (rawValue == null)
       return List.of(); // WHERE @rid IN <null> matches nothing
 
@@ -2116,6 +2120,81 @@ public class SelectExecutionPlanner {
       if (rid == null)
         return null;
       rids.add(rid);
+    }
+    return new ArrayList<>(rids);
+  }
+
+  /** Sentinel returned by {@link #resolveInRightHandRawValue} for an {@code IN} shape this optimization can't handle at all (a subquery). */
+  private static final Object NOT_A_RESOLVABLE_RID_SHAPE = new Object();
+
+  /**
+   * Shared by {@link #extractRidEqualityOrInList} and {@link #resolveRidEqualityOrInListAtRuntime}:
+   * turns the right-hand side of an {@code @rid IN <right>} condition into the raw bound value,
+   * before it's walked into individual {@link RID}s. Evaluating
+   * {@code in.getRightMathExpression()} can throw (e.g. it references a per-record field, which is
+   * meaningless outside a scan) - deliberately left uncaught here so each caller can apply its own
+   * policy: the build-time caller treats it as "not resolvable at plan time" (falls back to a scan),
+   * the runtime caller lets it propagate as a genuine execution error.
+   */
+  private static Object resolveInRightHandRawValue(final InCondition in, final CommandContext context) {
+    if (in.right instanceof List<?> list) {
+      final List<Object> values = new ArrayList<>(list.size());
+      for (final Object item : list)
+        values.add(item instanceof Expression itemExpr ? extractRidValue(itemExpr, context) : item);
+      return values;
+    }
+    if (in.getRightMathExpression() != null)
+      return in.getRightMathExpression().execute((Result) null, context);
+    if (in.getRightParam() != null)
+      return in.getRightParam().getValue(context.getInputParameters());
+    return NOT_A_RESOLVABLE_RID_SHAPE;
+  }
+
+  /**
+   * Runtime counterpart of {@link #extractRidEqualityOrInList}, called from
+   * {@link FetchFromRidsStep#syncPull} on every pull of a {@code FetchFromRidsStep} built from a
+   * {@code @rid = ?} / {@code @rid IN ?} condition, re-resolving against that execution's own live
+   * {@code context} so the step - and the whole plan - stays safe to reuse from
+   * {@code db.getExecutionPlanCache()} with different bound parameters (issue #5855).
+   * <p>
+   * Unlike the build-time method, there is no scan fallback left once a plan has committed to this
+   * step, so an {@code IN}-list element that fails to resolve to a RID is skipped rather than
+   * aborting the whole result to empty - mirroring what a normal per-record {@code IN} scan does
+   * with a non-RID element (it simply never matches). An exception thrown while evaluating
+   * {@code in.getRightMathExpression()} - the only right-hand shape that can throw here - is a
+   * genuine execution-time error at this point (not "unknowable at plan time" the way it is in the
+   * build-time method) and is left to propagate. {@link #extractRidValue}, used for the equality
+   * operand and each list-literal item, still fails safe to "no match" on any exception in both
+   * this method and the build-time one - unchanged from before this split.
+   */
+  static List<RID> resolveRidEqualityOrInListAtRuntime(final BooleanExpression expr, final CommandContext context) {
+    if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
+        && RID_PROPERTY.equalsIgnoreCase(bc.getLeft().toString())) {
+      final RID rid = extractRidValue(bc.getRight(), context);
+      return rid == null ? List.of() : List.of(rid);
+    }
+
+    if (!(expr instanceof InCondition in) || in.not || !RID_PROPERTY.equalsIgnoreCase(in.getLeft().toString()))
+      return List.of();
+
+    final Object rawValue = resolveInRightHandRawValue(in, context);
+    if (rawValue == NOT_A_RESOLVABLE_RID_SHAPE || rawValue == null)
+      return List.of(); // subquery on the right, or WHERE @rid IN <null>: matches nothing
+
+    // Same dedup rationale as extractRidEqualityOrInList; unresolvable elements are skipped instead
+    // of aborting the whole list, matching how a normal IN scan treats a non-RID element (no match
+    // for that element, not a failure of the whole condition).
+    final Set<RID> rids = new LinkedHashSet<>();
+    if (rawValue instanceof Iterable<?> iterable) {
+      for (final Object item : iterable) {
+        final RID rid = toRid(item, context);
+        if (rid != null)
+          rids.add(rid);
+      }
+    } else {
+      final RID rid = toRid(rawValue, context);
+      if (rid != null)
+        rids.add(rid);
     }
     return new ArrayList<>(rids);
   }
