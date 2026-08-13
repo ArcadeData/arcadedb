@@ -395,22 +395,21 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
   }
 
   /**
-   * The other side of the same run: the records keep growing until they no longer fit their page and spill into
-   * placeholders and chunk chains, whose updates no merge can replay - so on a single-bucket type every one of them
-   * poisons the shared page and the eight threads serialize behind it. Conflicts are EXPECTED here (#6127 item 3, the
-   * re-triage of what used to look like a flake): what the test pins down is that a retry always converges, that the
-   * final content of every record is exactly what was last written, and that the database stays structurally sound.
-   * <p>
-   * Hence the explicit retry budget: the {@code TX_RETRIES} default of 3 is sized for incidental contention, not for
-   * a shape where every write on the page is structurally unmergeable and only one of eight can win a round. #6129
-   * tracks extending the slot merge to those shapes, which is what would make the default enough here.
+   * The other side of the same run: the records keep growing until they no longer fit their page and spill into chunk
+   * chains. This used to be where the merge gave up - the spill and every later update of a chunked record poisoned
+   * the shared page, so on a single-bucket type the eight threads serialized behind it, only one of them won each
+   * round, and a transaction that lost the race retried and spilled again instead of converging (#6127 item 3, the
+   * re-triage of what used to look like a flake). It needed an explicit budget of 50 attempts. Since #6129 the head
+   * chunk of a multi-page record - including the update that creates it - is a tracked slot like any other, so the
+   * {@code TX_RETRIES} DEFAULT is enough: that is what the absence of an {@code attempts} argument below asserts.
+   * What the test still pins down is that the final content of every record is exactly what was last written and that
+   * the database stays structurally sound.
    */
   @Test
   void growingUpdatesUnderContentionKeepTheDatabaseConsistent() throws Exception {
     final int threadCount = 8;
     final int recordsPerThread = 5;
     final int rounds = 8;
-    final int attempts = 50;
 
     final RID[][] owned = new RID[threadCount][recordsPerThread];
     database.transaction(() -> {
@@ -434,8 +433,8 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
               final RID rid = owned[id][i];
               final String payload = payloadOf(id, i, round);
               // What matters is that a retry converges and never corrupts the page. The value depends only on
-              // (thread, record, round), so a retry rewrites exactly the same content.
-              database.transaction(() -> rid.asDocument(true).modify().set("payload", payload).save(), true, attempts);
+              // (thread, record, round), so should a retry be needed it rewrites exactly the same content.
+              database.transaction(() -> rid.asDocument(true).modify().set("payload", payload).save());
             }
         } catch (final Throwable e) {
           errors.add(e);
