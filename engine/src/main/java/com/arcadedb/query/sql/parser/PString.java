@@ -21,12 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class PString extends SimpleNode {
-  public PString(final int id) {
-    super(id);
+  public PString() {
   }
 
   public PString copy() {
-    final PString result = new PString(-1);
+    final PString result = new PString();
     result.value = value;
     return result;
   }

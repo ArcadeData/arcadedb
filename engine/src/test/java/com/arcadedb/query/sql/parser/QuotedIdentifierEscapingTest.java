@@ -42,7 +42,7 @@ class QuotedIdentifierEscapingTest {
   @Test
   void quotedInputIsNotEscapedTwice() {
     // `a\`b` is the SQL spelling of the name a`b - the inner text arrives already escaped and must not be escaped again
-    final Identifier identifier = new Identifier(-1);
+    final Identifier identifier = new Identifier();
     identifier.setQuotedStringValue("`a\\`b`");
 
     assertThat(identifier.getStringValue()).isEqualTo("a`b");

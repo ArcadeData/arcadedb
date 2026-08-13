@@ -14,8 +14,7 @@ public class ExpressionStatement extends SimpleExecStatement {
 
   public Expression expression;
 
-  public ExpressionStatement(int id) {
-    super(id);
+  public ExpressionStatement() {
   }
 
   @Override
@@ -30,7 +29,7 @@ public class ExpressionStatement extends SimpleExecStatement {
 
   @Override
   public Statement copy() {
-    final ExpressionStatement result = new ExpressionStatement(-1);
+    final ExpressionStatement result = new ExpressionStatement();
     result.expression = expression.copy();
     return result;
   }

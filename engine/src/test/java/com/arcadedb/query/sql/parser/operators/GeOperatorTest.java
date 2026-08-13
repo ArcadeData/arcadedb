@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.fail;
 class GeOperatorTest {
   @Test
   void test() {
-    final GeOperator op = new GeOperator(-1);
+    final GeOperator op = new GeOperator();
     assertThat(op.execute(null, 1, 1)).isTrue();
     assertThat(op.execute(null, 1, 0)).isTrue();
     assertThat(op.execute(null, 0, 1)).isFalse();

@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NullSafeEqualsCompareOperatorTest {
   @Test
   void test() {
-    final NullSafeEqualsCompareOperator op = new NullSafeEqualsCompareOperator(-1);
+    final NullSafeEqualsCompareOperator op = new NullSafeEqualsCompareOperator();
 
     assertThat(op.execute(null, null, 1)).isFalse();
     assertThat(op.execute(null, 1, null)).isFalse();

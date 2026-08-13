@@ -38,8 +38,7 @@ public class MatchesCondition extends BooleanExpression {
   public    Expression     rightExpression;
   protected InputParameter rightParam;
 
-  public MatchesCondition(final int id) {
-    super(id);
+  public MatchesCondition() {
   }
 
   @Override
@@ -150,7 +149,7 @@ public class MatchesCondition extends BooleanExpression {
 
   @Override
   public MatchesCondition copy() {
-    final MatchesCondition result = new MatchesCondition(-1);
+    final MatchesCondition result = new MatchesCondition();
     result.expression = expression == null ? null : expression.copy();
     result.right = right;
     result.rightParam = rightParam == null ? null : rightParam.copy();

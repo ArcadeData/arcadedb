@@ -32,8 +32,7 @@ import java.util.Objects;
 public class SleepStatement extends SimpleExecStatement {
   public Expression expression;
 
-  public SleepStatement(final int id) {
-    super(id);
+  public SleepStatement() {
   }
 
   @Override
@@ -67,7 +66,7 @@ public class SleepStatement extends SimpleExecStatement {
 
   @Override
   public SleepStatement copy() {
-    final SleepStatement result = new SleepStatement(-1);
+    final SleepStatement result = new SleepStatement();
     result.expression = expression == null ? null : expression.copy();
     return result;
   }

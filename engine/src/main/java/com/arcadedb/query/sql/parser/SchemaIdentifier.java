@@ -26,8 +26,7 @@ import java.util.Objects;
 public class SchemaIdentifier extends SimpleNode {
   public String name;
 
-  public SchemaIdentifier(final int id) {
-    super(id);
+  public SchemaIdentifier() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -73,7 +72,7 @@ public class SchemaIdentifier extends SimpleNode {
   }
 
   public SchemaIdentifier copy() {
-    final SchemaIdentifier result = new SchemaIdentifier(-1);
+    final SchemaIdentifier result = new SchemaIdentifier();
     result.name = name;
     return result;
   }

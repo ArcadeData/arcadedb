@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EqualsCompareOperatorTest {
   @Test
   void test() {
-    final EqualsCompareOperator op = new EqualsCompareOperator(-1);
+    final EqualsCompareOperator op = new EqualsCompareOperator();
 
     assertThat(op.execute(null, null, 1)).isFalse();
     assertThat(op.execute(null, 1, null)).isFalse();

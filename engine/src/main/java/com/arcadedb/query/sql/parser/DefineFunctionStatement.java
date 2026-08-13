@@ -27,8 +27,7 @@ public class DefineFunctionStatement extends SimpleExecStatement {
   public List<Identifier> parameters;
   public Identifier       language;
 
-  public DefineFunctionStatement(final int id) {
-    super(id);
+  public DefineFunctionStatement() {
   }
 
   @Override
@@ -118,7 +117,7 @@ public class DefineFunctionStatement extends SimpleExecStatement {
 
   @Override
   public DefineFunctionStatement copy() {
-    final DefineFunctionStatement result = new DefineFunctionStatement(-1);
+    final DefineFunctionStatement result = new DefineFunctionStatement();
     result.libraryName = libraryName == null ? null : libraryName.copy();
     result.functionName = functionName == null ? null : functionName.copy();
     result.codeQuoted = codeQuoted;

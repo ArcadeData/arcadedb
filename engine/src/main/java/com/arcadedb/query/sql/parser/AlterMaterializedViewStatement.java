@@ -31,8 +31,7 @@ public class AlterMaterializedViewStatement extends DDLStatement {
   public int refreshInterval;
   public String refreshUnit;
 
-  public AlterMaterializedViewStatement(final int id) {
-    super(id);
+  public AlterMaterializedViewStatement() {
   }
 
   @Override

@@ -45,8 +45,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   protected       Expression                  value;
   public final    Map<Expression, Expression> settings  = new HashMap<>();
 
-  public ExportDatabaseStatement(final int id) {
-    super(id);
+  public ExportDatabaseStatement() {
   }
 
   @Override
@@ -132,7 +131,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public Statement copy() {
-    final ExportDatabaseStatement result = new ExportDatabaseStatement(-1);
+    final ExportDatabaseStatement result = new ExportDatabaseStatement();
     result.url = this.url;
     return result;
   }

@@ -44,8 +44,7 @@ public class FromItem extends SimpleNode {
   public Modifier             modifier;
   public Identifier           alias;
 
-  public FromItem(final int id) {
-    super(id);
+  public FromItem() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -173,7 +172,7 @@ public class FromItem extends SimpleNode {
   }
 
   public FromItem copy() {
-    final FromItem result = new FromItem(-1);
+    final FromItem result = new FromItem();
     if (rids != null) {
       result.rids = rids.stream().map(r -> r.copy()).collect(Collectors.toList());
     }

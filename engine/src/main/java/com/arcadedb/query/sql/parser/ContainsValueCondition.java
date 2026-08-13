@@ -35,8 +35,7 @@ public class ContainsValueCondition extends BooleanExpression {
   protected OrBlock               condition;
   public Expression            expression;
 
-  public ContainsValueCondition(final int id) {
-    super(id);
+  public ContainsValueCondition() {
   }
 
   @Override
@@ -93,7 +92,7 @@ public class ContainsValueCondition extends BooleanExpression {
 
   @Override
   public ContainsValueCondition copy() {
-    final ContainsValueCondition result = new ContainsValueCondition(-1);
+    final ContainsValueCondition result = new ContainsValueCondition();
     result.left = left.copy();
     result.operator = operator;
     result.condition = condition == null ? null : condition.copy();

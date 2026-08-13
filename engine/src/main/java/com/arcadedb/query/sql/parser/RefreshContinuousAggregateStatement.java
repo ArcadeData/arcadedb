@@ -27,8 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 public class RefreshContinuousAggregateStatement extends DDLStatement {
   public Identifier name;
 
-  public RefreshContinuousAggregateStatement(final int id) {
-    super(id);
+  public RefreshContinuousAggregateStatement() {
   }
 
   @Override

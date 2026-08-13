@@ -33,7 +33,7 @@ import java.util.Optional;
  */
 public abstract class BooleanExpression extends SimpleNode {
 
-  public static final BooleanExpression TRUE = new BooleanExpression(0) {
+  public static final BooleanExpression TRUE = new BooleanExpression() {
     @Override
     public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
       return true;
@@ -84,7 +84,7 @@ public abstract class BooleanExpression extends SimpleNode {
     }
   };
 
-  public static final BooleanExpression FALSE = new BooleanExpression(0) {
+  public static final BooleanExpression FALSE = new BooleanExpression() {
     @Override
     public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
       return false;
@@ -135,7 +135,7 @@ public abstract class BooleanExpression extends SimpleNode {
     }
   };
 
-  public static final BooleanExpression NULL = new BooleanExpression(0) {
+  public static final BooleanExpression NULL = new BooleanExpression() {
     @Override
     public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
       return null;
@@ -186,8 +186,7 @@ public abstract class BooleanExpression extends SimpleNode {
     }
   };
 
-  public BooleanExpression(final int id) {
-    super(id);
+  public BooleanExpression() {
   }
 
   public abstract Boolean evaluate(final Identifiable currentRecord, final CommandContext context);
@@ -218,7 +217,7 @@ public abstract class BooleanExpression extends SimpleNode {
     if (item instanceof AndBlock block)
       return block;
 
-    final AndBlock result = new AndBlock(-1);
+    final AndBlock result = new AndBlock();
     result.subBlocks.add(item);
     return result;
   }

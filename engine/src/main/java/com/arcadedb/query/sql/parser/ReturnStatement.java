@@ -34,8 +34,7 @@ import java.util.Objects;
 public class ReturnStatement extends SimpleExecStatement {
   public Expression expression;
 
-  public ReturnStatement(final int id) {
-    super(id);
+  public ReturnStatement() {
   }
 
   @Override
@@ -97,7 +96,7 @@ public class ReturnStatement extends SimpleExecStatement {
 
   @Override
   public ReturnStatement copy() {
-    final ReturnStatement result = new ReturnStatement(-1);
+    final ReturnStatement result = new ReturnStatement();
     result.expression = expression == null ? null : expression.copy();
     return result;
   }

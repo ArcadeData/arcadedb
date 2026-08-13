@@ -35,8 +35,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
   public String     updateModeStr;
   public int        compactionThreshold = -1; // -1 means not set
 
-  public AlterGraphAnalyticalViewStatement(final int id) {
-    super(id);
+  public AlterGraphAnalyticalViewStatement() {
   }
 
   @Override

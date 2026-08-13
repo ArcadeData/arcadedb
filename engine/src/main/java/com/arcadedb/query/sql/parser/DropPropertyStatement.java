@@ -41,8 +41,7 @@ public class DropPropertyStatement extends DDLStatement {
   public boolean    ifExists = false;
   public boolean    force    = false;
 
-  public DropPropertyStatement(final int id) {
-    super(id);
+  public DropPropertyStatement() {
   }
 
   @Override
@@ -115,7 +114,7 @@ public class DropPropertyStatement extends DDLStatement {
 
   @Override
   public DropPropertyStatement copy() {
-    final DropPropertyStatement result = new DropPropertyStatement(-1);
+    final DropPropertyStatement result = new DropPropertyStatement();
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.force = force;

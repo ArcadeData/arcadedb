@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ContainsValueOperatorTest {
   @Test
   void test() {
-    final ContainsValueOperator op = new ContainsValueOperator(-1);
+    final ContainsValueOperator op = new ContainsValueOperator();
 
     assertThat(op.execute(null, null, null)).isFalse();
     assertThat(op.execute(null, null, "foo")).isFalse();

@@ -114,8 +114,8 @@ public class MoveVertexExecutionPlanner {
   }
 
   private void handleSource(final UpdateExecutionPlan result, final CommandContext ctx, final FromItem source) {
-    final SelectStatement sourceStatement = new SelectStatement(-1);
-    sourceStatement.setTarget(new FromClause(-1));
+    final SelectStatement sourceStatement = new SelectStatement();
+    sourceStatement.setTarget(new FromClause());
     sourceStatement.getTarget().setItem(source);
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
     result.chain(new SubQueryStep(planner.createExecutionPlan(ctx, false), ctx, ctx));

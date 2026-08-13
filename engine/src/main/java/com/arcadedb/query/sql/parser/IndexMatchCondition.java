@@ -38,8 +38,7 @@ public class IndexMatchCondition extends BooleanExpression {
   protected List<Expression> leftExpressions;
   protected List<Expression> rightExpressions;
 
-  public IndexMatchCondition(final int id) {
-    super(id);
+  public IndexMatchCondition() {
   }
 
   @Override
@@ -91,7 +90,7 @@ public class IndexMatchCondition extends BooleanExpression {
 
   @Override
   public IndexMatchCondition copy() {
-    final IndexMatchCondition result = new IndexMatchCondition(-1);
+    final IndexMatchCondition result = new IndexMatchCondition();
     result.operator = operator == null ? null : operator.copy();
     result.between = between;
     result.leftExpressions = leftExpressions == null ? null : leftExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());

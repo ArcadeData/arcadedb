@@ -216,7 +216,7 @@ public class UpdateExecutionPlanner {
 
   private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
       final WhereClause whereClause, final Timeout timeout) {
-    final SelectStatement sourceStatement = new SelectStatement(-1);
+    final SelectStatement sourceStatement = new SelectStatement();
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
     if (timeout != null) {

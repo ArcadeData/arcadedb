@@ -34,8 +34,7 @@ public class Json extends SimpleNode {
 
   public List<JsonItem> items = new ArrayList<>();
 
-  public Json(final int id) {
-    super(id);
+  public Json() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -133,7 +132,7 @@ public class Json extends SimpleNode {
 
   public Json splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
     if (isAggregate(context)) {
-      final Json result = new Json(-1);
+      final Json result = new Json();
       for (final JsonItem item : items) {
         result.items.add(item.splitForAggregation(aggregateSplit, context));
       }
@@ -144,7 +143,7 @@ public class Json extends SimpleNode {
   }
 
   public Json copy() {
-    final Json result = new Json(-1);
+    final Json result = new Json();
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

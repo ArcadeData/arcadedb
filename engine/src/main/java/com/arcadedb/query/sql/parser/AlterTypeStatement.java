@@ -58,8 +58,7 @@ public class AlterTypeStatement extends DDLStatement {
   // invalidating ALTER (issue #4087); generic so future settings drop in cleanly.
   public final Map<Identifier, Expression> settings = new LinkedHashMap<>();
 
-  public AlterTypeStatement(final int id) {
-    super(id);
+  public AlterTypeStatement() {
   }
 
   @Override
@@ -91,7 +90,7 @@ public class AlterTypeStatement extends DDLStatement {
   }
 
   public Statement copy() {
-    final AlterTypeStatement result = new AlterTypeStatement(-1);
+    final AlterTypeStatement result = new AlterTypeStatement();
     result.name = name == null ? null : name.copy();
     result.property = property;
     result.identifierListValue = identifierListValue.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -287,7 +286,7 @@ public class AlterTypeStatement extends DDLStatement {
       // {@code REBUILD TYPE <name> WITH repartition = true} as a standalone command (which takes
       // the {@code implicitTx == true} branch and commits in {@code DEFAULT_BATCH_SIZE} chunks),
       // and then issue the bare {@code ALTER TYPE ...} without {@code WITH repartition = true}.
-      final RebuildTypeStatement rebuild = new RebuildTypeStatement(-1);
+      final RebuildTypeStatement rebuild = new RebuildTypeStatement();
       rebuild.typeName = name.copy();
       rebuild.polymorphic = false;
       // try-with-resources: any throw between the open and the explicit close would leak the

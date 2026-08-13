@@ -27,8 +27,7 @@ public class MatchExpression extends SimpleNode {
   protected MatchFilter         origin;
   protected List<MatchPathItem> items = new ArrayList<MatchPathItem>();
 
-  public MatchExpression(final int id) {
-    super(id);
+  public MatchExpression() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -40,7 +39,7 @@ public class MatchExpression extends SimpleNode {
 
   @Override
   public MatchExpression copy() {
-    final MatchExpression result = new MatchExpression(-1);
+    final MatchExpression result = new MatchExpression();
     result.origin = origin == null ? null : origin.copy();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;

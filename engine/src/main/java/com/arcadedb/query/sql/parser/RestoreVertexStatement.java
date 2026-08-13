@@ -64,8 +64,7 @@ public class RestoreVertexStatement extends SimpleExecStatement {
   public Rid        targetRid;
   public InsertBody insertBody;
 
-  public RestoreVertexStatement(final int id) {
-    super(id);
+  public RestoreVertexStatement() {
   }
 
   @Override
@@ -117,7 +116,7 @@ public class RestoreVertexStatement extends SimpleExecStatement {
 
   @Override
   public RestoreVertexStatement copy() {
-    final RestoreVertexStatement result = new RestoreVertexStatement(-1);
+    final RestoreVertexStatement result = new RestoreVertexStatement();
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetRid = targetRid == null ? null : targetRid.copy();
     result.insertBody = insertBody == null ? null : insertBody.copy();

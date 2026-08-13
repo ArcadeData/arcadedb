@@ -68,8 +68,7 @@ public class RebuildIndexStatement extends DDLStatement {
   public               Expression                  value;
   public final         Map<Expression, Expression> settings     = new HashMap<>();
 
-  public RebuildIndexStatement(final int id) {
-    super(id);
+  public RebuildIndexStatement() {
   }
 
   @Override
@@ -463,7 +462,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
   @Override
   public RebuildIndexStatement copy() {
-    final RebuildIndexStatement result = new RebuildIndexStatement(-1);
+    final RebuildIndexStatement result = new RebuildIndexStatement();
     result.all = all;
     result.name = name == null ? null : name.copy();
     return result;

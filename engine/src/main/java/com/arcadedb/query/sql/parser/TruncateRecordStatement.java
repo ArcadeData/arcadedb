@@ -32,8 +32,7 @@ public class TruncateRecordStatement extends SimpleExecStatement {
   public Rid       record;
   public List<Rid> records;
 
-  public TruncateRecordStatement(final int id) {
-    super(id);
+  public TruncateRecordStatement() {
   }
 
   @Override
@@ -89,7 +88,7 @@ public class TruncateRecordStatement extends SimpleExecStatement {
 
   @Override
   public TruncateRecordStatement copy() {
-    final TruncateRecordStatement result = new TruncateRecordStatement(-1);
+    final TruncateRecordStatement result = new TruncateRecordStatement();
     result.record = record == null ? null : record.copy();
     result.records = records == null ? null : records.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;

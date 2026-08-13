@@ -36,8 +36,7 @@ public class ConsoleStatement extends SimpleExecStatement {
   public Identifier logLevel;
   public Expression message;
 
-  public ConsoleStatement(final int id) {
-    super(id);
+  public ConsoleStatement() {
   }
 
   @Override
@@ -80,7 +79,7 @@ public class ConsoleStatement extends SimpleExecStatement {
 
   @Override
   public ConsoleStatement copy() {
-    final ConsoleStatement result = new ConsoleStatement(-1);
+    final ConsoleStatement result = new ConsoleStatement();
     result.logLevel = logLevel == null ? null : logLevel.copy();
     result.message = message == null ? null : message.copy();
     return result;

@@ -23,8 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 
 public class NearOperator extends SimpleNode implements BinaryCompareOperator {
-  public NearOperator(final int id) {
-    super(id);
+  public NearOperator() {
   }
 
   @Override

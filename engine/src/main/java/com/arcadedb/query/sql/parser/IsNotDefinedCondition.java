@@ -30,8 +30,7 @@ import java.util.Map;
 public class IsNotDefinedCondition extends BooleanExpression {
   public Expression expression;
 
-  public IsNotDefinedCondition(final int id) {
-    super(id);
+  public IsNotDefinedCondition() {
   }
 
   @Override
@@ -46,7 +45,7 @@ public class IsNotDefinedCondition extends BooleanExpression {
 
   @Override
   public IsNotDefinedCondition copy() {
-    final IsNotDefinedCondition result = new IsNotDefinedCondition(-1);
+    final IsNotDefinedCondition result = new IsNotDefinedCondition();
     result.expression = expression.copy();
     return result;
   }

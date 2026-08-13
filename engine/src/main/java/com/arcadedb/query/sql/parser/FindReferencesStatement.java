@@ -64,8 +64,7 @@ public class FindReferencesStatement extends SimpleExecStatement {
   protected List<Identifier> classes = new ArrayList<>();
   protected List<Identifier> buckets = new ArrayList<>();
 
-  public FindReferencesStatement(final int id) {
-    super(id);
+  public FindReferencesStatement() {
   }
 
   @Override
@@ -276,7 +275,7 @@ public class FindReferencesStatement extends SimpleExecStatement {
 
   @Override
   public FindReferencesStatement copy() {
-    final FindReferencesStatement out = new FindReferencesStatement(-1);
+    final FindReferencesStatement out = new FindReferencesStatement();
     out.rid = rid == null ? null : rid.copy();
     out.subQuery = subQuery == null ? null : subQuery.copy();
     out.classes = new ArrayList<>(classes);

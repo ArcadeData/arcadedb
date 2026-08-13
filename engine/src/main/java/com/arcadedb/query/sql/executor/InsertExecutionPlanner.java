@@ -110,7 +110,7 @@ public class InsertExecutionPlanner {
     } else if (insertBody.getSetExpressions() != null) {
       final List<UpdateItem> items = new ArrayList<>();
       for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
-        final UpdateItem item = new UpdateItem(-1);
+        final UpdateItem item = new UpdateItem();
         item.setOperator(UpdateItem.OPERATOR_EQ);
         item.setLeft(exp.getLeft().copy());
         item.setRight(exp.getRight().copy());

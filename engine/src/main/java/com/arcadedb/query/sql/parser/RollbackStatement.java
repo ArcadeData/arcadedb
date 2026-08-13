@@ -28,8 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.Map;
 
 public class RollbackStatement extends SimpleExecStatement {
-  public RollbackStatement(final int id) {
-    super(id);
+  public RollbackStatement() {
   }
 
   @Override
@@ -49,7 +48,7 @@ public class RollbackStatement extends SimpleExecStatement {
 
   @Override
   public RollbackStatement copy() {
-    final RollbackStatement result = new RollbackStatement(-1);
+    final RollbackStatement result = new RollbackStatement();
     return result;
   }
 
