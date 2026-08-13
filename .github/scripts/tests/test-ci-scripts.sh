@@ -951,6 +951,12 @@ printf 'not json at all\n' >"$work/broken.sarif"
 expect "rejects a malformed report" 2 "not valid JSON" \
     "$SCRIPTS/filter-meterian-sarif.py" "$work/broken.sarif"
 
+# Well-formed JSON that is not an object gets the same treatment, rather than reaching a .get()
+# on a list and reporting a stack trace where the line above reports a reason.
+printf '[]\n' >"$work/array.sarif"
+expect "rejects well-formed JSON that is not an object" 2 "not valid JSON" \
+    "$SCRIPTS/filter-meterian-sarif.py" "$work/array.sarif"
+
 echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"

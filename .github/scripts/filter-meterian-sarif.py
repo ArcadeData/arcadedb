@@ -115,6 +115,13 @@ def main() -> int:
         print(f"filter-meterian-sarif: {report} is not valid JSON: {error}", file=sys.stderr)
         return 2
 
+    # Well-formed JSON that is not an object at all - a bare array or string - would otherwise
+    # reach doc.get() and raise, which is safe but reports nothing useful. Say the same kind of
+    # thing the decode error above says.
+    if not isinstance(doc, dict):
+        print(f"filter-meterian-sarif: {report} is not valid JSON: expected an object at the top level", file=sys.stderr)
+        return 2
+
     runs = doc.get("runs")
     if not isinstance(runs, list):
         print(f"filter-meterian-sarif: {report} has no runs, nothing to filter")
