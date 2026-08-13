@@ -53,8 +53,10 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -64,6 +66,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -264,33 +267,91 @@ public class SnapshotHttpHandler implements HttpHandler {
 
     final DatabaseInternal db = server.getDatabase(databaseName);
 
-    // Flush pages and hold a read lock to ensure a consistent point-in-time view of database files.
-    // The refcounted suspension (#5068) guarantees ownership of the window; the per-database lock only
-    // serializes same-database reads with the snapshot zip path (see perDatabaseSuspendLock).
+    // Hold a read lock to keep the configuration files still, and serialize with this handler's other entry
+    // point per database (see perDatabaseSuspendLock: only the fallback path below suspends anything, but when
+    // it runs, keeping that window as short as possible still matters).
     final ReentrantLock dbSuspendLock = suspendLockFor(databaseName);
     dbSuspendLock.lock();
     try {
-      db.executeInReadLock(() -> {
-        db.getPageManager().suspendFlushAndExecute(db, () -> {
-          try {
-            final File dbDir = new File(db.getDatabasePath());
-            final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(dbDir);
-            final JSONObject response = new JSONObject();
-            for (final var entry : checksums.entrySet())
-              response.put(entry.getKey(), entry.getValue());
-
-            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-            exchange.getResponseSender().send(response.toString());
-          } catch (final Exception e) {
-            exchange.setStatusCode(500);
-            exchange.getResponseSender().send("Error computing checksums: " + e.getMessage());
-          }
-        });
-        return null;
-      });
+      final JSONObject response = computeChecksums(db);
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+      exchange.getResponseSender().send(response.toString());
+    } catch (final Exception e) {
+      exchange.setStatusCode(500);
+      exchange.getResponseSender().send("Error computing checksums: " + e.getMessage());
     } finally {
       dbSuspendLock.unlock();
     }
+  }
+
+  /**
+   * Builds the {@code /checksums} response, reading the page files through a point-in-time window (#6116).
+   * <p>
+   * This endpoint was the last reader in the product still freezing the data files with
+   * {@code suspendFlushAndExecute} after #6075 migrated the backup, the HA verify and the HA snapshot ship: it
+   * reads the database DIRECTORY rather than the registered page files, so it needed the directory-oriented shape
+   * of {@link SnapshotManager#computeFileChecksums(File, PageSnapshot, Collection)} rather than the verify
+   * handler's file-list one. It is a rarely called diagnostic, but on a large database it reads every byte of
+   * every file, so on the old path it throttled the leader's committers for its whole duration.
+   * <p>
+   * Falls back to the suspension exactly as the other consumers do: a window that cannot be opened must degrade to
+   * a slower answer, never to no answer. Package-private so the two paths can be driven from a test without an
+   * HTTP exchange.
+   */
+  JSONObject computeChecksums(final DatabaseInternal db) {
+    final JSONObject response = new JSONObject();
+    final File dbDir = new File(db.getDatabasePath());
+
+    db.executeInReadLock(() -> {
+      if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
+        try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir, snapshot, registeredPageFileNames(db)));
+          return null;
+        } catch (final PageSnapshotException e) {
+          // THE WINDOW LOST ITS POINT IN TIME (SHADOW CAP BREACH, I/O ERROR): NOTHING HAS BEEN PUT IN THE RESPONSE
+          // YET - computeFileChecksums BUILDS THE WHOLE MAP BEFORE IT RETURNS - SO THE FALLBACK BELOW CANNOT MIX
+          // SNAPSHOT AND LIVE CHECKSUMS
+          LogManager.instance().log(this, Level.WARNING,
+              "Point-in-time snapshot unusable for the checksums of database '%s' (%s): falling back to suspending the page flush",
+              null, db.getName(), e.getMessage());
+        }
+      }
+
+      // suspendFlushAndExecute LOGS AND SWALLOWS WHATEVER THE CALLBACK THROWS, SO A FAILURE INSIDE IT WOULD OTHERWISE
+      // LEAVE THIS METHOD RETURNING AN EMPTY MAP WITH A 200 - A CALLER COMPARING CHECKSUMS WOULD READ THAT AS
+      // "EVERY FILE MATCHES". CARRIED OUT AND RETHROWN SO THE HANDLER STILL ANSWERS 500
+      final AtomicReference<Exception> failure = new AtomicReference<>();
+      db.getPageManager().suspendFlushAndExecute(db, () -> {
+        try {
+          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir));
+        } catch (final Exception e) {
+          failure.set(e);
+        }
+      });
+      if (failure.get() != null)
+        throw failure.get();
+      return null;
+    });
+
+    return response;
+  }
+
+  private static void putChecksums(final JSONObject response, final Map<String, Long> checksums) {
+    for (final Map.Entry<String, Long> entry : checksums.entrySet())
+      response.put(entry.getKey(), entry.getValue());
+  }
+
+  /**
+   * Names of the page files the FileManager currently has registered. Used to tell a page file created after the
+   * snapshot's t0 - which has no point-in-time content and is therefore left out - from the config and time-series
+   * files the window never covered, which are still read raw.
+   */
+  private static Collection<String> registeredPageFileNames(final DatabaseInternal db) {
+    final Set<String> names = new HashSet<>();
+    for (final ComponentFile file : db.getFileManager().getFiles())
+      if (file != null)
+        names.add(file.getFileName());
+    return names;
   }
 
   /**
