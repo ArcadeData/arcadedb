@@ -71,7 +71,7 @@ class Issue5152CountRecomputeRaceTest extends TestHelper {
   }
 
   private LocalBucket bucket() {
-    final Bucket b = database.getSchema().getType("Doc").getBuckets(false).getFirst();
+    final Bucket b = database.getSchema().getType("Doc").getBuckets(false).get(0);
     return (LocalBucket) b;
   }
 
