@@ -54,11 +54,10 @@ import java.util.stream.Stream;
  * CALL functionName() YIELD result
  * </pre>
  * <p>
- * Maps Cypher procedure names to ArcadeDB SQL functions:
- * - db.labels() -> returns all type names
- * - db.relationshipTypes() -> returns all edge type names
- * - db.propertyKeys() -> returns all property keys
- * - Any SQL function can be called directly
+ * Resolution order: registered {@link CypherProcedure} (built-in Neo4j-compatible procedures like
+ * {@code db.labels()} and {@code merge.node()} are registered here too, see {@link CypherProcedureRegistry}),
+ * then a registered {@link StatelessFunction}, then a {@code DEFINE FUNCTION} library function, then any
+ * ArcadeDB SQL function.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

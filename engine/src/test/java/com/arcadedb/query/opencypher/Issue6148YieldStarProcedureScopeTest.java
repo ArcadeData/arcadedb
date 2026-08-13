@@ -19,11 +19,14 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6148: {@code CALL proc() YIELD *} never put any of the procedure's yielded output names into scope, so a
@@ -104,5 +107,24 @@ class Issue6148YieldStarProcedureScopeTest extends TestHelper {
     try (final ResultSet rs = database.query("opencypher", "CALL db.schema.visualization() YIELD * RETURN name, type, properties")) {
       assertThat(rs.hasNext()).isTrue();
     }
+  }
+
+  /**
+   * A custom {@code DEFINE FUNCTION} has no statically declared output signature - unlike a registered
+   * {@link com.arcadedb.query.opencypher.procedures.CypherProcedure}, {@code CypherProcedureRegistry} does not know
+   * it at all, so {@code resolveYieldAllFieldNames} returns {@code null} for it. This pins down that an unresolvable
+   * {@code YIELD *} keeps exactly today's (pre-fix) behavior instead of the fix guessing at a shape it cannot know.
+   */
+  @Test
+  void yieldStarOnAnUnresolvableProcedureNameKeepsPriorBehavior() {
+    database.command("sql", "DEFINE FUNCTION math.double \"SELECT :x * 2\" PARAMETERS [x] LANGUAGE sql");
+
+    assertThatThrownBy(() -> database.query("opencypher", "CALL math.double(4) YIELD * RETURN value").close())
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("UndefinedVariable");
+
+    assertThatThrownBy(() -> database.query("opencypher", "CALL math.double(4) YIELD * RETURN *").close())
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("NoVariablesInScope");
   }
 }
