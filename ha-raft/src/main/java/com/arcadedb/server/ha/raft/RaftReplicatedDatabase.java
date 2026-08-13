@@ -196,12 +196,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     /** Raw bytes of WAL currently sitting in {@link #schemaWalBuffer}. */
     private long                       bufferedBytes;
     /**
-     * Files an instalment already told the followers to create, so the final entry neither re-ships them nor
-     * forgets to retire one that the session went on to drop - {@code FileManager.dropFile} CANCELS the recorded
-     * create when both happen inside one session, which would otherwise leave the file on the followers only.
+     * Files an instalment told the followers to create - or MAY have, see the increment site - so the final entry
+     * neither re-ships them nor forgets to retire one that the session went on to drop:
+     * {@code FileManager.dropFile} CANCELS the recorded create when both happen inside one session, which would
+     * otherwise leave the file on the followers only.
      */
     private final Map<Integer, String> shippedFiles = new LinkedHashMap<>();
-    /** How many instalments went out; the final entry is unconditional once this is non-zero. */
+    /**
+     * How many instalments were STARTED; the final entry is unconditional once this is non-zero. Counted before
+     * the entry is submitted rather than after, for the reason given at the increment: an instalment over the cap
+     * is several entries, and a failure part-way through one still leaves the followers holding what its first
+     * chunk created.
+     */
     private int                        instalments;
 
   }
@@ -1826,17 +1832,28 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
     final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
 
-    // Drained only after the entry is committed: a failed instalment leaves the buffer holding the ONLY copy of
-    // those pages that can reach a follower, so clearing first would turn a replication error into silent
-    // divergence - the failure mode this whole code path exists to avoid.
-    broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
-
-    schemaWalBuffer.get().clear();
-    schemaBucketDeltaBuffer.get().clear();
-    state.bufferedBytes = 0;
+    // ANNOUNCED BEFORE IT IS SENT, and deliberately so. replicateSchemaInstalment is not one entry: an instalment
+    // that overshoots the cap - which the SOFT threshold makes reachable, since it is tested between buffered
+    // commits and one batch can carry more than the whole budget - goes through splitSchemaEntry and becomes
+    // several submitAndWait calls, the FIRST of which carries the file creations. A failure on a later chunk would
+    // then leave the followers holding files this bookkeeping had never recorded, so retireAbandonedInstalments
+    // would not know to retire them, and on a first instalment it would not even log, having seen no instalment at
+    // all. Recording the intent first makes the bookkeeping pessimistic: it says "the followers MAY hold these",
+    // which is what a compensation needs. Over-retiring costs nothing - the follower's FileManager.dropFile
+    // no-ops on a file id it does not have.
     state.shippedFiles.putAll(newFiles);
     ++state.instalments;
     schemaInstalmentsShipped.incrementAndGet();
+
+    broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
+
+    // The WAL buffer, by contrast, is drained only AFTER the entry is committed: it holds the ONLY copy of those
+    // pages that can reach a follower, so clearing it before a failure would turn a replication error into silent
+    // divergence - the failure mode this whole code path exists to avoid. The two orders are opposite because the
+    // two risks are: announcing too much costs a no-op removal, forgetting WAL costs a diverged follower.
+    schemaWalBuffer.get().clear();
+    schemaBucketDeltaBuffer.get().clear();
+    state.bufferedBytes = 0;
 
     HALog.log(this, HALog.DETAILED,
         "Schema WAL instalment %d for database '%s' shipped: newFiles=%d, walEntries=%d",

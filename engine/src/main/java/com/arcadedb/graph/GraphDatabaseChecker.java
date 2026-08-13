@@ -710,24 +710,6 @@ public class GraphDatabaseChecker {
   }
 
   /**
-   * Drops the unreadable chains the scan decided to rebuild (issue #6136, item 2). Every {@link #resetChain} call
-   * site used to do this from inside the {@code scanType} callback, one vertex record write per damaged chain and
-   * none of them inside the page budget; every one of those sites ALSO registered its vertex in one of the two
-   * reconnect sets, so those sets already were the complete list and deferring the write needs no new state.
-   * <p>
-   * Deferring it changes what the REST of the scan observes about an already-visited vertex, and the two places
-   * that can see the difference both improve: a far vertex whose list is unreadable answers the
-   * {@code isConnectedTo} probe with an exception instead of a silent empty list, and the probe's handler already
-   * treats that as "register it for a rebuild" (the set membership test that follows is what decides, and it is
-   * unchanged); and the "current vertex points at ANOTHER vertex's list" test at the head-chunk comparison now
-   * sees the shared chunk it is looking for rather than the {@code null} an earlier reset had already written,
-   * which is the case that test exists to catch.
-   * <p>
-   * A vertex registered for BOTH directions is loaded and saved twice. Left as two passes rather than merged
-   * through a union map: the second load reads the first one's uncommitted image, so both nulls survive, and the
-   * two writes land on the same page - the merge would buy a map allocation and no page.
-   */
-  /**
    * Plans one back-reference, unless this walk of THIS list already planned one for the same edge (issue #6136).
    * <p>
    * The de-duplication is needed because the repair is deferred: the {@code isConnectedTo} probe that used to
@@ -753,6 +735,24 @@ public class GraphDatabaseChecker {
     return seen;
   }
 
+  /**
+   * Drops the unreadable chains the scan decided to rebuild (issue #6136, item 2). Every {@link #resetChain} call
+   * site used to do this from inside the {@code scanType} callback, one vertex record write per damaged chain and
+   * none of them inside the page budget; every one of those sites ALSO registered its vertex in one of the two
+   * reconnect sets, so those sets already were the complete list and deferring the write needs no new state.
+   * <p>
+   * Deferring it changes what the REST of the scan observes about an already-visited vertex, and the two places
+   * that can see the difference both improve: a far vertex whose list is unreadable answers the
+   * {@code isConnectedTo} probe with an exception instead of a silent empty list, and the probe's handler already
+   * treats that as "register it for a rebuild" (the set membership test that follows is what decides, and it is
+   * unchanged); and the "current vertex points at ANOTHER vertex's list" test at the head-chunk comparison now
+   * sees the shared chunk it is looking for rather than the {@code null} an earlier reset had already written,
+   * which is the case that test exists to catch.
+   * <p>
+   * A vertex registered for BOTH directions is loaded and saved twice. Left as two passes rather than merged
+   * through a union map: the second load reads the first one's uncommitted image, so both nulls survive, and the
+   * two writes land on the same page - the merge would buy a map allocation and no page.
+   */
   private void applyPendingChainResets(final RepairPlan plan, final CheckReport report) {
     for (final RID rid : plan.reconnectOutEdges)
       resetChain(rid, Vertex.DIRECTION.OUT, report);
