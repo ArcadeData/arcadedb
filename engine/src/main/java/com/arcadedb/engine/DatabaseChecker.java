@@ -530,8 +530,14 @@ public class DatabaseChecker {
   }
 
   /**
-   * Removes the records this pass flagged corrupted, counting them into {@code autoFix} exactly as
-   * {@code GraphDatabaseChecker}'s vertex and edge arms count theirs.
+   * Removes the records this pass flagged corrupted, counting them into {@code autoFix}.
+   * <p>
+   * NOT quite what {@code GraphDatabaseChecker}'s vertex and edge arms count, and the difference is deliberate:
+   * they call {@code autoFix.incrementAndGet()} BEFORE attempting the delete, so a record they then fail to remove
+   * is still reported as fixed. This one counts a repair only once the delete and its counter delta have both
+   * succeeded, and counts nothing for a record that was already gone. If the two are ever unified, unify them
+   * towards THIS one: {@code autoFix} is what an operator reads to decide whether the run did anything, and a
+   * number that includes failed deletes cannot answer that.
    * <p>
    * This is not merely tidiness, and it is not optional. A corrupted record's RID goes into
    * {@code corruptedRecords}, which is what {@link #check()} turns into {@code affectedBuckets}, and every index on
