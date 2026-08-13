@@ -69,10 +69,10 @@ class Issue5505BoundRidCollectionTargetTest extends TestHelper {
     database.transaction(() -> {
       final List<RID> seeds = createChain();
 
-      final ResultSet result = database.query("sql", "SELECT FROM :seeds", Map.of("seeds", List.of(seeds.getFirst())));
+      final ResultSet result = database.query("sql", "SELECT FROM :seeds", Map.of("seeds", List.of(seeds.get(0))));
 
       final Set<RID> returned = collectRids(result);
-      assertThat(returned).containsExactly(seeds.getFirst());
+      assertThat(returned).containsExactly(seeds.get(0));
     });
   }
 
