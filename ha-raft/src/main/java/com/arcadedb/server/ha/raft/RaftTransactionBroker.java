@@ -126,6 +126,41 @@ public class RaftTransactionBroker {
   }
 
   /**
+   * Ships ONE intermediate instalment of a schema change that is still being produced (issue #6136).
+   * <p>
+   * {@link #splitSchemaEntry} splits a payload that has already been built in full; this is the same ordered-prefix
+   * contract applied to a payload that is still growing. The producer is
+   * {@code RaftReplicatedDatabase.flushSchemaWalBufferIfFull}: an index rebuild inside a {@code recordFileChanges}
+   * callback commits once per build batch, and every one of those commits used to sit in leader heap until the
+   * callback returned, so peak heap was the whole rebuilt index.
+   * <p>
+   * The instalment carries the newly created files (so they exist before any page lands in them) and WAL, and
+   * NOTHING that publishes: no schema JSON, no {@code filesToRemove}, no sealed blobs. Every chunk it produces is
+   * marked {@code moreChunksFollow}, INCLUDING the last one - the session's own final entry is the only thing that
+   * publishes, and a follower that reloaded its schema here would do it from a half-delivered state, which #5443
+   * showed to be sticky rather than merely wasteful. A leader that dies between instalments therefore leaves its
+   * followers holding unreferenced bytes, which is the same state a failure part-way through
+   * {@link #splitSchemaEntry} leaves.
+   */
+  public void replicateSchemaInstalment(final String dbName, final Map<Integer, String> filesToAdd,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
+    final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, "", filesToAdd, Collections.emptyMap(),
+        walEntries, bucketDeltas, Collections.emptyList(), true);
+
+    final long cap = groupCommitter.maxEntrySize();
+    if (entry.size() <= cap) {
+      groupCommitter.submitAndWait(entry.toByteArray());
+      return;
+    }
+
+    // The instalment threshold is a soft one - it is tested BETWEEN buffered commits, so one very large batch can
+    // overshoot it - and the cap is hard, so the splitter still has to be reachable from here.
+    for (final ByteString chunk : splitSchemaEntry(dbName, "", filesToAdd, Collections.emptyMap(), walEntries,
+        bucketDeltas, Collections.emptyList(), cap, entry.size(), true))
+      groupCommitter.submitAndWait(chunk.toByteArray());
+  }
+
+  /**
    * Splits a schema change that does not fit one Raft entry into an ordered sequence of
    * {@code SCHEMA_ENTRY} entries (issue #4743).
    * <p>
@@ -156,6 +191,21 @@ public class RaftTransactionBroker {
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs, final long cap, final int singleEntrySize) {
+    return splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs,
+        cap, singleEntrySize, false);
+  }
+
+  /**
+   * @param moreAfterLast when true the LAST chunk is marked {@code moreChunksFollow} as well, because these chunks
+   *                      are one instalment of a change that is still being produced and nothing here publishes it -
+   *                      see {@link #replicateSchemaInstalment}.
+   */
+  // @VisibleForTesting
+  static List<ByteString> splitSchemaEntry(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs, final long cap, final int singleEntrySize,
+      final boolean moreAfterLast) {
 
     // Worst-case non-WAL payload: the first entry carries filesToAdd, the last one the schema JSON,
     // filesToRemove and the sealed blobs. Measured by encoding both headers with no WAL at all.
@@ -223,7 +273,7 @@ public class RaftTransactionBroker {
           last ? filesToRemove : Collections.emptyMap(),
           walGroups.get(g), deltaGroups.get(g),
           last ? sealedFileBlobs : Collections.emptyList(),
-          !last);
+          !last || moreAfterLast);
 
       if (chunk.size() > cap)
         // A single WAL entry (or the header plus one WAL entry) still does not fit. Fail loudly rather
@@ -246,6 +296,19 @@ public class RaftTransactionBroker {
    */
   long maxEntrySize() {
     return groupCommitter.maxEntrySize();
+  }
+
+  /**
+   * How much RAW payload a producer should accumulate before shipping it, for the two that build their WAL
+   * incrementally: {@code runWithCompactionReplication}, which chunks a compacted file as it serializes it, and
+   * {@code flushSchemaWalBufferIfFull}, which ships a schema session's buffered WAL in instalments (#6136).
+   * <p>
+   * Half the entry cap, so a chunk still fits after the per-WAL framing and the header the codec adds, with the
+   * floor keeping it usable when the cap is configured very small in a test. Shared rather than written twice
+   * because the two producers must not drift apart if the policy is ever retuned.
+   */
+  long walChunkBudget() {
+    return Math.max(1024L, maxEntrySize() / 2);
   }
 
   /**

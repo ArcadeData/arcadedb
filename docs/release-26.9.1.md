@@ -1168,3 +1168,117 @@ torn across two instants. Incremental resync belongs at the **page** level, on t
 operator diagnostic.
 
 [#6125](https://github.com/ArcadeData/arcadedb/issues/6125)
+
+## `CHECK DATABASE FIX`: the last two unbounded repair paths, and what the numbers it reports mean (#6136)
+
+#6131 bounded the repair transaction a `CHECK DATABASE ... FIX` builds, committing every
+`arcadedb.checkDatabaseRepairBatchPages` dirtied pages so that a large repair on a replicated database no longer
+runs for hours and then dies whole at the commit with `ReplicatedEntryTooLargeException`. It deliberately reached
+only the post-scan loops. These are the two paths it did not, plus the reporting the split made necessary.
+
+### The index rebuild no longer buffers its whole WAL in leader heap
+
+`BucketIndexBuilder.create()` wraps an index build in `schema.recordFileChanges(...)`, which on a Raft leader marks
+the thread so that `commit()` **buffers** instead of replicating: the files being created do not exist on the
+followers yet, so a `TX_ENTRY` referring to them would have its pages silently dropped there. `LSMTreeIndex.build()`
+then commits once per `IndexBuilder.BUILD_BATCH_SIZE` (5000) records, and every one of those WAL images stayed
+resident until the callback returned. Peak leader heap was therefore roughly the whole rebuilt index, plus a repeat
+of every page more than one batch touched - on the node that is, by construction, the cluster's leader. A
+`CHECK DATABASE FIX` over a large damaged type drops and rebuilds every index on the affected buckets, which is
+exactly that shape.
+
+The buffer is now shipped in ordered **instalments** as it fills, so leader heap is bounded by the threshold rather
+than by the size of the index. Nothing new goes on the wire: this is the ordered-prefix sequence `splitSchemaEntry`
+has produced since #4743, emitted as the payload is produced rather than after it has been built in full. Files
+first, so pages have somewhere to land; WAL in the middle; and the fields that *publish* the change - the schema
+JSON and the files to retire - only in the session's final entry. Every prefix a follower can be left holding is
+therefore self-consistent, and a partially written new file is unreferenced bytes until the last entry publishes
+it. Followers need no new code, because that sequence is the one they already receive.
+
+The one difference from a `splitSchemaEntry` split carries the whole safety argument: the last chunk of an
+instalment is still marked `moreChunksFollow`, because an instalment is not the end of the change. A follower that
+mistook it for a publication would reload its schema from a half-delivered state, and #5443 measured what that
+costs - the reload detaches a compacted sub-index it cannot resolve yet, the later real publication reuses the same
+in-memory component, and the follower serves only its mutable pages from then on, silently and permanently.
+
+The threshold is derived rather than configured: half the maximum replicated entry size, the same expression the
+compaction path already uses for its own chunk budget. Lowering `arcadedb.ha.appendBufferSize` lowers it too, and
+that is worth knowing before tuning it down: a smaller buffer means more instalments per rebuild, and therefore more
+quorum round trips taken under the write lock (see below).
+
+**What it costs**, stated precisely because it is a trade and not only a heap win. The recording session stays open
+for the whole build, so a concurrent writer on the leader still waits on it - and, before that, on the database write
+lock the callback holds. Bounding the heap does not shorten that window, and each instalment *lengthens* it: a quorum
+round trip is now taken while that write lock is held, where the single final entry had always been submitted after
+the callback returned and the lock was released. Normally that is milliseconds against a build measured in minutes;
+against a slow or briefly partitioned quorum member it is up to `arcadedb.ha.quorumTimeout` per instalment, and the
+whole database's writers wait it out. Accepted, because the alternative is not "no round trips" - without instalments
+the one final entry carries the whole index, `splitSchemaEntry` splits it, and the same number of round trips happens
+anyway, after the lock but only once the leader has held the entire rebuilt index in heap. Making the window itself
+shorter means taking the build out of the recording session altogether, which is a different change on the same code
+path.
+
+**If the build fails after an instalment has shipped**, the followers are holding files and pages that the entry
+which would have published or retired them never reaches, because it lives after the line that threw - and every
+instalment chunk is marked `moreChunksFollow`, so there is no abandonment signal a follower could act on by itself.
+The session now sends a compensating removal, and *which* files it retires is the whole correctness of it: one the
+leader no longer has is retired (the case `BucketIndexBuilder.create()` produces, since it drops the half-built index
+from its own error handler), while one the leader still has is left alone and reported, because retiring that would
+take a state both sides agree on and make them disagree.
+
+### The in-scan repairs are bounded too
+
+Two repairs used to write from *inside* the vertex scan, where nothing can commit: `LocalDatabase.scanType` holds
+the database read lock for the length of the scan, and the chunk iterator being walked would not survive a commit
+taken under it.
+
+- the back-reference fix-up - one write to a **far** vertex per edge found "not connected from the other side",
+  each able to allocate a fresh edge-list chunk;
+- `resetChain`, which drops an unreadable adjacency chain so it can be rebuilt from the surviving edge records.
+
+Both are now *planned* during the scan and applied after it, through the same page budget as everything else. The
+chain resets needed no new state at all: every `resetChain` call site already registered its vertex in one of the
+two reconnect sets, so those sets were the complete list. The back-reference fix-up accumulates three RIDs per
+defective edge in flat `int[]`/`long[]` arrays - and the `ArrayList<Edge>` the chain rebuild used to fill, which
+held a fully materialised record per entry, was replaced by the same structure.
+
+One in-scan write remains and is named rather than implied: the iterator `remove()` that prunes a dangling
+adjacency entry. It is not deferrable the way the others were - the removal is made through the chunk iterator's
+live position, and replaying it afterwards would turn a linear pass into a quadratic one - and it is the mildest of
+the three, rewriting a chunk page the walk is already reading and never allocating one.
+
+### `autoFix` now comes with a breakdown
+
+`autoFix` is a count of repair **actions**, not of corruption instances: after #6131 it is records deleted plus
+dangling adjacency entries pruned, so one edge that is both listed in a chain and corrupt as a record contributes
+two. A rebuilt chain, meanwhile, contributed nothing at all and was visible only in the warnings. The one number an
+operator reads to decide whether a run did anything was a mixture of three repair kinds with different weights, one
+of them invisible.
+
+`autoFix` keeps its meaning - existing readers and existing expectations depend on it - and the result now also
+carries `removedRecords`, `prunedDanglingEntries` and `reconnectedEdges`. The first two sum to `autoFix`; the third
+is deliberately not in that sum, since folding a rebuilt chain in would change every number a current run reports.
+All three are always present, zero included. The first is named `removedRecords` rather than `deletedRecords`
+because the result already carries `totalDeletedRecords` - records found in the DELETED state by the bucket scan,
+nothing to do with repair - and a key one word away from it would read as its non-total sibling.
+
+**One key pair is gone, which is a non-additive change to that map.** `GraphDatabaseChecker.checkVertices` used to
+put the `List<Edge>` of reconnected edges under `outEdgesToReconnect`/`inEdgesToReconnect`; both keys are removed
+and `reconnectedEdges` carries the count instead. Nothing in the repository read them, and they never reached the
+`CHECK DATABASE` command result at all - `DatabaseChecker.updateStats` folds only `Long` values - so an operator
+reading the SQL output never saw them. Only a caller invoking `checkVertices` directly as an API could have, and
+holding a fully materialised `Edge` per reconnected entry was one of the unbounded-heap sources this change exists
+to remove, so they are not coming back.
+
+### The transaction-nesting headroom, measured rather than assumed
+
+#6136 also reported the FIX path as sitting exactly on `DatabaseContext`'s hardcoded limit of 3 nested
+transactions - the HTTP handler's, the arm's own, and the repair batch's - leaving no headroom. It does not.
+`CheckDatabaseStatement.executeSimple` opens by rolling the caller's transaction back, so the handler's level is
+released before the check starts; the arms' `begin()` then finds the last context inactive and reuses it rather
+than pushing; and the repair batch commits and re-begins at that same level. The path runs at **one** level with
+two to spare, and is now pinned both by sampling the depth it reaches and by running it under a cap of 1, so that a
+future change adding a level arrives as a red build naming the cap rather than as a `TransactionException` in a
+repair someone is running against a damaged production database.
+
+[#6136](https://github.com/ArcadeData/arcadedb/issues/6136)

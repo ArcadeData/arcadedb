@@ -1302,7 +1302,11 @@ public enum GlobalConfiguration {
       ones (binary blobs, base64, encrypted fields, float vectors) map roughly 1:1. Raise it when single \
       transactions or records are bigger than the default, and raise arcadedb.ha.writeBufferSize with it \
       (it must stay >= this value + 8 bytes). Cost of raising it: a directly-allocated write buffer of \
-      writeBufferSize per server, plus up to this many bytes of heap per follower appender during catch-up.""",
+      writeBufferSize per server, plus up to this many bytes of heap per follower appender during catch-up. \
+      Cost of LOWERING it (issue #6136): an index rebuild ships its WAL to the followers in instalments of half \
+      this size, and each instalment is a quorum round trip taken while the database write lock is held, so a \
+      smaller value means more round trips and a longer window in which every writer on that database waits - \
+      up to arcadedb.ha.quorumTimeout per instalment if a quorum member is slow or briefly partitioned.""",
       String.class, "32MB"),
 
   HA_APPEND_ELEMENT_LIMIT("arcadedb.ha.appendElementLimit", SCOPE.SERVER,
