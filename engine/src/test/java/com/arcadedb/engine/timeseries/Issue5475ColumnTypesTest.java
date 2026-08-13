@@ -115,12 +115,12 @@ class Issue5475ColumnTypesTest extends TestHelper {
       final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType(typeName)).getEngine();
       engine.appendSamples(new long[] { BASE_TS }, new Object[] { value });
 
-      final Object mutable = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst()[1];
+      final Object mutable = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0)[1];
       assertThat(mutable).as("%s from the mutable layer", declared).isInstanceOf(expected).isEqualTo(value);
 
       engine.compactAll();
 
-      final Object sealed = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst()[1];
+      final Object sealed = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0)[1];
       assertThat(sealed).as("%s from the sealed layer", declared).isInstanceOf(expected).isEqualTo(value);
     }
   }
@@ -383,14 +383,14 @@ class Issue5475ColumnTypesTest extends TestHelper {
     engine.appendSamples(new long[] { BASE_TS },
         new Object[] { null }, new Object[] { null }, new Object[] { 7.5d });
 
-    final Object[] mutable = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst();
+    final Object[] mutable = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0);
     assertThat(mutable[1]).isEqualTo(0L);
     assertThat(mutable[2]).isEqualTo(Boolean.FALSE);
     assertThat(mutable[3]).isEqualTo(7.5d);
 
     engine.compactAll();
 
-    final Object[] sealed = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst();
+    final Object[] sealed = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0);
     assertThat(sealed[1]).isEqualTo(0L);
     assertThat(sealed[2]).isEqualTo(Boolean.FALSE);
     assertThat(sealed[3]).isEqualTo(7.5d);

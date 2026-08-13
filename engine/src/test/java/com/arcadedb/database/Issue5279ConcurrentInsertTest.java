@@ -124,7 +124,7 @@ class Issue5279ConcurrentInsertTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(committed.get()).isEqualTo(concurrentIntent);
 
@@ -183,7 +183,7 @@ class Issue5279ConcurrentInsertTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     // Before the fix this was ~1750 of 2000. The tolerance covers only the unavoidable residue: the transaction
     // that happens to be re-placing its record exactly when a page fills up can still lose the race and retry.
@@ -257,7 +257,7 @@ class Issue5279ConcurrentInsertTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     final int cases = threadCount * casesPerThread - conflicts.get();
     database.transaction(() -> {

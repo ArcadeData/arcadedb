@@ -150,8 +150,8 @@ class RidScoreMinHeapTest {
     final List<RidScore> out = new ArrayList<>();
     heap.drainInto(out);
     assertThat(out).hasSize(1);
-    assertThat(out.getFirst().score()).isEqualTo(2.0f);
-    assertThat(out.getFirst().rid()).isEqualTo(new RID(1, 3));
+    assertThat(out.get(0).score()).isEqualTo(2.0f);
+    assertThat(out.get(0).rid()).isEqualTo(new RID(1, 3));
   }
 
   /** The backing arrays start small and grow on demand, so a large unfilled K costs nothing. */

@@ -107,7 +107,7 @@ class ArcadeStateMachineDeferredDropTest {
           .filter(p -> p.getFileName().toString().startsWith(DeferredDatabaseDeleter.STAGING_PREFIX))
           .toList();
       assertThat(staged).as("exactly one staging directory expected").hasSize(1);
-      return staged.getFirst();
+      return staged.get(0);
     }
   }
 
