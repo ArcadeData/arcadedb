@@ -185,6 +185,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile PeerAddressAllowlistFilter allowlistFilter;
   private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
+  // Upper bound on a single applyNotifier.wait(...) call before the loop re-checks the apply-index
+  // condition on its own, even without an intervening notifyApplied() call. notifyApplied() has a
+  // single call site (ArcadeStateMachine.applyTransaction()); any other path that advances the
+  // applied index - reinitialize() after a snapshot install and notifyInstallSnapshotFromLeader() are
+  // the two known ones (issue #5846) - now also calls notifyApplied() explicitly, but that call graph
+  // is not enforced by the compiler. This bound caps the cost of a future missed notification at this
+  // interval instead of the full quorumTimeout.
+  private static final long                  APPLY_WAIT_RECHECK_INTERVAL_MS = 1000L;
   private          RaftClusterManager        clusterManager;
   private final    Object                    recoveryLock          = new Object();
   private volatile boolean                   shutdownRequested     = false;
@@ -2087,6 +2095,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     clusterManager.leaveCluster(force);
   }
 
+  /**
+   * Wakes every thread blocked in {@link #waitForAppliedIndex(long, boolean)} or
+   * {@link #waitForLocalApply()} so they can re-check whether their target index has been reached.
+   * Must be called by every code path that advances the local applied index, not only
+   * {@link ArcadeStateMachine#applyTransaction}: {@link ArcadeStateMachine#reinitialize()} and
+   * {@link ArcadeStateMachine#notifyInstallSnapshotFromLeader} both seed the index directly after a
+   * snapshot install and call this too (issue #5846 - a snapshot install used to advance the index
+   * silently, leaving waiters blocked until {@link #quorumTimeout} even though their target was
+   * already reached).
+   */
   public void notifyApplied() {
     synchronized (applyNotifier) {
       applyNotifier.notifyAll();
@@ -2140,7 +2158,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
                 getLastAppliedIndex(), targetIndex);
             return;
           }
-          applyNotifier.wait(remaining);
+          applyNotifier.wait(Math.min(remaining, APPLY_WAIT_RECHECK_INTERVAL_MS));
         }
       }
       HALog.log(this, HALog.TRACE, "Apply wait complete: applied >= target=%d", targetIndex);
@@ -2157,9 +2175,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * from a previous write, and the replica waits until that entry has been applied locally
    * before serving the read.
    * <p>
-   * Uses {@link #applyNotifier} (notified by {@link ArcadeStateMachine#applyTransaction})
-   * with a timeout of {@link #quorumTimeout} milliseconds. If the deadline is reached before
-   * catch-up, the method returns silently (reads may be slightly stale rather than failing).
+   * Uses {@link #applyNotifier}, notified explicitly by every code path that advances the applied
+   * index (see {@link #notifyApplied()}) and re-checked on its own at least every
+   * {@link #APPLY_WAIT_RECHECK_INTERVAL_MS} regardless, with an overall timeout of
+   * {@link #quorumTimeout} milliseconds. If the deadline is reached before catch-up, the method
+   * returns silently (reads may be slightly stale rather than failing).
    */
   public void waitForLocalApply() {
     try {
@@ -2176,7 +2196,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
                 getLastAppliedIndex(), commitIndex);
             return;
           }
-          applyNotifier.wait(remaining);
+          applyNotifier.wait(Math.min(remaining, APPLY_WAIT_RECHECK_INTERVAL_MS));
         }
       }
       HALog.log(this, HALog.TRACE, "Local apply caught up: applied=%d >= commit=%d",
