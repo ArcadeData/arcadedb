@@ -124,7 +124,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
 
     // Take top k results, converting distance to score (similarity).
     // EUCLIDEAN distance is L2² in [0, ∞); map it back to a (0, 1] similarity so callers receive a comparable score.
-    final VectorSimilarityFunction similarityFunction = vectorIndexes.getFirst().getSimilarityFunction();
+    final VectorSimilarityFunction similarityFunction = vectorIndexes.get(0).getSimilarityFunction();
     final int resultCount = Math.min(limit, allNeighbors.size());
     final List<Result> results = new ArrayList<>(resultCount);
 
