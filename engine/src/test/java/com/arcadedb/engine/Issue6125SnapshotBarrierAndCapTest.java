@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
@@ -94,6 +95,37 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
       // ENOUGH FOR A TEST FIXTURE AND TOO SMALL FOR A REAL DATABASE
       assertThat(snapshot.getShadowMaxSizeInBytes()).isNotEqualTo(1024L * ONE_MEGABYTE);
     }
+  }
+
+  /**
+   * The automatic cap must never resolve to {@link PageShadow}'s "0 means uncapped" sentinel by accident. The free
+   * space is halved with integer division, so a volume down to its last byte computes {@code 1 / 2 == 0} - which
+   * would disable the cap outright in exactly the disk-almost-full case it exists for, the inverse of its purpose.
+   * <p>
+   * Asserted against the arithmetic directly rather than through a real volume: no test can fill a disk, and the
+   * method is pure precisely so this edge is reachable.
+   */
+  @Test
+  void theAutomaticCapNeverDegeneratesIntoTheUncappedSentinel() {
+    final ContextConfiguration configuration = database.getConfiguration();
+    // 64 KB OF PAGES AT t0, SO THE PROVABLE CEILING IS NOT ITSELF ZERO
+    final List<PageSnapshot.SnapshotFile> files = List.of(
+        new PageSnapshot.SnapshotFile(0, null, 65_536, 1, "one.bucket"));
+
+    for (final long usable : new long[] { 1L, 2L, 3L })
+      assertThat(PageManager.snapshotMaxShadowSize(configuration, files, usable))
+          .as("a nearly-full spill volume (%d usable bytes) must still cap the shadow", usable).isPositive();
+
+    // AND THE ORDINARY CASES STILL COMPUTE WHAT THEY SHOULD
+    assertThat(PageManager.snapshotMaxShadowSize(configuration, files, Long.MAX_VALUE))
+        .as("with room to spare the cap is the provable ceiling").isEqualTo(65_536L);
+    assertThat(PageManager.snapshotMaxShadowSize(configuration, files, 40_000L))
+        .as("with less room than the database the cap is half the free space").isEqualTo(20_000L);
+    assertThat(PageManager.snapshotMaxShadowSize(configuration, files, 0L))
+        .as("an unreadable free-space figure is not 'no room': fall back to the provable ceiling")
+        .isEqualTo(65_536L);
+    assertThat(PageManager.snapshotMaxShadowSize(configuration, List.of(), Long.MAX_VALUE))
+        .as("an empty t0 page set can never need a pre-image, so uncapped is the honest answer").isZero();
   }
 
   /** A number set by hand still means exactly what it used to, and 0 still means "do not cap at all". */

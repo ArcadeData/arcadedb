@@ -542,15 +542,17 @@ public class PageManager extends LockContext {
         final File spillDirectory = snapshotSpillDirectory(database);
         final long spillVolumeUsableSpace = spillDirectory.getUsableSpace();
 
-        // ONE BUDGET FOR THE WHOLE LOCKED SECTION BELOW, NOT ONE PER STEP: WHAT HAS TO BE BOUNDED IS THE TOTAL TIME
-        // THE JVM-WIDE LOCK IS HELD, AND THREE INDEPENDENT CEILINGS WOULD MULTIPLY IT
-        final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
-
         final ReentrantReadWriteLock applyLock = database.getTransactionManager().getApplyLock();
         applyLock.writeLock().lock();
         try {
           lock();
           try {
+            // ONE BUDGET FOR EVERYTHING BELOW, NOT ONE PER STEP: WHAT HAS TO BE BOUNDED IS THE TOTAL TIME THE
+            // JVM-WIDE LOCK IS HELD, AND THREE INDEPENDENT CEILINGS WOULD MULTIPLY IT. STARTED ONLY NOW, AFTER BOTH
+            // LOCKS ARE IN HAND: TIME SPENT WAITING TO ACQUIRE THEM IS QUEUEING, NOT HOLDING - CHARGING IT TO THE
+            // BUDGET WOULD SHRINK THE REAL WAITS UNDER CONTENTION AND MAKE A TIMEOUT BLAME THE WRONG THING
+            final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
+
             // STEP 2: THE RESIDUAL DRAIN, WITH PUBLICATION EXCLUDED. publishPages HOLDS THIS SAME LOCK ACROSS BOTH
             // THE SYNCHRONOUS PAGE WRITE AND THE FLUSH ENQUEUE, SO NOTHING CAN FEED THE PIPELINE WHILE WE HOLD IT
             // AND THIS CONVERGES BY CONSTRUCTION. IT COVERS EXACTLY THE COMMITS THAT LANDED SINCE STEP 1, WHICH IS
@@ -771,13 +773,18 @@ public class PageManager extends LockContext {
    * size above which backups silently start falling back to throttling the writers.
    * <p>
    * Pure arithmetic, deliberately: the free space it works from was read before the barrier took its locks, because
-   * {@code getUsableSpace()} is a blocking filesystem call and this runs inside them.
+   * {@code getUsableSpace()} is a blocking filesystem call and this runs inside them. Package-private for the same
+   * reason - being pure, the edge cases around {@code PageShadow}'s "0 means uncapped" sentinel are worth asserting
+   * directly rather than through a volume a test cannot fill.
    *
    * @param spillVolumeUsableSpace bytes usable on the spill volume, {@code <= 0} when it could not be read - which
    *                               {@code File.getUsableSpace()} also answers for a path it cannot interrogate, so it
    *                               is not an error signal and must not be read as "no room"
+   *
+   * @return the cap in bytes, {@code 0} meaning uncapped - which this only ever returns for an explicitly configured
+   *     {@code 0} or a t0 page set that is empty, never as a rounding artifact
    */
-  private static long snapshotMaxShadowSize(final ContextConfiguration configuration,
+  static long snapshotMaxShadowSize(final ContextConfiguration configuration,
       final List<PageSnapshot.SnapshotFile> files, final long spillVolumeUsableSpace) {
     final long configured = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE);
     if (configured >= 0)
@@ -787,12 +794,21 @@ public class PageManager extends LockContext {
     for (final PageSnapshot.SnapshotFile file : files)
       databaseSize += file.size();
 
+    // NOTHING TO CAP: NO PAGE EXISTED AT t0, SO NO PRE-IMAGE CAN EVER BE NEEDED AND THE VALUE IS MOOT
+    if (databaseSize == 0)
+      return 0;
+
     // WITH NO USABLE READING, FALL BACK TO THE PROVABLE CEILING ALONE RATHER THAN TO NO CAP AT ALL - A 0 CAP MEANS
-    // "UNCAPPED" TO THE SHADOW
+    // "UNCAPPED" TO THE SHADOW. File.getUsableSpace() ALSO ANSWERS 0 FOR A PATH IT CANNOT INTERROGATE, WHICH IS WHY
+    // THIS IS NOT READ AS "NO ROOM"
     if (spillVolumeUsableSpace <= 0)
       return databaseSize;
 
-    return Math.min(databaseSize, spillVolumeUsableSpace / SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR);
+    // CLAMPED TO AT LEAST ONE BYTE: THE DIVISION IS INTEGER, SO A VOLUME DOWN TO ITS LAST BYTE COMPUTES 1/2 == 0 AND
+    // WOULD HAND THE SHADOW THE SAME "UNCAPPED" SENTINEL THE BRANCH ABOVE EXISTS TO AVOID - INVERTING THIS CAP
+    // PRECISELY IN THE DISK-ALMOST-FULL CASE IT IS FOR. A ONE-BYTE CAP INSTEAD BREACHES ON THE FIRST CAPTURE, WHICH
+    // IS THE CORRECT ANSWER: THE WINDOW IS ABANDONED AND ITS CONSUMER FALLS BACK
+    return Math.max(1L, Math.min(databaseSize, spillVolumeUsableSpace / SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR));
   }
 
   private PageSnapshot registerSnapshot(final PageSnapshot snapshot) {
