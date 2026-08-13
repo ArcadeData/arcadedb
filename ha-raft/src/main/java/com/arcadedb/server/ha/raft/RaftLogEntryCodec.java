@@ -101,6 +101,27 @@ public final class RaftLogEntryCodec {
   }
 
   /**
+   * Validates a length field for a section read STRAIGHT off the stream, so the array it asks for is never
+   * allocated before the entry is known to actually carry that many bytes.
+   * <p>
+   * {@code remaining} is the exact number of bytes left in the entry: the stream is backed by a
+   * {@link ByteString}, whose {@code available()} is exact and is already load-bearing in {@link #decode}
+   * (the trailing-byte corruption check and the optional-section probes both depend on it). That makes it a
+   * far tighter bound than any constant - a corrupt or forged length is refused here rather than turning into
+   * a several-hundred-MB allocation that {@code readFully} would then fail on anyway. The absolute ceiling
+   * stays as a backstop.
+   * <p>
+   * This bound does NOT apply to the length of a section that is decompressed, which is legitimately many
+   * times the bytes present; {@link #checkDecompressedLength} covers that one.
+   */
+  private static void checkByteLength(final int length, final int remaining, final String context) {
+    checkByteLength(length, context);
+    if (length > remaining)
+      throw new IllegalStateException("Invalid byte length " + length + " in " + context + ": only " + remaining
+          + " bytes remain in the entry (truncated or corrupted replication payload)");
+  }
+
+  /**
    * Validates the uncompressed length a compressed section claims, before {@code decompress} allocates it.
    * Beyond the absolute ceiling the claim is also bounded by what the compressed bytes present in the entry
    * could possibly expand to, so raising {@link #MAX_DECODED_ENTRY_BYTES} cannot turn the decoder into an
@@ -494,7 +515,7 @@ public final class RaftLogEntryCodec {
   private static DecodedEntry decodeTxEntry(final DataInputStream dis, final String databaseName) throws IOException {
     final int uncompressedLength = dis.readInt();
     final int compressedLength = dis.readInt();
-    checkByteLength(compressedLength, "TX_ENTRY compressed WAL");
+    checkByteLength(compressedLength, dis.available(), "TX_ENTRY compressed WAL");
     checkDecompressedLength(uncompressedLength, compressedLength, "TX_ENTRY uncompressed WAL");
     final byte[] compressed = new byte[compressedLength];
     dis.readFully(compressed);
@@ -515,7 +536,7 @@ public final class RaftLogEntryCodec {
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
     final int schemaLen = dis.readInt();
-    checkByteLength(schemaLen, "SCHEMA_ENTRY schemaJson");
+    checkByteLength(schemaLen, dis.available(), "SCHEMA_ENTRY schemaJson");
     final byte[] schemaBytes = new byte[schemaLen];
     dis.readFully(schemaBytes);
     final String schemaJson = new String(schemaBytes, StandardCharsets.UTF_8);
@@ -539,7 +560,7 @@ public final class RaftLogEntryCodec {
         for (int i = 0; i < walCount; i++) {
           final int walUncompressedLen = dis.readInt();
           final int walCompressedLen = dis.readInt();
-          checkByteLength(walCompressedLen, "SCHEMA_ENTRY WAL compressed");
+          checkByteLength(walCompressedLen, dis.available(), "SCHEMA_ENTRY WAL compressed");
           checkDecompressedLength(walUncompressedLen, walCompressedLen, "SCHEMA_ENTRY WAL uncompressed");
           final byte[] walCompressed = new byte[walCompressedLen];
           dis.readFully(walCompressed);
@@ -574,7 +595,7 @@ public final class RaftLogEntryCodec {
           final long expectedCrc = dis.readLong();
           final int uncompressedLen = dis.readInt();
           final int compressedLen = dis.readInt();
-          checkByteLength(compressedLen, "SCHEMA_ENTRY sealed blob compressed");
+          checkByteLength(compressedLen, dis.available(), "SCHEMA_ENTRY sealed blob compressed");
           checkDecompressedLength(uncompressedLen, compressedLen, "SCHEMA_ENTRY sealed blob uncompressed");
           final byte[] compressed = new byte[compressedLen];
           dis.readFully(compressed);
@@ -612,7 +633,7 @@ public final class RaftLogEntryCodec {
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
       throws IOException {
     final int fpLen = dis.readInt();
-    checkByteLength(fpLen, "BOOTSTRAP_FINGERPRINT fingerprint");
+    checkByteLength(fpLen, dis.available(), "BOOTSTRAP_FINGERPRINT fingerprint");
     final byte[] fpBytes = new byte[fpLen];
     dis.readFully(fpBytes);
     final String fingerprint = new String(fpBytes, StandardCharsets.UTF_8);
@@ -623,7 +644,7 @@ public final class RaftLogEntryCodec {
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
     final int length = dis.readInt();
-    checkByteLength(length, "SECURITY_USERS_ENTRY");
+    checkByteLength(length, dis.available(), "SECURITY_USERS_ENTRY");
     final byte[] bytes = new byte[length];
     dis.readFully(bytes);
     final String usersJson = new String(bytes, StandardCharsets.UTF_8);

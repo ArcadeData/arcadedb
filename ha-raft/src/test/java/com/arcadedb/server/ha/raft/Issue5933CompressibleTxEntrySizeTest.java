@@ -195,6 +195,28 @@ class Issue5933CompressibleTxEntrySizeTest {
   }
 
   /**
+   * A length field for a section read straight off the stream is bounded by the bytes the entry ACTUALLY
+   * carries, which is exact and far tighter than any constant - so raising the absolute ceiling cannot make a
+   * forged length a bigger allocation than it was before. Both the compressed WAL of a TX_ENTRY and the
+   * (uncompressed) schema JSON of a SCHEMA_ENTRY go through it.
+   */
+  @Test
+  void aLengthLongerThanTheEntryIsRefusedBeforeItIsAllocated() {
+    final ByteString forgedTx = forgeTxEntry("heimdall", 64, 300 * 1024 * 1024,
+        CompressionFactory.getDefault().compress("a short transaction".getBytes()));
+    assertThatThrownBy(() -> RaftLogEntryCodec.decode(forgedTx))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("TX_ENTRY compressed WAL")
+        .hasMessageContaining("bytes remain in the entry");
+
+    final ByteString forgedSchema = forgeSchemaEntryWithSchemaLength("heimdall", 300 * 1024 * 1024);
+    assertThatThrownBy(() -> RaftLogEntryCodec.decode(forgedSchema))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("SCHEMA_ENTRY schemaJson")
+        .hasMessageContaining("bytes remain in the entry");
+  }
+
+  /**
    * Nothing that replicated before may stop replicating now: ordinary transactions, compressible or not, must
    * still round-trip byte for byte.
    */
@@ -253,19 +275,43 @@ class Issue5933CompressibleTxEntrySizeTest {
 
   private static ByteString forgeTxEntry(final String databaseName, final int uncompressedLength,
       final byte[] compressed) {
+    return forgeTxEntry(databaseName, uncompressedLength, compressed.length, compressed);
+  }
+
+  /**
+   * @param declaredCompressedLength written into the frame instead of the payload's real length, so a forged
+   *                                 length field can be exercised without hand-writing the whole frame twice
+   */
+  private static ByteString forgeTxEntry(final String databaseName, final int uncompressedLength,
+      final int declaredCompressedLength, final byte[] compressed) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
       dos.writeByte(RaftLogEntryType.TX_ENTRY.getId());
       dos.writeUTF(databaseName);
       dos.writeInt(uncompressedLength);
-      dos.writeInt(compressed.length);
+      dos.writeInt(declaredCompressedLength);
       dos.write(compressed);
       dos.writeInt(0); // no bucket deltas
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to forge TX entry", e);
+    }
+  }
+
+  private static ByteString forgeSchemaEntryWithSchemaLength(final String databaseName, final int schemaLength) {
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+      dos.writeByte(RaftLogEntryType.SCHEMA_ENTRY.getId());
+      dos.writeUTF(databaseName);
+      dos.writeInt(schemaLength);
+      dos.write("{}".getBytes());
+      dos.flush();
+      return ByteString.copyFrom(baos.toByteArray());
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to forge SCHEMA entry", e);
     }
   }
 }
