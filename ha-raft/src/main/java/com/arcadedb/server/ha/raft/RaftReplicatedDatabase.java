@@ -1810,6 +1810,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // Only the files created since the previous instalment: an already-announced one exists on the followers, and
     // re-announcing it would make createNewFiles run over a file that is being written into.
+    //
+    // This re-reads the WHOLE recorded-changes list per instalment, so it is O(instalments x file changes). Fine
+    // for the caller this exists for - an index rebuild records one or two file changes however many instalments
+    // its WAL volume produces, so the second factor does not grow with the first. A future DDL that creates MANY
+    // files through this buffered path would make it quadratic and should carry the shipped/unshipped split
+    // forward instead; an index into the list is not that, since dropFile removes entries from the middle of it.
     final Map<Integer, String> newFiles = new LinkedHashMap<>();
     final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
     if (changes != null)
