@@ -110,6 +110,22 @@ class Issue6148YieldStarProcedureScopeTest extends TestHelper {
   }
 
   /**
+   * Routing the hardcoded {@code db.*} built-ins through the normal {@code CypherProcedure} dispatch (issue #6148's
+   * fix) means they now go through {@code CypherProcedure#validateArgs} like every other procedure - previously the
+   * hardcoded {@code switch} in {@code CallStep} ignored {@code args} entirely, so {@code CALL db.labels(1)} silently
+   * succeeded. Pinning this down so a future refactor cannot silently reintroduce the old, more permissive behavior.
+   */
+  @Test
+  void dbLabelsNowRejectsAnUnexpectedArgument() {
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("opencypher", "CALL db.labels(1) YIELD label RETURN label")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).isInstanceOf(CommandSemanticException.class);
+  }
+
+  /**
    * A custom {@code DEFINE FUNCTION} has no statically declared output signature - unlike a registered
    * {@link com.arcadedb.query.opencypher.procedures.CypherProcedure}, {@code CypherProcedureRegistry} does not know
    * it at all, so {@code resolveYieldAllFieldNames} returns {@code null} for it. This pins down that an unresolvable
