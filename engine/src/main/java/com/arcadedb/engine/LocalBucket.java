@@ -1719,15 +1719,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // The REAL marker cost, not the 2 bytes MINIMUM_SPACE_FOR_FIRST_CHUNK budgets for it - and the two agree,
         // because both sides size the whole footprint rather than the marker alone (see that constant's javadoc).
         final int markerSize = Binary.getNumberSpace(FIRST_CHUNK);
-        if (markerSize + body.length > roomForTheChunk) {
-          // #6149: the write reached the chunk-header minimum by enlarging the slot through the in-page shift. Re-do
-          // exactly that here - the records that follow merely move, and their offsets are recomputed from THIS page,
-          // like the growth replay above. The slot footprint is fixed by the pre-image just checked, so the shift the
-          // write made and the one made here are the same size; the free tail is not, and a committed page that can
-          // no longer spare it sends the transaction to a normal retry.
-          final int enlargement = markerSize + body.length - roomForTheChunk;
-          if (lastRecordPositionInPage == existingPos || enlargement >= freeTailInPage)
-            return false;
+        // #6149: the write may have reached the chunk-header minimum by enlarging the slot through the in-page
+        // shift. Re-do exactly that here - the records that follow merely move, and their offsets are recomputed
+        // from THIS page, like the growth replay above. The decision runs through the SAME
+        // slotEnlargementForChunkHead the write used, so the two can only differ in what they feed it: the slot
+        // footprint is pinned by the pre-image just checked, while the free tail is not, and a committed page that
+        // can no longer spare it sends the transaction to a normal retry.
+        final int enlargement = slotEnlargementForChunkHead(markerSize + body.length, roomForTheChunk, freeTailInPage,
+                lastRecordPositionInPage == existingPos);
+        if (enlargement < 0)
+          return false;
+        if (enlargement > 0) {
           shiftFollowingRecordsRight(page, recordCountInPage, existingPos + slotFootprint, pageOccupiedInBytes,
                   enlargement);
           updatePageStatistics(pageNumber, freeTailInPage, -enlargement);
@@ -2221,17 +2223,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // (the pointer rewrite changes two pages at once) and the one behind the silent lost update of #6141.
           // Reaching this branch means the page could not host the record's FULL new size, which says nothing about
           // the handful of bytes that separate a 9-byte slot from a chunk header: ask for them through the same
-          // in-page shift a growth uses. Only the missing bytes are taken - a bigger bite would lock free space
-          // into a head chunk that is never grown again, denying it to every other record on the page. Nothing is
-          // shifted when the record is the LAST one of the page: its free tail is already counted above, so there
-          // is no room to be found and nothing after it to move.
-          int slotEnlargement = 0;
-          if (availableSpaceInCurrentPage < MINIMUM_SPACE_FOR_FIRST_CHUNK//
-                  && lastRecordPositionInPage != recordPositionInPage//
-                  && MINIMUM_SPACE_FOR_FIRST_CHUNK - availableSpaceInCurrentPage < freeTailInPage) {
-            slotEnlargement = MINIMUM_SPACE_FOR_FIRST_CHUNK - availableSpaceInCurrentPage;
-            availableSpaceInCurrentPage = MINIMUM_SPACE_FOR_FIRST_CHUNK;
-          }
+          // in-page shift a growth uses. The decision itself lives in slotEnlargementForChunkHead, shared with the
+          // commit-time replay so the two cannot drift apart.
+          final int slotEnlargement = slotEnlargementForChunkHead(MINIMUM_SPACE_FOR_FIRST_CHUNK,
+                  availableSpaceInCurrentPage, freeTailInPage, lastRecordPositionInPage == recordPositionInPage);
+          if (slotEnlargement > 0)
+            availableSpaceInCurrentPage += slotEnlargement;
 
           // TODO: LOOK FOR 1/2 OF THE RECORD SIZE
           if (availableSpaceInCurrentPage < MINIMUM_SPACE_FOR_FIRST_CHUNK) {
@@ -3484,6 +3481,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     updatePageStatistics(pageNumber, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
     return true;
+  }
+
+  /**
+   * How many bytes the in-page shift has to claim so a slot holding {@code roomAlreadyAvailable} bytes can host a
+   * chunk head of {@code roomRequired} (#6149). The single place that decision is made: the spill in
+   * {@link #updateRecordInternal} asks for {@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}, its commit-time replay in
+   * {@link #rebaseRecordOnPage} asks for the exact size of the head chunk it has to put back, and because both go
+   * through here they cannot drift apart on the margin or on the last-record rule - which is what lets the replay
+   * reproduce the write's shift rather than merely resemble it.
+   * <p>
+   * Only the MISSING bytes are ever claimed: a head chunk's footprint is fixed for the life of the record
+   * ({@code updateMultiPageRecord} rewrites only inside it), so a bigger bite would deny page space to every other
+   * record on the page for good.
+   *
+   * @param roomAlreadyAvailable bytes the slot may already use: its own footprint, plus the page's free tail when it
+   *                             is the last record.
+   * @param isLastRecordInPage   whether the slot is the last record of the page. Then there is nothing after it to
+   *                             move, and its free tail is already counted in {@code roomAlreadyAvailable}.
+   *
+   * @return 0 when the slot is already big enough and no shift is needed; a positive count of bytes to shift by; or
+   * -1 when the page cannot provide them, which sends the caller to the placeholder fallback (write) or to a plain
+   * retry (replay). The margin is the one {@link #growRecordInPage} keeps - the shift must leave at least one spare
+   * byte - so a growth and a spill judge the same page identically.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static int slotEnlargementForChunkHead(final int roomRequired, final int roomAlreadyAvailable,
+                                                 final int freeTailInPage, final boolean isLastRecordInPage) {
+    if (roomAlreadyAvailable >= roomRequired)
+      return 0;
+
+    final int missing = roomRequired - roomAlreadyAvailable;
+    if (isLastRecordInPage || missing >= freeTailInPage)
+      return -1;
+
+    return missing;
   }
 
   /**
