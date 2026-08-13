@@ -244,7 +244,7 @@ public class LogicalPlan {
     if (predicates.isEmpty())
       return;
 
-    BooleanExpression conjunction = predicates.getFirst();
+    BooleanExpression conjunction = predicates.get(0);
     for (int i = 1; i < predicates.size(); i++)
       conjunction = new LogicalExpression(LogicalExpression.Operator.AND, conjunction, predicates.get(i));
 
