@@ -931,17 +931,30 @@ public class TransactionContext implements Transaction {
     private final Map<Integer, byte[]> finalBody     = new HashMap<>();
     // slot -> the record body this transaction started from (UPDATES and DELETES only; absent for inserts).
     private final Map<Integer, byte[]> baseBody      = new HashMap<>();
-    // slot -> what SHAPE the two images above describe (#6129). Only present for the shapes that are not a plain
-    // in-place record: the replay has to check the committed marker against it, because the very same bytes mean a
-    // different record depending on the marker that precedes them. Absent entry = SLOT_KIND_RECORD.
-    private final Map<Integer, Byte>   kinds         = new HashMap<>();
     // slots holding a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
     // transaction stays an insert (base absent) rather than being mistaken for an in-place update.
     private final Set<Integer>         insertedSlots = new HashSet<>();
+    // slot -> what SHAPE the two images above describe (#6129). Only present for the shapes that are not a plain
+    // in-place record: the replay has to check the committed marker against it, because the very same bytes mean a
+    // different record depending on the marker that precedes them. Absent entry = SLOT_KIND_RECORD, which is why this
+    // one map - unlike its neighbours above - is allocated only if a page ever holds a shape that is not that: on
+    // everything but a bucket of outgrown records, it never is.
+    private       Map<Integer, Byte>   kinds;
 
     private byte kindOf(final int slot) {
+      if (kinds == null)
+        return SLOT_KIND_RECORD;
       final Byte kind = kinds.get(slot);
       return kind == null ? SLOT_KIND_RECORD : kind;
+    }
+
+    private void trackKind(final int slot, final byte kind) {
+      if (kind == SLOT_KIND_RECORD)
+        // The default: recording it would allocate the map for every page the merge tracks, to say nothing.
+        return;
+      if (kinds == null)
+        kinds = new HashMap<>();
+      kinds.put(slot, kind);
     }
   }
 
@@ -1088,8 +1101,7 @@ public class TransactionContext implements Transaction {
       poisonSlotRebasePage(fileId, pageNumber);
       return;
     }
-    if (kind != SLOT_KIND_RECORD)
-      buffer.kinds.put(slot, kind);
+    buffer.trackKind(slot, kind);
     final byte[] prevFinal = buffer.finalBody.put(slot, finalBody);
     long delta = finalBody.length - (prevFinal != null ? prevFinal.length : 0);
     // First-touch base wins: a second in-tx update must still diff against the COMMITTED pre-image, not the
