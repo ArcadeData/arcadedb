@@ -81,7 +81,7 @@ class WalCommitOrderingTest {
 
       // Inject a conflicting committed version for one of the transaction's pages, as a racing transaction
       // through the (now closed) lock-coverage hole would have: phase-2 validation MUST fail.
-      final MutablePage victim = phase1.modifiedPages.getFirst();
+      final MutablePage victim = phase1.modifiedPages.get(0);
       final MutablePage conflicting = new MutablePage(victim.getPageId(), (int) victim.getPhysicalSize(),
           victim.getContent().array().clone(), (int) (victim.getVersion() + 1), victim.getContentSize());
       final java.lang.reflect.Method put = PageManager.class.getDeclaredMethod("putPageInReadCache", CachedPage.class);

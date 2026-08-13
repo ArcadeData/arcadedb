@@ -60,9 +60,9 @@ class FlushRobustnessTest extends TestHelper {
     });
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
-    final PaginatedComponent brokenBucket = (PaginatedComponent) db.getSchema().getType("BrokenDoc").getBuckets(false).getFirst();
+    final PaginatedComponent brokenBucket = (PaginatedComponent) db.getSchema().getType("BrokenDoc").getBuckets(false).get(0);
     final PaginatedComponent healthyBucket = (PaginatedComponent) db.getSchema().getType("HealthyDoc").getBuckets(false)
-        .getFirst();
+        .get(0);
     final PaginatedComponentFile brokenFile = (PaginatedComponentFile) db.getFileManager().getFile(brokenBucket.getFileId());
     final PaginatedComponentFile healthyFile = (PaginatedComponentFile) db.getFileManager().getFile(healthyBucket.getFileId());
 

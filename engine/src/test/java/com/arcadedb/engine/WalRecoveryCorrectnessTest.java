@@ -72,7 +72,7 @@ class WalRecoveryCorrectnessTest {
       db.transaction(() -> db.newDocument("Doc").set("v", "A").save());
       db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
-      final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("Doc").getBuckets(false).getFirst();
+      final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("Doc").getBuckets(false).get(0);
       bucketFilePath = db.getFileManager().getFile(bucket.getFileId()).getFilePath();
 
       // 2. Commit the update to 'B' (bumping the page to v2, WAL entry written) but make sure the DATA page
@@ -126,7 +126,7 @@ class WalRecoveryCorrectnessTest {
 
     // Break one file so its fsync fails: channel closed underneath + OS file deleted, so the #4930 reopen
     // guard surfaces the failure from force() instead of silently re-creating the dropped file.
-    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("Doc").getBuckets(false).getFirst();
+    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("Doc").getBuckets(false).get(0);
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId());
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
     final java.lang.reflect.Field channelField = PaginatedComponentFile.class.getDeclaredField("channel");
