@@ -257,6 +257,68 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
   }
 
   /**
+   * The other way the tail of a record can move under a transaction: not its bytes but its SHAPE - the concurrent
+   * writer makes the record LONGER, so the chain grows a chunk at its end.
+   * <p>
+   * Which of the two checks catches it is worth knowing, and it is not the chunk-chain fingerprint: measured by
+   * removing that check, this interleaving still conflicts, because a serialized record carries the length of its
+   * content near its start and that lives in the HEAD chunk - so a total-length change perturbs the head as well and
+   * the byte-for-byte pre-image check of that chunk is enough. The test earns its place by pinning exactly that: a
+   * serialization change that moved the length out of the head chunk's reach would fail here rather than quietly
+   * leaving a chain-length change to be caught by a fingerprint that only fires when the head still matches.
+   */
+  @Test
+  void aConcurrentChangeToTheSameRecordsChainLengthStillConflicts() throws Exception {
+    final String committed = "z".repeat(200 * 1024) + "O";
+    final String mine = "z".repeat(200 * 1024) + "M";
+    final String longer = "z".repeat(260 * 1024);
+
+    final RID[] chunked = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Chain", 1).createProperty("v", Type.STRING);
+      chunked[0] = database.newDocument("Chain").set("v", "c".repeat(1024)).save().getIdentity();
+      fillFirstPage("Chain");
+    });
+    database.transaction(() -> chunked[0].asDocument(true).modify().set("v", committed).save());
+
+    final Map<String, Object> layout = bucketStats("Chain");
+    assertThat((Long) layout.get("totalMultiPageRecords")).as("the record must be a chunk chain: " + layout).isEqualTo(1L);
+    final long chunksBefore = (Long) layout.get("totalChunks");
+
+    database.begin();
+    chunked[0].asDocument(true).modify().set("v", mine).save();
+
+    final List<Throwable> otherErrors = new CopyOnWriteArrayList<>();
+    final Thread other = new Thread(() -> {
+      try {
+        database.transaction(() -> chunked[0].asDocument(true).modify().set("v", longer).save(), true, 1);
+      } catch (final Throwable e) {
+        otherErrors.add(e);
+      }
+    });
+    other.start();
+    other.join();
+    assertThat(otherErrors).isEmpty();
+
+    // The premise: the other transaction really did make the chain longer rather than just rewriting it.
+    assertThat((Long) bucketStats("Chain").get("totalChunks")).as("the chain must have grown a chunk")
+        .isGreaterThan(chunksBefore);
+
+    try {
+      database.commit();
+      throw new AssertionError("Expected a conflict: the other transaction extended the chain of the very same record");
+    } catch (final ConcurrentModificationException expected) {
+      // correct: the length prefix moved inside the head chunk, so the pre-image check of that chunk saw it
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    database.transaction(() -> assertThat(chunked[0].asDocument(true).getString("v")).isEqualTo(longer));
+    checkDatabase();
+  }
+
+  /**
    * Issue #6129 item 1: a record that spilled into a placeholder keeps its content on ANOTHER page, and an update of
    * that content record - in place or growing - is a single-slot write on that page like any other. Here the content
    * page also hosts plain records, so a concurrent write to one of them must not stop the placeholder update.

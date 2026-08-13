@@ -635,6 +635,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       pointer = chunkPage.readLong(headerPos + INT_SERIALIZED_SIZE);
     }
 
+    // A hash that lands on the "unknown" sentinel is moved onto the "no tail" one rather than being handed back as
+    // unknown. The two therefore alias - a real tail can be indistinguishable from a single-chunk record - which is
+    // sound because BOTH sides of the comparison go through this same remap, and is of the same ~2^-64 order as the
+    // collision the fingerprint already accepts.
     return fingerprint == NO_CHUNK_TAIL_FINGERPRINT ? EMPTY_CHUNK_TAIL_FINGERPRINT : fingerprint;
   }
 
