@@ -1222,6 +1222,15 @@ The cost is proportional to work the update was going to do anyway: an update of
 chunk of its chain, so the fingerprint walks pages it is about to load and write regardless, and a record that is not
 a chunk chain pays nothing beyond reading its own marker.
 
+Worth stating plainly what that trades, because it is the one guarantee this change moves rather than widens. For a
+multi-page record, "two transactions writing the same record always conflict" used to hold absolutely - for the blunt
+reason that the head chunk's page was poisoned no matter what. It now holds up to a fingerprint collision: ~2^-64 per
+pair of concurrent updates to one such record whose head chunks are byte-identical. Deliberate collisions are not a
+threat model here: both colliding tails are content of the same record, so producing one requires write access to it,
+and whoever has that can already overwrite it by committing last - which is the very outcome a collision would
+produce. An installation that wants the absolute form back sets `arcadedb.txPageSlotMerge=false` and gets
+unconditional poisoning, at the cost of the false conflicts the mechanism exists to remove.
+
 ### `TX_RETRIES` is enough again
 
 `Issue5279ConcurrentUpdateTest.growingUpdatesUnderContentionKeepTheDatabaseConsistent` needed an explicit budget of

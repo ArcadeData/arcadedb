@@ -1162,9 +1162,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         recordCountInPage = currentRecordCountInPage;
 
         if (spaceNeeded > spaceAvailableInCurrentPage) {
-          // MULTI-PAGE RECORD. Not declared covered by any merge and, on a reused page, poisoned right below
-          // (singleSlotInsert is false here): a brand-new chunk chain also writes this page's record table and record
-          // count, which no tracked slot image accounts for.
+          // MULTI-PAGE RECORD: a brand-new chunk chain also writes this page's record table and record count, which no
+          // tracked slot image accounts for. Two things keep it out of the merge, and both are outside this call:
+          // singleSlotInsert is false here, so the declaration opened above is 0 and every byte written stays
+          // uncovered; and on a REUSED page the `if (!singleSlotInsert) poisonSlotRebasePage` at the end of this
+          // method excludes it outright. A brand-new page needs neither - it is never rebase-tracked.
           writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0);
 
         } else {

@@ -339,6 +339,70 @@ class Issue6129ChunkedSlotMergeTest extends TestHelper {
     }
   }
 
+  /**
+   * The belt-and-suspenders half of the kind bookkeeping: a slot that changes SHAPE inside one transaction. The
+   * pre-image kept for the first write no longer describes what the second one started from, so the two cannot be
+   * replayed as one and the page must be excluded outright.
+   * <p>
+   * Driven through the tracking API rather than through records, deliberately: no write path reaches these states
+   * today - the writers of every shape transition poison the page themselves, and two updates of one record inside a
+   * transaction collapse into the single write {@code updatedRecords} performs at commit - so a test that went
+   * through the engine would prove nothing about the guards. What must not happen is that a future write path reaches
+   * them and is silently mis-merged instead, which is exactly what these three assert.
+   */
+  @Test
+  void aSlotThatChangesShapeInOneTransactionIsExcludedFromTheMerge() {
+    database.transaction(() -> database.getSchema().createDocumentType("Shapes", 1).createProperty("v", Type.STRING));
+    final int fileId = database.getSchema().getType("Shapes").getBuckets(false).getFirst().getFileId();
+
+    final byte[] base = "base".getBytes();
+    final byte[] image = "image".getBytes();
+
+    // An UPDATE of a shape other than the one already tracked for the slot.
+    inTransaction(tx -> {
+      tx.trackRebasableUpdate(fileId, 0, 3, base, image, TransactionContext.SLOT_KIND_RECORD);
+      assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).isFalse();
+      tx.trackRebasableUpdate(fileId, 0, 3, base, image, TransactionContext.SLOT_KIND_FIRST_CHUNK);
+      assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).as("a slot that changed shape must exclude its page").isTrue();
+    });
+
+    // An INSERT replays as a plain record into a free slot, so it cannot follow a write of another shape.
+    inTransaction(tx -> {
+      tx.trackRebasableUpdate(fileId, 0, 3, base, image, TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT);
+      assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).isFalse();
+      tx.trackRebasableInsert(fileId, 0, 3, image);
+      assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).as("an insert cannot follow another shape").isTrue();
+    });
+
+    // Only the delete of a PLAIN in-place record is replayable (#5569).
+    inTransaction(tx -> {
+      tx.trackRebasableUpdate(fileId, 0, 3, base, image, TransactionContext.SLOT_KIND_FIRST_CHUNK);
+      assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).isFalse();
+      tx.trackRebasableDelete(fileId, 0, 3, base);
+      assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).as("only a plain record's delete is replayable").isTrue();
+    });
+
+    // The same slot written twice with the SAME shape stays mergeable: the guards must not be indiscriminate.
+    inTransaction(tx -> {
+      tx.trackRebasableUpdate(fileId, 0, 3, base, image, TransactionContext.SLOT_KIND_FIRST_CHUNK);
+      tx.trackRebasableUpdate(fileId, 0, 3, base, image, TransactionContext.SLOT_KIND_FIRST_CHUNK);
+      assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).as("a second write of the same shape is still replayable")
+          .isFalse();
+    });
+  }
+
+  /** Runs {@code body} against a transaction that is rolled back, so the tracking state never reaches a page. */
+  private void inTransaction(final java.util.function.Consumer<TransactionContext> body) {
+    database.begin();
+    try {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+      assertThat(tx.isSlotMergeEnabled()).as("the merge must be on for the tracking to record anything").isTrue();
+      body.accept(tx);
+    } finally {
+      database.rollback();
+    }
+  }
+
   private interface PayloadOf {
     String of(int thread, int record, int round);
   }
