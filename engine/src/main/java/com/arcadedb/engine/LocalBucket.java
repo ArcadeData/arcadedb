@@ -1071,18 +1071,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @throws DatabaseOperationException if the slot is occupied or its page does not exist.
    */
   public RID restoreRecordAtPosition(final long position, final Record record) {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-
     final int positionInPage = (int) (position % maxRecordsInPage);
 
-    final Binary buffer = database.getSerializer().serialize(database, record);
-    while (buffer.size() < MINIMUM_RECORD_SIZE)
-      buffer.append((byte) 0);
-    final int bufferSize = buffer.size();
-    final int spaceNeeded = Binary.getNumberSpace(bufferSize) + bufferSize;
-
     try {
+      // Carries the CREATE_RECORD permission check, so there is no separate one here (PR #6130 review). Serializing
+      // the record only afterwards means an unauthorized caller, a missing page and an occupied slot are all
+      // rejected before anything is built.
       final MutablePage selectedPage = checkRestoreTargetIsFree(position);
+
+      final Binary buffer = database.getSerializer().serialize(database, record);
+      while (buffer.size() < MINIMUM_RECORD_SIZE)
+        buffer.append((byte) 0);
+      final int bufferSize = buffer.size();
+      final int spaceNeeded = Binary.getNumberSpace(bufferSize) + bufferSize;
 
       final short currentRecordCountInPage = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       final int newRecordPositionInPage = findContentInsertionOffset(selectedPage, currentRecordCountInPage);

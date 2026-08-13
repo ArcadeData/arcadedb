@@ -145,6 +145,51 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
   }
 
   /**
+   * The database-level registry is a separate call from the per-type one above and vetoes with its own message, so it
+   * gets its own case rather than riding on the type-level test (PR #6130 review).
+   */
+  @Test
+  void restoreFiresTheDatabaseLevelCreateEvents() {
+    final RID rid = deletedRecord(PLAIN);
+    final AtomicInteger before = new AtomicInteger();
+    final AtomicInteger after = new AtomicInteger();
+
+    final BeforeRecordCreateListener beforeListener = record -> {
+      before.incrementAndGet();
+      return true;
+    };
+    final AfterRecordCreateListener afterListener = (final Record record) -> after.incrementAndGet();
+
+    database.getEvents().registerListener(beforeListener).registerListener(afterListener);
+    try {
+      database.transaction(() -> database.command("sql", "RESTORE DOCUMENT " + PLAIN + " RID " + rid + " SET v = 'r'"));
+
+      assertThat(before.get()).isEqualTo(1);
+      assertThat(after.get()).isEqualTo(1);
+    } finally {
+      database.getEvents().unregisterListener(beforeListener).unregisterListener(afterListener);
+    }
+  }
+
+  @Test
+  void aDatabaseLevelVetoAlsoRaises() {
+    final RID rid = deletedRecord(PLAIN);
+    final BeforeRecordCreateListener veto = record -> false;
+
+    database.getEvents().registerListener(veto);
+    try {
+      database.transaction(() -> assertThatThrownBy(
+          () -> database.command("sql", "RESTORE DOCUMENT " + PLAIN + " RID " + rid + " SET v = 'r'")).isInstanceOf(
+          DatabaseOperationException.class).hasMessageContaining("database-level beforeCreate listener vetoed"));
+    } finally {
+      database.getEvents().unregisterListener(veto);
+    }
+
+    database.transaction(
+        () -> assertThatThrownBy(() -> database.lookupByRID(rid, true)).isInstanceOf(RecordNotFoundException.class));
+  }
+
+  /**
    * The one intentional divergence from {@code createRecordNoLock}, which returns quietly on a veto: a vetoed RESTORE
    * must raise, because reporting success while writing nothing is exactly the silent outcome #6127 is about.
    */
