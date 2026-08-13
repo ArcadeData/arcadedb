@@ -48,6 +48,22 @@ public class TransactionIndexContext {
    * queues one entry per non-zero dimension.
    */
   private final Map<String, List<IndexKey>>                                  unorderedEntries = new LinkedHashMap<>();
+  /**
+   * The index each lane above belongs to, remembered when the lane is opened rather than resolved back from its
+   * name at commit time (issue #6105).
+   * <p>
+   * A lane is keyed by the name the index answered to when its first entry was queued, and an {@code LSM_VECTOR}
+   * index renames itself when it is compacted - it is named after the component file it holds, and a compaction
+   * swaps that file in. That compaction runs on the async executor, so it can land between an entry being queued
+   * and this transaction committing. Resolving the lane by its name would then find nothing, and {@link #commit()}
+   * would discard it under the rule that drops the lanes of indexes dropped mid-transaction (TYPE DROP): the record
+   * is written, the index entry is silently lost.
+   * <p>
+   * Holding the reference makes the lane's identity independent of the name. The "was it dropped?" test stays a
+   * schema lookup, but of the index's CURRENT name, so a renamed index is kept and a genuinely dropped one is still
+   * discarded.
+   */
+  private final Map<String, IndexInternal>                                   indexPerLane     = new HashMap<>();
 
   public static class IndexKey {
     public final boolean           unique;
@@ -196,6 +212,26 @@ public class TransactionIndexContext {
   public void removeIndex(final String indexName) {
     indexEntries.remove(indexName);
     unorderedEntries.remove(indexName);
+    indexPerLane.remove(indexName);
+  }
+
+  /**
+   * The index a lane belongs to: the reference captured when the lane was opened, falling back to a lookup by name
+   * for lanes restored wholesale by {@link #setKeys}, which carry no reference. See {@link #indexPerLane}.
+   */
+  private IndexInternal resolveIndex(final String laneName) {
+    final IndexInternal index = indexPerLane.get(laneName);
+    return index != null ? index : (IndexInternal) database.getSchema().getIndexByName(laneName);
+  }
+
+  /**
+   * Whether the index a lane belongs to still exists in the schema - asked of the name the index answers to NOW, so
+   * an index that renamed itself since the lane was opened is kept (issue #6105) while one dropped mid-transaction
+   * (TYPE DROP) is still reported as gone.
+   */
+  private boolean laneIndexStillExists(final String laneName) {
+    final IndexInternal index = indexPerLane.get(laneName);
+    return database.getSchema().existsIndex(index != null ? index.getName() : laneName);
   }
 
   public int getTotalEntries() {
@@ -220,8 +256,8 @@ public class TransactionIndexContext {
 
   public void commit() {
     // REMOVE ENTRIES FOR INDEXES DROPPED DURING THE TRANSACTION (e.g. TYPE DROP)
-    indexEntries.keySet().removeIf(indexName -> !database.getSchema().existsIndex(indexName));
-    unorderedEntries.keySet().removeIf(indexName -> !database.getSchema().existsIndex(indexName));
+    indexEntries.keySet().removeIf(indexName -> !laneIndexStillExists(indexName));
+    unorderedEntries.keySet().removeIf(indexName -> !laneIndexStillExists(indexName));
 
     checkUniqueIndexKeys();
 
@@ -229,7 +265,7 @@ public class TransactionIndexContext {
     // INSERTION ORDER, SO A REMOVE FOLLOWED BY AN ADD ON THE SAME KEY ENDS WITH THE ADD (AND VICE
     // VERSA) WITHOUT THE TWO-PHASE REMOVE-THEN-ADD SPLIT THE ORDERED LANE NEEDS FOR ITS DEDUP MAP.
     for (final Map.Entry<String, List<IndexKey>> entry : unorderedEntries.entrySet()) {
-      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(entry.getKey());
+      final IndexInternal index = resolveIndex(entry.getKey());
       final List<IndexKey> keys = entry.getValue();
       for (int i = 0; i < keys.size(); i++) {
         final IndexKey key = keys.get(i);
@@ -242,7 +278,7 @@ public class TransactionIndexContext {
     unorderedEntries.clear();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
-      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(entry.getKey());
+      final IndexInternal index = resolveIndex(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
@@ -258,7 +294,7 @@ public class TransactionIndexContext {
     }
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
-      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(entry.getKey());
+      final IndexInternal index = resolveIndex(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
       // Batch optimization for vector indexes (issue #3864): collect all ADD operations
@@ -313,6 +349,7 @@ public class TransactionIndexContext {
     }
 
     indexEntries.clear();
+    indexPerLane.clear();
   }
 
   public void addFilesToLock(final IntHashSet modifiedFiles) {
@@ -325,11 +362,11 @@ public class TransactionIndexContext {
     indexNames.addAll(unorderedEntries.keySet());
 
     for (final String indexName : indexNames) {
-      if (!schema.existsIndex(indexName))
+      if (!laneIndexStillExists(indexName))
         // INDEX WAS DROPPED DURING THE TRANSACTION (e.g. TYPE DROP), SKIP IT
         continue;
 
-      final IndexInternal index = (IndexInternal) schema.getIndexByName(indexName);
+      final IndexInternal index = resolveIndex(indexName);
 
       if (!lockedIndexes.add(index))
         // ALREADY IN THE SET
@@ -396,6 +433,8 @@ public class TransactionIndexContext {
       return;
 
     final String indexName = index.getName();
+    // The lane belongs to THIS index, whatever it ends up being called by commit time (issue #6105).
+    indexPerLane.put(indexName, index);
 
     if (!index.isTransactionKeyOrderRequired()) {
       // APPEND-ONLY LANE: NO KEY ORDERING, NO PER-KEY DEDUP. REPLAY ORDER == INSERTION ORDER.
@@ -482,6 +521,7 @@ public class TransactionIndexContext {
   public void reset() {
     indexEntries.clear();
     unorderedEntries.clear();
+    indexPerLane.clear();
   }
 
   public TreeMap<ComparableKey, Map<IndexKey, IndexKey>> getIndexKeys(final String indexName) {
@@ -565,7 +605,7 @@ public class TransactionIndexContext {
     final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = getTxDeletedEntries();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
-      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(indexEntries.getKey());
+      final IndexInternal index = resolveIndex(indexEntries.getKey());
       if (index.isUnique()) {
         final TypeIndex typeIndex = index.getTypeIndex();
 
@@ -593,7 +633,7 @@ public class TransactionIndexContext {
     final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = new HashMap<>();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
-      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(indexEntries.getKey());
+      final IndexInternal index = resolveIndex(indexEntries.getKey());
       if (index.isUnique()) {
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
         for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {

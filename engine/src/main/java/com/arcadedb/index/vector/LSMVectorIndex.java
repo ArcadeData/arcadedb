@@ -590,6 +590,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         previousMutable = mutable;
         previousCompacted = compactedSubIndex;
         mutable = newMutable;
+        final String previousIndexName = indexName;
         indexName = newMutable.getName();
         compactedSubIndex = null;
         currentInsertPageNum = newPages.size() - 1;
@@ -600,6 +601,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // which the index answers offsets into a file that no longer exists - a search landing there reads another
         // entry's bytes, or the dropped compacted component through a null reference.
         publishLocationIndex(liveEntries);
+
+        // Follow the rename in the schema's index registry, in the same critical section. The registry is keyed by
+        // the name the index answers to, and everything that resolves an index by name goes through it - index
+        // maintenance queued on the transaction above all, which is silently discarded when the name it was queued
+        // under is no longer registered (issue #6105).
+        ((LocalSchema) database.getSchema()).indexRenamed(previousIndexName, this);
 
         ((LocalSchema) database.getSchema()).setMigratedFileId(oldFileId, newFileId);
         database.getSchema().getEmbedded().saveConfiguration();
