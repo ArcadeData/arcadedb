@@ -54,8 +54,8 @@ public class PropertyAccessExpression implements Expression {
       return null;
 
     if (variable instanceof RID rid) {
-      // Lazy vertex resolution: algorithm procedures store RIDs to avoid loading all vertices upfront.
-      // Only resolve to Document when a property is actually accessed.
+      // Lazy resolution: a persisted node-valued property is stored as a LINK, and algorithm procedures store RIDs to
+      // avoid loading all vertices upfront. Either way the record is loaded only when a property is actually read.
       return readLinkedProperty(rid, propertyName);
     } else if (variable instanceof Document) {
       final Object rawValue = ((Document) variable).get(propertyName);
@@ -88,29 +88,22 @@ public class PropertyAccessExpression implements Expression {
    * Reads {@code propertyName} through a persisted LINK, shared by this (variable-bound) access path and the chained
    * access path in {@code CypherExpressionBuilder.ChainedPropertyAccessExpression} so both dereference a RID identically.
    * <p>
-   * The RID is resolved to a {@link Document} rather than to a {@code Vertex}: every property-bearing record - vertex,
-   * edge or plain document - is a {@code Document}, and the caller's adjacent {@code instanceof Document} branch already
-   * reads a live value of any of those three shapes the same way, so a LINK to a non-vertex record is not an error. It
-   * also removes the {@code ClassCastException} that {@code RID.asVertex()} turned into a {@link RecordNotFoundException}.
-   * <p>
-   * What remains a failure is a RID that resolves to nothing, typically because the referenced record was deleted and
-   * nothing rewrote the property holding the link. That is reported as a {@link CommandExecutionException} carrying the
-   * same {@code TypeError: Cannot access property '<name>' on ...} wording the callers use for every other base type
-   * they cannot read a property from, so the query fails the way a Cypher type error fails instead of letting an
-   * engine-level {@link RecordNotFoundException} escape the query engine (issue #5898).
-   * <p>
-   * The resolution is {@code getRecord()} plus an {@code instanceof} rather than the more idiomatic
-   * {@code RID.asDocument()} for one reason: {@code asDocument()} answers a wrong-shaped record with a bare
-   * {@code ClassCastException}, so using it here would mean catching that - and a {@code catch (ClassCastException)}
-   * around a record lookup also swallows any unrelated cast failure raised deeper inside it, turning a real engine
-   * fault into a misleading "the linked record has no properties". The {@code instanceof} answers only the question
-   * being asked.
-   * <p>
-   * The {@code RecordNotFoundException} is deliberately NOT kept as the cause: {@code AbstractServerHttpHandler}
-   * classifies a {@code CommandExecutionException} by {@code getCause()} when there is one, so attaching it would route
-   * the response through the catch-all arm ("Error on transaction commit") instead of the Cypher-error arm ("Cannot
-   * execute command"), i.e. re-introduce the very message this fix removes. Nothing is lost - the RID and the reason
-   * are both in the message.
+   * Three decisions here are load-bearing and easy to undo by accident:
+   * <ul>
+   *   <li>The target is a {@link Document}, not a {@code Vertex}. Vertex, edge and plain document are all
+   *       {@code Document}s and the adjacent {@code instanceof Document} branch already reads all three the same way,
+   *       so a LINK to a non-vertex record is not an error - which is what {@code RID.asVertex()} made it, by
+   *       reporting its own {@code ClassCastException} as a {@link RecordNotFoundException}.</li>
+   *   <li>{@code getRecord()} plus {@code instanceof} rather than the shorter {@code RID.asDocument()}, which casts
+   *       internally: using it would mean a {@code catch (ClassCastException)} around a record lookup, which also
+   *       swallows any unrelated cast failure raised deeper inside it and reports a real engine fault as "the linked
+   *       record has no properties".</li>
+   *   <li>The {@link RecordNotFoundException} is NOT kept as the cause. {@code AbstractServerHttpHandler} classifies a
+   *       {@code CommandExecutionException} by {@code getCause()} when there is one, so attaching it routes the
+   *       response through the catch-all arm ("Error on transaction commit") instead of the Cypher-error arm ("Cannot
+   *       execute command") - the very message this replaced (issue #5898). Nothing is lost: the RID and the reason
+   *       are both in the message.</li>
+   * </ul>
    */
   public static Object readLinkedProperty(final RID rid, final String propertyName) {
     final Record record;
