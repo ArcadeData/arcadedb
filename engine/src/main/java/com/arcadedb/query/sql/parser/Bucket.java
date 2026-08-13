@@ -28,12 +28,10 @@ public class Bucket extends SimpleNode {
   public InputParameter inputParam;
 
   public Bucket(final String bucketName) {
-    super(-1);
     this.bucketName = bucketName;
   }
 
-  public Bucket(final int id) {
-    super(id);
+  public Bucket() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -60,7 +58,7 @@ public class Bucket extends SimpleNode {
   }
 
   public Bucket copy() {
-    final Bucket result = new Bucket(-1);
+    final Bucket result = new Bucket();
     result.bucketName = bucketName;
     result.bucketNumber = bucketNumber;
     result.inputParam = inputParam != null ? inputParam.copy() : null;

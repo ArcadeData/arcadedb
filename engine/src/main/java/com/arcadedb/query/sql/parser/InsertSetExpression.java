@@ -31,10 +31,6 @@ public class InsertSetExpression {
   public InsertSetExpression() {
   }
 
-  public InsertSetExpression(final int id) {
-    // Constructor for compatibility with visitor pattern
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" = ");

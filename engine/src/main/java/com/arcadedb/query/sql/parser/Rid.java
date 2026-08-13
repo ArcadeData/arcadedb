@@ -38,14 +38,12 @@ public class Rid extends SimpleNode {
   public Expression expression;
   public boolean    legacy;
 
-  public Rid(final int id) {
-    super(id);
+  public Rid() {
   }
 
   public Rid(final RID rid) {
-    super(-1);
-    bucket = new PInteger(-1).setValue(rid.getBucketId());
-    position = new PInteger(-1).setValue(rid.getPosition());
+    bucket = new PInteger().setValue(rid.getBucketId());
+    position = new PInteger().setValue(rid.getPosition());
     legacy = true;
   }
 
@@ -112,7 +110,7 @@ public class Rid extends SimpleNode {
   }
 
   public Rid copy() {
-    final Rid result = new Rid(-1);
+    final Rid result = new Rid();
     result.bucket = bucket == null ? null : bucket.copy();
     result.position = position == null ? null : position.copy();
     result.expression = expression == null ? null : expression.copy();
@@ -162,7 +160,7 @@ public class Rid extends SimpleNode {
     if (expression != null) {
       final RID rid = toRecordId((Result) null, new BasicCommandContext());
       if (rid != null) {
-        final PInteger result = new PInteger(-1);
+        final PInteger result = new PInteger();
         result.setValue(rid.getBucketId());
         return result;
       }
@@ -174,7 +172,7 @@ public class Rid extends SimpleNode {
     if (expression != null) {
       final RID rid = toRecordId((Result) null, new BasicCommandContext());
       if (rid != null) {
-        final PInteger result = new PInteger(-1);
+        final PInteger result = new PInteger();
         result.setValue(rid.getPosition());
         return result;
       }

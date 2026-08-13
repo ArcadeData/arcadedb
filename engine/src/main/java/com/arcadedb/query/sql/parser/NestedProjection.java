@@ -39,8 +39,7 @@ public class NestedProjection extends SimpleNode {
   public NestedProjectionItem       starItem;
   private   PInteger                   recursion; //not used for now
 
-  public NestedProjection(final int id) {
-    super(id);
+  public NestedProjection() {
   }
 
   /**
@@ -212,7 +211,7 @@ public class NestedProjection extends SimpleNode {
   }
 
   public NestedProjection copy() {
-    final NestedProjection result = new NestedProjection(-1);
+    final NestedProjection result = new NestedProjection();
     result.includeItems = includeItems.stream().map(NestedProjectionItem::copy).toList();
     result.excludeItems = excludeItems.stream().map(NestedProjectionItem::copy).toList();
     result.starItem = starItem == null ? null : starItem.copy();

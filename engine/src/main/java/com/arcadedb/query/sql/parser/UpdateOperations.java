@@ -48,8 +48,7 @@ public class UpdateOperations extends SimpleNode {
   public List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
   public List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
 
-  public UpdateOperations(final int id) {
-    super(id);
+  public UpdateOperations() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -128,7 +127,7 @@ public class UpdateOperations extends SimpleNode {
   }
 
   public UpdateOperations copy() {
-    final UpdateOperations result = new UpdateOperations(-1);
+    final UpdateOperations result = new UpdateOperations();
     result.type = type;
     result.updateItems = updateItems == null ? null : updateItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.updatePutItems = updatePutItems == null ? null : updatePutItems.stream().map(x -> x.copy()).collect(Collectors.toList());

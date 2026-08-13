@@ -30,8 +30,7 @@ public class Timeout extends SimpleNode {
   protected Number val;
   protected String failureStrategy;
 
-  public Timeout(final int id) {
-    super(id);
+  public Timeout() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -43,7 +42,7 @@ public class Timeout extends SimpleNode {
   }
 
   public Timeout copy() {
-    final Timeout result = new Timeout(-1);
+    final Timeout result = new Timeout();
     result.val = val;
     result.failureStrategy = failureStrategy;
     return result;

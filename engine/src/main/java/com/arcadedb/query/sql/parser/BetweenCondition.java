@@ -36,8 +36,7 @@ public class BetweenCondition extends BooleanExpression {
   public Expression second;
   public Expression third;
 
-  public BetweenCondition(final int id) {
-    super(id);
+  public BetweenCondition() {
   }
 
   @Override
@@ -130,7 +129,7 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public BooleanExpression copy() {
-    final BetweenCondition result = new BetweenCondition(-1);
+    final BetweenCondition result = new BetweenCondition();
     result.first = first.copy();
     result.second = second.copy();
     result.third = third.copy();

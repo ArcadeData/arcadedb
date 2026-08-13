@@ -30,8 +30,7 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   public boolean lightweight    = false;
   public boolean unique         = false;
 
-  public CreateEdgeTypeStatement(final int id) {
-    super(id);
+  public CreateEdgeTypeStatement() {
   }
 
   @Override
@@ -76,7 +75,7 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
 
   @Override
   public CreateEdgeTypeStatement copy() {
-    final CreateEdgeTypeStatement copy = (CreateEdgeTypeStatement) super.copy(new CreateEdgeTypeStatement(-1));
+    final CreateEdgeTypeStatement copy = (CreateEdgeTypeStatement) super.copy(new CreateEdgeTypeStatement());
     copy.unidirectional = unidirectional;
     copy.lightweight = lightweight;
     copy.unique = unique;

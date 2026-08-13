@@ -39,8 +39,7 @@ public class DropTriggerStatement extends DDLStatement {
   public Identifier name;
   public boolean ifExists = false;
 
-  public DropTriggerStatement(final int id) {
-    super(id);
+  public DropTriggerStatement() {
   }
 
   @Override
@@ -82,7 +81,7 @@ public class DropTriggerStatement extends DDLStatement {
 
   @Override
   public DropTriggerStatement copy() {
-    final DropTriggerStatement result = new DropTriggerStatement(-1);
+    final DropTriggerStatement result = new DropTriggerStatement();
     result.name = name == null ? null : name.copy();
     result.ifExists = ifExists;
     return result;

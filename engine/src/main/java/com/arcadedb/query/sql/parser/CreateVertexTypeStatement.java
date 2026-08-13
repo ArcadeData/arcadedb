@@ -25,8 +25,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
 public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
-  public CreateVertexTypeStatement(final int id) {
-    super(id);
+  public CreateVertexTypeStatement() {
   }
 
   @Override
@@ -60,7 +59,7 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
 
   @Override
   public CreateVertexTypeStatement copy() {
-    return (CreateVertexTypeStatement) super.copy(new CreateVertexTypeStatement(-1));
+    return (CreateVertexTypeStatement) super.copy(new CreateVertexTypeStatement());
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */

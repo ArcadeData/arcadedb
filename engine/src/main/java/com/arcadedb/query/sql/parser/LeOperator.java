@@ -25,8 +25,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 public class LeOperator extends SimpleNode implements BinaryCompareOperator {
-  public LeOperator(final int id) {
-    super(id);
+  public LeOperator() {
   }
 
   @Override

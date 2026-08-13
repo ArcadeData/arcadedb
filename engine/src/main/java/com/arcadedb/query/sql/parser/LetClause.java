@@ -29,8 +29,7 @@ public class LetClause extends SimpleNode {
 
   public List<LetItem> items = new ArrayList<LetItem>();
 
-  public LetClause(final int id) {
-    super(id);
+  public LetClause() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -50,7 +49,7 @@ public class LetClause extends SimpleNode {
   }
 
   public LetClause copy() {
-    final LetClause result = new LetClause(-1);
+    final LetClause result = new LetClause();
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

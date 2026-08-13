@@ -41,8 +41,7 @@ public class AlterPropertyStatement extends DDLStatement {
   public Expression customPropertyValue;
   public Identifier settingName;
 
-  public AlterPropertyStatement(final int id) {
-    super(id);
+  public AlterPropertyStatement() {
   }
 
   @Override
@@ -144,7 +143,7 @@ public class AlterPropertyStatement extends DDLStatement {
 
   @Override
   public AlterPropertyStatement copy() {
-    final AlterPropertyStatement result = new AlterPropertyStatement(-1);
+    final AlterPropertyStatement result = new AlterPropertyStatement();
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.customPropertyName = customPropertyName == null ? null : customPropertyName.copy();

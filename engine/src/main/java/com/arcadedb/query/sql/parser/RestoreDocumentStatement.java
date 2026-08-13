@@ -49,8 +49,7 @@ public class RestoreDocumentStatement extends SimpleExecStatement {
   public Rid        targetRid;
   public InsertBody insertBody;
 
-  public RestoreDocumentStatement(final int id) {
-    super(id);
+  public RestoreDocumentStatement() {
   }
 
   @Override
@@ -94,7 +93,7 @@ public class RestoreDocumentStatement extends SimpleExecStatement {
 
   @Override
   public RestoreDocumentStatement copy() {
-    final RestoreDocumentStatement result = new RestoreDocumentStatement(-1);
+    final RestoreDocumentStatement result = new RestoreDocumentStatement();
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetRid = targetRid == null ? null : targetRid.copy();
     result.insertBody = insertBody == null ? null : insertBody.copy();

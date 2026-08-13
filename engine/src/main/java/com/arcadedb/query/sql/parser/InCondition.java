@@ -50,8 +50,7 @@ public class InCondition extends BooleanExpression {
       Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
   private final        Object inputFinalValue = UNSET;
 
-  public InCondition(final int id) {
-    super(id);
+  public InCondition() {
   }
 
   @Override
@@ -271,7 +270,7 @@ public class InCondition extends BooleanExpression {
 
   @Override
   public InCondition copy() {
-    final InCondition result = new InCondition(-1);
+    final InCondition result = new InCondition();
     result.operator = operator == null ? null : operator.copy();
     result.left = left == null ? null : left.copy();
     result.rightMathExpression = rightMathExpression == null ? null : rightMathExpression.copy();
@@ -416,12 +415,12 @@ public class InCondition extends BooleanExpression {
     }
 
     // Normal syntax: field IN [values]
-    Expression item = new Expression(-1);
+    Expression item = new Expression();
     if (getRightMathExpression() != null) {
       item.setMathExpression(getRightMathExpression());
       return item;
     } else if (getRightParam() != null) {
-      BaseExpression e = new BaseExpression(-1);
+      BaseExpression e = new BaseExpression();
       e.setInputParam(getRightParam().copy());
       item.setMathExpression(e);
       return item;
@@ -440,12 +439,12 @@ public class InCondition extends BooleanExpression {
     }
 
     // Normal syntax: field IN [values]
-    Expression item = new Expression(-1);
+    Expression item = new Expression();
     if (getRightMathExpression() != null) {
       item.setMathExpression(getRightMathExpression());
       return item;
     } else if (getRightParam() != null) {
-      BaseExpression e = new BaseExpression(-1);
+      BaseExpression e = new BaseExpression();
       e.setInputParam(getRightParam().copy());
       item.setMathExpression(e);
       return item;

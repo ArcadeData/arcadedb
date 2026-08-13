@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InOperatorTest {
   @Test
   void test() {
-    final InOperator op = new InOperator(-1);
+    final InOperator op = new InOperator();
 
     assertThat(op.execute(null, null, null)).isFalse();
     assertThat(op.execute(null, null, "foo")).isFalse();
@@ -54,7 +54,7 @@ class InOperatorTest {
 
   @Test
   void issue1785() {
-    final InOperator op = new InOperator(-1);
+    final InOperator op = new InOperator();
 
     final List<Object> nullList = new ArrayList<>();
     nullList.add(null);

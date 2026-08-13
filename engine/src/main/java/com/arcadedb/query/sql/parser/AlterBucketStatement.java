@@ -32,8 +32,7 @@ public class AlterBucketStatement extends DDLStatement {
   public Identifier attributeName;
   public Expression attributeValue;
 
-  public AlterBucketStatement(final int id) {
-    super(id);
+  public AlterBucketStatement() {
   }
 
   @Override
@@ -51,7 +50,7 @@ public class AlterBucketStatement extends DDLStatement {
 
   @Override
   public AlterBucketStatement copy() {
-    final AlterBucketStatement result = new AlterBucketStatement(-1);
+    final AlterBucketStatement result = new AlterBucketStatement();
     result.name = name == null ? null : name.copy();
     result.attributeName = attributeName == null ? null : attributeName.copy();
     result.starred = starred;

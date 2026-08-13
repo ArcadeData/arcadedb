@@ -41,18 +41,15 @@ public class Identifier extends SimpleNode {
   protected boolean internalAlias = false;
 
   public Identifier(final Identifier copyFrom, final boolean quoted) {
-    this(-1);
     this.value = copyFrom.value;
     this.quoted = quoted;
   }
 
   public Identifier(final String content) {
-    this(-1);
     setStringValue(content);
   }
 
-  protected Identifier(final int id) {
-    super(id);
+  protected Identifier() {
   }
 
   /**
@@ -61,7 +58,7 @@ public class Identifier extends SimpleNode {
    * result on the following {@link #setQuotedStringValue(String)}.
    */
   public static Identifier quoted(final String spelling) {
-    final Identifier identifier = new Identifier(-1);
+    final Identifier identifier = new Identifier();
     identifier.setQuotedStringValue(spelling);
     return identifier;
   }

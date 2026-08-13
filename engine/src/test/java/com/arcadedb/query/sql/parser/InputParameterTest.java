@@ -33,7 +33,7 @@ class InputParameterTest {
   void floatArrayNotConvertedToPCollection() {
     // Given: A float array parameter (common for vector operations)
     final float[] floatArray = new float[]{1.0f, 2.0f, 3.0f};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(floatArray);
@@ -47,7 +47,7 @@ class InputParameterTest {
   void intArrayNotConvertedToPCollection() {
     // Given: An int array parameter
     final int[] intArray = new int[]{1, 2, 3};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(intArray);
@@ -61,7 +61,7 @@ class InputParameterTest {
   void doubleArrayNotConvertedToPCollection() {
     // Given: A double array parameter
     final double[] doubleArray = new double[]{1.0, 2.0, 3.0};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(doubleArray);
@@ -75,7 +75,7 @@ class InputParameterTest {
   void longArrayNotConvertedToPCollection() {
     // Given: A long array parameter
     final long[] longArray = new long[]{1L, 2L, 3L};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(longArray);
@@ -89,7 +89,7 @@ class InputParameterTest {
   void shortArrayNotConvertedToPCollection() {
     // Given: A short array parameter
     final short[] shortArray = new short[]{1, 2, 3};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(shortArray);
@@ -103,7 +103,7 @@ class InputParameterTest {
   void byteArrayNotConvertedToPCollection() {
     // Existing behavior should still work
     final byte[] byteArray = new byte[]{1, 2, 3};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(byteArray);
@@ -117,7 +117,7 @@ class InputParameterTest {
   void booleanArrayNotConvertedToPCollection() {
     // Given: A boolean array parameter
     final boolean[] booleanArray = new boolean[]{true, false, true};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(booleanArray);
@@ -131,7 +131,7 @@ class InputParameterTest {
   void charArrayNotConvertedToPCollection() {
     // Given: A char array parameter
     final char[] charArray = new char[]{'a', 'b', 'c'};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(charArray);
@@ -145,7 +145,7 @@ class InputParameterTest {
   void wrapperFloatArrayNotConvertedToPCollection() {
     // Float[] (boxed) should also be excluded for consistency
     final Float[] floatWrapperArray = new Float[]{1.0f, 2.0f, 3.0f};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(floatWrapperArray);
@@ -159,7 +159,7 @@ class InputParameterTest {
   void wrapperIntegerArrayNotConvertedToPCollection() {
     // Integer[] (boxed) should also be excluded for consistency
     final Integer[] integerWrapperArray = new Integer[]{1, 2, 3};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(integerWrapperArray);
@@ -173,7 +173,7 @@ class InputParameterTest {
   void wrapperDoubleArrayNotConvertedToPCollection() {
     // Double[] (boxed) should also be excluded for consistency
     final Double[] doubleWrapperArray = new Double[]{1.0, 2.0, 3.0};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(doubleWrapperArray);
@@ -187,7 +187,7 @@ class InputParameterTest {
   void wrapperByteArrayNotConvertedToPCollection() {
     // Byte[] (boxed) should also be excluded (was already excluded before)
     final Byte[] byteWrapperArray = new Byte[]{1, 2, 3};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(byteWrapperArray);
@@ -201,7 +201,7 @@ class InputParameterTest {
   void objectArrayStillConvertedToPCollection() {
     // String[] should still be converted to PCollection (existing behavior for object arrays)
     final String[] stringArray = new String[]{"a", "b", "c"};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(stringArray);
@@ -215,7 +215,7 @@ class InputParameterTest {
   void emptyFloatArrayNotConvertedToPCollection() {
     // Edge case: Empty float array
     final float[] emptyArray = new float[0];
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(emptyArray);
@@ -229,7 +229,7 @@ class InputParameterTest {
   void singleElementFloatArrayNotConvertedToPCollection() {
     // Edge case: Single element float array
     final float[] singleElementArray = new float[]{42.0f};
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(singleElementArray);
@@ -246,7 +246,7 @@ class InputParameterTest {
     for (int i = 0; i < 128; i++) {
       largeArray[i] = i * 1.0f;
     }
-    final InputParameter param = new InputParameter(-1);
+    final InputParameter param = new InputParameter();
 
     // When: Converting to parsed tree
     final Object result = param.toParsedTree(largeArray);

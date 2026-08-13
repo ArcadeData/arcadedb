@@ -52,8 +52,7 @@ public class CompactIndexStatement extends DDLStatement {
   public boolean    all = false;
   public Identifier name;
 
-  public CompactIndexStatement(final int id) {
-    super(id);
+  public CompactIndexStatement() {
   }
 
   @Override
@@ -149,7 +148,7 @@ public class CompactIndexStatement extends DDLStatement {
 
   @Override
   public CompactIndexStatement copy() {
-    final CompactIndexStatement result = new CompactIndexStatement(-1);
+    final CompactIndexStatement result = new CompactIndexStatement();
     result.all = all;
     result.name = name == null ? null : name.copy();
     return result;

@@ -27,8 +27,7 @@ public class LetItem extends SimpleNode {
   Expression expression;
   Statement  query;
 
-  public LetItem(final int id) {
-    super(id);
+  public LetItem() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -44,7 +43,7 @@ public class LetItem extends SimpleNode {
   }
 
   public LetItem copy() {
-    final LetItem result = new LetItem(-1);
+    final LetItem result = new LetItem();
     result.varName = varName.copy();
     result.expression = expression == null ? null : expression.copy();
     result.query = query == null ? null : query.copy();

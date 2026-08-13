@@ -35,8 +35,7 @@ public class ArrayConcatExpression extends SimpleNode {
 
   List<ArrayConcatExpressionElement> childExpressions = new ArrayList<>();
 
-  public ArrayConcatExpression(final int id) {
-    super(id);
+  public ArrayConcatExpression() {
   }
 
   public List<ArrayConcatExpressionElement> getChildExpressions() {
@@ -127,7 +126,7 @@ public class ArrayConcatExpression extends SimpleNode {
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
     if (isAggregate(context)) {
-      final ArrayConcatExpression result = new ArrayConcatExpression(-1);
+      final ArrayConcatExpression result = new ArrayConcatExpression();
       for (final ArrayConcatExpressionElement expr : this.childExpressions) {
         if (expr.isAggregate(context)) {
           // Split the aggregate expression, passing the aggregateSplit context
@@ -136,7 +135,7 @@ public class ArrayConcatExpression extends SimpleNode {
             result.childExpressions.add(element);
           } else {
             // Convert Expression to ArrayConcatExpressionElement
-            final ArrayConcatExpressionElement element = new ArrayConcatExpressionElement(-1);
+            final ArrayConcatExpressionElement element = new ArrayConcatExpressionElement();
             element.mathExpression = splitResult.mathExpression;
             element.json = splitResult.json;
             element.rid = splitResult.rid;
@@ -161,7 +160,7 @@ public class ArrayConcatExpression extends SimpleNode {
   }
 
   public ArrayConcatExpression copy() {
-    final ArrayConcatExpression result = new ArrayConcatExpression(-1);
+    final ArrayConcatExpression result = new ArrayConcatExpression();
     this.childExpressions.forEach(x -> result.childExpressions.add(x.copy()));
     return result;
   }

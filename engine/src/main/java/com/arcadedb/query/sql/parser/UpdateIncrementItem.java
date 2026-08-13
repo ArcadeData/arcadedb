@@ -28,8 +28,7 @@ public class UpdateIncrementItem extends SimpleNode {
   protected Modifier   leftModifier;
   protected Expression right;
 
-  public UpdateIncrementItem(final int id) {
-    super(id);
+  public UpdateIncrementItem() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -57,7 +56,7 @@ public class UpdateIncrementItem extends SimpleNode {
   }
 
   public UpdateIncrementItem copy() {
-    final UpdateIncrementItem result = new UpdateIncrementItem(-1);
+    final UpdateIncrementItem result = new UpdateIncrementItem();
     result.left = left == null ? null : left.copy();
     result.leftModifier = leftModifier == null ? null : leftModifier.copy();
     result.right = right == null ? null : right.copy();

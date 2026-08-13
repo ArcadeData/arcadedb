@@ -24,8 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 
 public class NeqOperator extends SimpleNode implements BinaryCompareOperator {
-  public NeqOperator(final int id) {
-    super(id);
+  public NeqOperator() {
   }
 
   @Override

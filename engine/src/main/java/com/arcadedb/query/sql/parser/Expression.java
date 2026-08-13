@@ -43,8 +43,7 @@ public class Expression extends SimpleNode {
   public Boolean               booleanValue;
   public WhereClause           whereCondition;
 
-  public Expression(final int id) {
-    super(id);
+  public Expression() {
   }
 
   public Expression(final Identifier identifier) {
@@ -342,7 +341,7 @@ public class Expression extends SimpleNode {
 
   public Expression splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
     if (isAggregate(context)) {
-      final Expression result = new Expression(-1);
+      final Expression result = new Expression();
       if (mathExpression != null) {
         final SimpleNode splitResult = mathExpression.splitForAggregation(aggregateSplit, context);
         if (splitResult instanceof MathExpression expression) {
@@ -383,7 +382,7 @@ public class Expression extends SimpleNode {
   }
 
   public Expression copy() {
-    final Expression result = new Expression(-1);
+    final Expression result = new Expression();
     result.singleQuotes = singleQuotes;
     result.doubleQuotes = doubleQuotes;
     result.isNull = isNull;

@@ -36,8 +36,7 @@ public class ProfileStatement extends Statement {
 
   public Statement statement;
 
-  public ProfileStatement(final int id) {
-    super(id);
+  public ProfileStatement() {
   }
 
   @Override
@@ -100,7 +99,7 @@ public class ProfileStatement extends Statement {
 
   @Override
   public ProfileStatement copy() {
-    final ProfileStatement result = new ProfileStatement(-1);
+    final ProfileStatement result = new ProfileStatement();
     result.statement = statement == null ? null : statement.copy();
     return result;
   }

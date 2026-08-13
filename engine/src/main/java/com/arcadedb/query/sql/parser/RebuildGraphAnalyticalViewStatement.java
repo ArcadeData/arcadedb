@@ -31,8 +31,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier name;
 
-  public RebuildGraphAnalyticalViewStatement(final int id) {
-    super(id);
+  public RebuildGraphAnalyticalViewStatement() {
   }
 
   @Override

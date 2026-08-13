@@ -36,8 +36,7 @@ public class LetStatement extends SimpleExecStatement {
   public Statement  statement;
   public Expression expression;
 
-  public LetStatement(final int id) {
-    super(id);
+  public LetStatement() {
   }
 
   @Override
@@ -83,7 +82,7 @@ public class LetStatement extends SimpleExecStatement {
 
   @Override
   public LetStatement copy() {
-    final LetStatement result = new LetStatement(-1);
+    final LetStatement result = new LetStatement();
     result.variableName = variableName == null ? null : variableName.copy();
     result.statement = statement == null ? null : statement.copy();
     result.expression = expression == null ? null : expression.copy();

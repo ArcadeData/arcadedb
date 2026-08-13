@@ -51,8 +51,7 @@ public class SuffixIdentifier extends SimpleNode {
   protected RecordAttribute recordAttribute;
   public boolean         star = false;
 
-  public SuffixIdentifier(final int id) {
-    super(id);
+  public SuffixIdentifier() {
   }
 
   public SuffixIdentifier(final Identifier identifier) {
@@ -313,7 +312,7 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public SuffixIdentifier copy() {
-    final SuffixIdentifier result = new SuffixIdentifier(-1);
+    final SuffixIdentifier result = new SuffixIdentifier();
     result.identifier = identifier == null ? null : identifier.copy();
     result.recordAttribute = recordAttribute == null ? null : recordAttribute.copy();
     result.star = star;

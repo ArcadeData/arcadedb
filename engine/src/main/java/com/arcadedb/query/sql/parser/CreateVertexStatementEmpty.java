@@ -21,8 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 public class CreateVertexStatementEmpty extends CreateVertexStatement {
-  public CreateVertexStatementEmpty(final int id) {
-    super(id);
+  public CreateVertexStatementEmpty() {
   }
 
 }

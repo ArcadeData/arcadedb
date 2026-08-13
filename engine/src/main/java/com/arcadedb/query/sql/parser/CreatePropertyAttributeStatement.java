@@ -32,8 +32,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   public Identifier settingName;
   public Expression settingValue;
 
-  public CreatePropertyAttributeStatement(final int id) {
-    super(id);
+  public CreatePropertyAttributeStatement() {
   }
 
   @Override
@@ -46,7 +45,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   }
 
   public CreatePropertyAttributeStatement copy() {
-    final CreatePropertyAttributeStatement result = new CreatePropertyAttributeStatement(-1);
+    final CreatePropertyAttributeStatement result = new CreatePropertyAttributeStatement();
     result.settingName = settingName == null ? null : settingName.copy();
     result.settingValue = settingValue == null ? null : settingValue.copy();
     return result;

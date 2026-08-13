@@ -36,8 +36,7 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier name;
   public boolean    ifExists = false;
 
-  public DropGraphAnalyticalViewStatement(final int id) {
-    super(id);
+  public DropGraphAnalyticalViewStatement() {
   }
 
   @Override

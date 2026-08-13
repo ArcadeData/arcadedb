@@ -50,8 +50,7 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
   public List<ColumnDef> tags   = new ArrayList<>();
   public List<ColumnDef> fields = new ArrayList<>();
 
-  public CreateTimeSeriesTypeStatement(final int id) {
-    super(id);
+  public CreateTimeSeriesTypeStatement() {
   }
 
   @Override
@@ -153,7 +152,7 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
 
   @Override
   public CreateTimeSeriesTypeStatement copy() {
-    final CreateTimeSeriesTypeStatement result = new CreateTimeSeriesTypeStatement(-1);
+    final CreateTimeSeriesTypeStatement result = new CreateTimeSeriesTypeStatement();
     result.name = name == null ? null : name.copy();
     result.ifNotExists = ifNotExists;
     result.timestampColumn = timestampColumn == null ? null : timestampColumn.copy();

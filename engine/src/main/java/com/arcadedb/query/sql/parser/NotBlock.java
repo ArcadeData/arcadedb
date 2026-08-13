@@ -33,8 +33,7 @@ public class NotBlock extends BooleanExpression {
 
   public boolean negate = false;
 
-  public NotBlock(final int id) {
-    super(id);
+  public NotBlock() {
   }
 
   @Override
@@ -109,7 +108,7 @@ public class NotBlock extends BooleanExpression {
 
   @Override
   public NotBlock copy() {
-    final NotBlock result = new NotBlock(-1);
+    final NotBlock result = new NotBlock();
     result.sub = sub != null ? sub.copy() : null;
     result.negate = negate;
     return result;

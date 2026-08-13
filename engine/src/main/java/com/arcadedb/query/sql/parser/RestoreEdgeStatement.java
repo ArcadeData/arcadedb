@@ -59,8 +59,7 @@ public class RestoreEdgeStatement extends SimpleExecStatement {
   public Rid        toRid;
   public InsertBody insertBody;
 
-  public RestoreEdgeStatement(final int id) {
-    super(id);
+  public RestoreEdgeStatement() {
   }
 
   @Override
@@ -128,7 +127,7 @@ public class RestoreEdgeStatement extends SimpleExecStatement {
 
   @Override
   public RestoreEdgeStatement copy() {
-    final RestoreEdgeStatement result = new RestoreEdgeStatement(-1);
+    final RestoreEdgeStatement result = new RestoreEdgeStatement();
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetRid = targetRid == null ? null : targetRid.copy();
     result.fromRid = fromRid == null ? null : fromRid.copy();

@@ -25,8 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import java.util.Map;
 
 public class ContainsValueOperator extends SimpleNode implements BinaryCompareOperator {
-  public ContainsValueOperator(final int id) {
-    super(id);
+  public ContainsValueOperator() {
   }
 
   @Override

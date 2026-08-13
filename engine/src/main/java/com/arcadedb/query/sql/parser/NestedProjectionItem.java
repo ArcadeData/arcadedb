@@ -33,13 +33,12 @@ public class NestedProjectionItem extends SimpleNode {
   public NestedProjection expansion;
   public Identifier       alias;
 
-  public NestedProjectionItem(final int id) {
-    super(id);
+  public NestedProjectionItem() {
   }
 
   @Override
   public NestedProjectionItem copy() {
-    final NestedProjectionItem result = new NestedProjectionItem(-1);
+    final NestedProjectionItem result = new NestedProjectionItem();
     result.exclude = exclude;
     result.star = star;
     result.expression = expression == null ? null : expression.copy();

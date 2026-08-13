@@ -33,8 +33,7 @@ public class MatchPathItemFirst extends MatchPathItem {
   protected          FunctionCall function;
   protected volatile MethodCall   methodWrapper;
 
-  public MatchPathItemFirst(final int id) {
-    super(id);
+  public MatchPathItemFirst() {
   }
 
   public boolean isBidirectional() {
@@ -89,7 +88,7 @@ public class MatchPathItemFirst extends MatchPathItem {
     if (methodWrapper == null) {
       synchronized (this) {
         if (methodWrapper == null) {
-          final MethodCall m = new MethodCall(-1);
+          final MethodCall m = new MethodCall();
           m.params = function.params;
           m.methodName = function.name;
           methodWrapper = m;

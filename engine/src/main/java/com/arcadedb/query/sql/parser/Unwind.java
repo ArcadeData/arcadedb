@@ -29,8 +29,7 @@ import java.util.stream.Collectors;
 public class Unwind extends SimpleNode {
   public List<Identifier> items = new ArrayList<Identifier>();
 
-  public Unwind(final int id) {
-    super(id);
+  public Unwind() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -44,7 +43,7 @@ public class Unwind extends SimpleNode {
   }
 
   public Unwind copy() {
-    final Unwind result = new Unwind(-1);
+    final Unwind result = new Unwind();
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

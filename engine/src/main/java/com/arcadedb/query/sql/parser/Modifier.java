@@ -41,8 +41,7 @@ public class Modifier extends SimpleNode {
   public NestedProjection          nestedProjection;
   public Modifier                  next;
 
-  public Modifier(final int id) {
-    super(id);
+  public Modifier() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -145,7 +144,7 @@ public class Modifier extends SimpleNode {
   }
 
   public Modifier copy() {
-    final Modifier result = new Modifier(-1);
+    final Modifier result = new Modifier();
     result.squareBrackets = squareBrackets;
     result.arrayRange = arrayRange == null ? null : arrayRange.copy();
     result.condition = condition == null ? null : condition.copy();

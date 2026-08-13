@@ -40,8 +40,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   public int          compactionThreshold = -1; // -1 means not set (use default)
   public boolean      ifNotExists  = false;
 
-  public CreateGraphAnalyticalViewStatement(final int id) {
-    super(id);
+  public CreateGraphAnalyticalViewStatement() {
   }
 
   @Override

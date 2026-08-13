@@ -45,8 +45,7 @@ public class UpdateItem extends SimpleNode {
   public int        operator;
   public Expression right;
 
-  public UpdateItem(final int id) {
-    super(id);
+  public UpdateItem() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -77,7 +76,7 @@ public class UpdateItem extends SimpleNode {
   }
 
   public UpdateItem copy() {
-    final UpdateItem result = new UpdateItem(-1);
+    final UpdateItem result = new UpdateItem();
     result.left = left == null ? null : left.copy();
     result.leftModifier = leftModifier == null ? null : leftModifier.copy();
     result.operator = operator;
@@ -220,7 +219,7 @@ public class UpdateItem extends SimpleNode {
     if (leftModifier != null)
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
 
-    final MathExpression mathExp = new MathExpression(-1);
+    final MathExpression mathExp = new MathExpression();
     mathExp.getChildExpressions().add(leftEx.getMathExpression());
     mathExp.getChildExpressions().add(new ParenthesisExpression(right.copy()));
     mathExp.getOperators().add(explicitOperator);

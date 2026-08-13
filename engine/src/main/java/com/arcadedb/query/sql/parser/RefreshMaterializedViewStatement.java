@@ -27,8 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 public class RefreshMaterializedViewStatement extends DDLStatement {
   public Identifier name;
 
-  public RefreshMaterializedViewStatement(final int id) {
-    super(id);
+  public RefreshMaterializedViewStatement() {
   }
 
   @Override

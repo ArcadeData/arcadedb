@@ -33,8 +33,7 @@ public class FieldMatchPathItem extends MatchPathItem {
   public    Identifier       field;
   private   SuffixIdentifier exp;
 
-  public FieldMatchPathItem(final int id) {
-    super(id);
+  public FieldMatchPathItem() {
   }
 
   /**
@@ -98,7 +97,7 @@ public class FieldMatchPathItem extends MatchPathItem {
   public MatchPathItem copy() {
     FieldMatchPathItem result = null;
     try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      result = getClass().getConstructor().newInstance();
     } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }

@@ -27,8 +27,7 @@ public class FloatingPoint extends PNumber {
   protected String stringValue = null;
   Number finalValue = null;
 
-  public FloatingPoint(final int id) {
-    super(id);
+  public FloatingPoint() {
   }
 
   @Override
@@ -88,7 +87,7 @@ public class FloatingPoint extends PNumber {
 
   @Override
   public FloatingPoint copy() {
-    final FloatingPoint result = new FloatingPoint(-1);
+    final FloatingPoint result = new FloatingPoint();
     result.sign = sign;
     result.stringValue = stringValue;
     return result;

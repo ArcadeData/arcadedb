@@ -25,8 +25,7 @@ import java.util.Map;
 public class FromClause extends SimpleNode {
   public FromItem item;
 
-  public FromClause(final int id) {
-    super(id);
+  public FromClause() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -44,7 +43,7 @@ public class FromClause extends SimpleNode {
   }
 
   public FromClause copy() {
-    final FromClause result = new FromClause(-1);
+    final FromClause result = new FromClause();
     result.item = item.copy();
     return result;
   }

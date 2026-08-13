@@ -39,8 +39,7 @@ public class MatchFilterItem extends SimpleNode {
   public Identifier         depthAlias;
   public Identifier         pathAlias;
 
-  public MatchFilterItem(final int id) {
-    super(id);
+  public MatchFilterItem() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -117,7 +116,7 @@ public class MatchFilterItem extends SimpleNode {
 
   @Override
   public MatchFilterItem copy() {
-    final MatchFilterItem result = new MatchFilterItem(-1);
+    final MatchFilterItem result = new MatchFilterItem();
     result.typeName = typeName == null ? null : typeName.copy();
     result.typeNames = typeNames == null ? null : typeNames.copy();
     result.bucketName = bucketName == null ? null : bucketName.copy();

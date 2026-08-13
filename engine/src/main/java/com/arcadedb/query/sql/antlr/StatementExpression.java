@@ -40,7 +40,6 @@ public class StatementExpression extends BaseExpression {
   private Statement statement;
 
   public StatementExpression(final Statement statement) {
-    super(-1);
     this.statement = statement;
   }
 

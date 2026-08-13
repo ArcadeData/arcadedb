@@ -38,8 +38,7 @@ public class WhereClause extends SimpleNode {
   public BooleanExpression baseExpression;
   protected List<AndBlock>    flattened;
 
-  public WhereClause(final int id) {
-    super(id);
+  public WhereClause() {
   }
 
   public Boolean matchesFilters(final Identifiable currentRecord, final CommandContext context) {
@@ -117,8 +116,8 @@ public class WhereClause extends SimpleNode {
 
       if (indexedFunctConditions != null) {
         for (final BinaryCondition cond : indexedFunctConditions) {
-          final FromClause from = new FromClause(-1);
-          from.item = new FromItem(-1);
+          final FromClause from = new FromClause();
+          from.item = new FromItem();
           from.item.setIdentifier(new Identifier(oClass.getName()));
           final long newCount = cond.estimateIndexed(from, context);
           if (newCount < conditionEstimation) {
@@ -207,7 +206,7 @@ public class WhereClause extends SimpleNode {
   }
 
   public WhereClause copy() {
-    final WhereClause result = new WhereClause(-1);
+    final WhereClause result = new WhereClause();
     result.baseExpression = baseExpression.copy();
     result.flattened = flattened == null ? null : flattened.stream()
         .map(x -> x.copy()).collect(Collectors.toList());

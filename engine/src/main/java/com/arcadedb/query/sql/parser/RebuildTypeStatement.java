@@ -74,8 +74,7 @@ public class RebuildTypeStatement extends DDLStatement {
   public boolean                     polymorphic = false;
   public final Map<Expression, Expression> settings = new HashMap<>();
 
-  public RebuildTypeStatement(final int id) {
-    super(id);
+  public RebuildTypeStatement() {
   }
 
   @Override
@@ -387,7 +386,7 @@ public class RebuildTypeStatement extends DDLStatement {
 
   @Override
   public RebuildTypeStatement copy() {
-    final RebuildTypeStatement result = new RebuildTypeStatement(-1);
+    final RebuildTypeStatement result = new RebuildTypeStatement();
     result.typeName = typeName == null ? null : typeName.copy();
     result.polymorphic = polymorphic;
     for (final Map.Entry<Expression, Expression> e : settings.entrySet())

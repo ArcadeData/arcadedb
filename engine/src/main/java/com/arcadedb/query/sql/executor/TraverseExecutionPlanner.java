@@ -128,24 +128,24 @@ public class TraverseExecutionPlanner {
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return
     } else if (paramValue instanceof LocalDocumentType type) {
-      final FromClause from = new FromClause(-1);
-      final FromItem item = new FromItem(-1);
+      final FromClause from = new FromClause();
+      final FromItem item = new FromItem();
       from.setItem(item);
       item.setIdentifier(new Identifier(type.getName()));
       handleClassAsTarget(result, from, context);
     } else if (paramValue instanceof String string) {
       //strings are treated as classes
-      final FromClause from = new FromClause(-1);
-      final FromItem item = new FromItem(-1);
+      final FromClause from = new FromClause();
+      final FromItem item = new FromItem();
       from.setItem(item);
       item.setIdentifier(new Identifier(string));
       handleClassAsTarget(result, from, context);
     } else if (paramValue instanceof Identifiable identifiable) {
       final RID orid = identifiable.getIdentity();
-      final Rid rid = new Rid(-1);
-      final PInteger bucket = new PInteger(-1);
+      final Rid rid = new Rid();
+      final PInteger bucket = new PInteger();
       bucket.setValue(orid.getBucketId());
-      final PInteger position = new PInteger(-1);
+      final PInteger position = new PInteger();
       position.setValue(orid.getPosition());
       rid.setLegacy(true);
       rid.setBucket(bucket);
@@ -161,10 +161,10 @@ public class TraverseExecutionPlanner {
         }
         final RID orid = ((Identifiable) x).getIdentity();
 
-        final Rid rid = new Rid(-1);
-        final PInteger bucket = new PInteger(-1);
+        final Rid rid = new Rid();
+        final PInteger bucket = new PInteger();
         bucket.setValue(orid.getBucketId());
-        final PInteger position = new PInteger(-1);
+        final PInteger position = new PInteger();
         position.setValue(orid.getPosition());
         rid.setLegacy(true);
         rid.setBucket(bucket);

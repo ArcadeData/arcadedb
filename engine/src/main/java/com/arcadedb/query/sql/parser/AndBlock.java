@@ -32,13 +32,12 @@ import java.util.Map;
 public class AndBlock extends BooleanExpression {
   public final List<BooleanExpression> subBlocks;
 
-  public AndBlock(final int id) {
-    super(id);
+  public AndBlock() {
     this.subBlocks = new ArrayList<>();
   }
 
   public AndBlock(final List<BooleanExpression>... expressions) {
-    this(-1);
+    this();
 
     for (List<BooleanExpression> expression : expressions)
       subBlocks.addAll(expression);
@@ -144,7 +143,7 @@ public class AndBlock extends BooleanExpression {
           result.add(subAndItem);
         } else {
           for (final AndBlock oldResultItem : oldResult) {
-            final AndBlock block = new AndBlock(-1);
+            final AndBlock block = new AndBlock();
             block.subBlocks.addAll(oldResultItem.subBlocks);
             for (final BooleanExpression resultItem : subAndItem.subBlocks) {
               block.subBlocks.add(resultItem);
@@ -162,13 +161,13 @@ public class AndBlock extends BooleanExpression {
     if (item instanceof AndBlock block) {
       return block;
     }
-    final AndBlock result = new AndBlock(-1);
+    final AndBlock result = new AndBlock();
     result.subBlocks.add(item);
     return result;
   }
 
   public AndBlock copy() {
-    final AndBlock result = new AndBlock(-1);
+    final AndBlock result = new AndBlock();
     for (final BooleanExpression exp : subBlocks) {
       result.subBlocks.add(exp.copy());
     }

@@ -33,7 +33,7 @@ class ContainsKeyOperatorTest {
 
   @Test
   void test() {
-        final ContainsKeyOperator op = new ContainsKeyOperator(-1);
+        final ContainsKeyOperator op = new ContainsKeyOperator();
 
       assertThat(op.execute(null, null, null)).isFalse();
       assertThat(op.execute(null, null, "foo")).isFalse();

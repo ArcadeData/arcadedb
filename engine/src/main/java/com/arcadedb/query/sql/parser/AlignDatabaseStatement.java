@@ -29,8 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.Map;
 
 public class AlignDatabaseStatement extends SimpleExecStatement {
-  public AlignDatabaseStatement(final int id) {
-    super(id);
+  public AlignDatabaseStatement() {
   }
 
   @Override

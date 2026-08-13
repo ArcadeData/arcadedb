@@ -45,8 +45,7 @@ public class CreateTriggerStatement extends DDLStatement {
   public String actionCode;
   public boolean ifNotExists = false;
 
-  public CreateTriggerStatement(final int id) {
-    super(id);
+  public CreateTriggerStatement() {
   }
 
   @Override

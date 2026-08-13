@@ -28,8 +28,7 @@ import java.util.stream.Collectors;
 public class GroupBy extends SimpleNode {
   public List<Expression> items = new ArrayList<Expression>();
 
-  public GroupBy(final int id) {
-    super(id);
+  public GroupBy() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -47,7 +46,7 @@ public class GroupBy extends SimpleNode {
   }
 
   public GroupBy copy() {
-    final GroupBy result = new GroupBy(-1);
+    final GroupBy result = new GroupBy();
     result.items = items.stream().map(Expression::copy).collect(Collectors.toList());
     return result;
   }

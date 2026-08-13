@@ -90,7 +90,7 @@ public class ScriptExecutionPlanCloseTest {
 
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(context);
     plan.chain(new RecordingPlan("line0", closed, false));
-    plan.chain(new SingleOpExecutionPlan(context, new ReturnStatement(-1)));
+    plan.chain(new SingleOpExecutionPlan(context, new ReturnStatement()));
     plan.chain(new RecordingPlan("line2", closed, false));
 
     assertThat(plan.executeUntilReturn()).isInstanceOf(ReturnStep.class);
@@ -127,7 +127,7 @@ public class ScriptExecutionPlanCloseTest {
     final List<String> closed = new ArrayList<>();
 
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(context);
-    plan.chain(new SingleOpExecutionPlan(context, new ReturnStatement(-1)));
+    plan.chain(new SingleOpExecutionPlan(context, new ReturnStatement()));
     for (int i = 0; i < LINES; i++)
       plan.chain(new RecordingPlan("line" + i, closed, false));
 

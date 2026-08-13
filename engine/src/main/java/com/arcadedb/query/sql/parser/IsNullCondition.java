@@ -32,8 +32,7 @@ public class IsNullCondition extends BooleanExpression {
 
   public Expression expression;
 
-  public IsNullCondition(final int id) {
-    super(id);
+  public IsNullCondition() {
   }
 
   @Override
@@ -61,7 +60,7 @@ public class IsNullCondition extends BooleanExpression {
 
   @Override
   public IsNullCondition copy() {
-    final IsNullCondition result = new IsNullCondition(-1);
+    final IsNullCondition result = new IsNullCondition();
     result.expression = expression.copy();
     return result;
   }
@@ -98,14 +97,14 @@ public class IsNullCondition extends BooleanExpression {
 
   @Override
   public Expression resolveKeyFrom(final BinaryCondition additional) {
-    final Expression exp = new Expression(-1);
+    final Expression exp = new Expression();
     exp.setNull(true);
     return exp;
   }
 
   @Override
   public Expression resolveKeyTo(final BinaryCondition additional) {
-    Expression exp = new Expression(-1);
+    Expression exp = new Expression();
     exp.setNull(true);
     return exp;
   }

@@ -32,13 +32,12 @@ public class RightBinaryCondition extends SimpleNode {
   public InOperator            inOperator;
   public Expression            right;
 
-  public RightBinaryCondition(final int id) {
-    super(id);
+  public RightBinaryCondition() {
   }
 
   @Override
   public RightBinaryCondition copy() {
-    final RightBinaryCondition result = new RightBinaryCondition(-1);
+    final RightBinaryCondition result = new RightBinaryCondition();
     result.operator = operator == null ? null : operator.copy();
     result.not = not;
     result.inOperator = inOperator == null ? null : inOperator.copy();

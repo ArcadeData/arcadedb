@@ -3,8 +3,7 @@
 package com.arcadedb.query.sql.parser;
 
 public class ParseExpression extends SimpleNode {
-  public ParseExpression(int id) {
-    super(id);
+  public ParseExpression() {
   }
 }
 /* JavaCC - OriginalChecksum=05ab3488725894e5e4e7400a75f98dfa (do not edit this line) */

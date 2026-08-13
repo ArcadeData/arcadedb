@@ -39,12 +39,10 @@ public class ParenthesisExpression extends MathExpression {
   protected Statement             statement;
   private   InternalExecutionPlan executionPlan;
 
-  public ParenthesisExpression(final int id) {
-    super(id);
+  public ParenthesisExpression() {
   }
 
   public ParenthesisExpression(final Expression exp) {
-    super(-1);
     this.expression = exp;
   }
 
@@ -140,7 +138,7 @@ public class ParenthesisExpression extends MathExpression {
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final ParenthesisExpression result = new ParenthesisExpression(-1);
+      final ParenthesisExpression result = new ParenthesisExpression();
       result.expression = expression.splitForAggregation(aggregateProj, context);
       return result;
     } else {
@@ -150,7 +148,7 @@ public class ParenthesisExpression extends MathExpression {
 
   @Override
   public ParenthesisExpression copy() {
-    final ParenthesisExpression result = new ParenthesisExpression(-1);
+    final ParenthesisExpression result = new ParenthesisExpression();
     result.expression = expression == null ? null : expression.copy();
     result.statement = statement == null ? null : statement.copy();
     result.cachedStringForm = cachedStringForm;

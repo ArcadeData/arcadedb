@@ -29,8 +29,7 @@ public class DropMaterializedViewStatement extends DDLStatement {
   public Identifier name;
   public boolean ifExists = false;
 
-  public DropMaterializedViewStatement(final int id) {
-    super(id);
+  public DropMaterializedViewStatement() {
   }
 
   @Override

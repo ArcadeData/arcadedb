@@ -35,8 +35,7 @@ import java.util.Map;
  */
 public abstract class SimpleExecStatement extends Statement {
 
-  public SimpleExecStatement(final int id) {
-    super(id);
+  public SimpleExecStatement() {
   }
 
   public abstract ResultSet executeSimple(CommandContext context);

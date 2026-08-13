@@ -776,8 +776,7 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  public MathExpression(final int id) {
-    super(id);
+  public MathExpression() {
   }
 
   @Override
@@ -1121,7 +1120,7 @@ public class MathExpression extends SimpleNode {
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final MathExpression result = new MathExpression(-1);
+      final MathExpression result = new MathExpression();
       int i = 0;
       for (final MathExpression expr : this.childExpressions) {
         if (i > 0)
@@ -1151,7 +1150,7 @@ public class MathExpression extends SimpleNode {
   public MathExpression copy() {
     MathExpression result = null;
     try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      result = getClass().getConstructor().newInstance();
     } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }

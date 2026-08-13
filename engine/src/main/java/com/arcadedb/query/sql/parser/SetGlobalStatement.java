@@ -39,8 +39,7 @@ public class SetGlobalStatement extends SimpleExecStatement {
   public Identifier variableName;
   public Expression expression;
 
-  public SetGlobalStatement(final int id) {
-    super(id);
+  public SetGlobalStatement() {
   }
 
   @Override
@@ -64,7 +63,7 @@ public class SetGlobalStatement extends SimpleExecStatement {
 
   @Override
   public SetGlobalStatement copy() {
-    final SetGlobalStatement result = new SetGlobalStatement(-1);
+    final SetGlobalStatement result = new SetGlobalStatement();
     result.variableName = variableName == null ? null : variableName.copy();
     result.expression = expression == null ? null : expression.copy();
     return result;

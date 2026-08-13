@@ -31,8 +31,7 @@ public class ArrayNumberSelector extends SimpleNode {
   public MathExpression expressionValue;
   public Integer        integer;
 
-  public ArrayNumberSelector(final int id) {
-    super(id);
+  public ArrayNumberSelector() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -84,7 +83,7 @@ public class ArrayNumberSelector extends SimpleNode {
   }
 
   public ArrayNumberSelector copy() {
-    final ArrayNumberSelector result = new ArrayNumberSelector(-1);
+    final ArrayNumberSelector result = new ArrayNumberSelector();
     result.inputValue = inputValue == null ? null : inputValue.copy();
     result.expressionValue = expressionValue == null ? null : expressionValue.copy();
     result.integer = integer;

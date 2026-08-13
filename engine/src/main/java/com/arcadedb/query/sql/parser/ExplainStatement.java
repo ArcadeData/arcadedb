@@ -34,8 +34,7 @@ public class ExplainStatement extends Statement {
 
   public Statement statement;
 
-  public ExplainStatement(final int id) {
-    super(id);
+  public ExplainStatement() {
   }
 
   @Override
@@ -83,7 +82,7 @@ public class ExplainStatement extends Statement {
 
   @Override
   public ExplainStatement copy() {
-    final ExplainStatement result = new ExplainStatement(-1);
+    final ExplainStatement result = new ExplainStatement();
     result.statement = statement == null ? null : statement.copy();
     return result;
   }

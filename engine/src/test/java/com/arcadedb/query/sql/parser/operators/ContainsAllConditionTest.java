@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ContainsAllConditionTest {
   @Test
   void test() {
-    final ContainsAllCondition op = new ContainsAllCondition(-1);
+    final ContainsAllCondition op = new ContainsAllCondition();
 
     assertThat(op.execute(null, null)).isFalse();
     assertThat(op.execute(null, "foo")).isFalse();
@@ -89,7 +89,7 @@ class ContainsAllConditionTest {
       }
     };
 
-    final ContainsAllCondition op = new ContainsAllCondition(-1);
+    final ContainsAllCondition op = new ContainsAllCondition();
     // [3, 1, 2] contains all of [2, 3]
     assertThat(op.execute(left, right)).isTrue();
     // [3, 1, 2] does not contain 99
@@ -98,7 +98,7 @@ class ContainsAllConditionTest {
 
   @Test
   void issue1785() {
-    final ContainsAllCondition op = new ContainsAllCondition(-1);
+    final ContainsAllCondition op = new ContainsAllCondition();
 
     final List<Object> nullList = new ArrayList<>();
     nullList.add(null);

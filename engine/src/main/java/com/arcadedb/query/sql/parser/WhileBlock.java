@@ -37,8 +37,7 @@ public class WhileBlock extends Statement {
   public BooleanExpression condition;
   public List<Statement>   statements = new ArrayList<>();
 
-  public WhileBlock(final int id) {
-    super(id);
+  public WhileBlock() {
   }
 
   @Override
@@ -86,7 +85,7 @@ public class WhileBlock extends Statement {
 
   @Override
   public Statement copy() {
-    final WhileBlock result = new WhileBlock(-1);
+    final WhileBlock result = new WhileBlock();
     result.condition = condition.copy();
     result.statements = statements.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;

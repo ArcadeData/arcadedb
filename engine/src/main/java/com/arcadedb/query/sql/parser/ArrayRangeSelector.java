@@ -39,8 +39,7 @@ public class ArrayRangeSelector extends SimpleNode {
   public ArrayNumberSelector fromSelector;
   public ArrayNumberSelector toSelector;
 
-  public ArrayRangeSelector(final int id) {
-    super(id);
+  public ArrayRangeSelector() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -144,7 +143,7 @@ public class ArrayRangeSelector extends SimpleNode {
   }
 
   public ArrayRangeSelector copy() {
-    final ArrayRangeSelector result = new ArrayRangeSelector(-1);
+    final ArrayRangeSelector result = new ArrayRangeSelector();
     result.from = from;
     result.to = to;
     result.newRange = newRange;

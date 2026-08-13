@@ -22,8 +22,7 @@ public class MoveVertexStatement extends Statement {
   public UpdateOperations updateOperations;
   public Batch            batch;
 
-  public MoveVertexStatement(int id) {
-    super(id);
+  public MoveVertexStatement() {
   }
 
   @Override
@@ -100,7 +99,7 @@ public class MoveVertexStatement extends Statement {
 
   @Override
   public MoveVertexStatement copy() {
-    MoveVertexStatement result = new MoveVertexStatement(-1);
+    MoveVertexStatement result = new MoveVertexStatement();
     result.source = source.copy();
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucket = targetBucket == null ? null : targetBucket.copy();

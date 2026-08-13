@@ -39,8 +39,7 @@ public class DropTypeStatement extends DDLStatement {
   public boolean        ifExists = false;
   public boolean        unsafe   = false;
 
-  public DropTypeStatement(final int id) {
-    super(id);
+  public DropTypeStatement() {
   }
 
   @Override
@@ -105,7 +104,7 @@ public class DropTypeStatement extends DDLStatement {
 
   @Override
   public DropTypeStatement copy() {
-    final DropTypeStatement result = new DropTypeStatement(-1);
+    final DropTypeStatement result = new DropTypeStatement();
     result.name = name == null ? null : name.copy();
     result.nameParam = nameParam == null ? null : nameParam.copy();
     result.ifExists = ifExists;

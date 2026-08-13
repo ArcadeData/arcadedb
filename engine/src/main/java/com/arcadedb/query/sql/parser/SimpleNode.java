@@ -32,9 +32,6 @@ public abstract class SimpleNode implements Node {
   public SimpleNode() {
   }
 
-  public SimpleNode(final int i) {
-  }
-
   public void jjtOpen() {
     // NO ACTIONS
   }

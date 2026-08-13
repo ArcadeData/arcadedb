@@ -29,8 +29,7 @@ public class UpdatePutItem extends SimpleNode {
   protected Expression key;
   protected Expression value;
 
-  public UpdatePutItem(final int id) {
-    super(id);
+  public UpdatePutItem() {
   }
 
   public UpdatePutItem setLeft(final Identifier left) {
@@ -57,7 +56,7 @@ public class UpdatePutItem extends SimpleNode {
   }
 
   public UpdatePutItem copy() {
-    final UpdatePutItem result = new UpdatePutItem(-1);
+    final UpdatePutItem result = new UpdatePutItem();
     result.left = left == null ? null : left.copy();
     result.key = key == null ? null : key.copy();
     result.value = value == null ? null : value.copy();

@@ -10,8 +10,7 @@ import java.util.stream.Collectors;
 public class JsonArray extends SimpleNode {
   public List<Json> items = new ArrayList<>();
 
-  public JsonArray(int id) {
-    super(id);
+  public JsonArray() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -29,7 +28,7 @@ public class JsonArray extends SimpleNode {
   }
 
   public JsonArray copy() {
-    final JsonArray result = new JsonArray(-1);
+    final JsonArray result = new JsonArray();
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

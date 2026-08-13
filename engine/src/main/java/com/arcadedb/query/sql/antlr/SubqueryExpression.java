@@ -37,7 +37,6 @@ public class SubqueryExpression extends BaseExpression {
   private final SelectStatement statement;
 
   public SubqueryExpression(final SelectStatement statement) {
-    super(-1);
     this.statement = statement;
   }
 

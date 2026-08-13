@@ -34,8 +34,7 @@ public class BaseIdentifier extends SimpleNode {
   public LevelZeroIdentifier levelZero;
   public SuffixIdentifier    suffix;
 
-  public BaseIdentifier(final int id) {
-    super(id);
+  public BaseIdentifier() {
   }
 
   public BaseIdentifier(final Identifier identifier) {
@@ -181,7 +180,7 @@ public class BaseIdentifier extends SimpleNode {
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final BaseIdentifier result = new BaseIdentifier(-1);
+      final BaseIdentifier result = new BaseIdentifier();
       if (levelZero != null) {
         final SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj, context);
         if (splitResult instanceof LevelZeroIdentifier identifier) {
@@ -218,7 +217,7 @@ public class BaseIdentifier extends SimpleNode {
   }
 
   public BaseIdentifier copy() {
-    final BaseIdentifier result = new BaseIdentifier(-1);
+    final BaseIdentifier result = new BaseIdentifier();
     result.levelZero = levelZero == null ? null : levelZero.copy();
     result.suffix = suffix == null ? null : suffix.copy();
     return result;

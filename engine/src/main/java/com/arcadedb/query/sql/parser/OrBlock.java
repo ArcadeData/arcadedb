@@ -34,8 +34,7 @@ import java.util.stream.Collectors;
 public class OrBlock extends BooleanExpression {
   public List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();
 
-  public OrBlock(final int id) {
-    super(id);
+  public OrBlock() {
   }
 
   @Override
@@ -144,7 +143,7 @@ public class OrBlock extends BooleanExpression {
 
   @Override
   public OrBlock copy() {
-    final OrBlock result = new OrBlock(-1);
+    final OrBlock result = new OrBlock();
     result.subBlocks = subBlocks.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

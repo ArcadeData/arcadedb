@@ -28,8 +28,7 @@ public class ResourcePathItem extends SimpleNode {
   protected Identifier identifier;
   protected String     name;
 
-  public ResourcePathItem(final int id) {
-    super(id);
+  public ResourcePathItem() {
   }
 
   @Override
@@ -45,7 +44,7 @@ public class ResourcePathItem extends SimpleNode {
 
   @Override
   public ResourcePathItem copy() {
-    final ResourcePathItem result = new ResourcePathItem(-1);
+    final ResourcePathItem result = new ResourcePathItem();
     result.star = star;
     result.identifier = identifier == null ? null : identifier.copy();
     result.name = name;

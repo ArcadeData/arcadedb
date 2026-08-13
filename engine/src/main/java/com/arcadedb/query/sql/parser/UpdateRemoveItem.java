@@ -33,8 +33,7 @@ public class UpdateRemoveItem extends SimpleNode {
   public Expression left;
   public Expression right;
 
-  public UpdateRemoveItem(final int id) {
-    super(id);
+  public UpdateRemoveItem() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -46,7 +45,7 @@ public class UpdateRemoveItem extends SimpleNode {
   }
 
   public UpdateRemoveItem copy() {
-    final UpdateRemoveItem result = new UpdateRemoveItem(-1);
+    final UpdateRemoveItem result = new UpdateRemoveItem();
     result.left = left == null ? null : left.copy();
     result.right = right == null ? null : right.copy();
     return result;

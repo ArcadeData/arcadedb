@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ContainsConditionTest {
   @Test
   void test() {
-    final ContainsCondition op = new ContainsCondition(-1);
+    final ContainsCondition op = new ContainsCondition();
 
     assertThat(op.execute(null, null)).isFalse();
     assertThat(op.execute(null, "foo")).isFalse();
@@ -74,13 +74,13 @@ class ContainsConditionTest {
       }
     };
 
-    final ContainsCondition op = new ContainsCondition(-1);
+    final ContainsCondition op = new ContainsCondition();
     assertThat(op.execute(left, right)).isTrue();
   }
 
   @Test
   void issue1785() {
-    final ContainsCondition op = new ContainsCondition(-1);
+    final ContainsCondition op = new ContainsCondition();
 
     final List<Object> nullList = new ArrayList<>();
     nullList.add(null);

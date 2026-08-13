@@ -29,8 +29,7 @@ public class MatchFilter extends SimpleNode {
   // TODO transform in a map
   public List<MatchFilterItem> items = new ArrayList<MatchFilterItem>();
 
-  public MatchFilter(final int id) {
-    super(id);
+  public MatchFilter() {
   }
 
   public String getAlias() {
@@ -52,7 +51,7 @@ public class MatchFilter extends SimpleNode {
       }
     }
     if (!found) {
-      final MatchFilterItem newItem = new MatchFilterItem(-1);
+      final MatchFilterItem newItem = new MatchFilterItem();
       newItem.alias = new Identifier(alias);
       items.add(newItem);
     }
@@ -77,7 +76,7 @@ public class MatchFilter extends SimpleNode {
       }
     }
     if (!found) {
-      final MatchFilterItem newItem = new MatchFilterItem(-1);
+      final MatchFilterItem newItem = new MatchFilterItem();
       newItem.filter = filter;
       items.add(newItem);
     }
@@ -186,7 +185,7 @@ public class MatchFilter extends SimpleNode {
 
   @Override
   public MatchFilter copy() {
-    final MatchFilter result = new MatchFilter(-1);
+    final MatchFilter result = new MatchFilter();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

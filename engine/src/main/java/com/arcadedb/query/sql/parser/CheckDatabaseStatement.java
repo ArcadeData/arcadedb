@@ -52,8 +52,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   public       boolean               fix      = false;
   public       boolean               compress = false;
 
-  public CheckDatabaseStatement(final int id) {
-    super(id);
+  public CheckDatabaseStatement() {
   }
 
   @Override

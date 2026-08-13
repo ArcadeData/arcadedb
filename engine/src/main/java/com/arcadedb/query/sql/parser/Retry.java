@@ -21,8 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 public class Retry extends SimpleNode {
-  public Retry(final int id) {
-    super(id);
+  public Retry() {
   }
 
   @Override

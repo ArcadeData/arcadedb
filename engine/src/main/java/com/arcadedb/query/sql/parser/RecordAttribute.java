@@ -35,8 +35,7 @@ import static com.arcadedb.schema.Property.*;
 public class RecordAttribute extends SimpleNode {
   protected String name;
 
-  public RecordAttribute(final int id) {
-    super(id);
+  public RecordAttribute() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -44,7 +43,7 @@ public class RecordAttribute extends SimpleNode {
   }
 
   public RecordAttribute copy() {
-    final RecordAttribute result = new RecordAttribute(-1);
+    final RecordAttribute result = new RecordAttribute();
     result.name = name;
     return result;
   }

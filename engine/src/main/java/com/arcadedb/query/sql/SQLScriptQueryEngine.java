@@ -150,7 +150,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
     for (final Statement stm : statements) {
       stm.setOriginalStatement(stm);
-      stm.setLimit(new Limit(-1).setValue((int) database.getResultSetLimit()));
+      stm.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
 
       if (stm instanceof BeginStatement)
         nestedTxLevel++;

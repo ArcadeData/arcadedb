@@ -32,8 +32,7 @@ public class MultiMatchPathItem extends MatchPathItem {
   // Flag to indicate if this is from .(nested) syntax (true) or chained function calls (false)
   protected boolean isNestedPath = false;
 
-  public MultiMatchPathItem(final int id) {
-    super(id);
+  public MultiMatchPathItem() {
   }
 
   public void validate() throws CommandParsingException {

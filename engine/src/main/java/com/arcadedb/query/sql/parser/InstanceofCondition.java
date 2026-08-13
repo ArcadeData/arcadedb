@@ -36,8 +36,7 @@ public class InstanceofCondition extends BooleanExpression {
   public Identifier right;
   public String     rightString;
 
-  public InstanceofCondition(final int id) {
-    super(id);
+  public InstanceofCondition() {
   }
 
   @Override
@@ -109,7 +108,7 @@ public class InstanceofCondition extends BooleanExpression {
 
   @Override
   public InstanceofCondition copy() {
-    final InstanceofCondition result = new InstanceofCondition(-1);
+    final InstanceofCondition result = new InstanceofCondition();
     result.left = left.copy();
     result.right = right == null ? null : right.copy();
     result.rightString = rightString;

@@ -26,8 +26,7 @@ public class PInteger extends PNumber {
 
   public Number value;
 
-  public PInteger(final int id) {
-    super(id);
+  public PInteger() {
   }
 
   public Number getValue() {
@@ -84,7 +83,7 @@ public class PInteger extends PNumber {
   }
 
   public PInteger copy() {
-    final PInteger result = new PInteger(-1);
+    final PInteger result = new PInteger();
     result.value = value;
     return result;
   }

@@ -42,8 +42,7 @@ public class TruncateBucketStatement extends DDLStatement {
   public PInteger   bucketNumber;
   public boolean    unsafe = false;
 
-  public TruncateBucketStatement(final int id) {
-    super(id);
+  public TruncateBucketStatement() {
   }
 
   @Override
@@ -152,7 +151,7 @@ public class TruncateBucketStatement extends DDLStatement {
 
   @Override
   public TruncateBucketStatement copy() {
-    final TruncateBucketStatement result = new TruncateBucketStatement(-1);
+    final TruncateBucketStatement result = new TruncateBucketStatement();
     result.bucketName = bucketName == null ? null : bucketName.copy();
     result.bucketNumber = bucketNumber == null ? null : bucketNumber.copy();
     result.unsafe = unsafe;

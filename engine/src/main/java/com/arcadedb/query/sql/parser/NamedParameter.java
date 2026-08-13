@@ -28,8 +28,7 @@ public class NamedParameter extends InputParameter {
   public int    paramNumber;
   public String paramName;
 
-  public NamedParameter(final int id) {
-    super(id);
+  public NamedParameter() {
   }
 
   @Override
@@ -80,7 +79,7 @@ public class NamedParameter extends InputParameter {
 
   @Override
   public NamedParameter copy() {
-    final NamedParameter result = new NamedParameter(-1);
+    final NamedParameter result = new NamedParameter();
     result.paramName = paramName;
     result.paramNumber = paramNumber;
     return result;

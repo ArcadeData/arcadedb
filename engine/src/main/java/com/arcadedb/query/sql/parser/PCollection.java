@@ -33,8 +33,7 @@ import java.util.stream.Collectors;
 public class PCollection extends SimpleNode {
   protected List<Expression> expressions = new ArrayList<>();
 
-  public PCollection(final int id) {
-    super(id);
+  public PCollection() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -81,7 +80,7 @@ public class PCollection extends SimpleNode {
 
   public PCollection splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final PCollection result = new PCollection(-1);
+      final PCollection result = new PCollection();
       for (final Expression exp : this.expressions) {
         if (exp.isAggregate(context) || exp.isEarlyCalculated(context)) {
           result.expressions.add(exp.splitForAggregation(aggregateProj, context));
@@ -105,7 +104,7 @@ public class PCollection extends SimpleNode {
   }
 
   public PCollection copy() {
-    final PCollection result = new PCollection(-1);
+    final PCollection result = new PCollection();
     result.expressions = expressions == null ? null : expressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

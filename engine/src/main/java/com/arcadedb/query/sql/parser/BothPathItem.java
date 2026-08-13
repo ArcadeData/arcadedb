@@ -25,8 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.Map;
 
 public class BothPathItem extends MatchPathItem {
-  public BothPathItem(final int id) {
-    super(id);
+  public BothPathItem() {
   }
 
   @Override

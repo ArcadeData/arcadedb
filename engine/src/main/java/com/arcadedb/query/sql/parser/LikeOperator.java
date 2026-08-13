@@ -29,8 +29,7 @@ import com.arcadedb.utility.TimeBoundRegex;
 import java.util.Iterator;
 
 public class LikeOperator extends SimpleNode implements BinaryCompareOperator {
-  public LikeOperator(final int id) {
-    super(id);
+  public LikeOperator() {
   }
 
   @Override

@@ -37,8 +37,7 @@ public class DropBucketStatement extends DDLStatement {
   public PInteger   id;
   public boolean    ifExists = false;
 
-  public DropBucketStatement(final int id) {
-    super(id);
+  public DropBucketStatement() {
   }
 
   @Override
@@ -93,7 +92,7 @@ public class DropBucketStatement extends DDLStatement {
 
   @Override
   public DropBucketStatement copy() {
-    final DropBucketStatement result = new DropBucketStatement(-1);
+    final DropBucketStatement result = new DropBucketStatement();
     result.name = name == null ? null : name.copy();
     result.id = id == null ? null : id.copy();
     result.ifExists = this.ifExists;

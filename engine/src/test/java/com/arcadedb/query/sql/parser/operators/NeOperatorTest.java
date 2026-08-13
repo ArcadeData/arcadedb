@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NeOperatorTest {
   @Test
   void test() {
-    final NeOperator op = new NeOperator(-1);
+    final NeOperator op = new NeOperator();
 
     assertThat(op.execute(null, null, 1)).isTrue();
     assertThat(op.execute(null, 1, null)).isTrue();

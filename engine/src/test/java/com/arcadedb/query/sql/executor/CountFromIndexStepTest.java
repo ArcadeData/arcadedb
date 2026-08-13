@@ -67,7 +67,7 @@ public class CountFromIndexStepTest {
 
       className = TestHelper.createRandomType(db).getName();
       final Identifier name = new Identifier(indexName);
-      final IndexIdentifier identifier = new IndexIdentifier(-1);
+      final IndexIdentifier identifier = new IndexIdentifier();
       identifier.setIndexName(name);
       identifier.setIndexNameString(name.getValue());
       identifier.setType(identifierType);

@@ -42,8 +42,7 @@ public class FunctionCall extends SimpleNode {
   public List<Expression> params = new ArrayList<>();
   private   SQLFunction      cachedFunction;
 
-  public FunctionCall(final int id) {
-    super(id);
+  public FunctionCall() {
   }
 
   public boolean isStar() {
@@ -272,7 +271,7 @@ public class FunctionCall extends SimpleNode {
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final FunctionCall newFunct = new FunctionCall(-1);
+      final FunctionCall newFunct = new FunctionCall();
       newFunct.name = this.name;
       final Identifier functionResultAlias = aggregateProj.getNextAlias();
 
@@ -287,7 +286,7 @@ public class FunctionCall extends SimpleNode {
               throw new CommandExecutionException("Cannot calculate an aggregate function of another aggregate function " + this);
             }
             final Identifier nextAlias = aggregateProj.getNextAlias();
-            final ProjectionItem paramItem = new ProjectionItem(-1);
+            final ProjectionItem paramItem = new ProjectionItem();
             paramItem.alias = nextAlias;
             paramItem.expression = param;
             aggregateProj.getPreAggregate().add(paramItem);
@@ -318,15 +317,15 @@ public class FunctionCall extends SimpleNode {
   }
 
   private ProjectionItem createProjection(final FunctionCall newFunct, final Identifier alias) {
-    final LevelZeroIdentifier l0 = new LevelZeroIdentifier(-1);
+    final LevelZeroIdentifier l0 = new LevelZeroIdentifier();
     l0.functionCall = newFunct;
-    final BaseIdentifier l1 = new BaseIdentifier(-1);
+    final BaseIdentifier l1 = new BaseIdentifier();
     l1.levelZero = l0;
-    final BaseExpression l2 = new BaseExpression(-1);
+    final BaseExpression l2 = new BaseExpression();
     l2.identifier = l1;
-    final Expression l3 = new Expression(-1);
+    final Expression l3 = new Expression();
     l3.mathExpression = l2;
-    final ProjectionItem item = new ProjectionItem(-1);
+    final ProjectionItem item = new ProjectionItem();
     item.alias = alias;
     item.expression = l3;
     return item;
@@ -357,7 +356,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public FunctionCall copy() {
-    final FunctionCall result = new FunctionCall(-1);
+    final FunctionCall result = new FunctionCall();
     result.name = name;
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -385,7 +384,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public MethodCall toMethod() {
-    final MethodCall result = new MethodCall(-1);
+    final MethodCall result = new MethodCall();
     result.methodName = name.copy();
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;

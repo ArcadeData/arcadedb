@@ -39,8 +39,7 @@ public class Statement extends SimpleNode {
   public Limit     limit   = null;
   public Timeout   timeout = null;
 
-  public Statement(final int id) {
-    super(id);
+  public Statement() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

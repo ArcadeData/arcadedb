@@ -31,8 +31,7 @@ public class TraverseProjectionItem extends SimpleNode {
   public BaseIdentifier base;
   public Modifier       modifier;
 
-  public TraverseProjectionItem(final int id) {
-    super(id);
+  public TraverseProjectionItem() {
   }
 
   public Object execute(final Result currentRecord, final CommandContext context) {
@@ -95,7 +94,7 @@ public class TraverseProjectionItem extends SimpleNode {
   }
 
   public TraverseProjectionItem copy() {
-    final TraverseProjectionItem result = new TraverseProjectionItem(-1);
+    final TraverseProjectionItem result = new TraverseProjectionItem();
     result.base = base == null ? null : base.copy();
     result.modifier = modifier == null ? null : modifier.copy();
     return result;

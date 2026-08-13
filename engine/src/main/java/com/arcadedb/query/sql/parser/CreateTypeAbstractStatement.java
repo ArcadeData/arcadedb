@@ -74,8 +74,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    */
   public final Map<Identifier, Expression> customProperties = new LinkedHashMap<>();
 
-  public CreateTypeAbstractStatement(final int id) {
-    super(id);
+  public CreateTypeAbstractStatement() {
   }
 
   protected abstract String commandType();

@@ -38,8 +38,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
 
   public List<ArraySelector> items = new ArrayList<>();
 
-  public ArraySingleValuesSelector(final int id) {
-    super(id);
+  public ArraySingleValuesSelector() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -137,7 +136,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
   }
 
   public ArraySingleValuesSelector copy() {
-    final ArraySingleValuesSelector result = new ArraySingleValuesSelector(-1);
+    final ArraySingleValuesSelector result = new ArraySingleValuesSelector();
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

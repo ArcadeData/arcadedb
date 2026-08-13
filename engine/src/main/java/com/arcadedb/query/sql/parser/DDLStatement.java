@@ -33,8 +33,7 @@ import java.util.Map;
  */
 public abstract class DDLStatement extends Statement {
 
-  public DDLStatement(final int id) {
-    super(id);
+  public DDLStatement() {
   }
 
   public abstract ResultSet executeDDL(CommandContext context);

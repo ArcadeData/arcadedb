@@ -27,8 +27,7 @@ import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import java.util.Iterator;
 
 public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryCompareOperator {
-  public NullSafeEqualsCompareOperator(final int id) {
-    super(id);
+  public NullSafeEqualsCompareOperator() {
   }
 
   @Override

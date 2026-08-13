@@ -17,8 +17,7 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
   public Identifier libraryName;
   public Identifier functionName;
 
-  public DeleteFunctionStatement(final int id) {
-    super(id);
+  public DeleteFunctionStatement() {
   }
 
   @Override
@@ -50,7 +49,7 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
 
   @Override
   public DefineFunctionStatement copy() {
-    final DefineFunctionStatement result = new DefineFunctionStatement(-1);
+    final DefineFunctionStatement result = new DefineFunctionStatement();
     result.libraryName = libraryName == null ? null : libraryName.copy();
     result.functionName = functionName == null ? null : functionName.copy();
     return result;

@@ -17,8 +17,7 @@ public class LockStatement extends SimpleExecStatement {
   public String           mode;
   public List<Identifier> identifiers;
 
-  public LockStatement(final int id) {
-    super(id);
+  public LockStatement() {
   }
 
   @Override
@@ -61,7 +60,7 @@ public class LockStatement extends SimpleExecStatement {
 
   @Override
   public LockStatement copy() {
-    final LockStatement result = new LockStatement(-1);
+    final LockStatement result = new LockStatement();
     result.mode = mode;
     result.identifiers = identifiers == null ? null : new ArrayList<>(identifiers);
     return result;

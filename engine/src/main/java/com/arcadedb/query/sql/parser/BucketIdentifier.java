@@ -27,8 +27,7 @@ public class BucketIdentifier extends SimpleNode {
   public Identifier     bucketName;
   public InputParameter inputParam;
 
-  public BucketIdentifier(final int id) {
-    super(id);
+  public BucketIdentifier() {
   }
 
   public Object getValue() {
@@ -75,7 +74,7 @@ public class BucketIdentifier extends SimpleNode {
 
   @Override
   public BucketIdentifier copy() {
-    final BucketIdentifier copy = new BucketIdentifier(-1);
+    final BucketIdentifier copy = new BucketIdentifier();
     copy.bucketName = bucketName != null ? bucketName.copy() : null;
     copy.bucketId = bucketId != null ? bucketId.copy() : null;
     copy.inputParam = inputParam != null ? inputParam.copy() : null;

@@ -33,8 +33,7 @@ public class ContainsTextCondition extends BooleanExpression {
   public Expression left;
   public Expression right;
 
-  public ContainsTextCondition(final int id) {
-    super(id);
+  public ContainsTextCondition() {
   }
 
   @Override
@@ -71,7 +70,7 @@ public class ContainsTextCondition extends BooleanExpression {
 
   @Override
   public ContainsTextCondition copy() {
-    final ContainsTextCondition result = new ContainsTextCondition(-1);
+    final ContainsTextCondition result = new ContainsTextCondition();
     result.left = left.copy();
     result.right = right.copy();
     return result;

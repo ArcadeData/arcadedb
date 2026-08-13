@@ -31,11 +31,6 @@ public class OrderBy extends SimpleNode {
   protected List<OrderByItem> items;
 
   public OrderBy() {
-    super(-1);
-  }
-
-  public OrderBy(final int id) {
-    super(id);
   }
 
   public List<OrderByItem> getItems() {
@@ -69,7 +64,7 @@ public class OrderBy extends SimpleNode {
   }
 
   public OrderBy copy() {
-    final OrderBy result = new OrderBy(-1);
+    final OrderBy result = new OrderBy();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }

@@ -26,8 +26,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 public class GeOperator extends SimpleNode implements BinaryCompareOperator {
-  public GeOperator(final int id) {
-    super(id);
+  public GeOperator() {
   }
 
   @Override

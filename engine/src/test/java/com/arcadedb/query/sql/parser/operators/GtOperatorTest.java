@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GtOperatorTest {
   @Test
   void test() {
-    final GtOperator op = new GtOperator(-1);
+    final GtOperator op = new GtOperator();
     assertThat(op.execute(null, 1, 1)).isFalse();
     assertThat(op.execute(null, 1, 0)).isTrue();
     assertThat(op.execute(null, 0, 1)).isFalse();

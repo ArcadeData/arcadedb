@@ -30,8 +30,7 @@ import java.util.Map;
 public class ParenthesisBlock extends BooleanExpression {
   BooleanExpression subElement;
 
-  public ParenthesisBlock(final int id) {
-    super(id);
+  public ParenthesisBlock() {
   }
 
   @Override
@@ -57,7 +56,7 @@ public class ParenthesisBlock extends BooleanExpression {
 
   @Override
   public ParenthesisBlock copy() {
-    final ParenthesisBlock result = new ParenthesisBlock(-1);
+    final ParenthesisBlock result = new ParenthesisBlock();
     result.subElement = subElement.copy();
     return result;
   }

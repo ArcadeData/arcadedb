@@ -288,6 +288,28 @@ class MoveVertexStatementExecutionTest extends TestHelper {
   }
 
   /**
+   * Regression test for issue #5871: MOVE VERTEX ... TO bucket:&lt;number&gt; (the numeric bucket form) must move the
+   * vertex to the target bucket. This form is parsed via {@code Bucket.bucketNumber} rather than {@code bucketName},
+   * a path that was silently discarding the parsed bucket id before this fix (the AST builder was constructing the
+   * {@link com.arcadedb.query.sql.parser.Bucket} through a constructor that never wired the number into the field).
+   */
+  @Test
+  void moveVertexToBucketNumber() {
+    final String typeA = "testMoveBucketNumA";
+    final int extraBucketId = database.getSchema().createBucket("testMoveBucketNum_extra").getFileId();
+    database.getSchema().createVertexType(typeA).addBucket(database.getSchema().getBucketById(extraBucketId));
+    database.setAutoTransaction(true);
+
+    final String rid = database.command("sql", "create vertex " + typeA).next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX " + rid + " TO bucket:" + extraBucketId)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result moved = rs.next();
+      assertThat(moved.getElement().get().getIdentity().getBucketId()).isEqualTo(extraBucketId);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
    * Regression test for issue #4461: the SET/REMOVE/MERGE/CONTENT operations must be applied to the moved (re-created)
    * vertex. Previously they were silently applied to the stale source record and lost.
    */

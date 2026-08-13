@@ -46,14 +46,12 @@ public class Projection extends SimpleNode {
   private Set<String> excludes;
 
   public Projection(final List<ProjectionItem> items, final boolean distinct) {
-    super(-1);
     this.items = items;
     this.distinct = distinct;
     //TODO make the whole class immutable!
   }
 
-  public Projection(final int id) {
-    super(id);
+  public Projection() {
   }
 
   public List<ProjectionItem> getItems() {
@@ -184,7 +182,7 @@ public class Projection extends SimpleNode {
   }
 
   public Projection getExpandContent() {
-    final Projection result = new Projection(-1);
+    final Projection result = new Projection();
     result.setItems(new ArrayList<>());
     result.getItems().add(this.getItems().get(0).getExpandContent());
     return result;
@@ -195,7 +193,7 @@ public class Projection extends SimpleNode {
   }
 
   public Projection copy() {
-    final Projection result = new Projection(-1);
+    final Projection result = new Projection();
     if (items != null)
       result.items = items.stream().map(ProjectionItem::copy).collect(Collectors.toList());
 
