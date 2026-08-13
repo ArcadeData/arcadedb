@@ -115,6 +115,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.IntPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -1577,7 +1578,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             removeFiles.put(c.fileId, c.fileName);
         }
 
-      reconcileInstalmentFiles(instalmentState, addFiles, removeFiles);
+      reconcileInstalmentFiles(instalmentState.shippedFiles, addFiles, removeFiles);
 
       if (schemaChanged)
         serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
@@ -1626,6 +1627,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // The SECOND of the two assignments (see the one inside the block above). This one covers the path where the
       // block was not entered at all: there was nothing to say, which can only happen when no instalment went out
       // either - an instalment forces the condition - so there is nothing for the compensation to do.
+      //
+      // ADDING CODE ABOVE THIS LINE: everything between the first assignment and here is code that can throw AFTER
+      // the change has already been published, and this flag is what decides whether the finally block goes on to
+      // retire the instalments' files. Decide deliberately which side of it your code belongs on rather than
+      // dropping it in above.
       published = true;
       return result;
     } finally {
@@ -1697,11 +1703,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // agreed state into a diverged one.
     final Map<Integer, String> toRetire = new LinkedHashMap<>();
     final Map<Integer, String> keptByLeader = new LinkedHashMap<>();
-    for (final Map.Entry<Integer, String> shipped : state.shippedFiles.entrySet())
-      if (proxied.getFileManager().existsFile(shipped.getKey()))
-        keptByLeader.put(shipped.getKey(), shipped.getValue());
-      else
-        toRetire.put(shipped.getKey(), shipped.getValue());
+    partitionAbandonedFiles(state.shippedFiles, proxied.getFileManager()::existsFile, toRetire, keptByLeader);
 
     if (!keptByLeader.isEmpty())
       LogManager.instance().log(this, Level.WARNING,
@@ -1749,12 +1751,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * <p>
    * A no-op when no instalment went out, which is every session small enough to ship in one entry.
    */
-  private static void reconcileInstalmentFiles(final SchemaInstalmentState state, final Map<Integer, String> addFiles,
+  // @VisibleForTesting
+  static void reconcileInstalmentFiles(final Map<Integer, String> shippedFiles, final Map<Integer, String> addFiles,
       final Map<Integer, String> removeFiles) {
-    if (state == null || state.shippedFiles.isEmpty())
+    if (shippedFiles == null || shippedFiles.isEmpty())
       return;
 
-    for (final Map.Entry<Integer, String> shipped : state.shippedFiles.entrySet())
+    for (final Map.Entry<Integer, String> shipped : shippedFiles.entrySet())
       if (addFiles.remove(shipped.getKey()) == null)
         removeFiles.putIfAbsent(shipped.getKey(), shipped.getValue());
   }
@@ -1822,6 +1825,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // its WAL volume produces, so the second factor does not grow with the first. A future DDL that creates MANY
     // files through this buffered path would make it quadratic and should carry the shipped/unshipped split
     // forward instead; an index into the list is not that, since dropFile removes entries from the middle of it.
+    // Tracked as issue #6142.
     final Map<Integer, String> newFiles = new LinkedHashMap<>();
     final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
     if (changes != null)
@@ -1858,6 +1862,27 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     HALog.log(this, HALog.DETAILED,
         "Schema WAL instalment %d for database '%s' shipped: newFiles=%d, walEntries=%d",
         state.instalments, getName(), newFiles.size(), walEntries.size());
+  }
+
+  /**
+   * Splits what the instalments announced into what must be retired on the other nodes and what must be left alone,
+   * by the one rule that keeps the compensation from trading one divergence for another: THIS NODE OWNS THE TRUTH.
+   * A file it no longer has is retired; a file it still has is left, because both sides holding an unpublished file
+   * is a state they agree on and retiring it would end that agreement. See {@link #retireAbandonedInstalments}.
+   * <p>
+   * Static and side-effect-free so the bookkeeping can be pinned without a cluster - it is map arithmetic across a
+   * session, which is exactly the kind of logic that regresses silently.
+   *
+   * @param existsLocally answers whether this node still holds a given file id
+   */
+  // @VisibleForTesting
+  static void partitionAbandonedFiles(final Map<Integer, String> shippedFiles, final IntPredicate existsLocally,
+      final Map<Integer, String> toRetire, final Map<Integer, String> keptLocally) {
+    for (final Map.Entry<Integer, String> shipped : shippedFiles.entrySet())
+      if (existsLocally.test(shipped.getKey()))
+        keptLocally.put(shipped.getKey(), shipped.getValue());
+      else
+        toRetire.put(shipped.getKey(), shipped.getValue());
   }
 
   /** Schema-WAL instalments shipped by this JVM since it started - see {@link #schemaInstalmentsShipped}. */
