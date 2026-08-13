@@ -426,6 +426,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * ArcadeDB-side {@link #lastAppliedIndex} stays on the honest persisted position, the read floor is
    * published for the apply waiters, and the "applied advanced" notification is withheld until a resync
    * has actually restored the state.
+   * <p>
+   * The floor guards <b>reads</b> only. Writes during the same window are already guarded, and by a
+   * different mechanism: Ratis keeps feeding {@link #applyTransaction} the entries committed after the
+   * marker, and applying one on top of a database that stops at {@code persistedApplied} fails its page
+   * version check. {@link #applyTxEntry} converts that {@link WALVersionGapException} into a diverged
+   * database plus an immediate snapshot resync instead of writing mismatched pages, so the gap can never
+   * escalate from "stale data served" to "corrupted data written".
    */
   public void reinitialize() throws IOException {
     final long persistedApplied = readPersistedAppliedIndex();

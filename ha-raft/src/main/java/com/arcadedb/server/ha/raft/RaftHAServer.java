@@ -2144,9 +2144,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       synchronized (applyNotifier) {
         while (getTrustedAppliedIndex() < targetIndex) {
           if (!throwOnTimeout && getStaleSnapshotAppliedFloor() >= 0) {
-            // READ_YOUR_WRITES / bookmark: the target sits inside a gap that only the pending snapshot
-            // resync can fill, so waiting out the quorum timeout cannot change the outcome. Degrade now
-            // with the same contract the timeout branch below applies (issue #6111).
+            // No explicit "targetIndex > floor" test is needed, and adding one would be dead code:
+            // reaching this line means the loop condition held, i.e. getTrustedAppliedIndex() (pinned at
+            // the floor for the whole life of an outstanding gap, since Ratis' own counter starts at the
+            // marker index - above the floor by construction - and only grows) is below targetIndex.
+            //
+            // READ_YOUR_WRITES / bookmark: the target therefore sits inside a gap that only the pending
+            // snapshot resync can fill, so waiting out the quorum timeout cannot change the outcome.
+            // Degrade now with the same contract the timeout branch below applies (issue #6111).
             LogManager.instance().log(this, Level.WARNING,
                 "READ_YOUR_WRITES target %d is inside a pending snapshot resync gap (trusted applied=%d): "
                     + "consistency degraded to EVENTUAL without waiting",
@@ -2202,8 +2207,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       synchronized (applyNotifier) {
         while (getTrustedAppliedIndex() < commitIndex) {
           if (getStaleSnapshotAppliedFloor() >= 0) {
-            // Only the pending snapshot resync can close this gap; this waiter is best-effort by
-            // contract, so degrade now instead of burning the whole quorum timeout (issue #6111).
+            // Same reasoning as waitForAppliedIndex: the loop condition already proves commitIndex sits
+            // above the floor, so no explicit comparison is needed. Only the pending snapshot resync can
+            // close the gap; this waiter is best-effort by contract, so degrade now instead of burning
+            // the whole quorum timeout (issue #6111).
             LogManager.instance().log(this, Level.WARNING,
                 "waitForLocalApply: commit=%d is inside a pending snapshot resync gap (trusted applied=%d), "
                     + "returning without waiting (reads may be stale)",
