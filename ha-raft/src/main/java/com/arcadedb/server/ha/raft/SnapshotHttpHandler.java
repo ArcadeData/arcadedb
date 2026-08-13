@@ -86,6 +86,9 @@ public class SnapshotHttpHandler implements HttpHandler {
   private static final Semaphore CONCURRENCY_SEMAPHORE =
       new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
 
+  /** How far {@link #rootCauseMessage} walks a cause chain before giving up. Real ones are two or three links. */
+  private static final int MAX_CAUSE_DEPTH = 20;
+
   // #5063 (review round 5) introduced this per-database lock because PageManagerFlushThread.setSuspended
   // was ownership-based (putIfAbsent): only the FIRST caller owned the suspend flag, so a second thread
   // streaming the same database could observe a resumed flush mid-read. Issue #5068 made the suspension
@@ -349,7 +352,10 @@ public class SnapshotHttpHandler implements HttpHandler {
    */
   static String rootCauseMessage(final Throwable error) {
     Throwable deepest = error;
-    while (deepest.getCause() != null && deepest.getCause() != deepest)
+    // BOUNDED, NOT GUARDED ON IDENTITY. A "cause != self" guard only catches a one-element cycle; a chain that
+    // loops back through two links (a -> b -> a, which initCause makes possible) would spin forever. A depth cap
+    // needs no reference comparison at all and covers every shape of cycle
+    for (int depth = 0; depth < MAX_CAUSE_DEPTH && deepest.getCause() != null; depth++)
       deepest = deepest.getCause();
     return deepest.getMessage() != null ? deepest.getMessage() : deepest.toString();
   }

@@ -85,4 +85,14 @@ class SnapshotHttpHandlerDisconnectTest {
     assertThat(SnapshotHttpHandler.rootCauseMessage(new RuntimeException(new NullPointerException())))
         .isEqualTo("java.lang.NullPointerException");
   }
+
+  /** A cause chain that loops back on itself must terminate, not hang the response thread. */
+  @Test
+  void aCyclicCauseChainTerminates() {
+    final Throwable first = new RuntimeException("first");
+    final Throwable second = new RuntimeException("second", first);
+    first.initCause(second);
+
+    assertThat(SnapshotHttpHandler.rootCauseMessage(first)).isNotNull();
+  }
 }
