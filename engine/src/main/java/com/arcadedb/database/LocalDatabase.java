@@ -1098,6 +1098,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public RID restoreRecord(final Record record, final LocalBucket bucket, final long position) {
+    if (record.getIdentity() != null)
+      throw new IllegalArgumentException(
+          "Cannot restore record " + record.getIdentity() + " because it is already persistent");
+
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot restore a record");
 
@@ -1107,33 +1111,51 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException(
           "Bucket '" + bucket.getName() + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be restored into");
 
-    return executeInReadLock(() -> {
-      final RID rid = bucket.restoreRecordAtPosition(position, record);
-
-      final TransactionContext transaction = getTransaction();
-      transaction.updateRecordInCache(record);
-      // #6069: restoreRecordAtPosition does the physical page write only, so fold the same +1 on the cached bucket
-      // record-count delta that count(*) reads and a normal create applies.
-      transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
-
-      if (record instanceof MutableDocument doc) {
-        // #6120: and the index entries, likewise. Without this the restored record is returned by a full scan but
-        // not by any index-resolved query, and a UNIQUE index never learns the key came back - so a later restore
-        // or insert could hand the same key to a second record unchallenged. Deliberately the same call
-        // createRecordNoLock makes: a restored record is indexed exactly like an inserted one, duplicate rejection
-        // included.
-        indexer.createDocument(doc, doc.getType(), bucket);
-
-        // The record did not exist before this transaction, so for a rollback it is a NEW record: keep it out of
-        // the reload loop and reset its identity to provisional (#4562, #4940) rather than leaving a dangling RID
-        // on the caller's object.
-        transaction.registerNewRecord(record);
+    // Auto-transaction parity with createRecordNoLock: on a database opened with setAutoTransaction(true) a plain
+    // INSERT wraps itself in a transaction, and RESTORE must not be the one statement that throws instead. Without
+    // it, both paths still fail identically outside a transaction (autoTransaction defaults to false).
+    boolean success = false;
+    final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
+    try {
+      final RID restoredRid = executeInReadLock(() -> restoreRecordInTransaction(record, bucket, position));
+      success = true;
+      return restoredRid;
+    } finally {
+      if (implicitTransaction) {
+        if (success)
+          wrappedDatabaseInstance.commit();
+        else
+          wrappedDatabaseInstance.rollback();
       }
+    }
+  }
 
-      ((RecordInternal) record).unsetDirty();
+  private RID restoreRecordInTransaction(final Record record, final LocalBucket bucket, final long position) {
+    final RID rid = bucket.restoreRecordAtPosition(position, record);
 
-      return rid;
-    });
+    final TransactionContext transaction = getTransaction();
+    transaction.updateRecordInCache(record);
+    // #6069: restoreRecordAtPosition does the physical page write only, so fold the same +1 on the cached bucket
+    // record-count delta that count(*) reads and a normal create applies.
+    transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
+
+    if (record instanceof MutableDocument doc) {
+      // #6120: and the index entries, likewise. Without this the restored record is returned by a full scan but
+      // not by any index-resolved query, and a UNIQUE index never learns the key came back - so a later restore
+      // or insert could hand the same key to a second record unchallenged. Deliberately the same call
+      // createRecordNoLock makes: a restored record is indexed exactly like an inserted one, duplicate rejection
+      // included.
+      indexer.createDocument(doc, doc.getType(), bucket);
+
+      // The record did not exist before this transaction, so for a rollback it is a NEW record: keep it out of
+      // the reload loop and reset its identity to provisional (#4562, #4940) rather than leaving a dangling RID
+      // on the caller's object.
+      transaction.registerNewRecord(record);
+    }
+
+    ((RecordInternal) record).unsetDirty();
+
+    return rid;
   }
 
   @Override

@@ -141,6 +141,16 @@ public interface DatabaseInternal extends Database {
    * bucket record-count delta that {@code count(*)} reads (#6069), the transaction record cache, and the record's
    * index entries (#6120) - is the caller's job, and having each RESTORE call site do it by hand is how both of
    * those were missed. It lives here, next to {@code createRecordNoLock}, so there is one place to forget.
+   * <p>
+   * Follows {@code createRecordNoLock}'s transaction contract: it joins the caller's transaction, and on a database
+   * with {@code setAutoTransaction(true)} it wraps itself in an implicit one rather than throwing - RESTORE must not
+   * be the one statement that behaves differently from an INSERT for those callers. {@code record} must not already
+   * be persistent.
+   * <p>
+   * It deliberately does NOT apply two things a create does, because RESTORE is admin repair rather than user DML:
+   * {@code validate()}/default values (a mandatory-property check would block a structure-only shell restore exactly
+   * when the emergency repair is needed) and the create events (firing user-authored triggers during a repair is a
+   * far larger behavioural surface than recreating one record).
    *
    * @return the RID the record was restored at, always {@code bucket}'s file id at {@code position}
    */

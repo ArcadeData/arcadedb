@@ -208,6 +208,51 @@ class RestoreRecordAtPositionTest extends TestHelper {
   }
 
   @Test
+  void restoreJoinsAnImplicitTransactionWhenAutoTransactionIsOn() {
+    // PR #6123 review: createRecordNoLock wraps itself in an implicit transaction when the database was opened with
+    // setAutoTransaction(true), while restoreRecord called getTransaction() directly and threw. RESTORE must not be
+    // the one statement that behaves differently from an INSERT for those callers.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("name", "auto").save().getIdentity());
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
+    database.transaction(() -> database.lookupByRID(rid[0], false).asDocument().delete());
+
+    database.setAutoTransaction(true);
+    try {
+      // No explicit begin(): the implicit transaction must be opened AND committed by the restore itself.
+      final MutableDocument shell = database.newDocument(DOC_TYPE).set("name", "restored-auto");
+      assertThat(db.restoreRecord(shell, bucket, rid[0].getPosition())).isEqualTo(rid[0]);
+    } finally {
+      database.setAutoTransaction(false);
+    }
+
+    reopenDatabase();
+
+    database.transaction(
+        () -> assertThat(database.lookupByRID(rid[0], true).asDocument().getString("name")).isEqualTo("restored-auto"));
+  }
+
+  @Test
+  void restoreRefusesAnAlreadyPersistentRecord() {
+    // PR #6123 review: createRecordNoLock rejects a persistent record up front; restoreRecord did not, so a misuse
+    // would silently overwrite the identity of a live record instead of failing.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("name", "live").save().getIdentity());
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument persistent = database.lookupByRID(rid[0], true).asDocument().modify();
+      db.restoreRecord(persistent, bucket, rid[0].getPosition());
+    })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("already persistent");
+
+    database.transaction(() -> assertThat(database.lookupByRID(rid[0], true).asDocument().getString("name")).isEqualTo("live"));
+  }
+
+  @Test
   void rollingBackARestoreLeavesNoDanglingIdentityOnTheShell() {
     // A restored record did not exist before its transaction, so on rollback it is a NEW record: the shell must come
     // back provisional (#4562/#4940 semantics, which a create gets via registerNewRecord) rather than keeping a RID
