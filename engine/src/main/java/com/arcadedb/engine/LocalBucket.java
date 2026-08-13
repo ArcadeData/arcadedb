@@ -98,6 +98,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 2 bytes), the chunk size and the pointer to the next chunk, plus at least one byte of content. A slot that
    * cannot reach it is the only case left where a record that outgrows its page still spills into a placeholder
    * instead of a chunk chain (#6149).
+   * <p>
+   * <b>The 2 budgeted for the marker is deliberately more than the 1 byte {@code writeNumber} really spends on
+   * {@link #FIRST_CHUNK}, and that does not put this constant at odds with the {@code Binary.getNumberSpace} the
+   * replay measures.</b> Both sides target the same TOTAL footprint, never the marker on its own:
+   * {@code writeMultiPageRecord} derives {@code chunkSize} from the room it is given minus the marker it actually
+   * wrote, so the spare byte simply becomes chunk content ({@code 14 - 1 - 4 - 8 = 1} byte of content), and
+   * {@code rebaseRecordOnPage} re-derives the same 14 as {@code getNumberSpace(FIRST_CHUNK) + body.length}, the
+   * body being the chunk image those very bytes produced. Raising the budget only makes the head chunk carry one
+   * more byte of content; it can never make the two sides disagree.
    */
   private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
   /** No fingerprint could be taken of a record's chunk-chain tail: see {@link #chunkChainTailFingerprint(RID)}. */
@@ -1696,6 +1705,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (lastRecordPositionInPage == existingPos)
           roomForTheChunk += freeTailInPage;
 
+        // The REAL marker cost, not the 2 bytes MINIMUM_SPACE_FOR_FIRST_CHUNK budgets for it - and the two agree,
+        // because both sides size the whole footprint rather than the marker alone (see that constant's javadoc).
         final int markerSize = Binary.getNumberSpace(FIRST_CHUNK);
         if (markerSize + body.length > roomForTheChunk) {
           // #6149: the write reached the chunk-header minimum by enlarging the slot through the in-page shift. Re-do
@@ -2241,6 +2252,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (slotEnlargement > 0) {
               // #6149: make the slot reach the chunk-header minimum. Declared under the same coverage as the head
               // chunk itself: the replay of a spilled-to-chunk slot re-does this shift on the committed page.
+              //
+              // This span is deliberately CLOSED before writeMultiPageRecord opens its own, rather than left open
+              // around both the way growRecordInPage wraps its shift and its write in one. The difference matters:
+              // when the chunk chain comes back to this very page, writeMultiPageRecord writes a CONTINUATION chunk
+              // onto it through inline record-table writes it does not wrap in a coverage span of their own - it
+              // poisons the page instead. Those writes would inherit an outer span left open here and be declared
+              // slot-merge replayable, which they are not. Do not merge the two spans.
               final int shiftCoverage = page.beginCoveredWrite(spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0);
               try {
                 shiftFollowingRecordsRight(page, recordCountInPage, recordPositionInPage + slotFootprint,
