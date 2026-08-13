@@ -147,12 +147,19 @@ public interface DatabaseInternal extends Database {
    * be the one statement that behaves differently from an INSERT for those callers. {@code record} must not already
    * be persistent.
    * <p>
-   * It deliberately does NOT apply two things a create does, because RESTORE is admin repair rather than user DML:
-   * {@code validate()}/default values (a mandatory-property check would block a structure-only shell restore exactly
-   * when the emergency repair is needed) and the create events (firing user-authored triggers during a repair is a
-   * far larger behavioural surface than recreating one record).
+   * Since #6127 the parity is complete: default values, {@code validate()} and the create events (database-level and
+   * per-type) all apply, so a restored record is indistinguishable from one an INSERT at the same RID would have
+   * produced. Restoring past a type's constraints used to be allowed on the grounds that an emergency repair must
+   * never be blocked, but the record it produced could not be UPDATEd afterwards ({@code updateRecord} validates too)
+   * and no consistency pass ever flagged it - {@code CHECK DATABASE} is structural and does not read schema
+   * constraints. The one intentional difference from {@code createRecordNoLock}: a {@code beforeCreate} listener that
+   * vetoes raises here instead of returning quietly, because a repair that reports success without writing the record
+   * is the one outcome this call must never produce.
    *
    * @return the RID the record was restored at, always {@code bucket}'s file id at {@code position}
+   *
+   * @throws com.arcadedb.exception.ValidationException  if {@code record} violates its type's constraints
+   * @throws com.arcadedb.exception.DatabaseOperationException if a {@code beforeCreate} listener vetoed the restore
    */
   RID restoreRecord(Record record, LocalBucket bucket, long position);
 

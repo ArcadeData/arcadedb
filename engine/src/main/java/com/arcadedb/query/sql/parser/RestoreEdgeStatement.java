@@ -42,6 +42,9 @@ import java.util.Objects;
  * lists still reference this RID - the usual case this repairs, since a raw record delete never touches the
  * neighbours - restoring the edge record itself is enough. Refuses if either endpoint vertex does not exist: an
  * edge to a missing vertex is not what this statement is for (see RESTORE VERTEX first in that case).
+ * <p>
+ * The type's schema applies in full (#6127): declared default values are set, the edge is validated, and the create
+ * events fire, exactly as for an INSERT.
  */
 public class RestoreEdgeStatement extends SimpleExecStatement {
   public Identifier targetType;

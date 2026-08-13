@@ -429,6 +429,11 @@ public class GraphEngine {
    * edges and are not set here (the caller may set them afterward if known from another source). Refuses if the
    * slot is occupied (see {@link LocalBucket#restoreRecordAtPosition}) or if {@code typeName} does not own
    * {@code targetRid}'s bucket.
+   * <p>
+   * The type's schema applies in full (#6127, see {@link DatabaseInternal#restoreRecord}), so on a type with
+   * MANDATORY properties the property-less shell this builds is refused with a
+   * {@link com.arcadedb.exception.ValidationException}: use
+   * {@code RESTORE VERTEX ... SET ...} instead, which lets the caller supply them.
    */
   public Vertex restoreVertexAt(final RID targetRid, final String typeName) {
     final DocumentType type = database.getSchema().getType(typeName);

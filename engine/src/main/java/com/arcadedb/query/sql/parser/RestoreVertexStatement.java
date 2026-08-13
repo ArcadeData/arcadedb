@@ -44,6 +44,11 @@ import java.util.Set;
  * <p>
  * Restores graph STRUCTURE only: the vertex's original property values are not recoverable from its edges. SET or
  * CONTENT lets the caller supply them if known from another source (a backup, an application log, ...).
+ * <p>
+ * The type's schema applies in full (#6127): declared default values are set, the vertex is validated, and the
+ * create events fire, exactly as for an INSERT. On a type with MANDATORY properties a bare structure-only restore is
+ * therefore refused until SET/CONTENT supplies them - the placeholder value has to be the operator's explicit
+ * choice, because a vertex written past its own constraints could not be updated afterwards either.
  */
 public class RestoreVertexStatement extends SimpleExecStatement {
   public Identifier targetType;
