@@ -74,7 +74,7 @@ class Issue4960LSMReloadCompactionCounterTest extends TestHelper {
   }
 
   private LSMTreeIndexMutable bucketMutableIndex() {
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").get(0);
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
       if (bucketIndex instanceof LSMTreeIndex lsmIndex)
         return lsmIndex.getMutableIndex();
