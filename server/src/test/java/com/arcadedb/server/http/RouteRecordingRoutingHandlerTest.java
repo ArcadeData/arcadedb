@@ -22,7 +22,10 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RouteRecordingRoutingHandlerTest {
 
@@ -53,5 +56,22 @@ class RouteRecordingRoutingHandlerTest {
 
     assertThat(result).isSameAs(handler);
     assertThat(handler.getRegisteredRoutes()).hasSize(2);
+  }
+
+  /**
+   * Issue #4896's required self-test, exercised against the real recording mechanism: proves the
+   * actual-vs-declared comparison every core anti-drift check relies on genuinely fails when a route
+   * is actually registered but missing from the declared set.
+   */
+  @Test
+  void theAntiDriftCheckCatchesARouteThatIsNotDeclared() {
+    final RouteRecordingRoutingHandler handler = new RouteRecordingRoutingHandler();
+    handler.get("/databases", NOOP_HANDLER).post("/begin/{database}", NOOP_HANDLER);
+
+    final var declared = List.of(new RouteRecordingRoutingHandler.RouteDescriptor("GET", "/databases"));
+
+    assertThatThrownBy(() -> assertThat(handler.getRegisteredRoutes())
+        .containsExactlyInAnyOrderElementsOf(declared))
+        .isInstanceOf(AssertionError.class);
   }
 }

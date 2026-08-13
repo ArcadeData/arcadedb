@@ -29,7 +29,9 @@ import java.util.stream.Collectors;
  * router. A template with no parameter is registered EXACTLY as written. Two templates can
  * normalize to the same prefix - e.g. both "/api/v1/ha/snapshot/{database}" and
  * "/api/v1/ha/snapshot/{database}/checksums" collapse to "/api/v1/ha/snapshot/" - because one
- * handler answers both, registered once.
+ * handler answers both, registered once. This means a fabricated spec path added under an
+ * already-registered prefix is invisible to the per-plugin anti-drift check - the collapse trades
+ * finer reverse-drift precision for matching what the router can actually distinguish.
  */
 public final class RoutePathNormalizer {
 

@@ -21,9 +21,11 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.server.http.RecordingPathHandler;
 import com.arcadedb.server.http.RoutePathNormalizer;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #4896: RaftHAPlugin holds arcadedb-server at provided scope, so it cannot declare its own
@@ -33,9 +35,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
 
+  private RaftHAPlugin plugin;
+
+  @AfterEach
+  void tearDown() {
+    if (plugin != null)
+      plugin.stopService();
+  }
+
   @Test
   void registeredRoutesMatchTheDeclaredApiSpecPaths() {
-    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin = new RaftHAPlugin();
     final RecordingPathHandler routes = new RecordingPathHandler();
 
     plugin.registerAPI(null, routes);
@@ -43,5 +53,23 @@ class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
     assertThat(routes.getRegisteredPaths())
         .as("RaftHAPlugin.registerAPI() and PluginApiSpec.HA_RAFT_PATHS have drifted apart")
         .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalize(PluginApiSpec.HA_RAFT_PATHS));
+  }
+
+  /**
+   * Issue #4896's required self-test, exercised against the real production plugin and the real
+   * recording handler: proves the anti-drift comparison genuinely fails when an undeclared route is
+   * actually registered, rather than only proving AssertJ can compare two hand-written sets.
+   */
+  @Test
+  void theAntiDriftCheckCatchesARouteThatIsNotDeclared() {
+    plugin = new RaftHAPlugin();
+    final RecordingPathHandler routes = new RecordingPathHandler();
+    plugin.registerAPI(null, routes);
+    routes.addExactPath("/api/v1/cluster/issue-4896-undeclared", (exchange) -> {
+    });
+
+    assertThatThrownBy(() -> assertThat(routes.getRegisteredPaths())
+        .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalize(PluginApiSpec.HA_RAFT_PATHS)))
+        .isInstanceOf(AssertionError.class);
   }
 }

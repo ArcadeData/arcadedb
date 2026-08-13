@@ -18,50 +18,47 @@
  */
 package com.arcadedb.server.http;
 
+import io.undertow.predicate.Predicate;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.RoutingHandler;
+import io.undertow.util.HttpString;
 
-import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A {@link RoutingHandler} that records every (method, path template) pair registered through it,
  * so a live server can report exactly which routes it actually wired up. Used by
  * {@link HttpServer#setupRoutes()} in place of a plain {@code Handlers.routing()} instance -
  * recording is a side effect only, behavior as a router is unchanged because every overridden method
- * delegates to {@code super} before returning. Note: only routes registered via
- * {@code get()}, {@code post()}, {@code put()}, and {@code delete()} are recorded; routes registered
- * via {@code add(...)} or predicate-based overloads would silently not appear in {@link #getRegisteredRoutes()}.
+ * delegates to {@code super} before returning. All eight verb convenience methods ({@code get()},
+ * {@code post()}, ...) and both {@code add(...)} overloads funnel through the two terminal
+ * {@code add(HttpString, String, HttpHandler)} / {@code add(HttpString, String, Predicate, HttpHandler)}
+ * methods overridden here, so every registration path is captured, including future verbs (e.g.
+ * PATCH) that have no dedicated convenience method. {@code addAll(RoutingHandler)} is the one
+ * remaining gap: it merges another handler's internal route map directly and bypasses both terminal
+ * methods, so routes registered that way would not appear in {@link #getRegisteredRoutes()} - not a
+ * concern today since {@link HttpServer#setupRoutes()} never calls it.
  */
 public class RouteRecordingRoutingHandler extends RoutingHandler {
 
   public record RouteDescriptor(String method, String path) {
   }
 
-  private final List<RouteDescriptor> registeredRoutes = new ArrayList<>();
+  private final Set<RouteDescriptor> registeredRoutes = new LinkedHashSet<>();
 
   @Override
-  public synchronized RoutingHandler get(final String template, final HttpHandler handler) {
-    registeredRoutes.add(new RouteDescriptor("GET", template));
-    return super.get(template, handler);
+  public synchronized RoutingHandler add(final HttpString method, final String template, final HttpHandler handler) {
+    registeredRoutes.add(new RouteDescriptor(method.toString(), template));
+    return super.add(method, template, handler);
   }
 
   @Override
-  public synchronized RoutingHandler post(final String template, final HttpHandler handler) {
-    registeredRoutes.add(new RouteDescriptor("POST", template));
-    return super.post(template, handler);
-  }
-
-  @Override
-  public synchronized RoutingHandler put(final String template, final HttpHandler handler) {
-    registeredRoutes.add(new RouteDescriptor("PUT", template));
-    return super.put(template, handler);
-  }
-
-  @Override
-  public synchronized RoutingHandler delete(final String template, final HttpHandler handler) {
-    registeredRoutes.add(new RouteDescriptor("DELETE", template));
-    return super.delete(template, handler);
+  public synchronized RoutingHandler add(final HttpString method, final String template, final Predicate predicate,
+      final HttpHandler handler) {
+    registeredRoutes.add(new RouteDescriptor(method.toString(), template));
+    return super.add(method, template, predicate, handler);
   }
 
   public synchronized List<RouteDescriptor> getRegisteredRoutes() {

@@ -312,7 +312,7 @@ public class HttpServer implements ServerPlugin {
    * to verify the OpenAPI specification against what the server actually registers, instead of a
    * second hand-maintained list (issue #4896).
    */
-  public List<RouteRecordingRoutingHandler.RouteDescriptor> getRegisteredRoutes() {
+  List<RouteRecordingRoutingHandler.RouteDescriptor> getRegisteredRoutes() {
     return registeredRoutes;
   }
 

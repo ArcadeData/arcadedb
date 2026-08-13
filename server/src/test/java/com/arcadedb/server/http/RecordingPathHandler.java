@@ -47,7 +47,7 @@ public class RecordingPathHandler extends PathHandler {
     return super.addPrefixPath(path, handler);
   }
 
-  public Set<String> getRegisteredPaths() {
+  public synchronized Set<String> getRegisteredPaths() {
     return Set.copyOf(registeredPaths);
   }
 }
