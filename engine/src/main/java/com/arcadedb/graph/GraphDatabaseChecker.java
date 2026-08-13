@@ -227,7 +227,7 @@ public class GraphDatabaseChecker {
 
         for (final RID orphan : orphansToDelete) {
           try {
-            database.getSchema().getBucketById(orphan.getBucketId()).deleteRecord(orphan);
+            deleteCorruptedRecord(orphan);
             ++reclaimed;
           } catch (final RecordNotFoundException e) {
             // ALREADY GONE
@@ -254,6 +254,34 @@ public class GraphDatabaseChecker {
       stats.put("totalWarnings", report.totalWarnings);
     }
     return stats;
+  }
+
+  /**
+   * Removes one record this checker decided is beyond repair, and pays the bucket-counter debt that comes with it.
+   * <p>
+   * {@code LocalBucket.deleteRecord} does NOT touch {@code cachedRecordCount}, and that counter - not a scan - is
+   * what {@code count(*)} and {@code countType()} answer from. Every caller that deletes through the bucket
+   * therefore owes the matching {@code updateBucketRecordDelta(-1)}, the same accounting
+   * {@code LocalDatabase.cascadeDeleteExternalValues} and {@code DatabaseChecker}'s document arm do.
+   * <p>
+   * Missing it was invisible on a type-wide run, which is why it survived: {@code DatabaseChecker.checkBuckets}
+   * recomputes every bucket counter afterwards and repaired the drift as a side effect. The RECORD scope
+   * deliberately skips the database-wide passes, so there the type simply kept over-reporting the deleted record
+   * for good. Pinned by {@code CheckDatabaseRecordScopeTest#aRecordScopedFixKeepsTheCachedRecordCountConsistent}
+   * and its edge twin.
+   * <p>
+   * Shared by all three delete sites in this class - the vertex arm, the edge arm and the orphan-segment reclaim -
+   * rather than repeated: they were byte-identical copies, and the rule is the thing that must not drift apart
+   * again. The reclaim's edge-list buckets belong to no type, so nothing user-facing reads their counter today;
+   * it goes through here anyway, because "which buckets have a reader" is not a distinction worth encoding in
+   * three places.
+   *
+   * @throws com.arcadedb.exception.RecordNotFoundException if the record is already gone - callers decide whether
+   *                                                        that is worth reporting
+   */
+  private void deleteCorruptedRecord(final RID rid) {
+    database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+    database.getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
   }
 
   /**
@@ -501,7 +529,7 @@ public class GraphDatabaseChecker {
 
           autoFix.incrementAndGet();
           try {
-            database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+            deleteCorruptedRecord(rid);
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
@@ -1290,7 +1318,7 @@ public class GraphDatabaseChecker {
 
           autoFix.incrementAndGet();
           try {
-            database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+            deleteCorruptedRecord(rid);
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
