@@ -210,7 +210,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
      * chunk created.
      */
     private int                        instalments;
-
   }
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
@@ -1694,6 +1693,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * masking that with a replication error would replace a diagnosable failure with a confusing one. A compensation
    * that fails is therefore logged at SEVERE naming every file it could not retire, which is what an operator
    * needs to clean them up by hand.
+   * <p>
+   * WHEN THE COMPENSATION ITSELF CANNOT RUN, named because it is the most Raft-idiomatic way for this path to fail
+   * and it is a consequence instalments introduce. {@code recordFileChanges} checks {@code isLeader()} once, at the
+   * top; nothing re-checks it per instalment, and {@code requireRaftServer()} only asserts that a server exists,
+   * not that this node still leads. If leadership moves away after an instalment has shipped - failover, a brief
+   * partition, a manual step-down, all normal Raft events rather than application bugs - this node can no longer
+   * submit entries, so the removal below fails and lands in the SEVERE branch.
+   * <p>
+   * Before instalments that case cost nothing: nothing had reached a follower, so the final {@code replicateSchema}
+   * simply failed and the caller saw a retryable error. Now it leaves files on the other nodes that only an
+   * operator can remove, which is why the log line has to name them. Deliberately not "solved" here: re-checking
+   * leadership per instalment would narrow the window without closing it (leadership can move between the check
+   * and the submit), and a node that is no longer leader has no way to make the cluster do anything. The real fix
+   * is for the new leader to reclaim unreferenced files, which is a garbage-collection feature this database does
+   * not have. Tracked as issue #6143, along with the fact that this SEVERE branch is reasoned about rather than
+   * covered - the step-down has to land between an instalment and the unwind to reach it.
    */
   private void retireAbandonedInstalments(final SchemaInstalmentState state) {
     if (state == null || state.instalments == 0)
@@ -1733,11 +1748,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           toRetire.size(), toRetire.values());
 
     } catch (final Exception e) {
+      // Names the leadership case, because it is both the likeliest cause and the one where "retry the operation"
+      // is the wrong advice: this node cannot make the cluster do anything any more, so the files stay until
+      // somebody removes them.
       LogManager.instance().log(this, Level.SEVERE,
           "Schema session on database '%s' failed after shipping %d instalment(s) AND the compensating removal "
-              + "could not be replicated. The other nodes are holding file(s) this node does not have and nothing "
+              + "could not be replicated%s. The other nodes are holding file(s) this node does not have and nothing "
               + "will reclaim them: %s. Remove them manually once the cluster is healthy", e, getName(),
-          state.instalments, toRetire.values());
+          state.instalments, isLeader() ? "" : " because this node is no longer the leader", toRetire.values());
     }
   }
 
