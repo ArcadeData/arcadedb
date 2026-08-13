@@ -319,19 +319,26 @@ public class PluginApiSpec implements OpenApiContributor {
     final Operation get = SpecBuilders.operation("getDatabaseSnapshotChecksums", "Cluster",
         "Read the checksums of a snapshot's files",
         """
-            Returns the per-file checksums of the database a snapshot download would produce, so a \
-            follower can decide whether it needs the full transfer. Only the root user may read them.
+            Returns the per-file checksums of the database as a snapshot download would produce it, read \
+            through the same point-in-time window. Only the root user may read them.
+
+            This is an operator diagnostic: it answers "do these two nodes hold the same bytes?" without \
+            transferring a database. Resync itself does not consult it - a follower that falls behind the \
+            compacted Raft log always downloads the full snapshot ZIP - because a whole-file comparison is the \
+            wrong granularity for an ArcadeDB database, which is usually dominated by one bucket file that any \
+            single changed byte re-ships in full. Incremental resync is tracked as a page-level diff in #6115.
 
             This route accepts HTTP Basic only, for the same reason as the snapshot download. """
             + RAFT_REQUIRED);
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     SpecBuilders.basicAuthOnly(get);
-    // No 400: unlike the snapshot download branch, the checksums branch never validates the database
-    // name (missing/invalid characters); an unknown name simply resolves to 404. A checksum
-    // computation failure is caught locally and reported as 500.
+    // 400 since #6125: the database name is validated (non-empty, no separators, no '..', printable ASCII)
+    // BEFORE this branch is taken, exactly as on the snapshot download route, so a malformed name is refused
+    // here rather than resolving to a 404 further down. A checksum computation failure is caught locally and
+    // reported as 500.
     get.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Per-file checksums", null),
-        "401", "403", "404", "500", "503"));
+        "400", "401", "403", "404", "500", "503"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setGet(get);

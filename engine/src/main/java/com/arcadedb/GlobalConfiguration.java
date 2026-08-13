@@ -472,12 +472,26 @@ public enum GlobalConfiguration {
   PAGE_SNAPSHOT_MAX_SIZE("arcadedb.pageSnapshotMaxSize", SCOPE.DATABASE,
       """
       Hard cap (in MB, RAM plus spill file) on the size a single snapshot shadow may reach before the window is \
-      declared overflowed (issue #6075, challenge C4). Worst case the shadow grows to the working set dirtied while \
-      the window is open, which on a small very hot database approaches the database size, so an uncapped shadow \
-      would reproduce the 'snapshot full' failure mode of sparse-file snapshots. On breach the window stops \
-      capturing and every reader fails loudly, so the consumer can fall back to the suspend-and-freeze path - never \
-      a silently truncated or torn snapshot. Set to 0 for no cap.""",
-      Long.class, 1024),
+      declared overflowed (issue #6075, challenge C4). On breach the window stops capturing and every reader fails \
+      loudly, so the consumer can fall back to the suspend-and-freeze path - never a silently truncated or torn \
+      snapshot. The default -1 sizes the cap AUTOMATICALLY when the window opens (issue #6125), as the smaller of \
+      the ceiling the shadow provably cannot exceed - one pre-image per page that existed at t0, so the t0 size of \
+      the page files - and half the space still usable on the volume holding the spill file. A flat number cannot \
+      do that: measurements on a 128 MB database show the shadow reaching 100% of the database under a flat-out \
+      writer, so any fixed default is simply the database size above which backups silently start falling back to \
+      throttling the writers. Set a positive value to pin an absolute cap in MB, or 0 for no cap at all; any \
+      negative value means automatic, so -1 is the spelling to use rather than the only one accepted.""",
+      Long.class, -1),
+
+  PAGE_SNAPSHOT_SPILL_PATH("arcadedb.pageSnapshotSpillPath", SCOPE.DATABASE,
+      """
+      Directory holding the scratch spill file of a snapshot shadow, empty (the default) to keep it in the database \
+      directory (issue #6125). A shadow can grow to the size of the database, so on a volume sized for the data \
+      alone it competes for space with the very files it is protecting; pointing this at another volume removes \
+      that coupling, and the automatic PAGE_SNAPSHOT_MAX_SIZE is then measured against the free space THERE. The \
+      file is pure scratch - it is created when the RAM budget is exhausted, deleted when the window closes, and \
+      never read by recovery.""",
+      String.class, ""),
 
   EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),

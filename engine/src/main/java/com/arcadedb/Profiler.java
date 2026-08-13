@@ -315,7 +315,16 @@ public class Profiler {
     json.put("snapshotOldestWindowAge", new JSONObject().put("value", pStats.snapshotOldestWindowMillis));
     json.put("snapshotWindowsOpened", new JSONObject().put("count", pStats.snapshotWindowsOpened));
     json.put("snapshotWindowsInvalidated", new JSONObject().put("count", pStats.snapshotWindowsInvalidated));
+    // #6125: the split of the line above, because the two reasons take an operator to different places, plus the
+    // timer over the t0 barrier - the one stall the snapshot path still has, and until now the only thing about it
+    // that was reported was a WARNING when it gave up.
+    json.put("snapshotWindowsOverflowed", new JSONObject().put("count", pStats.snapshotWindowsOverflowed));
+    json.put("snapshotWindowsFailed", new JSONObject().put("count", pStats.snapshotWindowsFailed));
     json.put("snapshotPreImagesCaptured", new JSONObject().put("count", pStats.snapshotPreImagesCaptured));
+    json.put("snapshotBarriers", new JSONObject().put("count", pStats.snapshotBarriers));
+    json.put("snapshotBarrierTime", new JSONObject().put("count", pStats.snapshotBarrierMillis));
+    json.put("snapshotBarrierMaxTime", new JSONObject().put("value", pStats.snapshotBarrierMaxMillis));
+    json.put("snapshotBarriersInexact", new JSONObject().put("count", pStats.snapshotBarriersInexact));
     json.put("deferredRAM", new JSONObject().put("space", pStats.deferredRAMBytes));
 
     final long freeSpace = new File(".").getFreeSpace();
@@ -498,6 +507,15 @@ public class Profiler {
           FileUtils.getSizeAsString(pStats.snapshotShadowSpilledBytes), pStats.snapshotShadowUsagePerc,
           pStats.snapshotOldestWindowMillis, pStats.snapshotWindowsOpened, pStats.snapshotWindowsInvalidated,
           pStats.snapshotPreImagesCaptured));
+
+      // #6125: the t0 barrier on its own line. The average is what an operator compares against their write-latency
+      // budget; the max is what a single unlucky backup actually cost, and averaging it away hides exactly the
+      // outlier worth chasing.
+      buffer.append("%n    barriers=%d avg=%,dms max=%,dms inexact=%d overflowed=%d failed=%d".formatted(
+          pStats.snapshotBarriers,
+          pStats.snapshotBarriers > 0 ? pStats.snapshotBarrierMillis / pStats.snapshotBarriers : 0L,
+          pStats.snapshotBarrierMaxMillis, pStats.snapshotBarriersInexact, pStats.snapshotWindowsOverflowed,
+          pStats.snapshotWindowsFailed));
 
       buffer.append(
         "%n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s".formatted(walTotalFiles, walPagesWritten,

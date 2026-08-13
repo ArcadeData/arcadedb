@@ -319,14 +319,14 @@ class PluginApiSpecTest {
 
   @Test
   void snapshotChecksumsResponseCodesMatchTheHandler() {
-    // Correction: the checksums branch (SnapshotHttpHandler.handleChecksums) never validates the
-    // database-name shape the way the download branch does, so 400 can never be returned; a checksum
-    // computation failure is caught locally and reported as 500, and the same root-only 403 check
-    // applies before either branch is reached. The brief's response set had 400 but neither 403 nor 500.
+    // #6125: the checksums branch now validates the database-name shape too - the validation was hoisted above
+    // the branch in SnapshotHttpHandler, so both routes refuse a malformed name with 400 instead of one of them
+    // relying on the downstream exact-match lookup to answer 404. A checksum computation failure is still caught
+    // locally and reported as 500, and the same root-only 403 check applies before either branch is reached.
     final Operation checksums = openAPI.getPaths()
         .get("/api/v1/ha/snapshot/{database}/checksums").getGet();
     assertThat(checksums.getResponses().keySet())
-        .containsExactlyInAnyOrder("200", "401", "403", "404", "500", "503");
+        .containsExactlyInAnyOrder("200", "400", "401", "403", "404", "500", "503");
   }
 
   @Test

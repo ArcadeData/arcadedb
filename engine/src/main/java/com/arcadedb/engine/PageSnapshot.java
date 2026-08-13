@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -191,9 +192,11 @@ public class PageSnapshot implements AutoCloseable {
   }
 
   /**
-   * The {@code arcadedb.pageSnapshotMaxSize} cap this window's shadow was opened with, in bytes. Exposed so a monitor
-   * can report the headroom left before the window is invalidated and its consumer forced onto the
-   * suspend-and-freeze path (#6116), rather than only reporting the breach after the fact.
+   * The EFFECTIVE cap this window's shadow was opened with, in bytes: since #6125 the default
+   * {@code arcadedb.pageSnapshotMaxSize} of -1 is resolved at t0 rather than read as a number of MB, so this is the
+   * only place the number a breach will be measured against can be read. Exposed so a monitor can report the
+   * headroom left before the window is invalidated and its consumer forced onto the suspend-and-freeze path (#6116),
+   * rather than only reporting the breach after the fact. {@code 0} means uncapped.
    */
   public long getShadowMaxSizeInBytes() {
     return shadow.getMaxSizeInBytes();
@@ -314,9 +317,12 @@ public class PageSnapshot implements AutoCloseable {
         return;
 
       if (!shadow.store(PageShadow.key(fileId, pageNumber), content, length))
+        // THE EFFECTIVE CAP, NOT THE CONFIGURED ONE: SINCE #6125 THE DEFAULT IS SIZED AT t0 FROM THE DATABASE SIZE
+        // AND THE FREE SPACE ON THE SPILL VOLUME, SO ECHOING THE SETTING WOULD PRINT "-1 MB"
         invalidate(STATUS.OVERFLOWED,
-            "the copy-on-write shadow reached the " + GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE.getKey() + " cap of "
-                + database.getConfiguration().getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE) + " MB");
+            "the copy-on-write shadow reached its " + FileUtils.getSizeAsString(shadow.getMaxSizeInBytes()) + " cap ("
+                + GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE.getKey() + "="
+                + database.getConfiguration().getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE) + ")");
     } catch (final IOException e) {
       invalidate(STATUS.FAILED, "error capturing the pre-image of page " + fileId + "/" + pageNumber + ": " + e);
     } finally {
@@ -343,8 +349,10 @@ public class PageSnapshot implements AutoCloseable {
       status = newStatus;
       invalidReason = reason;
       // #6116: A CONSUMER THAT FALLS BACK STILL COMPLETES, SO THIS IS INVISIBLE OUTSIDE THE LOG UNLESS IT IS COUNTED.
-      // COUNTED HERE RATHER THAN AT THE CALL SITES SO NO FUTURE INVALIDATION REASON CAN FORGET TO
-      pageManager.incrementSnapshotWindowsInvalidated();
+      // COUNTED HERE RATHER THAN AT THE CALL SITES SO NO FUTURE INVALIDATION REASON CAN FORGET TO.
+      // #6125: PASSED THE STATUS TOO, BECAUSE THE TWO REASONS TAKE AN OPERATOR TO DIFFERENT PLACES - OVERFLOWED IS A
+      // TUNING PROBLEM (arcadedb.pageSnapshotMaxSize, OR ROOM ON THE SPILL VOLUME), FAILED IS A DISK PROBLEM
+      pageManager.incrementSnapshotWindowsInvalidated(newStatus);
       LogManager.instance().log(this, Level.WARNING,
           "Snapshot of database '%s' is no longer usable (%s): %s. Readers will fail and can fall back to suspending the page flush",
           null, database.getName(), newStatus, reason);

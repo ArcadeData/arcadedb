@@ -1003,3 +1003,104 @@ window lives in the database directory, so any node that happened to have a back
 had.
 
 [#6116](https://github.com/ArcadeData/arcadedb/issues/6116)
+
+## The snapshot shadow cap sizes itself, the t0 barrier stops retrying, and two smaller loose ends (#6125)
+
+Four items the benchmarks of #6116 turned up. None was a correctness bug; two of them contradict an assumption
+#6075 shipped on, and could only be stated once there were measurements.
+
+### `arcadedb.pageSnapshotMaxSize` is no longer a flat number
+
+The measurement first: on a 128 MB database with the backup throttled to 32 MB/s, the copy-on-write shadow peaked
+at 37% of the database with a writer pausing 100 ms between transactions, 84% at 20 ms, and **100%** with a writer
+running flat out. The shadow holds the pre-image of every page dirtied while the window is open, so its ceiling is
+the working set of the backup's duration, and a hot database rewrites all of it.
+
+That makes any fixed default simply the database size above which backups silently start falling back to the
+suspend-and-freeze path - the very writer throttling #6075 set out to remove. The 1 GB default only reliably
+covered databases up to about a gigabyte under sustained writes.
+
+The cap is now sized when the window opens. `arcadedb.pageSnapshotMaxSize` defaults to **-1**, meaning automatic:
+
+```
+cap = min( sum(pageCount * pageSize) at t0,   // the ceiling the shadow provably cannot exceed
+           usableSpace(spill volume) / 2 )    // so a window can never be why the disk filled
+```
+
+The first term is exact rather than a heuristic: the shadow holds one pre-image per page that existed at t0, and
+pages appended after t0 need none, so it cannot grow past the t0 size of the page files. A positive value still
+means an absolute number of MB and `0` still means uncapped, so no existing configuration changes meaning.
+
+Related, and the reason for the second term: the spill file lands in the database directory, where a breach-sized
+shadow competes for disk with the data it is protecting. The new **`arcadedb.pageSnapshotSpillPath`** moves it to
+another volume, and the automatic cap is then measured against the free space there.
+
+The two ways a window can lose its point in time are also counted apart now, because they send an operator to
+different places: `arcadedb_engine_snapshot_windows_overflowed_total` is a tuning problem (raise the cap, or give
+the spill volume room), `arcadedb_engine_snapshot_windows_failed_total` is a disk problem. Their sum remains
+`arcadedb_engine_snapshot_windows_invalidated_total`.
+
+### The t0 barrier is single-pass, exact, and measured
+
+#6116 measured the barrier at tens of milliseconds under load against 13 us idle, and found the driver was not the
+flush-queue depth - which stays near zero on an SSD - but the barrier **retrying**: it drained the flush queue in
+full, and a commit landing between that drain and the flush-thread suspension made it start over. After three
+attempts it stopped retrying and stamped a t0 that could sit slightly behind the last committed transaction.
+
+The gap is now closed by construction. `PageManager.publishPages` already holds the global page-manager lock across
+*both* halves of publication - the synchronous page write and the flush-queue enqueue - so the barrier takes that
+lock (after the apply lock, in the order it already used) and repeats the drain underneath it. Nothing can feed the
+pipeline while the lock is held, so that second drain is guaranteed to converge, and it is normally instant because
+a first, lock-free drain has already emptied the pipeline. The retry loop and `SNAPSHOT_BARRIER_ATTEMPTS` are gone.
+
+Everything the barrier does under that lock shares one hard 5 s budget, because the lock is JVM-wide and the waits
+those steps use elsewhere are either uncapped (the wait for the in-flight flush batch polls until a synchronous
+`file.write` returns) or capped only by the 60 s progress-based `arcadedb.flushAllPagesTimeout` - either of which
+would let one sick disk stall every committer in the process. Exhausting it is handled per step according to what it
+costs: a pipeline that has not drained only means t0 may sit slightly behind the last commit, which is logged and
+accepted, while a suspension that cannot be acquired or an in-flight batch that has not landed abandons the window
+outright and the consumer falls back to the suspend-and-freeze path - slower for one database rather than briefly
+fatal for all of them.
+
+Exactness matters beyond tidiness: the HA snapshot ship writes `lastTxId` into the `last-tx-id.bin` recency marker
+a follower is judged by at cold bootstrap, and a marker naming a transaction whose pages were still queued claims
+data the archive does not contain.
+
+The obvious inversion still does not work and is now documented as such: suspending the flush thread before the
+drain makes the drain unable to ever complete, because a suspended thread defers batches instead of writing them.
+
+The barrier is also reported now, the way a Prometheus timer is - a count and a summed duration, so
+`rate(seconds)/rate(count)` is the average - plus the high-water mark a scalar snapshot cannot otherwise carry:
+
+| Metric | Type | |
+|---|---|---|
+| `arcadedb_engine_snapshot_barrier_count_total` | counter | t0 barriers executed |
+| `arcadedb_engine_snapshot_barrier_seconds_total` | counter | total time spent in them |
+| `arcadedb_engine_snapshot_barrier_max_seconds` | gauge | the longest one observed |
+| `arcadedb_engine_snapshot_barrier_inexact_total` | counter | barriers that could not prove the pipeline was empty |
+
+The last one should stay at zero: no commit can cause it any more, so a non-zero value means index compaction was
+feeding the flush pipeline throughout the barrier - harmless for consistency, since those writes go to pages beyond
+the t0 page count of a file being built, but worth being able to see.
+
+### `/checksums` validates the database name before taking its branch
+
+`SnapshotHttpHandler` dispatched the `/checksums` sub-path *before* the block that rejects `..`, separators, NUL
+and non-ASCII. It was not exploitable - the checksums path gates on an exact-match lookup over the already-open
+databases, so a traversal string 404'd and the database was never resolved - but the guarantee lived two calls away
+from the handler that needed it. The sub-path is now stripped, the name validated, and only then is a branch
+chosen. A malformed name on the checksums route answers 400 instead of 404, which the OpenAPI spec now documents.
+
+### The unused checksum diff is gone
+
+`SnapshotManager.findDifferingFiles()` was called from nothing but its own unit test, while its presence - and the
+`/checksums` description - suggested resync could ship only what changed. It has been removed rather than wired in,
+for two reasons. Granularity: an ArcadeDB database is usually dominated by one bucket file, so a whole-file
+comparison saves nothing the moment a single byte of it changes. Consistency: the checksums come from one
+point-in-time window and the ZIP from another, so a file that matched when it was compared can be rewritten before
+the transfer starts, and a follower that kept its local copy on the strength of that match would hold a database
+torn across two instants. Incremental resync belongs at the **page** level, on the page-version manifest of phase 3
+(#6115), where both halves come from the same window. `/checksums` is documented as what it actually is: an
+operator diagnostic.
+
+[#6125](https://github.com/ArcadeData/arcadedb/issues/6125)
