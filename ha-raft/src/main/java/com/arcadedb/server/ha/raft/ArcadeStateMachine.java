@@ -2530,9 +2530,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return raftDir != null ? raftDir.resolve("bootstrap-baselines") : null;
   }
 
-  private void triggerSnapshotDownload() {
+  // @VisibleForTesting
+  void triggerSnapshotDownload() {
     if (raftHAServer == null || server == null)
       return;
+    // A node cannot repair itself from itself. notifyLeaderChanged() submits this unconditionally -
+    // including on the node that just WON the election - and getLeaderHttpAddress() then resolves to
+    // this node's own HTTP address, so the "download" would copy this node's already-incomplete
+    // databases back onto themselves and report success. That is merely pointless on the pre-existing
+    // paths, but it would let resolveStaleSnapshotFloorAfterResync() durably record the marker index as
+    // applied and drop the read floor, re-opening issue #6111 on a leader and surviving restarts.
+    // Refuse instead: the floor stands, isResyncInProgress() keeps the node out of the ready set, and
+    // reads keep failing honestly until leadership moves to a peer that actually holds the entries.
+    if (raftHAServer.isLeader()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Refusing a snapshot resync: this node is the leader, so there is no peer to pull from. "
+              + "The request stays pending until leadership moves elsewhere (issue #6111)");
+      return;
+    }
     // Single-flight guard: multiple recovery paths (reinitialize watchdog, notifyLeaderChanged,
     // stale-follower recovery from the HealthMonitor) can request a download. Only one may run at
     // a time; concurrent requests are dropped. The flag also feeds isSnapshotDownloadPending() so
@@ -2550,6 +2565,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (leaderHttpAddr == null) {
         LogManager.instance().log(this, Level.WARNING,
             "Cannot trigger snapshot download: leader HTTP address unknown");
+        return;
+      }
+      // Backstop for the isLeader() check above: leadership can move between the two, and getLeaderId()
+      // can already report this node while isLeader() has not caught up. Compare the addresses too, so
+      // a self-download is impossible on either side of that window (issue #6111).
+      final String localHttpAddr = raftHAServer.getPeerHttpAddress(raftHAServer.getLocalPeerId());
+      if (leaderHttpAddr.equals(localHttpAddr)) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Refusing a snapshot resync: the resolved leader address %s is this node's own. "
+                + "The request stays pending until a peer holds the leadership (issue #6111)", leaderHttpAddr);
         return;
       }
       final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
@@ -2571,7 +2596,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
       // without it the very same gap is re-detected on the next restart and the node re-downloads
       // forever. Then wake the waiters this resync unblocked (issue #6111).
-      resolveStaleSnapshotFloorAfterResync();
+      resolveStaleSnapshotFloorAfterResync(resynced);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Snapshot resync failed", e);
       // The node is still short of the entries the marker claims, so the read floor stays and the
@@ -2593,10 +2618,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * them all to it, and leaving the persisted value behind makes {@link #reinitialize()} re-detect the
    * same gap on the next restart - then clears the floor and wakes the waiters it was holding back.
    * No-op when no floor was outstanding.
+   * <p>
+   * {@code resynced} is logged rather than gated on: zero is legitimate for a node with no databases
+   * open (nothing can be stale), and it matches what {@code notifyInstallSnapshotFromLeader} already
+   * records over the same {@code getDatabaseNames()} set. It is worth seeing in the log, because a
+   * floor resolved after reinstalling zero databases is the shape an unexpectedly-empty registry would
+   * take.
    */
-  private void resolveStaleSnapshotFloorAfterResync() {
+  private void resolveStaleSnapshotFloorAfterResync(final int resynced) {
     if (staleSnapshotAppliedFloor.get() < 0)
       return;
+    LogManager.instance().log(this, Level.INFO,
+        "Stale-snapshot read floor resolved after reinstalling %d database(s); reads are unclamped again", resynced);
     final var snapshotInfo = storage.getLatestSnapshot();
     if (snapshotInfo != null && snapshotInfo.getIndex() > readPersistedAppliedIndex()) {
       writePersistedAppliedIndexForAllDatabases(snapshotInfo.getIndex());

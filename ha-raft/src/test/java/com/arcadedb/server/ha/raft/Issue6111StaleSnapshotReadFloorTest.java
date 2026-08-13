@@ -501,6 +501,94 @@ class Issue6111StaleSnapshotReadFloorTest {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // A node must never "resolve" its own gap by downloading from itself
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The dangerous sequence: restart onto a stale marker, then win the next election before the resync
+   * lands. {@code notifyLeaderChanged()} submits {@code triggerSnapshotDownload()} unconditionally, on
+   * the new leader too, and {@code getLeaderHttpAddress()} then resolves to this node's own address - so
+   * the resync would copy this node's incomplete databases onto themselves, report success, and let the
+   * floor be dropped and the marker index durably recorded as applied. That reopens #6111 on a leader,
+   * and survives the next restart because the persisted position no longer shows the gap.
+   */
+  @Test
+  void aLeaderMustNotResolveItsOwnFloorByDownloadingFromItself(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    when(mockRaft.isLeader()).thenReturn(true);
+    when(mockRaft.getLeaderHttpAddress()).thenReturn("localhost:2480");
+    sm.setRaftHAServer(mockRaft);
+    try {
+      sm.writePersistedAppliedIndex(PERSISTED_APPLIED, DB_NAME);
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+
+      sm.triggerSnapshotDownload();
+
+      assertThat(sm.getStaleSnapshotAppliedFloor())
+          .as("a self-download resolves nothing, so the read floor must stand")
+          .isEqualTo(PERSISTED_APPLIED);
+      assertThat(sm.readPersistedAppliedIndex())
+          .as("and the marker index must not be durably recorded as applied")
+          .isEqualTo(PERSISTED_APPLIED);
+      assertThat(sm.isResyncInProgress())
+          .as("the node keeps itself out of the ready set instead of pretending it caught up")
+          .isTrue();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * Same refusal via the address comparison rather than the role flag: leadership can move between the
+   * {@code isLeader()} check and the address resolution, and {@code getLeaderId()} can report this node
+   * while {@code isLeader()} has not caught up.
+   */
+  @Test
+  void aResolvedLeaderAddressEqualToOurOwnIsAlsoRefused(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    final RaftPeerId localId = RaftPeerId.valueOf("local-peer");
+    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    when(mockRaft.isLeader()).thenReturn(false); // role flag has not caught up...
+    when(mockRaft.getLeaderHttpAddress()).thenReturn("localhost:2480");
+    when(mockRaft.getLocalPeerId()).thenReturn(localId);
+    when(mockRaft.getPeerHttpAddress(localId)).thenReturn("localhost:2480"); // ...but it is us
+    sm.setRaftHAServer(mockRaft);
+    try {
+      sm.writePersistedAppliedIndex(PERSISTED_APPLIED, DB_NAME);
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+
+      sm.triggerSnapshotDownload();
+
+      assertThat(sm.getStaleSnapshotAppliedFloor()).isEqualTo(PERSISTED_APPLIED);
+      assertThat(sm.readPersistedAppliedIndex()).isEqualTo(PERSISTED_APPLIED);
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * Control: a genuine peer leader is downloaded from, and the floor resolves. Without it the two tests
+   * above would also pass against a {@code triggerSnapshotDownload()} that refused everything.
+   */
+  @Test
+  void aPeerLeaderIsStillDownloadedFromAndResolvesTheFloor(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    sm.setRaftHAServer(followerRaftHAServerMock());
+    try {
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+
+      sm.triggerSnapshotDownload();
+
+      assertThat(sm.getStaleSnapshotAppliedFloor())
+          .as("a resync from a real peer resolves the floor")
+          .isEqualTo(-1L);
+    } finally {
+      sm.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------------------------
 

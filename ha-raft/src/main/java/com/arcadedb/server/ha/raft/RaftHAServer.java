@@ -2158,6 +2158,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             // the floor for the whole life of an outstanding gap, since Ratis' own counter starts at the
             // marker index - above the floor by construction - and only grows) is below targetIndex.
             //
+            // That invariant is established in ArcadeStateMachine.reinitialize()'s snapshot-gap branch:
+            // it publishes the floor as persistedApplied and only when
+            // snapshotIndex > persistedApplied + HA_SNAPSHOT_GAP_TOLERANCE, so marker > floor always
+            // holds while the floor is outstanding. Anything that changes what that branch publishes
+            // must revisit this reasoning.
+            //
             // READ_YOUR_WRITES / bookmark: the target therefore sits inside a gap that only the pending
             // snapshot resync can fill, so waiting out the quorum timeout cannot change the outcome.
             // Degrade now with the same contract the timeout branch below applies (issue #6111).
