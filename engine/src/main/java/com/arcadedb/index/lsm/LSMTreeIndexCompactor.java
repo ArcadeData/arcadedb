@@ -174,7 +174,7 @@ public class LSMTreeIndexCompactor {
 
     LogManager.instance().log(mainIndex, Level.INFO,
         "Full compaction of index '%s' (series=%d mutablePagesToCompact=%d threadId=%d)...", null, mainIndex.getName(),
-        seriesCount, lastImmutablePage + 1, Thread.currentThread().threadId());
+        seriesCount, lastImmutablePage + 1, Thread.currentThread().getId());
 
     // INPUT CURSORS ORDERED OLDEST -> NEWEST: the compacted series first (newIterators returns them newest
     // first, so reverse), then the mutable immutable pages (page 0 is the oldest). The per-key merge below
@@ -346,7 +346,7 @@ public class LSMTreeIndexCompactor {
     LogManager.instance().log(mainIndex, Level.INFO,
         "Index '%s' fully compacted in %dms (keys=%d values=%d droppedKeys=%d droppedValues=%d mergedSeries=%d newFile=%s(%d) threadId=%d)".formatted(
             mainIndex.getName(), System.currentTimeMillis() - startTime, totalKeys, totalValues, droppedKeys, droppedValues,
-            seriesCount, newCompacted.getName(), newCompacted.getFileId(), Thread.currentThread().threadId()));
+            seriesCount, newCompacted.getName(), newCompacted.getFileId(), Thread.currentThread().getId()));
 
     return true;
   }

@@ -56,7 +56,7 @@ class RebuildIndexOrphanBucketTest extends TestHelper {
           .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("name").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("name").get(0);
     final LSMTreeIndex subIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
     // the bucket name the loader uses to relink is the <bucketName> prefix of the sub-index name
     final String expectedBucketName = subIndex.getName().substring(0, subIndex.getName().lastIndexOf('_'));
@@ -86,7 +86,7 @@ class RebuildIndexOrphanBucketTest extends TestHelper {
 
     // Corrupt one bucket sub-index: drop its bucket association, reproducing the orphaned-metadata state that
     // makes getAssociatedBucketId() return -1 at rebuild time.
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("name").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("name").get(0);
     final IndexInternal subIndex = typeIndex.getIndexesOnBuckets()[0];
     final String orphanName = subIndex.getName();
     subIndex.getMetadata().associatedBucketId = -1;
@@ -101,7 +101,7 @@ class RebuildIndexOrphanBucketTest extends TestHelper {
     }
 
     // The association is restored on every bucket sub-index...
-    final TypeIndex rebuiltTypeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("name").getFirst();
+    final TypeIndex rebuiltTypeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("name").get(0);
     for (final Index bucketIndex : rebuiltTypeIndex.getIndexesOnBuckets())
       assertThat(bucketIndex.getAssociatedBucketId()).as("bucket association must be valid after rebuild").isGreaterThanOrEqualTo(0);
 

@@ -84,7 +84,7 @@ class BmwBlockSkipPruningTest extends TestHelper {
     inTx(() -> {
       // Open the per-dim source cursors ourselves so we can read their decoded-block counters
       // after the scan; the scorer merges each into a single-source DimCursor transparently.
-      final PaginatedSegmentReader reader = readers.getFirst();
+      final PaginatedSegmentReader reader = readers.get(0);
       final PaginatedSegmentDimCursor[] sources = new PaginatedSegmentDimCursor[QUERY_DIMS];
       final DimCursor[] cursors = new DimCursor[QUERY_DIMS];
       long totalBlocks = 0;
@@ -143,7 +143,7 @@ class BmwBlockSkipPruningTest extends TestHelper {
     final int k = 6;
 
     inTx(() -> {
-      final PaginatedSegmentReader reader = readers.getFirst();
+      final PaginatedSegmentReader reader = readers.get(0);
       final PaginatedSegmentDimCursor[] sources = new PaginatedSegmentDimCursor[QUERY_DIMS];
       final DimCursor[] cursors = new DimCursor[QUERY_DIMS];
       long totalBlocks = 0;

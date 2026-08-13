@@ -131,7 +131,7 @@ class LSMTreeIndexFullCompactionTest extends TestHelper {
       while (cursor.hasNext())
         found.add(cursor.next().getIdentity());
       assertThat(found).as("only the surviving record must remain").hasSize(1);
-      assertThat(found.getFirst()).isNotEqualTo(victim.get());
+      assertThat(found.get(0)).isNotEqualTo(victim.get());
     });
   }
 

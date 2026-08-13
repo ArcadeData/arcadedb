@@ -128,7 +128,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     // Feature actually worked: the merge fired at least once (0 would mean every false conflict was thrown).
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
@@ -225,7 +225,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges - mergesBefore;
     assertThat(merges).as("insert/update slot merges must fire on the churned shared page").isGreaterThan(0);
@@ -295,7 +295,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     // With retries each grow commits; correct final length proves growth fell back cleanly (no torn/merged record).
     database.transaction(() -> {
@@ -352,7 +352,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     database.transaction(() -> {
       for (int i = 0; i < records; i++)
@@ -463,7 +463,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
     assertThat(merges).as("head-flip false conflicts must be merged").isGreaterThan(0);
@@ -557,7 +557,7 @@ class Issue5381FalseConflictTest extends TestHelper {
     competitor.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     // The large record must read back byte-for-byte: a dropped chunk would truncate it (or fail to deserialize).
     database.transaction(() -> {
@@ -623,7 +623,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
     assertThat(merges).as("in-place update merge must fire").isGreaterThan(0);
@@ -730,7 +730,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     database.transaction(() -> {
       // Survivors keep their exact last committed value; victims are gone; nothing corrupted.
@@ -870,7 +870,7 @@ class Issue5381FalseConflictTest extends TestHelper {
     bumper.join();
 
     if (!bumpErrors.isEmpty())
-      throw new AssertionError("bumper failed: " + bumpErrors.getFirst(), bumpErrors.getFirst());
+      throw new AssertionError("bumper failed: " + bumpErrors.get(0), bumpErrors.get(0));
 
     // Content only (not the attempt count): however the conflict was resolved, no write may be lost.
     assertThat(countIn(c, "SLinkA")).as("classic in-chunk append co-located with the directory").isEqualTo(2);
@@ -979,7 +979,7 @@ class Issue5381FalseConflictTest extends TestHelper {
     bumper.join();
 
     if (!bumpErrors.isEmpty())
-      throw new AssertionError("bumper failed: " + bumpErrors.getFirst(), bumpErrors.getFirst());
+      throw new AssertionError("bumper failed: " + bumpErrors.get(0), bumpErrors.get(0));
 
     // The vertex head must be a READABLE directory (a dropped directory record leaves a dangling head)...
     assertThat(loadInHead(h)).isInstanceOf(StripeDirectory.class);

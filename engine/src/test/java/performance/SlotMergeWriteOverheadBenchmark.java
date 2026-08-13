@@ -74,7 +74,7 @@ class SlotMergeWriteOverheadBenchmark extends TestHelper {
       database.transaction(() -> rid.asDocument(true).modify().set("tag", v).save(), true, 1);
     }
     final ThreadMXBean tb = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long id = Thread.currentThread().threadId();
+    final long id = Thread.currentThread().getId();
     final long a0 = tb.getThreadAllocatedBytes(id);
     final long t0 = System.nanoTime();
     for (int i = 0; i < OPS; i++) {
@@ -91,7 +91,7 @@ class SlotMergeWriteOverheadBenchmark extends TestHelper {
     for (int i = 0; i < WARMUP; i++)
       database.transaction(() -> database.newDocument("Bench").set("tag", "x").save(), true, 1);
     final ThreadMXBean tb = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long id = Thread.currentThread().threadId();
+    final long id = Thread.currentThread().getId();
     final long a0 = tb.getThreadAllocatedBytes(id);
     final long t0 = System.nanoTime();
     for (int i = 0; i < OPS; i++)
