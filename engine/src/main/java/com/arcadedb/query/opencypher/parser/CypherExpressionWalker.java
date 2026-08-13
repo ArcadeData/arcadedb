@@ -92,74 +92,64 @@ public final class CypherExpressionWalker {
 
     visitor.accept(expr);
 
-    switch (expr) {
-    case FunctionCallExpression func -> walkAll(func.getArguments(), visitor);
-    case ArithmeticExpression arithmetic -> {
+    if (expr instanceof FunctionCallExpression func) {
+      walkAll(func.getArguments(), visitor);
+    } else if (expr instanceof ArithmeticExpression arithmetic) {
       walk(arithmetic.getLeft(), visitor);
       walk(arithmetic.getRight(), visitor);
-    }
-    case ListExpression list -> walkAll(list.getElements(), visitor);
-    case CaseExpression caseExpr -> {
+    } else if (expr instanceof ListExpression list) {
+      walkAll(list.getElements(), visitor);
+    } else if (expr instanceof CaseExpression caseExpr) {
       walk(caseExpr.getCaseExpression(), visitor);
       for (final CaseAlternative alternative : caseExpr.getAlternatives()) {
         walk(alternative.getWhenExpression(), visitor);
         walk(alternative.getThenExpression(), visitor);
       }
       walk(caseExpr.getElseExpression(), visitor);
-    }
-    case MapExpression map -> {
+    } else if (expr instanceof MapExpression map) {
       for (final Expression value : map.getEntries().values())
         walk(value, visitor);
-    }
-    case MapProjectionExpression projection -> {
+    } else if (expr instanceof MapProjectionExpression projection) {
       for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
         walk(element.getExpression(), visitor);
-    }
-    case ListIndexExpression index -> {
+    } else if (expr instanceof ListIndexExpression index) {
       walk(index.getListExpression(), visitor);
       walk(index.getIndexExpression(), visitor);
-    }
-    case ListSliceExpression slice -> {
+    } else if (expr instanceof ListSliceExpression slice) {
       walk(slice.getListExpression(), visitor);
       walk(slice.getFromExpression(), visitor);
       walk(slice.getToExpression(), visitor);
-    }
-    case ListComprehensionExpression comprehension -> {
+    } else if (expr instanceof ListComprehensionExpression comprehension) {
       walk(comprehension.getListExpression(), visitor);
       walk(comprehension.getWhereExpression(), visitor);
       walk(comprehension.getMapExpression(), visitor);
-    }
-    case ListPredicateExpression predicate -> {
+    } else if (expr instanceof ListPredicateExpression predicate) {
       walk(predicate.getListExpression(), visitor);
       walk(predicate.getWhereExpression(), visitor);
-    }
-    case ReduceExpression reduce -> {
+    } else if (expr instanceof ReduceExpression reduce) {
       walk(reduce.getInitialValue(), visitor);
       walk(reduce.getListExpression(), visitor);
       walk(reduce.getReduceExpression(), visitor);
-    }
-    case AllReduceExpression reduce -> {
+    } else if (expr instanceof AllReduceExpression reduce) {
       walk(reduce.getInitialValue(), visitor);
       walk(reduce.getListExpression(), visitor);
       walk(reduce.getReduceExpression(), visitor);
       walk(reduce.getPredicateExpression(), visitor);
-    }
-    case TernaryLogicalExpression ternary -> {
+    } else if (expr instanceof TernaryLogicalExpression ternary) {
       walk(ternary.getLeft(), visitor);
       walk(ternary.getRight(), visitor);
-    }
-    case BooleanWrapperExpression wrapper -> walk(wrapper.getBooleanExpression(), visitor);
-    case ComparisonExpressionWrapper wrapper -> walk(wrapper.getComparison(), visitor);
-    case PatternComprehensionExpression comprehension -> {
+    } else if (expr instanceof BooleanWrapperExpression wrapper) {
+      walk(wrapper.getBooleanExpression(), visitor);
+    } else if (expr instanceof ComparisonExpressionWrapper wrapper) {
+      walk(wrapper.getComparison(), visitor);
+    } else if (expr instanceof PatternComprehensionExpression comprehension) {
       walk(comprehension.getPathPattern(), visitor);
       walk(comprehension.getWhereExpression(), visitor);
       walk(comprehension.getMapExpression(), visitor);
+    } else if (expr instanceof ShortestPathExpression shortestPath) {
+      walk(shortestPath.getPathPattern(), visitor);
     }
-    case ShortestPathExpression shortestPath -> walk(shortestPath.getPathPattern(), visitor);
-    default -> {
-      // A leaf: literal, variable, parameter, property access, or a subquery kept as text.
-    }
-    }
+    // else: a leaf - literal, variable, parameter, property access, or a subquery kept as text.
   }
 
   /**
@@ -169,36 +159,33 @@ public final class CypherExpressionWalker {
     if (expr == null)
       return;
 
-    switch (expr) {
-    case ComparisonExpression comparison -> {
+    if (expr instanceof ComparisonExpression comparison) {
       walk(comparison.getLeft(), visitor);
       walk(comparison.getRight(), visitor);
-    }
-    case LogicalExpression logical -> {
+    } else if (expr instanceof LogicalExpression logical) {
       walk(logical.getLeft(), visitor);
       walk(logical.getRight(), visitor);
-    }
-    case InExpression in -> {
+    } else if (expr instanceof InExpression in) {
       walk(in.getExpression(), visitor);
       walkAll(in.getList(), visitor);
-    }
-    case IsNullExpression isNull -> walk(isNull.getExpression(), visitor);
-    case RegexExpression regex -> {
+    } else if (expr instanceof IsNullExpression isNull) {
+      walk(isNull.getExpression(), visitor);
+    } else if (expr instanceof RegexExpression regex) {
       walk(regex.getExpression(), visitor);
       walk(regex.getPattern(), visitor);
-    }
-    case StringMatchExpression match -> {
+    } else if (expr instanceof StringMatchExpression match) {
       walk(match.getExpression(), visitor);
       walk(match.getPattern(), visitor);
+    } else if (expr instanceof LabelCheckExpression labelCheck) {
+      walk(labelCheck.getVariableExpression(), visitor);
+    } else if (expr instanceof IsTypedExpression typed) {
+      walk(typed.getValueExpression(), visitor);
+    } else if (expr instanceof BooleanCoercionExpression coercion) {
+      walk(coercion.getExpression(), visitor);
+    } else if (expr instanceof PatternPredicateExpression pattern) {
+      walk(pattern.getPathPattern(), visitor);
     }
-    case LabelCheckExpression labelCheck -> walk(labelCheck.getVariableExpression(), visitor);
-    case IsTypedExpression typed -> walk(typed.getValueExpression(), visitor);
-    case BooleanCoercionExpression coercion -> walk(coercion.getExpression(), visitor);
-    case PatternPredicateExpression pattern -> walk(pattern.getPathPattern(), visitor);
-    default -> {
-      // A predicate with no nested expression to reach, or one whose body is kept as unparsed text.
-    }
-    }
+    // else: a predicate with no nested expression to reach, or one whose body is kept as unparsed text.
   }
 
   /**
