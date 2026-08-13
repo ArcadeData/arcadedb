@@ -95,6 +95,18 @@ public class LocalSchema implements Schema {
   public static final String                                 CACHED_COUNT_FILE_NAME_LEGACY = "cached-count.json"; // DEPRECATED FROM v25.2.1
   public static final String                                 STATISTICS_FILE_NAME          = "statistics.json";
   public static final int                                    BUILD_TX_BATCH_SIZE           = 100_000;
+
+  // The rest of the NTFS/Windows-reserved character set beyond '/', '\' and '*', which checkValidBucketName()
+  // checks separately: '<', '>', ':', '"', '|' and '?'.
+  private static final String                                WINDOWS_ILLEGAL_CHARS         = "<>:\"|?";
+
+  // Windows reserves these as device names for the segment of a file name up to (and not including) the first
+  // dot, regardless of what an extension or further dotted segment says: "CON.txt" is refused exactly like "CON".
+  private static final Set<String>                           WINDOWS_RESERVED_NAMES        = Set.of(//
+      "CON", "PRN", "AUX", "NUL",//
+      "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",//
+      "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9");
+
   final               IndexFactory                           indexFactory                  = new IndexFactory();
   final               Map<String, LocalDocumentType>         types                         = new ConcurrentHashMap<>();
   private             String                                 encoding                      = DEFAULT_ENCODING;
@@ -559,17 +571,6 @@ public class LocalSchema implements Schema {
     });
   }
 
-  // The rest of the NTFS/Windows-reserved character set, beyond '/', '\' and '*' which are checked separately
-  // above: '<', '>', ':', '"', '|' and '?'.
-  private static final String WINDOWS_ILLEGAL_CHARS = "<>:\"|?";
-
-  // Windows reserves these as device names for the segment of a file name up to (and not including) the first
-  // dot, regardless of what an extension or further dotted segment says: "CON.txt" is refused exactly like "CON".
-  private static final Set<String> WINDOWS_RESERVED_NAMES = Set.of(//
-      "CON", "PRN", "AUX", "NUL",//
-      "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",//
-      "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9");
-
   /**
    * A bucket name becomes the last path segment of its component file, so it must address a file inside the
    * database directory and nothing else. A type name reaches the same place already percent-encoded by
@@ -599,9 +600,13 @@ public class LocalSchema implements Schema {
 
     for (int i = 0; i < bucketName.length(); ++i) {
       final char c = bucketName.charAt(i);
-      if (c < 0x20 || WINDOWS_ILLEGAL_CHARS.indexOf(c) > -1)
+      if (c < 0x20 || WINDOWS_ILLEGAL_CHARS.indexOf(c) > -1) {
+        // A control character is not printable, so render it as \\uXXXX to keep the exception message and any
+        // log it lands in readable.
+        final String printableChar = c < 0x20 ? String.format("\\u%04x", (int) c) : String.valueOf(c);
         throw new SchemaException(
-            "Invalid bucket name '" + bucketName + "': it cannot contain the character '" + c + "' (illegal on Windows)");
+            "Invalid bucket name '" + bucketName + "': it cannot contain the character '" + printableChar + "' (illegal on Windows)");
+      }
     }
 
     final int firstDot = bucketName.indexOf('.');
