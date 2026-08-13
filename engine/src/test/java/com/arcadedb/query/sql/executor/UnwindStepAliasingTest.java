@@ -87,14 +87,14 @@ class UnwindStepAliasingTest {
 
       // One row is produced and the scalar value is preserved (not flattened to null).
       assertThat(output).hasSize(1);
-      final ResultInternal unwound = (ResultInternal) output.getFirst();
+      final ResultInternal unwound = (ResultInternal) output.get(0);
       assertThat(unwound.<String>getProperty("single")).isEqualTo("value");
 
       // The forwarded row must be a defensive copy, not the upstream instance: mutating it must not
       // bleed back into the row still referenced upstream.
-      assertThat(unwound).isNotSameAs(sharedRows.getFirst());
+      assertThat(unwound).isNotSameAs(sharedRows.get(0));
       unwound.setProperty("single", "MUTATED");
-      assertThat(sharedRows.getFirst().<String>getProperty("single")).isEqualTo("value");
+      assertThat(sharedRows.get(0).<String>getProperty("single")).isEqualTo("value");
     });
   }
 
@@ -140,12 +140,12 @@ class UnwindStepAliasingTest {
         output.add(rs.next());
 
       assertThat(output).hasSize(1);
-      final ResultInternal unwound = (ResultInternal) output.getFirst();
+      final ResultInternal unwound = (ResultInternal) output.get(0);
 
       // Mutating the forwarded copy must not corrupt the shared upstream row.
-      assertThat(unwound).isNotSameAs(sharedRows.getFirst());
+      assertThat(unwound).isNotSameAs(sharedRows.get(0));
       unwound.setProperty("id", 999);
-      assertThat(sharedRows.getFirst().<Integer>getProperty("id")).isEqualTo(1);
+      assertThat(sharedRows.get(0).<Integer>getProperty("id")).isEqualTo(1);
     });
   }
 
@@ -165,8 +165,8 @@ class UnwindStepAliasingTest {
 
         // UNWIND of a scalar yields a single row with the value preserved (single-element semantics).
         assertThat(rows).hasSize(1);
-        assertThat(rows.getFirst().<Integer>getProperty("id")).isEqualTo(1);
-        assertThat(rows.getFirst().<String>getProperty("single")).isEqualTo("value");
+        assertThat(rows.get(0).<Integer>getProperty("id")).isEqualTo(1);
+        assertThat(rows.get(0).<String>getProperty("single")).isEqualTo("value");
       });
     });
   }

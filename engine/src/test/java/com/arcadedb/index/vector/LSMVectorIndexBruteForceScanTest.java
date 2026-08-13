@@ -153,7 +153,7 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
               .contains(rid);
         }
 
-        final Result top = results.getFirst();
+        final Result top = results.get(0);
         final RID topRid = top.<com.arcadedb.database.Document>getProperty("record").getIdentity();
         final float topDistance = ((Number) top.getProperty("distance")).floatValue();
 
@@ -246,7 +246,7 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
       bruteForceScan.invoke(index, query, 5, null, results, vectorsFromA, ordinalA);
 
       assertThat(results).isNotEmpty();
-      final Pair<RID, Float> top = results.getFirst();
+      final Pair<RID, Float> top = results.get(0);
       assertThat(top.getSecond())
           .as("Self-match must score ~0 distance")
           .isLessThan(1e-3f);
