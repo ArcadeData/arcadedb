@@ -95,7 +95,7 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
 
     final com.sun.management.ThreadMXBean threadBean =
         (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
-    final long tid = Thread.currentThread().threadId();
+    final long tid = Thread.currentThread().getId();
 
     // One big transaction: every edge appends to the hub's IN head chunk (tracked) with no other thread, so no
     // conflict, no merge - pure tracking cost.
