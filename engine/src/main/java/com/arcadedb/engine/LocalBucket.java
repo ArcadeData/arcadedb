@@ -490,6 +490,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Fingerprint of the chunk chain of {@code rid} PAST its head chunk, or {@link #NO_CHUNK_TAIL_FINGERPRINT} when
    * there is nothing to fingerprint (the record is not a multi-page one) or the chain cannot be walked.
    * <p>
+   * {@code recordPage} is the page the record lives on, which every caller has just pinned
+   * ({@link #fetchPageInTransaction(RID)} returns it): taking it as a parameter keeps this off the update path's
+   * allocation budget, since resolving it again would cost a {@link PageId} per updated record.
+   * <p>
    * The disjoint-slot merge replays a record's slot on ONE page, and of a multi-page record only the head chunk lives
    * there: the byte-for-byte pre-image check it makes therefore sees the head chunk and nothing else. This is what
    * covers the rest (#6129). Taken twice - once when the record is taken for update, once at commit before the chain
@@ -514,26 +518,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  public long chunkChainTailFingerprint(final RID rid) {
+  public long chunkChainTailFingerprint(final RID rid, final BasePage recordPage) {
     try {
-      final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
-      final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-      if (pageId >= getTotalPages())
+      if (recordPage == null)
         return NO_CHUNK_TAIL_FINGERPRINT;
 
-      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
-      if (page == null)
-        return NO_CHUNK_TAIL_FINGERPRINT;
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+      final int recordPositionInPage = getRecordPositionInPage(recordPage, positionInPage);
       if (recordPositionInPage == 0)
         return NO_CHUNK_TAIL_FINGERPRINT;
 
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      final long[] recordSize = recordPage.readNumberAndSize(recordPositionInPage);
       if (recordSize[0] != FIRST_CHUNK)
         // Not a multi-page record: the whole of it is on the page the merge replays, nothing left to cover.
         return NO_CHUNK_TAIL_FINGERPRINT;
 
-      return chunkChainTailFingerprint(page, (int) (recordPositionInPage + recordSize[1]));
+      return chunkChainTailFingerprint(recordPage, (int) (recordPositionInPage + recordSize[1]));
     } catch (final Exception e) {
       // A chain that cannot be walked (a page that is gone, a broken pointer) simply cannot be vouched for.
       return unwalkableChunkChain(e, rid);
@@ -646,10 +646,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return folded;
   }
 
-  public void fetchPageInTransaction(final RID rid) throws IOException {
+  /**
+   * @return the page pinned for the record, or {@code null} when the RID could not name one - so a caller that needs
+   * to read the record right after does not have to resolve the very same page a second time (#6129).
+   */
+  public MutablePage fetchPageInTransaction(final RID rid) throws IOException {
     if (rid.getPosition() < 0L) {
       LogManager.instance().log(this, Level.WARNING, "Cannot load a page from a record with invalid RID (" + rid + ")");
-      return;
+      return null;
     }
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
@@ -661,7 +665,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
     }
 
-    database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
+    return database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
   }
 
   @Override

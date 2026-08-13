@@ -497,14 +497,14 @@ public class TransactionContext implements Transaction {
       updatedRecords = new HashMap<>();
     if (updatedRecords.put(record.getIdentity(), record) == null) {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
-      bucket.fetchPageInTransaction(rid);
+      final MutablePage recordPage = bucket.fetchPageInTransaction(rid);
       if (slotMerge) {
         // #6129: same moment, and the same reason, as the page pinned right above - it is the view of the record this
         // update is based on. For a record that outgrew its page only its HEAD chunk lives on that page, so the
         // fingerprint of the rest of the chain is what lets the commit tell whether it is still updating the record it
         // read. Without it the merge could replay the head chunk of a record somebody else has meanwhile rewritten
         // past that chunk, and silently drop their write.
-        final long fingerprint = bucket.chunkChainTailFingerprint(rid);
+        final long fingerprint = bucket.chunkChainTailFingerprint(rid, recordPage);
         if (fingerprint != LocalBucket.NO_CHUNK_TAIL_FINGERPRINT) {
           if (chunkTailFingerprints == null)
             chunkTailFingerprints = new HashMap<>();
