@@ -99,6 +99,13 @@ public class PropertyAccessExpression implements Expression {
    * they cannot read a property from, so the query fails the way a Cypher type error fails instead of letting an
    * engine-level {@link RecordNotFoundException} escape the query engine (issue #5898).
    * <p>
+   * The resolution is {@code getRecord()} plus an {@code instanceof} rather than the more idiomatic
+   * {@code RID.asDocument()} for one reason: {@code asDocument()} answers a wrong-shaped record with a bare
+   * {@code ClassCastException}, so using it here would mean catching that - and a {@code catch (ClassCastException)}
+   * around a record lookup also swallows any unrelated cast failure raised deeper inside it, turning a real engine
+   * fault into a misleading "the linked record has no properties". The {@code instanceof} answers only the question
+   * being asked.
+   * <p>
    * The {@code RecordNotFoundException} is deliberately NOT kept as the cause: {@code AbstractServerHttpHandler}
    * classifies a {@code CommandExecutionException} by {@code getCause()} when there is one, so attaching it would route
    * the response through the catch-all arm ("Error on transaction commit") instead of the Cypher-error arm ("Cannot
