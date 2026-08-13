@@ -211,6 +211,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // (issue #6111). This field publishes the honest ceiling so those waiters clamp to it until the
   // flagged re-download actually lands; it is cleared only by a resync that restored the state, never
   // by merely starting one.
+  //
+  // Deliberately node-global, not per-database, and conservative on purpose: the gap is detected from
+  // the global persisted position against the (inherently global) Ratis snapshot index, so which of the
+  // co-located databases is actually short of the marker is not knowable here. A multi-database node
+  // therefore clamps reads on every database while any gap is outstanding. The alternative - guessing
+  // per-database from a global signal - is exactly the class of mistake issue #4824 fixed.
   private final AtomicLong    staleSnapshotAppliedFloor  = new AtomicLong(-1);
   // Wall-clock of the last retry submitted by retryUnfilledSnapshotGap(); 0 = none since the floor was
   // last cleared. Throttles the HealthMonitor-driven backstop, which ticks far more often than a full
@@ -2571,6 +2577,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // can already report this node while isLeader() has not caught up. Compare the addresses too, so
       // a self-download is impossible on either side of that window (issue #6111).
       final String localHttpAddr = raftHAServer.getPeerHttpAddress(raftHAServer.getLocalPeerId());
+      if (localHttpAddr == null)
+        // getPeerHttpAddress() degrades to null when this node's own HTTP endpoint cannot be resolved
+        // right now. The comparison below then cannot fire, so say so rather than letting the backstop
+        // no-op invisibly: only the isLeader() check above is standing between us and a self-download.
+        LogManager.instance().log(this, Level.WARNING,
+            "Cannot resolve this node's own HTTP address; the self-resync address check is inactive for this "
+                + "attempt and only the leader-role check guards it (issue #6111)");
       if (leaderHttpAddr.equals(localHttpAddr)) {
         LogManager.instance().log(this, Level.WARNING,
             "Refusing a snapshot resync: the resolved leader address %s is this node's own. "
