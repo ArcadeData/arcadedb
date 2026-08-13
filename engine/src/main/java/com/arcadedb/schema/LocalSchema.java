@@ -116,7 +116,14 @@ public class LocalSchema implements Schema {
   final               Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
-  protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
+  // Concurrent, not because the map is written often, but because it is written from threads that are not the ones
+  // reading it and the reads are on the correctness path. DDL (CREATE/DROP INDEX) has always mutated it from
+  // arbitrary user threads while queries resolve index names; since #6105 a compaction re-keys it too
+  // ({@link #indexRenamed}), and an AUTOMATIC compaction runs on the async executor - a thread the writer whose
+  // commit then has to see the new key never synchronizes with. Under a plain HashMap that publication rested on
+  // whichever file lock the two sides happened to share, which is not a guarantee anyone should have to reconstruct.
+  // Null keys and values never reach it: every name is either generated here or guarded by the accessors below.
+  protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
@@ -801,7 +808,9 @@ public class LocalSchema implements Schema {
 
   @Override
   public boolean existsIndex(final String indexName) {
-    return indexMap.containsKey(indexName);
+    // Null-guarded because indexMap is a ConcurrentHashMap, which rejects a null key with an NPE where the previous
+    // HashMap simply answered "absent". Callers pass a name straight from SQL, so keep the old answer.
+    return indexName != null && indexMap.containsKey(indexName);
   }
 
   @Override
@@ -830,7 +839,7 @@ public class LocalSchema implements Schema {
    * unique = false} - which drops the flag and this index together.
    */
   private void checkIndexIsNotBackingAConstraint(final String indexName) {
-    final IndexInternal index = indexMap.get(indexName);
+    final IndexInternal index = indexName != null ? indexMap.get(indexName) : null;
     if (index == null || index.getTypeName() == null || !existsType(index.getTypeName()))
       return;
 
@@ -848,7 +857,7 @@ public class LocalSchema implements Schema {
         multipleUpdate = true;
 
       try {
-        final IndexInternal index = indexMap.get(indexName);
+        final IndexInternal index = indexName != null ? indexMap.get(indexName) : null;
         if (index == null)
           return null;
 
@@ -1229,7 +1238,9 @@ public class LocalSchema implements Schema {
 
   @Override
   public Index getIndexByName(final String indexName) {
-    final Index p = indexMap.get(indexName);
+    // Same null guard as existsIndex: a null name must still surface as "not found", not as the NPE a
+    // ConcurrentHashMap raises on a null key.
+    final Index p = indexName != null ? indexMap.get(indexName) : null;
     if (p == null)
       throw new SchemaException("Index with name '" + indexName + "' was not found");
     return p;

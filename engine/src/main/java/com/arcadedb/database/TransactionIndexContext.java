@@ -218,6 +218,12 @@ public class TransactionIndexContext {
   /**
    * The index a lane belongs to: the reference captured when the lane was opened, falling back to a lookup by name
    * for lanes restored wholesale by {@link #setKeys}, which carry no reference. See {@link #indexPerLane}.
+   * <p>
+   * That fallback is not a residual hole. {@code setKeys} is only used by {@code TransactionContext.commitFromReplica},
+   * and a replica never renames a vector index behind its own back: {@code LSMVectorIndex.isCompactionAllowedOnThisNode}
+   * refuses to schedule a compaction on anything but a standalone database or the current leader, so a follower's copy
+   * is renamed only when it adopts the component the leader shipped it - which arrives through the schema update, not
+   * concurrently with a replicated commit it is already applying.
    */
   private IndexInternal resolveIndex(final String laneName) {
     final IndexInternal index = indexPerLane.get(laneName);
@@ -433,8 +439,6 @@ public class TransactionIndexContext {
       return;
 
     final String indexName = index.getName();
-    // The lane belongs to THIS index, whatever it ends up being called by commit time (issue #6105).
-    indexPerLane.put(indexName, index);
 
     if (!index.isTransactionKeyOrderRequired()) {
       // APPEND-ONLY LANE: NO KEY ORDERING, NO PER-KEY DEDUP. REPLAY ORDER == INSERTION ORDER.
@@ -447,6 +451,9 @@ public class TransactionIndexContext {
               + "' cannot opt out of the key-ordered transaction map: duplicated-key detection reads it back");
         lane = new ArrayList<>();
         unorderedEntries.put(indexName, lane);
+        // Recorded once per lane, at creation, not once per key: the lane belongs to THIS index whatever it ends up
+        // being called by commit time (issue #6105).
+        indexPerLane.put(indexName, index);
       }
       lane.add(new IndexKey(false, operation, keysValues, rid));
       return;
@@ -461,6 +468,8 @@ public class TransactionIndexContext {
     if (keys == null) {
       keys = new TreeMap<>(); // ORDERED TO KEEP INSERTION ORDER
       indexEntries.put(indexName, keys);
+      // See the sibling call in the append-only branch above (issue #6105).
+      indexPerLane.put(indexName, index);
 
       values = new HashMap<>();
       keys.put(k, values);
