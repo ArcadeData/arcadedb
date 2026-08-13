@@ -23,7 +23,9 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
@@ -161,8 +163,8 @@ public interface DatabaseInternal extends Database {
    *
    * @return the RID the record was restored at, always {@code bucket}'s file id at {@code position}
    *
-   * @throws com.arcadedb.exception.ValidationException  if {@code record} violates its type's constraints
-   * @throws com.arcadedb.exception.DatabaseOperationException if a {@code beforeCreate} listener vetoed the restore
+   * @throws ValidationException        if {@code record} violates its type's constraints
+   * @throws DatabaseOperationException if a {@code beforeCreate} listener vetoed the restore
    */
   RID restoreRecord(Record record, LocalBucket bucket, long position);
 

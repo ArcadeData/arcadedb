@@ -28,7 +28,9 @@ import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
@@ -53,6 +55,7 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
   private static final String CONSTRAINED = "ConstrainedDoc";
   private static final String PLAIN       = "PlainDoc";
   private static final String VERTEX      = "ConstrainedVertex";
+  private static final String EDGE        = "ConstrainedEdge";
 
   @Override
   protected void beginTest() {
@@ -67,6 +70,58 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
 
       final VertexType vertexType = database.getSchema().createVertexType(VERTEX);
       vertexType.createProperty("label", Type.STRING).setMandatory(true);
+
+      final EdgeType edgeType = database.getSchema().createEdgeType(EDGE);
+      edgeType.createProperty("since", Type.STRING).setMandatory(true);
+      edgeType.createProperty("weight", Type.STRING).setDefaultValue("'1'");
+    });
+  }
+
+  /**
+   * The edge arm builds its shell with {@code new MutableEdge(...)} rather than {@code database.newDocument} /
+   * {@code newVertex}, so it reaches {@code restoreRecord} down a different construction path and needs its own
+   * proof that validation, default values and the create events all apply there too (PR #6130 review).
+   */
+  @Test
+  void restoreEdgeAppliesTheSchemaAndFiresTheCreateEvents() {
+    final RID[] endpoints = new RID[2];
+    final RID[] edge = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex from = database.newVertex(VERTEX).set("label", "from").save();
+      final MutableVertex to = database.newVertex(VERTEX).set("label", "to").save();
+      endpoints[0] = from.getIdentity();
+      endpoints[1] = to.getIdentity();
+      // The properties go through newEdge: it saves the edge itself, so a later set() would be validated too late.
+      edge[0] = from.newEdge(EDGE, to, "since", "yesterday").getIdentity();
+    });
+
+    final LocalBucket bucket = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(edge[0].getBucketId());
+    database.transaction(() -> bucket.deleteRecord(edge[0]));
+
+    final String restore =
+        "RESTORE EDGE " + EDGE + " RID " + edge[0] + " FROM " + endpoints[0] + " TO " + endpoints[1];
+
+    // The mandatory property is enforced on the edge shell too.
+    database.transaction(() -> assertThatThrownBy(() -> database.command("sql", restore))//
+        .isInstanceOf(ValidationException.class).hasMessageContaining("since"));
+
+    final AtomicInteger after = new AtomicInteger();
+    final AfterRecordCreateListener afterListener = (final Record record) -> after.incrementAndGet();
+    database.getSchema().getType(EDGE).getEvents().registerListener(afterListener);
+    try {
+      database.transaction(() -> database.command("sql", restore + " SET since = 'today'"));
+      assertThat(after.get()).isEqualTo(1);
+    } finally {
+      database.getSchema().getType(EDGE).getEvents().unregisterListener(afterListener);
+    }
+
+    database.transaction(() -> {
+      final var restored = database.lookupByRID(edge[0], true).asEdge();
+      assertThat(restored.getString("since")).isEqualTo("today");
+      // The declared default reached the edge shell as well.
+      assertThat(restored.getString("weight")).isEqualTo("1");
+      assertThat(restored.getOut()).isEqualTo(endpoints[0]);
+      assertThat(restored.getIn()).isEqualTo(endpoints[1]);
     });
   }
 
