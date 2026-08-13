@@ -451,7 +451,13 @@ public enum GlobalConfiguration {
       contains: how many records a repair touched says nothing about how many distinct pages it dirtied. The default \
       of 256 stays well under the 32MB appendBufferSize default even at the 64KB bucket page size and before the WAL \
       is compressed. Raising it lowers commit overhead on an embedded database at the cost of bigger transactions; 0 \
-      disables batching entirely, restoring the all-or-nothing repair semantics of a single transaction.""",
+      disables batching entirely, restoring the all-or-nothing repair semantics of a single transaction. \
+      ALSO BOUNDS CHECK DATABASE ... COMPRESS, whose per-transaction page count was a hardcoded 10 - one Raft round \
+      trip per ten pages, which on a replicated database of any size does not finish; COMPRESS keeps that 10 when \
+      this is set to 0, since one transaction over every page in the database helps nobody. \
+      A SOFT ceiling, not a hard cap: the budget is checked between units of repair work, so a transaction can \
+      exceed it by whatever the unit in flight dirties (reconnecting one very wide adjacency list, or a hub record \
+      spanning several pages). Leave headroom when picking a value close to the replicated-entry limit.""",
       Integer.class, 256),
 
   PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),

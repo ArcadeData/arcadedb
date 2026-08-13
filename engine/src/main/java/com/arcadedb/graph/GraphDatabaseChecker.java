@@ -329,6 +329,19 @@ public class GraphDatabaseChecker {
    * {@code LocalDatabase.scanType} holds the database read lock and owns an implicit transaction for the length of
    * the scan, so committing under it would commit a transaction the scan believes it still owns. Every call site
    * here is therefore in a post-scan apply or delete loop, which is also where the page volume actually is.
+   * <p>
+   * WHAT THAT LEAVES UNBOUNDED, named rather than implied: the in-scan repairs stay outside this budget. The
+   * back-reference fix-up in {@link #checkIncomingEdges}/{@link #checkOutgoingEdges} - the
+   * {@code connectOutgoingEdge}/{@code connectIncomingEdge} pair that re-links an edge "not connected from the
+   * other side" - writes a vertex per defective edge from inside the scan, and {@link #resetChain} likewise. A
+   * database with a very large number of edges in that particular state can therefore still accumulate one big
+   * transaction and hit the entry cap this budget exists to stay under. It is accepted rather than overlooked: that
+   * shape is much narrower than the dangling references and broken chains the post-scan loops handle, and bounding
+   * it means restructuring those checks into collect-then-apply so the writes leave the scan, which is a bigger
+   * change than this one and deserves to be judged on its own.
+   * <p>
+   * A SOFT ceiling: the check happens between units, so a transaction can exceed the budget by whatever the unit in
+   * flight dirties. Leave headroom when tuning it close to the replicated-entry limit.
    */
   private void commitRepairBatchIfFull() {
     if (repairBatchPages <= 0)
