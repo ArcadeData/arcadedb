@@ -167,6 +167,25 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
   }
 
   /**
+   * PR #6130 review: validation now runs before anything is written, so it could have started masking the error that
+   * used to be the only one RESTORE returned. Aiming at a RID that is still live is the likeliest mistake with this
+   * statement, so when a restore is BOTH invalid and pointed at an occupied slot, the occupied slot is what the
+   * caller must be told about - fixing the record would not have helped.
+   */
+  @Test
+  void anOccupiedSlotIsReportedAheadOfTheRecordsOwnConstraints() {
+    final RID[] live = new RID[1];
+    database.transaction(() -> live[0] = database.newDocument(CONSTRAINED).set("name", "still here").save().getIdentity());
+
+    database.transaction(() -> assertThatThrownBy(
+        () -> database.command("sql", "RESTORE DOCUMENT " + CONSTRAINED + " RID " + live[0] + " SET note = 'x'"))//
+        .isInstanceOf(DatabaseOperationException.class).hasMessageContaining("occupied by a live record"));
+
+    // And the live record is untouched.
+    database.transaction(() -> assertThat(database.lookupByRID(live[0], true).asDocument().getString("name")).isEqualTo("still here"));
+  }
+
+  /**
    * The Java-API arm: {@code GraphEngine.restoreVertexAt} restores a property-less shell by design, so it is the one
    * caller the mandatory-property rule can turn away - and it must, for the same reason the SQL arm does.
    */

@@ -154,7 +154,10 @@ public interface DatabaseInternal extends Database {
    * and no consistency pass ever flagged it - {@code CHECK DATABASE} is structural and does not read schema
    * constraints. The one intentional difference from {@code createRecordNoLock}: a {@code beforeCreate} listener that
    * vetoes raises here instead of returning quietly, because a repair that reports success without writing the record
-   * is the one outcome this call must never produce.
+   * is the one outcome this call must never produce. Everything above runs inside the same read lock as the write, so
+   * a listener - arbitrary user code - cannot run against a database an {@code executeInWriteLock} caller
+   * ({@code drop()}, {@code close()}) is free to close underneath it, and the occupied-slot check comes first so that
+   * the likeliest mistake with this call is not masked by the record's own constraints.
    *
    * @return the RID the record was restored at, always {@code bucket}'s file id at {@code position}
    *

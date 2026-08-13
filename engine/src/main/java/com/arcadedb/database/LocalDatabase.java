@@ -1128,43 +1128,51 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException(
           "Bucket '" + bucket.getName() + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be restored into");
 
-    // #6127: the schema contract, applied exactly as createRecordNoLock applies it. RESTORE used to skip both of
-    // these on the grounds that an emergency repair must never be blocked - but a record written past its own
-    // MANDATORY/NOTNULL constraints cannot even be UPDATEd afterwards (updateRecord validates too, so every later
-    // write throws until the missing property is supplied), and CHECK DATABASE is a structural check that never
-    // looks at schema constraints, so nothing downstream catches it either. Refusing up front costs the caller one
-    // explicit `SET name = '<unknown>'` and yields a record the rest of the engine can actually work with.
-    setDefaultValues(record);
-
-    if (record instanceof MutableDocument doc)
-      doc.validate();
-
-    // #6127: the create events, likewise. Whoever may RESTORE may also INSERT, and the same triggers already run on
-    // every INSERT, so firing them here adds no privilege or behavioural surface that was not already reachable -
-    // while NOT firing them silently drifts any derived state a trigger maintains. Unlike createRecordNoLock, a veto
-    // raises instead of returning quietly: a repair that reports success without writing the record is the one
-    // outcome this statement must never produce.
-    if (!events.onBeforeCreate(record))
-      throw new DatabaseOperationException(
-          "Cannot restore record at position " + position + " in bucket '" + bucket.getName()
-              + "': a database-level beforeCreate listener vetoed it");
-    if (record instanceof Document doc)
-      if (!((RecordEventsRegistry) doc.getType().getEvents()).onBeforeCreate(record))
-        throw new DatabaseOperationException(
-            "Cannot restore record at position " + position + " in bucket '" + bucket.getName() + "': a beforeCreate listener on type '"
-                + doc.getTypeName() + "' vetoed it");
-
     // Auto-transaction parity with createRecordNoLock: on a database opened with setAutoTransaction(true) a plain
     // INSERT wraps itself in a transaction, and RESTORE must not be the one statement that throws instead. Without
     // it, both paths still fail identically outside a transaction (autoTransaction defaults to false).
     // The implicit transaction is opened AND committed inside the SAME read lock the restore write holds, the way
     // createRecord wraps all of createRecordNoLock. Committing after releasing it would leave a window - unique in
     // this class - for an executeInWriteLock caller (drop(), close()) to interleave between the physical page write
-    // and the commit that persists it.
+    // and the commit that persists it. The whole sequence below - validation and the beforeCreate listeners
+    // included - is inside that lock for the same reason createRecord puts them there: a listener is arbitrary user
+    // code, and it must not run against a database an executeInWriteLock caller is free to close underneath it.
     return executeInReadLock(() -> {
       boolean success = false;
       final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
       try {
+        // Checked before the record's own constraints (#6127 review): aiming at a RID that is still live is the
+        // likeliest mistake with this statement and used to be the only error it could return, so a
+        // mandatory-property violation must not be what a caller sees first and goes off to fix. Advisory only -
+        // restoreRecordAtPosition runs the same check again, authoritatively, on the page it writes.
+        bucket.checkRestoreTargetIsFree(position);
+
+        // #6127: the schema contract, applied exactly as createRecordNoLock applies it. RESTORE used to skip both of
+        // these on the grounds that an emergency repair must never be blocked - but a record written past its own
+        // MANDATORY/NOTNULL constraints cannot even be UPDATEd afterwards (updateRecord validates too, so every later
+        // write throws until the missing property is supplied), and CHECK DATABASE is a structural check that never
+        // looks at schema constraints, so nothing downstream catches it either. Refusing up front costs the caller one
+        // explicit `SET name = '<unknown>'` and yields a record the rest of the engine can actually work with.
+        setDefaultValues(record);
+
+        if (record instanceof MutableDocument doc)
+          doc.validate();
+
+        // #6127: the create events, likewise. Whoever may RESTORE may also INSERT, and the same triggers already run
+        // on every INSERT, so firing them here adds no privilege or behavioural surface that was not already
+        // reachable - while NOT firing them silently drifts any derived state a trigger maintains. Unlike
+        // createRecordNoLock, a veto raises instead of returning quietly: a repair that reports success without
+        // writing the record is the one outcome this statement must never produce.
+        if (!events.onBeforeCreate(record))
+          throw new DatabaseOperationException(
+              "Cannot restore record at position " + position + " in bucket '" + bucket.getName()
+                  + "': a database-level beforeCreate listener vetoed it");
+        if (record instanceof Document doc)
+          if (!((RecordEventsRegistry) doc.getType().getEvents()).onBeforeCreate(record))
+            throw new DatabaseOperationException(
+                "Cannot restore record at position " + position + " in bucket '" + bucket.getName()
+                    + "': a beforeCreate listener on type '" + doc.getTypeName() + "' vetoed it");
+
         final RID restoredRid = restoreRecordInTransaction(record, bucket, position);
         success = true;
 

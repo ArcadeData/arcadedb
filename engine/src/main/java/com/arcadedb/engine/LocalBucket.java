@@ -1073,7 +1073,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public RID restoreRecordAtPosition(final long position, final Record record) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
-    final int pageId = (int) (position / maxRecordsInPage);
     final int positionInPage = (int) (position % maxRecordsInPage);
 
     final Binary buffer = database.getSerializer().serialize(database, record);
@@ -1083,24 +1082,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final int spaceNeeded = Binary.getNumberSpace(bufferSize) + bufferSize;
 
     try {
-      final int txPageCount = getTotalPages();
-      if (pageId >= txPageCount)
-        throw new DatabaseOperationException(
-            "Cannot restore record at position " + position + " in bucket '" + componentName + "': its page (" + pageId
-                + ") does not exist");
-
-      final MutablePage selectedPage = database.getTransaction()
-              .getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
+      final MutablePage selectedPage = checkRestoreTargetIsFree(position);
 
       final short currentRecordCountInPage = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-      if (positionInPage < currentRecordCountInPage) {
-        final int existingPos = getRecordPositionInPage(selectedPage, positionInPage);
-        if (existingPos != 0)
-          throw new DatabaseOperationException(
-              "Cannot restore record at position " + position + " in bucket '" + componentName
-                  + "': the slot is occupied by a live record");
-      }
-
       final int newRecordPositionInPage = findContentInsertionOffset(selectedPage, currentRecordCountInPage);
       final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newRecordPositionInPage;
 
@@ -1141,6 +1125,56 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot restore record at position " + position + " in bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * The two preconditions {@link #restoreRecordAtPosition} enforces before it writes anything: {@code position}'s
+   * page must exist, and its slot must not already hold a live record. So a restore can never silently overwrite
+   * data.
+   * <p>
+   * Public because {@code LocalDatabase.restoreRecord} calls it FIRST, ahead of the record's own validation and the
+   * beforeCreate listeners (#6127 review): aiming at a RID that is still live is the likeliest mistake to make with
+   * this statement, and it used to be the only error a restore could return - reporting a mandatory-property
+   * violation instead would send the caller off to fix the wrong thing. That early call is a diagnostic ordering
+   * only; this remains the authoritative check because {@code restoreRecordAtPosition} runs it again on the page it
+   * is about to write, inside the same transaction.
+   *
+   * @return the page holding the target slot, already fetched for modification.
+   *
+   * @throws DatabaseOperationException if the page does not exist or the slot is occupied by a live record.
+   */
+  public MutablePage checkRestoreTargetIsFree(final long position) {
+    // Gated on the same permission the write is: this runs BEFORE the record's own validation, so without it a
+    // caller with no CREATE_RECORD on the bucket could use the two error messages to probe which slots are live.
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
+    final int pageId = (int) (position / maxRecordsInPage);
+    final int positionInPage = (int) (position % maxRecordsInPage);
+
+    try {
+      if (pageId >= getTotalPages())
+        throw new DatabaseOperationException(
+            "Cannot restore record at position " + position + " in bucket '" + componentName + "': its page (" + pageId
+                + ") does not exist");
+
+      final MutablePage selectedPage = database.getTransaction()
+              .getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
+
+      final short currentRecordCountInPage = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (positionInPage < currentRecordCountInPage) {
+        final int existingPos = getRecordPositionInPage(selectedPage, positionInPage);
+        if (existingPos != 0)
+          throw new DatabaseOperationException(
+              "Cannot restore record at position " + position + " in bucket '" + componentName
+                  + "': the slot is occupied by a live record");
+      }
+
+      return selectedPage;
+
+    } catch (final IOException e) {
+      throw new DatabaseOperationException(
+          "Cannot restore record at position " + position + " in bucket '" + componentName + "'", e);
     }
   }
 
