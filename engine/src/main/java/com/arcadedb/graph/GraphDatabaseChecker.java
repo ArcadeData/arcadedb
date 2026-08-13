@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -280,7 +281,16 @@ public class GraphDatabaseChecker {
    *                                                        that is worth reporting
    */
   private void deleteCorruptedRecord(final RID rid) {
-    database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+    final Bucket bucket = database.getSchema().getBucketById(rid.getBucketId());
+    // LocalBucket.deleteCorruptedRecord escalates to a force delete for a structurally broken chunk chain, which a
+    // plain delete cannot clear (#4932). Without it the RECORD scope reported "error on delete" and left the record
+    // in place: the bucket-wide pass that force-deletes it (LocalBucket.check) is one of the database-wide passes
+    // that scope skips. The instanceof rather than a cast keeps a non-local Bucket implementation on the plain
+    // delete instead of failing outright, since the escalation is a repair nicety, not a precondition.
+    if (bucket instanceof LocalBucket localBucket)
+      localBucket.deleteCorruptedRecord(rid);
+    else
+      bucket.deleteRecord(rid);
     database.getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
   }
 
@@ -451,6 +461,8 @@ public class GraphDatabaseChecker {
     final Set<RID> reconnectInEdges = new HashSet<>();
     final Map<RID, Long> missingReferences = new HashMap<>();
     final Map<RID, String> missingReferenceErrors = new HashMap<>();
+    /** Records this run actually removed, surfaced as {@code deletedRecordsAfterFix}. */
+    final Set<RID> deletedRecords = new LinkedHashSet<>();
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -530,6 +542,11 @@ public class GraphDatabaseChecker {
           autoFix.incrementAndGet();
           try {
             deleteCorruptedRecord(rid);
+            // Reported, not only counted: an operator reads deletedRecordsAfterFix to learn WHICH records a repair
+            // removed, and until this arm populated it the answer depended on which pass happened to do the delete -
+            // a broken-chain record was listed (LocalBucket.check removed it) and every other corrupt record was not.
+            // Bounded by the same cap as report.corruptedRecords, which this iterates.
+            deletedRecords.add(rid);
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
@@ -546,6 +563,7 @@ public class GraphDatabaseChecker {
 
     } finally {
       stats.put("autoFix", autoFix.get());
+      stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("duplicateLightEdges", report.duplicateLightEdges);
       stats.put("invalidLinks", report.invalidLinks);
@@ -1175,6 +1193,8 @@ public class GraphDatabaseChecker {
     // Vertices whose edge LIST failed to walk during the back-reference probe: warned once each (a broken
     // super-node chain is referenced by millions of edges), never flagged corrupted - see the probe guards.
     final Set<RID> unreadableListVertices = new HashSet<>();
+    /** Records this run actually removed, surfaced as {@code deletedRecordsAfterFix}. */
+    final Set<RID> deletedRecords = new LinkedHashSet<>();
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -1319,6 +1339,11 @@ public class GraphDatabaseChecker {
           autoFix.incrementAndGet();
           try {
             deleteCorruptedRecord(rid);
+            // Reported, not only counted: an operator reads deletedRecordsAfterFix to learn WHICH records a repair
+            // removed, and until this arm populated it the answer depended on which pass happened to do the delete -
+            // a broken-chain record was listed (LocalBucket.check removed it) and every other corrupt record was not.
+            // Bounded by the same cap as report.corruptedRecords, which this iterates.
+            deletedRecords.add(rid);
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
@@ -1335,6 +1360,7 @@ public class GraphDatabaseChecker {
 
     } finally {
       stats.put("autoFix", autoFix.get());
+      stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("invalidLinks", report.invalidLinks);
       stats.put("missingReferenceBack", missingReferenceBack.get());

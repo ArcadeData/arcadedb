@@ -445,6 +445,21 @@ public class DatabaseChecker {
         "the rebuild failed before the index was dropped; the index itself is unchanged";
   }
 
+  /**
+   * Merges the records a sub-check actually deleted into {@code deletedRecordsAfterFix}.
+   * <p>
+   * Absent before, which made the field answer a different question depending on which pass did the removing: the
+   * bucket-wide {@code LocalBucket.check} listed what it deleted, while the vertex and edge arms deleted silently
+   * and reported only an {@code autoFix} count. The distinction was invisible while a broken-chain record was
+   * always removed by the bucket pass; once the arms could remove it first, the same repair stopped listing the
+   * same record. Reported by whichever pass performs it, or the field cannot be read at all.
+   */
+  private void mergeDeletedRecords(final Map<String, Object> stats) {
+    final Collection<RID> deleted = (Collection<RID>) stats.get("deletedRecordsAfterFix");
+    if (deleted != null)
+      ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll(deleted);
+  }
+
   /** Merges one scan's per-target dangling-reference counts into the cross-scan accumulator. */
   private void mergeMissingReferences(final Map<RID, Long> refs, final Map<RID, String> errors) {
     if (refs == null)
@@ -556,7 +571,13 @@ public class DatabaseChecker {
   private void deleteCorruptedRecords(final List<RID> toDelete) {
     for (final RID rid : toDelete) {
       try {
-        database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+        final Bucket bucket = database.getSchema().getBucketById(rid.getBucketId());
+        // See GraphDatabaseChecker.deleteCorruptedRecord: escalates to a force delete for the one failure force
+        // exists to clear, a structurally broken chunk chain, which a plain delete reports as a retry signal.
+        if (bucket instanceof LocalBucket localBucket)
+          localBucket.deleteCorruptedRecord(rid);
+        else
+          bucket.deleteRecord(rid);
         // Mirror the accounting in LocalDatabase.cascadeDeleteExternalValues (and in checkExternalProperties just
         // below) so count() stays consistent: LocalBucket.deleteRecord does NOT touch cachedRecordCount, and
         // count(*) reads that counter rather than scanning. Without this the type keeps reporting the deleted
@@ -565,6 +586,8 @@ public class DatabaseChecker {
         // counts depending on the scope it was asked for.
         database.getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
         result.put("autoFix", (Long) result.get("autoFix") + 1);
+        // Same reason as mergeDeletedRecords: a removal nobody lists cannot be audited.
+        ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).add(rid);
       } catch (final RecordNotFoundException e) {
         // ALREADY GONE
       } catch (final Exception e) {
@@ -686,6 +709,7 @@ public class DatabaseChecker {
       updateStats(stats);
       ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
       ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeDeletedRecords(stats);
       mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
           (Map<RID, String>) stats.get("missingReferenceErrors"));
     }
@@ -800,6 +824,7 @@ public class DatabaseChecker {
 
       ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
       ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeDeletedRecords(stats);
       mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
           (Map<RID, String>) stats.get("missingReferenceErrors"));
     }
@@ -823,6 +848,7 @@ public class DatabaseChecker {
 
       ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
       ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeDeletedRecords(stats);
       mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
           (Map<RID, String>) stats.get("missingReferenceErrors"));
     }

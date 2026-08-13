@@ -57,15 +57,13 @@ class CheckDatabaseFixDocumentTypeTest extends TestHelper {
    */
   @Test
   void fixDeletesCorruptedDocumentAndPreservesIndex() {
-    final RID victimRid = createIndexedDocs("myDocIdx", "NOTUNIQUE");
+    final RID victim = createIndexedDocs("myDocIdx", "NOTUNIQUE");
 
     // PRECONDITION: both records are indexed before anything is broken, so a later count of 1 means the rebuild
     // dropped exactly the corrupted one rather than the index having been short all along.
     assertThat(database.getSchema().getIndexByName("myDocIdx").countEntries()).isEqualTo(2L);
 
-    final AtomicReference<RID> victim = new AtomicReference<>(victimRid);
-
-    corruptRecordTypeByte((DatabaseInternal) database, victim.get());
+    corruptRecordTypeByte((DatabaseInternal) database, victim);
 
     final Result fix;
     try (final ResultSet rs = database.command("sql", "check database fix")) {
