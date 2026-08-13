@@ -121,8 +121,8 @@ public class RemoteProperty extends AbstractProperty {
     if (entry.containsKey("compression"))
       compression = (String) entry.get("compression");
     if (entry.containsKey("default"))
-      // NO COMPILED EXPRESSION: THE SERVER SENDS THE DEFINITION AND THE REMOTE SIDE ONLY EVER REPORTS IT BACK - IT HAS
-      // NO EMBEDDED DATABASE TO EVALUATE AN SQL EXPRESSION AGAINST.
+      // No compiled expression: the server sends the definition and the remote side only reports it back, having no
+      // embedded database to evaluate an SQL expression against.
       setDefaultValueDefinition(entry.get("default"));
     if (entry.containsKey("regexp"))
       regexp = (String) entry.get("regexp");

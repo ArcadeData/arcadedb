@@ -67,23 +67,18 @@ public abstract class AbstractProperty implements Property {
   /**
    * A property's default value together with the compiled form of the SQL expression it is written as (issue #6134).
    * <p>
-   * A String default is an SQL expression. It is compiled once, when the default is set, and the compiled form is what
-   * every record create evaluates - it used to be re-parsed per record, per defaulted property, costing ~3us each time
-   * on the insert hot path. The compiled EXPRESSION is cached, never the evaluated result: {@code DEFAULT sysdate()}
-   * has to produce a fresh value on every record.
+   * A String default is an SQL expression, compiled once when the default is set rather than re-parsed on every record
+   * create. The compiled EXPRESSION is cached, never the evaluated result: {@code DEFAULT sysdate()} has to produce a
+   * fresh value on every record.
    * <p>
-   * <b>One compiled instance is executed concurrently</b> by every thread creating a record of the owning type, which
-   * relies on {@code execute()} over the expression tree being side-effect-free. That is not a new requirement this
-   * introduced: {@link com.arcadedb.query.sql.parser.StatementCache} hands the same parsed {@code Statement} to every
-   * concurrent caller of a given SQL string and {@code SQLQueryEngine.parse} executes it without copying, so every
-   * query in the engine already shares its AST across threads. Pinned by
+   * <b>One compiled instance is executed concurrently</b> by every thread creating a record of the owning type, so
+   * {@code execute()} over the expression tree must stay side-effect-free. The engine already relies on that -
+   * {@link com.arcadedb.query.sql.parser.StatementCache} hands one parsed {@code Statement} to every concurrent caller
+   * of an SQL string and it is executed without copying - but the sharing here lasts longer: a cached statement is
+   * shared only while it stays cached, whereas this instance backs every record create of the type for as long as the
+   * default is set. A default calling a user-defined function that keeps mutable state would therefore misbehave
+   * persistently rather than intermittently. Pinned by
    * {@code PropertyDefaultValueTest.aCompiledDefaultIsSafeToEvaluateConcurrently}.
-   * <p>
-   * The <i>scope</i> of the sharing is wider here, though, and that is what to weigh when choosing a function for a
-   * default: a cached statement is shared only among callers of that one SQL string and only while it stays in the
-   * cache, whereas this instance backs every record create of the type for as long as the default is set. A default
-   * that calls a user-defined function keeping mutable state would therefore misbehave persistently rather than
-   * intermittently.
    *
    * @param value      what the schema stores and {@code schema.json} round-trips: the source text for a String default,
    *                   the value itself for one set through the API, or {@link #DEFAULT_NOT_SET} when none is defined
@@ -154,10 +149,9 @@ public abstract class AbstractProperty implements Property {
   public Object getDefaultValue() {
     final DefaultValue current = defaultValue;
     if (current.expression() == null)
-      // NOTHING TO EVALUATE: THE DEFAULT IS UNSET, IS null, IS NOT A STRING (SET THROUGH THE API, USED VERBATIM), OR IS
-      // A PRE-#6134 DEFAULT THAT DOES NOT COMPILE - IN WHICH CASE THIS RETURNS THE SOURCE TEXT, AS IT ALWAYS DID.
-      // THE DEFAULT_NOT_SET SENTINEL IS NEVER HANDED OUT: IT USED TO LEAK THROUGH EVERY SCHEMA-REPORTING PATH, WHICH IS
-      // WHY `SELECT FROM schema:types` PUT "<DEFAULT_NOT_SET>" IN THE `default` FIELD OF EVERY PLAIN PROPERTY.
+      // Nothing to evaluate: the default is unset, is null, is not a String (set through the API and used verbatim), or
+      // is a persisted one that does not compile, which falls back to its source text. The DEFAULT_NOT_SET sentinel is
+      // never handed out - it used to leak into the `default` field of every plain property in schema:types.
       return current.value() == DEFAULT_NOT_SET ? null : current.value();
 
     final Database database = owner.getSchema().getEmbedded().getDatabase();
@@ -165,10 +159,9 @@ public abstract class AbstractProperty implements Property {
       final Object result = current.expression().execute((Record) null, new BasicCommandContext().setDatabase(database));
       return Type.convert(database, result, type.javaDefaultType);
     } catch (Exception e) {
-      // ISSUE #6134: THIS USED TO BE SWALLOWED WITH A BARE `// IGNORE IT`, WHICH FELL THROUGH TO RETURNING THE
-      // EXPRESSION'S OWN SOURCE TEXT AND WROTE IT ON EVERY RECORD OF THE TYPE. THE EXPRESSION WAS ACCEPTED AT DDL TIME
-      // BECAUSE IT PARSES, SO A FAILURE HERE IS A REAL ERROR (`DEFAULT @rid` RESOLVES ONLY AGAINST A CURRENT RECORD,
-      // AND A DEFAULT IS ALWAYS EVALUATED AGAINST NONE) AND MUST BE REPORTED RATHER THAN TURNED INTO GARBAGE DATA.
+      // Reported, not swallowed: the expression was accepted at DDL time because it parses, so a failure here is a real
+      // error - `DEFAULT @rid` resolves only against a current record, and a default is always evaluated against none.
+      // Swallowing it wrote the expression's own source text onto every record of the type (issue #6134).
       throw new SchemaException(
           "Error on evaluating the default value `" + current.value() + "` defined on property '" + owner.getName() + "."
               + name + "'", e);
@@ -208,7 +201,7 @@ public abstract class AbstractProperty implements Property {
         reason = "it is a field reference, not a value: a default value is evaluated with no current record, so it would"
             + " always resolve to null. Quote it as '" + text + "' to use it as a literal";
     } catch (Exception e) {
-      // A CAUSE WITH NO MESSAGE CONTRIBUTES NOTHING, SO IT IS LEFT OFF RATHER THAN RENDERED AS A TRAILING ": null".
+      // A cause with no message contributes nothing, so it is left off rather than rendered as a trailing ": null".
       reason = "it cannot be parsed as an SQL expression" + (e.getMessage() == null ? "" : ": " + e.getMessage());
     }
 
@@ -218,20 +211,20 @@ public abstract class AbstractProperty implements Property {
     final String message =
         "Invalid default value `" + text + "` on property '" + owner.getName() + "." + name + "' because " + reason;
 
-    // EVERY REJECTION LEAVES THIS METHOD AS A SchemaException, WHATEVER THE PARSER THREW: THE catch ABOVE TURNS ANY
-    // Exception INTO A `reason` FIRST. OrientDBImporter.setImportedDefaultValue CATCHES EXACTLY THIS TYPE TO DECIDE
-    // WHETHER TO RETRY THE VALUE QUOTED, SO THE SINGLE EXIT MATTERS - DO NOT LET ANOTHER TYPE ESCAPE FROM HERE.
+    // Every rejection leaves as a SchemaException whatever the parser threw, because the catch above turns any
+    // Exception into a `reason` first. OrientDBImporter.setImportedDefaultValue keys its fallback off exactly this
+    // type, so do not let another one escape from here.
     if (owner.getSchema().getEmbedded().isSchemaLoaded())
       throw new SchemaException(message);
 
-    // SCHEMA LOAD: NEVER BLOCK THE DATABASE FROM OPENING OVER A DEFAULT THAT WAS ACCEPTED BY AN EARLIER RELEASE.
+    // Schema load: never block the database from opening over a default an earlier release accepted.
     LogManager.instance().log(this, Level.WARNING, message + (compiled == null ?
         ". Every new record will keep receiving the expression's own source text as its value" :
         ". Every new record will keep leaving the property unset"));
 
-    // REACHED ONLY ON THE LENIENT PATH - THE STRICT ONE THREW ABOVE - AND `compiled` CARRIES THE OUTCOME OF THE TWO
-    // REJECTION KINDS: A BARE IDENTIFIER STILL COMPILES, AND KEEPING IT PRESERVES THE PRE-#6134 null; AN UNPARSEABLE
-    // ONE IS null HERE, WHICH IS WHAT MAKES getDefaultValue() FALL BACK TO THE SOURCE TEXT, AS IT USED TO.
+    // Lenient path only - the strict one threw above - and `compiled` carries the outcome of the two rejection kinds:
+    // a bare identifier compiled, and keeping it preserves the null it has always evaluated to; an unparseable one is
+    // null here, which is what makes getDefaultValue() fall back to the source text.
     return compiled;
   }
 

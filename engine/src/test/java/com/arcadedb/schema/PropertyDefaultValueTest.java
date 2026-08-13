@@ -63,7 +63,7 @@ class PropertyDefaultValueTest extends TestHelper {
       assertThatThrownBy(() -> p.setDefaultValue("this is (not parseable")).isInstanceOf(SchemaException.class)
           .hasMessageContaining("Probe.broken").hasMessageContaining("this is (not parseable");
 
-      // THE REJECTED DEFAULT MUST NOT HAVE BEEN APPLIED
+      // The rejected default must not have been applied.
       assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("broken");
 
       final MutableDocument doc = database.newDocument("Probe").save();
@@ -383,28 +383,61 @@ class PropertyDefaultValueTest extends TestHelper {
       type.createProperty("broken", Type.STRING).setDefaultValue("'placeholder'");
     });
 
-    database.close();
+    reopenWithPersistedDefault("broken", "this is (not parseable");
 
-    final File schemaFile = new File(getDatabasePath() + File.separator + LocalSchema.SCHEMA_FILE_NAME);
-    final JSONObject schema = new JSONObject(FileUtils.readFileAsString(schemaFile));
-    schema.getJSONObject("types").getJSONObject("Probe").getJSONObject("properties").getJSONObject("broken")
-        .put("default", "this is (not parseable");
-    Files.write(schemaFile.toPath(), schema.toString().getBytes(StandardCharsets.UTF_8));
-
-    database = factory.open();
-
-    // PRE-#6134 BEHAVIOUR PRESERVED FOR AN ALREADY-PERSISTED INVALID DEFAULT
+    // The behaviour an earlier release had is preserved for an already-persisted invalid default.
     assertThat(database.getSchema().getType("Probe").getProperty("broken").getDefaultValue()).isEqualTo(
         "this is (not parseable");
 
-    // AND SETTING IT AGAIN, TO THE SAME TEXT, IS STILL REPORTED. THE LOAD PATH ACCEPTED IT WITHOUT VALIDATING, so
-    // "the value did not change" must not be mistaken for "the value was already validated" - which is why
-    // setDefaultValue() compiles before it compares.
+    // Setting it again, to the same text, is still reported: the load path accepted it without validating, so "the
+    // value did not change" must not be mistaken for "the value was already validated".
     assertThatThrownBy(
         () -> database.getSchema().getType("Probe").getProperty("broken").setDefaultValue("this is (not parseable"))
         .isInstanceOf(SchemaException.class);
 
     database.command("sql", "ALTER PROPERTY Probe.broken DEFAULT 'fixed'");
     assertThat(database.getSchema().getType("Probe").getProperty("broken").getDefaultValue()).isEqualTo("fixed");
+  }
+
+  /**
+   * The other half of the previous test. A persisted default is rejected on load for one of two reasons, and they
+   * leave {@code compileDefaultValue} by different exits: an unparseable one has no compiled expression to keep and
+   * falls back to its source text, while a bare identifier compiles fine and keeps evaluating to null. Both have to
+   * survive the load; this covers the second.
+   */
+  @Test
+  void aLegacyBareIdentifierDefaultLoadsAndKeepsEvaluatingToNull() throws IOException {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("Probe");
+      type.createProperty("bare", Type.STRING).setDefaultValue("'placeholder'");
+    });
+
+    reopenWithPersistedDefault("bare", "active");
+
+    final DocumentType type = database.getSchema().getType("Probe");
+    assertThat(type.getProperty("bare").getDefaultValue()).isNull();
+    assertThat(type.getProperty("bare").getDefaultValueDefinition()).isEqualTo("active");
+
+    // And the null rule applies to it like any other null-evaluating default.
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("bare")).isFalse());
+
+    database.command("sql", "ALTER PROPERTY Probe.bare DEFAULT 'fixed'");
+    assertThat(database.getSchema().getType("Probe").getProperty("bare").getDefaultValue()).isEqualTo("fixed");
+  }
+
+  /**
+   * Closes the database, rewrites one property's persisted default in schema.json to something this release would
+   * reject at DDL time, and reopens - standing in for a database created by an earlier release.
+   */
+  private void reopenWithPersistedDefault(final String propertyName, final String persistedDefault) throws IOException {
+    database.close();
+
+    final File schemaFile = new File(getDatabasePath() + File.separator + LocalSchema.SCHEMA_FILE_NAME);
+    final JSONObject schema = new JSONObject(FileUtils.readFileAsString(schemaFile));
+    schema.getJSONObject("types").getJSONObject("Probe").getJSONObject("properties").getJSONObject(propertyName)
+        .put("default", persistedDefault);
+    Files.write(schemaFile.toPath(), schema.toString().getBytes(StandardCharsets.UTF_8));
+
+    database = factory.open();
   }
 }

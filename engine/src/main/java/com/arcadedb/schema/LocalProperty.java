@@ -50,18 +50,14 @@ public class LocalProperty extends AbstractProperty {
         defaultValue :
         Type.convert(database, defaultValue, type.javaDefaultType);
 
-    // ISSUE #6134: COMPILE AND VALIDATE THE EXPRESSION HERE, ONCE, RATHER THAN RE-PARSING IT ON EVERY RECORD CREATE.
-    // THIS THROWS ON A DEFAULT THAT COULD ONLY EVER PRODUCE GARBAGE, SO IT RUNS BEFORE ANY STATE IS TOUCHED: A REJECTED
-    // DEFAULT MUST LEAVE THE PROPERTY EXACTLY AS IT WAS.
-    //
-    // DELIBERATELY BEFORE THE "DID IT CHANGE?" CHECK BELOW, NOT INSIDE IT. A DEFAULT PERSISTED BY AN EARLIER RELEASE
-    // IS LOADED WITHOUT VALIDATION (compileDefaultValue IS LENIENT WHILE THE SCHEMA HYDRATES), SO RE-SETTING ONE TO THE
-    // SAME INVALID TEXT IS THE ONE CASE WHERE new == old AND THE CALLER STILL HAS TO BE TOLD IT IS INVALID. THE COST IS
-    // ONE REDUNDANT PARSE ON A NO-OP DDL STATEMENT, WHICH IS NOT A HOT PATH.
+    // Compiled once here rather than on every record create, and before any state is touched, so a rejected default
+    // leaves the property exactly as it was. Before the "did it change?" check and not inside it: a default persisted
+    // by an earlier release is loaded without validation, so re-setting one to the same invalid text is the one case
+    // where new == old and the caller still has to be told it is invalid.
     final Expression compiled = compileDefaultValue(convertedValue, database);
 
     if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
-      // ONE PUBLICATION, SO NO READER CAN SEE THE NEW VALUE WITH THE OLD (OR NO) COMPILED EXPRESSION
+      // One publication, so no reader can see the new value with the old (or no) compiled expression.
       this.defaultValue = new DefaultValue(convertedValue, compiled);
 
       // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED

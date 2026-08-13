@@ -2822,8 +2822,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void setDefaultValues(final Record record) {
-    // ISSUE #6134: THE RULE LIVES IN DocumentType.applyDefaultValues, SHARED WITH ApplyDefaultsStep, SO THE TWO CANNOT
-    // DIVERGE AGAIN ON WHAT A null-EVALUATING DEFAULT MEANS.
+    // The rule lives in DocumentType.applyDefaultValues, shared with ApplyDefaultsStep, so the two cannot diverge
+    // again on what a null-evaluating default means (issue #6134).
     if (record instanceof MutableDocument doc)
       doc.getType().applyDefaultValues(doc);
   }
