@@ -143,8 +143,17 @@ final class PageShadow implements AutoCloseable {
     // INVALIDATES THE WHOLE WINDOW - WHICH IS CORRECT, SINCE THAT PAGE'S PRE-IMAGE IS GONE
     final ByteBuffer buffer = ByteBuffer.wrap(content, 0, length);
     long pos = offset;
-    while (buffer.hasRemaining())
-      pos += channel.write(buffer, pos);
+    try {
+      while (buffer.hasRemaining())
+        pos += channel.write(buffer, pos);
+    } catch (final IOException e) {
+      // #6125: NAME THE FILE AND HOW BIG IT HAD GROWN. THE CAP BREACH ABOVE AND A FULL FILESYSTEM BOTH END THE
+      // WINDOW, BUT ONLY THE FIRST IS A TUNING PROBLEM - THE STATUS ALREADY SEPARATES THEM (OVERFLOWED vs FAILED),
+      // AND THIS MAKES THE MESSAGE OF THE SECOND ONE ACTIONABLE INSTEAD OF A BARE "No space left on device"
+      throw new IOException(
+          "Cannot write the snapshot shadow file '" + spillFile + "' (" + (offset + length) + " bytes spilled so far): "
+              + e.getMessage(), e);
+    }
 
     synchronized (this) {
       // UNREACHABLE IN PRACTICE - PageSnapshot.close() DRAINS THE IN-FLIGHT CAPTURES BEFORE CLOSING THE SHADOW - AND

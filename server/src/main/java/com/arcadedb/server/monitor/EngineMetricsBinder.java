@@ -59,6 +59,9 @@ public final class EngineMetricsBinder implements MeterBinder {
 
   private static final long SNAPSHOT_TTL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
+  /** The engine times the t0 barrier in milliseconds; a {@code _seconds} series is what Prometheus expects (#6125). */
+  private static final double MILLIS_TO_SECONDS = 0.001d;
+
   /**
    * The memoized {@link Profiler} snapshot every meter reads through.
    * <p>
@@ -110,6 +113,29 @@ public final class EngineMetricsBinder implements MeterBinder {
     counter(registry, "arcadedb.engine.snapshot.preimages.captured",
         "Page pre-images copied into a snapshot shadow", "snapshotPreImagesCaptured");
 
+    // #6125: the split of windows.invalidated above. The two reasons take an operator to different places - a cap
+    // breach is answered by raising arcadedb.pageSnapshotMaxSize or giving the spill volume room, a capture failure
+    // by looking at the disk - and a single summed counter cannot say which.
+    counter(registry, "arcadedb.engine.snapshot.windows.overflowed",
+        "Snapshot windows whose shadow reached its size cap", "snapshotWindowsOverflowed");
+    counter(registry, "arcadedb.engine.snapshot.windows.failed",
+        "Snapshot windows lost to an I/O error while capturing a pre-image", "snapshotWindowsFailed");
+
+    // #6125: the t0 barrier, the ONE stall the snapshot path still has, exported as a Prometheus timer is: a count
+    // and a summed duration, so rate(seconds)/rate(count) is the average latency. It is a pair of counters rather
+    // than a real Timer because this binder reads scalars out of a memoized Profiler snapshot and never sees the
+    // individual events; the pair carries the same information a Timer's _sum and _count do.
+    counter(registry, "arcadedb.engine.snapshot.barrier.count", "Point-in-time snapshot t0 barriers executed",
+        "snapshotBarriers");
+    counter(registry, "arcadedb.engine.snapshot.barrier.seconds",
+        "Total time spent in the snapshot t0 barrier", "snapshotBarrierTime", MILLIS_TO_SECONDS);
+    counter(registry, "arcadedb.engine.snapshot.barrier.inexact",
+        "Barriers that could not prove the flush pipeline was empty at t0", "snapshotBarriersInexact");
+    // A HIGH-WATER MARK: MONOTONIC, BUT A rate() OVER IT WOULD BE MEANINGLESS, WHICH IS WHY IT IS THE ONE MONOTONIC
+    // READING HERE THAT STAYS A GAUGE
+    gauge(registry, "arcadedb.engine.snapshot.barrier.max.seconds",
+        "Longest snapshot t0 barrier observed", "snapshotBarrierMaxTime", MILLIS_TO_SECONDS);
+
     // Instantaneous readings: these go up AND down, so they are the only ones that stay gauges.
     gauge(registry, "arcadedb.engine.wal.files", "WAL files", "walTotalFiles");
     gauge(registry, "arcadedb.engine.files.open", "Open file descriptors", "totalOpenFiles");
@@ -144,16 +170,31 @@ public final class EngineMetricsBinder implements MeterBinder {
    * comes straight back.
    */
   private void counter(final MeterRegistry registry, final String name, final String description, final String jsonKey) {
+    counter(registry, name, description, jsonKey, 1d);
+  }
+
+  /**
+   * @param scale factor applied to the raw stat, for the readings the engine keeps in a different unit from the one
+   *     the series name promises (#6125: the barrier durations are milliseconds in {@code Profiler} and seconds on
+   *     the wire, which is what Prometheus dashboards and alert rules expect of a {@code _seconds} series).
+   */
+  private void counter(final MeterRegistry registry, final String name, final String description, final String jsonKey,
+      final double scale) {
     // No baseUnit(): Micrometer's Prometheus renderer splices the base unit INTO the series name
     // (arcadedb_engine_wal_bytes_written_bytes_total), which is a second, gratuitous rename on top of the _total
     // suffix this change already introduces.
-    FunctionCounter.builder(name, CACHE, c -> c.read(jsonKey))
+    FunctionCounter.builder(name, CACHE, c -> c.read(jsonKey) * scale)
         .description(description)
         .register(registry);
   }
 
   private void gauge(final MeterRegistry registry, final String name, final String description, final String jsonKey) {
-    Gauge.builder(name, CACHE, c -> c.read(jsonKey))
+    gauge(registry, name, description, jsonKey, 1d);
+  }
+
+  private void gauge(final MeterRegistry registry, final String name, final String description, final String jsonKey,
+      final double scale) {
+    Gauge.builder(name, CACHE, c -> c.read(jsonKey) * scale)
         .description(description)
         .register(registry);
   }

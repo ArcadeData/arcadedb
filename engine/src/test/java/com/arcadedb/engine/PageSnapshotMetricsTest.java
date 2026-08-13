@@ -83,8 +83,11 @@ class PageSnapshotMetricsTest extends TestHelper {
       assertThat(open.snapshotOldestWindowMillis).as("the window's age must be measured from when it opened")
           .isPositive();
       assertThat(open.snapshotShadowedPages).as("nothing has been written yet, so nothing is shadowed").isZero();
-      assertThat(snapshot.getShadowMaxSizeInBytes())
-          .isEqualTo(GlobalConfiguration.PAGE_SNAPSHOT_MAX_SIZE.getValueAsLong() * 1024 * 1024);
+      // #6125: THE DEFAULT CAP IS RESOLVED AT t0 FROM THE SIZE THE PAGE FILES OCCUPY, NOT READ AS A NUMBER OF MB
+      long t0Size = 0;
+      for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
+        t0Size += file.size();
+      assertThat(snapshot.getShadowMaxSizeInBytes()).isEqualTo(t0Size);
     }
 
     final PageManager.PPageManagerStats after = pageManager.getStats();

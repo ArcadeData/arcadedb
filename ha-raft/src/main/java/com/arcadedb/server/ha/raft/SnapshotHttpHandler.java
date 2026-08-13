@@ -86,6 +86,17 @@ public class SnapshotHttpHandler implements HttpHandler {
   private static final Semaphore CONCURRENCY_SEMAPHORE =
       new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
 
+  /** Sub-path selecting the checksums view of a database instead of its snapshot ZIP. */
+  static final String CHECKSUMS_SUFFIX = "/checksums";
+
+  /**
+   * What a request path resolves to: a validated database name plus which of the two views is being asked for, or -
+   * when {@code error} is set - the message of the 400 that answers it instead. Exactly one of {@code error} and
+   * {@code databaseName} is meaningful.
+   */
+  record Route(String databaseName, boolean checksums, String error) {
+  }
+
   /** How far {@link #rootCauseMessage} walks a cause chain before giving up. Real ones are two or three links. */
   private static final int MAX_CAUSE_DEPTH = 20;
 
@@ -131,6 +142,38 @@ public class SnapshotHttpHandler implements HttpHandler {
     watchdogExecutor.shutdownNow();
   }
 
+  /**
+   * Turns {@code /api/v1/ha/snapshot/{database}[/checksums]} into a {@link Route} (#6125).
+   * <p>
+   * The ORDER here is the fix: strip the sub-path, then validate what is left, then decide which branch to take.
+   * The checksums branch used to be taken BEFORE the validation, which was safe only because
+   * {@link #handleChecksums} gates on {@code existsDatabase} - an exact-match lookup over the already-open databases,
+   * so a traversal string 404s and {@code getDatabase} is never reached. That is a property of an implementation
+   * detail two calls away, not of this handler. Validating first makes the guarantee local, at the cost of a
+   * malformed name answering 400 instead of 404 on the checksums route.
+   * <p>
+   * The name rule is deliberately stricter than the engine's own {@code checkDatabaseNameIsValid}: this reads a name
+   * straight out of a URL, so anything that could escape the databases directory or smuggle a control character is
+   * refused before a name is ever resolved. Package-private and static so the whole decision is testable without an
+   * HTTP exchange.
+   */
+  static Route resolveRoute(final String relativePath) {
+    final String path = relativePath.startsWith("/") ? relativePath.substring(1) : relativePath;
+
+    final boolean checksums = path.endsWith(CHECKSUMS_SUFFIX);
+    final String databaseName = checksums ? path.substring(0, path.length() - CHECKSUMS_SUFFIX.length()) : path;
+
+    if (databaseName.isEmpty())
+      return new Route(null, checksums, "Missing database name in path");
+
+    if (databaseName.contains("/") || databaseName.contains("\\")
+        || databaseName.contains("..") || databaseName.contains("\0")
+        || !databaseName.chars().allMatch(c -> c >= 0x20 && c < 0x7F))
+      return new Route(null, checksums, "Invalid database name");
+
+    return new Route(databaseName, checksums, null);
+  }
+
   @Override
   public void handleRequest(final HttpServerExchange exchange) throws Exception {
     if (exchange.isInIoThread()) {
@@ -168,28 +211,16 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
     try {
-      // Extract database name from the path: /api/v1/ha/snapshot/{database}
-      final String relativePath = exchange.getRelativePath();
-      final String databaseName = relativePath.startsWith("/") ? relativePath.substring(1) : relativePath;
-
-      // Check for checksums sub-path: /api/v1/ha/snapshot/{database}/checksums
-      if (databaseName.endsWith("/checksums")) {
-        final String dbName = databaseName.substring(0, databaseName.length() - "/checksums".length());
-        handleChecksums(exchange, dbName);
+      final Route route = resolveRoute(exchange.getRelativePath());
+      if (route.error() != null) {
+        exchange.setStatusCode(400);
+        exchange.getResponseSender().send(route.error());
         return;
       }
 
-      if (databaseName.isEmpty()) {
-        exchange.setStatusCode(400);
-        exchange.getResponseSender().send("Missing database name in path");
-        return;
-      }
-
-      if (databaseName.contains("/") || databaseName.contains("\\")
-          || databaseName.contains("..") || databaseName.contains("\0")
-          || !databaseName.chars().allMatch(c -> c >= 0x20 && c < 0x7F)) {
-        exchange.setStatusCode(400);
-        exchange.getResponseSender().send("Invalid database name");
+      final String databaseName = route.databaseName();
+      if (route.checksums()) {
+        handleChecksums(exchange, databaseName);
         return;
       }
 

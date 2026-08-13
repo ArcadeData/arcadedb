@@ -60,6 +60,8 @@ public class PageManagerFlushThread extends Thread {
   // its suspension window can never overlap the resume's page writes (issue #5068).
   private final        Set<Database>                                            resumingDatabases   = ConcurrentHashMap.newKeySet();
   private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
+  /** Poll interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)} for callers that expect to wait. */
+  private final static long                                                     DEFAULT_FLUSH_WAIT_POLL_MILLIS = 10;
   // Package-private so the white-box regression test for issue #5068 can fabricate an in-flight batch and
   // deterministically exercise an interrupt during waitForCurrentFlushToComplete.
   final                AtomicReference<PagesToFlush>                            nextPagesToFlush    = new AtomicReference<>();
@@ -183,21 +185,6 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
-  /**
-   * Waits until all the pages of a database are flushed to disk.
-   * <p>
-   * Uses the {@link #pageIndex} as the authoritative source of truth for pending pages.
-   * Entries are added to pageIndex BEFORE enqueueing and removed AFTER flushing each page,
-   * so checking pageIndex is race-free unlike checking queue + nextPagesToFlush separately.
-   */
-  /**
-   * @return {@code true} when every page of the database reached the disk, {@code false} when the wait gave
-   *     up: either interrupted, or no flush PROGRESS was observed for {@code arcadedb.flushAllPagesTimeout}
-   *     milliseconds (#4928 - a wedged flush thread or unwritable disk used to hang close()/rename()/backup
-   *     forever here). The window resets whenever the pending-page count decreases, so a healthy but slow
-   *     backlog never trips it. Callers on the close path treat {@code false} as a crash-equivalent close:
-   *     the WAL files and the lock file are preserved so the next open replays the unflushed pages.
-   */
   /** Records that a page of the database LEFT the flush pipeline: the per-database progress signal (#4928). */
   private void bumpFlushProgress(final MutablePage page) {
     final AtomicLong counter = flushedPagesPerDatabase.get(page.getPageId().getDatabase());
@@ -205,6 +192,20 @@ public class PageManagerFlushThread extends Thread {
       counter.incrementAndGet();
   }
 
+  /**
+   * Waits until all the pages of a database are flushed to disk.
+   * <p>
+   * Uses the {@link #pageIndex} as the authoritative source of truth for pending pages. Entries are added to
+   * pageIndex BEFORE enqueueing and removed AFTER flushing each page, so checking pageIndex is race-free unlike
+   * checking queue + nextPagesToFlush separately.
+   *
+   * @return {@code true} when every page of the database reached the disk, {@code false} when the wait gave
+   *     up: either interrupted, or no flush PROGRESS was observed for {@code arcadedb.flushAllPagesTimeout}
+   *     milliseconds (#4928 - a wedged flush thread or unwritable disk used to hang close()/rename()/backup
+   *     forever here). The window resets whenever the pending-page count decreases, so a healthy but slow
+   *     backlog never trips it. Callers on the close path treat {@code false} as a crash-equivalent close:
+   *     the WAL files and the lock file are preserved so the next open replays the unflushed pages.
+   */
   protected boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
     final long timeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT);
     int lastPending = Integer.MAX_VALUE;
@@ -236,7 +237,7 @@ public class PageManagerFlushThread extends Thread {
       }
 
       try {
-        Thread.sleep(10);
+        Thread.sleep(DEFAULT_FLUSH_WAIT_POLL_MILLIS);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
@@ -366,11 +367,78 @@ public class PageManagerFlushThread extends Thread {
 
   /**
    * Whether any page of the database is still anywhere in the flush pipeline. Used by the snapshot t0 barrier
-   * (#6075) to tell "the queue drained and stayed drained" from "commits landed between the drain and the
-   * suspension", in which case the barrier retries instead of stamping a t0 that is already behind.
+   * (#6075) to tell "the pipeline drained and stayed drained" from "something is still feeding it", which since
+   * #6125 can only be index compaction: the barrier's second drain runs with the publication lock held, so no
+   * committer can queue a page.
    */
   boolean hasPendingPagesOfDatabase(final Database database) {
     return countPendingPagesOfDatabase(database, true) > 0;
+  }
+
+  /**
+   * Waits for the flush pipeline of a database to empty, bounded by a HARD wall-clock deadline rather than by the
+   * progress-based {@code arcadedb.flushAllPagesTimeout} (#6125).
+   * <p>
+   * This exists for exactly one caller: the snapshot t0 barrier's second drain, which runs with the JVM-wide
+   * page-manager lock held. There it has to absorb only the handful of pages that were queued between the barrier's
+   * first, lock-free drain and its acquisition of that lock, so it normally returns on the FIRST check - but a
+   * flush thread wedged on a dead disk must not be able to hold the global lock for the 60 s the progress-based
+   * timeout allows, which would stall every committer of every database in the JVM.
+   * <p>
+   * Polls at 1 ms rather than spinning, deliberately: {@link #countPendingPagesOfDatabase} walks the JVM-WIDE
+   * {@link #pageIndex}, so a spin loop would turn one cheap check into hundreds of O(n) scans of a map whose size
+   * grows with exactly the backlog that makes this wait non-trivial in the first place - and all of them under the
+   * global lock. One extra millisecond in the rare case where a page IS in flight is the better trade.
+   *
+   * @return {@code true} when the pipeline emptied, {@code false} when the deadline expired first (the caller
+   *     proceeds with a t0 that may sit slightly behind the last committed transaction, and says so).
+   */
+  boolean waitPendingPagesOfDatabaseUntil(final Database database, final long deadlineMillis)
+      throws InterruptedException {
+    while (hasPendingPagesOfDatabase(database)) {
+      if (System.currentTimeMillis() >= deadlineMillis)
+        return false;
+      Thread.sleep(1);
+    }
+    return true;
+  }
+
+  /**
+   * Bounded {@link #setSuspended(Database, boolean)} acquisition for the snapshot t0 barrier (#6125).
+   * <p>
+   * The unbounded version parks on {@code suspendLock} for as long as another suspender's resume is in flight, and
+   * that resume synchronously writes up to {@code arcadedb.flushSuspendMaxDeferredRAM} (512 MB by default) of
+   * deferred pages. The barrier calls this with the JVM-wide page-manager lock held, so an unbounded park there
+   * would put every committer of every database behind that write. Giving up instead lets the barrier fail cleanly
+   * and its consumer fall back to the suspend-and-freeze path, which is slower for the writers of ONE database
+   * rather than briefly fatal for all of them.
+   *
+   * @return {@code true} when a suspender reference was acquired - and the caller must release it exactly once with
+   *     {@code setSuspended(database, false)} - or {@code false} when the deadline expired first, in which case
+   *     nothing was acquired.
+   */
+  boolean trySuspendUntil(final Database database, final long deadlineMillis) {
+    final Object lock = suspendLock(database);
+    synchronized (lock) {
+      boolean interrupted = false;
+      try {
+        while (resumingDatabases.contains(database)) {
+          final long remaining = deadlineMillis - System.currentTimeMillis();
+          if (remaining <= 0)
+            return false;
+          try {
+            lock.wait(Math.min(remaining, 100));
+          } catch (final InterruptedException e) {
+            interrupted = true;
+          }
+        }
+        suspended.merge(database, 1, Integer::sum);
+        return true;
+      } finally {
+        if (interrupted)
+          Thread.currentThread().interrupt();
+      }
+    }
   }
 
   /**
@@ -390,9 +458,29 @@ public class PageManagerFlushThread extends Thread {
   }
 
   public void waitForCurrentFlushToComplete(final Database database) throws InterruptedException {
+    waitForCurrentFlushToCompleteUntil(database, Long.MAX_VALUE);
+  }
+
+  /**
+   * Bounded {@link #waitForCurrentFlushToComplete(Database)} for the snapshot t0 barrier (#6125).
+   * <p>
+   * The unbounded version waits for the in-flight batch to reach the disk with no ceiling at all - it polls until
+   * {@code PageManager.flushPage}'s synchronous {@code file.write} returns, and a write to a dead disk never does.
+   * The barrier calls this with the JVM-wide page-manager lock held, so that wait has to be bounded like every other
+   * step it performs there; a timeout is treated as a failure to establish t0, not as permission to proceed, because
+   * the batch is half-written by definition and a snapshot taken over it would hold half a transaction.
+   *
+   * @return {@code true} when the pipeline is no longer writing this database's pages, {@code false} on deadline.
+   */
+  boolean waitForCurrentFlushToCompleteUntil(final Database database, final long deadlineMillis)
+      throws InterruptedException {
     PagesToFlush current;
-    while ((current = nextPagesToFlush.get()) != null && database.equals(current.database))
+    while ((current = nextPagesToFlush.get()) != null && database.equals(current.database)) {
+      if (System.currentTimeMillis() >= deadlineMillis)
+        return false;
       Thread.sleep(1);
+    }
+    return true;
   }
 
   /**

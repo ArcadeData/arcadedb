@@ -33,12 +33,22 @@ import java.util.Map;
 import java.util.zip.CRC32;
 
 /**
- * Utility methods for snapshot-based resync in Raft HA.
+ * Manifest and checksum helpers for snapshot-based resync in Raft HA.
  * <p>
- * Currently provides checksum computation and file-diffing helpers. Full
- * {@code installSnapshot()} integration with Ratis is not yet wired - replicas
- * that fall behind past log compaction require a manual data copy from the leader.
- * These utilities are the building blocks for the future automatic resync.
+ * A follower that falls behind the compacted Raft log downloads the WHOLE database as a ZIP from
+ * {@code SnapshotHttpHandler} and installs it through {@code SnapshotInstaller}; this class carries the manifest
+ * that transfer is verified with, and the checksum computation behind the {@code /checksums} endpoint.
+ * <p>
+ * <b>There is deliberately no file-level diff here</b> (#6125). One used to be - a {@code findDifferingFiles}
+ * helper, called from nothing but its own unit test, whose presence suggested resync could ship only what changed.
+ * It was removed rather than wired in, for two reasons. Granularity: an ArcadeDB database is usually dominated by
+ * one bucket file, so a whole-file comparison saves nothing the moment a single byte of it changes. Consistency:
+ * the checksums come from one point-in-time window and the ZIP from another, so a file that matched when it was
+ * compared can be rewritten before the transfer starts, and a follower that kept its local copy on the strength of
+ * that match would hold a database torn across two instants. Incremental resync therefore belongs at the PAGE
+ * level, on the page-version manifest of phase 3 (#6115), where both halves come from the same window. Until then
+ * {@code /checksums} is an operator diagnostic - "do these two nodes hold the same bytes?" without moving a
+ * database - and nothing more.
  */
 public final class SnapshotManager {
 
@@ -197,28 +207,5 @@ public final class SnapshotManager {
     }
 
     return checksums;
-  }
-
-  /**
-   * Identifies files that differ between leader and replica based on checksums.
-   * A file is considered differing if it exists on the leader but not on the replica,
-   * or if its checksum does not match.
-   *
-   * @param leaderChecksums  checksums from the leader node
-   * @param replicaChecksums checksums from the replica node
-   *
-   * @return list of file names that need to be transferred
-   */
-  public static List<String> findDifferingFiles(final Map<String, Long> leaderChecksums,
-      final Map<String, Long> replicaChecksums) {
-    final List<String> differing = new ArrayList<>();
-
-    for (final Map.Entry<String, Long> entry : leaderChecksums.entrySet()) {
-      final Long replicaChecksum = replicaChecksums.get(entry.getKey());
-      if (replicaChecksum == null || !replicaChecksum.equals(entry.getValue()))
-        differing.add(entry.getKey());
-    }
-
-    return differing;
   }
 }
