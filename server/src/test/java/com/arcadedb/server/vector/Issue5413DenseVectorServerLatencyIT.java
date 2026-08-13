@@ -275,7 +275,7 @@ class Issue5413DenseVectorServerLatencyIT extends BaseGraphServerTest {
 
     synchronized (errors) {
       if (!errors.isEmpty())
-        throw new IllegalStateException("query lane failed with " + errors.size() + " errors", errors.getFirst());
+        throw new IllegalStateException("query lane failed with " + errors.size() + " errors", errors.get(0));
     }
     return samples;
   }

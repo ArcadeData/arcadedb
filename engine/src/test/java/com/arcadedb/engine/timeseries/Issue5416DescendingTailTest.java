@@ -180,7 +180,7 @@ class Issue5416DescendingTailTest extends TestHelper {
     final List<Object[]> rows = engine.queryDescending(fromTs, toTs, null, TagFilter.eq(0, "host_0"), 5, null);
 
     assertThat(deep(rows)).isEqualTo(deep(expectedNewest(engine, fromTs, toTs, "host_0", 5)));
-    assertThat((long) rows.getFirst()[0]).isEqualTo(toTs);
+    assertThat((long) rows.get(0)[0]).isEqualTo(toTs);
   }
 
   /**
@@ -204,7 +204,7 @@ class Issue5416DescendingTailTest extends TestHelper {
     final List<Object[]> old = engine.queryDescending(Long.MIN_VALUE, BASE_TS - 1, null, TagFilter.eq(0, "host_0"), 10,
         null);
     assertThat(old).hasSize(2);
-    assertThat((long) old.getFirst()[0]).isEqualTo(BASE_TS - 4_000);
+    assertThat((long) old.get(0)[0]).isEqualTo(BASE_TS - 4_000);
   }
 
   @Test
@@ -242,8 +242,8 @@ class Issue5416DescendingTailTest extends TestHelper {
         null);
 
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst()[2]).isEqualTo(value);
-    assertThat(rows.getFirst()[1]).isEqualTo("host_2");
+    assertThat(rows.get(0)[2]).isEqualTo(value);
+    assertThat(rows.get(0)[1]).isEqualTo("host_2");
   }
 
   @Test
@@ -307,7 +307,7 @@ class Issue5416DescendingTailTest extends TestHelper {
         TagFilter.eq(0, "host_1"), 1, null);
 
     assertThat(newest).hasSize(1);
-    final Object[] row = newest.getFirst();
+    final Object[] row = newest.get(0);
     assertThat(row[0]).isEqualTo(BASE_TS + 999L * STEP_MS);
     assertThat(row[1]).isEqualTo("host_1");
     assertThat(row[2]).isEqualTo(999.5d);
@@ -381,7 +381,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   void sqlLastPointOnAnUnsealedTailReturnsTheNewestRow() throws IOException {
     final TimeSeriesEngine engine = createUnsealed(10_000, 2);
 
-    final long expectedTs = (long) expectedNewest(engine, Long.MIN_VALUE, Long.MAX_VALUE, "host_1", 1).getFirst()[0];
+    final long expectedTs = (long) expectedNewest(engine, Long.MIN_VALUE, Long.MAX_VALUE, "host_1", 1).get(0)[0];
 
     try (final ResultSet rs = database.query("sql",
         "SELECT ts, value FROM Point WHERE host = 'host_1' ORDER BY ts DESC LIMIT 1")) {

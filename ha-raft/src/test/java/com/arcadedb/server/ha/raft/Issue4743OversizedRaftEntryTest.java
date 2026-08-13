@@ -159,10 +159,10 @@ class Issue4743OversizedRaftEntryTest {
     for (final ByteString chunk : chunks)
       decoded.add(RaftLogEntryCodec.decode(chunk));
 
-    assertThat(decoded.getFirst().filesToAdd()).isEqualTo(filesToAdd);
-    assertThat(decoded.getFirst().schemaJson()).isEmpty();
-    assertThat(decoded.getLast().schemaJson()).isEqualTo(schemaJson);
-    assertThat(decoded.getLast().filesToRemove()).isEqualTo(filesToRemove);
+    assertThat(decoded.get(0).filesToAdd()).isEqualTo(filesToAdd);
+    assertThat(decoded.get(0).schemaJson()).isEmpty();
+    assertThat(decoded.get(decoded.size() - 1).schemaJson()).isEqualTo(schemaJson);
+    assertThat(decoded.get(decoded.size() - 1).filesToRemove()).isEqualTo(filesToRemove);
     for (int i = 1; i < decoded.size(); i++)
       assertThat(decoded.get(i).filesToAdd()).as("only the first chunk creates files").isEmpty();
     for (int i = 0; i < decoded.size() - 1; i++) {

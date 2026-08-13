@@ -115,7 +115,7 @@ class LSMVectorIndexSearcherPoolTest {
       // The new vector must be visible: a pooled searcher holding a pre-insert view would miss it.
       final List<RID> after = searchRids(index(db), outlier);
       assertThat(after).isNotEmpty();
-      final var top = db.lookupByRID(after.getFirst(), true).asDocument();
+      final var top = db.lookupByRID(after.get(0), true).asDocument();
       assertThat(top.getInteger("id")).as("the just-inserted outlier must be the nearest neighbour").isEqualTo(NUM_VECTORS);
     }
   }

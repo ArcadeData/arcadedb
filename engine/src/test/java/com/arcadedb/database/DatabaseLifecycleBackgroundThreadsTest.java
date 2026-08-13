@@ -168,7 +168,7 @@ public class DatabaseLifecycleBackgroundThreadsTest {
         assertThat(armed).as("The vector index inactivity rebuild timer must be armed after a few buffered mutations")
             .hasSize(1);
 
-        callback.accept(database, armed.getFirst().getName());
+        callback.accept(database, armed.get(0).getName());
       } finally {
         if (database.isOpen())
           database.close();

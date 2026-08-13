@@ -121,7 +121,7 @@ class Issue4743InvalidSubIndexTest extends TestHelper {
   }
 
   private LSMTreeIndex bucketIndex() {
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").get(0);
     for (final Index index : typeIndex.getIndexesOnBuckets())
       if (index instanceof LSMTreeIndex lsmIndex)
         return lsmIndex;
