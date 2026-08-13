@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,11 +28,13 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.RandomAccessFile;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests idempotency of createNewFiles() in ArcadeStateMachine.
@@ -143,5 +146,54 @@ class ArcadeStateMachineCreateFilesTest {
     // File should now exist and be registered
     assertThat(new File(filePath).exists()).isTrue();
     assertThat(db.getFileManager().existsFile(fileId)).isTrue();
+  }
+
+  /**
+   * Issue #6063 regression: a file id already registered under a name DIFFERENT from what a committed
+   * schema entry expects is not the safe idempotent-replay case the other tests above cover - the two
+   * names cannot both be legitimate replays of the same entry, so it means this node's file-id space has
+   * diverged from the leader's (e.g. left behind by the first-formation bootstrap "local data is fresher,
+   * keep it" guard in {@code applyBootstrapFingerprintEntry}). Silently skipping the collision, as the
+   * pre-fix code did, left the new component (e.g. a freshly created type's bucket) never actually
+   * created on this node while the schema JSON was still merged, so the type was later dropped from the
+   * schema on load ("Cannot find bucket ..., removing it from type configuration") - the exact "Types:
+   * DB1 6 <> DB2 5" divergence the issue's CI log shows. It must now be reported loudly instead.
+   */
+  @Test
+  void createNewFilesThrowsOnFileIdCollisionWithDifferentName() throws Exception {
+    final int fileId = 9003;
+    final String existingFileName = "unrelated_bucket.9003.65536.v0.pcf";
+    final String expectedFileName = "new_type_bucket.9003.65536.v0.pcf";
+    final String existingFilePath = db.getDatabasePath() + File.separator + existingFileName;
+
+    // Plant the divergence directly, rather than racing for it: this node already has an unrelated file
+    // registered under fileId 9003 from its own independent history.
+    db.getFileManager().getOrCreateFile(fileId, existingFilePath);
+    assertThat(db.getFileManager().existsFile(fileId)).isTrue();
+
+    final ArcadeStateMachine stateMachine = new ArcadeStateMachine();
+    final Method createNewFiles = ArcadeStateMachine.class.getDeclaredMethod(
+        "createNewFiles", DatabaseInternal.class, Map.class);
+    createNewFiles.setAccessible(true);
+
+    // A committed schema change now expects the SAME fileId to name a DIFFERENT (brand new) file.
+    final Map<Integer, String> filesToAdd = new HashMap<>();
+    filesToAdd.put(fileId, expectedFileName);
+
+    assertThatThrownBy(() -> {
+      try {
+        createNewFiles.invoke(stateMachine, db, filesToAdd);
+      } catch (final InvocationTargetException e) {
+        throw e.getCause();
+      }
+    }).isInstanceOf(SchemaException.class)
+        .hasMessageContaining(String.valueOf(fileId))
+        .hasMessageContaining(existingFileName)
+        .hasMessageContaining(expectedFileName);
+
+    // The collision must not silently fabricate the new file: the existing registration is untouched
+    // and the new one was never created.
+    assertThat(db.getFileManager().getFile(fileId).getFileName()).isEqualTo(existingFileName);
+    assertThat(new File(db.getDatabasePath() + File.separator + expectedFileName)).doesNotExist();
   }
 }
