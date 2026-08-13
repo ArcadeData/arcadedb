@@ -53,7 +53,7 @@ class LSMTreeCompositeNullKeyAdjacencyTest extends TestHelper {
     database.transaction(() -> database.newDocument("D").set("a", 0).set("b", 0).save());
 
     database.transaction(() -> {
-      final TypeIndex index = database.getSchema().getType("D").getIndexesByProperties("a", "b").getFirst();
+      final TypeIndex index = database.getSchema().getType("D").getIndexesByProperties("a", "b").get(0);
       final IndexCursor c = index.get(new Object[] { 0, 0 });
       assertThat(c.hasNext())
           .as("the (0,0) entry must be readable next to the shorter (0,null) entry (#4947)").isTrue();
