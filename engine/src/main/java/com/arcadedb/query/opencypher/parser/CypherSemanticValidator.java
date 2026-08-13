@@ -1759,50 +1759,118 @@ public class CypherSemanticValidator {
   private void validateReturnStar(final CypherStatement statement) {
     if (statement.getReturnClause() == null)
       return;
-    for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems()) {
-      if (item.getExpression() instanceof StarExpression ||
-          (item.getExpression() instanceof VariableExpression &&
-              "*".equals(((VariableExpression) item.getExpression()).getVariableName()))) {
-        // RETURN * requires at least one named variable in scope
-        boolean hasNamedVars = false;
-        for (final MatchClause matchClause : statement.getMatchClauses()) {
-          if (matchClause.hasPathPatterns())
-            for (final PathPattern path : matchClause.getPathPatterns()) {
-              for (final NodePattern node : path.getNodes())
-                if (node.getVariable() != null && !node.getVariable().isEmpty()) {
-                  hasNamedVars = true;
-                  break;
-                }
-              if (hasNamedVars)
-                break;
-              for (final RelationshipPattern rel : path.getRelationships())
-                if (rel.getVariable() != null && !rel.getVariable().isEmpty()) {
-                  hasNamedVars = true;
-                  break;
-                }
-              if (hasNamedVars)
-                break;
-              if (path.hasPathVariable()) {
-                hasNamedVars = true;
-                break;
-              }
-            }
-          if (hasNamedVars)
-            break;
+    for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
+      if (isStarItem(item) && !statementDeclaresAnyVariable(statement))
+        throw new CommandParsingException("NoVariablesInScope: RETURN * is not allowed when there are no variables in scope");
+  }
+
+  private static boolean isStarItem(final ReturnClause.ReturnItem item) {
+    return item.getExpression() instanceof StarExpression ||
+        (item.getExpression() instanceof VariableExpression &&
+            "*".equals(((VariableExpression) item.getExpression()).getVariableName()));
+  }
+
+  /**
+   * Whether this statement's own clauses put at least one name into scope - the pool {@code RETURN *} draws from.
+   * Deliberately not the same question as "what is in scope here", which for an {@code EXISTS { } / COUNT { } /
+   * COLLECT { }} body also includes every variable the enclosing row seeds it with ({@link #checkSubqueryExpressionScope}):
+   * a body that does nothing but {@code RETURN *} must still be rejected, exactly as a standalone {@code RETURN *}
+   * is, and is (see {@code CypherSubqueryBodyIssue5656Test#returnStarWithNothingInScopeIsRejectedInsideABodyAsOutsideOne}).
+   * <p>
+   * Before issue #6135 this only looked at the statement's {@code MATCH} patterns and {@code UNWIND} variables, so a
+   * name put into scope any other way - a {@code WITH} projection, a {@code CALL ... YIELD} output, or a variable a
+   * {@code CALL { }} subquery returns - was invisible to it, and {@code RETURN *} was rejected even though the
+   * executor would have projected the name correctly had it been allowed to run.
+   */
+  private static boolean statementDeclaresAnyVariable(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty()) {
+      // Some builder paths leave the ordered list empty; the per-kind getters still answer (mirrors buildVarTypes).
+      for (final MatchClause matchClause : statement.getMatchClauses())
+        if (matchClause.hasPathPatterns())
+          for (final PathPattern path : matchClause.getPathPatterns())
+            if (pathDeclaresVariable(path))
+              return true;
+      if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty())
+        for (final PathPattern path : statement.getCreateClause().getPathPatterns())
+          if (pathDeclaresVariable(path))
+            return true;
+      return statement.getMergeClause() != null && pathDeclaresVariable(statement.getMergeClause().getPathPattern());
+    }
+
+    for (final ClauseEntry entry : clauses) {
+      switch (entry.getType()) {
+      case MATCH -> {
+        final MatchClause matchClause = entry.getTypedClause();
+        if (matchClause.hasPathPatterns())
+          for (final PathPattern path : matchClause.getPathPatterns())
+            if (pathDeclaresVariable(path))
+              return true;
+      }
+      case CREATE -> {
+        final CreateClause createClause = entry.getTypedClause();
+        if (createClause != null && !createClause.isEmpty())
+          for (final PathPattern path : createClause.getPathPatterns())
+            if (pathDeclaresVariable(path))
+              return true;
+      }
+      case MERGE -> {
+        final MergeClause mergeClause = entry.getTypedClause();
+        if (mergeClause != null && pathDeclaresVariable(mergeClause.getPathPattern()))
+          return true;
+      }
+      case WITH -> {
+        final WithClause withClause = entry.getTypedClause();
+        for (final ReturnClause.ReturnItem item : withClause.getItems())
+          if (!isStarItem(item) && item.getOutputName() != null && !"*".equals(item.getOutputName()))
+            return true;
+      }
+      case UNWIND -> {
+        if (((UnwindClause) entry.getTypedClause()).getVariable() != null)
+          return true;
+      }
+      case LOAD_CSV -> {
+        if (((LoadCSVClause) entry.getTypedClause()).getVariable() != null)
+          return true;
+      }
+      case CALL -> {
+        final CallClause callClause = entry.getTypedClause();
+        if (callClause.hasYield())
+          for (final CallClause.YieldItem item : callClause.getYieldItems())
+            if (item.getOutputName() != null)
+              return true;
+      }
+      case SUBQUERY -> {
+        // What a CALL { } subquery returns becomes an ordinary variable of the enclosing scope, exactly like WITH.
+        final SubqueryClause subqueryClause = entry.getTypedClause();
+        if (subqueryClause.getInnerStatement() != null) {
+          final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+          if (innerReturn != null)
+            for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
+              if (item.getOutputName() != null)
+                return true;
         }
-        // Also check UNWIND and WITH for variables
-        if (!hasNamedVars) {
-          for (final UnwindClause unwind : statement.getUnwindClauses()) {
-            if (unwind.getVariable() != null) {
-              hasNamedVars = true;
-              break;
-            }
-          }
-        }
-        if (!hasNamedVars)
-          throw new CommandParsingException("NoVariablesInScope: RETURN * is not allowed when there are no variables in scope");
+      }
+      default -> {
+        // No binding of its own.
+      }
       }
     }
+    return false;
+  }
+
+  private static boolean pathDeclaresVariable(final PathPattern path) {
+    if (path == null)
+      return false;
+    if (path.hasPathVariable())
+      return true;
+    for (final NodePattern node : path.getNodes())
+      if (node.getVariable() != null && !node.getVariable().isEmpty())
+        return true;
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
+        return true;
+    return false;
   }
 
   // ==============================
