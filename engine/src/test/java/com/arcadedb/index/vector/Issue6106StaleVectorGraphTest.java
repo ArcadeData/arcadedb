@@ -21,6 +21,8 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -215,6 +217,31 @@ class Issue6106StaleVectorGraphTest extends TestHelper {
     assertThat(vectorIndex().getStats().get("unverifiedGraphReuses"))
         .as("but the index has to say it is running on the weaker comparison").isEqualTo(1L);
     assertThat(selfRetrieved).as("%d of %d found", selfRetrieved, LIVE).isGreaterThanOrEqualTo(LIVE * 99 / 100);
+  }
+
+  /**
+   * The sidecar sits next to the graph file and its name ends in the graph file's own extension plus one more, so
+   * the only thing keeping the {@code FileManager} from opening it as a page-backed component is that the scan
+   * matches on the LAST extension. Everything downstream of that rule - the backup enumeration, the HA
+   * {@code /checksums} walk - follows. Its temporaries have to be as invisible, or a crash between the write and
+   * the atomic move would leave something a scan might try to open.
+   */
+  @Test
+  void theSidecarIsNeverMistakenForAComponentFile() {
+    createSchema(database);
+    insertDocs(database, 0, 8);
+    buildAndPersistGraph();
+
+    final String graph = graphFileIn(database.getDatabasePath()).getName();
+    assertThat(LocalDatabase.isComponentFileName(graph)).as("the graph file itself IS one").isTrue();
+    assertThat(LocalDatabase.isComponentFileName(graph + "." + LSMVectorIndexGraphManifest.FILE_EXT))
+        .as("its manifest is not, or the FileManager would open a JSON file as pages").isFalse();
+    assertThat(LocalDatabase.isComponentFileName(graph + "." + LSMVectorIndexGraphManifest.FILE_EXT + ".1a2b.tmp"))
+        .as("and neither is a temporary left behind by an interrupted manifest write").isFalse();
+
+    assertThat(((DatabaseInternal) database).getFileManager().getFiles().stream()
+        .anyMatch(f -> f != null && LSMVectorIndexGraphManifest.FILE_EXT.equals(f.getFileExtension())))
+        .as("nothing registered the sidecar as a component, so backup and file shipping never see it").isFalse();
   }
 
   /**

@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -176,17 +177,25 @@ public class LSMVectorIndexGraphManifest {
   }
 
   /**
-   * The temporary file is derived from the manifest's own name, so two writers on the SAME index would race on it.
-   * They cannot: every graph persist for an index runs under {@code LSMVectorIndex.graphBuildLock}, which
-   * serialises graph builds per index, and the manifest is written from inside that persist. A future change that
-   * lifts that serialisation has to give this a per-writer name.
+   * The temporary file carries a per-write suffix rather than a fixed {@code .tmp} name. Graph persists for one
+   * index are serialised today - by {@code LSMVectorIndex.graphBuildLock} on the rebuild path, and by the index
+   * write lock plus the {@code INDEX_STATUS} gate on the {@code build()} path - but that is two invariants held in
+   * two different places, and a shared temp name would turn a future change to either of them into a corrupted
+   * manifest. A unique name costs nothing and removes the assumption.
    */
   private void write(final int vectorCount, final long fingerprint, final String reason) {
-    final Path temporary = path.resolveSibling(path.getFileName() + ".tmp");
+    final Path temporary = path.resolveSibling(
+        path.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
     try {
       final Path parent = path.getParent();
       if (parent != null && !Files.exists(parent))
         Files.createDirectories(parent);
+
+      // A process killed between the write and the move leaves its temporary behind. Nothing reads one - the
+      // extension is not a component one, so no scan opens it - but nothing would ever remove it either, and an
+      // index rebuilt often enough would quietly litter the database directory. Sweeping here keeps at most one
+      // generation of leftovers around, without a lifecycle of its own.
+      deleteLeftoverTemporaries(parent);
 
       final JSONObject json = new JSONObject();
       json.put("formatVersion", FORMAT_VERSION);
@@ -211,6 +220,26 @@ public class LSMVectorIndexGraphManifest {
       } catch (final IOException ignored) {
         // NOTHING ELSE TO DO
       }
+    }
+  }
+
+  /**
+   * Removes the temporaries of earlier writes of THIS manifest, matched by name so no other file can be caught.
+   *
+   * @param parent directory holding the manifest, or {@code null} when it has none
+   */
+  private void deleteLeftoverTemporaries(final Path parent) {
+    if (parent == null)
+      return;
+
+    try (final DirectoryStream<Path> leftovers = Files.newDirectoryStream(parent,
+        path.getFileName() + ".*.tmp")) {
+      for (final Path leftover : leftovers)
+        Files.deleteIfExists(leftover);
+    } catch (final Exception e) {
+      // Housekeeping only: a manifest that cannot be written is what matters, and that is reported below.
+      LogManager.instance().log(this, Level.FINE,
+          "Could not remove leftover vector graph manifest temporaries next to '%s': %s", path, e.getMessage());
     }
   }
 
