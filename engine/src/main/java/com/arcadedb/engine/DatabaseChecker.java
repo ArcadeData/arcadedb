@@ -1034,6 +1034,13 @@ public class DatabaseChecker {
    * {@code checkedNodeScope} already carries for the rest of the run. Each node also publishes its own count as the
    * {@code arcadedb.ha.schema.unreferenced_files} gauge, which is how an operator finds the node that holds them.
    * <p>
+   * NOT LIMITED BY THE TYPE/BUCKET SCOPE, unlike everything else in this branch, and it cannot be: "no schema
+   * component claims this file" is a property of the whole schema, not of a type, so narrowing it would mean
+   * answering a different question - and the answer would be wrong, since a type that does not claim the file says
+   * nothing about whether another one does. A scoped run therefore reports findings from outside its scope, which
+   * the warning says. Same shape as the COMPRESS caveat above, and the reason both are stated rather than left to
+   * surprise someone.
+   * <p>
    * No progress step: it reads in-memory registries with no I/O, so it is over before a poller could observe it,
    * and giving it one would change the step plan every existing progress test asserts.
    */
@@ -1060,7 +1067,9 @@ public class DatabaseChecker {
           .append(" more (see the 'unreferencedFiles' result)");
 
     addWarning(unreferenced.size() + " file(s) on this node are referenced by no schema component and nothing will "
-        + "reclaim them: " + names + ". They are inert - no query, index or replication path reads a file the "
+        + "reclaim them (this pass covers the whole database, whatever TYPE or BUCKET scope was asked for: a file "
+        + "nothing claims is a property of the schema, not of a type): " + names
+        + ". They are inert - no query, index or replication path reads a file the "
         + "schema does not reference - so this costs disk only, and this check does not remove them. A schema change "
         + "interrupted after creating them is the usual cause; a bucket created with CREATE BUCKET and never given "
         + "to a type is the other, and is not a defect. Remove them with the server stopped, after a backup");
