@@ -78,6 +78,12 @@ public abstract class AbstractProperty implements Property {
    * concurrent caller of a given SQL string and {@code SQLQueryEngine.parse} executes it without copying, so every
    * query in the engine already shares its AST across threads. Pinned by
    * {@code PropertyDefaultValueTest.aCompiledDefaultIsSafeToEvaluateConcurrently}.
+   * <p>
+   * The <i>scope</i> of the sharing is wider here, though, and that is what to weigh when choosing a function for a
+   * default: a cached statement is shared only among callers of that one SQL string and only while it stays in the
+   * cache, whereas this instance backs every record create of the type for as long as the default is set. A default
+   * that calls a user-defined function keeping mutable state would therefore misbehave persistently rather than
+   * intermittently.
    *
    * @param value      what the schema stores and {@code schema.json} round-trips: the source text for a String default,
    *                   the value itself for one set through the API, or {@link #DEFAULT_NOT_SET} when none is defined
@@ -183,15 +189,16 @@ public abstract class AbstractProperty implements Property {
    * already holds an invalid default must still open. Such a default is logged as a warning and left uncompiled, which
    * makes {@link #getDefaultValue()} return exactly what it returned before this validation existed.
    *
+   * @param value    the default value to compile
+   * @param database the database to parse against, passed in because the caller has already resolved it
+   *
    * @return the compiled expression, or {@code null} when there is nothing to compile
    *
    * @throws SchemaException if the default cannot ever produce a value and the schema is fully loaded
    */
-  protected Expression compileDefaultValue(final Object value) {
+  protected Expression compileDefaultValue(final Object value, final Database database) {
     if (value == DEFAULT_NOT_SET || !(value instanceof String text))
       return null;
-
-    final Database database = owner.getSchema().getEmbedded().getDatabase();
 
     Expression compiled = null;
     String reason = null;

@@ -247,6 +247,29 @@ class PropertyDefaultValueTest extends TestHelper {
   }
 
   /**
+   * A default is inherited, and now so is its compiled form. Re-setting it on the supertype must be visible through
+   * the subtype at once - there is one {@link AbstractProperty} behind both views, so a stale compiled expression
+   * would be a per-subtype cache that does not exist. Covers the "polymorphic" half of
+   * {@code getPolymorphicPropertiesWithDefaultDefined()}.
+   */
+  @Test
+  void changingASupertypeDefaultIsVisibleThroughTheSubtypeImmediately() {
+    database.command("sql", "CREATE DOCUMENT TYPE Base");
+    database.command("sql", "CREATE PROPERTY Base.status STRING (DEFAULT 'first')");
+    database.command("sql", "CREATE DOCUMENT TYPE Derived EXTENDS Base");
+
+    final DocumentType derived = database.getSchema().getType("Derived");
+    assertThat(derived.getPolymorphicPropertiesWithDefaultDefined()).contains("status");
+    assertThat(derived.getPolymorphicProperty("status").getDefaultValue()).isEqualTo("first");
+    database.transaction(() -> assertThat(database.newDocument("Derived").save().getString("status")).isEqualTo("first"));
+
+    database.command("sql", "ALTER PROPERTY Base.status DEFAULT 'second'");
+
+    assertThat(derived.getPolymorphicProperty("status").getDefaultValue()).isEqualTo("second");
+    database.transaction(() -> assertThat(database.newDocument("Derived").save().getString("status")).isEqualTo("second"));
+  }
+
+  /**
    * The null rule has to survive a round trip through schema.json. Every SQL path stores a default as the expression's
    * source text - {@code DEFAULT null} is the four-character string, not a Java null - so reloading recompiles it to
    * the same null-literal expression and the property stays absent rather than reappearing as present-with-null.

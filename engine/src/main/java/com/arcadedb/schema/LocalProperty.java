@@ -58,7 +58,7 @@ public class LocalProperty extends AbstractProperty {
     // IS LOADED WITHOUT VALIDATION (compileDefaultValue IS LENIENT WHILE THE SCHEMA HYDRATES), SO RE-SETTING ONE TO THE
     // SAME INVALID TEXT IS THE ONE CASE WHERE new == old AND THE CALLER STILL HAS TO BE TOLD IT IS INVALID. THE COST IS
     // ONE REDUNDANT PARSE ON A NO-OP DDL STATEMENT, WHICH IS NOT A HOT PATH.
-    final Expression compiled = compileDefaultValue(convertedValue);
+    final Expression compiled = compileDefaultValue(convertedValue, database);
 
     if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
       // ONE PUBLICATION, SO NO READER CAN SEE THE NEW VALUE WITH THE OLD (OR NO) COMPILED EXPRESSION
