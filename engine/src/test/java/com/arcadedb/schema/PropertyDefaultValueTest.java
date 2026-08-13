@@ -300,6 +300,13 @@ class PropertyDefaultValueTest extends TestHelper {
     assertThat(database.getSchema().getType("Probe").getProperty("broken").getDefaultValue()).isEqualTo(
         "this is (not parseable");
 
+    // AND SETTING IT AGAIN, TO THE SAME TEXT, IS STILL REPORTED. THE LOAD PATH ACCEPTED IT WITHOUT VALIDATING, so
+    // "the value did not change" must not be mistaken for "the value was already validated" - which is why
+    // setDefaultValue() compiles before it compares.
+    assertThatThrownBy(
+        () -> database.getSchema().getType("Probe").getProperty("broken").setDefaultValue("this is (not parseable"))
+        .isInstanceOf(SchemaException.class);
+
     database.command("sql", "ALTER PROPERTY Probe.broken DEFAULT 'fixed'");
     assertThat(database.getSchema().getType("Probe").getProperty("broken").getDefaultValue()).isEqualTo("fixed");
   }
