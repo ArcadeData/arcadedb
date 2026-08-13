@@ -242,7 +242,7 @@ class ParallelRangeTopKTest extends TestHelper {
           final List<RidScore> split = engine.topK(queryDims, queryWeights, K);
 
           assertThat(split).as("split=%d must return as many documents", partitions).hasSameSizeAs(serial);
-          final float worstSerial = serial.getLast().score();
+          final float worstSerial = serial.get(serial.size() - 1).score();
           for (int i = 0; i < serial.size(); i++) {
             assertThat(split.get(i).score()).as("split=%d rank %d must be indistinguishable in score", partitions, i)
                 .isCloseTo(serial.get(i).score(), Offset.offset(TIE_EPSILON));

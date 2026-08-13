@@ -124,8 +124,8 @@ class MultiBucketSealedSegmentFanoutTest extends TestHelper {
 
     final long completedBefore = SparseVectorScoringPool.getInstance().getPoolStats()
         .completedTasks();
-    final int[] queryIdx = docIndices.getFirst();
-    final float[] queryVal = docValues.getFirst();
+    final int[] queryIdx = docIndices.get(0);
+    final float[] queryVal = docValues.get(0);
 
     final List<RID> hits = new ArrayList<>();
     database.transaction(() -> {
@@ -155,7 +155,7 @@ class MultiBucketSealedSegmentFanoutTest extends TestHelper {
     assertThat(completedAfter).as("fan-out must have dispatched (before=%d after=%d)", completedBefore, completedAfter)
         .isGreaterThan(completedBefore);
     assertThat(hits).as("a multi-bucket query over sealed segments must return the top-K").hasSize(K);
-    assertThat(hits.getFirst()).as("self-query must return self at rank 0").isEqualTo(docRids.getFirst());
+    assertThat(hits.get(0)).as("self-query must return self at rank 0").isEqualTo(docRids.get(0));
 
   }
 }

@@ -235,7 +235,7 @@ class LSMVectorIndexCompactionTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
       final List<Map<String, Object>> neighbors = rs.next().getProperty("neighbors");
       assertThat(neighbors).as("neighbors of doc%d %s", vertex, phase).isNotEmpty();
-      assertThat(neighbors.getFirst().get("id")).as("closest vector to doc%d %s", vertex, phase)
+      assertThat(neighbors.get(0).get("id")).as("closest vector to doc%d %s", vertex, phase)
           .isEqualTo("doc" + vertex);
     });
   }

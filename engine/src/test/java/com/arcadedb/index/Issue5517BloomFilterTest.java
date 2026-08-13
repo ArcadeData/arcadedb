@@ -92,7 +92,7 @@ class Issue5517BloomFilterTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("email", key(i)).save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     assertThat(((IndexInternal) typeIndex).scheduleCompaction()).isTrue();
     assertThat(((IndexInternal) typeIndex).compact()).isTrue();
 
@@ -189,7 +189,7 @@ class Issue5517BloomFilterTest extends TestHelper {
 
     reopenDatabase();
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     final LSMTreeIndexCompacted compacted = compactedOf(typeIndex);
 
     assertThat(compacted.getBloomFilter()).as("the filter file must be reattached at load").isNotNull();
@@ -219,7 +219,7 @@ class Issue5517BloomFilterTest extends TestHelper {
     GlobalConfiguration.INDEX_BLOOM_FILTER_RATE.setValue(0.0f);
     reopenDatabase();
 
-    final TypeIndex reopenedIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex reopenedIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     assertThat(probeEveryKey(reopenedIndex, 11)).isEqualTo(withFilters);
     assertThat(compactedOf(reopenedIndex).getBloomSkippedSeries()).as("no series may be skipped with the filters off")
         .isZero();
@@ -261,7 +261,7 @@ class Issue5517BloomFilterTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("city", "city-" + String.format("%04d", i % cities)).save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("city").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("city").get(0);
     assertThat(((IndexInternal) typeIndex).scheduleCompaction()).isTrue();
     assertThat(((IndexInternal) typeIndex).compact()).isTrue();
 

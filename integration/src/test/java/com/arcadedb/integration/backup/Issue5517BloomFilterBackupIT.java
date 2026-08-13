@@ -91,7 +91,7 @@ class Issue5517BloomFilterBackupIT {
           database.newDocument(TYPE_NAME).set("uid", uid(i)).save();
       });
 
-      final TypeIndex index = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").getFirst();
+      final TypeIndex index = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").get(0);
       assertThat(((IndexInternal) index).scheduleCompaction()).isTrue();
       assertThat(((IndexInternal) index).compact()).isTrue();
 
@@ -117,7 +117,7 @@ class Issue5517BloomFilterBackupIT {
       assertThat(new File(RESTORED_PATH, filterFileName))
           .as("the backup must carry the bloom filter file, and the restore must keep it").exists();
 
-      final TypeIndex index = restored.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").getFirst();
+      final TypeIndex index = restored.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").get(0);
       final LSMTreeIndexCompacted compacted = compactedOf(index);
 
       assertThat(compacted.getSeriesCount()).as("the restored index must have the same series").isEqualTo(series);

@@ -186,7 +186,7 @@ class LSMTreeBloomFilterBenchmark {
         });
       }
 
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties(PROPERTY_NAME).getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties(PROPERTY_NAME).get(0);
       assertThat(((IndexInternal) typeIndex).scheduleCompaction()).isTrue();
       assertThat(((IndexInternal) typeIndex).compact()).isTrue();
 
@@ -209,7 +209,7 @@ class LSMTreeBloomFilterBenchmark {
     GlobalConfiguration.INDEX_BLOOM_FILTER_RATE.setValue(filtersEnabled ? 0.01f : 0f);
 
     try (final DatabaseFactory factory = new DatabaseFactory(ROOT.toString()); final Database database = factory.open()) {
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties(PROPERTY_NAME).getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties(PROPERTY_NAME).get(0);
       final LSMTreeIndexCompacted compacted = compactedOf(typeIndex);
 
       assertThat(compacted.isBloomFilterEnabled()).as("filters consulted when enabled=%s", filtersEnabled)
