@@ -1,0 +1,3860 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "artifacts": [
+        {
+          "location": {
+            "index": 0,
+            "uri": "e2e-go/go.mod"
+          }
+        },
+        {
+          "location": {
+            "index": 1,
+            "uri": "studio/package-lock.json"
+          }
+        },
+        {
+          "location": {
+            "index": 2,
+            "uri": "studio/package.json"
+          }
+        },
+        {
+          "location": {
+            "index": 3,
+            "uri": "e2e-js/package-lock.json"
+          }
+        },
+        {
+          "location": {
+            "index": 4,
+            "uri": "pom.xml"
+          }
+        },
+        {
+          "location": {
+            "index": 5,
+            "uri": "bolt/conformance/requirements.txt"
+          }
+        },
+        {
+          "location": {
+            "index": 6,
+            "uri": "e2e-python/pyproject.toml"
+          }
+        }
+      ],
+      "automationDetails": {
+        "id": ".github/workflows/meterian.yml:meterian_scan/"
+      },
+      "conversion": {
+        "tool": {
+          "driver": {
+            "name": "GitHub Code Scanning"
+          }
+        }
+      },
+      "results": [
+        {
+          "correlationGuid": "2a5430cd-5ff6-4f1c-aa19-f60f76f739fa",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces golang.org/x/crypto@v0.54.0 which is vulnerable (MET-7229619214ba)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2219,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2219"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GOLANG.ORG-X-CRYPTO-7229619214BA",
+            "index": 6
+          },
+          "ruleId": "METERIAN-GOLANG-GOLANG.ORG-X-CRYPTO-7229619214BA"
+        },
+        {
+          "correlationGuid": "658220d4-bc59-4e0a-a15a-1fbdf16dac02",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces browserify-zlib@0.2.0 which is vulnerable (MET-46fc064e6533)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2369,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2369"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-BROWSERIFY-ZLIB-46FC064E6533",
+            "index": 39
+          },
+          "ruleId": "METERIAN-NODEJS-BROWSERIFY-ZLIB-46FC064E6533"
+        },
+        {
+          "correlationGuid": "5984311d-d2b1-42d1-a7a8-2dd835c9f8a4",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 2,
+                  "uri": "studio/package.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces cytoscape-graphml@1.0.6 which is vulnerable (MET-ef60ef67e0bf)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d34d0ff2ac037fdc:1"
+          },
+          "properties": {
+            "github/alertNumber": 2370,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2370"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-CYTOSCAPE-GRAPHML-EF60EF67E0BF",
+            "index": 42
+          },
+          "ruleId": "METERIAN-NODEJS-CYTOSCAPE-GRAPHML-EF60EF67E0BF"
+        },
+        {
+          "correlationGuid": "fee1e3be-853b-43d1-8141-c2a5890eae8f",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 2,
+                  "uri": "studio/package.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces cytoscape-node-html-label@1.2.2 which is vulnerable (MET-ef5fcddfb4e6)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d34d0ff2ac037fdc:1"
+          },
+          "properties": {
+            "github/alertNumber": 2371,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2371"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-CYTOSCAPE-NODE-HTML-LABEL-EF5FCDDFB4E6",
+            "index": 43
+          },
+          "ruleId": "METERIAN-NODEJS-CYTOSCAPE-NODE-HTML-LABEL-EF5FCDDFB4E6"
+        },
+        {
+          "correlationGuid": "e24508a2-582b-4e71-8c06-255ae52b4934",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces dfa@1.2.0 which is vulnerable (MET-2fb8e5d63900)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2372,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2372"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-DFA-2FB8E5D63900",
+            "index": 44
+          },
+          "ruleId": "METERIAN-NODEJS-DFA-2FB8E5D63900"
+        },
+        {
+          "correlationGuid": "abc442ca-0a9e-40fe-ac17-57ed45ddf7c6",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces fast-deep-equal@3.1.3 which is vulnerable (MET-dd74520d32ee)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2373,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2373"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-FAST-DEEP-EQUAL-DD74520D32EE",
+            "index": 45
+          },
+          "ruleId": "METERIAN-NODEJS-FAST-DEEP-EQUAL-DD74520D32EE"
+        },
+        {
+          "correlationGuid": "ef23fa47-9590-441f-aac7-15b0bcc69ec2",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 3,
+                  "uri": "e2e-js/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces ieee754@1.2.1 which is vulnerable (MET-19a6c1b0be9e)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "8578c173b00551e4:1"
+          },
+          "properties": {
+            "github/alertNumber": 1549,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/1549"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-IEEE754-19A6C1B0BE9E",
+            "index": 46
+          },
+          "ruleId": "METERIAN-NODEJS-IEEE754-19A6C1B0BE9E"
+        },
+        {
+          "correlationGuid": "f0b0a370-2765-474f-afc1-a569ecba263e",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces immediate@3.0.6 which is vulnerable (MET-8a90aabc12d3)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2374,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2374"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-IMMEDIATE-8A90AABC12D3",
+            "index": 47
+          },
+          "ruleId": "METERIAN-NODEJS-IMMEDIATE-8A90AABC12D3"
+        },
+        {
+          "correlationGuid": "44e648f0-2df2-41d0-b0a5-3cc8f00160d4",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces layout-base@2.0.1 which is vulnerable (MET-5f9032945b45)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2375,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2375"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-LAYOUT-BASE-5F9032945B45",
+            "index": 48
+          },
+          "ruleId": "METERIAN-NODEJS-LAYOUT-BASE-5F9032945B45"
+        },
+        {
+          "correlationGuid": "5519a2c2-a9b1-4ef1-b1f4-858ebfb3d75c",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces lie@3.3.0 which is vulnerable (MET-1ffe848c4dba)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2376,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2376"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-LIE-1FFE848C4DBA",
+            "index": 49
+          },
+          "ruleId": "METERIAN-NODEJS-LIE-1FFE848C4DBA"
+        },
+        {
+          "correlationGuid": "e1c4eb11-d492-457b-8439-a5556dd496e4",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 3,
+                  "uri": "e2e-js/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces pg-int8@1.0.1 which is vulnerable (MET-75cf986acf35)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "8578c173b00551e4:1"
+          },
+          "properties": {
+            "github/alertNumber": 921,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/921"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-PG-INT8-75CF986ACF35",
+            "index": 51
+          },
+          "ruleId": "METERIAN-NODEJS-PG-INT8-75CF986ACF35"
+        },
+        {
+          "correlationGuid": "f1e6ffb0-fa97-4cbc-9922-30cadd3622dc",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces process-nextick-args@2.0.1 which is vulnerable (MET-9401e0d9fa2d)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2377,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2377"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-PROCESS-NEXTICK-ARGS-9401E0D9FA2D",
+            "index": 52
+          },
+          "ruleId": "METERIAN-NODEJS-PROCESS-NEXTICK-ARGS-9401E0D9FA2D"
+        },
+        {
+          "correlationGuid": "1d30d723-d7e3-499a-a38e-1a6f588e0b86",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces safe-buffer@5.2.1 which is vulnerable (MET-c2601511bbed)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2378,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2378"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-SAFE-BUFFER-C2601511BBED",
+            "index": 53
+          },
+          "ruleId": "METERIAN-NODEJS-SAFE-BUFFER-C2601511BBED"
+        },
+        {
+          "correlationGuid": "e907a868-7c17-4e92-99a1-50e478ba2009",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 3,
+                  "uri": "e2e-js/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces safe-buffer@5.2.1 which is vulnerable (MET-c2601511bbed)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "8578c173b00551e4:1"
+          },
+          "properties": {
+            "github/alertNumber": 922,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/922"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-SAFE-BUFFER-C2601511BBED",
+            "index": 53
+          },
+          "ruleId": "METERIAN-NODEJS-SAFE-BUFFER-C2601511BBED"
+        },
+        {
+          "correlationGuid": "ae643945-9f83-4b68-b31b-bee7ba32b6f1",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces setimmediate@1.0.5 which is vulnerable (MET-c805df291ca8)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2379,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2379"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-SETIMMEDIATE-C805DF291CA8",
+            "index": 54
+          },
+          "ruleId": "METERIAN-NODEJS-SETIMMEDIATE-C805DF291CA8"
+        },
+        {
+          "correlationGuid": "c71e0301-f376-4e4f-b8fc-084a0b3b0c2c",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces tiny-inflate@1.0.3 which is vulnerable (MET-402a9b604945)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2380,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2380"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-TINY-INFLATE-402A9B604945",
+            "index": 56
+          },
+          "ruleId": "METERIAN-NODEJS-TINY-INFLATE-402A9B604945"
+        },
+        {
+          "correlationGuid": "d4bcc84f-66e2-493e-a762-ca18845aa38d",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces unicode-trie@2.0.0 which is vulnerable (MET-164ad765bc53)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2381,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2381"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-UNICODE-TRIE-164AD765BC53",
+            "index": 57
+          },
+          "ruleId": "METERIAN-NODEJS-UNICODE-TRIE-164AD765BC53"
+        },
+        {
+          "correlationGuid": "d684410d-137e-4d5d-98e2-da993a39f3fc",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces util-deprecate@1.0.2 which is vulnerable (MET-568296d94790)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2382,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2382"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-UTIL-DEPRECATE-568296D94790",
+            "index": 58
+          },
+          "ruleId": "METERIAN-NODEJS-UTIL-DEPRECATE-568296D94790"
+        },
+        {
+          "correlationGuid": "78461f1a-c890-4ba5-9d9b-0a22ff35a239",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 3,
+                  "uri": "e2e-js/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces xtend@4.0.2 which is vulnerable (MET-a1f1e948af76)"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "8578c173b00551e4:1"
+          },
+          "properties": {
+            "github/alertNumber": 711,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/711"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-XTEND-A1F1E948AF76",
+            "index": 59
+          },
+          "ruleId": "METERIAN-NODEJS-XTEND-A1F1E948AF76"
+        },
+        {
+          "correlationGuid": "bc143d66-e0d7-4480-a920-3c869d1ee3a1",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces ch.qos.logback:logback-classic@1.6.1 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2432,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2432"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-CH.QOS.LOGBACK:LOGBACK-CLASSIC-215FB50CC161",
+            "index": 12
+          },
+          "ruleId": "METERIAN-JAVA-CH.QOS.LOGBACK:LOGBACK-CLASSIC-215FB50CC161"
+        },
+        {
+          "correlationGuid": "e9bc6cad-a704-40dd-a896-d91e1b338583",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.grpc:grpc-netty-shaded@1.79.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2324,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2324"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.GRPC:GRPC-NETTY-SHADED-770ADE70456E",
+            "index": 13
+          },
+          "ruleId": "METERIAN-JAVA-IO.GRPC:GRPC-NETTY-SHADED-770ADE70456E"
+        },
+        {
+          "correlationGuid": "7504c411-1a9d-412f-ad55-a2510d5fa5ba",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.grpc:grpc-protobuf@1.79.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2327,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2327"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.GRPC:GRPC-PROTOBUF-9C903B4B204E",
+            "index": 14
+          },
+          "ruleId": "METERIAN-JAVA-IO.GRPC:GRPC-PROTOBUF-9C903B4B204E"
+        },
+        {
+          "correlationGuid": "31abbbd7-d50e-4ee3-872f-d2b450850489",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.grpc:grpc-services@1.79.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2328,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2328"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.GRPC:GRPC-SERVICES-76AB5F10E712",
+            "index": 15
+          },
+          "ruleId": "METERIAN-JAVA-IO.GRPC:GRPC-SERVICES-76AB5F10E712"
+        },
+        {
+          "correlationGuid": "cd82191e-d9c6-4c87-9d47-930928591cbd",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.grpc:grpc-stub@1.79.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2329,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2329"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.GRPC:GRPC-STUB-F85678CBCB31",
+            "index": 16
+          },
+          "ruleId": "METERIAN-JAVA-IO.GRPC:GRPC-STUB-F85678CBCB31"
+        },
+        {
+          "correlationGuid": "6efe7e76-b99a-42c1-81a6-d9b135497f9e",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.grpc:grpc-testing@1.79.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2325,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2325"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.GRPC:GRPC-TESTING-91D47F50D2B1",
+            "index": 17
+          },
+          "ruleId": "METERIAN-JAVA-IO.GRPC:GRPC-TESTING-91D47F50D2B1"
+        },
+        {
+          "correlationGuid": "5dbe1e7e-253c-4859-9761-6939ac747527",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.grpc:grpc-xds@1.79.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2323,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2323"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.GRPC:GRPC-XDS-EABBA04FD9CD",
+            "index": 18
+          },
+          "ruleId": "METERIAN-JAVA-IO.GRPC:GRPC-XDS-EABBA04FD9CD"
+        },
+        {
+          "correlationGuid": "9529473e-122a-441a-9fe5-3bae63004e9d",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.opentelemetry:opentelemetry-exporter-otlp@1.64.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2416,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2416"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-EXPORTER-OTLP-0BC3E8F397DA",
+            "index": 19
+          },
+          "ruleId": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-EXPORTER-OTLP-0BC3E8F397DA"
+        },
+        {
+          "correlationGuid": "08117017-d31c-4353-a8cc-37007085e29b",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.opentelemetry:opentelemetry-sdk@1.64.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2411,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2411"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-SDK-3D80071568F4",
+            "index": 20
+          },
+          "ruleId": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-SDK-3D80071568F4"
+        },
+        {
+          "correlationGuid": "07bca6e5-c673-4b86-9981-a74296294c08",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces io.opentelemetry:opentelemetry-sdk-testing@1.64.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2412,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2412"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-SDK-TESTING-C3174C492F51",
+            "index": 21
+          },
+          "ruleId": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-SDK-TESTING-C3174C492F51"
+        },
+        {
+          "correlationGuid": "7ea1f21c-302c-4bbd-ab56-a40157697825",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.antlr:antlr4-runtime@4.9.1 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 1082,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/1082"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.ANTLR:ANTLR4-RUNTIME-4E57589720EC",
+            "index": 22
+          },
+          "ruleId": "METERIAN-JAVA-ORG.ANTLR:ANTLR4-RUNTIME-4E57589720EC"
+        },
+        {
+          "correlationGuid": "ad98da6c-2bb8-45f1-8e72-f7e3082981b3",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.groovy:groovy@4.0.33 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2363,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2363"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.GROOVY:GROOVY-3ACEA48D169E",
+            "index": 23
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.GROOVY:GROOVY-3ACEA48D169E"
+        },
+        {
+          "correlationGuid": "1bdf5d06-cf30-4fdc-9ad0-cd88ac4017d8",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.lucene:lucene-analysis-common@10.5.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2433,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2433"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.LUCENE:LUCENE-ANALYSIS-COMMON-A145B88442B9",
+            "index": 24
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.LUCENE:LUCENE-ANALYSIS-COMMON-A145B88442B9"
+        },
+        {
+          "correlationGuid": "574af7d0-e3e9-4b24-a65a-f3f135623074",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.lucene:lucene-spatial-extras@10.5.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2436,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2436"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.LUCENE:LUCENE-SPATIAL-EXTRAS-90E99446130D",
+            "index": 25
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.LUCENE:LUCENE-SPATIAL-EXTRAS-90E99446130D"
+        },
+        {
+          "correlationGuid": "c66fb917-0de5-4bf2-87ba-d746a4386efd",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.ratis:ratis-common@3.2.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2437,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2437"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-COMMON-1DC0F3950924",
+            "index": 26
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-COMMON-1DC0F3950924"
+        },
+        {
+          "correlationGuid": "6332d977-0467-4ba5-b73e-8e7d0ddd92fd",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.ratis:ratis-grpc@3.2.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2438,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2438"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-GRPC-001E6B6982E6",
+            "index": 27
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-GRPC-001E6B6982E6"
+        },
+        {
+          "correlationGuid": "d144ca8d-2dcb-497f-abb8-06cf7d4efe11",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.ratis:ratis-metrics-default@3.2.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2439,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2439"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-METRICS-DEFAULT-2EFD270DA832",
+            "index": 28
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-METRICS-DEFAULT-2EFD270DA832"
+        },
+        {
+          "correlationGuid": "fd6d41db-5fed-444d-b6c6-d591a07ddccc",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.ratis:ratis-server@3.2.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2440,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2440"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-SERVER-8BACC929B3E6",
+            "index": 29
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-SERVER-8BACC929B3E6"
+        },
+        {
+          "correlationGuid": "6f3a9f66-5363-4bc7-a41c-1a8d32ee9dd7",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.apache.ratis:ratis-test@3.2.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2435,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2435"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-TEST-C9236BB8F968",
+            "index": 30
+          },
+          "ruleId": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-TEST-C9236BB8F968"
+        },
+        {
+          "correlationGuid": "2cf6b65f-9a69-4613-aaa0-05928668a5c3",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.assertj:assertj-core@3.27.7 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 1290,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/1290"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.ASSERTJ:ASSERTJ-CORE-3538A9057CA5",
+            "index": 31
+          },
+          "ruleId": "METERIAN-JAVA-ORG.ASSERTJ:ASSERTJ-CORE-3538A9057CA5"
+        },
+        {
+          "correlationGuid": "f1739a0d-349d-4f65-9b9d-2f13bbd8434c",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.junit.jupiter:junit-jupiter@6.1.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2413,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2413"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.JUNIT.JUPITER:JUNIT-JUPITER-11054DABA325",
+            "index": 32
+          },
+          "ruleId": "METERIAN-JAVA-ORG.JUNIT.JUPITER:JUNIT-JUPITER-11054DABA325"
+        },
+        {
+          "correlationGuid": "efa79a51-7e68-4065-aa43-017eb85245d7",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 22,
+                  "endLine": 613,
+                  "startColumn": 1,
+                  "startLine": 609
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sub-dependency org.junit.jupiter:junit-jupiter-params@6.1.2 is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "cca830a292b61882:1"
+          },
+          "properties": {
+            "github/alertNumber": 2414,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2414"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.JUNIT.JUPITER:JUNIT-JUPITER-PARAMS-6E46E69A780C",
+            "index": 33
+          },
+          "ruleId": "METERIAN-JAVA-ORG.JUNIT.JUPITER:JUNIT-JUPITER-PARAMS-6E46E69A780C"
+        },
+        {
+          "correlationGuid": "f2dead09-3c44-4b8c-a00a-be119959cbaf",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.junit.platform:junit-platform-suite@6.1.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2418,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2418"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.JUNIT.PLATFORM:JUNIT-PLATFORM-SUITE-EAA5E5928DF2",
+            "index": 34
+          },
+          "ruleId": "METERIAN-JAVA-ORG.JUNIT.PLATFORM:JUNIT-PLATFORM-SUITE-EAA5E5928DF2"
+        },
+        {
+          "correlationGuid": "abba4e32-7a31-4782-a3c5-bd22c976fdbe",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces org.junit.vintage:junit-vintage-engine@6.1.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2417,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2417"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-ORG.JUNIT.VINTAGE:JUNIT-VINTAGE-ENGINE-33400904B9CB",
+            "index": 35
+          },
+          "ruleId": "METERIAN-JAVA-ORG.JUNIT.VINTAGE:JUNIT-VINTAGE-ENGINE-33400904B9CB"
+        },
+        {
+          "correlationGuid": "6fd13c84-dcda-4897-a237-b0a76e98c28a",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 4,
+                  "uri": "pom.xml"
+                },
+                "region": {
+                  "endColumn": 39,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces redis.clients:jedis@7.5.3 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "f7a61f2fde3ed66d:1"
+          },
+          "properties": {
+            "github/alertNumber": 2423,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2423"
+          },
+          "rule": {
+            "id": "METERIAN-JAVA-REDIS.CLIENTS:JEDIS-E466767C7B0D",
+            "index": 36
+          },
+          "ruleId": "METERIAN-JAVA-REDIS.CLIENTS:JEDIS-E466767C7B0D"
+        },
+        {
+          "correlationGuid": "87963c53-debd-4d49-9fd1-5dd53d02438f",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces @types/node@26.1.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2415,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2415"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-@TYPES-NODE-B997B03DB10E",
+            "index": 37
+          },
+          "ruleId": "METERIAN-NODEJS-@TYPES-NODE-B997B03DB10E"
+        },
+        {
+          "correlationGuid": "fe310a26-bb10-4e3e-9b0d-7b5c1e022383",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 2,
+                  "uri": "studio/package.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces apexcharts@6.7.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d34d0ff2ac037fdc:1"
+          },
+          "properties": {
+            "github/alertNumber": 2422,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2422"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-APEXCHARTS-AE9EECBFDBEA",
+            "index": 38
+          },
+          "ruleId": "METERIAN-NODEJS-APEXCHARTS-AE9EECBFDBEA"
+        },
+        {
+          "correlationGuid": "125c7b45-422b-4879-98c7-b93c195e9306",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 2,
+                  "uri": "studio/package.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces codemirror@5.65.21 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d34d0ff2ac037fdc:1"
+          },
+          "properties": {
+            "github/alertNumber": 2384,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2384"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-CODEMIRROR-E4FC8CB7CE5C",
+            "index": 40
+          },
+          "ruleId": "METERIAN-NODEJS-CODEMIRROR-E4FC8CB7CE5C"
+        },
+        {
+          "correlationGuid": "0c5d3939-0859-4799-8ac8-fedb41961356",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 2,
+                  "uri": "studio/package.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces cytoscape@3.34.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d34d0ff2ac037fdc:1"
+          },
+          "properties": {
+            "github/alertNumber": 2429,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2429"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-CYTOSCAPE-AD9990D383F8",
+            "index": 41
+          },
+          "ruleId": "METERIAN-NODEJS-CYTOSCAPE-AD9990D383F8"
+        },
+        {
+          "correlationGuid": "3df95988-85ef-4e49-94af-adfd6c55ef34",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 3,
+                  "uri": "e2e-js/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces pg@8.22.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "8578c173b00551e4:1"
+          },
+          "properties": {
+            "github/alertNumber": 2419,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2419"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-PG-8EF5470315CD",
+            "index": 50
+          },
+          "ruleId": "METERIAN-NODEJS-PG-8EF5470315CD"
+        },
+        {
+          "correlationGuid": "e186b9f5-43f7-41e4-9cf4-8635c7201491",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 1,
+                  "uri": "studio/package-lock.json"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces swagger-ui-dist@5.32.12 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b506a3f95f083c1:1"
+          },
+          "properties": {
+            "github/alertNumber": 2431,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2431"
+          },
+          "rule": {
+            "id": "METERIAN-NODEJS-SWAGGER-UI-DIST-E5A3FDC8669A",
+            "index": 55
+          },
+          "ruleId": "METERIAN-NODEJS-SWAGGER-UI-DIST-E5A3FDC8669A"
+        },
+        {
+          "correlationGuid": "9a253699-01a9-4beb-8a47-67ca28648a0c",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 5,
+                  "uri": "bolt/conformance/requirements.txt"
+                },
+                "region": {
+                  "endColumn": 14,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces PyYAML@6.0.2 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "9261db0a810a0c4b:1"
+          },
+          "properties": {
+            "github/alertNumber": 2216,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2216"
+          },
+          "rule": {
+            "id": "METERIAN-PYTHON-PYYAML-CE84A0EEC243",
+            "index": 61
+          },
+          "ruleId": "METERIAN-PYTHON-PYYAML-CE84A0EEC243"
+        },
+        {
+          "correlationGuid": "821a11d2-b9e2-4f44-b709-b2878d854fbd",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 6,
+                  "uri": "e2e-python/pyproject.toml"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces pytest-asyncio@1.4.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "b1847808dc25b42:1"
+          },
+          "properties": {
+            "github/alertNumber": 2012,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2012"
+          },
+          "rule": {
+            "id": "METERIAN-PYTHON-PYTEST-ASYNCIO-9D937BDEE159",
+            "index": 60
+          },
+          "ruleId": "METERIAN-PYTHON-PYTEST-ASYNCIO-9D937BDEE159"
+        },
+        {
+          "correlationGuid": "4e02eb9b-9e37-4941-95c5-8d730c84efed",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 6,
+                  "uri": "e2e-python/pyproject.toml"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces sqlalchemy@2.0.52 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "b1847808dc25b42:1"
+          },
+          "properties": {
+            "github/alertNumber": 2428,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2428"
+          },
+          "rule": {
+            "id": "METERIAN-PYTHON-SQLALCHEMY-7BC679B5D040",
+            "index": 62
+          },
+          "ruleId": "METERIAN-PYTHON-SQLALCHEMY-7BC679B5D040"
+        },
+        {
+          "correlationGuid": "0d7f51f9-6240-4bae-92df-d833b530b4c8",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 6,
+                  "uri": "e2e-python/pyproject.toml"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces testcontainers@4.15.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "b1847808dc25b42:1"
+          },
+          "properties": {
+            "github/alertNumber": 2303,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2303"
+          },
+          "rule": {
+            "id": "METERIAN-PYTHON-TESTCONTAINERS-DE7436C0221C",
+            "index": 63
+          },
+          "ruleId": "METERIAN-PYTHON-TESTCONTAINERS-DE7436C0221C"
+        },
+        {
+          "correlationGuid": "568c4810-bf4f-4dc6-beef-76f43c2af5c1",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces github.com/cenkalti/backoff/v4@v4.3.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2166,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2166"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GITHUB.COM-CENKALTI-BACKOFF-V4-AC93C50F47AB",
+            "index": 0
+          },
+          "ruleId": "METERIAN-GOLANG-GITHUB.COM-CENKALTI-BACKOFF-V4-AC93C50F47AB"
+        },
+        {
+          "correlationGuid": "b9477b86-be9b-4508-a987-d95208d2ab0e",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces github.com/lufia/plan9stats@v0.0.0-20211012122336-39d0f177ccd0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2365,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2365"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GITHUB.COM-LUFIA-PLAN9STATS-546E5EACA99C",
+            "index": 1
+          },
+          "ruleId": "METERIAN-GOLANG-GITHUB.COM-LUFIA-PLAN9STATS-546E5EACA99C"
+        },
+        {
+          "correlationGuid": "81598fb9-1031-4702-bcef-3fdb606ac1cc",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces github.com/moby/sys/userns@v0.1.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2430,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2430"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GITHUB.COM-MOBY-SYS-USERNS-85DD570CD5F9",
+            "index": 2
+          },
+          "ruleId": "METERIAN-GOLANG-GITHUB.COM-MOBY-SYS-USERNS-85DD570CD5F9"
+        },
+        {
+          "correlationGuid": "6487ce48-c9f3-4b3c-a760-6d2f4b9744a7",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces github.com/neo4j/neo4j-go-driver/v5@v5.28.4 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2213,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2213"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GITHUB.COM-NEO4J-NEO4J-GO-DRIVER-V5-52DACFA06210",
+            "index": 3
+          },
+          "ruleId": "METERIAN-GOLANG-GITHUB.COM-NEO4J-NEO4J-GO-DRIVER-V5-52DACFA06210"
+        },
+        {
+          "correlationGuid": "91f49c09-639b-4496-b066-c2e9e0f2ebe2",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces github.com/power-devops/perfstat@v0.0.0-20240221224432-82ca36839d55 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2406,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2406"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GITHUB.COM-POWER-DEVOPS-PERFSTAT-5D010CF00F87",
+            "index": 4
+          },
+          "ruleId": "METERIAN-GOLANG-GITHUB.COM-POWER-DEVOPS-PERFSTAT-5D010CF00F87"
+        },
+        {
+          "correlationGuid": "dae556e9-b5e1-4fc4-9f02-7bd35352e4b3",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces github.com/testcontainers/testcontainers-go@v0.43.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2410,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2410"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GITHUB.COM-TESTCONTAINERS-TESTCONTAINERS-GO-94A4699DFE14",
+            "index": 5
+          },
+          "ruleId": "METERIAN-GOLANG-GITHUB.COM-TESTCONTAINERS-TESTCONTAINERS-GO-94A4699DFE14"
+        },
+        {
+          "correlationGuid": "8f8e2579-acb5-4c13-8a0b-c52494e3e126",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces golang.org/x/crypto@v0.54.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2427,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2427"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GOLANG.ORG-X-CRYPTO-BEE40C051BC8",
+            "index": 7
+          },
+          "ruleId": "METERIAN-GOLANG-GOLANG.ORG-X-CRYPTO-BEE40C051BC8"
+        },
+        {
+          "correlationGuid": "78c0402c-e481-41b4-b6df-86cbea96588d",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces golang.org/x/net@v0.56.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2434,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2434"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GOLANG.ORG-X-NET-E5BC7CE78001",
+            "index": 8
+          },
+          "ruleId": "METERIAN-GOLANG-GOLANG.ORG-X-NET-E5BC7CE78001"
+        },
+        {
+          "correlationGuid": "da110751-28a3-4755-b9a4-665f6e9aef65",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces golang.org/x/text@v0.40.0 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2426,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2426"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GOLANG.ORG-X-TEXT-5B133B1C3C02",
+            "index": 9
+          },
+          "ruleId": "METERIAN-GOLANG-GOLANG.ORG-X-TEXT-5B133B1C3C02"
+        },
+        {
+          "correlationGuid": "ee6487d2-7d30-4ec6-af3f-45eadd7fb1ee",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces google.golang.org/genproto/googleapis/rpc@v0.0.0-20260526163538-3dc84a4a5aaa which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2425,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2425"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GOOGLE.GOLANG.ORG-GENPROTO-GOOGLEAPIS-RPC-6DC15E8C2B40",
+            "index": 10
+          },
+          "ruleId": "METERIAN-GOLANG-GOOGLE.GOLANG.ORG-GENPROTO-GOOGLEAPIS-RPC-6DC15E8C2B40"
+        },
+        {
+          "correlationGuid": "cbc22af3-ff0a-4302-b50f-10959e2172b3",
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "e2e-go/go.mod"
+                },
+                "region": {
+                  "endColumn": 27,
+                  "endLine": 1,
+                  "startColumn": 1,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This file introduces google.golang.org/protobuf@v1.36.11 which is outdated"
+          },
+          "partialFingerprints": {
+            "primaryLocationLineHash": "bc6eb22b4c3a0592:1"
+          },
+          "properties": {
+            "github/alertNumber": 2424,
+            "github/alertUrl": "https://api.github.com/repos/ArcadeData/arcadedb/code-scanning/alerts/2424"
+          },
+          "rule": {
+            "id": "METERIAN-GOLANG-GOOGLE.GOLANG.ORG-PROTOBUF-45F7B99730BE",
+            "index": 11
+          },
+          "ruleId": "METERIAN-GOLANG-GOOGLE.GOLANG.ORG-PROTOBUF-45F7B99730BE"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Meterian",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] github.com/cenkalti/backoff/v4@v4.3.0 is outdated"
+              },
+              "help": {
+                "markdown": "github.com/cenkalti/backoff/v4@v4.3.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v7.0.0 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "github.com/cenkalti/backoff/v4@v4.3.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v7.0.0 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GITHUB.COM-CENKALTI-BACKOFF-V4-AC93C50F47AB",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] github.com/cenkalti/backoff/v4@v4.3.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] github.com/lufia/plan9stats@v0.0.0-20211012122336-39d0f177ccd0 is outdated"
+              },
+              "help": {
+                "markdown": "github.com/lufia/plan9stats@v0.0.0-20211012122336-39d0f177ccd0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.0.0-20260802145828-341c2f0c90b5 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "github.com/lufia/plan9stats@v0.0.0-20211012122336-39d0f177ccd0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.0.0-20260802145828-341c2f0c90b5 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GITHUB.COM-LUFIA-PLAN9STATS-546E5EACA99C",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] github.com/lufia/plan9stats@v0.0.0-20211012122336-39d0f177ccd0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] github.com/moby/sys/userns@v0.1.0 is outdated"
+              },
+              "help": {
+                "markdown": "github.com/moby/sys/userns@v0.1.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.2.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "github.com/moby/sys/userns@v0.1.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.2.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GITHUB.COM-MOBY-SYS-USERNS-85DD570CD5F9",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] github.com/moby/sys/userns@v0.1.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] github.com/neo4j/neo4j-go-driver/v5@v5.28.4 is outdated"
+              },
+              "help": {
+                "markdown": "github.com/neo4j/neo4j-go-driver/v5@v5.28.4 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v6.2.0 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "github.com/neo4j/neo4j-go-driver/v5@v5.28.4 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v6.2.0 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GITHUB.COM-NEO4J-NEO4J-GO-DRIVER-V5-52DACFA06210",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] github.com/neo4j/neo4j-go-driver/v5@v5.28.4 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] github.com/power-devops/perfstat@v0.0.0-20240221224432-82ca36839d55 is outdated"
+              },
+              "help": {
+                "markdown": "github.com/power-devops/perfstat@v0.0.0-20240221224432-82ca36839d55 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.0.0-20260805114148-88456608a4f6 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "github.com/power-devops/perfstat@v0.0.0-20240221224432-82ca36839d55 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.0.0-20260805114148-88456608a4f6 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GITHUB.COM-POWER-DEVOPS-PERFSTAT-5D010CF00F87",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] github.com/power-devops/perfstat@v0.0.0-20240221224432-82ca36839d55 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] github.com/testcontainers/testcontainers-go@v0.43.0 is outdated"
+              },
+              "help": {
+                "markdown": "github.com/testcontainers/testcontainers-go@v0.43.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.44.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "github.com/testcontainers/testcontainers-go@v0.43.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.44.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GITHUB.COM-TESTCONTAINERS-TESTCONTAINERS-GO-94A4699DFE14",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] github.com/testcontainers/testcontainers-go@v0.43.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] golang.org/x/crypto@v0.54.0 is vulnerable (MET-7229619214ba)"
+              },
+              "help": {
+                "markdown": "The golang.org/x/crypto/openpgp package is unsafe by design, has numerous known security issues, is not maintained, and should not be used.\n\nIf you are required to interoperate with OpenPGP systems and need a maintained package, consider github.com/ProtonMail/go-crypto/openpgp which is a maintained fork that aims to be a drop-in replacement for this package.\n\n**[CVSS: 0.25]**\n\n## Safe versions\n- v0.55.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "The golang.org/x/crypto/openpgp package is unsafe by design, has numerous known security issues, is not maintained, and should not be used.\n\nIf you are required to interoperate with OpenPGP systems and need a maintained package, consider github.com/ProtonMail/go-crypto/openpgp which is a maintained fork that aims to be a drop-in replacement for this package.\n\n**[CVSS: 0.25]**\n\n## Safe versions\n- v0.55.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-GOLANG-GOLANG.ORG-X-CRYPTO-7229619214BA",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "0",
+                "tags": [
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] golang.org/x/crypto@v0.54.0 is vulnerable (MET-7229619214ba)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] golang.org/x/crypto@v0.54.0 is outdated"
+              },
+              "help": {
+                "markdown": "golang.org/x/crypto@v0.54.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.55.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "golang.org/x/crypto@v0.54.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.55.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GOLANG.ORG-X-CRYPTO-BEE40C051BC8",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] golang.org/x/crypto@v0.54.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] golang.org/x/net@v0.56.0 is outdated"
+              },
+              "help": {
+                "markdown": "golang.org/x/net@v0.56.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.58.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "golang.org/x/net@v0.56.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.58.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GOLANG.ORG-X-NET-E5BC7CE78001",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] golang.org/x/net@v0.56.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] golang.org/x/text@v0.40.0 is outdated"
+              },
+              "help": {
+                "markdown": "golang.org/x/text@v0.40.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.41.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "golang.org/x/text@v0.40.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.41.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GOLANG.ORG-X-TEXT-5B133B1C3C02",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] golang.org/x/text@v0.40.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] google.golang.org/genproto/googleapis/rpc@v0.0.0-20260526163538-3dc84a4a5aaa is outdated"
+              },
+              "help": {
+                "markdown": "google.golang.org/genproto/googleapis/rpc@v0.0.0-20260526163538-3dc84a4a5aaa is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.0.0-20260810153831-ec0a7760b754 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "google.golang.org/genproto/googleapis/rpc@v0.0.0-20260526163538-3dc84a4a5aaa is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v0.0.0-20260810153831-ec0a7760b754 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GOOGLE.GOLANG.ORG-GENPROTO-GOOGLEAPIS-RPC-6DC15E8C2B40",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] google.golang.org/genproto/googleapis/rpc@v0.0.0-20260526163538-3dc84a4a5aaa is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] google.golang.org/protobuf@v1.36.11 is outdated"
+              },
+              "help": {
+                "markdown": "google.golang.org/protobuf@v1.36.11 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v1.36.12 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "google.golang.org/protobuf@v1.36.11 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- v1.36.12 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-GOLANG-GOOGLE.GOLANG.ORG-PROTOBUF-45F7B99730BE",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] google.golang.org/protobuf@v1.36.11 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] ch.qos.logback:logback-classic@1.6.1 is outdated"
+              },
+              "help": {
+                "markdown": "ch.qos.logback:logback-classic@1.6.1 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.6.2 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "ch.qos.logback:logback-classic@1.6.1 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.6.2 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-CH.QOS.LOGBACK:LOGBACK-CLASSIC-215FB50CC161",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] ch.qos.logback:logback-classic@1.6.1 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.grpc:grpc-netty-shaded@1.79.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.grpc:grpc-netty-shaded@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.grpc:grpc-netty-shaded@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.GRPC:GRPC-NETTY-SHADED-770ADE70456E",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.grpc:grpc-netty-shaded@1.79.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.grpc:grpc-protobuf@1.79.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.grpc:grpc-protobuf@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.grpc:grpc-protobuf@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.GRPC:GRPC-PROTOBUF-9C903B4B204E",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.grpc:grpc-protobuf@1.79.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.grpc:grpc-services@1.79.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.grpc:grpc-services@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.grpc:grpc-services@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.GRPC:GRPC-SERVICES-76AB5F10E712",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.grpc:grpc-services@1.79.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.grpc:grpc-stub@1.79.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.grpc:grpc-stub@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.grpc:grpc-stub@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.GRPC:GRPC-STUB-F85678CBCB31",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.grpc:grpc-stub@1.79.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.grpc:grpc-testing@1.79.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.grpc:grpc-testing@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.grpc:grpc-testing@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.GRPC:GRPC-TESTING-91D47F50D2B1",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.grpc:grpc-testing@1.79.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.grpc:grpc-xds@1.79.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.grpc:grpc-xds@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.grpc:grpc-xds@1.79.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.83.1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.GRPC:GRPC-XDS-EABBA04FD9CD",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.grpc:grpc-xds@1.79.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.opentelemetry:opentelemetry-exporter-otlp@1.64.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.opentelemetry:opentelemetry-exporter-otlp@1.64.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.65.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.opentelemetry:opentelemetry-exporter-otlp@1.64.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.65.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-EXPORTER-OTLP-0BC3E8F397DA",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.opentelemetry:opentelemetry-exporter-otlp@1.64.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.opentelemetry:opentelemetry-sdk@1.64.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.opentelemetry:opentelemetry-sdk@1.64.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.65.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.opentelemetry:opentelemetry-sdk@1.64.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.65.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-SDK-3D80071568F4",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.opentelemetry:opentelemetry-sdk@1.64.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] io.opentelemetry:opentelemetry-sdk-testing@1.64.0 is outdated"
+              },
+              "help": {
+                "markdown": "io.opentelemetry:opentelemetry-sdk-testing@1.64.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.65.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "io.opentelemetry:opentelemetry-sdk-testing@1.64.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.65.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-IO.OPENTELEMETRY:OPENTELEMETRY-SDK-TESTING-C3174C492F51",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] io.opentelemetry:opentelemetry-sdk-testing@1.64.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.antlr:antlr4-runtime@4.9.1 is outdated"
+              },
+              "help": {
+                "markdown": "org.antlr:antlr4-runtime@4.9.1 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 4.9.3 (patch upgrade)\n- 4.13.2 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.antlr:antlr4-runtime@4.9.1 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 4.9.3 (patch upgrade)\n- 4.13.2 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.ANTLR:ANTLR4-RUNTIME-4E57589720EC",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.antlr:antlr4-runtime@4.9.1 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.groovy:groovy@4.0.33 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.groovy:groovy@4.0.33 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 5.0.8 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.groovy:groovy@4.0.33 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 5.0.8 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.GROOVY:GROOVY-3ACEA48D169E",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.groovy:groovy@4.0.33 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.lucene:lucene-analysis-common@10.5.0 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.lucene:lucene-analysis-common@10.5.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 10.5.1 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.lucene:lucene-analysis-common@10.5.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 10.5.1 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.LUCENE:LUCENE-ANALYSIS-COMMON-A145B88442B9",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.lucene:lucene-analysis-common@10.5.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.lucene:lucene-spatial-extras@10.5.0 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.lucene:lucene-spatial-extras@10.5.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 10.5.1 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.lucene:lucene-spatial-extras@10.5.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 10.5.1 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.LUCENE:LUCENE-SPATIAL-EXTRAS-90E99446130D",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.lucene:lucene-spatial-extras@10.5.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.ratis:ratis-common@3.2.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.ratis:ratis-common@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.ratis:ratis-common@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-COMMON-1DC0F3950924",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.ratis:ratis-common@3.2.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.ratis:ratis-grpc@3.2.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.ratis:ratis-grpc@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.ratis:ratis-grpc@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-GRPC-001E6B6982E6",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.ratis:ratis-grpc@3.2.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.ratis:ratis-metrics-default@3.2.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.ratis:ratis-metrics-default@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.ratis:ratis-metrics-default@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-METRICS-DEFAULT-2EFD270DA832",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.ratis:ratis-metrics-default@3.2.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.ratis:ratis-server@3.2.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.ratis:ratis-server@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.ratis:ratis-server@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-SERVER-8BACC929B3E6",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.ratis:ratis-server@3.2.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.apache.ratis:ratis-test@3.2.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.apache.ratis:ratis-test@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.apache.ratis:ratis-test@3.2.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.3.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.APACHE.RATIS:RATIS-TEST-C9236BB8F968",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.apache.ratis:ratis-test@3.2.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.assertj:assertj-core@3.27.7 is outdated"
+              },
+              "help": {
+                "markdown": "org.assertj:assertj-core@3.27.7 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 4.0.0-M1 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.assertj:assertj-core@3.27.7 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 4.0.0-M1 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.ASSERTJ:ASSERTJ-CORE-3538A9057CA5",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.assertj:assertj-core@3.27.7 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.junit.jupiter:junit-jupiter@6.1.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.junit.jupiter:junit-jupiter@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.junit.jupiter:junit-jupiter@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.JUNIT.JUPITER:JUNIT-JUPITER-11054DABA325",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.junit.jupiter:junit-jupiter@6.1.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.junit.jupiter:junit-jupiter-params@6.1.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.junit.jupiter:junit-jupiter-params@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.junit.jupiter:junit-jupiter-params@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.JUNIT.JUPITER:JUNIT-JUPITER-PARAMS-6E46E69A780C",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.junit.jupiter:junit-jupiter-params@6.1.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.junit.platform:junit-platform-suite@6.1.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.junit.platform:junit-platform-suite@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.junit.platform:junit-platform-suite@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.JUNIT.PLATFORM:JUNIT-PLATFORM-SUITE-EAA5E5928DF2",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.junit.platform:junit-platform-suite@6.1.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] org.junit.vintage:junit-vintage-engine@6.1.2 is outdated"
+              },
+              "help": {
+                "markdown": "org.junit.vintage:junit-vintage-engine@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "org.junit.vintage:junit-vintage-engine@6.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.1.3 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-ORG.JUNIT.VINTAGE:JUNIT-VINTAGE-ENGINE-33400904B9CB",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] org.junit.vintage:junit-vintage-engine@6.1.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] redis.clients:jedis@7.5.3 is outdated"
+              },
+              "help": {
+                "markdown": "redis.clients:jedis@7.5.3 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 8.0.0 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "redis.clients:jedis@7.5.3 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 8.0.0 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-JAVA-REDIS.CLIENTS:JEDIS-E466767C7B0D",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] redis.clients:jedis@7.5.3 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] @types/node@26.1.2 is outdated"
+              },
+              "help": {
+                "markdown": "@types/node@26.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 26.2.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "@types/node@26.1.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 26.2.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-NODEJS-@TYPES-NODE-B997B03DB10E",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] @types/node@26.1.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] apexcharts@6.7.0 is outdated"
+              },
+              "help": {
+                "markdown": "apexcharts@6.7.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.7.1 (patch upgrade)\n- 6.8.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "apexcharts@6.7.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.7.1 (patch upgrade)\n- 6.8.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-NODEJS-APEXCHARTS-AE9EECBFDBEA",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] apexcharts@6.7.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] browserify-zlib@0.2.0 is vulnerable (MET-46fc064e6533)"
+              },
+              "help": {
+                "markdown": "Library 'browserify-zlib' does not appear to be properly maintained anymore, as it was last updated 9 years ago. We advise you to replace this library.\n\n**[CVSS: 5]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'browserify-zlib' does not appear to be properly maintained anymore, as it was last updated 9 years ago. We advise you to replace this library.\n\n**[CVSS: 5]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-BROWSERIFY-ZLIB-46FC064E6533",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] browserify-zlib@0.2.0 is vulnerable (MET-46fc064e6533)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] codemirror@5.65.21 is outdated"
+              },
+              "help": {
+                "markdown": "codemirror@5.65.21 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.65.7 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "codemirror@5.65.21 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.65.7 (major upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-NODEJS-CODEMIRROR-E4FC8CB7CE5C",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] codemirror@5.65.21 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] cytoscape@3.34.0 is outdated"
+              },
+              "help": {
+                "markdown": "cytoscape@3.34.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.34.1 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "cytoscape@3.34.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 3.34.1 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-NODEJS-CYTOSCAPE-AD9990D383F8",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] cytoscape@3.34.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] cytoscape-graphml@1.0.6 is vulnerable (MET-ef60ef67e0bf)"
+              },
+              "help": {
+                "markdown": "Library 'cytoscape-graphml' has not been updated since 7.4 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'cytoscape-graphml' has not been updated since 7.4 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-CYTOSCAPE-GRAPHML-EF60EF67E0BF",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] cytoscape-graphml@1.0.6 is vulnerable (MET-ef60ef67e0bf)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] cytoscape-node-html-label@1.2.2 is vulnerable (MET-ef5fcddfb4e6)"
+              },
+              "help": {
+                "markdown": "Library 'cytoscape-node-html-label' has not been updated since 67 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'cytoscape-node-html-label' has not been updated since 67 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-CYTOSCAPE-NODE-HTML-LABEL-EF5FCDDFB4E6",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "0",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] cytoscape-node-html-label@1.2.2 is vulnerable (MET-ef5fcddfb4e6)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] dfa@1.2.0 is vulnerable (MET-2fb8e5d63900)"
+              },
+              "help": {
+                "markdown": "Library 'dfa' has not been updated since 7.2 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'dfa' has not been updated since 7.2 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-DFA-2FB8E5D63900",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] dfa@1.2.0 is vulnerable (MET-2fb8e5d63900)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] fast-deep-equal@3.1.3 is vulnerable (MET-dd74520d32ee)"
+              },
+              "help": {
+                "markdown": "Library 'fast-deep-equal' has not been updated since 6.2 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'fast-deep-equal' has not been updated since 6.2 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-FAST-DEEP-EQUAL-DD74520D32EE",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] fast-deep-equal@3.1.3 is vulnerable (MET-dd74520d32ee)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] ieee754@1.2.1 is vulnerable (MET-19a6c1b0be9e)"
+              },
+              "help": {
+                "markdown": "Library 'ieee754' has not been updated since 70 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'ieee754' has not been updated since 70 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-IEEE754-19A6C1B0BE9E",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "0",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] ieee754@1.2.1 is vulnerable (MET-19a6c1b0be9e)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] immediate@3.0.6 is vulnerable (MET-8a90aabc12d3)"
+              },
+              "help": {
+                "markdown": "Library 'immediate' has not been updated since 6.2 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'immediate' has not been updated since 6.2 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-IMMEDIATE-8A90AABC12D3",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] immediate@3.0.6 is vulnerable (MET-8a90aabc12d3)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] layout-base@2.0.1 is vulnerable (MET-5f9032945b45)"
+              },
+              "help": {
+                "markdown": "Library 'layout-base' has not been updated since 62 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'layout-base' has not been updated since 62 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-LAYOUT-BASE-5F9032945B45",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "0",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] layout-base@2.0.1 is vulnerable (MET-5f9032945b45)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] lie@3.3.0 is vulnerable (MET-1ffe848c4dba)"
+              },
+              "help": {
+                "markdown": "Library 'lie' does not appear to be properly maintained anymore, as it was last updated 8.4 years ago. We advise you to replace this library.\n\n**[CVSS: 5]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'lie' does not appear to be properly maintained anymore, as it was last updated 8.4 years ago. We advise you to replace this library.\n\n**[CVSS: 5]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-LIE-1FFE848C4DBA",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] lie@3.3.0 is vulnerable (MET-1ffe848c4dba)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] pg@8.22.0 is outdated"
+              },
+              "help": {
+                "markdown": "pg@8.22.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 8.23.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "pg@8.22.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 8.23.0 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-NODEJS-PG-8EF5470315CD",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] pg@8.22.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] pg-int8@1.0.1 is vulnerable (MET-75cf986acf35)"
+              },
+              "help": {
+                "markdown": "Library 'pg-int8' has not been updated since 70 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'pg-int8' has not been updated since 70 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-PG-INT8-75CF986ACF35",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "0",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] pg-int8@1.0.1 is vulnerable (MET-75cf986acf35)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] process-nextick-args@2.0.1 is vulnerable (MET-9401e0d9fa2d)"
+              },
+              "help": {
+                "markdown": "Library 'process-nextick-args' has not been updated since 7.1 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'process-nextick-args' has not been updated since 7.1 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-PROCESS-NEXTICK-ARGS-9401E0D9FA2D",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] process-nextick-args@2.0.1 is vulnerable (MET-9401e0d9fa2d)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] safe-buffer@5.2.1 is vulnerable (MET-c2601511bbed)"
+              },
+              "help": {
+                "markdown": "Library 'safe-buffer' has not been updated since 70 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'safe-buffer' has not been updated since 70 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-SAFE-BUFFER-C2601511BBED",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "0",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] safe-buffer@5.2.1 is vulnerable (MET-c2601511bbed)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] setimmediate@1.0.5 is vulnerable (MET-c805df291ca8)"
+              },
+              "help": {
+                "markdown": "Library 'setimmediate' does not appear to be properly maintained anymore, as it was last updated 9.9 years ago. We advise you to replace this library.\n\n**[CVSS: 5]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'setimmediate' does not appear to be properly maintained anymore, as it was last updated 9.9 years ago. We advise you to replace this library.\n\n**[CVSS: 5]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-SETIMMEDIATE-C805DF291CA8",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] setimmediate@1.0.5 is vulnerable (MET-c805df291ca8)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] swagger-ui-dist@5.32.12 is outdated"
+              },
+              "help": {
+                "markdown": "swagger-ui-dist@5.32.12 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 5.32.13 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "swagger-ui-dist@5.32.12 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 5.32.13 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-NODEJS-SWAGGER-UI-DIST-E5A3FDC8669A",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] swagger-ui-dist@5.32.12 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] tiny-inflate@1.0.3 is vulnerable (MET-402a9b604945)"
+              },
+              "help": {
+                "markdown": "Library 'tiny-inflate' has not been updated since 6.7 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'tiny-inflate' has not been updated since 6.7 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-TINY-INFLATE-402A9B604945",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] tiny-inflate@1.0.3 is vulnerable (MET-402a9b604945)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] unicode-trie@2.0.0 is vulnerable (MET-164ad765bc53)"
+              },
+              "help": {
+                "markdown": "Library 'unicode-trie' has not been updated since 6.7 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'unicode-trie' has not been updated since 6.7 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-UNICODE-TRIE-164AD765BC53",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] unicode-trie@2.0.0 is vulnerable (MET-164ad765bc53)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] util-deprecate@1.0.2 is vulnerable (MET-568296d94790)"
+              },
+              "help": {
+                "markdown": "Library 'util-deprecate' has not been updated since 7.8 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'util-deprecate' has not been updated since 7.8 years ago. We advise you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 2]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-UTIL-DEPRECATE-568296D94790",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] util-deprecate@1.0.2 is vulnerable (MET-568296d94790)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[security] xtend@4.0.2 is vulnerable (MET-a1f1e948af76)"
+              },
+              "help": {
+                "markdown": "Library 'xtend' has not been updated since 72 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n",
+                "text": "Library 'xtend' has not been updated since 72 months ago. We suggest you to start looking for a replacement for this library or get in touch with the project maintainers.\n\n**[CVSS: 0.25]**\n\n## Safe versions\nWe were not able to provide a safe version for this library.\nYou should consider replacing this component as it could be an issue for the safety of your application.\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n## More Information\n\n\n"
+              },
+              "id": "METERIAN-NODEJS-XTEND-A1F1E948AF76",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "0",
+                "tags": [
+                  "CWE-1104",
+                  "security",
+                  "vulnerability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[security] xtend@4.0.2 is vulnerable (MET-a1f1e948af76)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] pytest-asyncio@1.4.0 is outdated"
+              },
+              "help": {
+                "markdown": "pytest-asyncio@1.4.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.4.0a2 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "pytest-asyncio@1.4.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 1.4.0a2 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-PYTHON-PYTEST-ASYNCIO-9D937BDEE159",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] pytest-asyncio@1.4.0 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] PyYAML@6.0.2 is outdated"
+              },
+              "help": {
+                "markdown": "PyYAML@6.0.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.0.3 (patch upgrade)\n- 6.0b1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "PyYAML@6.0.2 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 6.0.3 (patch upgrade)\n- 6.0b1 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-PYTHON-PYYAML-CE84A0EEC243",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] PyYAML@6.0.2 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] sqlalchemy@2.0.52 is outdated"
+              },
+              "help": {
+                "markdown": "sqlalchemy@2.0.52 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 2.1.0b3 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "sqlalchemy@2.0.52 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 2.1.0b3 (minor upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-PYTHON-SQLALCHEMY-7BC679B5D040",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] sqlalchemy@2.0.52 is outdated"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "[stability] testcontainers@4.15.0 is outdated"
+              },
+              "help": {
+                "markdown": "testcontainers@4.15.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 4.15.0rc4 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n",
+                "text": "testcontainers@4.15.0 is out of date. Review the safest upgrade paths we have detected below.\n\n## Safe versions\n- 4.15.0rc4 (patch upgrade)\n\n## Full Meterian Report\nhttps://www.meterian.com/projects/?pid=cbbc6f08-7118-4d7c-8d2c-7eb2ab60675a&branch=main\n\n"
+              },
+              "id": "METERIAN-PYTHON-TESTCONTAINERS-DE7436C0221C",
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "1",
+                "tags": [
+                  "stability"
+                ]
+              },
+              "shortDescription": {
+                "text": "[stability] testcontainers@4.15.0 is outdated"
+              }
+            }
+          ]
+        }
+      },
+      "versionControlProvenance": [
+        {
+          "branch": "refs/heads/main",
+          "repositoryUri": "https://github.com/ArcadeData/arcadedb",
+          "revisionId": "744d25757b6f4e21fae74fa0ec4d7114eec88e5f"
+        }
+      ]
+    }
+  ],
+  "version": "2.1.0"
+}

@@ -9,9 +9,14 @@
 # refuses); --exclude-folders stops it being probed at all.
 #
 # The score is a property of the whole transitive graph and no individual pull request can move it, so gating every
-# push on it produced a permanent red X that taught reviewers to ignore red - the actual cost. The findings
+# push on it produced a permanent red X that taught reviewers to ignore red - the actual cost. The security findings
 # themselves are not dropped: the SARIF upload below keeps every one of them as a triageable GitHub code-scanning
 # alert, which is where they are worked, and the scan still runs on main and nightly.
+#
+# What the upload does NOT carry is Meterian's stability dimension. Those findings report only that a newer release
+# of a dependency exists - Dependabot's job, and it is configured for every ecosystem in this repo - so they are
+# filtered out of the report before it is uploaded (see the "Drop stability findings" step). They were 46 of the 65
+# alerts on 2026-08-13, and a security tab that is 71% version drift does not get triaged.
 
 name: Meterian Scanner workflow
 
@@ -49,7 +54,21 @@ jobs:
         with:
           cli_args: "--report-sarif=report.sarif --exclude-folders=**/bindings/python"
           oss: true
-      - uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v3.29.5
+      - name: Drop stability findings from the report
+        # Meterian puts security, stability and licensing findings in one SARIF, and the stability
+        # ones ("<pkg> is outdated") are not vulnerabilities - they say a newer release exists,
+        # which is what Dependabot already opens PRs for. On the 2026-08-13 scan of main they were
+        # 46 of 65 alerts, so 71% of the security tab was version-drift noise that the actual
+        # security findings had to be read around.
+        #
+        # This is done here, not in the scanner, because Meterian has no flag for it:
+        # --report-console takes a security|stability|licensing filter but --report-sarif takes a
+        # filename only, and the .meterian exclusions file is documented as acting on the scores -
+        # which gate nothing here, the scan already being continue-on-error. See the script header.
+        continue-on-error: true
+        if: success() || failure()
+        run: .github/scripts/filter-meterian-sarif.py report.sarif
+      - uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v3.29.5
         # continue-on-error here too, or the fix above only half works: a pull request from a FORK gets a read-only
         # token no matter what `security-events: write` says, so this upload cannot succeed there - and it, not the
         # scan, would then turn the job red on exactly the PRs external contributors and Dependabot open. Uploading
