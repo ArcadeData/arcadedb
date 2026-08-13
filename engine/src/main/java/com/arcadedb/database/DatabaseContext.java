@@ -392,6 +392,33 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     // The stateful client session bound to this thread context (GQL SESSION statements).
     // Set by the protocol owner (HTTP/Bolt) alongside the transaction; null in plain embedded use.
     private      QuerySession             querySession = null;
+    /**
+     * True while a record-read event listener is running on this thread for this database, so that a listener which
+     * reads does not fire the listeners again.
+     * <p>
+     * The hazard is structural: {@code LocalBucket.getRecordInternal} fires BEFORE READ from inside the read itself,
+     * so a listener that loads anything re-enters it, which fires the listener, which loads... The shipped
+     * {@code BEFORE READ} trigger adapter did exactly that and made every read of its type die with a
+     * {@code StackOverflowError}; that one is fixed at the source, but any user listener - or the body of any
+     * READ trigger, which is arbitrary SQL/JavaScript - can still write {@code SELECT FROM SameType} and rebuild
+     * the loop by hand.
+     * <p>
+     * Lives HERE rather than in a {@code ThreadLocal} of its own, and not only to avoid a second thread-local: this
+     * context is keyed by database, so the guard is too. A bare thread-local would suppress the read events of
+     * database B while a listener of database A happened to be running on the same thread, which on a
+     * multi-database server is a silently missed event rather than a saved stack frame.
+     */
+    private      boolean                  firingReadEvents = false;
+
+    /** See {@link #firingReadEvents}. */
+    public boolean isFiringReadEvents() {
+      return firingReadEvents;
+    }
+
+    /** See {@link #firingReadEvents}. Callers MUST restore the previous value in a finally. */
+    public void setFiringReadEvents(final boolean firingReadEvents) {
+      this.firingReadEvents = firingReadEvents;
+    }
 
     public SecurityDatabaseUser getCurrentUser() {
       return currentUser;

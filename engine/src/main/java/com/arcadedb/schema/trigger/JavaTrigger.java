@@ -19,6 +19,7 @@
 package com.arcadedb.schema.trigger;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 
 /**
@@ -68,4 +69,33 @@ public interface JavaTrigger {
    * @throws Exception if the operation should be aborted with an error
    */
   boolean execute(Database database, Record record, Record oldRecord) throws Exception;
+
+  /**
+   * Execute the trigger logic for a {@code BEFORE READ} trigger, which receives the RID of the record about to be
+   * read and NOTHING ELSE.
+   * <p>
+   * That timing cannot be given the record, and the reason is structural rather than an omission: the hook fires
+   * from inside {@code LocalBucket.getRecordInternal}, before the record exists. Loading it from here re-enters the
+   * read that fired the hook, which fires it again - the adapter used to do exactly that and every read of a type
+   * carrying such a trigger died with a {@code StackOverflowError}.
+   * <p>
+   * So a {@code BEFORE READ} trigger decides on identity: it can veto by returning {@code false}, which the caller
+   * sees as {@code RecordNotFoundException}, but it cannot inspect content. A trigger that needs the content wants
+   * {@code AFTER READ}, which is handed the materialised record through {@link #execute}.
+   * <p>
+   * NOTE the RID is not always the one the caller asked for: a record relocated behind a placeholder fires the hook
+   * again with the placeholder POINTER as the read follows it.
+   * <p>
+   * Defaults to allowing the read, so an implementation that only handles other events needs no change.
+   *
+   * @param database The database instance where the read is occurring
+   * @param rid      Identity of the record about to be read
+   *
+   * @return true to continue the read, false to abort it
+   *
+   * @throws Exception if the read should be aborted with an error
+   */
+  default boolean executeBeforeRead(final Database database, final RID rid) throws Exception {
+    return true;
+  }
 }
