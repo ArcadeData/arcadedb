@@ -499,13 +499,13 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
 
     // MCP, ha-raft and metrics register directly on the outer PathHandler rather than through a
     // RoutingHandler, and ha-raft/metrics are not even loaded by this test server - they are
-    // verified separately, per-plugin-module.
-    final Set<String> pluginAndMcpPaths = EXPECTED_MCP_AND_PLUGIN_OPERATIONS.stream()
-        .map(operation -> operation.substring(operation.indexOf(' ') + 1))
-        .collect(Collectors.toSet());
+    // verified separately, per-plugin-module. Excluded by exact "METHOD path" match, not by path
+    // alone, so a hypothetical future core route that happened to reuse one of these paths under a
+    // different method would still be checked here rather than silently skipped.
+    final Set<String> pluginAndMcpOperations = Set.copyOf(EXPECTED_MCP_AND_PLUGIN_OPERATIONS);
 
     final List<String> declaredCore = declaredOperations(openAPI).stream()
-        .filter(operation -> !pluginAndMcpPaths.contains(operation.substring(operation.indexOf(' ') + 1)))
+        .filter(operation -> !pluginAndMcpOperations.contains(operation))
         .toList();
 
     final List<String> actualCore = getServer(0).getHttpServer().getRegisteredRoutes().stream()
