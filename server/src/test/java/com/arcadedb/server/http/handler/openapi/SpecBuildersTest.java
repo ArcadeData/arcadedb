@@ -99,6 +99,6 @@ class SpecBuildersTest {
     final Operation op = SpecBuilders.operation("downloadSnapshot", "Cluster", "Snapshot", "Streams a snapshot");
     SpecBuilders.basicAuthOnly(op);
     assertThat(op.getSecurity()).hasSize(1);
-    assertThat(op.getSecurity().getFirst()).containsOnlyKeys("basicAuth");
+    assertThat(op.getSecurity().get(0)).containsOnlyKeys("basicAuth");
   }
 }

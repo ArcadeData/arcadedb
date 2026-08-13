@@ -243,7 +243,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     bumper.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError("competitor failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("competitor failed: " + errors.get(0), errors.get(0));
 
     assertThat(committed).as("the transaction must eventually commit").isTrue();
 
@@ -308,7 +308,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     }
 
     if (!errors.isEmpty())
-      throw new AssertionError("second writer failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("second writer failed: " + errors.get(0), errors.get(0));
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges - mergesBefore;
     assertThat(merges).as("the edge-append merge must still fire on a fully covered page").isGreaterThan(0);
@@ -383,7 +383,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges - mergesBefore;
     assertThat(merges).as("growth and delete slot merges must still fire on fully covered pages").isGreaterThan(0);
@@ -469,7 +469,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     bumper.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError("competitor failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("competitor failed: " + errors.get(0), errors.get(0));
 
     assertThat(committed).as("the transaction must eventually commit").isTrue();
 

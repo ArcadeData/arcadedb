@@ -300,12 +300,12 @@ class PluginApiSpecTest {
     assertThat(snapshot.getSecurity())
         .as("SnapshotHttpHandler parses Basic itself and never reaches the bearer branch")
         .hasSize(1);
-    assertThat(snapshot.getSecurity().getFirst()).containsOnlyKeys("basicAuth");
+    assertThat(snapshot.getSecurity().get(0)).containsOnlyKeys("basicAuth");
 
     final Operation checksums = openAPI.getPaths()
         .get("/api/v1/ha/snapshot/{database}/checksums").getGet();
     assertThat(checksums.getOperationId()).isEqualTo("getDatabaseSnapshotChecksums");
-    assertThat(checksums.getSecurity().getFirst()).containsOnlyKeys("basicAuth");
+    assertThat(checksums.getSecurity().get(0)).containsOnlyKeys("basicAuth");
   }
 
   @Test

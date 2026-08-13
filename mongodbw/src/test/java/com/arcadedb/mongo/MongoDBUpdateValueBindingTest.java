@@ -119,7 +119,7 @@ class MongoDBUpdateValueBindingTest {
     final Object bound = ((Map<?, ?>) params.get("p0")).get("tags");
     assertThat(bound).isInstanceOf(List.class);
     assertThat((List<?>) bound).hasSize(2);
-    assertThat(((List<?>) bound).getFirst()).isEqualTo("a");
+    assertThat(((List<?>) bound).get(0)).isEqualTo("a");
     // the recursion has to reach documents nested inside a list, not just documents nested inside a document
     assertThat(((List<?>) bound).get(1)).isInstanceOf(Map.class);
     assertThat(((Map<?, ?>) ((List<?>) bound).get(1)).get("nested")).isEqualTo("b");

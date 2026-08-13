@@ -245,7 +245,7 @@ class FetchFromIndexStepResetTest extends TestHelper {
     final List<FetchFromIndexStep> found = new ArrayList<>();
     collect(resultSet.getExecutionPlan().orElseThrow().getSteps(), found);
     assertThat(found).as("the query must have planned an index fetch").hasSize(1);
-    return found.getFirst();
+    return found.get(0);
   }
 
   private void collect(final List<ExecutionStep> steps, final List<FetchFromIndexStep> found) {

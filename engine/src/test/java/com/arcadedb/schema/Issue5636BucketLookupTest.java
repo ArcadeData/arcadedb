@@ -73,7 +73,7 @@ class Issue5636BucketLookupTest extends TestHelper {
   @Test
   void getBucketByIdIfExistsStillReturnsARealBucket() {
     database.getSchema().createDocumentType("Doc", 1);
-    final int bucketId = database.getSchema().getType("Doc").getBuckets(false).getFirst().getFileId();
+    final int bucketId = database.getSchema().getType("Doc").getBuckets(false).get(0).getFileId();
 
     final LocalSchema schema = database.getSchema().getEmbedded();
     assertThat(schema.getBucketByIdIfExists(bucketId)).isNotNull();
@@ -88,7 +88,7 @@ class Issue5636BucketLookupTest extends TestHelper {
     assertThat(schema.getBucketByNameIfExists("NoSuchBucket")).isNull();
 
     database.getSchema().createDocumentType("Doc", 1);
-    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).get(0).getName();
     assertThat(schema.getBucketByNameIfExists(bucketName)).isNotNull();
   }
 
@@ -201,7 +201,7 @@ class Issue5636BucketLookupTest extends TestHelper {
   void insertFromASelectResolvesAParameterizedBucketName() {
     database.getSchema().createDocumentType("Doc", 1);
     database.getSchema().createDocumentType("Copy", 1);
-    final String target = database.getSchema().getType("Copy").getBuckets(false).getFirst().getName();
+    final String target = database.getSchema().getType("Copy").getBuckets(false).get(0).getName();
 
     database.transaction(() -> {
       database.newDocument("Doc").set("k", 1).save();
@@ -219,7 +219,7 @@ class Issue5636BucketLookupTest extends TestHelper {
   void insertIntoAKnownBucketFromASelectStillWorks() {
     database.getSchema().createDocumentType("Doc", 1);
     database.getSchema().createDocumentType("Copy", 1);
-    final String target = database.getSchema().getType("Copy").getBuckets(false).getFirst().getName();
+    final String target = database.getSchema().getType("Copy").getBuckets(false).get(0).getName();
 
     database.transaction(() -> {
       database.newDocument("Doc").set("k", 1).save();
@@ -273,7 +273,7 @@ class Issue5636BucketLookupTest extends TestHelper {
   @Test
   void selectFromAKnownBucketByIdStillWorks() {
     database.getSchema().createDocumentType("Doc", 1);
-    final int bucketId = database.getSchema().getType("Doc").getBuckets(false).getFirst().getFileId();
+    final int bucketId = database.getSchema().getType("Doc").getBuckets(false).get(0).getFileId();
 
     database.transaction(() -> database.newDocument("Doc").set("k", 1).save());
 
@@ -286,7 +286,7 @@ class Issue5636BucketLookupTest extends TestHelper {
   @Test
   void insertIntoAKnownBucketStillWorks() {
     database.getSchema().createDocumentType("Doc", 1);
-    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).get(0).getName();
 
     database.transaction(() -> database.command("sql", "insert into bucket:" + bucketName + " set k = 1").close());
 

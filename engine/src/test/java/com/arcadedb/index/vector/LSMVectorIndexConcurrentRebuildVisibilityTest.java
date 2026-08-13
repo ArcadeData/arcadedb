@@ -134,9 +134,9 @@ class LSMVectorIndexConcurrentRebuildVisibilityTest extends TestHelper {
 
       for (final Map.Entry<RID, float[]> e : committed.entrySet()) {
         final List<Pair<RID, Float>> hits = index.findNeighborsFromVector(e.getValue(), 1);
-        if (hits.isEmpty() || !hits.getFirst().getFirst().equals(e.getKey())) {
+        if (hits.isEmpty() || !hits.get(0).getFirst().equals(e.getKey())) {
           misses.add(typeName + " batch " + batch + ": " + e.getKey() + " -> "
-              + (hits.isEmpty() ? "no hit" : hits.getFirst().getFirst().toString()) + " | " + diagnose(index, e.getKey()));
+              + (hits.isEmpty() ? "no hit" : hits.get(0).getFirst().toString()) + " | " + diagnose(index, e.getKey()));
           return;
         }
       }

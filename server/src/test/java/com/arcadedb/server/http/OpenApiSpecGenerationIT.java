@@ -503,8 +503,8 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
           .hasSize(1);
       assertThat(declaredTags)
           .as("%s uses tag %s, which is not in the root tag vocabulary", op.getOperationId(),
-              op.getTags().getFirst())
-          .contains(op.getTags().getFirst());
+              op.getTags().get(0))
+          .contains(op.getTags().get(0));
     }));
   }
 

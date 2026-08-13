@@ -58,7 +58,7 @@ class TypeGeoIndexBuilderTest extends TestHelper {
         .withTokenization(GeoIndexMetadata.TOKENIZATION.FULL) //
         .create();
 
-    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) index.getSubIndexes().getFirst();
+    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) index.getSubIndexes().get(0);
     assertThat(geoIndex.getPrecision()).isEqualTo(5);
     assertThat(geoIndex.getTokenization()).isEqualTo(GeoIndexMetadata.TOKENIZATION.FULL);
   }
@@ -69,7 +69,7 @@ class TypeGeoIndexBuilderTest extends TestHelper {
         .withMetadata(new JSONObject().put("precision", 4)) //
         .create();
 
-    assertThat(((LSMTreeGeoIndex) index.getSubIndexes().getFirst()).getPrecision()).isEqualTo(4);
+    assertThat(((LSMTreeGeoIndex) index.getSubIndexes().get(0)).getPrecision()).isEqualTo(4);
   }
 
   @Test

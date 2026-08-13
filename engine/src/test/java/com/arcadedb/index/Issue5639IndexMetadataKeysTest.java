@@ -250,7 +250,7 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
   void bucketLevelVectorBuilderCarriesItsSettings() {
     createVectorType("Doc");
 
-    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).get(0).getName();
     final BucketLSMVectorIndexBuilder builder = (BucketLSMVectorIndexBuilder) database.getSchema()
         .buildBucketIndex("Doc", bucketName, new String[] { "embedding" })
         .withType(Schema.INDEX_TYPE.LSM_VECTOR);
@@ -297,7 +297,7 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
   void everyBucketBuilderSetterWritesItsOwnField() {
     createVectorType("Doc");
 
-    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).get(0).getName();
     final BucketLSMVectorIndexBuilder builder = (BucketLSMVectorIndexBuilder) database.getSchema()
         .buildBucketIndex("Doc", bucketName, new String[] { "embedding" })
         .withType(Schema.INDEX_TYPE.LSM_VECTOR);

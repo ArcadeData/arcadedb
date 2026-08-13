@@ -218,6 +218,6 @@ class LSMTreeGeoIndexSchemaTest extends TestHelper {
     final Index index = database.getSchema().getIndexByName(typeName + "[coords]");
     assertThat(index).isNotNull();
     assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
-    return (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().getFirst();
+    return (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().get(0);
   }
 }

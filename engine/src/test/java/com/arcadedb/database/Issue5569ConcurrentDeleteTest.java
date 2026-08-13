@@ -107,7 +107,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(committed.get()).isEqualTo(pairs * 2);
     // The merge is what made it possible: without it every commit but the first would have thrown.
@@ -159,7 +159,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(committed.get()).isEqualTo(records);
 
@@ -236,7 +236,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
     updater.join();
 
     if (!unexpected.isEmpty())
-      throw new AssertionError("unexpected failure: " + unexpected.getFirst(), unexpected.getFirst());
+      throw new AssertionError("unexpected failure: " + unexpected.get(0), unexpected.get(0));
 
     assertThat(conflicts.get()).as("two writes to the SAME record must conflict").isEqualTo(1);
     assertThat(deleteWon[0] ^ updateWon[0]).as("exactly one of the two must win").isTrue();
@@ -310,7 +310,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
     updater.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(committed.get()).isEqualTo(2);
     // The created-then-deleted record must have landed on the very page the updater was writing to, otherwise the
@@ -394,7 +394,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
     other.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(committed.get()).isEqualTo(2);
 
@@ -452,7 +452,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(committed.get()).isEqualTo(pairs * 2);
 
@@ -527,7 +527,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
     updater.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     database.transaction(() -> {
       assertThat(small[0].asDocument(true).getString("tag")).isEqualTo("v" + lastCommitted[0]);
@@ -593,7 +593,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     database.transaction(() -> {
       assertThat(database.countType("Churn", false)).isEqualTo(survivors.size());
@@ -634,7 +634,7 @@ class Issue5569ConcurrentDeleteTest extends TestHelper {
   }
 
   private int pageOf(final String typeName, final RID rid) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).get(0);
     return (int) (rid.getPosition() / bucket.getMaxRecordsInPage());
   }
 

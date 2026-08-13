@@ -378,7 +378,7 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
     }
 
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains("LocWarn[coords]").contains("REBUILD INDEX").contains("#5478");
+    assertThat(warnings.get(0)).contains("LocWarn[coords]").contains("REBUILD INDEX").contains("#5478");
   }
 
   /**
@@ -516,7 +516,7 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
   }
 
   private LSMTreeGeoIndex geoIndex(final String typeName) {
-    return (LSMTreeGeoIndex) ((TypeIndex) database.getSchema().getIndexByName(typeName + "[coords]")).getSubIndexes().getFirst();
+    return (LSMTreeGeoIndex) ((TypeIndex) database.getSchema().getIndexByName(typeName + "[coords]")).getSubIndexes().get(0);
   }
 
   private Set<String> lookup(final String typeName, final Shape shape) {

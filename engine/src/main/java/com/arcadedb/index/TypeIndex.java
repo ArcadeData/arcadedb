@@ -332,7 +332,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isResultApproximate() {
     // Same definition across every bucket sub-index, so the first one answers for all of them.
-    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.getFirst().isResultApproximate();
+    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.get(0).isResultApproximate();
   }
 
   @Override

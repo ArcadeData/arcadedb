@@ -195,7 +195,7 @@ class Issue5608RebasedPageCompressionTest extends TestHelper {
 
     assertThat(bumper.isAlive()).as("the competitor thread must not still be running").isFalse();
     if (!errors.isEmpty())
-      throw new AssertionError("competitor failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("competitor failed: " + errors.get(0), errors.get(0));
 
     return slotMerges() - mergesBefore;
   }

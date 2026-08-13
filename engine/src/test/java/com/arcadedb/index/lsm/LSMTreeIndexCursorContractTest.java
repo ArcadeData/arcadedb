@@ -203,8 +203,8 @@ class LSMTreeIndexCursorContractTest extends TestHelper {
       database.query("sql", "SELECT id FROM " + TYPE_NAME + " WHERE id >= 0 AND id <= " + TOTAL + " ORDER BY id")
           .forEachRemaining(r -> ids.add(r.getProperty("id")));
       assertThat(ids).hasSize(SURVIVORS).doesNotContainNull();
-      assertThat(ids.getFirst()).isEqualTo(SURVIVOR_FROM);
-      assertThat(ids.getLast()).isEqualTo(SURVIVOR_TO - 1);
+      assertThat(ids.get(0)).isEqualTo(SURVIVOR_FROM);
+      assertThat(ids.get(ids.size() - 1)).isEqualTo(SURVIVOR_TO - 1);
     });
   }
 

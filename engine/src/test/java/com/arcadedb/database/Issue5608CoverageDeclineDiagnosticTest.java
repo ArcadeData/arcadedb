@@ -60,7 +60,7 @@ class Issue5608CoverageDeclineDiagnosticTest extends TestHelper {
     });
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(
-        database.getSchema().getType("Diag").getBuckets(false).getFirst().getFileId());
+        database.getSchema().getType("Diag").getBuckets(false).get(0).getFileId());
 
     database.begin();
     try {

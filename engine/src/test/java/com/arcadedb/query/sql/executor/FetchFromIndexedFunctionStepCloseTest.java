@@ -166,7 +166,7 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
     final List<FetchFromIndexedFunctionStep> found = new ArrayList<>();
     collect(resultSet.getExecutionPlan().orElseThrow().getSteps(), found);
     assertThat(found).as("the geo predicate must have planned an indexed-function fetch").hasSize(1);
-    return found.getFirst();
+    return found.get(0);
   }
 
   private void collect(final List<ExecutionStep> steps, final List<FetchFromIndexedFunctionStep> found) {
