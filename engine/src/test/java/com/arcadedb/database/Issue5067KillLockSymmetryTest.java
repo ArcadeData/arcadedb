@@ -57,7 +57,7 @@ class Issue5067KillLockSymmetryTest extends TestHelper {
     // The file locks acquired by commit1stPhase must have been released by kill(): a foreign requester
     // must be able to lock the same bucket file within the (short) timeout instead of timing out on a
     // lock still keyed to the killed transaction's requester.
-    final int bucketFileId = database.getSchema().getType("Issue5067Type").getBuckets(false).getFirst().getFileId();
+    final int bucketFileId = database.getSchema().getType("Issue5067Type").getBuckets(false).get(0).getFileId();
     final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
     final Object foreignRequester = new Object();
 

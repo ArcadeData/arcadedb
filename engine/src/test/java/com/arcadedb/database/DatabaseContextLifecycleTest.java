@@ -185,25 +185,25 @@ class DatabaseContextLifecycleTest extends TestHelper {
 
     assertThat(registered.await(10, TimeUnit.SECONDS)).isTrue();
     try {
-      assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
+      assertThat(DatabaseContext.isThreadRegistered(worker.getId())).isTrue();
 
       // A FOREIGN CLOSE (removeAllContexts ON THIS THREAD) EMPTIES THE WORKER'S PER-DATABASE MAP BUT
       // DELIBERATELY DOES NOT PRUNE ITS CONTEXTS ENTRY (#4939): THE EMPTY ENTRY LINGERS WHILE THE WORKER
       // IS ALIVE
       DatabaseContext.INSTANCE.removeAllContexts(database.getDatabasePath());
-      assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
+      assertThat(DatabaseContext.isThreadRegistered(worker.getId())).isTrue();
 
       // #5067: THE PERIODIC SWEEP MUST OPPORTUNISTICALLY DROP THE NOW-EMPTY ENTRY EVEN THOUGH ITS OWNER IS
       // STILL ALIVE, SO OPEN/CLOSE CHURN ON LARGE LONG-LIVED THREAD POOLS DOES NOT ACCUMULATE EMPTY ENTRIES
       DatabaseContext.cleanupDeadThreads();
-      assertThat(DatabaseContext.isThreadRegistered(worker.threadId()))
+      assertThat(DatabaseContext.isThreadRegistered(worker.getId()))
           .as("the sweep must prune a live thread's empty context entry")
           .isFalse();
 
       // THE PRUNED OWNER RE-REGISTERS ON ITS NEXT init()
       pruned.countDown();
       assertThat(reinitDone.await(10, TimeUnit.SECONDS)).isTrue();
-      assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
+      assertThat(DatabaseContext.isThreadRegistered(worker.getId())).isTrue();
     } finally {
       pruned.countDown();
       release.countDown();
@@ -212,7 +212,7 @@ class DatabaseContextLifecycleTest extends TestHelper {
     worker.join(10_000);
     assertThat(worker.isAlive()).isFalse();
     assertThat(workerError.get()).isNull();
-    assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isFalse();
+    assertThat(DatabaseContext.isThreadRegistered(worker.getId())).isFalse();
   }
 
   @Test

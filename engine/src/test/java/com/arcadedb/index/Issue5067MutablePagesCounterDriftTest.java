@@ -52,7 +52,7 @@ class Issue5067MutablePagesCounterDriftTest extends TestHelper {
     final TypeIndex typeIndex = database.getSchema().getType("Issue5067Doc").getAllIndexes(false).iterator().next();
     final LSMTreeIndex lsmIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
     final LSMTreeIndexMutable mutable = lsmIndex.getMutableIndex();
-    final int bucketFileId = database.getSchema().getType("Issue5067Doc").getBuckets(false).getFirst().getFileId();
+    final int bucketFileId = database.getSchema().getType("Issue5067Doc").getBuckets(false).get(0).getFileId();
 
     // Create index pages inside a transaction that rolls back: put directly on the mutable index (the
     // regular record path defers index writes to commit) so createNewPage runs, then discard everything.

@@ -321,7 +321,7 @@ class WalCommitOrderingTest {
 
       // Inject a conflicting committed version so validateAndBumpVersions fails PRE-WAL (same toolkit as
       // failedValidationLeavesNoWalRecord).
-      final MutablePage victim = phase1.modifiedPages.getFirst();
+      final MutablePage victim = phase1.modifiedPages.get(0);
       victimPageId[0] = victim.getPageId();
       final MutablePage conflicting = new MutablePage(victim.getPageId(), (int) victim.getPhysicalSize(),
           victim.getContent().array().clone(), (int) (victim.getVersion() + 1), victim.getContentSize());
@@ -344,7 +344,7 @@ class WalCommitOrderingTest {
       held2.save();
       final TransactionContext tx2 = (TransactionContext) db.getTransaction();
       final TransactionContext.TransactionPhase1 phase2 = tx2.commit1stPhase(true);
-      final MutablePage victim2 = phase2.modifiedPages.getFirst();
+      final MutablePage victim2 = phase2.modifiedPages.get(0);
       final MutablePage conflicting2 = new MutablePage(victim2.getPageId(), (int) victim2.getPhysicalSize(),
           victim2.getContent().array().clone(), (int) (victim2.getVersion() + 1), victim2.getContentSize());
       PageManager.INSTANCE.putPageInReadCache(new CachedPage(conflicting2, false));
