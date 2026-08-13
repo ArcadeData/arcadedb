@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -150,7 +151,13 @@ class Issue6143UnreferencedFilesTest extends TestHelper {
     assertThat(UnreferencedFiles.scan(db())).isEmpty();
   }
 
-  /** The report is what {@code CHECK DATABASE} publishes, in both modes, and it never repairs. */
+  /**
+   * The report is what {@code CHECK DATABASE} publishes, in both modes, and it never repairs - and it is a result
+   * key of its own rather than a WARNING. That last part is load-bearing: an unreferenced file is not a defect in
+   * the data, the state is one supported operations produce, and every caller that reads an empty warning list as
+   * "this database is clean" - {@code TestHelper.checkDatabaseIntegrity} among them - would otherwise start calling
+   * a healthy database unhealthy.
+   */
   @Test
   void checkDatabaseReportsThemWithoutRemovingThem() {
     final String bucketName = "orphan_bucket_checked";
@@ -167,6 +174,10 @@ class Issue6143UnreferencedFilesTest extends TestHelper {
           .as("FIX must not delete it: reclaiming disk is not worth the risk of removing a file whose reference this "
               + "walk simply does not know how to follow")
           .isTrue();
+      assertThat((Collection<String>) result.get("warnings"))
+          .as("and it must NOT be a warning: a bucket outside every type is a supported state, so folding it in "
+              + "would make every zero-warnings assertion in the suite fail on a healthy database")
+          .isEmpty();
     } finally {
       database.getSchema().dropBucket(bucketName);
     }
@@ -209,6 +220,12 @@ class Issue6143UnreferencedFilesTest extends TestHelper {
   private void buildOneOfEverything() throws Exception {
     final Schema schema = database.getSchema();
 
+    // A hub whose edge list PROMOTES, so the per-type super-node stripe pool exists. This is the class CI caught and
+    // this fixture did not have: those buckets belong to no type either, and StripedEdgeList reaches them by
+    // composing the type name. Restored in the finally below - it is a global.
+    final int savedThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+
     // Read when the mutable index is constructed, so it has to be set BEFORE the index below is created. Zero makes
     // any index compactable, which - together with the small index page size - is what puts the compacted sub-index
     // and its bloom filter, the two files no schema JSON names, under this test.
@@ -235,13 +252,23 @@ class Issue6143UnreferencedFilesTest extends TestHelper {
     schema.buildManualIndex("manualIdx", new Type[] { Type.STRING }).withType(Schema.INDEX_TYPE.LSM_TREE)
         .withUnique(false).create();
 
-    database.transaction(() -> {
-      for (int i = 0; i < 2_000; i++)
-        database.newDocument("Doc").set("name", "n" + i).set("text", "some text " + i).set("code", i)
-            .set("blob", "x".repeat(300)).save();
-      for (int i = 0; i < 50; i++)
-        database.newVertex("V").set("id", i).save();
-    });
+    try {
+      database.transaction(() -> {
+        for (int i = 0; i < 2_000; i++)
+          database.newDocument("Doc").set("name", "n" + i).set("text", "some text " + i).set("code", i)
+              .set("blob", "x".repeat(300)).save();
+
+        final MutableVertex hub = database.newVertex("V").set("id", -1).save();
+        for (int i = 0; i < 300; i++)
+          database.newVertex("V").set("id", i).save().newEdge("E", hub);
+      });
+    } finally {
+      GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedThreshold);
+    }
+
+    assertThat(schema.getBuckets().stream().anyMatch(b -> b.getName().contains("_sn_stripe_")))
+        .as("the hub must actually have promoted, or the stripe-pool case is not covered")
+        .isTrue();
 
     // A compacted sub-index and its bloom filter are files no schema JSON names: the mutable index that owns them
     // does, through its header page. Forcing a compaction is what puts that link under test.

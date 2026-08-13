@@ -1381,10 +1381,16 @@ files stay on the other nodes referenced by nothing. Nothing reads them, so this
 correctness, but only the node that FAILED logged anything about it, and the nodes actually holding them said
 nothing at all.
 
-`CHECK DATABASE` now reports them, as `unreferencedFiles` in the result and as a warning naming each one, and every
-node publishes its own count as the `arcadedb.ha.schema.unreferenced_files` gauge - which is the one that matters
-under HA, since the check itself runs on the leader for a replicated database. It **reports only**, in both modes:
-a file whose reference the walk cannot follow would be data, and reclaiming disk is not worth that risk.
+`CHECK DATABASE` now reports them as `unreferencedFiles`, a result key of its own, and every node publishes its own
+count as the `arcadedb.ha.schema.unreferenced_files` gauge - which is the one that matters under HA, since the check
+itself runs on the leader for a replicated database. It **reports only**, in both modes: a file whose reference the
+walk cannot follow would be data, and reclaiming disk is not worth that risk.
+
+A result key rather than a warning, deliberately. A warning in this checker means the data is suspect, and an
+unreferenced file is not a defect in the data: nothing is corrupt, nothing is lost, and supported operations produce
+the state (a bucket created with `CREATE BUCKET` and not yet given to a type is exactly this shape, and so is the
+file left behind by an index construction that refused its own arguments). Folding it into `warnings` would also
+redefine what a clean database is for every caller that reads an empty warning list as the definition.
 
 The classification therefore refuses to guess. It proves three shapes - a file the file manager holds with no
 schema component at all (what an abandoned instalment leaves on a follower while it runs), a bucket no type claims,

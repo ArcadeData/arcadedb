@@ -19,7 +19,6 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
@@ -28,7 +27,9 @@ import com.arcadedb.schema.LocalSchema;
 
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Supplier;
 
@@ -61,8 +62,10 @@ import java.util.function.Supplier;
  * filter, a vector index's companion graph file, the time-series internals. Each of those is referenced by another
  * component rather than by the schema JSON, through a link this walk does not follow, so reporting them would be a
  * false positive on a healthy database - the one outcome that would make this diagnostic worse than useless.
- * Manual indexes are claimed for the same reason: they are bound to no type by design, as are the edge-list buckets
- * of a vertex bucket, which {@code GraphEngine} reaches by deriving their names from the vertex bucket's own.
+ * Manual indexes are claimed for the same reason: they are bound to no type by design. So is any bucket whose NAME
+ * is derived from a type's or a claimed bucket's - the edge-list buckets of a vertex bucket, a super-node stripe
+ * pool, a paired external bucket - see {@link #isDerivedFromAnOwner}, which recognises the convention rather than
+ * the individual features that follow it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -135,7 +138,9 @@ public class UnreferencedFiles {
    */
   private static void walk(final DatabaseInternal database, final UnreferencedFileConsumer consumer) {
     final LocalSchema localSchema = database.getSchema().getEmbedded();
-    final BitSet claimed = collectClaimedFileIds(localSchema);
+    // Type and claimed-bucket names, for the derived-name rule below.
+    final Set<String> owners = new HashSet<>();
+    final BitSet claimed = collectClaimedFileIds(localSchema, owners);
     // What has already been emitted, so the index pass below cannot report a file the file pass above did.
     final BitSet reported = new BitSet();
 
@@ -157,7 +162,8 @@ public class UnreferencedFiles {
       if (component instanceof LocalBucket bucket && !claimed.get(fileId)
           // Purpose is restored from the schema at load time and reset to PRIMARY when it is not, so it can only be
           // used to EXCLUDE: anything not claiming to be a plain data bucket is left to whoever paired it.
-          && bucket.getPurpose() == LocalBucket.Purpose.PRIMARY) {
+          && bucket.getPurpose() == LocalBucket.Purpose.PRIMARY
+          && !isDerivedFromAnOwner(bucket.getName(), owners)) {
         reported.set(fileId);
         consumer.accept(fileId, file, () -> "bucket '" + bucket.getName() + "' belongs to no type");
       }
@@ -181,24 +187,21 @@ public class UnreferencedFiles {
    * of them with no boxing, and the walk below queries it once per file - a linear structure would make the whole
    * scan quadratic on a schema with thousands of buckets.
    */
-  private static BitSet collectClaimedFileIds(final LocalSchema schema) {
+  private static BitSet collectClaimedFileIds(final LocalSchema schema, final Set<String> owners) {
     final BitSet claimed = new BitSet();
 
     for (final DocumentType type : schema.getTypes()) {
+      owners.add(type.getName());
+
       for (final Bucket bucket : type.getBuckets(false)) {
         claim(claimed, bucket.getFileId());
+        owners.add(bucket.getName());
+
         if (type instanceof LocalDocumentType localType) {
           final Integer externalBucketId = localType.getExternalBucketIdFor(bucket.getFileId());
           if (externalBucketId != null)
             claim(claimed, externalBucketId);
         }
-
-        // The edge-list buckets of a vertex bucket are reached BY NAME - GraphEngine derives them from the vertex
-        // bucket's own name and no type lists them - so a walk that only reads type.getBuckets() calls every one of
-        // them an orphan. Claimed for buckets of every type, not only vertex ones: the convention is what makes the
-        // file reachable, and asking about the type as well would only add a way to get it wrong.
-        claimBucketByName(schema, claimed, bucket.getName() + GraphEngine.OUT_EDGES_SUFFIX);
-        claimBucketByName(schema, claimed, bucket.getName() + GraphEngine.IN_EDGES_SUFFIX);
       }
 
       for (final Index index : type.getAllIndexes(true))
@@ -215,10 +218,32 @@ public class UnreferencedFiles {
     return claimed;
   }
 
-  /** Claims a bucket the schema reaches by name rather than through a type, when it exists. */
-  private static void claimBucketByName(final LocalSchema schema, final BitSet claimed, final String name) {
-    if (schema.existsBucket(name))
-      claim(claimed, schema.getBucketByName(name).getFileId());
+  /**
+   * Whether a bucket no type lists is nevertheless OWNED by one, because its name is derived from a type's or a
+   * claimed bucket's - {@code Hub_sn_stripe_3}, {@code V_0_out_edges}, {@code Doc_0_ext}.
+   * <p>
+   * A GENERAL rule, and deliberately so. This started as a list of the conventions in the engine and CI found the
+   * one that list was missing (the super-node stripe pools of #5156, whose buckets no type lists and which
+   * {@code StripedEdgeList} reaches by composing the type name), which is the proof that enumerating them is not a
+   * closed problem: every internal bucket names itself after the schema object it belongs to, and the next feature
+   * to add one will follow the same convention rather than register with this class. Recognising the convention
+   * itself covers them all, including the ones not written yet.
+   * <p>
+   * What it costs is a false NEGATIVE: a genuinely orphaned bucket that happens to be named after a surviving type
+   * goes unreported. That is the right side to fail on for a diagnostic whose findings invite deletion - and the
+   * shape that motivated it is not affected, since a session abandoned before it published left no type to derive
+   * the name from.
+   * <p>
+   * Matched by successive underscore-delimited prefixes rather than by scanning the owner set, so the cost is a few
+   * hash lookups per candidate instead of one pass over every type in the schema.
+   */
+  private static boolean isDerivedFromAnOwner(final String bucketName, final Set<String> owners) {
+    for (int underscore = bucketName.indexOf('_'); underscore > 0; underscore = bucketName.indexOf('_',
+        underscore + 1))
+      if (owners.contains(bucketName.substring(0, underscore)))
+        return true;
+
+    return false;
   }
 
   /**

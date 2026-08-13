@@ -59,11 +59,11 @@ public class DatabaseChecker {
   // leaves the index exactly as it was.
   private static final int          LOCK_POST_DROP_ATTEMPT_MULTIPLIER = 4;
   /**
-   * How many unreferenced files the single warning about them names (issue #6143). {@code maxWarnings} bounds how
-   * MANY warnings a run emits, not how long one of them is, and a node that leaked files can hold any number of
-   * them; the full list is always in the {@code unreferencedFiles} result key.
+   * How many unreferenced files the single log line about them names (issue #6143). A node that leaked files can
+   * hold any number of them and an unbounded log line helps nobody; the full list is always in the
+   * {@code unreferencedFiles} result key.
    */
-  private static final int          WARNED_UNREFERENCED_FILES = 20;
+  private static final int          LOGGED_UNREFERENCED_FILES = 20;
   private final DatabaseInternal    database;
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
@@ -1027,6 +1027,13 @@ public class DatabaseChecker {
    * cannot follow must not be deleted to reclaim disk. The finding is a pointer for an operator, who removes them
    * with the node stopped.
    * <p>
+   * REPORTED AS ITS OWN RESULT KEY, NOT AS A WARNING, and the distinction is not cosmetic. A warning here means the
+   * data is suspect; an unreferenced file is not a defect in the data at all - nothing is corrupt, nothing is lost,
+   * and the state is one a supported operation produces (a bucket created with CREATE BUCKET and not yet given to a
+   * type is exactly this shape, and so is the file left by an index construction that refused its own arguments).
+   * Folding it into {@code warnings} would also redefine what a clean database is for every caller that treats an
+   * empty warning list as the definition, {@code TestHelper.checkDatabaseIntegrity} among them.
+   * <p>
    * The principal producer is a replicated schema session that shipped instalments and then lost leadership: it can
    * no longer submit the compensating removal, so the files its instalments created stay on the other nodes with
    * nothing referencing them. Only the node that ran the session logs anything about it, and this check runs on the
@@ -1053,26 +1060,27 @@ public class DatabaseChecker {
     for (final UnreferencedFiles.UnreferencedFile file : unreferenced)
       reported.add(file.toString());
 
-    // The WARNING names at most this many. The full list is always in the result key, which is a set a caller can
-    // read; embedding it here as well would put an unbounded line in the log - maxWarnings bounds how MANY warnings
-    // a run emits, not how long one of them is.
+    if (verboseLevel < 1)
+      return;
+
+    // The log line names at most this many. The full list is always in the result key, which is a collection a
+    // caller can read; embedding all of it here would put an unbounded line in the log.
     final StringBuilder names = new StringBuilder();
-    for (int i = 0; i < unreferenced.size() && i < WARNED_UNREFERENCED_FILES; i++) {
+    for (int i = 0; i < unreferenced.size() && i < LOGGED_UNREFERENCED_FILES; i++) {
       if (i > 0)
         names.append(", ");
       names.append(unreferenced.get(i).fileName());
     }
-    if (unreferenced.size() > WARNED_UNREFERENCED_FILES)
-      names.append(" and ").append(unreferenced.size() - WARNED_UNREFERENCED_FILES)
+    if (unreferenced.size() > LOGGED_UNREFERENCED_FILES)
+      names.append(" and ").append(unreferenced.size() - LOGGED_UNREFERENCED_FILES)
           .append(" more (see the 'unreferencedFiles' result)");
 
-    addWarning(unreferenced.size() + " file(s) on this node are referenced by no schema component and nothing will "
-        + "reclaim them (this pass covers the whole database, whatever TYPE or BUCKET scope was asked for: a file "
-        + "nothing claims is a property of the schema, not of a type): " + names
-        + ". They are inert - no query, index or replication path reads a file the "
-        + "schema does not reference - so this costs disk only, and this check does not remove them. A schema change "
-        + "interrupted after creating them is the usual cause; a bucket created with CREATE BUCKET and never given "
-        + "to a type is the other, and is not a defect. Remove them with the server stopped, after a backup");
+    LogManager.instance().log(this, Level.INFO,
+        "%d file(s) on this node are referenced by no schema component and nothing will reclaim them (this pass "
+            + "covers the whole database, whatever TYPE or BUCKET scope was asked for: a file nothing claims is a "
+            + "property of the schema, not of a type): %s. They are inert - no query, index or replication path "
+            + "reads a file the schema does not reference - so this costs disk only, and this check does not remove "
+            + "them. Remove them with the server stopped, after a backup", null, unreferenced.size(), names);
   }
 
   /** Detects (and on FIX deletes) external-property records that are no longer referenced by any primary record. */
