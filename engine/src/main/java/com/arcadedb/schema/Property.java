@@ -52,7 +52,24 @@ public interface Property {
 
   int getId();
 
+  /**
+   * Evaluates the default value for a new record. A String default is an SQL expression, so this can return a
+   * different value on every call - {@code DEFAULT sysdate()} is meant to. Use it on the write paths only; for schema
+   * metadata use {@link #getDefaultValueDefinition()}, which reports the definition and never evaluates anything.
+   *
+   * @return the value to assign, or {@code null} when no default is defined or the default evaluates to null
+   */
   Object getDefaultValue();
+
+  /**
+   * The default value as defined in the schema, without evaluating it: for a String default that is the source text of
+   * the SQL expression ({@code 'active'}, {@code sysdate()}), which is exactly what a {@code DEFAULT} clause would
+   * take back. Never evaluates and never throws, so it is the right accessor for anything that reports on the schema
+   * rather than writing a record.
+   *
+   * @return the definition, or {@code null} when no default is defined
+   */
+  Object getDefaultValueDefinition();
 
   Property setDefaultValue(Object defaultValue);
 

@@ -22,9 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Property;
-
-import java.util.Set;
 
 /**
  * Execution step that applies default values to null/missing properties.
@@ -71,7 +68,9 @@ public class ApplyDefaultsStep extends AbstractExecutionStep {
 
   /**
    * Apply default values to properties that are null or missing.
-   * This mimics the behavior of setDefaultValues() in LocalDatabase.createRecord().
+   * <p>
+   * Issue #6134: this used to be a second, independent copy of {@code LocalDatabase.setDefaultValues()} that disagreed
+   * with it on null defaults. Both now go through {@link DocumentType#applyDefaultValues(MutableDocument)}.
    */
   private void applyDefaults(final Document doc) {
     if (doc == null) {
@@ -85,18 +84,7 @@ public class ApplyDefaultsStep extends AbstractExecutionStep {
       return;
     }
 
-    final Set<String> propertiesWithDefaultDefined = type.getPolymorphicPropertiesWithDefaultDefined();
-
-    for (final String pName : propertiesWithDefaultDefined) {
-      final Object pValue = mutableDoc.get(pName);
-      if (pValue == null) {
-        final Property p = type.getPolymorphicProperty(pName);
-        final Object defValue = p.getDefaultValue();
-        if (defValue != null) {
-          mutableDoc.set(pName, defValue);
-        }
-      }
-    }
+    type.applyDefaultValues(mutableDoc);
   }
 
   @Override
