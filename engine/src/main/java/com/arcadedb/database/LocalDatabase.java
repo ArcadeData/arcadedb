@@ -1097,6 +1097,46 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public RID restoreRecord(final Record record, final LocalBucket bucket, final long position) {
+    if (mode == ComponentFile.MODE.READ_ONLY)
+      throw new DatabaseIsReadOnlyException("Cannot restore a record");
+
+    // Restoring into an infrastructure bucket would recreate a serializer payload blob as if it were a user record,
+    // corrupting the schema's accounting of which records are real - same reason createRecordNoLock refuses it.
+    if (bucket.getPurpose() != LocalBucket.Purpose.PRIMARY)
+      throw new IllegalArgumentException(
+          "Bucket '" + bucket.getName() + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be restored into");
+
+    return executeInReadLock(() -> {
+      final RID rid = bucket.restoreRecordAtPosition(position, record);
+
+      final TransactionContext transaction = getTransaction();
+      transaction.updateRecordInCache(record);
+      // #6069: restoreRecordAtPosition does the physical page write only, so fold the same +1 on the cached bucket
+      // record-count delta that count(*) reads and a normal create applies.
+      transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
+
+      if (record instanceof MutableDocument doc) {
+        // #6120: and the index entries, likewise. Without this the restored record is returned by a full scan but
+        // not by any index-resolved query, and a UNIQUE index never learns the key came back - so a later restore
+        // or insert could hand the same key to a second record unchallenged. Deliberately the same call
+        // createRecordNoLock makes: a restored record is indexed exactly like an inserted one, duplicate rejection
+        // included.
+        indexer.createDocument(doc, doc.getType(), bucket);
+
+        // The record did not exist before this transaction, so for a rollback it is a NEW record: keep it out of
+        // the reload loop and reset its identity to provisional (#4562, #4940) rather than leaving a dangling RID
+        // on the caller's object.
+        transaction.registerNewRecord(record);
+      }
+
+      ((RecordInternal) record).unsetDirty();
+
+      return rid;
+    });
+  }
+
+  @Override
   public void updateRecord(final Record record) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");

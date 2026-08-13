@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
@@ -129,6 +130,21 @@ public interface DatabaseInternal extends Database {
   void createRecord(Record record, String bucketName);
 
   void createRecordNoLock(Record record, String bucketName, boolean discardRecordAfter);
+
+  /**
+   * Emergency repair: recreates {@code record} at {@code position} in {@code bucket}, i.e. at the exact RID a
+   * deleted record used to hold, so existing references to that RID stay valid. Behind {@code RESTORE
+   * DOCUMENT/VERTEX/EDGE} and {@link GraphEngine#restoreVertexAt}.
+   * <p>
+   * {@link com.arcadedb.engine.LocalBucket#restoreRecordAtPosition} performs only the physical page write, exactly
+   * like bucket-level create/delete. Everything a create folds on top of that page write - the transaction's cached
+   * bucket record-count delta that {@code count(*)} reads (#6069), the transaction record cache, and the record's
+   * index entries (#6120) - is the caller's job, and having each RESTORE call site do it by hand is how both of
+   * those were missed. It lives here, next to {@code createRecordNoLock}, so there is one place to forget.
+   *
+   * @return the RID the record was restored at, always {@code bucket}'s file id at {@code position}
+   */
+  RID restoreRecord(Record record, LocalBucket bucket, long position);
 
   void updateRecord(Record record);
 

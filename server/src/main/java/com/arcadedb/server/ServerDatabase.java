@@ -40,6 +40,7 @@ import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -330,6 +331,11 @@ public class ServerDatabase implements DatabaseInternal {
 
   public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
     wrapped.createRecordNoLock(record, bucketName, false);
+  }
+
+  @Override
+  public RID restoreRecord(final Record record, final LocalBucket bucket, final long position) {
+    return wrapped.restoreRecord(record, bucket, position);
   }
 
   public void updateRecord(final Record record) {
