@@ -1605,6 +1605,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
         // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
         // this node no longer has, and it still has them - but it would put an operator on a phantom hunt.
+        //
+        // Assigned a SECOND time after this block, and neither assignment is redundant: this one covers a throw
+        // between here and there, the other covers the path where this block is not entered at all.
         published = true;
         HALog.log(this, HALog.DETAILED,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d, instalments=%d",
@@ -1614,8 +1617,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           logSchemaPayloadDiagnostics("recordFileChanges", serializedSchema, addFiles, removeFiles);
       }
 
-      // The block above was not entered: there was nothing to say, which can only happen when no instalment went
-      // out either (an instalment forces the condition), so there is nothing for the compensation to do.
+      // The SECOND of the two assignments (see the one inside the block above). This one covers the path where the
+      // block was not entered at all: there was nothing to say, which can only happen when no instalment went out
+      // either - an instalment forces the condition - so there is nothing for the compensation to do.
       published = true;
       return result;
     } finally {

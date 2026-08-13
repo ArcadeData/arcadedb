@@ -1202,7 +1202,9 @@ costs - the reload detaches a compacted sub-index it cannot resolve yet, the lat
 in-memory component, and the follower serves only its mutable pages from then on, silently and permanently.
 
 The threshold is derived rather than configured: half the maximum replicated entry size, the same expression the
-compaction path already uses for its own chunk budget. Lowering `arcadedb.ha.appendBufferSize` lowers it too.
+compaction path already uses for its own chunk budget. Lowering `arcadedb.ha.appendBufferSize` lowers it too, and
+that is worth knowing before tuning it down: a smaller buffer means more instalments per rebuild, and therefore more
+quorum round trips taken under the write lock (see below).
 
 **What it costs**, stated precisely because it is a trade and not only a heap win. The recording session stays open
 for the whole build, so a concurrent writer on the leader still waits on it - and, before that, on the database write

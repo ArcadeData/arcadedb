@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -124,7 +125,7 @@ class CheckDatabaseBackReferenceRepairTest extends TestHelper {
   private int countCommitsDuring(final Runnable block) {
     final AtomicInteger commits = new AtomicInteger();
     final DatabaseInternal db = (DatabaseInternal) database;
-    final java.util.concurrent.Callable<Void> counter = () -> {
+    final Callable<Void> counter = () -> {
       commits.incrementAndGet();
       return null;
     };
