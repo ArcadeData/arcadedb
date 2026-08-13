@@ -114,4 +114,42 @@ class BucketNameValidationTest extends TestHelper {
     assertThat(database.getSchema().getType("acme.Customer").getBuckets(false).getFirst().getName())
         .isEqualTo("acme.Customer_0");
   }
+
+  /**
+   * A bucket name is used verbatim as a file name, so any character NTFS/Windows refuses in a file name must be
+   * rejected here too: {@code / \} are already covered as path separators, this covers the rest of the reserved
+   * set (issue #6104).
+   */
+  @Test
+  void createBucketRejectsWindowsIllegalCharacters() {
+    for (final String name : List.of("a<b", "a>b", "a:b", "a\"b", "a|b", "a?b", "a\u0000b", "a\u001fb"))
+      assertThatThrownBy(() -> database.getSchema().createBucket(name))
+          .as("bucket name '%s' must be rejected", name)
+          .isInstanceOf(SchemaException.class);
+  }
+
+  /**
+   * {@code CON}, {@code PRN}, {@code AUX}, {@code NUL}, {@code COM1-9} and {@code LPT1-9} address a reserved
+   * Windows device rather than a regular file, whether or not an extension follows: {@code CON.txt} is refused by
+   * the OS exactly like bare {@code CON} is, because it looks only at the segment before the first dot (#6104).
+   */
+  @Test
+  void createBucketRejectsWindowsReservedDeviceNames() {
+    for (final String name : List.of("CON", "con", "PRN", "AUX", "NUL", "COM1", "com9", "LPT1", "LPT9", "CON.dat", "nul.backup"))
+      assertThatThrownBy(() -> database.getSchema().createBucket(name))
+          .as("bucket name '%s' must be rejected", name)
+          .isInstanceOf(SchemaException.class);
+  }
+
+  /**
+   * A reserved stem is only reserved as the exact segment before the first dot: a name that merely starts with
+   * one, or that contains one as a later dot-separated segment, addresses an ordinary file and must be accepted.
+   */
+  @Test
+  void createBucketAcceptsNamesThatOnlyResembleReservedDeviceNames() {
+    for (final String name : List.of("CONFIG", "console", "NULL", "COM10", "COM0", "LPT10", "a.CON", "Concurrent"))
+      assertThatCode(() -> database.getSchema().createBucket(name))
+          .as("bucket name '%s' must be accepted", name)
+          .doesNotThrowAnyException();
+  }
 }
