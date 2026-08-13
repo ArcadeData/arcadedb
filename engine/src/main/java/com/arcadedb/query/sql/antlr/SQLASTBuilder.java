@@ -26,7 +26,182 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
+import com.arcadedb.query.sql.parser.AlterBucketStatement;
+import com.arcadedb.query.sql.parser.AlterDatabaseStatement;
+import com.arcadedb.query.sql.parser.AlterGraphAnalyticalViewStatement;
+import com.arcadedb.query.sql.parser.AlterMaterializedViewStatement;
+import com.arcadedb.query.sql.parser.AlterPropertyStatement;
+import com.arcadedb.query.sql.parser.AlterTimeSeriesTypeStatement;
+import com.arcadedb.query.sql.parser.AlterTypeStatement;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.ArrayConcatExpression;
+import com.arcadedb.query.sql.parser.ArrayConcatExpressionElement;
+import com.arcadedb.query.sql.parser.ArrayLiteralExpression;
+import com.arcadedb.query.sql.parser.ArrayNumberSelector;
+import com.arcadedb.query.sql.parser.ArrayRangeSelector;
+import com.arcadedb.query.sql.parser.ArraySelector;
+import com.arcadedb.query.sql.parser.ArraySingleValuesSelector;
+import com.arcadedb.query.sql.parser.BackupDatabaseStatement;
+import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
+import com.arcadedb.query.sql.parser.Batch;
+import com.arcadedb.query.sql.parser.BeginStatement;
+import com.arcadedb.query.sql.parser.BetweenCondition;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.BreakStatement;
+import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.BucketIdentifier;
+import com.arcadedb.query.sql.parser.BucketList;
+import com.arcadedb.query.sql.parser.CaseAlternative;
+import com.arcadedb.query.sql.parser.CaseExpression;
+import com.arcadedb.query.sql.parser.CheckDatabaseStatement;
+import com.arcadedb.query.sql.parser.CommitStatement;
+import com.arcadedb.query.sql.parser.CompactIndexStatement;
+import com.arcadedb.query.sql.parser.ConsoleStatement;
+import com.arcadedb.query.sql.parser.ContainsAllCondition;
+import com.arcadedb.query.sql.parser.ContainsAnyCondition;
+import com.arcadedb.query.sql.parser.ContainsCondition;
+import com.arcadedb.query.sql.parser.ContainsKeyOperator;
+import com.arcadedb.query.sql.parser.ContainsTextCondition;
+import com.arcadedb.query.sql.parser.ContainsValueCondition;
+import com.arcadedb.query.sql.parser.CreateBucketStatement;
+import com.arcadedb.query.sql.parser.CreateContinuousAggregateStatement;
+import com.arcadedb.query.sql.parser.CreateDocumentTypeStatement;
+import com.arcadedb.query.sql.parser.CreateEdgeStatement;
+import com.arcadedb.query.sql.parser.CreateEdgeTypeStatement;
+import com.arcadedb.query.sql.parser.CreateGraphAnalyticalViewStatement;
+import com.arcadedb.query.sql.parser.CreateIndexStatement;
+import com.arcadedb.query.sql.parser.CreateMaterializedViewStatement;
+import com.arcadedb.query.sql.parser.CreatePropertyAttributeStatement;
+import com.arcadedb.query.sql.parser.CreatePropertyStatement;
+import com.arcadedb.query.sql.parser.CreateTimeSeriesTypeStatement;
+import com.arcadedb.query.sql.parser.CreateTriggerStatement;
+import com.arcadedb.query.sql.parser.CreateVertexStatement;
+import com.arcadedb.query.sql.parser.CreateVertexTypeStatement;
+import com.arcadedb.query.sql.parser.DefineFunctionStatement;
+import com.arcadedb.query.sql.parser.DeleteFunctionStatement;
+import com.arcadedb.query.sql.parser.DeleteStatement;
+import com.arcadedb.query.sql.parser.DropBucketStatement;
+import com.arcadedb.query.sql.parser.DropContinuousAggregateStatement;
+import com.arcadedb.query.sql.parser.DropGraphAnalyticalViewStatement;
+import com.arcadedb.query.sql.parser.DropIndexStatement;
+import com.arcadedb.query.sql.parser.DropMaterializedViewStatement;
+import com.arcadedb.query.sql.parser.DropPropertyStatement;
+import com.arcadedb.query.sql.parser.DropTriggerStatement;
+import com.arcadedb.query.sql.parser.DropTypeStatement;
+import com.arcadedb.query.sql.parser.EqualsCompareOperator;
+import com.arcadedb.query.sql.parser.ExplainStatement;
+import com.arcadedb.query.sql.parser.ExportDatabaseStatement;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.ExpressionStatement;
+import com.arcadedb.query.sql.parser.FieldMatchPathItem;
+import com.arcadedb.query.sql.parser.FindReferencesStatement;
+import com.arcadedb.query.sql.parser.ForEachBlock;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.FunctionCall;
+import com.arcadedb.query.sql.parser.GeOperator;
+import com.arcadedb.query.sql.parser.GroupBy;
+import com.arcadedb.query.sql.parser.GtOperator;
+import com.arcadedb.query.sql.parser.ILikeOperator;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.IfStatement;
+import com.arcadedb.query.sql.parser.ImportDatabaseStatement;
+import com.arcadedb.query.sql.parser.InCondition;
+import com.arcadedb.query.sql.parser.InOperator;
+import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.query.sql.parser.InputParameter;
+import com.arcadedb.query.sql.parser.InsertBody;
+import com.arcadedb.query.sql.parser.InsertSetExpression;
+import com.arcadedb.query.sql.parser.InsertStatement;
+import com.arcadedb.query.sql.parser.InstanceofCondition;
+import com.arcadedb.query.sql.parser.IsDefinedCondition;
+import com.arcadedb.query.sql.parser.IsNotDefinedCondition;
+import com.arcadedb.query.sql.parser.IsNotNullCondition;
+import com.arcadedb.query.sql.parser.IsNullCondition;
+import com.arcadedb.query.sql.parser.Json;
+import com.arcadedb.query.sql.parser.JsonArray;
+import com.arcadedb.query.sql.parser.JsonItem;
+import com.arcadedb.query.sql.parser.LeOperator;
+import com.arcadedb.query.sql.parser.LetClause;
+import com.arcadedb.query.sql.parser.LetItem;
+import com.arcadedb.query.sql.parser.LetStatement;
+import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
+import com.arcadedb.query.sql.parser.LikeOperator;
+import com.arcadedb.query.sql.parser.Limit;
+import com.arcadedb.query.sql.parser.LockStatement;
+import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.MatchExpression;
+import com.arcadedb.query.sql.parser.MatchFilter;
+import com.arcadedb.query.sql.parser.MatchFilterItem;
+import com.arcadedb.query.sql.parser.MatchPathItem;
+import com.arcadedb.query.sql.parser.MatchPathItemFirst;
+import com.arcadedb.query.sql.parser.MatchStatement;
+import com.arcadedb.query.sql.parser.MatchesCondition;
+import com.arcadedb.query.sql.parser.MathExpression;
+import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.Modifier;
+import com.arcadedb.query.sql.parser.MoveVertexStatement;
+import com.arcadedb.query.sql.parser.MultiMatchPathItem;
+import com.arcadedb.query.sql.parser.NamedParameter;
+import com.arcadedb.query.sql.parser.NeOperator;
+import com.arcadedb.query.sql.parser.NearOperator;
+import com.arcadedb.query.sql.parser.NeqOperator;
+import com.arcadedb.query.sql.parser.NestedProjection;
+import com.arcadedb.query.sql.parser.NestedProjectionItem;
+import com.arcadedb.query.sql.parser.NotBlock;
+import com.arcadedb.query.sql.parser.NullSafeEqualsCompareOperator;
+import com.arcadedb.query.sql.parser.OrBlock;
+import com.arcadedb.query.sql.parser.OrderBy;
+import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.PInteger;
+import com.arcadedb.query.sql.parser.PNumber;
+import com.arcadedb.query.sql.parser.ParenthesisExpression;
+import com.arcadedb.query.sql.parser.PositionalParameter;
+import com.arcadedb.query.sql.parser.ProfileStatement;
+import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.RebuildGraphAnalyticalViewStatement;
+import com.arcadedb.query.sql.parser.RebuildIndexStatement;
+import com.arcadedb.query.sql.parser.RebuildTypeStatement;
+import com.arcadedb.query.sql.parser.RecordAttribute;
+import com.arcadedb.query.sql.parser.RefreshContinuousAggregateStatement;
+import com.arcadedb.query.sql.parser.RefreshMaterializedViewStatement;
+import com.arcadedb.query.sql.parser.RestoreDocumentStatement;
+import com.arcadedb.query.sql.parser.RestoreEdgeStatement;
+import com.arcadedb.query.sql.parser.RestoreVertexStatement;
+import com.arcadedb.query.sql.parser.ReturnStatement;
+import com.arcadedb.query.sql.parser.Rid;
+import com.arcadedb.query.sql.parser.RightBinaryCondition;
+import com.arcadedb.query.sql.parser.RollbackStatement;
+import com.arcadedb.query.sql.parser.SchemaIdentifier;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.SetGlobalStatement;
+import com.arcadedb.query.sql.parser.Skip;
+import com.arcadedb.query.sql.parser.SleepStatement;
+import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SubQueryCollector;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
+import com.arcadedb.query.sql.parser.Timeout;
+import com.arcadedb.query.sql.parser.TraverseProjectionItem;
+import com.arcadedb.query.sql.parser.TraverseStatement;
+import com.arcadedb.query.sql.parser.TruncateBucketStatement;
+import com.arcadedb.query.sql.parser.TruncateRecordStatement;
+import com.arcadedb.query.sql.parser.TruncateTypeStatement;
+import com.arcadedb.query.sql.parser.Unwind;
+import com.arcadedb.query.sql.parser.UpdateIncrementItem;
+import com.arcadedb.query.sql.parser.UpdateItem;
+import com.arcadedb.query.sql.parser.UpdateOperations;
+import com.arcadedb.query.sql.parser.UpdatePutItem;
+import com.arcadedb.query.sql.parser.UpdateRemoveItem;
+import com.arcadedb.query.sql.parser.UpdateStatement;
+import com.arcadedb.query.sql.parser.Url;
+import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.query.sql.parser.WhileBlock;
+import com.arcadedb.query.sql.parser.WithinOperator;
 import com.arcadedb.schema.Property;
 import com.arcadedb.utility.CollectionUtils;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -65,7 +240,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
       "map", "agg", "node", "rel", "path", "create");
-
 
   private int positionalParamCounter = 0;
 
@@ -988,231 +1162,232 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Map the key to the appropriate field
     switch (keyName) {
-      case "type":
-        item.typeName = (Expression) valueObj;
-        break;
-      case "types":
-        item.typeNames = (Expression) valueObj;
-        break;
-      case "bucket":
-        // Could be bucket name (identifier) or bucket id (integer)
-        if (valueObj instanceof PInteger) {
-          item.bucketId = (PInteger) valueObj;
-        } else if (valueObj instanceof final Expression expr) {
-          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-            if (baseExpr.number instanceof PInteger) {
-              item.bucketId = (PInteger) baseExpr.number;
-            } else if (baseExpr.identifier != null) {
-              // Extract the Identifier directly to avoid backtick escaping via toString()
-              final Object suffix = baseExpr.identifier.suffix;
-              if (suffix instanceof final SuffixIdentifier si && si.identifier != null) {
-                item.bucketName = si.identifier;
-              }
+    case "type":
+      item.typeName = (Expression) valueObj;
+      break;
+    case "types":
+      item.typeNames = (Expression) valueObj;
+      break;
+    case "bucket":
+      // Could be bucket name (identifier) or bucket id (integer)
+      if (valueObj instanceof PInteger) {
+        item.bucketId = (PInteger) valueObj;
+      } else if (valueObj instanceof final Expression expr) {
+        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
+          if (baseExpr.number instanceof PInteger) {
+            item.bucketId = (PInteger) baseExpr.number;
+          } else if (baseExpr.identifier != null) {
+            // Extract the Identifier directly to avoid backtick escaping via toString()
+            final Object suffix = baseExpr.identifier.suffix;
+            if (suffix instanceof final SuffixIdentifier si && si.identifier != null) {
+              item.bucketName = si.identifier;
             }
           }
         }
-        if (item.bucketId == null && item.bucketName == null) {
-          throw new CommandSQLParsingException("MATCH bucket filter must be an integer ID or an identifier, got: " + valueObj);
-        }
-        break;
-      case "rid":
-        if (valueObj instanceof Rid) {
-          item.rid = (Rid) valueObj;
-        } else if (valueObj instanceof final Expression expr) {
-          if (expr.rid != null) {
-            // Literal RID such as #13:32960 - visitRidLiteral wraps the Rid in an Expression
-            item.rid = expr.rid;
-          } else {
-            // Parameterized or computed RID such as :rid - keep the expression and resolve it against
-            // the command context at plan time (Rid.toRecordId)
-            final Rid computed = new Rid();
-            computed.expression = expr;
-            item.rid = computed;
-          }
+      }
+      if (item.bucketId == null && item.bucketName == null) {
+        throw new CommandSQLParsingException("MATCH bucket filter must be an integer ID or an identifier, got: " + valueObj);
+      }
+      break;
+    case "rid":
+      if (valueObj instanceof Rid) {
+        item.rid = (Rid) valueObj;
+      } else if (valueObj instanceof final Expression expr) {
+        if (expr.rid != null) {
+          // Literal RID such as #13:32960 - visitRidLiteral wraps the Rid in an Expression
+          item.rid = expr.rid;
         } else {
-          throw new CommandSQLParsingException("MATCH rid filter must be a RID or an expression evaluating to a RID, got: " + valueObj);
+          // Parameterized or computed RID such as :rid - keep the expression and resolve it against
+          // the command context at plan time (Rid.toRecordId)
+          final Rid computed = new Rid();
+          computed.expression = expr;
+          item.rid = computed;
         }
-        break;
-      case "as":
-        // Extract identifier name from the expression
-        if (valueObj instanceof BaseIdentifier) {
-          // Create Identifier from the string representation
+      } else {
+        throw new CommandSQLParsingException(
+            "MATCH rid filter must be a RID or an expression evaluating to a RID, got: " + valueObj);
+      }
+      break;
+    case "as":
+      // Extract identifier name from the expression
+      if (valueObj instanceof BaseIdentifier) {
+        // Create Identifier from the string representation
+        final StringBuilder sb = new StringBuilder();
+        ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
+        item.alias = new Identifier(sb.toString());
+      } else if (valueObj instanceof final BaseExpression baseExpr) {
+        if (baseExpr.identifier != null) {
           final StringBuilder sb = new StringBuilder();
-          ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
+          baseExpr.identifier.toString(Collections.emptyMap(), sb);
           item.alias = new Identifier(sb.toString());
-        } else if (valueObj instanceof final BaseExpression baseExpr) {
-          if (baseExpr.identifier != null) {
-            final StringBuilder sb = new StringBuilder();
-            baseExpr.identifier.toString(Collections.emptyMap(), sb);
-            item.alias = new Identifier(sb.toString());
-          } else {
-            item.alias = new Identifier(valueObj.toString().replace("'", ""));
-          }
         } else {
-          // If value is a string literal, extract the alias name
           item.alias = new Identifier(valueObj.toString().replace("'", ""));
         }
-        break;
-      case "where":
-        if (valueObj instanceof WhereClause) {
-          item.filter = (WhereClause) valueObj;
-        } else if (valueObj instanceof BooleanExpression) {
-          final WhereClause whereClause = new WhereClause();
-          whereClause.baseExpression = (BooleanExpression) valueObj;
-          item.filter = whereClause;
-        } else if (valueObj instanceof final Expression expr) {
-          // Expression containing the WHERE condition: where:(name = 'n1')
-          // Check if it's a BaseExpression containing a boolean value like (true) or (false)
-          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-            if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
-              // Handle boolean literals wrapped in BaseExpression: where: (true)
-              final WhereClause whereClause = new WhereClause();
-              final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
-              whereClause.baseExpression = boolExpr;
-              item.filter = whereClause;
-            }
-          }
-          // For parenthesized conditions like (name = 'n1'), mathExpression is a ParenthesisExpression
-          else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
-            // Extract the inner expression's whereCondition from the parentheses
-            if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
-              item.filter = parenExpr.expression.whereCondition;
-            } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
-              // Handle boolean literals like (true) or (false)
-              final WhereClause whereClause = new WhereClause();
-              final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
-              whereClause.baseExpression = boolExpr;
-              item.filter = whereClause;
-            }
-          } else if (expr.whereCondition != null) {
-            // Direct WHERE clause
-            item.filter = expr.whereCondition;
-          } else if (expr.booleanValue != null) {
-            // Direct boolean literal
+      } else {
+        // If value is a string literal, extract the alias name
+        item.alias = new Identifier(valueObj.toString().replace("'", ""));
+      }
+      break;
+    case "where":
+      if (valueObj instanceof WhereClause) {
+        item.filter = (WhereClause) valueObj;
+      } else if (valueObj instanceof BooleanExpression) {
+        final WhereClause whereClause = new WhereClause();
+        whereClause.baseExpression = (BooleanExpression) valueObj;
+        item.filter = whereClause;
+      } else if (valueObj instanceof final Expression expr) {
+        // Expression containing the WHERE condition: where:(name = 'n1')
+        // Check if it's a BaseExpression containing a boolean value like (true) or (false)
+        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
+          if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
+            // Handle boolean literals wrapped in BaseExpression: where: (true)
             final WhereClause whereClause = new WhereClause();
-            final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
+            final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
             whereClause.baseExpression = boolExpr;
             item.filter = whereClause;
           }
         }
-        break;
-      case "while":
-        if (valueObj instanceof WhereClause) {
-          item.whileCondition = (WhereClause) valueObj;
-        } else if (valueObj instanceof BooleanExpression) {
-          final WhereClause whereClause = new WhereClause();
-          whereClause.baseExpression = (BooleanExpression) valueObj;
-          item.whileCondition = whereClause;
-        } else if (valueObj instanceof final Expression expr) {
-          // Expression containing the WHILE condition
-          // Check if it's a BaseExpression containing a boolean value like (true) or (false)
-          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-            if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
-              // Handle boolean literals wrapped in BaseExpression: while: (true)
-              final WhereClause whereClause = new WhereClause();
-              final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
-              whereClause.baseExpression = boolExpr;
-              item.whileCondition = whereClause;
-            }
-          }
-          // For parenthesized conditions, mathExpression is a ParenthesisExpression
-          else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
-            // Extract the inner expression's whereCondition from the parentheses
-            if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
-              item.whileCondition = parenExpr.expression.whereCondition;
-            } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
-              // Handle boolean literals like (true) or (false)
-              final WhereClause whereClause = new WhereClause();
-              final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
-              whereClause.baseExpression = boolExpr;
-              item.whileCondition = whereClause;
-            }
-          } else if (expr.whereCondition != null) {
-            // Direct WHERE clause (used for WHILE)
-            item.whileCondition = expr.whereCondition;
-          } else if (expr.booleanValue != null) {
-            // Direct boolean literal
+        // For parenthesized conditions like (name = 'n1'), mathExpression is a ParenthesisExpression
+        else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
+          // Extract the inner expression's whereCondition from the parentheses
+          if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
+            item.filter = parenExpr.expression.whereCondition;
+          } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
+            // Handle boolean literals like (true) or (false)
             final WhereClause whereClause = new WhereClause();
-            final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
+            final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
+            whereClause.baseExpression = boolExpr;
+            item.filter = whereClause;
+          }
+        } else if (expr.whereCondition != null) {
+          // Direct WHERE clause
+          item.filter = expr.whereCondition;
+        } else if (expr.booleanValue != null) {
+          // Direct boolean literal
+          final WhereClause whereClause = new WhereClause();
+          final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
+          whereClause.baseExpression = boolExpr;
+          item.filter = whereClause;
+        }
+      }
+      break;
+    case "while":
+      if (valueObj instanceof WhereClause) {
+        item.whileCondition = (WhereClause) valueObj;
+      } else if (valueObj instanceof BooleanExpression) {
+        final WhereClause whereClause = new WhereClause();
+        whereClause.baseExpression = (BooleanExpression) valueObj;
+        item.whileCondition = whereClause;
+      } else if (valueObj instanceof final Expression expr) {
+        // Expression containing the WHILE condition
+        // Check if it's a BaseExpression containing a boolean value like (true) or (false)
+        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
+          if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
+            // Handle boolean literals wrapped in BaseExpression: while: (true)
+            final WhereClause whereClause = new WhereClause();
+            final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
             whereClause.baseExpression = boolExpr;
             item.whileCondition = whereClause;
           }
         }
-        break;
-      case "maxdepth":
-        if (valueObj instanceof PInteger) {
-          item.maxDepth = (PInteger) valueObj;
-        } else if (valueObj instanceof final BaseExpression baseExpr) {
+        // For parenthesized conditions, mathExpression is a ParenthesisExpression
+        else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
+          // Extract the inner expression's whereCondition from the parentheses
+          if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
+            item.whileCondition = parenExpr.expression.whereCondition;
+          } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
+            // Handle boolean literals like (true) or (false)
+            final WhereClause whereClause = new WhereClause();
+            final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
+            whereClause.baseExpression = boolExpr;
+            item.whileCondition = whereClause;
+          }
+        } else if (expr.whereCondition != null) {
+          // Direct WHERE clause (used for WHILE)
+          item.whileCondition = expr.whereCondition;
+        } else if (expr.booleanValue != null) {
+          // Direct boolean literal
+          final WhereClause whereClause = new WhereClause();
+          final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
+          whereClause.baseExpression = boolExpr;
+          item.whileCondition = whereClause;
+        }
+      }
+      break;
+    case "maxdepth":
+      if (valueObj instanceof PInteger) {
+        item.maxDepth = (PInteger) valueObj;
+      } else if (valueObj instanceof final BaseExpression baseExpr) {
+        if (baseExpr.number instanceof PInteger) {
+          item.maxDepth = (PInteger) baseExpr.number;
+        }
+      } else if (valueObj instanceof final Expression expr) {
+        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
           if (baseExpr.number instanceof PInteger) {
             item.maxDepth = (PInteger) baseExpr.number;
           }
-        } else if (valueObj instanceof final Expression expr) {
-          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-            if (baseExpr.number instanceof PInteger) {
-              item.maxDepth = (PInteger) baseExpr.number;
-            }
-          }
         }
-        break;
-      case "depth":
-        // depth can be an ArrayRangeSelector like depth: [0..3]
-        if (valueObj instanceof ArrayRangeSelector) {
-          item.depth = (ArrayRangeSelector) valueObj;
-        } else if (valueObj instanceof BaseExpression) {
-          // Try to extract range from expression
-          // For now, just skip if it's not already an ArrayRangeSelector
-        }
-        break;
-      case "optional":
-        item.optional = true;
-        break;
-      case "depthalias":
-        // Extract identifier name from the expression
-        if (valueObj instanceof BaseIdentifier) {
+      }
+      break;
+    case "depth":
+      // depth can be an ArrayRangeSelector like depth: [0..3]
+      if (valueObj instanceof ArrayRangeSelector) {
+        item.depth = (ArrayRangeSelector) valueObj;
+      } else if (valueObj instanceof BaseExpression) {
+        // Try to extract range from expression
+        // For now, just skip if it's not already an ArrayRangeSelector
+      }
+      break;
+    case "optional":
+      item.optional = true;
+      break;
+    case "depthalias":
+      // Extract identifier name from the expression
+      if (valueObj instanceof BaseIdentifier) {
+        final StringBuilder sb = new StringBuilder();
+        ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
+        item.depthAlias = new Identifier(sb.toString());
+      } else if (valueObj instanceof final BaseExpression baseExpr) {
+        if (baseExpr.identifier != null) {
           final StringBuilder sb = new StringBuilder();
-          ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
+          baseExpr.identifier.toString(Collections.emptyMap(), sb);
           item.depthAlias = new Identifier(sb.toString());
-        } else if (valueObj instanceof final BaseExpression baseExpr) {
+        }
+      } else if (valueObj instanceof final Expression expr) {
+        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
             baseExpr.identifier.toString(Collections.emptyMap(), sb);
             item.depthAlias = new Identifier(sb.toString());
           }
-        } else if (valueObj instanceof final Expression expr) {
-          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-            if (baseExpr.identifier != null) {
-              final StringBuilder sb = new StringBuilder();
-              baseExpr.identifier.toString(Collections.emptyMap(), sb);
-              item.depthAlias = new Identifier(sb.toString());
-            }
-          }
         }
-        break;
-      case "pathalias":
-        // Extract identifier name from the expression
-        if (valueObj instanceof BaseIdentifier) {
+      }
+      break;
+    case "pathalias":
+      // Extract identifier name from the expression
+      if (valueObj instanceof BaseIdentifier) {
+        final StringBuilder sb = new StringBuilder();
+        ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
+        item.pathAlias = new Identifier(sb.toString());
+      } else if (valueObj instanceof final BaseExpression baseExpr) {
+        if (baseExpr.identifier != null) {
           final StringBuilder sb = new StringBuilder();
-          ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
+          baseExpr.identifier.toString(Collections.emptyMap(), sb);
           item.pathAlias = new Identifier(sb.toString());
-        } else if (valueObj instanceof final BaseExpression baseExpr) {
+        }
+      } else if (valueObj instanceof final Expression expr) {
+        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
             baseExpr.identifier.toString(Collections.emptyMap(), sb);
             item.pathAlias = new Identifier(sb.toString());
           }
-        } else if (valueObj instanceof final Expression expr) {
-          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-            if (baseExpr.identifier != null) {
-              final StringBuilder sb = new StringBuilder();
-              baseExpr.identifier.toString(Collections.emptyMap(), sb);
-              item.pathAlias = new Identifier(sb.toString());
-            }
-          }
         }
-        break;
-      default:
-        // Unknown key - ignore or log warning
-        break;
+      }
+      break;
+    default:
+      // Unknown key - ignore or log warning
+      break;
     }
 
     return item;
@@ -1474,9 +1649,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public NestedProjection visitNestedProjection(final SQLParser.NestedProjectionContext ctx) {
     final NestedProjection nestedProjection = new NestedProjection();
 
-    @SuppressWarnings("unchecked") final List<NestedProjectionItem> includeItems =
+    @SuppressWarnings("unchecked")
+    final List<NestedProjectionItem> includeItems =
         nestedProjection.includeItems;
-    @SuppressWarnings("unchecked") final List<NestedProjectionItem> excludeItems =
+    @SuppressWarnings("unchecked")
+    final List<NestedProjectionItem> excludeItems =
         nestedProjection.excludeItems;
 
     for (final SQLParser.NestedProjectionItemContext itemCtx : ctx.nestedProjectionItem()) {
@@ -2750,8 +2927,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // only Long.MIN_VALUE's magnitude can still be represented once the sign is folded in;
       // anything larger is a genuine overflow and keeps raising the original error
       try {
-        final BaseExpression baseExpr = new BaseExpression(-1);
-        baseExpr.number = new PInteger(-1).setValue(Long.parseLong("-" + text));
+        final BaseExpression baseExpr = new BaseExpression();
+        baseExpr.number = new PInteger().setValue(Long.parseLong("-" + text));
         return baseExpr;
       } catch (final NumberFormatException stillInvalid) {
         throw new CommandSQLParsingException("Invalid integer: " + originalText);
@@ -5456,7 +5633,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             body.contentJson = baseExpr.expression.json;
           }
           // Check if it contains an array literal
-          else if (baseExpr.expression != null && baseExpr.expression.mathExpression instanceof final ArrayLiteralExpression arrayLit) {
+          else if (baseExpr.expression != null
+              && baseExpr.expression.mathExpression instanceof final ArrayLiteralExpression arrayLit) {
 
             // For CREATE EDGE, if array has single element, extract it as contentJson
             // If array has multiple elements, store as contentArray (executor will validate)
@@ -7910,7 +8088,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (value < 0)
       throw new CommandSQLParsingException("COMPACTION THRESHOLD must be >= 0 (0 = disabled), got: " + value);
     if (value == 1)
-      throw new CommandSQLParsingException("COMPACTION THRESHOLD = 1 is not allowed (would trigger compaction after every delta). Use 0 to disable or >= 2 for a valid threshold");
+      throw new CommandSQLParsingException(
+          "COMPACTION THRESHOLD = 1 is not allowed (would trigger compaction after every delta). Use 0 to disable or >= 2 for a valid threshold");
     return value;
   }
 
