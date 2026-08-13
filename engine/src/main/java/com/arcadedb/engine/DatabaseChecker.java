@@ -58,6 +58,12 @@ public class DatabaseChecker {
   // gets a larger budget than a plain lock-acquisition timeout, where nothing was touched and giving up simply
   // leaves the index exactly as it was.
   private static final int          LOCK_POST_DROP_ATTEMPT_MULTIPLIER = 4;
+  /**
+   * How many unreferenced files the single warning about them names (issue #6143). {@code maxWarnings} bounds how
+   * MANY warnings a run emits, not how long one of them is, and a node that leaked files can hold any number of
+   * them; the full list is always in the {@code unreferencedFiles} result key.
+   */
+  private static final int          WARNED_UNREFERENCED_FILES = 20;
   private final DatabaseInternal    database;
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
@@ -1040,8 +1046,21 @@ public class DatabaseChecker {
     for (final UnreferencedFiles.UnreferencedFile file : unreferenced)
       reported.add(file.toString());
 
+    // The WARNING names at most this many. The full list is always in the result key, which is a set a caller can
+    // read; embedding it here as well would put an unbounded line in the log - maxWarnings bounds how MANY warnings
+    // a run emits, not how long one of them is.
+    final StringBuilder names = new StringBuilder();
+    for (int i = 0; i < unreferenced.size() && i < WARNED_UNREFERENCED_FILES; i++) {
+      if (i > 0)
+        names.append(", ");
+      names.append(unreferenced.get(i).fileName());
+    }
+    if (unreferenced.size() > WARNED_UNREFERENCED_FILES)
+      names.append(" and ").append(unreferenced.size() - WARNED_UNREFERENCED_FILES)
+          .append(" more (see the 'unreferencedFiles' result)");
+
     addWarning(unreferenced.size() + " file(s) on this node are referenced by no schema component and nothing will "
-        + "reclaim them: " + reported + ". They are inert - no query, index or replication path reads a file the "
+        + "reclaim them: " + names + ". They are inert - no query, index or replication path reads a file the "
         + "schema does not reference - so this costs disk only, and this check does not remove them. A schema change "
         + "interrupted after creating them is the usual cause; a bucket created with CREATE BUCKET and never given "
         + "to a type is the other, and is not a defect. Remove them with the server stopped, after a backup");

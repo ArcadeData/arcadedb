@@ -505,8 +505,16 @@ public class FileManager {
    * path carries the temp-suffixed file name in {@code addFiles} while the schema JSON captured
    * post-rename references the stripped name; the follower then creates the file under the wrong
    * name and emits "Cannot find indexes ..." warnings on schema reload (issue #4083).
+   * <p>
+   * SYNCHRONIZED like every other mutation of the session's two structures. It used to rely on "only the recording
+   * thread ever reaches here", which is true of its single caller ({@code PaginatedComponent.removeTempSuffix}) but
+   * is not something the next caller has to notice - and {@code unshippedCreates} (issue #6142) is a plain
+   * {@link LinkedHashMap}, so getting that wrong would corrupt a map rather than merely read one stale. Taking the
+   * monitor here cannot deadlock: this method touches maps only, the paths that hold this monitor across I/O
+   * ({@link #dropFile}) take file locks UNDER it, and the caller holds none of its own - {@code rename} released
+   * the component's channel lock before returning.
    */
-  public void refreshRecordedFileName(final ComponentFile file) {
+  public synchronized void refreshRecordedFileName(final ComponentFile file) {
     if (recordedChanges == null || file == null)
       return;
     final int fileId = file.getFileId();

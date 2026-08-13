@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.List;
 import java.util.TreeMap;
+import java.util.function.Supplier;
 
 /**
  * Lists the paginated files a node holds that nothing in its schema claims (issue #6143).
@@ -93,13 +94,41 @@ public class UnreferencedFiles {
    * either way. A finding worth acting on is one that survives a second call.
    */
   public static List<UnreferencedFile> scan(final DatabaseInternal database) {
-    final LocalSchema localSchema = database.getSchema().getEmbedded();
-
     // Ordered by file id so two calls on an unchanged database produce identical output, which is what makes
     // "did my repair work?" answerable by comparing them.
     final TreeMap<Integer, UnreferencedFile> found = new TreeMap<>();
 
+    walk(database, (fileId, file, reason) -> found.put(fileId,
+        new UnreferencedFile(fileId, file.getFileName(), reason.get())));
+
+    return new ArrayList<>(found.values());
+  }
+
+  /**
+   * How many files nothing claims, for callers that publish only a number - the per-database HA gauge, refreshed on
+   * a timer.
+   * <p>
+   * Shares {@link #walk} with {@link #scan} rather than counting its result, so the descriptive reason of each
+   * finding is never built here: it is a {@code Supplier} this consumer simply does not call. Free in the common
+   * case, where there is nothing to describe, and it keeps a node that IS leaking files from paying for strings
+   * every refresh throws away.
+   */
+  public static long count(final DatabaseInternal database) {
+    final long[] count = { 0 };
+    walk(database, (fileId, file, reason) -> ++count[0]);
+    return count[0];
+  }
+
+  /**
+   * The walk itself, emitting each unclaimed file exactly once, in file-id order.
+   * <p>
+   * The reason is passed as a {@link Supplier} so a consumer that only counts never builds it.
+   */
+  private static void walk(final DatabaseInternal database, final UnreferencedFileConsumer consumer) {
+    final LocalSchema localSchema = database.getSchema().getEmbedded();
     final BitSet claimed = collectClaimedFileIds(localSchema);
+    // What has already been emitted, so the index pass below cannot report a file the file pass above did.
+    final BitSet reported = new BitSet();
 
     final List<ComponentFile> physicalFiles = database.getFileManager().getFiles();
     for (int fileId = 0; fileId < physicalFiles.size(); fileId++) {
@@ -109,28 +138,29 @@ public class UnreferencedFiles {
 
       final Component component = localSchema.getFileByIdIfExists(fileId);
       if (component == null) {
-        found.put(fileId, new UnreferencedFile(fileId, file.getFileName(),
-            "the file exists on this node but no schema component was ever built for it, which is the state a "
-                + "replicated schema change leaves behind when it delivers a file and is then abandoned"));
+        reported.set(fileId);
+        consumer.accept(fileId, file,
+            () -> "the file exists on this node but no schema component was ever built for it, which is the state a "
+                + "replicated schema change leaves behind when it delivers a file and is then abandoned");
         continue;
       }
 
       if (component instanceof LocalBucket bucket && !claimed.get(fileId)
           // Purpose is restored from the schema at load time and reset to PRIMARY when it is not, so it can only be
           // used to EXCLUDE: anything not claiming to be a plain data bucket is left to whoever paired it.
-          && bucket.getPurpose() == LocalBucket.Purpose.PRIMARY)
-        found.put(fileId, new UnreferencedFile(fileId, file.getFileName(),
-            "bucket '" + bucket.getName() + "' belongs to no type"));
+          && bucket.getPurpose() == LocalBucket.Purpose.PRIMARY) {
+        reported.set(fileId);
+        consumer.accept(fileId, file, () -> "bucket '" + bucket.getName() + "' belongs to no type");
+      }
     }
 
-    collectUnreferencedIndexFiles(localSchema, claimed, physicalFiles, found);
-
-    return new ArrayList<>(found.values());
+    walkUnreferencedIndexFiles(localSchema, claimed, reported, physicalFiles, consumer);
   }
 
-  /** Convenience for callers that only publish a number, e.g. the per-database HA gauge. */
-  public static long count(final DatabaseInternal database) {
-    return scan(database).size();
+  /** Receives one unclaimed file. The reason is deferred so a counting consumer never pays for it. */
+  @FunctionalInterface
+  private interface UnreferencedFileConsumer {
+    void accept(int fileId, ComponentFile file, Supplier<String> reason);
   }
 
   /**
@@ -200,14 +230,14 @@ public class UnreferencedFiles {
    * and only the index itself can say so. Every file it names is reported, so the operator gets the whole set rather
    * than the one file whose component happened to be classifiable.
    */
-  private static void collectUnreferencedIndexFiles(final LocalSchema schema, final BitSet claimed,
-      final List<ComponentFile> physicalFiles, final TreeMap<Integer, UnreferencedFile> found) {
+  private static void walkUnreferencedIndexFiles(final LocalSchema schema, final BitSet claimed,
+      final BitSet reported, final List<ComponentFile> physicalFiles, final UnreferencedFileConsumer consumer) {
     for (final Index index : schema.getIndexes()) {
       if (!(index instanceof IndexInternal internal) || !internal.isAutomatic())
         continue;
 
       for (final int fileId : internal.getFileIds()) {
-        if (fileId < 0 || claimed.get(fileId) || found.containsKey(fileId))
+        if (fileId < 0 || claimed.get(fileId) || reported.get(fileId))
           continue;
         if (fileId >= physicalFiles.size())
           continue;
@@ -215,8 +245,8 @@ public class UnreferencedFiles {
         if (file == null)
           continue;
 
-        found.put(fileId, new UnreferencedFile(fileId, file.getFileName(),
-            "index '" + index.getName() + "' is referenced by no type"));
+        reported.set(fileId);
+        consumer.accept(fileId, file, () -> "index '" + index.getName() + "' is referenced by no type");
       }
     }
   }

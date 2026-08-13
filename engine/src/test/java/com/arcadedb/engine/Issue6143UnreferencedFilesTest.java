@@ -172,6 +172,24 @@ class Issue6143UnreferencedFilesTest extends TestHelper {
     }
   }
 
+  /**
+   * The gauge publishes {@code count()}, which shares the walk with {@code scan()} and skips only the building of
+   * each finding's description. Sharing it is the point - two walks would be two chances to disagree - so the two
+   * must answer the same number on the same database.
+   */
+  @Test
+  void countAgreesWithScan() {
+    assertThat(UnreferencedFiles.count(db())).as("a healthy database").isZero();
+
+    final String bucketName = "orphan_bucket_counted";
+    database.getSchema().createBucket(bucketName);
+    try {
+      assertThat(UnreferencedFiles.count(db())).isEqualTo(UnreferencedFiles.scan(db()).size()).isEqualTo(1);
+    } finally {
+      database.getSchema().dropBucket(bucketName);
+    }
+  }
+
   @Test
   void aCleanCheckDatabaseSaysNoneRatherThanNothing() {
     final Map<String, Object> result = new DatabaseChecker(database).setVerboseLevel(0).check();
