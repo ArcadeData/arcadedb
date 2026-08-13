@@ -1139,6 +1139,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // code, and it must not run against a database an executeInWriteLock caller is free to close underneath it.
     return executeInReadLock(() -> {
       boolean success = false;
+      // Opened BEFORE the checks below, where createRecordNoLock opens it after them - forced, not an oversight:
+      // checkRestoreTargetIsFree reads the target page through the transaction, so there has to be one to read it
+      // through. The only visible difference is that with autoTransaction a RESTORE that fails validation opens and
+      // rolls back an empty implicit transaction where the equivalent INSERT would not have opened one, which costs
+      // nothing - a rollback with no modified page is a no-op.
       final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
       try {
         // Checked before the record's own constraints (#6127 review): aiming at a RID that is still live is the
