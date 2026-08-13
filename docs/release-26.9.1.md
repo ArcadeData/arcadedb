@@ -1169,6 +1169,75 @@ operator diagnostic.
 
 [#6125](https://github.com/ArcadeData/arcadedb/issues/6125)
 
+## The disjoint-slot merge now covers the records that outgrew their page (#6129)
+
+The commit-time disjoint-slot merge (`arcadedb.txPageSlotMerge`, #5381/#5279/#5569) turns a page-level
+`ConcurrentModificationException` back into the record-level verdict it should have been: when the only reason a
+bucket page conflicts is that another transaction wrote a *different* slot on it, this transaction's slot writes are
+replayed on top of the newer committed page instead of failing the whole transaction. Until now it stopped at the
+page boundary. A record that grew past the page size became a chunk chain or a placeholder, and from then on every
+update of it poisoned its page unconditionally - so on a single-bucket type whose records had all outgrown their
+page, concurrent updates of *unrelated* records conflicted for good. That is exactly the false conflict #5279
+removed, reappearing one size class up.
+
+Measured on the regression test that first exposed it (8 threads, 40 records of one bucket, each thread rewriting
+only its own): once the records had spilled, **280 of 320 commits conflicted** - seven of eight writers lost every
+round - and every one of those conflicts was on the single page holding the records' head chunks. With the merge
+extended, the same run reports **zero**.
+
+Three shapes are now tracked, each with its own slot *kind* so the replay checks the marker on the committed page and
+not only the bytes:
+
+- **The head chunk of a multi-page record.** Its footprint on the page is fixed when the record spills and is never
+  grown again - an update rewrites the chunk size, the pointer to the next chunk and the chunk content, all inside
+  the record's own bytes - so the page sees a single-slot write that commutes with writes to every other slot.
+- **The spill itself**, where a plain record that no longer fits is turned into that head chunk. It is the one
+  tracked write whose two images differ in shape, and the replay re-establishes the room the spill used: the slot's
+  own footprint, plus the free tail of the page when it is the last record. Leaving this out was not a one-off cost -
+  a transaction whose spill loses the race retries and spills again, so under contention the records that have to
+  spill could starve instead of converging.
+- **The content record behind a placeholder pointer**, in place or growing on its own page. It is an ordinary record
+  on that page; only its size marker is negative.
+
+The continuation chunks are still out: they are placed through inline record-table writes that no tracked slot image
+accounts for, so every page they land on is poisoned, as is the head chunk's own page when the chain comes back to
+it. So is a slot turning into - or being rebuilt from - a placeholder *pointer*, which changes two pages at once.
+
+### The head chunk needed one guarantee the pre-image check cannot give
+
+Every replay is gated on a byte-for-byte pre-image check, which is what tells a false page conflict from a true one
+(two transactions writing the *same* record must still conflict, so the application reloads). For a multi-page record
+that check can only see the head chunk, because that is the only part of the record living on the page being
+replayed: a concurrent transaction that rewrote the record only *past* that chunk would have slipped through it and
+been silently overwritten.
+
+`LocalBucket.chunkChainTailFingerprint` closes that. It is a 64-bit FNV-1a over the chain past the head chunk (each
+chunk's RID, size and content), taken when the record is taken for update - the same moment its page is pinned - and
+again at commit before the chain is rewritten. The head chunk is replayable only while the two agree; when they do
+not, the page falls back to the plain retry it took before this change. `Issue6129ChunkedSlotMergeTest` pins it with
+two 200 KB values differing only in their last byte, which share their whole head chunk: without the fingerprint that
+commit silently drops the other transaction's write.
+
+The cost is proportional to work the update was going to do anyway: an update of a multi-page record rewrites every
+chunk of its chain, so the fingerprint walks pages it is about to load and write regardless, and a record that is not
+a chunk chain pays nothing beyond reading its own marker.
+
+Worth stating plainly what that trades, because it is the one guarantee this change moves rather than widens. For a
+multi-page record, "two transactions writing the same record always conflict" used to hold absolutely - for the blunt
+reason that the head chunk's page was poisoned no matter what. It now holds up to a fingerprint collision: ~2^-64 per
+pair of concurrent updates to one such record whose head chunks are byte-identical. Deliberate collisions are not a
+threat model here: both colliding tails are content of the same record, so producing one requires write access to it,
+and whoever has that can already overwrite it by committing last - which is the very outcome a collision would
+produce. An installation that wants the absolute form back sets `arcadedb.txPageSlotMerge=false` and gets
+unconditional poisoning, at the cost of the false conflicts the mechanism exists to remove.
+
+### `TX_RETRIES` is enough again
+
+`Issue5279ConcurrentUpdateTest.growingUpdatesUnderContentionKeepTheDatabaseConsistent` needed an explicit budget of
+50 attempts (#6127 item 3, the re-triage of what used to look like a chronic flake). It now runs at the `TX_RETRIES`
+default of 3 - the absence of an `attempts` argument is the assertion.
+
+[#6129](https://github.com/ArcadeData/arcadedb/issues/6129)
 ## `CHECK DATABASE FIX`: the last two unbounded repair paths, and what the numbers it reports mean (#6136)
 
 #6131 bounded the repair transaction a `CHECK DATABASE ... FIX` builds, committing every
