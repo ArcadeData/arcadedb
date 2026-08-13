@@ -60,7 +60,12 @@ class EngineMetricsBinderTest {
         "arcadedb.engine.page.merges.declined", "arcadedb.engine.tx.write", "arcadedb.engine.tx.read",
         "arcadedb.engine.tx.rollbacks", "arcadedb.engine.queries", "arcadedb.engine.commands",
         "arcadedb.engine.snapshot.windows.opened", "arcadedb.engine.snapshot.windows.invalidated",
-        "arcadedb.engine.snapshot.preimages.captured" }) {
+        "arcadedb.engine.snapshot.preimages.captured",
+        // #6125: the invalidation split and the t0 barrier timer, whose sum/count pair is what a Prometheus Timer
+        // exports and what makes rate(seconds)/rate(count) the average barrier latency
+        "arcadedb.engine.snapshot.windows.overflowed", "arcadedb.engine.snapshot.windows.failed",
+        "arcadedb.engine.snapshot.barrier.count", "arcadedb.engine.snapshot.barrier.seconds",
+        "arcadedb.engine.snapshot.barrier.inexact" }) {
       final FunctionCounter counter = registry.find(name).functionCounter();
       assertThat(counter).as(name).isNotNull();
       assertThat(Double.isNaN(counter.count())).as(name).isFalse();
@@ -81,6 +86,9 @@ class EngineMetricsBinderTest {
         "arcadedb.engine.databases", "arcadedb.engine.snapshot.windows.open", "arcadedb.engine.snapshot.shadow.pages",
         "arcadedb.engine.snapshot.shadow.bytes", "arcadedb.engine.snapshot.shadow.spilled.bytes",
         "arcadedb.engine.snapshot.shadow.usage.percent", "arcadedb.engine.snapshot.window.age.ms",
+        // #6125: a high-water mark. Monotonic, but a rate() over it would be meaningless, so it is the one
+        // never-decreasing reading here that is deliberately a gauge
+        "arcadedb.engine.snapshot.barrier.max.seconds",
         "arcadedb.engine.flush.deferred.bytes" }) {
       final Gauge gauge = registry.find(name).gauge();
       assertThat(gauge).as(name).isNotNull();
@@ -128,9 +136,9 @@ class EngineMetricsBinderTest {
    * is holding and how close it is to {@code arcadedb.pageSnapshotMaxSize}, before the breach forces the backup back
    * onto the path that throttles writers.
    * <p>
-   * The shadow-usage assertion is the one that earns its keep: against the 1 GB default cap a few shadowed pages are
-   * a small FRACTION of a percent, so a reading truncated to a long would report a comfortable zero for a window
-   * that is actually filling.
+   * The shadow-usage assertion is the one that earns its keep: against a cap sized from the whole database a few
+   * shadowed pages are a small FRACTION of a percent, so a reading truncated to a long would report a comfortable
+   * zero for a window that is actually filling.
    */
   @Test
   void theSnapshotGaugesFollowAnOpenWindow() throws Exception {
@@ -174,6 +182,14 @@ class EngineMetricsBinderTest {
 
         assertThat(registry.find("arcadedb.engine.snapshot.preimages.captured").functionCounter().count()).isPositive();
         assertThat(registry.find("arcadedb.engine.snapshot.windows.opened").functionCounter().count()).isPositive();
+
+        // #6125: OPENING THE WINDOW RAN A t0 BARRIER, SO ITS TIMER MUST HAVE MOVED. THE DURATION IS ASSERTED AS
+        // NON-NEGATIVE RATHER THAN POSITIVE ON PURPOSE - AN IDLE BARRIER TAKES TENS OF MICROSECONDS AND ROUNDS TO
+        // ZERO MILLISECONDS, WHICH IS THE HEALTHY CASE, NOT A BROKEN METER
+        assertThat(registry.find("arcadedb.engine.snapshot.barrier.count").functionCounter().count()).isPositive();
+        assertThat(registry.find("arcadedb.engine.snapshot.barrier.seconds").functionCounter().count())
+            .isNotNegative();
+        assertThat(registry.find("arcadedb.engine.snapshot.barrier.max.seconds").gauge().value()).isNotNegative();
       }
 
       assertThat(awaitGauge(registry, "arcadedb.engine.snapshot.windows.open", value -> value <= windowsBefore))
