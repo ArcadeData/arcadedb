@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -135,6 +136,17 @@ public class DatabaseChecker {
     result.put("totalCorruptedRecords", 0L);
     result.put("distinctMissingReferences", 0L);
     result.put("topMissingReferences", new ArrayList<String>());
+    // Issue #6128 (5): says WHICH copy of a replicated database this answer describes. The statement is classified
+    // non-idempotent, so a follower forwards it to the leader and the check only ever reads the leader's pages;
+    // repairs then reach the other nodes as WAL deltas over the page ranges they touched. Neither direction covers a
+    // follower whose own copy diverged. Reported as a field rather than left to the documentation because the
+    // dangerous reading of a clean result - "the cluster is fine" - is one an operator makes from the output.
+    result.put("checkedNodeScope", database.isReplicated() ? "this node only (replicated database)" : "whole database");
+
+    if (database.isReplicated())
+      addWarning("this database is replicated and this check inspected only the node that ran it: a clean result "
+          + "does not certify the other nodes, and a repair reaches them as replicated changes rather than by each "
+          + "node repairing itself. Progress is published per node too, so poll it on the node running the check");
 
     // COMPUTE THE STEP PLAN UPFRONT so every progress emission carries a stable stepIndex/totalSteps pair.
     final List<DocumentType> edgeTypes = new ArrayList<>();
@@ -605,7 +617,16 @@ public class DatabaseChecker {
       totalPagesToCompress += ((LocalBucket) b).getTotalPages();
     stepBegin("Compressing buckets", totalPagesToCompress);
 
-    int pageTxBatch = 10;
+    // Issue #6128 (4): the hardcoded 10 made COMPRESS unusable on a replicated database. Every commit is a Raft
+    // consensus round trip, so ten pages per transaction means one round trip per ten pages - millions of them on a
+    // database of any size, which is not a slow operation but one that does not finish. Reusing the repair budget
+    // rather than adding a second knob: it answers the same question ("how many pages may one CHECK DATABASE
+    // transaction accumulate"), and at its 256 default this is a 25x reduction in round trips while staying well
+    // under the appendBufferSize the entry has to fit in. Guarded so a 0 (batching disabled) does not turn into a
+    // single transaction over every page in the database, which is the one outcome nobody wants here.
+    final int budget = database.getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES);
+    final int pageTxBatch = budget > 0 ? budget : 10;
     int pageBatch = 0;
 
     for (final Bucket b : database.getSchema().getBuckets()) {

@@ -50,6 +50,12 @@ import java.util.logging.Level;
 public class GraphDatabaseChecker {
   private final DatabaseInternal database;
   private final GraphEngine      graphEngine;
+  /**
+   * Modified-page budget of one repair transaction (issue #6128) - see {@link #commitRepairBatchIfFull()}. Read
+   * once per checker rather than per repaired record: it is a database-scoped setting, and re-reading it inside the
+   * repair loops would put a configuration lookup on the per-record path for a value that cannot change under it.
+   */
+  private final int              repairBatchPages;
 
   // Progress reporting (issue #5372): the step identity (name/index/totalSteps) is assigned by the caller
   // (DatabaseChecker owns the step plan); this class emits within-step done/total, throttled to integer
@@ -65,6 +71,8 @@ public class GraphDatabaseChecker {
   public GraphDatabaseChecker(DatabaseInternal database) {
     this.database = database;
     this.graphEngine = database.getGraphEngine();
+    this.repairBatchPages = database.getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES);
   }
 
   /** Installs the progress receiver and this checker's step identity in the caller's step plan. */
@@ -230,6 +238,7 @@ public class GraphDatabaseChecker {
           try {
             deleteCorruptedRecord(orphan);
             ++reclaimed;
+            commitRepairBatchIfFull();
           } catch (final RecordNotFoundException e) {
             // ALREADY GONE
           } catch (final Exception e) {
@@ -292,6 +301,42 @@ public class GraphDatabaseChecker {
     else
       bucket.deleteRecord(rid);
     database.getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
+  }
+
+  /**
+   * Commits the repair so far and opens the next transaction once it has dirtied
+   * {@link GlobalConfiguration#CHECK_DATABASE_REPAIR_BATCH_PAGES} pages (issue #6128).
+   * <p>
+   * Without this the repair of one type - every reconnected edge and every deleted record - was one transaction,
+   * and on a replicated database one Raft log entry. {@code RaftTransactionBroker.replicateTransaction} submits it
+   * whole and {@code RaftGroupCommitter.submitAndWait} rejects anything above
+   * {@code min(appendBufferSize, grpcMessageSizeMax)} with a {@code ReplicatedEntryTooLargeException}, which is not
+   * a {@code NeedRetryException} and so is never retried: a repair large enough to matter ran for hours and was
+   * then rolled back whole. A schema entry has had a splitter since #4743; a transaction entry has none.
+   * <p>
+   * PAGES, not repaired records: the entry carries page images, and how many records a repair touched says nothing
+   * about how many distinct pages it dirtied. {@code TransactionContext.getModifiedPages()} counts both modified
+   * and newly-created pages, which is exactly what the WAL will hold.
+   * <p>
+   * WHAT THIS CHANGES, stated plainly because it is a semantic change and not only a performance one: a repair is
+   * no longer all-or-nothing. A failure part-way through now leaves the earlier batches committed. That is the
+   * behaviour a multi-type run has always had - {@code check()} commits each type before starting the next - so
+   * this makes one type behave like the whole run rather than inventing a new semantics; and the alternative on a
+   * replicated database is not an atomic repair but no repair at all. Set the budget to 0 to get the single
+   * transaction back.
+   * <p>
+   * Only ever called BETWEEN units of repair work, never inside a {@code scanType}/{@code scan} callback:
+   * {@code LocalDatabase.scanType} holds the database read lock and owns an implicit transaction for the length of
+   * the scan, so committing under it would commit a transaction the scan believes it still owns. Every call site
+   * here is therefore in a post-scan apply or delete loop, which is also where the page volume actually is.
+   */
+  private void commitRepairBatchIfFull() {
+    if (repairBatchPages <= 0)
+      return;
+    if (database.getTransaction().getModifiedPages() < repairBatchPages)
+      return;
+    database.commit();
+    database.begin();
   }
 
   /**
@@ -539,9 +584,14 @@ public class GraphDatabaseChecker {
           if (rid == null)
             continue;
 
-          autoFix.incrementAndGet();
           try {
             deleteCorruptedRecord(rid);
+            // Counted AFTER the delete returns, not before it is attempted (issue #6128). autoFix is what an
+            // operator reads to decide whether a run did anything, so it must not include a repair that failed -
+            // and the failure here is routine rather than exotic: checkEdges flags both ends of a dangling edge,
+            // and the far end is flagged precisely because it is not there, so its delete always raises
+            // RecordNotFoundException. One dangling edge used to report two repairs.
+            autoFix.incrementAndGet();
             // Reported, not only counted: an operator reads deletedRecordsAfterFix to learn WHICH records a repair
             // removed, and until this arm populated it the answer depended on which pass happened to do the delete -
             // a broken-chain record was listed (LocalBucket.check removed it) and every other corrupt record was not.
@@ -552,6 +602,7 @@ public class GraphDatabaseChecker {
           } catch (final Throwable e) {
             report.warn("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
+          commitRepairBatchIfFull();
         }
       }
 
@@ -562,7 +613,8 @@ public class GraphDatabaseChecker {
       database.commit();
 
     } finally {
-      stats.put("autoFix", autoFix.get());
+      // Both kinds of repair this run performed: records removed, plus dangling adjacency entries pruned (#6128).
+      stats.put("autoFix", autoFix.get() + report.prunedDanglingEntries);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("duplicateLightEdges", report.duplicateLightEdges);
@@ -630,6 +682,7 @@ public class GraphDatabaseChecker {
         final MutableVertex vertex = e.getOutVertex().modify();
         // getOrCreateEdgeList dispatches on the head record type, so promoted (striped) vertices work too
         graphEngine.getOrCreateEdgeList(vertex, Vertex.DIRECTION.OUT).add(e.getIdentity(), e.getIn());
+        commitRepairBatchIfFull();
       }
       report.warn("reconnected " + outEdgesToReconnect.size() + " outgoing edges");
       stats.put("outEdgesToReconnect", outEdgesToReconnect);
@@ -639,6 +692,7 @@ public class GraphDatabaseChecker {
       for (Edge e : inEdgesToReconnect) {
         final MutableVertex vertex = e.getInVertex().modify();
         graphEngine.getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
+        commitRepairBatchIfFull();
       }
       report.warn("reconnected " + inEdgesToReconnect.size() + " incoming edges");
       stats.put("inEdgesToReconnect", inEdgesToReconnect);
@@ -885,8 +939,14 @@ public class GraphDatabaseChecker {
               }
             }
 
-            if (fix && removeEntry)
+            if (fix && removeEntry) {
               in.remove();
+              // Pruning a dangling list entry IS a repair, and counting it is what keeps autoFix meaning "repairs
+              // performed" now that it no longer counts deletes that failed (issue #6128). Without this an operator
+              // who ran FIX over a database whose only damage was dangling references - the commonest shape, since
+              // the far record is usually already gone - would read autoFix = 0 and conclude nothing was done.
+              ++report.prunedDanglingEntries;
+            }
           } catch (Exception e) {
             // UNKNOWN ERROR WHILE WALKING THE LIST: the chain is unreliable, rebuild it below
             chainBroken = true;
@@ -1126,8 +1186,11 @@ public class GraphDatabaseChecker {
               }
             }
 
-            if (fix && removeEntry)
+            if (fix && removeEntry) {
               out.remove();
+              // See the twin in checkIncomingEdges: a pruned dangling entry is a repair and is counted as one.
+              ++report.prunedDanglingEntries;
+            }
 
           } catch (Exception e) {
             // UNKNOWN ERROR WHILE WALKING THE LIST: the chain is unreliable, rebuild it below
@@ -1336,9 +1399,14 @@ public class GraphDatabaseChecker {
           if (rid == null)
             continue;
 
-          autoFix.incrementAndGet();
           try {
             deleteCorruptedRecord(rid);
+            // Counted AFTER the delete returns, not before it is attempted (issue #6128). autoFix is what an
+            // operator reads to decide whether a run did anything, so it must not include a repair that failed -
+            // and the failure here is routine rather than exotic: checkEdges flags both ends of a dangling edge,
+            // and the far end is flagged precisely because it is not there, so its delete always raises
+            // RecordNotFoundException. One dangling edge used to report two repairs.
+            autoFix.incrementAndGet();
             // Reported, not only counted: an operator reads deletedRecordsAfterFix to learn WHICH records a repair
             // removed, and until this arm populated it the answer depended on which pass happened to do the delete -
             // a broken-chain record was listed (LocalBucket.check removed it) and every other corrupt record was not.
@@ -1349,6 +1417,7 @@ public class GraphDatabaseChecker {
           } catch (final Throwable e) {
             report.warn("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
+          commitRepairBatchIfFull();
         }
       }
 
@@ -1359,7 +1428,8 @@ public class GraphDatabaseChecker {
       database.commit();
 
     } finally {
-      stats.put("autoFix", autoFix.get());
+      // Both kinds of repair this run performed: records removed, plus dangling adjacency entries pruned (#6128).
+      stats.put("autoFix", autoFix.get() + report.prunedDanglingEntries);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("invalidLinks", report.invalidLinks);
@@ -1430,6 +1500,13 @@ public class GraphDatabaseChecker {
     // nothing else does. checkEdges leaves duplicateLightEdges at zero and does not publish it, as before.
     long                        invalidLinks;
     long                        duplicateLightEdges;
+    /**
+     * Dangling adjacency-list entries this run PRUNED (issue #6128). Folded into the reported {@code autoFix}
+     * alongside the records actually deleted, because both are repairs the run performed and {@code autoFix} is the
+     * one number an operator reads to decide whether it did anything. Lives here rather than as another parameter
+     * for the same reason the counters above do: every helper that prunes needs it and nothing else does.
+     */
+    long                        prunedDanglingEntries;
     final int                   maxWarnings;
     final int                   maxCorrupted;
     /**

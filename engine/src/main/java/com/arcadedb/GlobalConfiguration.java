@@ -439,6 +439,21 @@ public enum GlobalConfiguration {
       Larger values reduce commit overhead on single-node setups at the cost of bigger transactions.""",
       Integer.class, 1000),
 
+  CHECK_DATABASE_REPAIR_BATCH_PAGES("arcadedb.checkDatabaseRepairBatchPages", SCOPE.DATABASE,
+      """
+      Number of modified pages CHECK DATABASE ... FIX accumulates before committing its repair and opening the next \
+      transaction. Same rationale as arcadedb.truncateBatchSize, and the same failure it avoids (issue #6128): the \
+      repair of one type - every reconnected edge and every deleted record - used to be a SINGLE transaction, which \
+      in HA is a SINGLE Raft log entry, and a transaction entry has no splitter the way a schema entry has had since \
+      issue #4743. Above min(arcadedb.ha.appendBufferSize, arcadedb.ha.grpcMessageSizeMax) the entry is rejected with \
+      ReplicatedEntryTooLargeException - not a NeedRetryException, so nothing retries it - and a repair that had run \
+      for hours was rolled back whole. Counted in PAGES rather than records because pages are what the entry \
+      contains: how many records a repair touched says nothing about how many distinct pages it dirtied. The default \
+      of 256 stays well under the 32MB appendBufferSize default even at the 64KB bucket page size and before the WAL \
+      is compressed. Raising it lowers commit overhead on an embedded database at the cost of bigger transactions; 0 \
+      disables batching entirely, restoring the all-or-nothing repair semantics of a single transaction.""",
+      Integer.class, 256),
+
   PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
 
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
