@@ -114,13 +114,17 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
   /** Sums the RRF terms over an array-like rank source (caller guarantees {@link #isArrayLike}). */
   private static double rrfFromArray(final Object arrayLike, final long k) {
     double score = 0.0;
-    switch (arrayLike) {
     // Primitive arrays are iterated directly (no boxing, per the engine's GC-awareness policy).
-    case int[] a -> { for (final int r : a) score += rankTerm(r, k); }
-    case long[] a -> { for (final long r : a) score += rankTerm(r, k); }
-    case Object[] a -> { for (final Object o : a) if (o != null) score += rankTerm(toDouble(o), k); }
-    case List<?> l -> { for (final Object o : l) if (o != null) score += rankTerm(toDouble(o), k); }
-    default -> throw new AssertionError("rrfFromArray reached with non-array-like: " + arrayLike.getClass().getSimpleName());
+    if (arrayLike instanceof int[] a) {
+      for (final int r : a) score += rankTerm(r, k);
+    } else if (arrayLike instanceof long[] a) {
+      for (final long r : a) score += rankTerm(r, k);
+    } else if (arrayLike instanceof Object[] a) {
+      for (final Object o : a) if (o != null) score += rankTerm(toDouble(o), k);
+    } else if (arrayLike instanceof List<?> l) {
+      for (final Object o : l) if (o != null) score += rankTerm(toDouble(o), k);
+    } else {
+      throw new AssertionError("rrfFromArray reached with non-array-like: " + arrayLike.getClass().getSimpleName());
     }
     return score;
   }
