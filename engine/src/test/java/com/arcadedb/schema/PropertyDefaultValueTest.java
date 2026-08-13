@@ -33,6 +33,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -175,6 +180,51 @@ class PropertyDefaultValueTest extends TestHelper {
         assertThat(p.getDefaultValueExpression()).isSameAs(compiled);
       }
     });
+  }
+
+  /**
+   * One compiled expression now backs every record create of the type, so the same AST instance is executed by every
+   * thread inserting concurrently - where before #6134 each call parsed its own throwaway copy. Executing a parsed tree
+   * concurrently is already what the whole engine does ({@code StatementCache} hands one {@code Statement} to every
+   * caller of a given SQL string and it is executed without copying), but the defaults path is the one place where the
+   * sharing is per-schema-object rather than per-query, so it is pinned here: a constant, a method call and
+   * {@code sysdate()} hammered from several threads must all produce correct values and raise nothing.
+   */
+  @Test
+  void aCompiledDefaultIsSafeToEvaluateConcurrently() throws InterruptedException {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("Probe");
+      type.createProperty("constant", Type.STRING).setDefaultValue("'ok'");
+      type.createProperty("method", Type.STRING).setDefaultValue("'a'.append('b')");
+      type.createProperty("createdOn", Type.DATETIME_MICROS).setDefaultValue("sysdate()");
+    });
+
+    final DocumentType type = database.getSchema().getType("Probe");
+    final int threads = 8, iterations = 500;
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(threads);
+    final List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+
+    for (int t = 0; t < threads; t++) {
+      new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < iterations; i++) {
+            assertThat(type.getProperty("constant").getDefaultValue()).isEqualTo("ok");
+            assertThat(type.getProperty("method").getDefaultValue()).isEqualTo("ab");
+            assertThat(type.getProperty("createdOn").getDefaultValue()).isInstanceOf(LocalDateTime.class);
+          }
+        } catch (Throwable e) {
+          failures.add(e);
+        } finally {
+          done.countDown();
+        }
+      }).start();
+    }
+
+    start.countDown();
+    assertThat(done.await(60, TimeUnit.SECONDS)).isTrue();
+    assertThat(failures).isEmpty();
   }
 
   /**

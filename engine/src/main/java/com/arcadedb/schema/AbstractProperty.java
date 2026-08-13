@@ -71,6 +71,13 @@ public abstract class AbstractProperty implements Property {
    * every record create evaluates - it used to be re-parsed per record, per defaulted property, costing ~3us each time
    * on the insert hot path. The compiled EXPRESSION is cached, never the evaluated result: {@code DEFAULT sysdate()}
    * has to produce a fresh value on every record.
+   * <p>
+   * <b>One compiled instance is executed concurrently</b> by every thread creating a record of the owning type, which
+   * relies on {@code execute()} over the expression tree being side-effect-free. That is not a new requirement this
+   * introduced: {@link com.arcadedb.query.sql.parser.StatementCache} hands the same parsed {@code Statement} to every
+   * concurrent caller of a given SQL string and {@code SQLQueryEngine.parse} executes it without copying, so every
+   * query in the engine already shares its AST across threads. Pinned by
+   * {@code PropertyDefaultValueTest.aCompiledDefaultIsSafeToEvaluateConcurrently}.
    *
    * @param value      what the schema stores and {@code schema.json} round-trips: the source text for a String default,
    *                   the value itself for one set through the API, or {@link #DEFAULT_NOT_SET} when none is defined
@@ -194,7 +201,8 @@ public abstract class AbstractProperty implements Property {
         reason = "it is a field reference, not a value: a default value is evaluated with no current record, so it would"
             + " always resolve to null. Quote it as '" + text + "' to use it as a literal";
     } catch (Exception e) {
-      reason = "it cannot be parsed as an SQL expression: " + e.getMessage();
+      // A CAUSE WITH NO MESSAGE CONTRIBUTES NOTHING, SO IT IS LEFT OFF RATHER THAN RENDERED AS A TRAILING ": null".
+      reason = "it cannot be parsed as an SQL expression" + (e.getMessage() == null ? "" : ": " + e.getMessage());
     }
 
     if (reason == null)
