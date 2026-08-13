@@ -492,7 +492,6 @@ public class PageManager extends LockContext {
    *     was deferred for it are released there.
    */
   public PageSnapshot openSnapshot(final DatabaseInternal database) {
-    final long beginTime = System.currentTimeMillis();
     try {
       return openSnapshotInternal(database);
     } catch (final PageSnapshotException e) {
@@ -502,10 +501,6 @@ public class PageManager extends LockContext {
       throw new PageSnapshotException("Interrupted while opening a snapshot of database '" + database.getName() + "'", e);
     } catch (final Exception e) {
       throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName() + "'", e);
-    } finally {
-      // #6125: TIMED EVEN WHEN THE BARRIER THROWS - A BARRIER THAT FAILS SLOWLY IS EXACTLY AS MUCH OF A STALL AS ONE
-      // THAT SUCCEEDS SLOWLY, AND ITS CONSUMER STILL FALLS BACK TO THE PATH THAT THROTTLES WRITERS
-      recordSnapshotBarrier(System.currentTimeMillis() - beginTime);
     }
   }
 
@@ -519,10 +514,17 @@ public class PageManager extends LockContext {
   private PageSnapshot openSnapshotInternal(final DatabaseInternal database) throws IOException, InterruptedException {
     final PageManagerFlushThread thread = flushThread;
     if (thread == null)
+      // NOT TIMED AND NOT COUNTED: NOTHING OF THE BARRIER RAN, AND A CALL THAT REFUSED INSTANTLY WOULD OTHERWISE PULL
+      // THE AVERAGE THIS METRIC EXISTS TO REPORT TOWARDS ZERO
       throw new PageSnapshotException(
           "Cannot open a snapshot of database '" + database.getName() + "': the page manager is not running");
 
     synchronized (snapshotBarrierLock(database)) {
+      // THE CLOCK STARTS HERE, NOT AT THE PUBLIC ENTRY POINT: THIS MONITOR ONLY SERIALIZES BARRIERS ON THE SAME
+      // DATABASE, AND A SECOND CALLER'S WAIT ON IT IS QUEUEING FOR THE BARRIER RATHER THAN THE BARRIER ITSELF. THE
+      // SUSPENSION RELEASE IN THE OUTER finally IS DELIBERATELY INSIDE THE MEASUREMENT - IT FLUSHES WHAT THE
+      // SUSPENSION DEFERRED, WHICH IS PART OF WHAT OPENING THE WINDOW COSTS
+      final long beginTime = System.currentTimeMillis();
       boolean suspended = false;
       try {
         // STEP 1: THE BULK DRAIN, DELIBERATELY OUTSIDE EVERY LOCK. IT IS THE LONG PART, AND MAKING COMMITTERS WAIT
@@ -602,6 +604,9 @@ public class PageManager extends LockContext {
       } finally {
         if (suspended)
           thread.setSuspended(database, false);
+        // #6125: TIMED EVEN WHEN THE BARRIER THROWS - A BARRIER THAT FAILS SLOWLY IS EXACTLY AS MUCH OF A STALL AS
+        // ONE THAT SUCCEEDS SLOWLY, AND ITS CONSUMER STILL FALLS BACK TO THE PATH THAT THROTTLES WRITERS
+        recordSnapshotBarrier(System.currentTimeMillis() - beginTime);
       }
     }
   }
@@ -754,7 +759,8 @@ public class PageManager extends LockContext {
    * The cap on this window's shadow, in bytes (#6125).
    * <p>
    * A positive {@code arcadedb.pageSnapshotMaxSize} is an absolute number of MB and 0 means uncapped, both unchanged.
-   * The default -1 sizes it here instead, from the two quantities that actually bound the shadow:
+   * ANY negative value - -1 is merely the spelling the default and the documentation use - sizes it here instead,
+   * from the two quantities that actually bound the shadow:
    * <ul>
    * <li>the t0 size of the page files, which the shadow provably cannot exceed - it holds ONE pre-image per page that
    * existed at t0, and pages appended after t0 need none (challenge C7);</li>

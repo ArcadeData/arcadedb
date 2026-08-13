@@ -342,7 +342,15 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     }
   }
 
-  /** The one stall the snapshot path still has is now reported rather than only logged when it goes wrong. */
+  /**
+   * The one stall the snapshot path still has is now reported rather than only logged when it goes wrong.
+   * <p>
+   * The timer measures the barrier itself: it starts inside the per-database monitor, so a second caller queueing
+   * behind a barrier on the same database is not charged for the wait, and a call refused before the barrier is
+   * entered at all is neither timed nor counted. Neither of those is asserted here - the first needs two threads
+   * racing on one database and the second needs a page manager that is not running, which no test can arrange
+   * without breaking the JVM-wide singleton this and every other test class shares.
+   */
   @Test
   void theBarrierIsTimed() {
     final DatabaseInternal db = (DatabaseInternal) database;

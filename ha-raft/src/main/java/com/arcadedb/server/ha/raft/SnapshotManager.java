@@ -208,5 +208,4 @@ public final class SnapshotManager {
 
     return checksums;
   }
-
 }
