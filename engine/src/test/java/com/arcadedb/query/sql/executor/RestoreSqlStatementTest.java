@@ -249,6 +249,53 @@ class RestoreSqlStatementTest extends TestHelper {
     assertThat(countByQuery()).isEqualTo(3);
   }
 
+  @Test
+  void restoreDocumentInTheSameTransactionAsTheDelete() {
+    // #6096: DELETE and RESTORE of the same RID inside ONE transaction. The two folds cancel out (-1 then +1) so
+    // count(*) still reports 1, but the record itself was written at a bogus page offset and a full scan returned
+    // 0 rows. The only live record of the page is the deleted one, so every slot of the page is a hole - the case
+    // findContentInsertionOffset() mistook for "a record starting at offset 0".
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("i", 7).save().getIdentity());
+
+    database.transaction(() -> {
+      database.command("sql", "DELETE FROM " + rid[0]);
+      database.command("sql", "RESTORE DOCUMENT " + DOC_TYPE + " RID " + rid[0] + " SET i = 7");
+    });
+
+    assertThat(countByScan()).isEqualTo(1);
+    assertThat(countByQuery()).isEqualTo(1);
+    database.transaction(() -> assertThat(database.lookupByRID(rid[0], true).asDocument().<Integer>get("i")).isEqualTo(7));
+
+    reopenDatabase();
+
+    assertThat(countByScan()).isEqualTo(1);
+    assertThat(countByQuery()).isEqualTo(1);
+  }
+
+  @Test
+  void restoreDocumentWhenEverySlotOfThePageIsAHole() {
+    // #6096, separate-transaction variant of the same page shape: the bucket's only record is deleted and
+    // committed, then restored. The record table is all holes, so the restore must start the content right after
+    // the page header instead of deriving an offset from a hole.
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("i", 7).save().getIdentity());
+
+    database.transaction(() -> database.command("sql", "DELETE FROM " + rid[0]));
+    assertThat(countByScan()).isEqualTo(0);
+    assertThat(countByQuery()).isEqualTo(0);
+
+    database.transaction(() -> database.command("sql", "RESTORE DOCUMENT " + DOC_TYPE + " RID " + rid[0] + " SET i = 7"));
+
+    assertThat(countByScan()).isEqualTo(1);
+    assertThat(countByQuery()).isEqualTo(1);
+
+    reopenDatabase();
+
+    assertThat(countByScan()).isEqualTo(1);
+    assertThat(countByQuery()).isEqualTo(1);
+  }
+
   private long countByQuery() {
     try (ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + DOC_TYPE)) {
       return rs.next().<Number>getProperty("c").longValue();
