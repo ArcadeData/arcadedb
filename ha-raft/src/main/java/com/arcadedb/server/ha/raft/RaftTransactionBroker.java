@@ -130,7 +130,7 @@ public class RaftTransactionBroker {
    * <p>
    * {@link #splitSchemaEntry} splits a payload that has already been built in full; this is the same ordered-prefix
    * contract applied to a payload that is still growing. The producer is
-   * {@code RaftReplicatedDatabase.flushSchemaWalBuffer}: an index rebuild inside a {@code recordFileChanges}
+   * {@code RaftReplicatedDatabase.flushSchemaWalBufferIfFull}: an index rebuild inside a {@code recordFileChanges}
    * callback commits once per build batch, and every one of those commits used to sit in leader heap until the
    * callback returned, so peak heap was the whole rebuilt index.
    * <p>

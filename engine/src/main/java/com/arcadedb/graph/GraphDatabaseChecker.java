@@ -540,7 +540,7 @@ public class GraphDatabaseChecker {
     final AtomicLong autoFix = new AtomicLong();
     final CheckReport report = new CheckReport(maxWarnings, maxCorrupted, verboseLevel);
     // Every repair this scan decides on, applied AFTER it under the page budget (issue #6136) - see RepairPlan.
-    final RepairPlan plan = new RepairPlan();
+    final RepairPlan plan = new RepairPlan(database);
     final Map<RID, Long> missingReferences = new HashMap<>();
     final Map<RID, String> missingReferenceErrors = new HashMap<>();
     /** Records this run actually removed, surfaced as {@code deletedRecordsAfterFix}. */
@@ -727,6 +727,32 @@ public class GraphDatabaseChecker {
    * through a union map: the second load reads the first one's uncommitted image, so both nulls survive, and the
    * two writes land on the same page - the merge would buy a map allocation and no page.
    */
+  /**
+   * Plans one back-reference, unless this walk of THIS list already planned one for the same edge (issue #6136).
+   * <p>
+   * The de-duplication is needed because the repair is deferred: the {@code isConnectedTo} probe that used to
+   * suppress a second attempt answered on a list the previous repair had already written to, and now it answers on
+   * the pre-repair list. So a list naming the same edge twice - itself corruption, and reported as such - would
+   * plant two back-references where one used to be planted. It is scoped to the one list because that is the only
+   * scope in which the duplicate can arise: across vertices the planned entries differ in the endpoint they
+   * record, which is exactly what the probe distinguished too.
+   * <p>
+   * Shared by {@link #checkIncomingEdges} and {@link #checkOutgoingEdges} rather than copied into each: the two
+   * drifting apart is what produced the bug {@link #handleDanglingEdgeListEntry} exists to fix.
+   *
+   * @param seen the caller's set, created on first use so a healthy list never allocates one
+   *
+   * @return the set to keep, whether it was just created or was already there
+   */
+  private static EdgeIdentitySet planBackReference(EdgeIdentitySet seen, final PendingLinks target,
+      final RID farVertex, final RID edge, final RID nearVertex) {
+    if (seen == null)
+      seen = new EdgeIdentitySet();
+    if (seen.add(edge))
+      target.add(farVertex, edge, nearVertex);
+    return seen;
+  }
+
   private void applyPendingChainResets(final RepairPlan plan, final CheckReport report) {
     for (final RID rid : plan.reconnectOutEdges)
       resetChain(rid, Vertex.DIRECTION.OUT, report);
@@ -810,7 +836,7 @@ public class GraphDatabaseChecker {
         continue;
 
       try {
-        final MutableVertex vertex = vertexRID.asVertex(true).modify();
+        final MutableVertex vertex = database.lookupByRID(vertexRID, true).asVertex(true).modify();
         // getOrCreateEdgeList dispatches on the head record type, so promoted (striped) vertices work too
         graphEngine.getOrCreateEdgeList(vertex, direction).add(edgeRID, pending.other(i));
         ++applied;
@@ -875,6 +901,17 @@ public class GraphDatabaseChecker {
       final CheckReport report) {
     final Set<RID> reconnectInEdges = plan.reconnectInEdges;
     final Set<RID> reconnectOutEdges = plan.reconnectOutEdges;
+
+    // Already condemned by an EARLIER vertex's far-endpoint probe: nothing here can improve on a list that is
+    // about to be dropped and rebuilt from the surviving edge records, and walking it can make things worse -
+    // an entry pointing at an edge that belongs to another vertex is diagnosed as a corrupt EDGE and deleted in
+    // fix mode, destroying a record the rebuild would have re-linked. Before #6136 this was implicit and
+    // scan-order dependent: resetChain ran inside the scan, so a vertex condemned before its own turn arrived
+    // with a null head chunk and fell out at the guard below, while the same vertex reached first was walked in
+    // full. Deferring the write made the skip explicit, which also makes it deterministic.
+    if (fix && reconnectInEdges.contains(vertexIdentity))
+      return;
+
     if (((VertexInternal) vertex).getInEdgesHeadChunk() != null) {
       EdgeLinkedList inEdges = null;
       try {
@@ -1045,12 +1082,9 @@ public class GraphDatabaseChecker {
                     // PLANNED, not written (issue #6136): this is the repair that wrote one far vertex per defective
                     // edge from inside the scan, where nothing could commit. Same write, applied afterwards under
                     // the page budget - connectOutgoingEdge is getOrCreateEdgeList(v, OUT).add(edge, target).
-                    if (fix) {
-                      if (plannedBackRefs == null)
-                        plannedBackRefs = new EdgeIdentitySet();
-                      if (plannedBackRefs.add(edgeRID))
-                        plan.backRefOutLinks.add(inVertex.getIdentity(), edge.getIdentity(), vertexIdentity);
-                    }
+                    if (fix)
+                      plannedBackRefs = planBackReference(plannedBackRefs, plan.backRefOutLinks,
+                          inVertex.getIdentity(), edge.getIdentity(), vertexIdentity);
                   }
                 }
 
@@ -1103,6 +1137,12 @@ public class GraphDatabaseChecker {
       final CheckReport report) {
     final Set<RID> reconnectOutEdges = plan.reconnectOutEdges;
     final Set<RID> reconnectInEdges = plan.reconnectInEdges;
+
+    // See the twin in checkIncomingEdges: a list already condemned by an earlier vertex's probe is skipped, which
+    // is what the immediate resetChain used to achieve by leaving a null head chunk behind (issue #6136).
+    if (fix && reconnectOutEdges.contains(vertexIdentity))
+      return;
+
     // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
     if (((VertexInternal) vertex).getOutEdgesHeadChunk() != null) {
       EdgeLinkedList outEdges = null;
@@ -1290,12 +1330,9 @@ public class GraphDatabaseChecker {
                             + vertexIdentity);
                     // PLANNED, not written - see the twin in checkIncomingEdges (issue #6136), including why the
                     // per-list de-duplication is needed now that the probe no longer sees the previous repair.
-                    if (fix) {
-                      if (plannedBackRefs == null)
-                        plannedBackRefs = new EdgeIdentitySet();
-                      if (plannedBackRefs.add(edgeRID))
-                        plan.backRefInLinks.add(outVertex.getIdentity(), edgeRID, vertexIdentity);
-                    }
+                    if (fix)
+                      plannedBackRefs = planBackReference(plannedBackRefs, plan.backRefInLinks,
+                          outVertex.getIdentity(), edgeRID, vertexIdentity);
                   }
                 }
 
@@ -1352,7 +1389,7 @@ public class GraphDatabaseChecker {
    */
   private void resetChain(final RID vertexRID, final Vertex.DIRECTION direction, final CheckReport report) {
     try {
-      final MutableVertex mutable = vertexRID.asVertex(true).modify();
+      final MutableVertex mutable = database.lookupByRID(vertexRID, true).asVertex(true).modify();
       if (direction == Vertex.DIRECTION.OUT)
         mutable.setOutEdgesHeadChunk(null);
       else
@@ -1642,18 +1679,25 @@ public class GraphDatabaseChecker {
     /** Vertices whose IN list must be dropped and rebuilt from the surviving edge records. */
     final Set<RID>     reconnectInEdges  = new HashSet<>();
     /** OUT-list entries rebuilt from the surviving edge records, for the vertices in {@link #reconnectOutEdges}. */
-    final PendingLinks rebuiltOutLinks   = new PendingLinks();
+    final PendingLinks rebuiltOutLinks;
     /** IN-list entries rebuilt from the surviving edge records, for the vertices in {@link #reconnectInEdges}. */
-    final PendingLinks rebuiltInLinks    = new PendingLinks();
+    final PendingLinks rebuiltInLinks;
     /**
      * Back-references the OUT list of an otherwise healthy far vertex was missing. Kept apart from the rebuilt
      * links rather than merged into them, even though the write is identical, because the two are reported
      * separately: "reconnected N outgoing edges" has always meant "a broken chain was rebuilt from N edge records"
      * and folding a different repair into that number would change what an existing report says.
      */
-    final PendingLinks backRefOutLinks   = new PendingLinks();
+    final PendingLinks backRefOutLinks;
     /** Back-references the IN list of an otherwise healthy far vertex was missing. */
-    final PendingLinks backRefInLinks    = new PendingLinks();
+    final PendingLinks backRefInLinks;
+
+    RepairPlan(final DatabaseInternal database) {
+      rebuiltOutLinks = new PendingLinks(database);
+      rebuiltInLinks = new PendingLinks(database);
+      backRefOutLinks = new PendingLinks(database);
+      backRefInLinks = new PendingLinks(database);
+    }
   }
 
   /**
@@ -1671,13 +1715,27 @@ public class GraphDatabaseChecker {
    * Still unbounded in the number of ENTRIES, and deliberately so: an entry is dropped only once its repair has
    * been applied, and a cap would mean silently declining to repair part of the damage. The bound that matters -
    * and the one #6128/#6136 are about - is on the transaction, not on the plan.
+   * <p>
+   * The RIDs it hands back are BOUND TO THE DATABASE ({@code database.newRID}), which is not cosmetic. Flattening
+   * to primitives loses the owning database, and a bare {@code RID} resolves one through
+   * {@code RID.resolveActiveDatabase()} - a thread-local lookup that THROWS when more than one database is in
+   * scope on the thread. That exception would be caught by the apply loop's generic handler and turned into a
+   * per-entry warning, so on a multi-database server the repair would silently decline to apply while the run
+   * still reported success. Rebuilding them here rather than at each call site means no future caller can
+   * reintroduce that.
    */
   private static final class PendingLinks {
     private static final int TRIPLE = 3;
 
+    private final DatabaseInternal database;
+
     private int[]  buckets   = new int[TRIPLE * 16];
     private long[] positions = new long[TRIPLE * 16];
     private int    size;
+
+    PendingLinks(final DatabaseInternal database) {
+      this.database = database;
+    }
 
     void add(final RID vertex, final RID edge, final RID other) {
       final int base = size * TRIPLE;
@@ -1698,7 +1756,7 @@ public class GraphDatabaseChecker {
     }
 
     private RID get(final int slot) {
-      return new RID(buckets[slot], positions[slot]);
+      return database.newRID(buckets[slot], positions[slot]);
     }
 
     int size() {

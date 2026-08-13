@@ -1204,10 +1204,25 @@ in-memory component, and the follower serves only its mutable pages from then on
 The threshold is derived rather than configured: half the maximum replicated entry size, the same expression the
 compaction path already uses for its own chunk budget. Lowering `arcadedb.ha.appendBufferSize` lowers it too.
 
-**What this does not change**, stated because the difference matters to an operator: the recording session stays
-open for the whole build, so a concurrent writer on the leader still waits on it - and, before that, on the database
-write lock the callback holds. Bounding the heap does not shorten that window. Shortening it means taking the build
-out of the session altogether, which is a different change on the same code path.
+**What it costs**, stated precisely because it is a trade and not only a heap win. The recording session stays open
+for the whole build, so a concurrent writer on the leader still waits on it - and, before that, on the database write
+lock the callback holds. Bounding the heap does not shorten that window, and each instalment *lengthens* it: a quorum
+round trip is now taken while that write lock is held, where the single final entry had always been submitted after
+the callback returned and the lock was released. Normally that is milliseconds against a build measured in minutes;
+against a slow or briefly partitioned quorum member it is up to `arcadedb.ha.quorumTimeout` per instalment, and the
+whole database's writers wait it out. Accepted, because the alternative is not "no round trips" - without instalments
+the one final entry carries the whole index, `splitSchemaEntry` splits it, and the same number of round trips happens
+anyway, after the lock but only once the leader has held the entire rebuilt index in heap. Making the window itself
+shorter means taking the build out of the recording session altogether, which is a different change on the same code
+path.
+
+**If the build fails after an instalment has shipped**, the followers are holding files and pages that the entry
+which would have published or retired them never reaches, because it lives after the line that threw - and every
+instalment chunk is marked `moreChunksFollow`, so there is no abandonment signal a follower could act on by itself.
+The session now sends a compensating removal, and *which* files it retires is the whole correctness of it: one the
+leader no longer has is retired (the case `BucketIndexBuilder.create()` produces, since it drops the half-built index
+from its own error handler), while one the leader still has is left alone and reported, because retiring that would
+take a state both sides agree on and make them disagree.
 
 ### The in-scan repairs are bounded too
 

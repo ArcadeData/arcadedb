@@ -182,11 +182,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final class SchemaInstalmentState {
     /**
      * Raw buffered bytes at which the next instalment goes out: half the maximum replicated entry size, the same
-     * expression {@code runWithCompactionReplication} uses for its own chunk budget. Resolved ONCE per session
-     * rather than per buffered commit - it cannot change under a session, and the alternative puts a
-     * {@code requireRaftServer().getTransactionBroker()} hop on every batch commit of an index build.
+     * expression {@code runWithCompactionReplication} uses for its own chunk budget. Zero until the session's
+     * FIRST buffered commit resolves it.
+     * <p>
+     * Resolved once, and lazily, for two different reasons. Once, because it cannot change under a session and the
+     * alternative puts a {@code requireRaftServer().getTransactionBroker()} hop on every batch commit of an index
+     * build. Lazily, because {@code requireRaftServer()} throws a retryable {@code NeedRetryException} while the
+     * Raft server is transiently absent (restart, failover), and resolving it when the session OPENS would fail a
+     * {@code recordFileChanges} that buffers nothing and would have completed as a harmless no-op. A session that
+     * does buffer needs the server to replicate anyway, so nothing is lost by asking then.
      */
-    private final long                 threshold;
+    private long                       threshold;
     /** Raw bytes of WAL currently sitting in {@link #schemaWalBuffer}. */
     private long                       bufferedBytes;
     /**
@@ -198,9 +204,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     /** How many instalments went out; the final entry is unconditional once this is non-zero. */
     private int                        instalments;
 
-    SchemaInstalmentState(final long threshold) {
-      this.threshold = threshold;
-    }
   }
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
@@ -1541,8 +1544,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // Saved and restored for exactly the reason the mark above is: a session opened on ANOTHER database from
     // inside this callback must not take over this one's instalment bookkeeping (issue #6136).
     final SchemaInstalmentState outerInstalments = schemaInstalments.get();
-    final SchemaInstalmentState instalmentState = new SchemaInstalmentState(
-        Math.max(1024L, requireRaftServer().getTransactionBroker().maxEntrySize() / 2));
+    final SchemaInstalmentState instalmentState = new SchemaInstalmentState();
     schemaWalBuffer.get().clear();
     schemaBucketDeltaBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
@@ -1599,6 +1601,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           || shippedInstalments > 0) {
         final RaftHAServer raft = requireRaftServer();
         raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
+        // Set HERE, not after the logging below: the change is published the moment that call returns, and a
+        // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
+        // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
+        // this node no longer has, and it still has them - but it would put an operator on a phantom hunt.
+        published = true;
         HALog.log(this, HALog.DETAILED,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d, instalments=%d",
             addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size(), shippedInstalments);
@@ -1607,6 +1614,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           logSchemaPayloadDiagnostics("recordFileChanges", serializedSchema, addFiles, removeFiles);
       }
 
+      // The block above was not entered: there was nothing to say, which can only happen when no instalment went
+      // out either (an instalment forces the condition), so there is nothing for the compensation to do.
       published = true;
       return result;
     } finally {
@@ -1618,8 +1627,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         isSchemaCommitThread.set(outerSchemaCommitThread);
       if (outerInstalments == null)
         schemaInstalments.remove();
-      else
+      else {
+        // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
+        // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
+        // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
+        // the counter and the buffer telling the same story.
+        //
+        // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
+        // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
+        // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
+        outerInstalments.bufferedBytes = 0;
         schemaInstalments.set(outerInstalments);
+      }
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
@@ -1756,15 +1775,31 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * leaves the followers holding files and pages the session will never publish, where before them nothing reached
    * a follower until the callback returned. {@link #retireAbandonedInstalments} sends the compensating removal.
    * <p>
-   * WHAT IT DOES NOT FIX, stated because the difference matters: the recording session stays open for the whole
-   * build, so a concurrent writer still waits on {@link #waitForActiveRecordingSession()} (and, before that, on the
-   * database write lock the callback holds). Bounding the heap does not shorten the window, and shortening it means
-   * taking the build out of the session altogether - a different change, on the same code path, worth its own
-   * judgement.
+   * WHAT IT COSTS, stated precisely because it is a real trade and not only a heap win. The recording session stays
+   * open for the whole build, so a concurrent writer still waits on {@link #waitForActiveRecordingSession()} and,
+   * before that, on the database write lock the callback holds. Bounding the heap does not shorten that window -
+   * and each instalment LENGTHENS it, because {@code submitAndWait} is a quorum round trip taken while that write
+   * lock is held, where the single final entry has always been submitted after the callback returned and the lock
+   * was released. Normally that is milliseconds against a build measured in minutes. Against a slow or briefly
+   * partitioned quorum member it is up to {@code HA_QUORUM_TIMEOUT} per instalment, and the whole database's
+   * writers wait it out.
+   * <p>
+   * Accepted, because the alternative is not "no round trips": without instalments the one final entry carries the
+   * whole index, {@code splitSchemaEntry} splits it, and the same number of round trips happens anyway - after the
+   * lock, but only after the leader has held the entire rebuilt index in heap, which is the failure this exists to
+   * prevent. Paying for a bounded heap with round trips inside a window that is already fully exclusive is the
+   * better side of that trade. Making the window itself shorter means taking the build out of the recording
+   * session altogether - a different change, on the same code path, worth its own judgement.
    */
   private void flushSchemaWalBufferIfFull() {
     final SchemaInstalmentState state = schemaInstalments.get();
-    if (state == null || state.bufferedBytes < state.threshold)
+    if (state == null)
+      return;
+
+    if (state.threshold == 0)
+      state.threshold = Math.max(1024L, requireRaftServer().getTransactionBroker().maxEntrySize() / 2);
+
+    if (state.bufferedBytes < state.threshold)
       return;
 
     final RaftTransactionBroker broker = requireRaftServer().getTransactionBroker();
