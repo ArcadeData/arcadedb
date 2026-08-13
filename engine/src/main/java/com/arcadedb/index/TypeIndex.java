@@ -107,7 +107,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (indexesOnBuckets.get(0) instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, -1);
 
       // For full-text indexes, collect entries with scores
@@ -159,7 +159,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (indexesOnBuckets.get(0) instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, limit);
 
       // For full-text indexes, collect entries with scores

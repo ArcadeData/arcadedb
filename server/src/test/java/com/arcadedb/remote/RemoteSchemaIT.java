@@ -177,7 +177,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
         assertThat(database.getSchema().existsIndex("IndexedDoc[propA,propB]")).isTrue();
         assertThat(database.getSchema().existsIndex("IndexedDoc[nonExistent]")).isFalse();
 
-        final String bucketName = type.getBuckets(false).getFirst().getName();
+        final String bucketName = type.getBuckets(false).get(0).getName();
         assertThat(database.getSchema().existsBucket(bucketName)).isTrue();
         assertThat(database.getSchema().existsBucket("nonExistentBucket")).isFalse();
 

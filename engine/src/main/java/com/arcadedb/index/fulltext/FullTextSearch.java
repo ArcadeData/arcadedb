@@ -110,7 +110,7 @@ public class FullTextSearch {
     if (bucketIndexes.isEmpty())
       return Map.of();
 
-    if (bucketIndexes.size() > 1 && bucketIndexes.getFirst().isBM25())
+    if (bucketIndexes.size() > 1 && bucketIndexes.get(0).isBM25())
       return searchBM25(bucketIndexes, queryText, effectiveLimit);
 
     final Map<RID, Float> allResults = new HashMap<>();
@@ -185,11 +185,11 @@ public class FullTextSearch {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
     if (bucketIndexes.isEmpty())
       return new TempIndexCursor(List.of());
-    if (!bucketIndexes.getFirst().isBM25())
+    if (!bucketIndexes.get(0).isBM25())
       throw new IllegalArgumentException("searchSimple requires a BM25 full-text index");
 
     final int effectiveLimit = limit < 1 ? -1 : limit;
-    final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
+    final Map<String, Float> scoringTokens = bucketIndexes.get(0).getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
         scanDocumentFrequencies(bucketIndexes, scoringTokens));
     final Map<RID, Float> allResults = new HashMap<>();
@@ -206,7 +206,7 @@ public class FullTextSearch {
    */
   public static JSONObject explainScoring(final TypeIndex typeIndex, final String queryText) {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
-    if (bucketIndexes.isEmpty() || !bucketIndexes.getFirst().isBM25())
+    if (bucketIndexes.isEmpty() || !bucketIndexes.get(0).isBM25())
       return null;
 
     final Map<String, Float> allTokens = collectScoringTokens(bucketIndexes, queryText,
@@ -214,7 +214,7 @@ public class FullTextSearch {
     final Map<String, Float> shownTokens = firstTokens(allTokens, MAX_EXPLAIN_TERMS);
     final BM25ScoringContext context = createScoringContext(bucketIndexes,
         scanDocumentFrequencies(bucketIndexes, shownTokens));
-    final FullTextIndexMetadata metadata = bucketIndexes.getFirst().getFullTextMetadata();
+    final FullTextIndexMetadata metadata = bucketIndexes.get(0).getFullTextMetadata();
 
     final JSONObject explain = new JSONObject()
         .put("similarity", FullTextIndexMetadata.SIMILARITY_BM25)
@@ -281,7 +281,7 @@ public class FullTextSearch {
 
   private static BM25ScoringContext createScoringContext(final List<LSMTreeFullTextIndex> bucketIndexes,
       final Map<String, Long> documentFrequencies) {
-    final LSMTreeFullTextIndex first = bucketIndexes.getFirst();
+    final LSMTreeFullTextIndex first = bucketIndexes.get(0);
     first.ensureTypeWideBM25Counters();
 
     // Both counters are clamped to the neutral values BM25 uses when no statistics are available. A type whose indexed

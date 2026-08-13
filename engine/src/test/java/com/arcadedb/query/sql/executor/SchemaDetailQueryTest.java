@@ -200,7 +200,7 @@ class SchemaDetailQueryTest extends TestHelper {
   void selectFromSchemaBucketDetailQuoted() {
     database.transaction(() -> database.getSchema().createDocumentType("QuotedBucketTestType"));
 
-    final String bucketName = database.getSchema().getType("QuotedBucketTestType").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("QuotedBucketTestType").getBuckets(false).get(0).getName();
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM schema:bucket:`" + bucketName + "`")) {
       assertThat(rs.hasNext()).isTrue();
