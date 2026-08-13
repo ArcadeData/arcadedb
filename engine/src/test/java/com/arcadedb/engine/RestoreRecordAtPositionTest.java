@@ -101,6 +101,86 @@ class RestoreRecordAtPositionTest extends TestHelper {
   }
 
   @Test
+  void restoresARecordDeletedInTheSameTransaction() {
+    // #6096: same shape as restoresARecordAtItsOriginalRidAfterARawDelete(), but the delete and the restore share
+    // ONE transaction. That is the only way to reach the restore with a page whose record count is still > 0 while
+    // every one of those slots is a hole: on commit compressPage() resets the count to 0, which is why the
+    // separate-transaction case never hit it. The insertion offset was then derived from the 0 entry as if a
+    // record started at content offset 0, and the restored bytes landed on top of the page's own slot table - the
+    // record was written but no scan or lookup could ever find it again.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID[] rid = new RID[1];
+
+    database.transaction(() -> rid[0] = database.newVertex(TYPE).set("name", "original").save().getIdentity());
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
+
+    database.transaction(() -> {
+      bucket.deleteRecord(rid[0]);
+      final MutableVertex shell = database.newVertex(TYPE).set("name", "restored-same-tx");
+      assertThat(bucket.restoreRecordAtPosition(rid[0].getPosition(), shell)).isEqualTo(rid[0]);
+    });
+
+    database.transaction(() -> {
+      assertThat(bucket.existsRecord(rid[0])).isTrue();
+      assertThat(database.lookupByRID(rid[0], true).asVertex().getString("name")).isEqualTo("restored-same-tx");
+      assertThat(countByScan(bucket)).isEqualTo(1);
+      assertThat(bucket.count()).isEqualTo(1);
+    });
+
+    reopenDatabase();
+
+    final LocalBucket reopened = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(rid[0].getBucketId());
+    database.transaction(() -> {
+      assertThat(database.lookupByRID(rid[0], true).asVertex().getString("name")).isEqualTo("restored-same-tx");
+      assertThat(countByScan(reopened)).isEqualTo(1);
+      assertThat(reopened.count()).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void restoresIntoAPageWhoseEverySlotIsAHole() {
+    // #6096, wider variant: several records deleted in the same transaction so the page keeps a record count of 3
+    // with three holes, then the middle one is restored. The restore must start the content right after the page
+    // header, exactly like an insert into a page emptied by deletes. The type is created with a single bucket so
+    // the three records provably share one page and the all-holes shape is guaranteed rather than incidental.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final String type = "RestoreSingleBucket";
+    database.transaction(() -> database.getSchema().createDocumentType(type, 1));
+
+    final RID[] rid = new RID[3];
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        rid[i] = database.newDocument(type).set("name", "doc" + i).save().getIdentity();
+    });
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[1].getBucketId());
+    assertThat(rid[0].getBucketId()).isEqualTo(rid[2].getBucketId());
+
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        database.lookupByRID(rid[i], false).asDocument().delete();
+
+      final MutableDocument shell = database.newDocument(type).set("name", "restored-middle");
+      assertThat(bucket.restoreRecordAtPosition(rid[1].getPosition(), shell)).isEqualTo(rid[1]);
+    });
+
+    database.transaction(() -> {
+      assertThat(database.lookupByRID(rid[1], true).asDocument().getString("name")).isEqualTo("restored-middle");
+      assertThat(countByScan(bucket)).isEqualTo(1);
+    });
+  }
+
+  private long countByScan(final LocalBucket bucket) {
+    final long[] scanned = new long[1];
+    bucket.scan((rid, view) -> {
+      scanned[0]++;
+      return true;
+    }, null);
+    return scanned[0];
+  }
+
+  @Test
   void refusesToOverwriteAnOccupiedSlot() {
     final DatabaseInternal db = (DatabaseInternal) database;
     final RID[] rid = new RID[1];

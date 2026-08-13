@@ -1121,16 +1121,32 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * {@link #restoreRecordAtPosition} - the target page is fixed.
    */
   private int findContentInsertionOffset(final BasePage page, final int totalRecordsInPage) throws IOException {
-    int lastRecordPositionInPage = -1;
-    for (int i = 0; i < totalRecordsInPage; i++) {
-      final int recordPositionInPage = getRecordPositionInPage(page, i);
-      if (recordPositionInPage > lastRecordPositionInPage)
-        lastRecordPositionInPage = recordPositionInPage;
-    }
+    return contentEndOffset(page, getLastRecordPositionInPage(page, totalRecordsInPage));
+  }
 
+  /**
+   * Content-byte offset right past the record whose bytes end last in the page, i.e. where the next record's bytes
+   * can start. {@code lastRecordPositionInPage} is what {@link #getLastRecordPositionInPage} returned, so -1 means
+   * the page holds no live slot at all and the content starts right after the header.
+   * <p>
+   * #6096: this used to be duplicated between the allocator ({@link #getFreeSpaceInPage}) and
+   * {@link #findContentInsertionOffset}, and the two copies had already drifted - the restore-side copy took the
+   * max over the record table without skipping the 0 entries a delete leaves behind, so on a page whose every slot
+   * was a hole it read the entry as a record starting at content offset 0 (the record-count header) and placed the
+   * restored record inside the page header, corrupting the slot table it had just written. Both callers now share
+   * the one implementation.
+   */
+  private int contentEndOffset(final BasePage page, final int lastRecordPositionInPage) throws IOException {
     if (lastRecordPositionInPage == -1)
       // EMPTY PAGE (OR EVERY SLOT IS A HOLE): START RIGHT AFTER THE HEADER
       return contentHeaderSize;
+
+    if (lastRecordPositionInPage < contentHeaderSize)
+      // A LIVE SLOT POINTING INSIDE THE PAGE HEADER: THERE IS NO RECORD THERE, THE RECORD TABLE IS CORRUPTED. FAIL
+      // LOUDLY INSTEAD OF DERIVING AN INSERTION OFFSET FROM HEADER BYTES AND OVERWRITING THE SLOT TABLE (#6096).
+      throw new DatabaseOperationException(
+          "Invalid record position " + lastRecordPositionInPage + " in page " + page.getPageId() + " of bucket '" + componentName
+              + "'");
 
     final long[] lastRecordSize = page.readNumberAndSize(lastRecordPositionInPage);
     if (lastRecordSize[0] == 0)
@@ -2918,7 +2934,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return true;
   }
 
-  private int getLastRecordPositionInPage(final MutablePage page, final int totalRecords) throws IOException {
+  /**
+   * Highest content offset in use in {@code page}, or -1 when no slot below {@code totalRecords} holds one. A 0
+   * entry in the record table is a hole left by a delete, not a record at content offset 0 (the page header lives
+   * there), so it is skipped - see {@link #contentEndOffset}.
+   */
+  private int getLastRecordPositionInPage(final BasePage page, final int totalRecords) throws IOException {
     int lastRecordPositionInPage = -1;
     for (int i = 0; i < totalRecords; i++) {
       final int recordPositionInPage = getRecordPositionInPage(page, i);
@@ -2988,33 +3009,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // USE NEW POSITION
       pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
 
-    if (pageAnalysis.lastRecordPositionInPage == -1) {
-      // TOTALLY EMPTY PAGE AFTER DELETION, GET THE FIRST POSITION
-      pageAnalysis.newRecordPositionInPage = contentHeaderSize;
-    } else {
-      final long[] lastRecordSize = pageAnalysis.page.readNumberAndSize(pageAnalysis.lastRecordPositionInPage);
-      if (lastRecordSize[0] == 0)
-        // DELETED (V<24.1.1)
-        pageAnalysis.newRecordPositionInPage = pageAnalysis.lastRecordPositionInPage + (int) lastRecordSize[1];
-      else if (lastRecordSize[0] > 0)
-        // RECORD PRESENT, CONSIDER THE RECORD SIZE + VARINT SIZE
-        pageAnalysis.newRecordPositionInPage =
-                pageAnalysis.lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
-      else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
-        // PLACEHOLDER, CONSIDER NEXT 9 BYTES
-        pageAnalysis.newRecordPositionInPage =
-                pageAnalysis.lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
-      else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
-        // CHUNK
-        final int chunkSize = pageAnalysis.page.readInt((int) (pageAnalysis.lastRecordPositionInPage + lastRecordSize[1]));
-        pageAnalysis.newRecordPositionInPage =
-                pageAnalysis.lastRecordPositionInPage + (int) lastRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE
-                        + chunkSize;
-      } else
-        // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-        pageAnalysis.newRecordPositionInPage =
-                pageAnalysis.lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
-    }
+    pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
     pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
   }
 
