@@ -445,7 +445,7 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
       final List<Map<String, Object>> neighbors = rs.next().getProperty("neighbors");
       assertThat(neighbors).isNotEmpty();
-      assertThat(neighbors.getFirst().get("id")).isEqualTo("doc" + vertex);
+      assertThat(neighbors.get(0).get("id")).isEqualTo("doc" + vertex);
     });
   }
 }

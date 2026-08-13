@@ -182,7 +182,7 @@ class Issue5519TagStrideTest extends TestHelper {
     final List<Object[]> rows = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
     assertThat(rows).hasSize(1);
     for (int c = 1; c <= TSBS_TAGS.length; c++)
-      assertThat(rows.getFirst()[c]).isEqualTo("");
+      assertThat(rows.get(0)[c]).isEqualTo("");
   }
 
   @Test
@@ -201,7 +201,7 @@ class Issue5519TagStrideTest extends TestHelper {
     assertThat(newest).hasSize(3);
     for (final Object[] row : newest)
       assertThat(row[1]).isEqualTo("host_3");
-    assertThat((long) newest.getFirst()[0]).isGreaterThan((long) newest.get(1)[0]);
+    assertThat((long) newest.get(0)[0]).isGreaterThan((long) newest.get(1)[0]);
   }
 
   /**

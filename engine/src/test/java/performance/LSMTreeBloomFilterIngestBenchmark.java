@@ -163,7 +163,7 @@ class LSMTreeBloomFilterIngestBenchmark {
       }
       final long nanos = System.nanoTime() - started;
 
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties(PROPERTY_NAME).getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties(PROPERTY_NAME).get(0);
       final LSMTreeIndexCompacted compacted = compactedOf(typeIndex);
       final LSMTreeIndexBloomFilter filter = compacted.getBloomFilter();
 
