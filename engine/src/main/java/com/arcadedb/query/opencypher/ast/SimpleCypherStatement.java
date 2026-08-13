@@ -18,6 +18,9 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -151,8 +154,9 @@ public class SimpleCypherStatement implements CypherStatement {
     this.hasRemove = hasRemove;
     final boolean hasForeach = this.clausesInOrder.stream().anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
     final boolean writeSubquery = anyWriteSubquery(this.clausesInOrder);
+    final boolean writeProcedureCall = anyWriteProcedureCall(this.callClauses);
     this.readOnly = !hasCreate && !hasMerge && !hasDelete && !hasRemove && !hasForeach
-        && (setClause == null || setClause.isEmpty()) && !writeSubquery;
+        && (setClause == null || setClause.isEmpty()) && !writeSubquery && !writeProcedureCall;
 
     // Pre-compute flags used by CypherExecutionPlan.execute() to avoid repeated clause scanning
     this.hasVariableLengthPath = computeHasVariableLengthPath();
@@ -245,6 +249,55 @@ public class SimpleCypherStatement implements CypherStatement {
         return true;
     }
     return false;
+  }
+
+  /**
+   * Returns {@code true} when any top-level {@code CALL} in this statement targets a registered write
+   * {@link CypherProcedure}. Without this, {@code CALL merge.node(...) YIELD node RETURN node} - a statement with
+   * no CREATE/SET/MERGE/DELETE/REMOVE/FOREACH clause of its own - classified as read-only, and that flag is what
+   * {@code OpenCypherQueryEngine.executionDatabase()} uses to pick between the raw database instance and the
+   * Raft-aware wrapper. On HA the raw instance commits pages locally without proposing them to Raft, and a
+   * follower runs the statement locally instead of forwarding it to the leader, because the same flag backs
+   * {@code analyze().isIdempotent()}. Harmless until #6073 gave {@code CallStep} an auto-commit; live since.
+   * See issue #6094, and #5492/#5655 for the same failure class on other write steps.
+   * <p>
+   * A {@code CALL} nested in a {@code CALL { ... }} subquery is already covered: {@link #anyWriteSubquery}
+   * recurses through the inner statement's own {@code isReadOnly()}, which now accounts for this.
+   * <p>
+   * A name that resolves to no registered procedure is left alone - it is not this method's business to guess
+   * what a SQL-function fallback or an outright unknown name does. The registry lookup is a static
+   * case-insensitive map read that also strips the {@code apoc.} prefix, so both spellings of one procedure
+   * classify identically, and it costs nothing at execution time: this runs once per parse, and parsed
+   * statements are cached per query text.
+   */
+  private static boolean anyWriteProcedureCall(final List<CallClause> calls) {
+    if (calls.isEmpty())
+      return false;
+    for (final CallClause call : calls) {
+      final CypherProcedure procedure = CypherProcedureRegistry.get(call.getProcedureName());
+      // A per-call refinement may only narrow, so a procedure that never writes needs no second look.
+      if (procedure == null || !procedure.isWriteProcedure())
+        continue;
+      if (procedure.isWriteProcedure(literalArguments(call)))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * The constant value of every argument at a call site, with {@code null} wherever the parser produced anything
+   * other than a literal (a parameter, a variable, a computed expression). Fed to
+   * {@link CypherProcedure#isWriteProcedure(Object[])} so a procedure whose behaviour depends on its arguments -
+   * {@code apoc.do.when} runs caller-supplied query strings - can classify one particular call rather than being
+   * pinned to the conservative answer it must give for the procedure as a whole.
+   */
+  private static Object[] literalArguments(final CallClause call) {
+    final List<Expression> arguments = call.getArguments();
+    final Object[] values = new Object[arguments.size()];
+    for (int i = 0; i < values.length; i++)
+      if (arguments.get(i) instanceof LiteralExpression literal)
+        values[i] = literal.getValue();
+    return values;
   }
 
   @Override
