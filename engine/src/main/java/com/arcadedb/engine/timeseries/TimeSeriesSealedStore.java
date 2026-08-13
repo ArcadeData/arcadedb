@@ -533,7 +533,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (results.size() >= need) {
           trimToDescendingLimit(results, need);
-          cutoffTs = (long) results.getLast()[0];
+          cutoffTs = (long) results.get(results.size() - 1)[0];
         }
       }
 

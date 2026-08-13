@@ -101,7 +101,7 @@ class MaxScorePruningTest extends TestHelper {
     }
 
     inTx(() -> {
-      final PaginatedSegmentReader reader = readers.getFirst();
+      final PaginatedSegmentReader reader = readers.get(0);
       final PaginatedSegmentDimCursor[] sources = new PaginatedSegmentDimCursor[DIMS];
       final DimCursor[] cursors = new DimCursor[DIMS];
       try {
@@ -167,7 +167,7 @@ class MaxScorePruningTest extends TestHelper {
     }
 
     inTx(() -> {
-      final PaginatedSegmentReader reader = readers.getFirst();
+      final PaginatedSegmentReader reader = readers.get(0);
       final PaginatedSegmentDimCursor[] sources = new PaginatedSegmentDimCursor[DIMS];
       final DimCursor[] cursors = new DimCursor[DIMS];
       try {
@@ -220,7 +220,7 @@ class MaxScorePruningTest extends TestHelper {
     }
 
     inTx(() -> {
-      final PaginatedSegmentReader reader = readers.getFirst();
+      final PaginatedSegmentReader reader = readers.get(0);
       long totalBlocks = 0;
       for (int i = 0; i < DIMS; i++)
         totalBlocks += reader.openCursor(queryDims[i]).metadata().blockCount();

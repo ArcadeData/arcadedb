@@ -91,7 +91,7 @@ class Issue5414LastPointTest extends TestHelper {
     final List<Object[]> newest = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, filter, 1, metrics);
 
     assertThat(newest).hasSize(1);
-    assertThat((long) newest.getFirst()[0]).isEqualTo(newestTimestamp(filter));
+    assertThat((long) newest.get(0)[0]).isEqualTo(newestTimestamp(filter));
 
     // The whole point of the shortcut: at most the newest block of each shard is decompressed.
     final int touched = metrics.getFastPathBlocks() + metrics.getSlowPathBlocks();
@@ -137,8 +137,8 @@ class Issue5414LastPointTest extends TestHelper {
     final List<Object[]> rows = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, filter, 2, null);
 
     assertThat(rows).hasSize(2);
-    assertThat((long) rows.getFirst()[0]).isEqualTo(newerTs);
-    assertThat(((Number) rows.getFirst()[2]).doubleValue()).isEqualTo(999.0);
+    assertThat((long) rows.get(0)[0]).isEqualTo(newerTs);
+    assertThat(((Number) rows.get(0)[2]).doubleValue()).isEqualTo(999.0);
     assertThat((long) rows.get(1)[0]).isEqualTo(BASE_TS + (PER_TAG - 1) * STEP_MS);
   }
 
@@ -154,7 +154,7 @@ class Issue5414LastPointTest extends TestHelper {
 
     // The newest timestamp must match the plain unbounded ascending scan's tail.
     final List<Result> asc = query("SELECT ts FROM Point WHERE host = 'host_2'");
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(epochMillis(asc.getLast()));
+    assertThat(epochMillis(rows.get(0))).isEqualTo(epochMillis(asc.get(asc.size() - 1)));
   }
 
   @Test
@@ -178,8 +178,8 @@ class Issue5414LastPointTest extends TestHelper {
     assertThat(rows).hasSize(1);
 
     final List<Result> asc = query("SELECT value FROM Point WHERE host = 'host_4'");
-    assertThat(((Number) rows.getFirst().getProperty("v")).doubleValue())
-        .isEqualTo(((Number) asc.getLast().getProperty("value")).doubleValue());
+    assertThat(((Number) rows.get(0).getProperty("v")).doubleValue())
+        .isEqualTo(((Number) asc.get(asc.size() - 1).getProperty("value")).doubleValue());
   }
 
   @Test
@@ -192,7 +192,7 @@ class Issue5414LastPointTest extends TestHelper {
     final List<Result> newest = query("SELECT value FROM Point WHERE ts = " + lastTs);
     assertThat(newest).hasSize(TAGS);
     assertThat(newest.stream().map(r -> ((Number) r.getProperty("value")).doubleValue()))
-        .contains(((Number) rows.getFirst().getProperty("v")).doubleValue());
+        .contains(((Number) rows.get(0).getProperty("v")).doubleValue());
   }
 
   @Test
@@ -201,7 +201,7 @@ class Issue5414LastPointTest extends TestHelper {
     final List<Result> rows = query(
         "SELECT ts FROM Point WHERE host = 'host_1' AND ts <= " + cutoff + " ORDER BY ts DESC LIMIT 1");
     assertThat(rows).hasSize(1);
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(cutoff);
+    assertThat(epochMillis(rows.get(0))).isEqualTo(cutoff);
   }
 
   @Test
@@ -230,10 +230,10 @@ class Issue5414LastPointTest extends TestHelper {
 
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("value")).doubleValue()).isLessThan(100.0);
+    assertThat(((Number) rows.get(0).getProperty("value")).doubleValue()).isLessThan(100.0);
 
     final List<Result> reference = query("SELECT ts, value FROM Point WHERE host = 'host_6' AND value < 100");
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(epochMillis(reference.getLast()));
+    assertThat(epochMillis(rows.get(0))).isEqualTo(epochMillis(reference.get(reference.size() - 1)));
   }
 
   /**
@@ -249,7 +249,7 @@ class Issue5414LastPointTest extends TestHelper {
 
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(1);
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(BASE_TS + (PER_TAG - 2) * STEP_MS);
+    assertThat(epochMillis(rows.get(0))).isEqualTo(BASE_TS + (PER_TAG - 2) * STEP_MS);
   }
 
   /**
@@ -265,7 +265,7 @@ class Issue5414LastPointTest extends TestHelper {
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(2);
     final long lastTs = BASE_TS + (PER_TAG - 1) * STEP_MS;
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(lastTs);
+    assertThat(epochMillis(rows.get(0))).isEqualTo(lastTs);
     assertThat(epochMillis(rows.get(1))).isEqualTo(lastTs);
     assertThat(rows.stream().map(r -> (String) r.getProperty("host"))).containsExactlyInAnyOrder("host_1", "host_2");
   }
@@ -291,8 +291,8 @@ class Issue5414LastPointTest extends TestHelper {
 
     final List<Result> rows = query("SELECT * FROM Point WHERE host = 'host_0' ORDER BY ts DESC LIMIT 1");
     assertThat(rows).hasSize(1);
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(BASE_TS + (PER_TAG - 1) * STEP_MS);
-    assertThat((String) rows.getFirst().getProperty("host")).isEqualTo("host_0");
+    assertThat(epochMillis(rows.get(0))).isEqualTo(BASE_TS + (PER_TAG - 1) * STEP_MS);
+    assertThat((String) rows.get(0).getProperty("host")).isEqualTo("host_0");
   }
 
   /**
@@ -307,7 +307,7 @@ class Issue5414LastPointTest extends TestHelper {
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(1);
     // The largest `value` of host_0, not its newest timestamp.
-    assertThat(((Number) rows.getFirst().getProperty("ts")).doubleValue()).isEqualTo((PER_TAG - 1) * (double) TAGS);
+    assertThat(((Number) rows.get(0).getProperty("ts")).doubleValue()).isEqualTo((PER_TAG - 1) * (double) TAGS);
   }
 
   /**
@@ -321,8 +321,8 @@ class Issue5414LastPointTest extends TestHelper {
 
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().getPropertyNames()).containsExactly("value");
-    assertThat(((Number) rows.getFirst().getProperty("value")).doubleValue()).isEqualTo((PER_TAG - 1) * (double) TAGS);
+    assertThat(rows.get(0).getPropertyNames()).containsExactly("value");
+    assertThat(((Number) rows.get(0).getProperty("value")).doubleValue()).isEqualTo((PER_TAG - 1) * (double) TAGS);
   }
 
   /**
@@ -335,7 +335,7 @@ class Issue5414LastPointTest extends TestHelper {
 
     final List<Result> rows = query("SELECT ts.last(value, ts) AS v, avg(value) AS a FROM Point WHERE host = 'host_0'");
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("v")).doubleValue()).isEqualTo((PER_TAG - 1) * (double) TAGS);
+    assertThat(((Number) rows.get(0).getProperty("v")).doubleValue()).isEqualTo((PER_TAG - 1) * (double) TAGS);
   }
 
   /**
@@ -361,10 +361,10 @@ class Issue5414LastPointTest extends TestHelper {
 
     final List<Result> rows = query("SELECT ts, value FROM Fresh WHERE host = 'a' ORDER BY ts DESC LIMIT 1");
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("value")).doubleValue()).isEqualTo(3.0);
+    assertThat(((Number) rows.get(0).getProperty("value")).doubleValue()).isEqualTo(3.0);
 
     final List<Result> last = query("SELECT ts.last(value, ts) AS v FROM Fresh WHERE host = 'a'");
-    assertThat(((Number) last.getFirst().getProperty("v")).doubleValue()).isEqualTo(3.0);
+    assertThat(((Number) last.get(0).getProperty("v")).doubleValue()).isEqualTo(3.0);
   }
 
   @Test
@@ -390,19 +390,19 @@ class Issue5414LastPointTest extends TestHelper {
     final List<Object[]> rows = historic.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, TagFilter.eq(0, "a"), 1,
         null);
     assertThat(rows).hasSize(1);
-    assertThat((long) rows.getFirst()[0]).isEqualTo(-10_000L);
+    assertThat((long) rows.get(0)[0]).isEqualTo(-10_000L);
 
     final List<Object[]> bounded = historic.queryDescending(Long.MIN_VALUE, -20_000L, null, TagFilter.eq(0, "a"), 1,
         null);
     assertThat(bounded).hasSize(1);
-    assertThat((long) bounded.getFirst()[0]).isEqualTo(-30_000L);
+    assertThat((long) bounded.get(0)[0]).isEqualTo(-30_000L);
   }
 
   // ---------------------------------------------------------------------------------------------
 
   private long newestTimestamp(final TagFilter filter) throws IOException {
     final List<Object[]> all = ascending(Long.MIN_VALUE, Long.MAX_VALUE, filter);
-    return (long) all.getLast()[0];
+    return (long) all.get(all.size() - 1)[0];
   }
 
   private List<Object[]> ascending(final long fromTs, final long toTs, final TagFilter filter) throws IOException {

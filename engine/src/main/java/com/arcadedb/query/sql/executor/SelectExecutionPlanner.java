@@ -2482,7 +2482,7 @@ public class SelectExecutionPlanner {
     if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.projectionAfterOrderBy != null)
       return false;
 
-    final OrderByItem item = info.orderBy.getItems().getFirst();
+    final OrderByItem item = info.orderBy.getItems().get(0);
     // A modifier, a computed expression or a parameterised direction all mean the fetch order alone
     // cannot satisfy the clause.
     if (item.modifier != null || item.expression != null || item.getDirectionParameter() != null)
@@ -2567,7 +2567,7 @@ public class SelectExecutionPlanner {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final Set<String> constrainedTags = new HashSet<>();
 
-    for (final BooleanExpression expr : info.flattenedWhereClause.getFirst().getSubBlocks()) {
+    for (final BooleanExpression expr : info.flattenedWhereClause.get(0).getSubBlocks()) {
       if (extractTimeRange(expr, timestampColumn, context) != null)
         continue;
 
