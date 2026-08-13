@@ -106,13 +106,16 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.IntPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -152,6 +155,62 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // install the rewritten sealed files atomically with the buffered mutable-bucket clear WAL.
   private static final ThreadLocal<List<RaftLogEntryCodec.TsSealedBlob>> compactionSealedBuffer =
       ThreadLocal.withInitial(ArrayList::new);
+  /**
+   * Non-null only while a {@code recordFileChanges} session on THIS thread is shipping its buffered WAL in
+   * instalments (issue #6136). Thread-local for the same reason the buffers are, and null everywhere else - notably
+   * in {@code runWithCompactionReplication}, which buffers too but produces a bounded amount of it and chunks its
+   * synthetic WAL as it serializes.
+   */
+  private static final ThreadLocal<SchemaInstalmentState>                schemaInstalments      = new ThreadLocal<>();
+  /**
+   * How many schema-WAL instalments this JVM has shipped since it started (issue #6136). A process-wide
+   * observability counter, not per-database state: the question it answers - "did a schema session have to ship
+   * its WAL incrementally, and how often?" - is asked of a node, and a leader runs one such session at a time
+   * anyway. Zero on a node that never crossed the threshold, which is every node until an index is rebuilt or a
+   * DDL callback writes more than half a Raft entry's worth of pages.
+   */
+  private static final AtomicLong                                        schemaInstalmentsShipped = new AtomicLong();
+
+  /**
+   * Bookkeeping for a {@code recordFileChanges} session that ships its WAL incrementally (issue #6136).
+   * <p>
+   * An index rebuild inside such a session commits once per {@code IndexBuilder.BUILD_BATCH_SIZE} records, and
+   * every one of those commits buffered a full WAL image that was only drained when the callback returned: peak
+   * leader heap was the whole rebuilt index, plus a repeat of every page touched by more than one batch. This
+   * accumulates the same thing but flushes it as an ordered prefix once it crosses a threshold, so heap is bounded
+   * by the threshold instead of by the size of the index.
+   */
+  private static final class SchemaInstalmentState {
+    /**
+     * Raw buffered bytes at which the next instalment goes out: {@code RaftTransactionBroker.walChunkBudget()},
+     * shared with the compaction path so the two cannot drift apart. Zero until the session's FIRST BUFFERED
+     * commit resolves it.
+     * <p>
+     * Resolved once, and lazily, for two different reasons. Once, because it cannot change under a session and the
+     * alternative puts a {@code requireRaftServer().getTransactionBroker()} hop on every batch commit of an index
+     * build. Lazily, because {@code requireRaftServer()} throws a retryable {@code NeedRetryException} while the
+     * Raft server is transiently absent (restart, failover), and resolving it when the session OPENS would fail a
+     * {@code recordFileChanges} that buffers nothing and would have completed as a harmless no-op. A session that
+     * does buffer needs the server to replicate anyway, so nothing is lost by asking then.
+     */
+    private long                       threshold;
+    /** Raw bytes of WAL currently sitting in {@link #schemaWalBuffer}. */
+    private long                       bufferedBytes;
+    /**
+     * Files an instalment told the followers to create - or MAY have, see the increment site - so the final entry
+     * neither re-ships them nor forgets to retire one that the session went on to drop:
+     * {@code FileManager.dropFile} CANCELS the recorded create when both happen inside one session, which would
+     * otherwise leave the file on the followers only.
+     */
+    private final Map<Integer, String> shippedFiles = new LinkedHashMap<>();
+    /**
+     * How many instalments were STARTED; the final entry is unconditional once this is non-zero. Counted before
+     * the entry is submitted rather than after, for the reason given at the increment: an instalment over the cap
+     * is several entries, and a failure part-way through one still leaves the followers holding what its first
+     * chunk created.
+     */
+    private int                        instalments;
+  }
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
@@ -340,8 +399,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
           if (phase1 != null) {
             tx.commit2ndPhase(phase1);
-            schemaWalBuffer.get().add(phase1.result.toByteArray());
+            final byte[] wal = phase1.result.toByteArray();
+            schemaWalBuffer.get().add(wal);
             schemaBucketDeltaBuffer.get().add(new HashMap<>(tx.getBucketRecordDelta()));
+            final SchemaInstalmentState state = schemaInstalments.get();
+            if (state != null)
+              state.bufferedBytes += wal.length;
           } else
             tx.reset();
           if (getSchema().getEmbedded().isDirty())
@@ -351,6 +414,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
         return null;
       });
+      // Ships OUTSIDE the read lock: the instalment is a Raft round trip, and it needs none of what the block
+      // above holds. The enclosing recordFileChanges callback still owns the database WRITE lock throughout - it
+      // has for the whole build already - so this adds round trips to a window that is fully exclusive anyway,
+      // and it is what keeps the buffer bounded rather than growing with the whole rebuilt index (issue #6136).
+      flushSchemaWalBufferIfFull();
       return;
     }
 
@@ -1479,9 +1547,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // and the outer callback's remaining commits would ship separate TX_ENTRYs instead of riding its
     // SCHEMA_ENTRY - the ordering hazard of issue #4083.
     final Boolean outerSchemaCommitThread = isSchemaCommitThread.get();
+    // Saved and restored for exactly the reason the mark above is: a session opened on ANOTHER database from
+    // inside this callback must not take over this one's instalment bookkeeping (issue #6136).
+    final SchemaInstalmentState outerInstalments = schemaInstalments.get();
+    final SchemaInstalmentState instalmentState = new SchemaInstalmentState();
     schemaWalBuffer.get().clear();
     schemaBucketDeltaBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
+    schemaInstalments.set(instalmentState);
+
+    // Set only once the session's FINAL entry has gone out. Everything an instalment shipped before that is
+    // delivery-only, so leaving this false is what tells the finally block that the followers are holding an
+    // abandoned prefix and it has to be retired - see retireAbandonedInstalments (issue #6136).
+    boolean published = false;
 
     try {
       final RET result = proxied.recordFileChanges(callback);
@@ -1498,6 +1576,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           else
             removeFiles.put(c.fileId, c.fileName);
         }
+
+      reconcileInstalmentFiles(instalmentState.shippedFiles, addFiles, removeFiles);
 
       if (schemaChanged)
         serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
@@ -1519,27 +1599,318 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // next ordinary transaction touching one of those pages fails on them with WALVersionGapException,
       // marking the database diverged. The sibling runWithCompactionReplication guards the same buffers
       // with walEntries.isEmpty() included.
-      if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()) {
+      // ... and unconditionally once an instalment went out: those entries are all marked as delivery-only, so
+      // the session's final entry is the only thing that publishes the change. Leaving it out because nothing was
+      // left to say would strand the followers on a half-delivered state they never reload from.
+      final int shippedInstalments = instalmentState.instalments;
+      if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()
+          || shippedInstalments > 0) {
         final RaftHAServer raft = requireRaftServer();
         raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
+        // Set HERE, not after the logging below: the change is published the moment that call returns, and a
+        // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
+        // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
+        // this node no longer has, and it still has them - but it would put an operator on a phantom hunt.
+        //
+        // Assigned a SECOND time after this block, and neither assignment is redundant: this one covers a throw
+        // between here and there, the other covers the path where this block is not entered at all.
+        published = true;
         HALog.log(this, HALog.DETAILED,
-            "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
-            addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
+            "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d, instalments=%d",
+            addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size(), shippedInstalments);
 
         if (HALog.isEnabled(HALog.DETAILED))
           logSchemaPayloadDiagnostics("recordFileChanges", serializedSchema, addFiles, removeFiles);
       }
 
+      // The SECOND of the two assignments (see the one inside the block above). This one covers the path where the
+      // block was not entered at all: there was nothing to say, which can only happen when no instalment went out
+      // either - an instalment forces the condition - so there is nothing for the compensation to do.
+      //
+      // ADDING CODE ABOVE THIS LINE: everything between the first assignment and here is code that can throw AFTER
+      // the change has already been published, and this flag is what decides whether the finally block goes on to
+      // retire the instalments' files. Decide deliberately which side of it your code belongs on rather than
+      // dropping it in above.
+      published = true;
       return result;
     } finally {
+      if (!published)
+        retireAbandonedInstalments(instalmentState);
       if (outerSchemaCommitThread == null)
         isSchemaCommitThread.remove();
       else
         isSchemaCommitThread.set(outerSchemaCommitThread);
+      if (outerInstalments == null)
+        schemaInstalments.remove();
+      else {
+        // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
+        // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
+        // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
+        // the counter and the buffer telling the same story.
+        //
+        // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
+        // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
+        // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
+        outerInstalments.bufferedBytes = 0;
+        schemaInstalments.set(outerInstalments);
+      }
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
     }
+  }
+
+  /**
+   * Retires what the instalments of a session that never reached its final entry left on the followers
+   * (issue #6136).
+   * <p>
+   * WHY THIS IS NEEDED, and it is a risk the instalments introduce rather than one that was already there. Before
+   * them, the whole buffered WAL sat in leader heap and NOTHING reached a follower until the callback returned, so
+   * a build that threw part-way - a source record the builder cannot read, an I/O error, a quorum timeout on a
+   * later instalment - left the followers untouched. Now the files an instalment announced and the pages it
+   * delivered are already there, and the entry that would have published or retired them is never sent, because it
+   * lives after the line that threw. Every instalment chunk is marked {@code moreChunksFollow} by design, so there
+   * is no "this sequence is abandoned" signal a follower could act on by itself; the leader has to say so.
+   * <p>
+   * WHAT IT SENDS is one ordinary publishing entry - {@code moreChunksFollow} false - carrying nothing but
+   * {@code filesToRemove}, and the removal list FOLLOWS THE LEADER rather than simply undoing every announcement.
+   * That distinction is the whole correctness of this method, and getting it wrong swaps one divergence for
+   * another:
+   * <ul>
+   *   <li>a file the leader NO LONGER HAS is retired. This is the case that matters, because it is the one the
+   *       principal caller produces: {@code BucketIndexBuilder.create()} drops the half-built index from its own
+   *       error handler, so the leader has already let the file go and only the followers are still holding it;</li>
+   *   <li>a file the leader STILL HAS is left alone, and reported. A failed DDL can leave the leader holding a
+   *       created-but-unpublished file - the schema was never saved, so nothing references it there either - and
+   *       retiring it on the followers would take a state both sides agree on and make them disagree. The
+   *       leader-side orphan is a pre-existing consequence of a DDL that throws, not something instalments
+   *       introduce, and this method deliberately does not try to repair it.</li>
+   * </ul>
+   * Pages an instalment applied to PRE-EXISTING files are left alone for the same reason: {@code commit()} ran
+   * {@code commit2ndPhase} before buffering, so the leader holds them too and the two sides already agree.
+   * <p>
+   * IT CANNOT THROW. It runs from a {@code finally} that is usually unwinding the build's own exception, and
+   * masking that with a replication error would replace a diagnosable failure with a confusing one. A compensation
+   * that fails is therefore logged at SEVERE naming every file it could not retire, which is what an operator
+   * needs to clean them up by hand.
+   * <p>
+   * WHEN THE COMPENSATION ITSELF CANNOT RUN, named because it is the most Raft-idiomatic way for this path to fail
+   * and it is a consequence instalments introduce. {@code recordFileChanges} checks {@code isLeader()} once, at the
+   * top; nothing re-checks it per instalment, and {@code requireRaftServer()} only asserts that a server exists,
+   * not that this node still leads. If leadership moves away after an instalment has shipped - failover, a brief
+   * partition, a manual step-down, all normal Raft events rather than application bugs - this node can no longer
+   * submit entries, so the removal below fails and lands in the SEVERE branch.
+   * <p>
+   * Before instalments that case cost nothing: nothing had reached a follower, so the final {@code replicateSchema}
+   * simply failed and the caller saw a retryable error. Now it leaves files on the other nodes that only an
+   * operator can remove, which is why the log line has to name them. Deliberately not "solved" here: re-checking
+   * leadership per instalment would narrow the window without closing it (leadership can move between the check
+   * and the submit), and a node that is no longer leader has no way to make the cluster do anything. The real fix
+   * is for the new leader to reclaim unreferenced files, which is a garbage-collection feature this database does
+   * not have. Tracked as issue #6143, along with the fact that this SEVERE branch is reasoned about rather than
+   * covered - the step-down has to land between an instalment and the unwind to reach it.
+   */
+  private void retireAbandonedInstalments(final SchemaInstalmentState state) {
+    if (state == null || state.instalments == 0)
+      return;
+
+    // Only what the leader has already let go of - see the javadoc: retiring a file the leader kept would turn an
+    // agreed state into a diverged one.
+    final Map<Integer, String> toRetire = new LinkedHashMap<>();
+    final Map<Integer, String> keptByLeader = new LinkedHashMap<>();
+    partitionAbandonedFiles(state.shippedFiles, proxied.getFileManager()::existsFile, toRetire, keptByLeader);
+
+    if (!keptByLeader.isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Schema session on database '%s' failed after shipping %d instalment(s); file(s) %s exist on every node "
+              + "but no schema references them, because the change was never published. Left in place: this node "
+              + "holds them too, so the cluster is consistent", null, getName(), state.instalments,
+          keptByLeader.values());
+
+    if (toRetire.isEmpty()) {
+      if (keptByLeader.isEmpty())
+        // WAL-only instalments: those pages went to files that already existed and the leader committed them
+        // locally before buffering, so there is nothing to undo. Still reported, because an interrupted
+        // replicated session is not a normal event.
+        LogManager.instance().log(this, Level.WARNING,
+            "Schema session on database '%s' failed after shipping %d WAL instalment(s); they created no file, so "
+                + "there is nothing to retire on the other nodes", null, getName(), state.instalments);
+      return;
+    }
+
+    try {
+      requireRaftServer().getTransactionBroker().replicateSchema(getName(), "", Collections.emptyMap(), toRetire,
+          Collections.emptyList(), Collections.emptyList());
+
+      LogManager.instance().log(this, Level.WARNING,
+          "Schema session on database '%s' failed after shipping %d instalment(s); retired the %d file(s) they had "
+              + "created on the other nodes, matching this node: %s", null, getName(), state.instalments,
+          toRetire.size(), toRetire.values());
+
+    } catch (final Exception e) {
+      // Names the leadership case, because it is both the likeliest cause and the one where "retry the operation"
+      // is the wrong advice: this node cannot make the cluster do anything any more, so the files stay until
+      // somebody removes them.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Schema session on database '%s' failed after shipping %d instalment(s) AND the compensating removal "
+              + "could not be replicated%s. The other nodes are holding file(s) this node does not have and nothing "
+              + "will reclaim them: %s. Remove them manually once the cluster is healthy", e, getName(),
+          state.instalments, isLeader() ? "" : " because this node is no longer the leader", toRetire.values());
+    }
+  }
+
+  /**
+   * Folds what the instalments already shipped into the session's FINAL file maps (issue #6136).
+   * <p>
+   * A file an instalment created is not re-announced - it exists on the followers already. More importantly, one
+   * the session went on to DROP has to be retired explicitly: {@code FileManager.dropFile} CANCELS the recorded
+   * create when both happen inside one session, so the final entry would say nothing about a file the followers
+   * were told to create, and it would survive there and nowhere else.
+   * <p>
+   * A no-op when no instalment went out, which is every session small enough to ship in one entry.
+   */
+  // @VisibleForTesting
+  static void reconcileInstalmentFiles(final Map<Integer, String> shippedFiles, final Map<Integer, String> addFiles,
+      final Map<Integer, String> removeFiles) {
+    if (shippedFiles == null || shippedFiles.isEmpty())
+      return;
+
+    for (final Map.Entry<Integer, String> shipped : shippedFiles.entrySet())
+      if (addFiles.remove(shipped.getKey()) == null)
+        removeFiles.putIfAbsent(shipped.getKey(), shipped.getValue());
+  }
+
+  /**
+   * Ships the buffered schema WAL as an ordered instalment once it crosses the threshold (issue #6136).
+   * <p>
+   * WHAT THIS FIXES. {@code BucketIndexBuilder.create()} wraps the whole build in {@code recordFileChanges}, which
+   * marks this thread so that {@code commit()} BUFFERS instead of replicating; {@code LSMTreeIndex.build()} then
+   * commits once per {@code IndexBuilder.BUILD_BATCH_SIZE} records. Every one of those WAL images stayed in leader
+   * heap until the callback returned, so peak heap was roughly the whole rebuilt index plus a repeat of every page
+   * more than one batch touched. A {@code CHECK DATABASE FIX} that rebuilds the indexes of a large damaged type is
+   * exactly that shape, on a node that is already the cluster's leader.
+   * <p>
+   * WHY IT IS SAFE, which is the whole question on this path - #4083, #4743 and #5492 all surfaced here as SILENT
+   * follower divergence rather than as an exception. It ships nothing new: it is the ordered-prefix sequence
+   * {@code splitSchemaEntry} has produced since #4743, emitted as the payload is produced rather than after it is
+   * built. Files first, WAL in the middle, and the publishing fields - schema JSON, {@code filesToRemove} - only in
+   * the session's final entry, so every prefix a follower can be left holding is self-consistent: the files exist
+   * before pages land in them, and a partially written new file is unreferenced bytes until the last entry
+   * publishes it. Followers need no new code, because that sequence is the one they already receive.
+   * <p>
+   * THE THRESHOLD is derived, not configured: half the maximum replicated entry size, the same expression
+   * {@code runWithCompactionReplication} uses for its own chunk budget. It is SOFT - tested between buffered
+   * commits, so one batch can overshoot it - which is why {@code replicateSchemaInstalment} can still split.
+   * <p>
+   * THE RISK IT DOES INTRODUCE, and how it is paid for: a build that throws after an instalment has gone out
+   * leaves the followers holding files and pages the session will never publish, where before them nothing reached
+   * a follower until the callback returned. {@link #retireAbandonedInstalments} sends the compensating removal.
+   * <p>
+   * WHAT IT COSTS, stated precisely because it is a real trade and not only a heap win. The recording session stays
+   * open for the whole build, so a concurrent writer still waits on {@link #waitForActiveRecordingSession()} and,
+   * before that, on the database write lock the callback holds. Bounding the heap does not shorten that window -
+   * and each instalment LENGTHENS it, because {@code submitAndWait} is a quorum round trip taken while that write
+   * lock is held, where the single final entry has always been submitted after the callback returned and the lock
+   * was released. Normally that is milliseconds against a build measured in minutes. Against a slow or briefly
+   * partitioned quorum member it is up to {@code HA_QUORUM_TIMEOUT} per instalment, and the whole database's
+   * writers wait it out.
+   * <p>
+   * Accepted, because the alternative is not "no round trips": without instalments the one final entry carries the
+   * whole index, {@code splitSchemaEntry} splits it, and the same number of round trips happens anyway - after the
+   * lock, but only after the leader has held the entire rebuilt index in heap, which is the failure this exists to
+   * prevent. Paying for a bounded heap with round trips inside a window that is already fully exclusive is the
+   * better side of that trade. Making the window itself shorter means taking the build out of the recording
+   * session altogether - a different change, on the same code path, worth its own judgement.
+   */
+  private void flushSchemaWalBufferIfFull() {
+    final SchemaInstalmentState state = schemaInstalments.get();
+    // bufferedBytes == 0 covers BOTH "nothing buffered yet" and "just flushed", and is tested before the threshold
+    // is resolved rather than after. This method runs after EVERY commit inside the session, including ones that
+    // buffered nothing (commit1stPhase returning null), so resolving first would call requireRaftServer() on a
+    // no-op commit - the case the lazy resolution exists to keep working while the Raft server is transiently
+    // absent. Zero bytes can never reach a positive threshold anyway, so nothing is lost by leaving early.
+    if (state == null || state.bufferedBytes == 0)
+      return;
+
+    if (state.threshold == 0)
+      state.threshold = requireRaftServer().getTransactionBroker().walChunkBudget();
+
+    if (state.bufferedBytes < state.threshold)
+      return;
+
+    final RaftTransactionBroker broker = requireRaftServer().getTransactionBroker();
+
+    // Only the files created since the previous instalment: an already-announced one exists on the followers, and
+    // re-announcing it would make createNewFiles run over a file that is being written into.
+    //
+    // This re-reads the WHOLE recorded-changes list per instalment, so it is O(instalments x file changes). Fine
+    // for the caller this exists for - an index rebuild records one or two file changes however many instalments
+    // its WAL volume produces, so the second factor does not grow with the first. A future DDL that creates MANY
+    // files through this buffered path would make it quadratic and should carry the shipped/unshipped split
+    // forward instead; an index into the list is not that, since dropFile removes entries from the middle of it.
+    // Tracked as issue #6142.
+    final Map<Integer, String> newFiles = new LinkedHashMap<>();
+    final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
+    if (changes != null)
+      for (final FileManager.FileChange c : changes)
+        if (c.create && !state.shippedFiles.containsKey(c.fileId))
+          newFiles.put(c.fileId, c.fileName);
+
+    final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
+    final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
+
+    // ANNOUNCED BEFORE IT IS SENT, and deliberately so. replicateSchemaInstalment is not one entry: an instalment
+    // that overshoots the cap - which the SOFT threshold makes reachable, since it is tested between buffered
+    // commits and one batch can carry more than the whole budget - goes through splitSchemaEntry and becomes
+    // several submitAndWait calls, the FIRST of which carries the file creations. A failure on a later chunk would
+    // then leave the followers holding files this bookkeeping had never recorded, so retireAbandonedInstalments
+    // would not know to retire them, and on a first instalment it would not even log, having seen no instalment at
+    // all. Recording the intent first makes the bookkeeping pessimistic: it says "the followers MAY hold these",
+    // which is what a compensation needs. Over-retiring costs nothing - the follower's FileManager.dropFile
+    // no-ops on a file id it does not have.
+    state.shippedFiles.putAll(newFiles);
+    ++state.instalments;
+    schemaInstalmentsShipped.incrementAndGet();
+
+    broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
+
+    // The WAL buffer, by contrast, is drained only AFTER the entry is committed: it holds the ONLY copy of those
+    // pages that can reach a follower, so clearing it before a failure would turn a replication error into silent
+    // divergence - the failure mode this whole code path exists to avoid. The two orders are opposite because the
+    // two risks are: announcing too much costs a no-op removal, forgetting WAL costs a diverged follower.
+    schemaWalBuffer.get().clear();
+    schemaBucketDeltaBuffer.get().clear();
+    state.bufferedBytes = 0;
+
+    HALog.log(this, HALog.DETAILED,
+        "Schema WAL instalment %d for database '%s' shipped: newFiles=%d, walEntries=%d",
+        state.instalments, getName(), newFiles.size(), walEntries.size());
+  }
+
+  /**
+   * Splits what the instalments announced into what must be retired on the other nodes and what must be left alone,
+   * by the one rule that keeps the compensation from trading one divergence for another: THIS NODE OWNS THE TRUTH.
+   * A file it no longer has is retired; a file it still has is left, because both sides holding an unpublished file
+   * is a state they agree on and retiring it would end that agreement. See {@link #retireAbandonedInstalments}.
+   * <p>
+   * Static and side-effect-free so the bookkeeping can be pinned without a cluster - it is map arithmetic across a
+   * session, which is exactly the kind of logic that regresses silently.
+   *
+   * @param existsLocally answers whether this node still holds a given file id
+   */
+  // @VisibleForTesting
+  static void partitionAbandonedFiles(final Map<Integer, String> shippedFiles, final IntPredicate existsLocally,
+      final Map<Integer, String> toRetire, final Map<Integer, String> keptLocally) {
+    for (final Map.Entry<Integer, String> shipped : shippedFiles.entrySet())
+      if (existsLocally.test(shipped.getKey()))
+        keptLocally.put(shipped.getKey(), shipped.getValue());
+      else
+        toRetire.put(shipped.getKey(), shipped.getValue());
+  }
+
+  /** Schema-WAL instalments shipped by this JVM since it started - see {@link #schemaInstalmentsShipped}. */
+  public static long getSchemaWalInstalmentsShipped() {
+    return schemaInstalmentsShipped.get();
   }
 
   @Override
@@ -1618,7 +1989,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // #4743: chunked against the maximum replicated entry size so a big compacted index does not
       // produce one oversized Raft entry (which would make the leader step down, over and over).
       final RaftTransactionBroker broker = requireRaftServer().getTransactionBroker();
-      final long walChunkBudget = Math.max(1024L, broker.maxEntrySize() / 2);
+      final long walChunkBudget = broker.walChunkBudget();
       for (final int fileId : addFiles.keySet())
         appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas, 0);
 

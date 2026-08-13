@@ -26,8 +26,7 @@ import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOperator {
   boolean doubleEquals = false;
 
-  public EqualsCompareOperator(final int id) {
-    super(id);
+  public EqualsCompareOperator() {
   }
 
   @Override

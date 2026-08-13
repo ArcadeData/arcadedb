@@ -37,8 +37,7 @@ public class DropIndexStatement extends DDLStatement {
   public Identifier name;
   public boolean    ifExists = false;
 
-  public DropIndexStatement(final int id) {
-    super(id);
+  public DropIndexStatement() {
   }
 
   @Override
@@ -87,7 +86,7 @@ public class DropIndexStatement extends DDLStatement {
 
   @Override
   public DropIndexStatement copy() {
-    final DropIndexStatement result = new DropIndexStatement(-1);
+    final DropIndexStatement result = new DropIndexStatement();
     result.all = all;
     result.name = name == null ? null : name.copy();
     return result;

@@ -25,8 +25,7 @@ import com.arcadedb.schema.Schema;
 
 public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
 
-  public CreateDocumentTypeStatement(final int id) {
-    super(id);
+  public CreateDocumentTypeStatement() {
   }
 
   @Override
@@ -61,7 +60,7 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
 
   @Override
   public CreateDocumentTypeStatement copy() {
-    return (CreateDocumentTypeStatement) super.copy(new CreateDocumentTypeStatement(-1));
+    return (CreateDocumentTypeStatement) super.copy(new CreateDocumentTypeStatement());
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */

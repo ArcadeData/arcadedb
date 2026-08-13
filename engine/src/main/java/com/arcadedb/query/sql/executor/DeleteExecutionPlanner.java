@@ -125,7 +125,7 @@ public class DeleteExecutionPlanner {
       }
       result.chain(new DeleteFromIndexStep(index, keyCondition, null, ridCondition, context));
       if (ridCondition != null) {
-        final WhereClause where = new WhereClause(-1);
+        final WhereClause where = new WhereClause();
         where.setBaseExpression(ridCondition);
         result.chain(new FilterStep(where, context));
       }
@@ -180,7 +180,7 @@ public class DeleteExecutionPlanner {
       final CommandContext context,
       final FromClause fromClause,
       final WhereClause whereClause) {
-    final SelectStatement sourceStatement = new SelectStatement(-1);
+    final SelectStatement sourceStatement = new SelectStatement();
     sourceStatement.setTarget(fromClause);
     sourceStatement.setWhereClause(whereClause);
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);

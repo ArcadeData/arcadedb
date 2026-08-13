@@ -49,8 +49,7 @@ public class TraverseStatement extends Statement {
   // before emission only: non-matching vertices still drive expansion, they are just not returned as results. Not exposed in grammar.
   protected WhereClause                  postFilter;
 
-  public TraverseStatement(final int id) {
-    super(id);
+  public TraverseStatement() {
   }
 
   public void validate() throws CommandSQLParsingException {
@@ -158,7 +157,7 @@ public class TraverseStatement extends Statement {
 
   @Override
   public Statement copy() {
-    final TraverseStatement result = new TraverseStatement(-1);
+    final TraverseStatement result = new TraverseStatement();
     result.projections = projections == null ? null : projections.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.target = target == null ? null : target.copy();
     result.whileClause = whileClause == null ? null : whileClause.copy();

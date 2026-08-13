@@ -45,8 +45,7 @@ public class UpdateStatement extends Statement {
   public WhereClause            whereClause;
   public Batch                  batch;
 
-  public UpdateStatement(final int id) {
-    super(id);
+  public UpdateStatement() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -99,7 +98,7 @@ public class UpdateStatement extends Statement {
 
   @Override
   public UpdateStatement copy() {
-    final UpdateStatement result = new UpdateStatement(-1);
+    final UpdateStatement result = new UpdateStatement();
     result.target = target == null ? null : target.copy();
     result.operations = operations == null ? null : operations.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.upsert = upsert;

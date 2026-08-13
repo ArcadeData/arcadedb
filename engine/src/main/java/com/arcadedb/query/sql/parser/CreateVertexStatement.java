@@ -44,8 +44,7 @@ public class CreateVertexStatement extends Statement {
   public Projection returnStatement;
   public InsertBody insertBody;
 
-  public CreateVertexStatement(final int id) {
-    super(id);
+  public CreateVertexStatement() {
   }
 
   @Override
@@ -126,7 +125,7 @@ public class CreateVertexStatement extends Statement {
   public CreateVertexStatement copy() {
     CreateVertexStatement result;
     try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      result = getClass().getConstructor().newInstance();
     } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }

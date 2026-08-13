@@ -21,8 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 public class Parse extends SimpleNode {
-  public Parse(final int id) {
-    super(id);
+  public Parse() {
   }
 }
 /* JavaCC - OriginalChecksum=d5bdbb7024b5ee7edd4f794c6b8860d0 (do not edit this line) */

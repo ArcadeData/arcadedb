@@ -149,7 +149,7 @@ public class SelectExecutionPlanner {
     info.limit = this.statement.getLimit();
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
     if (info.timeout == null && context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) > 0) {
-      info.timeout = new Timeout(-1);
+      info.timeout = new Timeout();
       info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
     }
 
@@ -353,10 +353,10 @@ public class SelectExecutionPlanner {
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
         final Expression exp = function.getParams().getFirst();
-        final ProjectionItem resultItem = new ProjectionItem(-1);
+        final ProjectionItem resultItem = new ProjectionItem();
         resultItem.setAlias(item.getAlias());
         resultItem.setExpression(exp.copy());
-        final Projection result = new Projection(-1);
+        final Projection result = new Projection();
         result.setItems(new ArrayList<>());
         result.setDistinct(true);
         result.getItems().add(resultItem);
@@ -810,7 +810,7 @@ public class SelectExecutionPlanner {
       info.orderBy = newOrderBy;//the ORDER BY has changed
     }
     if (additionalOrderByProjections.size() > 0) {
-      info.projectionAfterOrderBy = new Projection(-1);
+      info.projectionAfterOrderBy = new Projection();
       info.projectionAfterOrderBy.setItems(new ArrayList<>());
       for (final String alias : info.projection.getAllAliases()) {
         info.projectionAfterOrderBy.getItems().add(projectionFromAlias(new Identifier(alias)));
@@ -845,7 +845,7 @@ public class SelectExecutionPlanner {
     for (final Identifier unwindItem : info.unwind.getItems()) {
       final String unwindFieldName = unwindItem.getStringValue();
       if (!allAliases.contains(unwindFieldName)) {
-        final ProjectionItem newProj = new ProjectionItem(-1);
+        final ProjectionItem newProj = new ProjectionItem();
         newProj.setExpression(new Expression(unwindItem));
         // Keep the original field name so UNWIND can find it
         newProj.setAlias(unwindItem);
@@ -855,7 +855,7 @@ public class SelectExecutionPlanner {
 
     if (!additionalUnwindProjections.isEmpty()) {
       // Save the original projection to restore after UNWIND
-      info.projectionAfterUnwind = new Projection(-1);
+      info.projectionAfterUnwind = new Projection();
       info.projectionAfterUnwind.setItems(new ArrayList<>());
       for (final String alias : allAliases) {
         info.projectionAfterUnwind.getItems().add(projectionFromAlias(new Identifier(alias)));
@@ -890,14 +890,14 @@ public class SelectExecutionPlanner {
     if (orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty()) {
       for (final OrderByItem item : orderBy.getItems()) {
         if (!allAliases.contains(item.getName())) {
-          final ProjectionItem newProj = new ProjectionItem(-1);
+          final ProjectionItem newProj = new ProjectionItem();
           if (item.expression != null) {
             // Complex expression (e.g., CASE WHEN) - use the stored expression directly
             newProj.setExpression(item.expression);
           } else if (item.getAlias() != null) {
             newProj.setExpression(new Expression(new Identifier(item.getAlias()), item.getModifier()));
           } else if (item.getRecordAttr() != null) {
-            final RecordAttribute attr = new RecordAttribute(-1);
+            final RecordAttribute attr = new RecordAttribute();
             attr.setName(item.getRecordAttr());
             newProj.setExpression(new Expression(attr, item.getModifier()));
           } else {
@@ -922,11 +922,11 @@ public class SelectExecutionPlanner {
     if (info.projection == null)
       return;
 
-    final Projection preAggregate = new Projection(-1);
+    final Projection preAggregate = new Projection();
     preAggregate.setItems(new ArrayList<>());
-    final Projection aggregate = new Projection(-1);
+    final Projection aggregate = new Projection();
     aggregate.setItems(new ArrayList<>());
-    final Projection postAggregate = new Projection(-1);
+    final Projection postAggregate = new Projection();
     postAggregate.setItems(new ArrayList<>());
 
     boolean isSplitted = false;
@@ -947,7 +947,7 @@ public class SelectExecutionPlanner {
       } else {
         preAggregate.getItems().add(item);
         //also push the alias forward in the chain
-        final ProjectionItem aggItem = new ProjectionItem(-1);
+        final ProjectionItem aggItem = new ProjectionItem();
         aggItem.setExpression(new Expression(item.getProjectionAlias()));
         aggregate.getItems().add(aggItem);
         postAggregate.getItems().add(aggItem);
@@ -979,10 +979,10 @@ public class SelectExecutionPlanner {
       if (exp.isAggregate(context))
         throw new CommandExecutionException("Cannot group by an aggregate function");
 
-      final ProjectionItem newItem = new ProjectionItem(-1);
+      final ProjectionItem newItem = new ProjectionItem();
       newItem.setExpression(exp);
       if (info.aggregateProjection == null)
-        info.aggregateProjection = new Projection(-1);
+        info.aggregateProjection = new Projection();
 
       if (info.aggregateProjection.getItems() == null)
         info.aggregateProjection.setItems(new ArrayList<>());
@@ -996,7 +996,7 @@ public class SelectExecutionPlanner {
   }
 
   private static ProjectionItem projectionFromAlias(final Identifier oIdentifier) {
-    final ProjectionItem result = new ProjectionItem(-1);
+    final ProjectionItem result = new ProjectionItem();
     result.setExpression(new Expression(oIdentifier));
     return result;
   }
@@ -1009,7 +1009,7 @@ public class SelectExecutionPlanner {
     if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() == 0) {
       return;
     }
-    final GroupBy newGroupBy = new GroupBy(-1);
+    final GroupBy newGroupBy = new GroupBy();
     final int i = 0;
     for (final Expression exp : info.groupBy.getItems()) {
       if (exp.isAggregate(context)) {
@@ -1028,12 +1028,12 @@ public class SelectExecutionPlanner {
         }
       }
       if (!found) {
-        final ProjectionItem newItem = new ProjectionItem(-1);
+        final ProjectionItem newItem = new ProjectionItem();
         newItem.setExpression(exp);
         final Identifier groupByAlias = new Identifier("_$$$GROUP_BY_ALIAS$$$_" + i);
         newItem.setAlias(groupByAlias);
         if (info.preAggregateProjection == null) {
-          info.preAggregateProjection = new Projection(-1);
+          info.preAggregateProjection = new Projection();
         }
         if (info.preAggregateProjection.getItems() == null) {
           info.preAggregateProjection.setItems(new ArrayList<>());
@@ -1092,9 +1092,9 @@ public class SelectExecutionPlanner {
 
   private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Expression exp) {
     if (info.globalLetClause == null)
-      info.globalLetClause = new LetClause(-1);
+      info.globalLetClause = new LetClause();
 
-    final LetItem item = new LetItem(-1);
+    final LetItem item = new LetItem();
     item.setVarName(alias);
     item.setExpression(exp);
     info.globalLetClause.addItem(item);
@@ -1102,9 +1102,9 @@ public class SelectExecutionPlanner {
 
   private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm, final int pos) {
     if (info.globalLetClause == null)
-      info.globalLetClause = new LetClause(-1);
+      info.globalLetClause = new LetClause();
 
-    final LetItem item = new LetItem(-1);
+    final LetItem item = new LetItem();
     item.setVarName(alias);
     item.setQuery(stm);
     if (pos > -1)
@@ -1115,9 +1115,9 @@ public class SelectExecutionPlanner {
 
   private static void addRecordLevelLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm, final int pos) {
     if (info.perRecordLetClause == null)
-      info.perRecordLetClause = new LetClause(-1);
+      info.perRecordLetClause = new LetClause();
 
-    final LetItem item = new LetItem(-1);
+    final LetItem item = new LetItem();
     item.setVarName(alias);
     item.setQuery(stm);
     if (pos > -1)
@@ -1358,7 +1358,7 @@ public class SelectExecutionPlanner {
   }
 
   private AndBlock extractRidRanges(final List<AndBlock> flattenedWhereClause, final CommandContext context) {
-    final AndBlock result = new AndBlock(-1);
+    final AndBlock result = new AndBlock();
 
     if (flattenedWhereClause == null || flattenedWhereClause.size() != 1)
       return result;
@@ -1404,25 +1404,25 @@ public class SelectExecutionPlanner {
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return
     } else if (paramValue instanceof LocalDocumentType type) {
-      final FromClause from = new FromClause(-1);
-      final FromItem item = new FromItem(-1);
+      final FromClause from = new FromClause();
+      final FromItem item = new FromItem();
       from.setItem(item);
       item.setIdentifier(new Identifier(type.getName()));
       handleTypeAsTarget(result, filterClusters, from, info, context);
     } else if (paramValue instanceof String string) {
       //strings are treated as classes
-      final FromClause from = new FromClause(-1);
-      final FromItem item = new FromItem(-1);
+      final FromClause from = new FromClause();
+      final FromItem item = new FromItem();
       from.setItem(item);
       item.setIdentifier(new Identifier(string));
       handleTypeAsTarget(result, filterClusters, from, info, context);
     } else if (paramValue instanceof Identifiable identifiable) {
       final RID orid = identifiable.getIdentity();
 
-      final Rid rid = new Rid(-1);
-      final PInteger bucket = new PInteger(-1);
+      final Rid rid = new Rid();
+      final PInteger bucket = new PInteger();
       bucket.setValue(orid.getBucketId());
-      final PInteger position = new PInteger(-1);
+      final PInteger position = new PInteger();
       position.setValue(orid.getPosition());
       rid.setLegacy(true);
       rid.setBucket(bucket);
@@ -1442,10 +1442,10 @@ public class SelectExecutionPlanner {
           throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
         }
         final RID orid = ((Identifiable) x).getIdentity();
-        final Rid rid = new Rid(-1);
-        final PInteger bucket = new PInteger(-1);
+        final Rid rid = new Rid();
+        final PInteger bucket = new PInteger();
         bucket.setValue(orid.getBucketId());
-        final PInteger position = new PInteger(-1);
+        final PInteger position = new PInteger();
         position.setValue(orid.getPosition());
         rid.setLegacy(true);
         rid.setBucket(bucket);
@@ -1535,7 +1535,7 @@ public class SelectExecutionPlanner {
       }
       result.chain(new FetchFromIndexStep(index, keyCondition, null, context));
       if (ridCondition != null) {
-        final WhereClause where = new WhereClause(-1);
+        final WhereClause where = new WhereClause();
         where.setBaseExpression(ridCondition);
         result.chain(new FilterStep(where, context));
       }
@@ -1967,9 +1967,9 @@ public class SelectExecutionPlanner {
       final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
       remaining.remove(i);
       if (!remaining.isEmpty()) {
-        final AndBlock remainingBlock = new AndBlock(-1);
+        final AndBlock remainingBlock = new AndBlock();
         remainingBlock.getSubBlocks().addAll(remaining);
-        final WhereClause remainingWhere = new WhereClause(-1);
+        final WhereClause remainingWhere = new WhereClause();
         remainingWhere.setBaseExpression(remainingBlock);
         plan.chain(new FilterStep(remainingWhere, context));
       }
@@ -2026,28 +2026,35 @@ public class SelectExecutionPlanner {
 
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
       final BooleanExpression expr = andBlock.getSubBlocks().get(i);
-      final List<RID> rids = extractRidEqualityOrInList(expr, context);
-      if (rids == null)
-        continue;
+      if (extractRidEqualityOrInList(expr, context) == null)
+        continue; // not one of the @rid = <RID> / @rid IN [<RID list>] shapes
 
-      if (rids.isEmpty()) {
-        // The RID list is definitely empty (e.g. an empty IN-list or a null bind parameter):
-        // no record can match, whatever the remaining conditions are.
-        plan.chain(new EmptyStep(context));
-        info.whereClause = null;
-        info.flattenedWhereClause = null;
-        return true;
-      }
+      // Known tradeoff: this shape check runs against THIS build's bound value, and its true/false
+      // outcome (not the resolved RIDs themselves, which are re-resolved per execution below) is
+      // what the cached plan commits to. An atypical first bind that fails to resolve here (e.g. a
+      // null @rid, or one bad element in an IN-list) permanently locks that statement text into the
+      // scan fallback until the next cache invalidation, even though later executions bind good
+      // RIDs. Not a correctness issue - the scan still evaluates the condition correctly - just a
+      // missed optimization for that call pattern.
 
-      plan.chain(new FetchFromRidsStep(rids, context));
+      // Deliberately do NOT bake the RID(s) resolved above into the fetch step: this build may run
+      // once per statement text and get reused later, with different bound parameters, straight from
+      // db.getExecutionPlanCache() (see ExecutionPlanCache.get()'s InternalExecutionPlan.copy(context)).
+      // FetchFromRidsStep(BooleanExpression, CommandContext) re-resolves ridCondition lazily against
+      // each execution's own live context instead, keeping this whole plan cacheable. That includes
+      // whatever this particular build's RIDs resolved to being empty (e.g. a null-bound parameter):
+      // baking THAT into a cached plan would be just as wrong for a later, differently-bound
+      // execution - see EmptyStep.canBeCached()'s "DON'T TOUCH" comment for exactly this hazard, and
+      // issue #5855.
+      plan.chain(new FetchFromRidsStep(expr, context));
       plan.chain(new FilterByTypeStep(identifier, context));
 
       final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
       remaining.remove(i);
       if (!remaining.isEmpty()) {
-        final AndBlock remainingBlock = new AndBlock(-1);
+        final AndBlock remainingBlock = new AndBlock();
         remainingBlock.getSubBlocks().addAll(remaining);
-        final WhereClause remainingWhere = new WhereClause(-1);
+        final WhereClause remainingWhere = new WhereClause();
         remainingWhere.setBaseExpression(remainingBlock);
         plan.chain(new FilterStep(remainingWhere, context));
       }
@@ -2061,17 +2068,23 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also {@code IN (<RID list>)}
-   * and {@code IN <bind parameter>}) and resolves the RID(s) at plan time. Returns {@code null} if
-   * {@code expr} isn't one of these shapes, or if any element can't be resolved to a RID at plan
-   * time (e.g. it's computed from a per-record field) - the caller falls back to the normal scan
-   * in that case, which still evaluates correctly. Returns an empty list if the condition can
-   * never match any record (empty IN-list, or a bind parameter bound to null) so the caller can
-   * short-circuit to no results. {@code @rid NOT IN [...]} is deliberately not handled here:
-   * excluding a RID set still requires scanning every other record of the type, which this
-   * optimization cannot help with.
+   * Build-time-only: recognizes {@code @rid = <RID>} and {@code @rid IN [<RID list>]} (also
+   * {@code IN (<RID list>)} and {@code IN <bind parameter>}) and resolves the RID(s) against
+   * {@code context}, purely to decide whether {@code expr} is one of these shapes at all. Returns
+   * {@code null} if {@code expr} isn't one of these shapes, or if ANY element can't be resolved to a
+   * RID given this particular build's {@code context} (e.g. a per-record field, or one bad element
+   * mixed into an otherwise-valid list) - the caller ({@link #handleTypeWithRidFilter}) then falls
+   * back to a normal scan, which evaluates the {@code IN}/{@code =} condition itself and handles a
+   * partially-resolvable list correctly on its own. Returns an empty list if the condition can never
+   * match any record (empty IN-list, or a bind parameter bound to null). {@code @rid NOT IN [...]}
+   * is deliberately not handled here: excluding a RID set still requires scanning every other record
+   * of the type, which this optimization cannot help with.
+   * <p>
+   * Do NOT call this from {@link FetchFromRidsStep#syncPull} - once the plan has committed to a
+   * {@code FetchFromRidsStep}, there is no scan fallback left, so "abort the whole list to null on
+   * one bad element" is wrong there. Use {@link #resolveRidEqualityOrInListAtRuntime} instead.
    */
-  private static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
+  static List<RID> extractRidEqualityOrInList(final BooleanExpression expr, final CommandContext context) {
     if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
         && RID_PROPERTY.equalsIgnoreCase(bc.getLeft().toString())) {
       final RID rid = extractRidValue(bc.getRight(), context);
@@ -2082,22 +2095,13 @@ public class SelectExecutionPlanner {
       return null;
 
     final Object rawValue;
-    if (in.right instanceof List<?> list) {
-      final List<Object> values = new ArrayList<>(list.size());
-      for (final Object item : list)
-        values.add(item instanceof Expression itemExpr ? extractRidValue(itemExpr, context) : item);
-      rawValue = values;
-    } else if (in.getRightMathExpression() != null) {
-      try {
-        rawValue = in.getRightMathExpression().execute((Result) null, context);
-      } catch (final Exception e) {
-        return null; // not resolvable at plan time (e.g. references a per-record field)
-      }
-    } else if (in.getRightParam() != null) {
-      rawValue = in.getRightParam().getValue(context.getInputParameters());
-    } else
+    try {
+      rawValue = resolveInRightHandRawValue(in, context);
+    } catch (final Exception e) {
+      return null; // not resolvable at plan time (e.g. references a per-record field)
+    }
+    if (rawValue == NOT_A_RESOLVABLE_RID_SHAPE)
       return null; // subquery on the right: not a plan-time-resolvable RID list
-
     if (rawValue == null)
       return List.of(); // WHERE @rid IN <null> matches nothing
 
@@ -2116,6 +2120,81 @@ public class SelectExecutionPlanner {
       if (rid == null)
         return null;
       rids.add(rid);
+    }
+    return new ArrayList<>(rids);
+  }
+
+  /** Sentinel returned by {@link #resolveInRightHandRawValue} for an {@code IN} shape this optimization can't handle at all (a subquery). */
+  private static final Object NOT_A_RESOLVABLE_RID_SHAPE = new Object();
+
+  /**
+   * Shared by {@link #extractRidEqualityOrInList} and {@link #resolveRidEqualityOrInListAtRuntime}:
+   * turns the right-hand side of an {@code @rid IN <right>} condition into the raw bound value,
+   * before it's walked into individual {@link RID}s. Evaluating
+   * {@code in.getRightMathExpression()} can throw (e.g. it references a per-record field, which is
+   * meaningless outside a scan) - deliberately left uncaught here so each caller can apply its own
+   * policy: the build-time caller treats it as "not resolvable at plan time" (falls back to a scan),
+   * the runtime caller lets it propagate as a genuine execution error.
+   */
+  private static Object resolveInRightHandRawValue(final InCondition in, final CommandContext context) {
+    if (in.right instanceof List<?> list) {
+      final List<Object> values = new ArrayList<>(list.size());
+      for (final Object item : list)
+        values.add(item instanceof Expression itemExpr ? extractRidValue(itemExpr, context) : item);
+      return values;
+    }
+    if (in.getRightMathExpression() != null)
+      return in.getRightMathExpression().execute((Result) null, context);
+    if (in.getRightParam() != null)
+      return in.getRightParam().getValue(context.getInputParameters());
+    return NOT_A_RESOLVABLE_RID_SHAPE;
+  }
+
+  /**
+   * Runtime counterpart of {@link #extractRidEqualityOrInList}, called from
+   * {@link FetchFromRidsStep#syncPull} on every pull of a {@code FetchFromRidsStep} built from a
+   * {@code @rid = ?} / {@code @rid IN ?} condition, re-resolving against that execution's own live
+   * {@code context} so the step - and the whole plan - stays safe to reuse from
+   * {@code db.getExecutionPlanCache()} with different bound parameters (issue #5855).
+   * <p>
+   * Unlike the build-time method, there is no scan fallback left once a plan has committed to this
+   * step, so an {@code IN}-list element that fails to resolve to a RID is skipped rather than
+   * aborting the whole result to empty - mirroring what a normal per-record {@code IN} scan does
+   * with a non-RID element (it simply never matches). An exception thrown while evaluating
+   * {@code in.getRightMathExpression()} - the only right-hand shape that can throw here - is a
+   * genuine execution-time error at this point (not "unknowable at plan time" the way it is in the
+   * build-time method) and is left to propagate. {@link #extractRidValue}, used for the equality
+   * operand and each list-literal item, still fails safe to "no match" on any exception in both
+   * this method and the build-time one - unchanged from before this split.
+   */
+  static List<RID> resolveRidEqualityOrInListAtRuntime(final BooleanExpression expr, final CommandContext context) {
+    if (expr instanceof BinaryCondition bc && bc.getOperator() instanceof EqualsCompareOperator
+        && RID_PROPERTY.equalsIgnoreCase(bc.getLeft().toString())) {
+      final RID rid = extractRidValue(bc.getRight(), context);
+      return rid == null ? List.of() : List.of(rid);
+    }
+
+    if (!(expr instanceof InCondition in) || in.not || !RID_PROPERTY.equalsIgnoreCase(in.getLeft().toString()))
+      return List.of();
+
+    final Object rawValue = resolveInRightHandRawValue(in, context);
+    if (rawValue == NOT_A_RESOLVABLE_RID_SHAPE || rawValue == null)
+      return List.of(); // subquery on the right, or WHERE @rid IN <null>: matches nothing
+
+    // Same dedup rationale as extractRidEqualityOrInList; unresolvable elements are skipped instead
+    // of aborting the whole list, matching how a normal IN scan treats a non-RID element (no match
+    // for that element, not a failure of the whole condition).
+    final Set<RID> rids = new LinkedHashSet<>();
+    if (rawValue instanceof Iterable<?> iterable) {
+      for (final Object item : iterable) {
+        final RID rid = toRid(item, context);
+        if (rid != null)
+          rids.add(rid);
+      }
+    } else {
+      final RID rid = toRid(rawValue, context);
+      if (rid != null)
+        rids.add(rid);
     }
     return new ArrayList<>(rids);
   }
@@ -3155,10 +3234,10 @@ public class SelectExecutionPlanner {
 
           // Create IS NULL filter for the first indexed property
           final String propertyName = indexFields.getFirst();
-          final IsNullCondition isNullCondition = new IsNullCondition(-1);
+          final IsNullCondition isNullCondition = new IsNullCondition();
           final Expression expr = new Expression(new Identifier(propertyName));
           isNullCondition.setExpression(expr);
-          final WhereClause nullWhereClause = new WhereClause(-1);
+          final WhereClause nullWhereClause = new WhereClause();
           nullWhereClause.setBaseExpression(isNullCondition);
           nullPlan.chain(new FilterStep(nullWhereClause, context));
 
@@ -3470,7 +3549,7 @@ public class SelectExecutionPlanner {
   }
 
   private WhereClause createWhereFrom(final BooleanExpression remainingCondition) {
-    final WhereClause result = new WhereClause(-1);
+    final WhereClause result = new WhereClause();
     result.setBaseExpression(remainingCondition);
     return result;
   }
@@ -3728,7 +3807,7 @@ public class SelectExecutionPlanner {
   private IndexSearchDescriptor buildIndexSearchDescriptorForFulltext(final CommandContext context, final Index index,
       final AndBlock block, final DocumentType clazz) {
     final List<String> indexFields = index.getPropertyNames();
-    final BinaryCondition keyCondition = new BinaryCondition(-1);
+    final BinaryCondition keyCondition = new BinaryCondition();
     final Identifier key = new Identifier("key");
     keyCondition.setLeft(new Expression(key));
     boolean found = false;
@@ -3736,7 +3815,7 @@ public class SelectExecutionPlanner {
     final AndBlock blockCopy = block.copy();
     Iterator<BooleanExpression> blockIterator;
 
-    final AndBlock indexKeyValue = new AndBlock(-1);
+    final AndBlock indexKeyValue = new AndBlock();
     final IndexSearchDescriptor result = new IndexSearchDescriptor();
     result.index = (RangeIndex) index;
     result.keyCondition = indexKeyValue;
@@ -3763,7 +3842,7 @@ public class SelectExecutionPlanner {
           if (baseFieldName.equals(fieldName)) {
             found = true;
             indexFieldFound = true;
-            final ContainsTextCondition condition = new ContainsTextCondition(-1);
+            final ContainsTextCondition condition = new ContainsTextCondition();
             condition.setLeft(left);
             condition.setRight(textCondition.getRight().copy());
             indexKeyValue.getSubBlocks().add(condition);
@@ -3805,7 +3884,7 @@ public class SelectExecutionPlanner {
     AndBlock blockCopy = block.copy();
     Iterator<BooleanExpression> blockIterator;
 
-    AndBlock indexKeyValue = new AndBlock(-1);
+    AndBlock indexKeyValue = new AndBlock();
     BinaryCondition additionalRangeCondition = null;
 
     for (String indexField : indexFields) {
@@ -3949,7 +4028,7 @@ public class SelectExecutionPlanner {
 
       OrBlock existingAdditionalConditions = filtersForIndex.get(extendedCond);
       if (existingAdditionalConditions == null) {
-        existingAdditionalConditions = new OrBlock(-1);
+        existingAdditionalConditions = new OrBlock();
         filtersForIndex.put(extendedCond, existingAdditionalConditions);
       }
       existingAdditionalConditions.getSubBlocks().add(item.remainingCondition);

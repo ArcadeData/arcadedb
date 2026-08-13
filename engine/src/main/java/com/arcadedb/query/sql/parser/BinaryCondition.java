@@ -34,8 +34,7 @@ public class BinaryCondition extends BooleanExpression {
   public BinaryCompareOperator operator;
   public Expression            right;
 
-  public BinaryCondition(final int id) {
-    super(id);
+  public BinaryCondition() {
   }
 
   @Override
@@ -122,7 +121,7 @@ public class BinaryCondition extends BooleanExpression {
 
   @Override
   public BinaryCondition copy() {
-    final BinaryCondition result = new BinaryCondition(-1);
+    final BinaryCondition result = new BinaryCondition();
     result.left = left.copy();
     result.operator = operator.copy();
     result.right = right.copy();
@@ -141,7 +140,7 @@ public class BinaryCondition extends BooleanExpression {
       return Optional.empty();
     }
     if (operator instanceof EqualsCompareOperator) {
-      final UpdateItem result = new UpdateItem(-1);
+      final UpdateItem result = new UpdateItem();
       result.operator = UpdateItem.OPERATOR_EQ;
       final BaseExpression baseExp = (BaseExpression) left.mathExpression;
       result.left = baseExp.identifier.suffix.identifier.copy();

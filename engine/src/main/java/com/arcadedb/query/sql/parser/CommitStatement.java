@@ -35,8 +35,7 @@ public class CommitStatement extends SimpleExecStatement {
   public List<Statement> elseStatements;
   public Boolean         elseFail;
 
-  public CommitStatement(final int id) {
-    super(id);
+  public CommitStatement() {
   }
 
   public void addElse(final Statement statement) {
@@ -88,7 +87,7 @@ public class CommitStatement extends SimpleExecStatement {
 
   @Override
   public CommitStatement copy() {
-    CommitStatement result = new CommitStatement(-1);
+    CommitStatement result = new CommitStatement();
     result.retry = retry == null ? null : retry.copy();
     if (this.elseStatements != null) {
       result.elseStatements = new ArrayList<>();

@@ -31,8 +31,7 @@ public class InputParameter extends SimpleNode {
 
   protected static final String dateFormatString = "yyyy-MM-dd HH:mm:ss.SSS";
 
-  public InputParameter(final int id) {
-    super(id);
+  public InputParameter() {
   }
 
   public Object bindFromInputParams(final Map<String, Object> params) {
@@ -45,36 +44,36 @@ public class InputParameter extends SimpleNode {
 
   protected Object toParsedTree(final Object value) {
     if (value == null) {
-      final Expression result = new Expression(-1);
+      final Expression result = new Expression();
       result.isNull = true;
       return result;
     }
     if (value instanceof Boolean boolean1) {
-      final Expression result = new Expression(-1);
+      final Expression result = new Expression();
       result.booleanValue = boolean1;
       return result;
     }
     if (value instanceof Integer integer) {
-      final PInteger result = new PInteger(-1);
+      final PInteger result = new PInteger();
       result.setValue(integer);
       return result;
     }
     if (value instanceof BigDecimal decimal) {
-      final Expression result = new Expression(-1);
-      final FunctionCall funct = new FunctionCall(-1);
-      result.mathExpression = new BaseExpression(-1);
-      ((BaseExpression) result.mathExpression).identifier = new BaseIdentifier(-1);
-      ((BaseExpression) result.mathExpression).identifier.levelZero = new LevelZeroIdentifier(-1);
+      final Expression result = new Expression();
+      final FunctionCall funct = new FunctionCall();
+      result.mathExpression = new BaseExpression();
+      ((BaseExpression) result.mathExpression).identifier = new BaseIdentifier();
+      ((BaseExpression) result.mathExpression).identifier.levelZero = new LevelZeroIdentifier();
       ((BaseExpression) result.mathExpression).identifier.levelZero.functionCall = funct;
       funct.name = new Identifier("decimal");
-      final Expression stringExp = new Expression(-1);
+      final Expression stringExp = new Expression();
       stringExp.mathExpression = new BaseExpression(decimal.toPlainString());
       funct.getParams().add(stringExp);
       return result;
     }
 
     if (value instanceof Number number) {
-      final FloatingPoint result = new FloatingPoint(-1);
+      final FloatingPoint result = new FloatingPoint();
       result.sign = number.doubleValue() >= 0 ? 1 : -1;
       result.stringValue = value.toString();
       if (result.stringValue.startsWith("-")) {
@@ -91,24 +90,24 @@ public class InputParameter extends SimpleNode {
       return value;
     }
     if (MultiValue.isMultiValue(value)) {
-      final PCollection coll = new PCollection(-1);
+      final PCollection coll = new PCollection();
       coll.expressions = new ArrayList<Expression>();
       final Iterator iterator = MultiValue.getMultiValueIterator(value);
       while (iterator.hasNext()) {
         final Object o = iterator.next();
-        final Expression exp = new Expression(-1);
+        final Expression exp = new Expression();
         exp.value = toParsedTree(o);
         coll.expressions.add(exp);
       }
       return coll;
     }
     if (value instanceof Map map) {
-      final Json json = new Json(-1);
+      final Json json = new Json();
       json.items = new ArrayList<JsonItem>();
       for (final Object entry : map.entrySet()) {
         final JsonItem item = new JsonItem();
         item.leftString = "" + ((Map.Entry) entry).getKey();
-        final Expression exp = new Expression(-1);
+        final Expression exp = new Expression();
         exp.value = toParsedTree(((Map.Entry) entry).getValue());
         item.right = exp;
         json.items.add(item);
@@ -117,30 +116,30 @@ public class InputParameter extends SimpleNode {
     }
     if (value instanceof Identifiable identifiable) {
       // TODO if invalid build a JSON
-      final Rid rid = new Rid(-1);
+      final Rid rid = new Rid();
       final String stringVal = identifiable.getIdentity().toString().substring(1);
       final String[] splitted = stringVal.split(":");
-      final PInteger c = new PInteger(-1);
+      final PInteger c = new PInteger();
       c.setValue(Integer.parseInt(splitted[0]));
       rid.bucket = c;
-      final PInteger p = new PInteger(-1);
+      final PInteger p = new PInteger();
       p.setValue(Integer.parseInt(splitted[1]));
       rid.position = p;
       rid.setLegacy(true);
       return rid;
     }
     if (value instanceof Date) {
-      final FunctionCall function = new FunctionCall(-1);
+      final FunctionCall function = new FunctionCall();
       function.name = new Identifier("date");
 
-      final Expression dateExpr = new Expression(-1);
+      final Expression dateExpr = new Expression();
       dateExpr.singleQuotes = true;
       dateExpr.doubleQuotes = false;
       final SimpleDateFormat dateFormat = new SimpleDateFormat(dateFormatString);
       dateExpr.value = dateFormat.format(value);
       function.getParams().add(dateExpr);
 
-      final Expression dateFormatExpr = new Expression(-1);
+      final Expression dateFormatExpr = new Expression();
       dateFormatExpr.singleQuotes = true;
       dateFormatExpr.doubleQuotes = false;
       dateFormatExpr.value = dateFormatString;

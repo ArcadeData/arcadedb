@@ -55,7 +55,6 @@ public class CaseExpression extends MathExpression {
    * Constructor for simple CASE form (no case expression).
    */
   public CaseExpression(final List<CaseAlternative> alternatives, final Expression elseExpression) {
-    super(-1);
     this.caseExpression = null;
     this.alternatives = alternatives;
     this.elseExpression = elseExpression;
@@ -76,7 +75,6 @@ public class CaseExpression extends MathExpression {
    */
   public CaseExpression(final Expression caseExpression, final List<CaseAlternative> alternatives,
                         final Expression elseExpression) {
-    super(-1);
     this.caseExpression = caseExpression;
     this.alternatives = alternatives;
     this.elseExpression = elseExpression;

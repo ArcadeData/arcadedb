@@ -23,8 +23,7 @@ package com.arcadedb.query.sql.parser;
 import java.util.Map;
 
 public class PNumber extends SimpleNode {
-  public PNumber(final int id) {
-    super(id);
+  public PNumber() {
   }
 
   public Number getValue() {
@@ -36,7 +35,7 @@ public class PNumber extends SimpleNode {
   }
 
   public PNumber copy() {
-    final PNumber result = new PNumber(-1);
+    final PNumber result = new PNumber();
     result.value = value;
     return result;
   }

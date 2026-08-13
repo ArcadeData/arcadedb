@@ -89,7 +89,7 @@ public class InsertStatementExecutionTest extends TestHelper {
 
   private void assertInsertExecutionPlanRunsOnce(final Function<InsertStatement, ResultSet> executeStatement) {
     final AtomicInteger executions = new AtomicInteger();
-    final InsertStatement statement = new InsertStatement(-1) {
+    final InsertStatement statement = new InsertStatement() {
       @Override
       public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
         return countingExecutionPlan(context, executions);

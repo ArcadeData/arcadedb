@@ -34,8 +34,7 @@ public class LevelZeroIdentifier extends SimpleNode {
   protected Boolean      self;
   protected PCollection  collection;
 
-  public LevelZeroIdentifier(final int id) {
-    super(id);
+  public LevelZeroIdentifier() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -194,7 +193,7 @@ public class LevelZeroIdentifier extends SimpleNode {
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
+      final LevelZeroIdentifier result = new LevelZeroIdentifier();
       if (functionCall != null) {
         final SimpleNode node = functionCall.splitForAggregation(aggregateProj, context);
         if (node instanceof FunctionCall call) {
@@ -224,7 +223,7 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public LevelZeroIdentifier copy() {
-    final LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
+    final LevelZeroIdentifier result = new LevelZeroIdentifier();
     result.functionCall = functionCall == null ? null : functionCall.copy();
     result.self = self;
     result.collection = collection == null ? null : collection.copy();

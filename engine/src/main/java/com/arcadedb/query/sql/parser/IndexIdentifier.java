@@ -33,8 +33,7 @@ public class IndexIdentifier extends SimpleNode {
   public String     indexNameString;
   public Identifier indexName;
 
-  public IndexIdentifier(final int id) {
-    super(id);
+  public IndexIdentifier() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -72,7 +71,7 @@ public class IndexIdentifier extends SimpleNode {
   }
 
   public IndexIdentifier copy() {
-    final IndexIdentifier result = new IndexIdentifier(-1);
+    final IndexIdentifier result = new IndexIdentifier();
     result.type = type;
     result.indexNameString = indexNameString;
     result.indexName = indexName.copy();

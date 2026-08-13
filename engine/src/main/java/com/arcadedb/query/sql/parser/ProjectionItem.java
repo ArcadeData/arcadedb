@@ -41,14 +41,12 @@ public class ProjectionItem extends SimpleNode {
   public NestedProjection nestedProjection;
 
   public ProjectionItem(final Expression expression, final Identifier alias, final NestedProjection nestedProjection) {
-    super(-1);
     this.expression = expression;
     this.alias = alias;
     this.nestedProjection = nestedProjection;
   }
 
-  public ProjectionItem(final int id) {
-    super(id);
+  public ProjectionItem() {
   }
 
   public boolean isAll() {
@@ -166,7 +164,7 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public ProjectionItem getExpandContent() {
-    final ProjectionItem result = new ProjectionItem(-1);
+    final ProjectionItem result = new ProjectionItem();
     result.setExpression(expression.getExpandContent());
     // Ad-hoc support for issue #2965: preserve nested projection when expanding
     result.nestedProjection = this.nestedProjection;
@@ -196,7 +194,7 @@ public class ProjectionItem extends SimpleNode {
    */
   public ProjectionItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
     if (isAggregate(context)) {
-      final ProjectionItem result = new ProjectionItem(-1);
+      final ProjectionItem result = new ProjectionItem();
       result.alias = getProjectionAlias();
       result.expression = expression.splitForAggregation(aggregateSplit, context);
       result.nestedProjection = nestedProjection;
@@ -214,7 +212,7 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public ProjectionItem copy() {
-    final ProjectionItem result = new ProjectionItem(-1);
+    final ProjectionItem result = new ProjectionItem();
     result.exclude = this.exclude;
     result.all = all;
     result.alias = alias == null ? null : alias.copy();

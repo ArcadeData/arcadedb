@@ -45,17 +45,14 @@ public class BaseExpression extends MathExpression {
   public Modifier       modifier;
   public boolean        isNull = false;
 
-  public BaseExpression(final int id) {
-    super(id);
+  public BaseExpression() {
   }
 
   public BaseExpression(final Identifier identifier) {
-    super(-1);
     this.identifier = new BaseIdentifier(identifier);
   }
 
   public BaseExpression(final String string) {
-    super(-1);
     this.string = "\"" + encode(string) + "\"";
   }
 
@@ -67,7 +64,6 @@ public class BaseExpression extends MathExpression {
   }
 
   public BaseExpression(final RecordAttribute attr, final Modifier modifier) {
-    super(-1);
     this.identifier = new BaseIdentifier(attr);
     if (modifier != null) {
       this.modifier = modifier;
@@ -246,7 +242,7 @@ public class BaseExpression extends MathExpression {
     if (!registered)
       return null;
 
-    final FunctionCall fc = new FunctionCall(-1);
+    final FunctionCall fc = new FunctionCall();
     final Identifier name = new Identifier(combined);
     fc.name = name;
     fc.params = mc.params;
@@ -255,7 +251,7 @@ public class BaseExpression extends MathExpression {
   }
 
   private transient FunctionCall cachedNamespacedCall;
-  private static final FunctionCall NAMESPACED_CALL_NONE = new FunctionCall(-1);
+  private static final FunctionCall NAMESPACED_CALL_NONE = new FunctionCall();
 
   @Override
   public boolean isIndexedFunctionCall(final CommandContext context) {
@@ -394,7 +390,7 @@ public class BaseExpression extends MathExpression {
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
-      final BaseExpression result = new BaseExpression(-1);
+      final BaseExpression result = new BaseExpression();
 
       // Handle case where identifier is set
       if (identifier != null) {
@@ -412,7 +408,7 @@ public class BaseExpression extends MathExpression {
           result.expression = expr;
         } else if (splitResult instanceof MathExpression mathExpr) {
           // Wrap the MathExpression back in an Expression
-          final Expression wrapperExpr = new Expression(-1);
+          final Expression wrapperExpr = new Expression();
           wrapperExpr.mathExpression = mathExpr;
           result.expression = wrapperExpr;
         }
@@ -438,7 +434,7 @@ public class BaseExpression extends MathExpression {
 
   @Override
   public BaseExpression copy() {
-    final BaseExpression result = new BaseExpression(-1);
+    final BaseExpression result = new BaseExpression();
     result.isNull = isNull;
     result.number = number == null ? null : number.copy();
     result.identifier = identifier == null ? null : identifier.copy();

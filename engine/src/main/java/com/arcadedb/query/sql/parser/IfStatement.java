@@ -41,8 +41,7 @@ public class IfStatement extends Statement {
   public List<Statement>   statements     = new ArrayList<Statement>();
   public List<Statement>   elseStatements = new ArrayList<Statement>();//TODO support ELSE in the SQL syntax
 
-  public IfStatement(final int id) {
-    super(id);
+  public IfStatement() {
   }
 
   @Override
@@ -158,7 +157,7 @@ public class IfStatement extends Statement {
 
   @Override
   public IfStatement copy() {
-    final IfStatement result = new IfStatement(-1);
+    final IfStatement result = new IfStatement();
     result.expression = expression == null ? null : expression.copy();
     result.statements = statements == null ? null : statements.stream().map(Statement::copy).collect(Collectors.toList());
     result.elseStatements =

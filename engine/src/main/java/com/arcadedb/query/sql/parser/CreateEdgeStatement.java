@@ -43,8 +43,7 @@ public class CreateEdgeStatement extends Statement {
   public boolean    ifNotExists;
   public boolean    unidirectional = false;
 
-  public CreateEdgeStatement(final int id) {
-    super(id);
+  public CreateEdgeStatement() {
   }
 
   @Override
@@ -124,7 +123,7 @@ public class CreateEdgeStatement extends Statement {
 
   @Override
   public CreateEdgeStatement copy() {
-    final CreateEdgeStatement result = new CreateEdgeStatement(-1);
+    final CreateEdgeStatement result = new CreateEdgeStatement();
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
     result.leftExpression = leftExpression == null ? null : leftExpression.copy();

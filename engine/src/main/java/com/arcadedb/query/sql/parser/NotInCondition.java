@@ -41,8 +41,7 @@ public class NotInCondition extends BooleanExpression {
   private static final Object UNSET           = new Object();
   private final        Object inputFinalValue = UNSET;
 
-  public NotInCondition(final int id) {
-    super(id);
+  public NotInCondition() {
   }
 
   @Override
@@ -105,7 +104,7 @@ public class NotInCondition extends BooleanExpression {
 
   @Override
   public NotInCondition copy() {
-    final NotInCondition result = new NotInCondition(-1);
+    final NotInCondition result = new NotInCondition();
     result.operator = operator == null ? null : operator.copy();
     result.left = left == null ? null : left.copy();
     result.rightMathExpression = rightMathExpression == null ? null : rightMathExpression.copy();

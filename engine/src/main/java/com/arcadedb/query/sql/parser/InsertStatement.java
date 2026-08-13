@@ -46,8 +46,7 @@ public class InsertStatement extends Statement {
   public boolean         selectWithFrom      = false;
   public boolean         unsafe              = false;
 
-  public InsertStatement(final int id) {
-    super(id);
+  public InsertStatement() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -96,7 +95,7 @@ public class InsertStatement extends Statement {
 
   @Override
   public InsertStatement copy() {
-    final InsertStatement result = new InsertStatement(-1);
+    final InsertStatement result = new InsertStatement();
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
     result.targetBucket = targetBucket == null ? null : targetBucket.copy();

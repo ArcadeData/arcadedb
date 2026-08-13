@@ -87,7 +87,7 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
-    statement.setLimit(new Limit(-1).setValue((int) database.getResultSetLimit()));
+    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     return statement.execute(database, parameters);
   }
 
@@ -97,14 +97,14 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
-    statement.setLimit(new Limit(-1).setValue((int) database.getResultSetLimit()));
+    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     return statement.execute(database, parameters);
   }
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
-    statement.setLimit(new Limit(-1).setValue((int) database.getResultSetLimit()));
+    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
 
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(parameters);
@@ -116,7 +116,7 @@ public class SQLQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Statement statement = parse(query, database);
-    statement.setLimit(new Limit(-1).setValue((int) database.getResultSetLimit()));
+    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
     return statement.execute(executionDatabase(), parameters, context);
@@ -175,7 +175,7 @@ public class SQLQueryEngine implements QueryEngine {
       public ResultSet execute(final Map<String, Object> parameters) {
         final long resultSetLimit = database.getResultSetLimit();
         if (resultSetLimit > 0)
-          statement.setLimit(new Limit(-1).setValue((int) resultSetLimit));
+          statement.setLimit(new Limit().setValue((int) resultSetLimit));
         // Same resolution as command(): this is a third execution entry point, not an analysis-only one.
         // The MCP command tool runs SQL exclusively through here (analyze() once, then execute(); the
         // database.command() fallback is only reached by engines whose execute() returns null), so leaving

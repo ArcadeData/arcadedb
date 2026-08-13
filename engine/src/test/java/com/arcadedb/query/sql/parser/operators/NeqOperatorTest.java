@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NeqOperatorTest {
   @Test
   void test() {
-    final NeqOperator op = new NeqOperator(-1);
+    final NeqOperator op = new NeqOperator();
     assertThat(op.execute(null, null, 1)).isTrue();
     assertThat(op.execute(null, 1, null)).isTrue();
     assertThat(op.execute(null, null, null)).isTrue();

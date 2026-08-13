@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LikeOperatorTest {
   @Test
   void test() {
-    final LikeOperator op = new LikeOperator(-1);
+    final LikeOperator op = new LikeOperator();
     assertThat(op.execute(null, "foobar", "%ooba%")).isTrue();
     assertThat(op.execute(null, "foobar", "%oo%")).isTrue();
     assertThat(op.execute(null, "foobar", "oo%")).isFalse();

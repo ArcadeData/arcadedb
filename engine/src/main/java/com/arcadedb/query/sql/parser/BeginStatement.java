@@ -33,8 +33,7 @@ import java.util.Map;
 public class BeginStatement extends SimpleExecStatement {
   public Identifier isolation;
 
-  public BeginStatement(final int id) {
-    super(id);
+  public BeginStatement() {
   }
 
   @Override
@@ -65,7 +64,7 @@ public class BeginStatement extends SimpleExecStatement {
 
   @Override
   public BeginStatement copy() {
-    final BeginStatement result = new BeginStatement(-1);
+    final BeginStatement result = new BeginStatement();
     result.isolation = isolation == null ? null : isolation.copy();
     return result;
   }

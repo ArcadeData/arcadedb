@@ -27,8 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 public class ArrayConcatExpressionElement extends Expression {
   public NestedProjection nestedProjection;
 
-  public ArrayConcatExpressionElement(final int id) {
-    super(id);
+  public ArrayConcatExpressionElement() {
   }
 
   @Override
@@ -52,7 +51,7 @@ public class ArrayConcatExpressionElement extends Expression {
   @Override
   public Expression splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
     if (isAggregate(context)) {
-      final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);
+      final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement();
 
       // If there's a nested projection, we need to track the number of aggregates before and after
       // the split so we can attach the nested projection to the newly created aggregate item
@@ -89,7 +88,7 @@ public class ArrayConcatExpressionElement extends Expression {
 
   @Override
   public ArrayConcatExpressionElement copy() {
-    final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);
+    final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement();
     result.singleQuotes = singleQuotes;
     result.doubleQuotes = doubleQuotes;
     result.isNull = isNull;

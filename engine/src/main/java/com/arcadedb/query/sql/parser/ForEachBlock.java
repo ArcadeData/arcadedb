@@ -45,8 +45,7 @@ public class ForEachBlock extends Statement {
   public                 Expression      loopValues;
   public                 List<Statement> statements             = new ArrayList<>();
 
-  public ForEachBlock(final int id) {
-    super(id);
+  public ForEachBlock() {
   }
 
   @Override
@@ -91,7 +90,7 @@ public class ForEachBlock extends Statement {
 
   @Override
   public Statement copy() {
-    final ForEachBlock result = new ForEachBlock(-1);
+    final ForEachBlock result = new ForEachBlock();
     result.loopVariable = loopVariable.copy();
     result.loopValues = loopValues.copy();
     result.statements = statements.stream().map(x -> x.copy()).collect(Collectors.toList());

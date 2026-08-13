@@ -107,11 +107,6 @@ public class MatchStatement extends Statement {
   }
 
   public MatchStatement() {
-    super(-1);
-  }
-
-  public MatchStatement(final int id) {
-    super(id);
   }
 
   @Override
@@ -201,7 +196,7 @@ public class MatchStatement extends Statement {
 
       for (final MatchPathItem item : expression.items) {
         if (item.filter == null) {
-          item.filter = new MatchFilter(-1);
+          item.filter = new MatchFilter();
         }
         if (item.filter.getAlias() == null) {
           item.filter.setAlias(DEFAULT_ALIAS_PREFIX + (counter++));
@@ -267,8 +262,8 @@ public class MatchStatement extends Statement {
       if (filter != null && filter.baseExpression != null) {
         WhereClause previousFilter = aliasFilters.get(alias);
         if (previousFilter == null) {
-          previousFilter = new WhereClause(-1);
-          previousFilter.baseExpression = new AndBlock(-1);
+          previousFilter = new WhereClause();
+          previousFilter.baseExpression = new AndBlock();
           aliasFilters.put(alias, previousFilter);
         }
         final AndBlock filterBlock = (AndBlock) previousFilter.baseExpression;
@@ -374,7 +369,7 @@ public class MatchStatement extends Statement {
 
   @Override
   public MatchStatement copy() {
-    final MatchStatement result = new MatchStatement(-1);
+    final MatchStatement result = new MatchStatement();
     result.database = database;
     result.matchExpressions =
         matchExpressions == null ? null : matchExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -526,11 +521,11 @@ public class MatchStatement extends Statement {
   private void setProfilingConstraints(final DatabaseInternal db) {
     final long profiledLimit = db.getResultSetLimit();
     if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
-      setLimit(new Limit(-1).setValue((int) profiledLimit));
+      setLimit(new Limit().setValue((int) profiledLimit));
 
     final long profiledTimeout = db.getReadTimeout();
     if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
-      setTimeout(new Timeout(-1).setValue((int) profiledTimeout));
+      setTimeout(new Timeout().setValue((int) profiledTimeout));
   }
 
   /**

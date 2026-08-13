@@ -244,10 +244,10 @@ public class MatchExecutionPlanner {
     } else if (returnPathElements) {
       result.chain(new ReturnMatchPathElementsStep(context));
     } else {
-      final Projection projection = new Projection(-1);
+      final Projection projection = new Projection();
       projection.setItems(new ArrayList<>());
       for (int i = 0; i < returnAliases.size(); i++) {
-        final ProjectionItem item = new ProjectionItem(-1);
+        final ProjectionItem item = new ProjectionItem();
         item.setExpression(returnItems.get(i));
         item.setAlias(returnAliases.get(i));
         item.setNestedProjection(returnNestedProjections.get(i));
@@ -599,9 +599,9 @@ public class MatchExecutionPlanner {
       final String bucket = this.aliasBuckets.get(patternNode.alias);
       final Rid rid = this.aliasRids.get(patternNode.alias);
       final WhereClause where = aliasFilters.get(patternNode.alias);
-      final SelectStatement select = new SelectStatement(-1);
-      select.setTarget(new FromClause(-1));
-      select.getTarget().setItem(new FromItem(-1));
+      final SelectStatement select = new SelectStatement();
+      select.setTarget(new FromClause());
+      select.getTarget().setItem(new FromItem());
       if (typez != null) {
         select.getTarget().getItem().setIdentifier(new Identifier(typez));
       } else if (bucket != null) {
@@ -640,10 +640,10 @@ public class MatchExecutionPlanner {
 
   private SelectStatement createSelectStatement(final String targetClass, final String targetCluster, final Rid targetRid,
       final WhereClause filter) {
-    final SelectStatement prefetchStm = new SelectStatement(-1);
+    final SelectStatement prefetchStm = new SelectStatement();
     prefetchStm.setWhereClause(filter);
-    final FromClause from = new FromClause(-1);
-    final FromItem fromItem = new FromItem(-1);
+    final FromClause from = new FromClause();
+    final FromItem fromItem = new FromItem();
     if (targetRid != null) {
       fromItem.setRids(List.of(targetRid));
     } else if (targetClass != null) {
@@ -714,8 +714,8 @@ public class MatchExecutionPlanner {
       if (filter != null && filter.getBaseExpression() != null) {
         WhereClause previousFilter = aliasFilters.get(alias);
         if (previousFilter == null) {
-          previousFilter = new WhereClause(-1);
-          previousFilter.setBaseExpression(new AndBlock(-1));
+          previousFilter = new WhereClause();
+          previousFilter.setBaseExpression(new AndBlock());
           aliasFilters.put(alias, previousFilter);
         }
         final AndBlock filterBlock = (AndBlock) previousFilter.getBaseExpression();
@@ -787,7 +787,7 @@ public class MatchExecutionPlanner {
 
       for (final MatchPathItem item : expression.getItems()) {
         if (item.getFilter() == null) {
-          item.setFilter(new MatchFilter(-1));
+          item.setFilter(new MatchFilter());
         }
         if (item.getFilter().getAlias() == null) {
           item.getFilter().setAlias(DEFAULT_ALIAS_PREFIX + (counter++));
