@@ -59,6 +59,22 @@ class RouteRecordingRoutingHandlerTest {
   }
 
   /**
+   * The class Javadoc claims every verb - not just get/post/put/delete - is captured, because they
+   * all funnel through the two overridden terminal add() methods. Nothing in HttpServer.setupRoutes()
+   * uses a verb without its own convenience method today, so this proves the broader claim directly
+   * rather than leaving it implied by the four convenience methods alone.
+   */
+  @Test
+  void recordsAVerbRegisteredThroughTheGenericAddOverloadWithNoConvenienceMethod() {
+    final RouteRecordingRoutingHandler handler = new RouteRecordingRoutingHandler();
+
+    handler.add("PATCH", "/server/settings", NOOP_HANDLER);
+
+    assertThat(handler.getRegisteredRoutes())
+        .containsExactly(new RouteRecordingRoutingHandler.RouteDescriptor("PATCH", "/server/settings"));
+  }
+
+  /**
    * Issue #4896's required self-test, exercised against the real recording mechanism: proves the
    * actual-vs-declared comparison every core anti-drift check relies on genuinely fails when a route
    * is actually registered but missing from the declared set.
