@@ -44,7 +44,7 @@ The shutdown trigger has a counterintuitive consequence when reproducing durabil
 
 - `getStats()` - feeds `ha.network.replicas` in `/api/v1/server?mode=cluster`
 - `getReplicaAddresses()` - feeds `ha.replicaAddresses` in the same response
-- the Bolt routing address resolver
+- `getRoutingTable(protocol)` - the client routing table, one resolver shared by Bolt and gRPC
 
 Each has its own local `excludeId` derivation (`leaderId != null ? leaderId : localPeerId`, or the leader directly). They are not factored into a shared helper, so a fix applied to one silently leaves the others wrong and the cluster API response internally inconsistent.
 

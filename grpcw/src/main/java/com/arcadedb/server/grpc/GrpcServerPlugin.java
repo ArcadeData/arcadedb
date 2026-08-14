@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
@@ -80,7 +81,9 @@ public class GrpcServerPlugin implements ServerPlugin {
   // Configuration keys as simple strings
   private static final String CONFIG_PREFIX              = "arcadedb.grpc.";
   private static final String CONFIG_ENABLED             = CONFIG_PREFIX + "enabled";
-  private static final String CONFIG_PORT                = CONFIG_PREFIX + "port";
+  // Registered as GlobalConfiguration.GRPC_PORT: HA resolves a peer's dialable gRPC address from the same
+  // key and default, so the two must not be able to drift apart (issue #6091).
+  private static final String CONFIG_PORT                = GlobalConfiguration.GRPC_PORT.getKey();
   private static final String CONFIG_HOST                = CONFIG_PREFIX + "host";
   private static final String CONFIG_MODE                = CONFIG_PREFIX + "mode";
   private static final String CONFIG_XDS_PORT            = CONFIG_PREFIX + "xds.port";
@@ -139,7 +142,7 @@ public class GrpcServerPlugin implements ServerPlugin {
 
   private void startStandardServer(ContextConfiguration config) throws IOException {
 
-    int port = getConfigInt(config, CONFIG_PORT, 50051);
+    int port = getConfigInt(config, CONFIG_PORT, GlobalConfiguration.GRPC_PORT.getValueAsInteger());
     String host = getConfigString(config, CONFIG_HOST, "0.0.0.0");
 
     NettyServerBuilder serverBuilder;

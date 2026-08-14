@@ -329,8 +329,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
-  public BoltRoutingTable getBoltRoutingTable() {
-    return raftHAServer != null ? raftHAServer.getBoltRoutingTable() : null;
+  public RoutingTable getRoutingTable(final ROUTING_PROTOCOL protocol) {
+    return raftHAServer != null ? raftHAServer.getRoutingTable(protocol) : null;
   }
 
   @Override

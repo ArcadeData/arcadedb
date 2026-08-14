@@ -42,6 +42,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -72,6 +73,7 @@ import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -2692,19 +2694,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // state (schema dictionary, type metadata) that only the leader can serialize, and running it on a
             // follower hits the race in Dictionary.getIdByName as the local state-machine apply runs
             // concurrently with this thread (issue #4122). The HTTP endpoint relays the payload to the leader;
-            // this stream cannot, because the HA plugin exposes the leader's HTTP address only and relaying a
-            // bulk load through a follower would double the traffic of the transport chosen to avoid exactly
-            // that. It is refused before a single record is written, so the caller can redirect and retry
-            // without having to reconcile a partial load.
+            // this stream does not, because relaying a bulk load through a follower would double the traffic of
+            // the transport chosen to avoid exactly that. It is refused before a single record is written, and
+            // names an address the caller can dial, so redirecting costs it neither a partial load to reconcile
+            // nor knowledge of the deployment's port-mapping convention.
             final HAServerPlugin ha = arcadeServer != null ? arcadeServer.getHA() : null;
             if (ha != null && !ha.isLeader()) {
-              final String leader = ha.getLeaderAddress();
               errorSent[0] = true;
-              out.onError(Status.FAILED_PRECONDITION.withDescription(
-                  "graphBatchLoad: this server is not the cluster leader and a graph batch load must run on the leader. "
-                      + (leader != null && !leader.isBlank() ?
-                      "Reconnect to the leader at '" + leader + "' (HTTP address; use its gRPC port) and retry" :
-                      "The leader is currently unknown, retry once the election has settled")).asException());
+              out.onError(notTheLeader(ha, "graphBatchLoad", "a graph batch load must run on the leader"));
               return;
             }
 
@@ -2882,6 +2879,55 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         .setPartialCommit(counts[0] > 0 || edgesCommitted > 0)
         .build());
     return trailers;
+  }
+
+  /**
+   * The refusal a follower answers with when an RPC may only run on the cluster leader (issue #6091). It names
+   * where to go instead in two forms, because a message a person reads and a value a client can act on are not
+   * the same thing:
+   * <ul>
+   *   <li>the leader's client-reachable <b>gRPC</b> address on the {@code LEADER_GRPC_ADDRESS} trailer, which
+   *       is the address the refused call can be retried on. Present when the cluster can resolve one - either
+   *       a {@code grpc:} field in {@code arcadedb.ha.serverList} or a deployment homogeneous enough for the
+   *       derive-from-local-port fallback;</li>
+   *   <li>the leader's <b>HTTP</b> address on {@code LEADER_HTTP_ADDRESS}, which is always known when a leader
+   *       is but is not an address this call can be retried on. It is the diagnostic of last resort, and what
+   *       the description falls back to naming.</li>
+   * </ul>
+   * The description says the same thing in prose so an operator reading a log is not left to decode trailers,
+   * but a client redirecting itself should read the trailer: the wording is not a contract, and the client-side
+   * mapper turns the pair into a {@code ServerIsNotTheLeaderException} carrying the address, the same type the
+   * HTTP protocol raises for the same situation.
+   */
+  private static StatusException notTheLeader(final HAServerPlugin ha, final String rpc, final String why) {
+    // One routing-table read: writer and readers come from a single leader snapshot, so a concurrent election
+    // cannot make the address named here disagree with the leader the rest of the answer is about.
+    final HAServerPlugin.RoutingTable grpcRouting = ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC);
+    final String grpcLeader = blankToNull(grpcRouting != null ? grpcRouting.writer() : null);
+    final String httpLeader = blankToNull(ha.getLeaderAddress());
+
+    final String where;
+    if (grpcLeader != null)
+      where = "Reconnect to the leader at '" + grpcLeader + "' (gRPC address) and retry";
+    else if (httpLeader != null)
+      where = "Reconnect to the leader at '" + httpLeader + "' (HTTP address; use its gRPC port) and retry";
+    else
+      where = "The leader is currently unknown, retry once the election has settled";
+
+    final Metadata trailers = new Metadata();
+    trailers.put(GrpcErrorMapper.EXCEPTION_CLASS_KEY, ServerIsNotTheLeaderException.class.getName());
+    if (grpcLeader != null)
+      trailers.put(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS, grpcLeader);
+    if (httpLeader != null)
+      trailers.put(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS, httpLeader);
+
+    return Status.FAILED_PRECONDITION.withDescription(
+        rpc + ": this server is not the cluster leader and " + why + ". " + where).asException(trailers);
+  }
+
+  /** An address the cluster could not resolve and one it resolved to nothing are the same answer here. */
+  private static String blankToNull(final String address) {
+    return address != null && !address.isBlank() ? address : null;
   }
 
   private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {
