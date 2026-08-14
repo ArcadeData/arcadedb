@@ -303,6 +303,11 @@ public class SelectExecutionPlanner {
    * <p>
    * Both are how a client asks for a query's columns without asking for its rows: Spark and several BI tools over the
    * Postgres wire send one such probe per pushed-down query, against the real target (issue #6174).
+   * <p>
+   * The two reasons are not decided the same way. A constant-false filter is folded only when the statement itself
+   * says so, never through a function - see {@link Expression#isLiteral()}. A {@code LIMIT 0} truncates the result to
+   * nothing whatever the filter would have done, so the filter is simply not evaluated: a predicate that raises at
+   * runtime ({@code WHERE 1/0 = 1 LIMIT 0}) stops raising, which is the one way the difference can be observed.
    */
   private String emptyByConstructionReason(final CommandContext context) {
     if (info.whereClause != null && info.whereClause.isAlwaysFalse(context))

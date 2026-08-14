@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
@@ -29,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Pins the planner fold of a filter that is false for every row ({@code WHERE 1=0}) and of {@code LIMIT 0}: the
@@ -157,6 +159,20 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
 
     assertThat(names("SELECT FROM Character LIMIT ?", 0)).isEmpty();
     assertThat(names("SELECT FROM Character LIMIT ?", 2)).hasSize(2);
+
+    // -1 is the sentinel LimitExecutionStep reads as "unlimited": the fold must not confuse it with zero
+    assertScan(planOf("SELECT FROM Character LIMIT -1"));
+    assertThat(names("SELECT FROM Character LIMIT -1")).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+  }
+
+  @Test
+  void limitZeroIsFoldedWhateverTheFilterSays() {
+    // a LIMIT 0 truncates the result to nothing no matter what the filter would have done, so the filter is not
+    // evaluated at all. The one thing that can tell the difference is a predicate that raises: it no longer does.
+    assertThatThrownBy(() -> names("SELECT FROM Character WHERE 1/0 = 1")).isInstanceOf(ArithmeticErrorException.class);
+
+    assertNoScan(planOf("SELECT FROM Character WHERE 1/0 = 1 LIMIT 0"));
+    assertThat(names("SELECT FROM Character WHERE 1/0 = 1 LIMIT 0")).isEmpty();
   }
 
   @Test

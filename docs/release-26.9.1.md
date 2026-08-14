@@ -1540,6 +1540,13 @@ What the fold deliberately keeps:
 The fold applies wherever a `SELECT` plan is built, so a subquery, a `DELETE ... WHERE 1=0` and an
 `UPDATE ... WHERE 1=0` are covered by the same code.
 
+The two spellings are not recognised the same way, and it is worth being explicit about the difference. A
+constant-false filter is folded only when the statement itself says so, never through a function. A `LIMIT 0`
+truncates the result to nothing whatever the filter would have done, so the filter is not evaluated at all - which
+means a predicate that raises at runtime stops raising: `SELECT * FROM T WHERE 1/0 = 1` reports a division by zero,
+and the same statement with `LIMIT 0` now returns an empty result instead. Nothing else can observe the difference,
+since no row was going to come back either way.
+
 One behaviour change worth naming, and one wrong answer found next to it. `count(*)` on a bare type is answered
 from the bucket counters by a hardwired plan that replaces the whole step chain - and returned without chaining the
 statement's `SKIP` or `LIMIT` at all. So `SELECT count(*) FROM T LIMIT 0` returned one row, and
