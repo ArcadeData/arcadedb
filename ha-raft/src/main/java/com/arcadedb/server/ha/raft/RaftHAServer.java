@@ -1708,8 +1708,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final Collection<RaftPeer> peers = raftGroup.getPeers();
 
     // Index 0 is always the writer, so one pair of arrays carries the whole view and the ambiguity check can
-    // see the leader and the followers at once. Sized for the group; a peer that resolves to nothing is
-    // skipped, exactly as before.
+    // see the leader and the followers at once. A peer that resolves to nothing is skipped, exactly as before.
+    //
+    // The +1 is not slack: raftGroup is final and holds the peers HA_SERVER_LIST was parsed into, while the
+    // leader comes from live Ratis state, so a leader that joined at runtime (addPeer, the Kubernetes
+    // auto-join) is not in getPeers() and the writer occupies a slot beyond it. Sizing to peers.size() would
+    // put an ArrayIndexOutOfBoundsException on the Bolt ROUTE path in exactly that window.
     final String[] addresses = new String[peers.size() + 1];
     final boolean[] fromConfig = new boolean[addresses.length];
     addresses[0] = writer;
