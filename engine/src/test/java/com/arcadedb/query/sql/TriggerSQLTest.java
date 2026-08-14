@@ -21,10 +21,13 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Trigger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -222,6 +225,60 @@ class TriggerSQLTest extends TestHelper {
         """
             CREATE TRIGGER abort_trigger BEFORE CREATE ON TYPE User \
             EXECUTE JAVASCRIPT 'false;'"""); // Return false to abort
+
+    // Record creation should be silently aborted (no exception, just not saved)
+    database.transaction(() -> database.newDocument("User").set("name", "Test").save());
+
+    // Verify record was not created
+    final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'Test'");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  /**
+   * A {@code SELECT} trigger body used to be a complete no-op: {@code SQLTriggerExecutor} closed the result set
+   * without ever iterating it, and a {@code SELECT} result set in ArcadeDB is pull-based, so nothing behind it ever
+   * ran. This proves the body now actually executes by calling a Java function with a real side effect from a plain
+   * projection - no FROM clause, no record touched, nothing eager about it except the fix.
+   */
+  @Test
+  void beforeCreateTriggerSelectBodyActuallyExecutes() throws Exception {
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("triggerProbe", SelectBodyProbe.class));
+    try {
+      SelectBodyProbe.CALLS.set(0);
+
+      database.command("sql",
+          """
+              CREATE TRIGGER select_body_trigger BEFORE CREATE ON TYPE User \
+              EXECUTE SQL 'SELECT `triggerProbe.bump`()'""");
+
+      database.transaction(() -> database.newDocument("User").set("name", "Selecta").save());
+
+      assertThat(SelectBodyProbe.CALLS.get())
+          .as("a SELECT trigger body must actually run rather than being silently skipped").isEqualTo(1);
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("triggerProbe");
+    }
+  }
+
+  /** Invoked from SQL as {@code `triggerProbe.bump`()}, see {@link #beforeCreateTriggerSelectBodyActuallyExecutes()}. */
+  public static class SelectBodyProbe {
+    static final AtomicInteger CALLS = new AtomicInteger();
+
+    public static int bump() {
+      return CALLS.incrementAndGet();
+    }
+  }
+
+  /**
+   * The SQL arm of the veto contract already in place for JavaScript ({@link #beforeCreateTriggerAbort()}) and Java
+   * ({@code TestJavaAbortTrigger}): a body that evaluates to a single scalar {@code false} aborts the operation.
+   */
+  @Test
+  void beforeCreateTriggerAbortSQL() {
+    database.command("sql",
+        """
+            CREATE TRIGGER abort_trigger_sql BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'SELECT false'""");
 
     // Record creation should be silently aborted (no exception, just not saved)
     database.transaction(() -> database.newDocument("User").set("name", "Test").save());

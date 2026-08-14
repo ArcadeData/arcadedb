@@ -196,11 +196,10 @@ class BeforeReadTriggerTest extends TestHelper {
   /**
    * A SQL BEFORE READ trigger runs its body without the record, and must not recurse either.
    * <p>
-   * The body is {@code SELECT 1} rather than something reading the type, and that is not laziness in the test:
-   * {@code SQLTriggerExecutor} runs {@code database.command(...).close()} without ever iterating the result, and a
-   * SELECT result set is lazy, so a SELECT body produces no rows and touches no record. Measured - a SELECT body
-   * fires zero read events, while INSERT/UPDATE/DELETE bodies execute normally on close. The recursion this class
-   * guards against is therefore exercised with a Java trigger below, which really does read.
+   * The body is {@code SELECT 1} rather than something reading the type, and it is not laziness in the test: it is
+   * a projection against no type, so consuming it (see {@link SQLTriggerExecutor}) touches no record and cannot
+   * re-enter the read. The recursion this class guards against is therefore exercised with a Java trigger below,
+   * which really does read.
    */
   @Test
   void aSqlBeforeReadTriggerRunsWithoutTheRecord() {
@@ -212,6 +211,23 @@ class BeforeReadTriggerTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.lookupByRID(rid[0], true).asDocument().<String>get("name"))
         .isEqualTo("first"));
+  }
+
+  /**
+   * The SQL arm of the veto contract, matching {@link #theTriggerCanVetoTheRead()} (Java) and
+   * {@link #aJavaScriptBeforeReadTriggerSeesTheRidAndCanVeto()} (JavaScript): a body that evaluates to a single
+   * scalar {@code false} aborts the read, which the bucket surfaces as {@code RecordNotFoundException}.
+   */
+  @Test
+  void aSqlBeforeReadTriggerCanVetoTheRead() {
+    database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(TYPE_NAME).set("name", "first").save().getIdentity());
+
+    database.command("sql", "CREATE TRIGGER sqlVetoRead BEFORE READ ON TYPE " + TYPE_NAME + " EXECUTE SQL 'SELECT false'");
+
+    database.transaction(() -> assertThatThrownBy(() -> database.lookupByRID(rid[0], true).asDocument().get("name"))
+        .as("a SQL body evaluating to a single false must veto the read").isInstanceOf(RecordNotFoundException.class));
   }
 
   /**

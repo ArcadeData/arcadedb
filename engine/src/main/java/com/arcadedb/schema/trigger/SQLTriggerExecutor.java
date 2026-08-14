@@ -22,9 +22,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -53,10 +56,7 @@ public class SQLTriggerExecutor implements TriggerExecutor {
         params.put("$oldRecord", oldRecord);
       }
 
-      // Execute SQL with context parameters. Triggers run on every matching record; closing the
-      // ResultSet releases the per-call execution plan and avoids per-record state accumulation.
-      database.command("sql", sql, params).close();
-      return true;
+      return consume(database.command("sql", sql, params));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
@@ -76,11 +76,41 @@ public class SQLTriggerExecutor implements TriggerExecutor {
       params.put("rid", rid);
       params.put("$rid", rid);
 
-      database.command("sql", sql, params).close();
-      return true;
+      return consume(database.command("sql", sql, params));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Drains the body's result set to exhaustion before closing it. A {@code SELECT} result set in ArcadeDB is
+   * pull-based: nothing runs until it is iterated, so a body that reads without ever being consumed executes
+   * nothing at all - a silent no-op rather than a slow or partial one. DML bodies (INSERT/UPDATE/DELETE) already
+   * execute eagerly when the command is built, so draining them here only walks their already-buffered rows.
+   * <p>
+   * The drained result also decides whether the operation continues, giving a SQL body the same veto contract as
+   * {@link ScriptTriggerExecutor#execute}: a body that evaluates to a single scalar {@code false} - one row, one
+   * property - aborts the operation, exactly what {@code SELECT false} or {@code SELECT <condition> AS ok} looks
+   * like it should do. A multi-row or multi-column result has no unambiguous single answer, so it is drained for
+   * its effects and treated as a pass, same as DML.
+   */
+  private static boolean consume(final ResultSet result) {
+    try (result) {
+      Result single = null;
+      long   count  = 0;
+      while (result.hasNext()) {
+        final Result row = result.next();
+        single = count == 0 ? row : null;
+        count++;
+      }
+
+      if (count == 1 && single != null && single.isProjection()) {
+        final Set<String> properties = single.getPropertyNames();
+        if (properties.size() == 1 && Boolean.FALSE.equals(single.getProperty(properties.iterator().next())))
+          return false;
+      }
+      return true;
     }
   }
 
