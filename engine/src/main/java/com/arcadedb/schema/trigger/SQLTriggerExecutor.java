@@ -19,6 +19,7 @@
 package com.arcadedb.schema.trigger;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
@@ -127,7 +128,7 @@ public class SQLTriggerExecutor implements TriggerExecutor {
       if (count == 1 && first.isProjection()) {
         final String property = soleRealProperty(first);
         if (property != null && Boolean.FALSE.equals(first.getProperty(property))
-            && database.getQueryEngine("sql").analyze(sql).isIdempotent())
+            && ((DatabaseInternal) database).getStatementCache().isIdempotent(sql))
           return false;
       }
       return true;

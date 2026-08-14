@@ -315,6 +315,47 @@ class TriggerSQLTest extends TestHelper {
     assertThat(flag.next().<Boolean>getProperty("active")).isFalse();
   }
 
+  /**
+   * The row-count boundary of the veto check: only a single row is an unambiguous answer. A multi-row SELECT -
+   * even one where every row is the same lone {@code false} column - has no single answer to trust, so it is
+   * drained for its (non-)effects and the operation proceeds, same as any other multi-row result.
+   */
+  @Test
+  void beforeCreateTriggerMultiRowFalseDoesNotVeto() {
+    database.command("sql", "CREATE DOCUMENT TYPE Marker");
+    database.transaction(() -> {
+      database.newDocument("Marker").save();
+      database.newDocument("Marker").save();
+    });
+
+    database.command("sql",
+        """
+            CREATE TRIGGER multi_row_trigger BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'SELECT false FROM Marker'""");
+
+    database.transaction(() -> database.newDocument("User").set("name", "MultiRow").save());
+
+    final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'MultiRow'");
+    assertThat(result.hasNext()).as("a multi-row SELECT has no single answer and must not veto").isTrue();
+  }
+
+  /**
+   * The column-count boundary: a single row with more than one real property is also not an unambiguous answer,
+   * even when one of its columns is {@code false}.
+   */
+  @Test
+  void beforeCreateTriggerSingleRowMultiColumnFalseDoesNotVeto() {
+    database.command("sql",
+        """
+            CREATE TRIGGER multi_column_trigger BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'SELECT true AS a, false AS b'""");
+
+    database.transaction(() -> database.newDocument("User").set("name", "MultiColumn").save());
+
+    final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'MultiColumn'");
+    assertThat(result.hasNext()).as("a single row with more than one property has no single answer and must not veto").isTrue();
+  }
+
   @Test
   void multipleTriggersSameType() {
     database.command("sql",
