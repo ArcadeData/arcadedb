@@ -1048,7 +1048,8 @@ public class BoltNetworkExecutor extends Thread {
     final List<Map<String, Object>> servers = new ArrayList<>();
 
     final HAServerPlugin ha = server.getHA();
-    final HAServerPlugin.BoltRoutingTable table = ha != null ? ha.getBoltRoutingTable() : null;
+    final HAServerPlugin.RoutingTable table = ha != null ?
+        ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.BOLT) : null;
 
     if (table != null) {
       // HA cluster with a known leader: the leader is the writer and a router, followers are readers and

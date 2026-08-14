@@ -1836,6 +1836,13 @@ public enum GlobalConfiguration {
       Default is 1000, generous for any real BOLT message.""",
       Integer.class, 1000),
 
+  // gRPC
+  GRPC_PORT("arcadedb.grpc.port", SCOPE.SERVER, """
+      TCP/IP port number used for incoming connections for the gRPC plugin. Registered here, rather than read as a \
+      bare key by the plugin alone, because HA has to know the port a peer's gRPC endpoint listens on to advertise a \
+      dialable address for it (see the 'grpc' field of arcadedb.ha.serverList). Default is 50051""",
+      Integer.class, 50051),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),

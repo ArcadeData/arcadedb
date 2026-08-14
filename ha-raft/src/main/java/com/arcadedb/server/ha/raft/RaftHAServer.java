@@ -72,9 +72,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.UUID;
@@ -145,8 +147,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Client-reachable Bolt endpoints (optional object-form 'bolt' field in HA_SERVER_LIST). Advertised
   // in the Bolt ROUTE routing table so neo4j:// drivers can discover leader/followers.
   private final    Map<RaftPeerId, String> boltAddresses      = new HashMap<>();
-  // Logged at most once: warns operators that Bolt routing addresses are derived (not explicitly configured).
-  private final    AtomicBoolean           boltFallbackWarned = new AtomicBoolean(false);
+  // Client-reachable gRPC endpoints (optional object-form 'grpc' field in HA_SERVER_LIST). Advertised in the
+  // gRPC routing table so a caller refused on a follower is told an address it can actually dial (issue #6091).
+  private final    Map<RaftPeerId, String> grpcAddresses      = new HashMap<>();
+  // Logged at most once per protocol: warns operators that routing addresses are derived, not configured.
+  private final    Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> routingFallbackWarned = createRoutingFallbackLatches();
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
   private final    String                  clusterName;
 
@@ -252,6 +257,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.httpAddresses.putAll(parsed.httpAddresses());
     this.httpsAddresses.putAll(parsed.httpsAddresses());
     this.boltAddresses.putAll(parsed.boltAddresses());
+    this.grpcAddresses.putAll(parsed.grpcAddresses());
 
     RaftPeerId resolvedLocalPeerId;
     try {
@@ -1672,28 +1678,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Builds a single-snapshot Bolt routing table (leader as writer, followers as readers) from one
-   * {@link #getLeaderId()} read, so a concurrent leader change cannot make the writer and reader sets
+   * Builds a single-snapshot routing table for one client protocol (leader as writer, followers as readers)
+   * from one {@link #getLeaderId()} read, so a concurrent leader change cannot make the writer and reader sets
    * mutually inconsistent. Returns {@code null} when no leader is known or the leader has no resolvable
-   * Bolt address. Readers reflect the configured cluster membership, matching {@link #getReplicaAddresses()};
-   * peers whose Bolt address cannot be resolved are skipped.
+   * address for that protocol. Readers reflect the configured cluster membership, matching
+   * {@link #getReplicaAddresses()}; peers whose address cannot be resolved are skipped.
    */
-  public HAServerPlugin.BoltRoutingTable getBoltRoutingTable() {
+  public HAServerPlugin.RoutingTable getRoutingTable(final HAServerPlugin.ROUTING_PROTOCOL protocol) {
     final RaftPeerId leaderId = getLeaderId();
     if (leaderId == null)
       return null;
-    final String writer = resolveBoltAddress(leaderId);
+    final String writer = resolveRoutingAddress(protocol, leaderId);
     if (writer == null)
       return null;
     final List<String> readers = new ArrayList<>();
     for (final RaftPeer peer : raftGroup.getPeers()) {
       if (!peer.getId().equals(leaderId)) {
-        final String reader = resolveBoltAddress(peer.getId());
+        final String reader = resolveRoutingAddress(protocol, peer.getId());
         if (reader != null)
           readers.add(reader);
       }
     }
-    return new HAServerPlugin.BoltRoutingTable(writer, List.copyOf(readers));
+    return new HAServerPlugin.RoutingTable(protocol, writer, List.copyOf(readers));
   }
 
   /**
@@ -1724,40 +1730,73 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Resolves the client-reachable Bolt address (host:boltPort) of a peer. Returns the address declared
-   * with the object-form {@code bolt:} field when present; otherwise derives it from the peer's Raft host
-   * plus this node's local Bolt port. The fallback is correct only for homogeneous deployments where every
-   * node listens on the same Bolt port (e.g. a Kubernetes StatefulSet); a one-time WARNING is logged so
-   * operators declare explicit Bolt ports for heterogeneous clusters. Returns {@code null} when the peer is
-   * unknown or the local Bolt port is unavailable.
+   * Resolves the client-reachable address (host:port) of a peer for one client protocol. Returns the address
+   * declared with the matching object-form field ({@code bolt:} / {@code grpc:}) when present; otherwise
+   * derives it from the peer's Raft host plus <em>this</em> node's local port for that protocol. The fallback
+   * is correct only for homogeneous deployments where every node listens on the same port (e.g. a Kubernetes
+   * StatefulSet); a one-time WARNING per protocol is logged so operators declare explicit ports for
+   * heterogeneous clusters. Returns {@code null} when the peer is unknown or the local port is unavailable.
    */
-  private String resolveBoltAddress(final RaftPeerId peerId) {
+  private String resolveRoutingAddress(final HAServerPlugin.ROUTING_PROTOCOL protocol, final RaftPeerId peerId) {
     if (peerId == null)
       return null;
-    final String configured = boltAddresses.get(peerId);
+    final String configured = declaredRoutingAddresses(protocol).get(peerId);
     if (configured != null)
       return configured;
-    final int localBoltPort = configuration.getValueAsInteger(GlobalConfiguration.BOLT_PORT);
-    final String derived = deriveBoltAddress(peerRaftAddress(peerId), localBoltPort);
-    if (derived != null && boltFallbackWarned.compareAndSet(false, true))
+    final int localPort = localRoutingPort(protocol);
+    final String derived = deriveRoutingAddress(peerRaftAddress(peerId), localPort);
+    if (derived != null && routingFallbackWarned.get(protocol).compareAndSet(false, true)) {
+      final String field = routingConfigField(protocol);
       LogManager.instance().log(this, Level.WARNING,
-          "HA Bolt routing addresses are not configured in '%s': deriving peer Bolt endpoints from each peer's Raft host plus this node's Bolt port (%d). "
-              + "This is correct only when every node listens on the same Bolt port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous "
-              + "Bolt ports, declare them explicitly using the 'host:{raft:..,bolt:..}' object syntax in %s.",
-          GlobalConfiguration.HA_SERVER_LIST.getKey(), localBoltPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
+          "HA %s routing addresses are not configured in '%s': deriving every peer's %s endpoint from its Raft host plus this node's "
+              + "own %s port (%d). That is correct only when every node listens on the same port (e.g. a Kubernetes StatefulSet); on a "
+              + "cluster with heterogeneous ports, declare them explicitly with the 'host:{raft:..,%s:..}' object syntax in %s.",
+          protocol.name(), GlobalConfiguration.HA_SERVER_LIST.getKey(), protocol.name(), protocol.name(), localPort,
+          field, GlobalConfiguration.HA_SERVER_LIST.getKey());
+    }
     return derived;
   }
 
+  /** The explicitly declared addresses for one client protocol, as parsed from {@code HA_SERVER_LIST}. */
+  private Map<RaftPeerId, String> declaredRoutingAddresses(final HAServerPlugin.ROUTING_PROTOCOL protocol) {
+    return switch (protocol) {
+      case BOLT -> boltAddresses;
+      case GRPC -> grpcAddresses;
+    };
+  }
+
+  /** This node's own listening port for one client protocol, used by the derive fallback. */
+  private int localRoutingPort(final HAServerPlugin.ROUTING_PROTOCOL protocol) {
+    return switch (protocol) {
+      case BOLT -> configuration.getValueAsInteger(GlobalConfiguration.BOLT_PORT);
+      case GRPC -> configuration.getValueAsInteger(GlobalConfiguration.GRPC_PORT);
+    };
+  }
+
+  /** The {@code HA_SERVER_LIST} object-form field an operator writes to declare this protocol's port. */
+  private static String routingConfigField(final HAServerPlugin.ROUTING_PROTOCOL protocol) {
+    return protocol.name().toLowerCase(Locale.ENGLISH);
+  }
+
+  /** One "already warned" latch per client protocol, so a derived Bolt address does not mute the gRPC warning. */
+  private static Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> createRoutingFallbackLatches() {
+    final Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> latches = new EnumMap<>(
+        HAServerPlugin.ROUTING_PROTOCOL.class);
+    for (final HAServerPlugin.ROUTING_PROTOCOL protocol : HAServerPlugin.ROUTING_PROTOCOL.values())
+      latches.put(protocol, new AtomicBoolean(false));
+    return latches;
+  }
+
   /**
-   * Derives a Bolt address (host:boltPort) by combining a peer's Raft host with the given Bolt port.
+   * Derives a client-reachable address (host:port) by combining a peer's Raft host with the given port.
    * Returns {@code null} when the port is not positive or the host cannot be extracted. Package-private
    * for testing.
    */
-  static String deriveBoltAddress(final String raftAddress, final int boltPort) {
-    if (raftAddress == null || boltPort <= 0)
+  static String deriveRoutingAddress(final String raftAddress, final int port) {
+    if (raftAddress == null || port <= 0)
       return null;
     final String host = extractHost(raftAddress);
-    return host != null ? host + ":" + boltPort : null;
+    return host != null ? host + ":" + port : null;
   }
 
   private String deriveHttpAddressWithWarning(final String raftAddress) {

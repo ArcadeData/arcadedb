@@ -382,18 +382,74 @@ class RaftHAServerAddressParsingTest {
   }
 
   @Test
-  void deriveBoltAddressCombinesRaftHostWithBoltPort() {
-    assertThat(RaftHAServer.deriveBoltAddress("db1:2434", 7687)).isEqualTo("db1:7687");
+  void objectFormParsesGrpcPort() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{raft:2434,http:2480,grpc:50051}", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.grpcAddresses()).containsEntry(peerId, "myhost:50051");
+    assertThat(parsed.httpAddresses()).containsEntry(peerId, "myhost:2480");
   }
 
   @Test
-  void deriveBoltAddressReturnsNullForNonPositivePort() {
-    assertThat(RaftHAServer.deriveBoltAddress("db1:2434", 0)).isNull();
-    assertThat(RaftHAServer.deriveBoltAddress("db1:2434", -1)).isNull();
+  void objectFormWithoutGrpcLeavesGrpcAddressesEmpty() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{raft:2434,http:2480,bolt:7687}", 2434);
+    assertThat(parsed.grpcAddresses()).isEmpty();
   }
 
   @Test
-  void deriveBoltAddressHandlesIpv6Literal() {
-    assertThat(RaftHAServer.deriveBoltAddress("[::1]:2434", 7687)).isEqualTo("[::1]:7687");
+  void positionalFormNeverPopulatesGrpcAddresses() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:2434:2480:7:2490", 2434);
+    assertThat(parsed.grpcAddresses()).isEmpty();
+  }
+
+  @Test
+  void namedObjectFormParsesGrpcPort() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost:{raft:2434,grpc:50055}", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.grpcAddresses()).containsEntry(peerId, "myhost:50055");
+    assertThat(parsed.peerNames()).containsEntry(peerId, "alpha");
+  }
+
+  /** Bolt and gRPC are independent fields on the same entry: declaring one must not resolve the other. */
+  @Test
+  void boltAndGrpcAreParsedIndependentlyOnTheSameEntry() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "n0:{raft:2434,bolt:7687,grpc:50051},n1:{raft:2435,bolt:7688}", 2434);
+    final var first = parsed.peers().get(0).getId();
+    final var second = parsed.peers().get(1).getId();
+    assertThat(parsed.boltAddresses()).containsEntry(first, "n0:7687").containsEntry(second, "n1:7688");
+    assertThat(parsed.grpcAddresses()).containsEntry(first, "n0:50051").doesNotContainKey(second);
+  }
+
+  @Test
+  void malformedGrpcPortThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("myhost:{raft:2434,grpc:notaport}", 2434))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("grpc");
+  }
+
+  @Test
+  void grpcPortIsSuffixedWithTheK8sDnsName() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "arcadedb-0:{raft:2434,grpc:50051}", 2434, ".arcadedb.default.svc.cluster.local");
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.grpcAddresses())
+        .containsEntry(peerId, "arcadedb-0.arcadedb.default.svc.cluster.local:50051");
+  }
+
+  @Test
+  void deriveRoutingAddressCombinesRaftHostWithPort() {
+    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", 7687)).isEqualTo("db1:7687");
+    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", 50051)).isEqualTo("db1:50051");
+  }
+
+  @Test
+  void deriveRoutingAddressReturnsNullForNonPositivePort() {
+    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", 0)).isNull();
+    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", -1)).isNull();
+  }
+
+  @Test
+  void deriveRoutingAddressHandlesIpv6Literal() {
+    assertThat(RaftHAServer.deriveRoutingAddress("[::1]:2434", 7687)).isEqualTo("[::1]:7687");
   }
 }

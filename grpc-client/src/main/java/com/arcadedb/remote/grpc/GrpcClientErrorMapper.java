@@ -23,7 +23,9 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.remote.RemoteException;
+import com.arcadedb.server.grpc.LeaderRedirectProtocol;
 import io.grpc.Metadata;
 import io.grpc.Status;
 
@@ -90,9 +92,28 @@ final class GrpcClientErrorMapper {
       case "com.arcadedb.exception.RecordNotFoundException" -> new RecordNotFoundException(msg, null);
       case "com.arcadedb.exception.TimeoutException" -> new TimeoutException(msg);
       case "java.lang.SecurityException" -> new SecurityException(msg);
+      case "com.arcadedb.network.binary.ServerIsNotTheLeaderException" ->
+          new ServerIsNotTheLeaderException(msg, leaderAddress(trailers));
       // Unknown class: let the caller fall back to status-code mapping.
       default -> null;
     };
+  }
+
+  /**
+   * Returns the address to redirect to when a follower refused an RPC that only the leader may run: the
+   * leader's gRPC address when the cluster could resolve one, otherwise its HTTP address. Both may be absent -
+   * a refusal issued during an election names no leader at all - and the exception then carries a null address,
+   * which is what {@code ServerIsNotTheLeaderException} means by "retry, destination unknown".
+   * <p>
+   * The gRPC address is preferred because it is the only one of the two this client can actually dial. The HTTP
+   * address is kept as a fallback because it is always known when a leader is, and a caller that can map an
+   * HTTP endpoint to its gRPC port is better off than one told nothing.
+   */
+  private static String leaderAddress(final Metadata trailers) {
+    if (trailers == null)
+      return null;
+    final String grpcAddress = trailers.get(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS);
+    return grpcAddress != null ? grpcAddress : trailers.get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS);
   }
 
   /**
