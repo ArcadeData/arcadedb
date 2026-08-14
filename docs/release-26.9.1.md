@@ -1509,3 +1509,55 @@ its query on every read of the type. This is the fix, not a regression, but it i
 trigger exists in an upgraded database.
 
 [#6134](https://github.com/ArcadeData/arcadedb/issues/6134)
+
+## A constant-false filter and `LIMIT 0` are folded at plan time, so a schema probe stops scanning its target (#6174)
+
+`SELECT * FROM (SELECT name FROM Character) SPARK_GEN_SUBQ_0 WHERE 1=0` is not an academic shape: it is what Spark,
+and several BI tools over the Postgres wire, send to discover a query's schema - one probe per pushed-down query,
+against the real target. The planner had no notion of a filter that is false for every row, so it built the full
+scan and let the filter step drain it: every probe read the whole type to return nothing that the statement itself
+did not already say. `LIMIT 0` is the other common spelling of the same intent and cost the same.
+
+Both are now recognised while the plan is built and answered with an `EMPTY RESULT` source step in place of the
+target fetch, which is what `EXPLAIN` now shows. Recognition is structural, over the condition tree the statement
+wrote - through parentheses, and through AND/OR (an AND is false when any term is, an OR only when every
+alternative is) - and folds only comparisons whose **both** operands are literals, evaluated by the very same
+`BinaryCondition.evaluate` the filter step would have called. A bound parameter is never folded, because the plan
+outlives the execution that bound it; nor is a function call, because nothing on `SQLFunction` marks a function as
+pure and classifying a statement must not be a reason to invoke one. `WHERE uuid() = 'x'` and `WHERE ? = 0` are
+therefore still planned as scans, as they must be.
+
+What the fold deliberately keeps:
+
+- **The target is still resolved**, so `SELECT FROM ATypeThatDoesNotExist WHERE 1=0` still reports the missing type
+  rather than quietly returning nothing. Only the scan is dropped, after the fetch has been planned.
+- **Everything downstream of the fetch stays in the plan** and receives no row, which is exactly what it receives
+  today from the filter being removed: `SELECT count(*) FROM T WHERE 1=0` still returns its one row with 0, and the
+  same statement with a `GROUP BY` still returns none.
+- **A `LET` evaluated once per statement still runs**; only the per-record `LET` and the per-record projection work
+  disappear, along with the rows that were never going to come back.
+
+The fold applies wherever a `SELECT` plan is built, so a subquery, a `DELETE ... WHERE 1=0` and an
+`UPDATE ... WHERE 1=0` are covered by the same code.
+
+The two spellings are not recognised the same way, and it is worth being explicit about the difference. A
+constant-false filter is folded only when the statement itself says so, never through a function. A `LIMIT 0`
+truncates the result to nothing whatever the filter would have done, so the filter is not evaluated at all - which
+means a predicate that raises at runtime stops raising: `SELECT * FROM T WHERE 1/0 = 1` reports a division by zero,
+and the same statement with `LIMIT 0` now returns an empty result instead. Nothing else can observe the difference,
+since no row was going to come back either way.
+
+One behaviour change worth naming, and one wrong answer found next to it. `count(*)` on a bare type is answered
+from the bucket counters by a hardwired plan that replaces the whole step chain - and returned without chaining the
+statement's `SKIP` or `LIMIT` at all. So `SELECT count(*) FROM T LIMIT 0` returned one row, and
+`SELECT count(*) FROM T SKIP 1` handed back the very row it was told to skip; `SELECT max(indexedProperty) FROM T
+SKIP 1`, which is answered the same way from the index, did too. The `LIMIT 0` spelling is now folded away before
+the hardwired plan is even considered; the rest is fixed by chaining both steps after the count/max/min, which
+costs nothing on a plan that produces a single row. This is the SQL twin of the Cypher defect fixed in #5715, where
+the CSR count push-down replaced the whole step chain and `RETURN count(*) LIMIT 0` likewise returned a row.
+
+The Postgres wire protocol reuses this recognition instead of its own copy: the schema-probe detection added in
+#6172 now calls `WhereClause.isAlwaysFalse()`, and the ~90 lines that duplicated it in `PostgresNetworkExecutor`
+are gone.
+
+[#6174](https://github.com/ArcadeData/arcadedb/issues/6174)

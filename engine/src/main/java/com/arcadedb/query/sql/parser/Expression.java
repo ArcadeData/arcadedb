@@ -111,6 +111,30 @@ public class Expression extends SimpleNode {
     return false;
   }
 
+  /**
+   * Whether the expression is built out of literals alone - a number, a string, a boolean, null, or arithmetic over
+   * them - so that its value is written in the statement itself and cannot change between two executions of the same
+   * plan.
+   * <p>
+   * This is deliberately narrower than {@link #isEarlyCalculated(CommandContext)}, which only asks whether an
+   * expression can be computed without a record. That admits any function call whose arguments need no record, and
+   * nothing on {@code SQLFunction} distinguishes a pure function from one with a side effect; it also admits a bound
+   * parameter, whose value belongs to one execution and must never be baked into a cached plan. Plan-time constant
+   * folding asks this question of statements that are overwhelmingly not constant at all, so it must never reach a
+   * function: {@code WHERE someStatefulFunction() = 42} would otherwise have that function invoked just to be
+   * classified.
+   */
+  public boolean isLiteral() {
+    if (isNull || booleanValue != null)
+      return true;
+
+    // a RID, a JSON object, a nested condition or an array concatenation is never a bare literal
+    if (rid != null || json != null || whereCondition != null || arrayConcatExpression != null)
+      return false;
+
+    return mathExpression != null && mathExpression.isLiteral();
+  }
+
   public boolean isEarlyCalculated(final CommandContext context) {
     if (isNull)
       return true;

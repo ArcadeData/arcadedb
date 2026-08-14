@@ -85,5 +85,10 @@ public class ParenthesisBlock extends BooleanExpression {
   public boolean isAlwaysTrue() {
     return subElement.isAlwaysTrue();
   }
+
+  @Override
+  public boolean isAlwaysFalse(final CommandContext context) {
+    return subElement.isAlwaysFalse(context);
+  }
 }
 /* JavaCC - OriginalChecksum=9a16b6cf7d051382acb94c45067631a9 (do not edit this line) */

@@ -79,6 +79,15 @@ public class Limit extends SimpleNode {
     throw new CommandExecutionException("No value for LIMIT");
   }
 
+  /**
+   * Whether this clause truncates the result to nothing, decidable from the statement alone: {@code LIMIT 0}, the
+   * other common spelling of a schema probe. A limit that resolves through a bound parameter or an expression is
+   * deliberately not folded - its value belongs to one execution, and the plan is reused across them.
+   */
+  public boolean isAlwaysEmpty() {
+    return num != null && num.getValue() != null && NumberUtils.saturateToInt(num.getValue()) == 0;
+  }
+
   public Limit setValue(final int value) {
     num = new PInteger().setValue(value);
     return this;
