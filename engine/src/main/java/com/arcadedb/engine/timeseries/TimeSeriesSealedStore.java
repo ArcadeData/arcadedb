@@ -554,7 +554,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   static void trimToDescendingLimit(final List<Object[]> rows, final int need) {
     rows.sort((a, b) -> Long.compare((long) b[0], (long) a[0]));
     while (rows.size() > need)
-      rows.removeLast();
+      rows.remove(rows.size() - 1);
   }
 
   /**

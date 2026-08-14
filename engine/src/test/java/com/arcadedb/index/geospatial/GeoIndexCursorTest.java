@@ -236,7 +236,7 @@ class GeoIndexCursorTest {
       public Identifiable next() {
         if (remaining.isEmpty())
           throw new NoSuchElementException();
-        return remaining.removeFirst();
+        return remaining.remove(0);
       }
 
       @Override
