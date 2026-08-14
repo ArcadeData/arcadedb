@@ -485,9 +485,10 @@ public class SelectExecutionPlanner {
 
   /**
    * A hardwired plan replaces the whole step chain, so the SKIP and LIMIT of the statement have to be chained here or
-   * they are not chained at all - which is how {@code SELECT count(*) FROM T SKIP 1} used to hand back the very row
-   * it was told to skip. The single row these plans produce makes both steps cheap; {@code LIMIT 0} does not even
-   * reach this point, {@link #emptyByConstructionReason} claims it first.
+   * they are not chained at all - which is how {@code SELECT count(*) FROM T SKIP 1}, and equally
+   * {@code SELECT max(indexedProperty) FROM T SKIP 1}, used to hand back the very row they were told to skip. The
+   * single row these plans produce makes both steps cheap; {@code LIMIT 0} does not even reach this point,
+   * {@link #emptyByConstructionReason} claims it first.
    */
   private static void handleSkipAndLimitAfterHardwired(final SelectExecutionPlan result, final QueryPlanningInfo info,
       final CommandContext context) {
@@ -623,6 +624,7 @@ public class SelectExecutionPlanner {
 
     // Create the optimized execution step
     result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
+    handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
 

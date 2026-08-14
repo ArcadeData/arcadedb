@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
@@ -181,6 +183,22 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
 
     assertThat(rs.hasNext()).isFalse();
     rs.close();
+  }
+
+  @Test
+  void maxOnAnIndexedPropertyWithASkipReturnsNoRow() {
+    // same hazard as the count one below: MaxMinFromIndexStep also replaces the whole chain, and it is only reached
+    // when the property carries a range index
+    database.getSchema().getType("Character").createProperty("age", Type.INTEGER);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Character", "age");
+
+    try (final ResultSet rs = database.query("sql", "SELECT max(age) AS oldest FROM Character SKIP 1")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT max(age) AS oldest FROM Character")) {
+      assertThat(rs.next().<Number>getProperty("oldest").intValue()).isEqualTo(39);
+    }
   }
 
   @Test

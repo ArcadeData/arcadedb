@@ -1543,10 +1543,11 @@ The fold applies wherever a `SELECT` plan is built, so a subquery, a `DELETE ...
 One behaviour change worth naming, and one wrong answer found next to it. `count(*)` on a bare type is answered
 from the bucket counters by a hardwired plan that replaces the whole step chain - and returned without chaining the
 statement's `SKIP` or `LIMIT` at all. So `SELECT count(*) FROM T LIMIT 0` returned one row, and
-`SELECT count(*) FROM T SKIP 1` handed back the very row it was told to skip. The first is now folded away before
-the hardwired plan is even considered; the second is fixed by chaining both steps after the count, which costs
-nothing on a plan that produces a single row. This is the SQL twin of the Cypher defect fixed in #5715, where the
-CSR count push-down replaced the whole step chain and `RETURN count(*) LIMIT 0` likewise returned a row.
+`SELECT count(*) FROM T SKIP 1` handed back the very row it was told to skip; `SELECT max(indexedProperty) FROM T
+SKIP 1`, which is answered the same way from the index, did too. The `LIMIT 0` spelling is now folded away before
+the hardwired plan is even considered; the rest is fixed by chaining both steps after the count/max/min, which
+costs nothing on a plan that produces a single row. This is the SQL twin of the Cypher defect fixed in #5715, where
+the CSR count push-down replaced the whole step chain and `RETURN count(*) LIMIT 0` likewise returned a row.
 
 The Postgres wire protocol reuses this recognition instead of its own copy: the schema-probe detection added in
 #6172 now calls `WhereClause.isAlwaysFalse()`, and the ~90 lines that duplicated it in `PostgresNetworkExecutor`
