@@ -79,6 +79,12 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    // This builder is the one place that reaches LocalSchema.indexMap with a caller-supplied name rather than a
+    // generated one, and it does so directly instead of through the schema's null-guarded accessors. A null name
+    // used to be accepted all the way into the map, leaving an index nothing could look up again; say so instead.
+    if (indexName == null)
+      throw new DatabaseMetadataException("Cannot create a manual index without a name");
+
     // Both checked before the existing-index lookup below, which needs the requested index kind to decide whether the
     // index already carrying this name covers the request.
     if (indexType == null)

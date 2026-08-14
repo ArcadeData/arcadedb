@@ -1691,11 +1691,11 @@ class CypherExpressionBuilder {
       // sees the stored RID rather than the live Vertex it saw during the write. Dereference it
       // transparently, applying the same temporal-type restoration as the single-level
       // PropertyAccessExpression, so the same expression keeps working across the transaction
-      // boundary (#5800) and stays consistent with the variable-bound access path.
-      if (baseValue instanceof RID rid) {
-        final Object rawValue = rid.asVertex().get(propertyName);
-        return TemporalUtil.convertFromStorage(rawValue);
-      }
+      // boundary (#5800) and stays consistent with the variable-bound access path - literally so: the
+      // dereference itself lives in PropertyAccessExpression, which also turns a link that resolves to
+      // nothing into a Cypher-flavored TypeError instead of a raw RecordNotFoundException (#5898).
+      if (baseValue instanceof RID rid)
+        return PropertyAccessExpression.readLinkedProperty(rid, propertyName);
 
       // Handle Document types
       if (baseValue instanceof Document) {

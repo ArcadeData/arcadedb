@@ -97,6 +97,20 @@ public final class HealthMonitor {
      */
     default void reportResyncProgress() {
     }
+
+    /**
+     * Retries the snapshot resync of a follower that restarted onto a snapshot marker running ahead of
+     * the entries it actually applied, and whose download has not succeeded yet (issue #6111). No-op
+     * when there is no such gap, when one is already running, or on the leader.
+     * <p>
+     * This cannot be folded into {@link #isFollowerLaggingBeyond(long)} /
+     * {@link #recoverFromPersistentLag()}: those are driven by {@code commitIndex - appliedIndex}, and
+     * Ratis derives the applied index from the very marker that is ahead - so a node sitting on an
+     * unfilled gap reports zero lag and looks perfectly caught up. Without its own hook the only thing
+     * that would ever retry such a node is a leader election.
+     */
+    default void retryUnfilledSnapshotGap() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -202,6 +216,9 @@ public final class HealthMonitor {
     // the actual re-resolution to its configured refresh interval.
     target.refreshPeerAllowlist();
     target.reportResyncProgress();
+    // Independent of the lag checks below, which are structurally blind to an unfilled snapshot gap
+    // (issue #6111). Self-throttled by the target.
+    target.retryUnfilledSnapshotGap();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);

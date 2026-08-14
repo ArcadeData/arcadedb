@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -373,6 +374,182 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(4);
+  }
+
+  // ========== coll.toSet ==========
+  @Test
+  void collToSet() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.toSet([1, 2, 2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(3);
+    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
+  }
+
+  @Test
+  void collToSetEmpty() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.toSet([]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void collToSetNull() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.toSet(null) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Object) rs.next().getProperty("result")).isNull();
+  }
+
+  @Test
+  void collToSetKeepsNullElement() {
+    // A null element is a value like any other, so it survives dedup exactly once.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.toSet([1, null, 1, null]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(2);
+    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(result.get(1)).isNull();
+  }
+
+  @Test
+  void collToSetDedupsByTypeAndValue() {
+    // Same caveat as coll.union/coll.distinct: dedup is by object equality, so an integer and a float of the
+    // same numeric value are NOT collapsed. Pinned here so the whole coll.* namespace stays consistent.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.toSet([1, 1.0]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(2);
+  }
+
+  @Test
+  void collToSetWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.toSet([1, 2], [3]) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collToSetNonListArgument() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.toSet('not a list') AS result").hasNext())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("coll.toSet() requires a list argument");
+  }
+
+  @Test
+  void collToSetApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.toSet([1, 2, 2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(3);
+    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
+  }
+
+  // ========== coll.pairsMin ==========
+  @Test
+  @SuppressWarnings("unchecked")
+  void collPairsMin() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.pairsMin([1, 2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(2);
+
+    final List<Object> first = (List<Object>) result.get(0);
+    assertThat(first).hasSize(2);
+    assertThat(((Number) first.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) first.get(1)).longValue()).isEqualTo(2L);
+
+    final List<Object> second = (List<Object>) result.get(1);
+    assertThat(second).hasSize(2);
+    assertThat(((Number) second.get(0)).longValue()).isEqualTo(2L);
+    assertThat(((Number) second.get(1)).longValue()).isEqualTo(3L);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void collPairsMinDropsTheTrailingIncompletePair() {
+    // This is the whole difference from APOC's coll.pairs: no [3, null] tail is appended. Assert the last pair
+    // specifically, so this stays a check on the tail rather than a restatement of collPairsMin()'s size check.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.pairsMin([1, 2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> result = rs.next().getProperty("result");
+
+    final List<Object> last = (List<Object>) result.get(result.size() - 1);
+    assertThat(last).doesNotContainNull();
+    assertThat(((Number) last.get(0)).longValue()).isEqualTo(2L);
+    assertThat(((Number) last.get(1)).longValue()).isEqualTo(3L);
+  }
+
+  @Test
+  void collPairsMinSingleElement() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.pairsMin([1]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void collPairsMinEmpty() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.pairsMin([]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void collPairsMinNull() {
+    final ResultSet rs = database.query("opencypher", "RETURN coll.pairsMin(null) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Object) rs.next().getProperty("result")).isNull();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void collPairsMinOfNestedLists() {
+    // The elements themselves may be lists: pairing is positional and does not look inside them.
+    final ResultSet rs = database.query("opencypher", "RETURN coll.pairsMin([[1, 2], [3, 4]]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(1);
+
+    final List<Object> pair = (List<Object>) result.get(0);
+    assertThat(pair).hasSize(2);
+    assertThat((List<Object>) pair.get(0)).hasSize(2);
+    assertThat((List<Object>) pair.get(1)).hasSize(2);
+  }
+
+  @Test
+  void collPairsMinWrongArity() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.pairsMin([1, 2], [3]) AS result").hasNext())
+        .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void collPairsMinNonListArgument() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.pairsMin('not a list') AS result").hasNext())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("coll.pairsMin() requires a list argument");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void collPairsMinApocPrefix() {
+    final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.pairsMin([1, 2, 3]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(2);
+    assertThat((List<Object>) result.get(0)).hasSize(2);
+    assertThat((List<Object>) result.get(1)).hasSize(2);
   }
 
   // ========== elementId ==========

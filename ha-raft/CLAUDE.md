@@ -16,6 +16,22 @@ The persisted `.raft/applied-index` JSON is read in `reinitialize()` but **never
 
 Note that `globalAppliedIndex` and `lastAppliedIndex` track the same value on the apply path but are seeded independently, so they can briefly differ right after `reinitialize()`. Do not assert equality across that window.
 
+## `RaftHAServer.getLastAppliedIndex()` does not read ArcadeDB's counter
+
+It reads Ratis: `division.getInfo().getLastAppliedIndex()` -> `StateMachineUpdater.appliedIndex`, which Ratis seeds from `getLatestSnapshot().getIndex()` (in its constructor, and again in `reload()` right *after* `reinitialize()` returns). `ArcadeStateMachine.lastAppliedIndex`, the `AtomicLong`, feeds `takeSnapshot()` and the phase-2 replay floor and is **not** on that path.
+
+Two consequences that have already cost debugging time:
+
+- Changing what `reinitialize()` writes into the `AtomicLong` does **not** change what a `waitForAppliedIndex()` / `waitForLocalApply()` waiter observes. If you are chasing "a read was released too early", the value to reason about is the marker index, not the counter.
+- Because the value comes from the marker, a node whose marker runs ahead of the entries it actually applied advertises an applied index covering data it does not hold. That is issue #6111: `reinitialize()`'s snapshot-gap branch now publishes `staleSnapshotAppliedFloor` and the waiters use `getTrustedAppliedIndex()` (the raw value clamped to that floor). **Reporting** paths - cluster status, lag detection - deliberately keep the raw Ratis value; only read guarantees clamp. The floor is cleared where a resync actually restored the state, never where one is merely requested.
+
+### The stale-gap failure mode an operator will meet
+
+A node holding an unfilled gap fails LINEARIZABLE reads (503) and reports not-ready via `isResyncInProgress()`, by design: it is genuinely missing committed entries, and the alternative is serving short data silently. Two things about how it recovers:
+
+- **The lag backstop cannot see it.** `isFollowerLaggingBeyond()` is driven by `commitIndex - appliedIndex`, and the applied index comes from the marker that is ahead - so the node reports *zero lag* while the gap is open. `retryUnfilledSnapshotGap()` (a `HealthMonitor.HealthTarget` hook, throttled to one attempt per snapshot-watchdog timeout) exists specifically because of this; do not try to fold it back into `recoverFromPersistentLag()`.
+- **A node that becomes leader while holding a gap wedges, deliberately.** `triggerSnapshotDownload()` refuses to resync when this node is the leader (or when the resolved leader address is its own), because copying its own incomplete databases onto themselves would report success and durably record the marker index as applied - re-opening #6111 permanently. So a single-node cluster, or a node that wins the election because every peer is unreachable, retries and refuses on every tick until a peer that actually holds the entries takes leadership. That is the intended terminal state, not a hang; the refusal is logged at WARNING on every attempt.
+
 ## Snapshots are taken far more often than you would guess
 
 Three triggers, not one: the Ratis auto-trigger (`arcadedb.ha.snapshotThreshold`, default 100k entries), ArcadeDB's own wall-clock `RaftLogCompactionScheduler` (`arcadedb.ha.snapshotInterval` 300 s, `arcadedb.ha.snapshotMinEntries` 64), **and shutdown**, via Ratis's `StateMachineUpdater.stop()`.
