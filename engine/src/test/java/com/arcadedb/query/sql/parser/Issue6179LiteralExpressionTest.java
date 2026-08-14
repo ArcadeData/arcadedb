@@ -117,6 +117,28 @@ class Issue6179LiteralExpressionTest extends AbstractParserTest {
   }
 
   @Test
+  void aCaseIsALiteralOnlyWhenEveryBranchIs() {
+    assertThat(rightOperandOf("select from Foo where a = CASE 1 WHEN 1 THEN 'x' ELSE 'y' END").isLiteral()).isTrue();
+    assertThat(rightOperandOf("select from Foo where a = CASE b WHEN 1 THEN 'x' ELSE 'y' END").isLiteral()).isFalse();
+    assertThat(rightOperandOf("select from Foo where a = CASE 1 WHEN 1 THEN b ELSE 'y' END").isLiteral()).isFalse();
+    assertThat(rightOperandOf("select from Foo where a = CASE 1 WHEN 1 THEN 'x' ELSE b END").isLiteral()).isFalse();
+    // the simple form's WHEN is a boolean expression, which carries no constant-ness of its own
+    assertThat(rightOperandOf("select from Foo where a = CASE WHEN 1 = 1 THEN 'x' ELSE 'y' END").isLiteral()).isFalse();
+  }
+
+  @Test
+  void aCaseIsEarlyCalculatedOnlyWhenNoBranchReadsTheRecord() {
+    assertThat(rightOperandOf("select from Foo where a = CASE 1 WHEN 1 THEN 'x' ELSE 'y' END").isEarlyCalculated(
+        context)).isTrue();
+    assertThat(rightOperandOf("select from Foo where a = CASE b WHEN 1 THEN 'x' ELSE 'y' END").isEarlyCalculated(
+        context)).isFalse();
+    assertThat(rightOperandOf("select from Foo where a = CASE 1 WHEN 1 THEN b ELSE 'y' END").isEarlyCalculated(
+        context)).isFalse();
+    assertThat(rightOperandOf("select from Foo where a = CASE WHEN 1 = 1 THEN 'x' ELSE 'y' END").isEarlyCalculated(
+        context)).isFalse();
+  }
+
+  @Test
   void aTraversalMethodIsNotEarlyCalculated() {
     final Expression expression = rightOperandOf("select from Foo where a = 'x'.out('E')");
     assertThat(expression.isEarlyCalculated(context)).isFalse();
