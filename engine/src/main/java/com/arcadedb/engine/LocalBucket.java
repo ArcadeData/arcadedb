@@ -1251,7 +1251,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // singleSlotInsert is false here, so the declaration opened above is 0 and every byte written stays
           // uncovered; and on a REUSED page the `if (!singleSlotInsert) poisonSlotRebasePage` at the end of this
           // method excludes it outright. A brand-new page needs neither - it is never rebase-tracked.
-          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0);
+          //
+          // The record is being created at the page's content end, so it owns nothing yet: the head chunk takes the
+          // whole free tail and seals the page (#6154).
+          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0, 0);
 
         } else {
           final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage,
@@ -1361,7 +1364,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (spaceNeeded > spaceAvailableInCurrentPage) {
           // MULTI-PAGE RECORD: only the first chunk is pinned to this slot; writeMultiPageRecord places the rest.
-          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0);
+          // Like a normal create, the restored record starts at the page's content end and owns nothing yet (#6154).
+          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0, 0);
         } else {
           final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage, bufferSize);
           selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
@@ -1729,10 +1733,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final long[] rs = page.readNumberAndSize(existingPos);
 
       if (kind == TransactionContext.SLOT_KIND_FIRST_CHUNK) {
-        // #6129: the head chunk of a multi-page record. Its footprint was fixed when the record spilled and
-        // updateMultiPageRecord only rewrites INSIDE it (the chunk size, the pointer to the next chunk and the chunk
-        // content), so re-applying our final image at the same offset reproduces the page byte for byte - exactly as
-        // for a same-or-smaller overwrite. What this check cannot see is the rest of the record, which lives on other
+        // #6129: the head chunk of a multi-page record. It keeps its slot and updateMultiPageRecord only rewrites
+        // INSIDE the region that slot owns (the chunk size, the pointer to the next chunk and the chunk content), so
+        // re-applying our final image at the same offset reproduces the page byte for byte - exactly as for a
+        // same-or-smaller overwrite. What this check cannot see is the rest of the record, which lives on other
         // pages: that is covered before the write, by the chunk-chain fingerprint (see updateRecordInternal).
         if (rs[0] != FIRST_CHUNK)
           return false;
@@ -1740,9 +1744,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final byte[] committedChunk = readChunkImage(page, chunkHeaderPos);
         if (committedChunk == null || !Arrays.equals(committedChunk, baseBody))
           return false;
-        if (body.length > committedChunk.length)
-          // A chunk head never grows: refuse rather than write past the record's own bytes.
+        // #6163: the declared size may have grown back into the room the region still had. The write sized it
+        // against the region of the page IT saw, so the one thing this replay may not do is take that on trust: it
+        // re-derives the region from the COMMITTED page, exactly as growRecordInPage re-derives the free tail for a
+        // plain record that grew. A concurrent commit that has taken those bytes - an insert into the tail a shrink
+        // released - leaves a shorter region and sends this transaction to a normal retry, rather than writing our
+        // longer head chunk straight over that record. A same-or-shorter image passes it by construction.
+        final int chunkRegionEnd = headChunkRegionEnd(page, recordCountInPage, existingPos);
+        if (chunkHeaderPos + body.length > chunkRegionEnd)
           return false;
+
+        // #6154: same accounting the write makes, re-derived here for the same reason as the region - the write made
+        // it against a page this one has moved on from. It is an absolute value, not an increment, so re-stating it
+        // corrects the earlier one rather than doubling it.
+        if (chunkRegionEnd == page.getMaxContentSize() && body.length != committedChunk.length)
+          updatePageStatistics(pageNumber, chunkRegionEnd - (chunkHeaderPos + committedChunk.length),
+                  committedChunk.length - body.length);
+
         page.writeByteArray(chunkHeaderPos, body, 0, body.length);
         return true;
       }
@@ -2130,13 +2148,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         recordSize[0] = LONG_SERIALIZED_SIZE;
         recordSize[1] = 1L;
       } else if (recordSize[0] == FIRST_CHUNK) {
-        // DISJOINT-SLOT MERGE (#6129): the head chunk of a multi-page record. Its footprint on THIS page was fixed
-        // when the record spilled and is never grown again - updateMultiPageRecord rewrites the chunk size, the
-        // pointer to the next chunk and the chunk content, all inside the record's own bytes - so the change this
-        // page sees is a single-slot write that commutes with writes to every other slot, exactly like an in-place
-        // overwrite. Before this, a bucket whose records had all outgrown their page serialized every writer on the
-        // page holding their heads.
+        // DISJOINT-SLOT MERGE (#6129): the head chunk of a multi-page record. It keeps its slot and its region on
+        // THIS page - updateMultiPageRecord rewrites the chunk size, the pointer to the next chunk and the chunk
+        // content, all inside the bytes the region covers - so the change this page sees is a single-slot write that
+        // commutes with writes to every other slot, exactly like an in-place overwrite. Before this, a bucket whose
+        // records had all outgrown their page serialized every writer on the page holding their heads.
+        // #6163: the declared size may go UP as well as down inside that region, which is why the replay re-derives
+        // the region from the committed page rather than refusing every head chunk longer than the one it finds.
         final int chunkHeaderPos = (int) (recordPositionInPage + recordSize[1]);
+        final int chunkRegionEnd = headChunkRegionEnd(page, recordCountInPage, recordPositionInPage);
         // A slot this transaction CREATED cannot be a chunk head (writeMultiPageRecord poisons the page it spills
         // on), so there is no insert variant to keep here: refuse to track and let the page fall back to a retry.
         //
@@ -2159,7 +2179,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // committed page. Only THIS page's writes are declared: updateMultiPageRecord leaves the ones it makes to
         // the other pages of the chain undeclared, and poisons them.
         updateMultiPageRecord(rid, buffer, page, chunkHeaderPos,
-                chunkBaseImage != null ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+                chunkBaseImage != null ? MutablePage.COVERAGE_SLOT_MERGE : 0, chunkRegionEnd);
 
         // updateMultiPageRecord may have poisoned this very page meanwhile (a continuation chunk of the chain landed
         // on it, or a chunk it freed lives on it): re-check before trusting the images.
@@ -2326,8 +2346,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               updatePageStatistics(pageId, freeTailInPage, -slotEnlargement);
             }
 
+            // #6154: the slot's own footprint and the bytes the shift just claimed are already accounted for; the
+            // rest of what the head chunk is given - the free tail, when this is the page's last record - is not.
             writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceInCurrentPage,
-                    spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+                    spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0,
+                    slotFootprint + Math.max(slotEnlargement, 0));
 
             if (!spillRebasable) {
               if (slotMergeOn)
@@ -3087,9 +3110,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                           which case the caller has ALREADY poisoned this page. Only the writes landing on it are
    *                           declared: the chunks placed on the other pages stay undeclared, and those pages are
    *                           poisoned below.
+   * @param slotBytesAlreadyOwned how many of {@code availableSpaceForFirstChunk} the slot already held (and the page
+   *                           statistics already knew about) before this call: 0 for a record being created, and for
+   *                           a record spilling out of its page its own footprint plus whatever the in-page shift
+   *                           just claimed for it (#6149). The rest is free tail this write takes, which is what
+   *                           {@link #updatePageStatistics} has to be told (#6154).
    */
   private void writeMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition,
-                                    final int availableSpaceForFirstChunk, final int firstChunkCoverage) throws IOException {
+                                    final int availableSpaceForFirstChunk, final int firstChunkCoverage,
+                                    final int slotBytesAlreadyOwned) throws IOException {
     // DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table
     // writes that bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED
     // page that also holds a tracked single-slot write would let the rebase re-derive that page from the tracked
@@ -3120,6 +3149,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } finally {
       currentPage.endCoveredWrite(previousCoverage);
     }
+
+    // #6154: the head chunk is the biggest bite anything takes out of a bucket page - a record spilling as the LAST
+    // record of its page is given its own footprint PLUS the whole free tail, and a record being created is given the
+    // tail outright - and it was the one chunk never fed into the free-space statistics, which then went on offering
+    // the allocator a page with nothing left. Whatever the head chunk did not already own is tail it takes, and it
+    // takes ALL of it whenever it takes any, so this lands the page's free space on exactly 0 and drops its entry.
+    final int freeTailTakenByHeadChunk = availableSpaceForFirstChunk - slotBytesAlreadyOwned;
+    if (freeTailTakenByHeadChunk > 0)
+      updatePageStatistics(firstPage.pageId.getPageNumber(), freeTailTakenByHeadChunk, -freeTailTakenByHeadChunk);
 
     newPosition += INT_SERIALIZED_SIZE;
 
@@ -3253,9 +3291,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                           when it did not - in which case the caller has ALREADY poisoned the head chunk's page.
    *                           Only the writes landing on that page are declared: every other page of the chain is
    *                           poisoned below and its writes stay undeclared, so neither merge can re-derive it.
+   * @param headChunkRegionEnd first byte after the room the head chunk may use on this page, as
+   *                           {@link #headChunkRegionEnd} derives it from the page's own slot table.
    */
   private void updateMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition,
-                                     final int firstChunkCoverage) throws IOException {
+                                     final int firstChunkCoverage, final int headChunkRegionEnd) throws IOException {
     // DISJOINT-SLOT MERGE (#5381): like writeMultiPageRecord, this rewrites/relocates/frees chunk records on
     // existing pages through inline record-table writes that bypass the tracking hooks. Poison every page it
     // touches so a page carrying both a tracked single-slot write and a chunk write can never be rebased. The page
@@ -3266,15 +3306,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
     final MutablePage firstPage = currentPage;
 
-    int chunkSize = currentPage.readInt(newPosition);
+    final int previousChunkSize = currentPage.readInt(newPosition);
     int bufferSize = buffer.size();
 
-    // WRITE THE 1ST CHUNK
-    if (bufferSize < chunkSize)
-      // 1ST AND LAST CHUNK
-      chunkSize = bufferSize;
-
+    // WRITE THE 1ST CHUNK, USING ALL THE ROOM THE HEAD CHUNK OWNS ON THIS PAGE
+    //
+    // #6163: sized from the PAGE, not from what the chunk header happens to declare today. Deriving it from the
+    // header could only ever cap it downwards - a shrink rewrote the declared size and no path ever raised it again -
+    // so a record that oscillated in size pinned its head chunk to the smallest size it had ever had and pushed the
+    // difference into continuation chunks on other pages for the rest of its life. The room is the same one a fresh
+    // spill would be given (writeMultiPageRecord's availableSpaceForFirstChunk), which is what makes an update place
+    // its head chunk exactly as a spill of the new content would have.
     final int firstChunkContentOffset = newPosition + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+    final int headChunkRoom = headChunkRegionEnd - firstChunkContentOffset;
+
+    // The two ways the region can disagree with the chunk it holds are NOT the same failure, and are answered
+    // differently on purpose - the fatal one first, so it is the one that speaks when both are true.
+    //
+    // A region that cannot host a single byte of content is where the arithmetic stops being safe: a chunk size of 0
+    // or below is not a shorter chunk, it is a header no reader can walk. Refused outright, in the same terms
+    // writeMultiPageRecord refuses an invalid continuation chunk. Reaching it means the page is corrupted (a
+    // neighbour's slot pointing inside this chunk's own header), and failing the transaction beats writing a header
+    // that would make the record unreadable.
+    if (headChunkRoom < 1)
+      throw new DatabaseOperationException(
+              "Head chunk of record " + originalRID + " has no room left in page " + currentPage.getPageId() + " (region ends at "
+                      + headChunkRegionEnd + ", chunk content starts at " + firstChunkContentOffset + ")");
+
+    // A region merely SMALLER than what the head chunk declares breaks an invariant of a healthy page (nothing may
+    // start inside another record's bytes), but it cannot corrupt anything from here: the head chunk is written
+    // shorter and the content that no longer fits leaves through the continuation loop below, which is the ordinary
+    // path. That is an assertion's job - loud in the tests (surefire runs with -ea), harmless in production.
+    assert previousChunkSize <= headChunkRoom :
+        "the head chunk of " + originalRID + " declares " + previousChunkSize + " bytes in a region of " + headChunkRoom;
+
+    int chunkSize = Math.min(bufferSize, headChunkRoom);
+
     final int previousCoverage = currentPage.beginCoveredWrite(firstChunkCoverage);
     try {
       currentPage.writeInt(newPosition, chunkSize);
@@ -3282,6 +3349,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } finally {
       currentPage.endCoveredWrite(previousCoverage);
     }
+
+    // #6154: the head chunk moves the page's free tail - the only chunk that can - and only when it is the page's
+    // LAST record, which is exactly when its region runs to the maximum content size. In every other case the region
+    // is bounded by the neighbour that follows and the tail does not move, so there is nothing to account.
+    if (headChunkRegionEnd == currentPage.getMaxContentSize() && chunkSize != previousChunkSize)
+      updatePageStatistics(currentPage.pageId.getPageNumber(), headChunkRoom - previousChunkSize,
+              previousChunkSize - chunkSize);
 
     newPosition += INT_SERIALIZED_SIZE;
 
@@ -3451,6 +3525,39 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       newPosition = (int) (recordPositionInPage + recordSize[1]);
       chunkToDeletePointer = nextPage.readLong(newPosition + INT_SERIALIZED_SIZE);
     }
+  }
+
+  /**
+   * Where the region a HEAD chunk may use on its own page ENDS: the content offset of the record stored right after
+   * it, or the page's maximum content size when nothing is (which is exactly the case of a chunk head that is the
+   * page's LAST record). Everything in between belongs to the head chunk and to nothing else - the allocator only
+   * ever hands out the page's tail, and a record that is not the last one can only be followed by its neighbour or by
+   * the dead bytes of a delete, which no other record can claim either.
+   * <p>
+   * This is the room {@code writeMultiPageRecord} was given when the record spilled, re-derived from the page instead
+   * of remembered, and it is what makes an update size its head chunk exactly as a fresh spill would (#6163). It is
+   * derived, never stored, for a reason: a chunk header declares its CONTENT length, not its footprint, so the room a
+   * shrink left unused is invisible in the record's own bytes; and the page can hand it away meanwhile
+   * ({@code compressPage} closes the hole, an insert takes the released tail), after which this returns the smaller
+   * region and the head chunk simply stops there.
+   * <p>
+   * The slot-table scan is the same one {@link #getLastRecordPositionInPage} already costs the growth path on every
+   * update that does not fit in place, against a write that then moves kilobytes of chunk content: there is nothing
+   * to cache here, because the answer is exactly the page state a concurrent commit is allowed to change.
+   *
+   * @param recordPositionInPage content offset of the head chunk's slot, marker included.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private int headChunkRegionEnd(final BasePage page, final short recordCountInPage, final int recordPositionInPage)
+          throws IOException {
+    int regionEnd = page.getMaxContentSize();
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int nextRecordPositionInPage = getRecordPositionInPage(page, pos);
+      if (nextRecordPositionInPage > recordPositionInPage && nextRecordPositionInPage < regionEnd)
+        regionEnd = nextRecordPositionInPage;
+    }
+    return regionEnd;
   }
 
   /**
@@ -3930,6 +4037,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             freeSpaceInPages.put(pageId, newSpace);
         }
       }
+    }
+  }
+
+  /**
+   * The free-space HINT currently held for a page, or -1 when there is none: the value
+   * {@link #findAvailableSpaceFromStatistics} screens candidate pages with. Package-private and read-only, it exists
+   * so what the write paths feed into the statistics can be asserted for what it is (#6154) - the allocator re-reads
+   * every candidate page before using it, so a test driven through the allocator alone would pass whether or not the
+   * statistics were ever told.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  int getFreeSpaceHintForPage(final int pageId) {
+    synchronized (freeSpaceInPages) {
+      return freeSpaceInPages.get(pageId, -1);
     }
   }
 
