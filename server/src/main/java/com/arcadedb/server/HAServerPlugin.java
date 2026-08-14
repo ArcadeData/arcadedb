@@ -113,21 +113,31 @@ public interface HAServerPlugin extends ServerPlugin {
   String getReplicaAddresses();
 
   /**
-   * Immutable snapshot of the Bolt routing topology: the current leader's client-reachable Bolt address
-   * (writer) and the non-leader replicas' Bolt addresses (readers). Both sets are derived from a single
-   * leader read so a concurrent leader change cannot make them mutually inconsistent.
+   * A client-facing wire protocol a routing view can be built for. Each names a per-peer endpoint a client
+   * dials directly, which is never the Raft address the cluster uses to talk to itself, nor - for anything
+   * but a homogeneous deployment - derivable from it. The name of a constant, lowercased, is also the field
+   * an operator writes in the object form of {@code arcadedb.ha.serverList} ({@code host:{raft:..,bolt:..,grpc:..}}).
    */
-  record BoltRoutingTable(String writer, List<String> readers) {
+  enum ROUTING_PROTOCOL {
+    BOLT, GRPC
   }
 
   /**
-   * Returns a single-snapshot Bolt routing table for the ROUTE response, or null when HA is inactive,
-   * no leader is currently known, or the leader has no resolvable Bolt address. Readers reflect the
-   * configured cluster membership (parity with {@link #getReplicaAddresses()}); a down or partitioned
-   * follower is still advertised until it leaves the group, and the driver fails over. Used to build the
-   * Bolt ROUTE routing table.
+   * Immutable snapshot of the routing topology for one client protocol: the current leader's
+   * client-reachable address (writer) and the non-leader replicas' addresses (readers). Both sets are
+   * derived from a single leader read so a concurrent leader change cannot make them mutually inconsistent.
    */
-  default BoltRoutingTable getBoltRoutingTable() {
+  record RoutingTable(ROUTING_PROTOCOL protocol, String writer, List<String> readers) {
+  }
+
+  /**
+   * Returns a single-snapshot routing table for the given client protocol, or null when HA is inactive,
+   * no leader is currently known, or the leader has no resolvable address for that protocol. Readers reflect
+   * the configured cluster membership (parity with {@link #getReplicaAddresses()}); a down or partitioned
+   * follower is still advertised until it leaves the group, and the client fails over. Used to build the
+   * Bolt ROUTE response and to name a dialable leader when a gRPC RPC refuses work only the leader may run.
+   */
+  default RoutingTable getRoutingTable(final ROUTING_PROTOCOL protocol) {
     return null;
   }
 
