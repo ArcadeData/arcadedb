@@ -1488,4 +1488,24 @@ null on every imported record, and under the new one would be rejected. It now i
 is a valid ArcadeDB default expression - `sysdate()`, numbers, already-quoted strings keep their meaning - and quotes
 it as a string literal otherwise, logging which defaults it had to translate.
 
+## A SQL trigger body that is a `SELECT` now actually runs, and can veto (#6167)
+
+`SQLTriggerExecutor` ran a trigger's SQL body with `database.command(...).close()`, discarding the result set
+without ever iterating it. A `SELECT` result set in ArcadeDB is pull-based - nothing runs until it is pulled - so a
+`SELECT`-bodied trigger was a silent no-op: the DDL succeeded, the trigger registered, it fired on schedule, and its
+body never executed. `INSERT`/`UPDATE`/`DELETE` bodies were unaffected, because their execution plans run eagerly
+when the command is built.
+
+The body's result set is now drained to exhaustion instead of closed unread, which fixes the no-op and also gives a
+SQL trigger body the same veto contract the JavaScript executor already had: a body that evaluates to a single
+scalar `false` - one row, one real property (`$score`/`$similarity` search-scoring metadata don't count) - aborts
+the operation, which is what `SELECT false` or `SELECT <condition> AS ok` looks like it should do. The check is
+scoped to bodies that are actually idempotent (`SELECT`), so an existing `UPDATE ... RETURN AFTER <field>` (or
+`RETURN BEFORE`) trigger - which can produce that same one-row, one-property shape - is never misread as a veto
+regardless of what the returned field holds.
+
+**Upgrade note**: a `BEFORE READ` trigger with a non-trivial `SELECT` body that previously did nothing will now run
+its query on every read of the type. This is the fix, not a regression, but it is worth budgeting for if such a
+trigger exists in an upgraded database.
+
 [#6134](https://github.com/ArcadeData/arcadedb/issues/6134)
