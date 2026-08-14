@@ -22,7 +22,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 
 import java.io.IOException;
@@ -53,7 +52,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       for (Bucket bucket : additionalBuckets) {
         final String oldBucketName = bucket.getName();
 
-        if (!oldBucketName.endsWith(GraphEngine.OUT_EDGES_SUFFIX) && !oldBucketName.endsWith(GraphEngine.IN_EDGES_SUFFIX))
+        if (!InternalBucketNaming.isEdgeListBucketName(oldBucketName))
           throw new SchemaException(
               "Cannot rename bucket '" + oldBucketName + "' because it does not follow the naming convention");
 

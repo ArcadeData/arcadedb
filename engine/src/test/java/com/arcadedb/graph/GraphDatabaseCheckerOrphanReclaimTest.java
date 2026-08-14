@@ -26,6 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.schema.InternalBucketNaming;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -283,8 +284,8 @@ class GraphDatabaseCheckerOrphanReclaimTest extends TestHelper {
 
     // A document type whose ONLY bucket is literally named "<x>_out_edges" (suffix collision), and a document
     // type whose default bucket name CONTAINS the stripe infix "_sn_stripe_" (infix collision).
-    final String suffixBucketName = "Ledger" + GraphEngine.OUT_EDGES_SUFFIX;
-    final String infixTypeName    = "Audit" + StripedEdgeList.STRIPE_BUCKET_INFIX + "journal";
+    final String suffixBucketName = InternalBucketNaming.outEdgesBucketName("Ledger");
+    final String infixTypeName    = InternalBucketNaming.Convention.SUPER_NODE_STRIPE.compose("Audit") + "journal";
     final int    suffixDocs       = 20;
     final int    infixDocs        = 15;
 

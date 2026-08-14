@@ -29,6 +29,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.InternalBucketNaming;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.utility.InterleavedIterator;
@@ -86,9 +87,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class StripedEdgeList extends EdgeLinkedList {
-  // Package-visible for GraphDatabaseChecker's orphan reclaim, which identifies stripe buckets by name.
-  static final String STRIPE_BUCKET_INFIX = "_sn_stripe_";
-
   /** Guards against stampeding pool creations: one in-flight creation per database+type (value = start ms). */
   private static final ConcurrentHashMap<String, Long> POOLS_IN_CREATION = new ConcurrentHashMap<>();
   /** One-shot diagnostic latch: warn ONCE per type if a pool creation looks stuck (see ensureStripePool). */
@@ -120,7 +118,7 @@ public class StripedEdgeList extends EdgeLinkedList {
    * real hubs are typically hot in a single direction and the pool size is the tuning lever.
    */
   public static String stripeBucketName(final String typeName, final int slot) {
-    return typeName + STRIPE_BUCKET_INFIX + slot;
+    return InternalBucketNaming.superNodeStripeBucketName(typeName, slot);
   }
 
   /**

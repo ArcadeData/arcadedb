@@ -553,7 +553,7 @@ public class LocalSchema implements Schema {
     // with the matching prefix later gains an EXTERNAL property; ensureExternalBucketFor() rejects with a
     // SchemaException at that point. Surfacing the constraint at create time is much cheaper than debugging
     // the later failure.
-    if (version == LocalBucket.CURRENT_VERSION && bucketName.endsWith("_ext"))
+    if (version == LocalBucket.CURRENT_VERSION && InternalBucketNaming.looksLikeAnExternalPropertyBucketName(bucketName))
       LogManager.instance().log(this, Level.WARNING,
           """
           Bucket name '%s' ends with '_ext'. The engine reserves the '<primaryName>_ext' suffix for paired\

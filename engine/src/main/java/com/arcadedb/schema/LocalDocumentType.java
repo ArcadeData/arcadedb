@@ -1504,7 +1504,7 @@ public class LocalDocumentType implements DocumentType {
     // Atomic check-and-create: two threads racing through ensureExternalBuckets()/addBucketInternal() must not
     // both attempt to allocate the paired _ext bucket and trip schema.createBucket's "already exists" guard.
     externalBucketIdByPrimaryBucketId.computeIfAbsent(primary.getFileId(), pid -> {
-      final String extName = primary.getName() + "_ext";
+      final String extName = InternalBucketNaming.externalPropertyBucketName(primary.getName());
       final LocalBucket external;
       if (schema.bucketMap.containsKey(extName)) {
         external = schema.bucketMap.get(extName);
@@ -1648,7 +1648,7 @@ public class LocalDocumentType implements DocumentType {
     for (final Bucket primaryBucket : buckets) {
       if (externalBucketIdByPrimaryBucketId.containsKey(primaryBucket.getFileId()))
         continue;
-      final String candidateName = primaryBucket.getName() + "_ext";
+      final String candidateName = InternalBucketNaming.externalPropertyBucketName(primaryBucket.getName());
       final LocalBucket candidate = schema.bucketMap.get(candidateName);
       if (candidate == null)
         continue;

@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.engine.UnreferencedFiles;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -2640,11 +2639,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * node that LOST leadership mid-session is the only one that logs the files it could not retire;
    * this is how the nodes still holding them say so, which is what makes the SEVERE line actionable
    * without reading a data directory by hand.
+   * <p>
+   * The count is memoized on the database behind a (file modification count, schema version) gate (issue #6168),
+   * so this refresh - every 5 seconds, per open database, forever - walks the schema only when one of the two has
+   * actually moved.
    */
   public List<HAReplicationStatsProvider.UnreferencedFilesSample> getUnreferencedFilesSamples() {
     final List<HAReplicationStatsProvider.UnreferencedFilesSample> samples = new ArrayList<>();
     forEachOpenReplicatedDatabase((name, db) -> samples.add(
-        new HAReplicationStatsProvider.UnreferencedFilesSample(name, UnreferencedFiles.count(db))));
+        new HAReplicationStatsProvider.UnreferencedFilesSample(name, db.getUnreferencedFilesCount())));
     return samples;
   }
 

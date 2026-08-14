@@ -164,7 +164,13 @@ class Issue6116ChecksumsPointInTimeTest {
     final double fallback = suspendedFractionWhileComputingChecksums(false);
     final double withSnapshot = suspendedFractionWhileComputingChecksums(true);
 
-    assertThat(fallback).as("the fallback path must still freeze the files for the whole read").isGreaterThan(0.9);
+    // THE CONTROL'S THRESHOLD IS DELIBERATELY LOOSE (issue #6168, item 4). Its only job is to prove this machine's
+    // sampler sees suspensions at all, and it is a SAMPLED FRACTION: the handler does real work either side of the
+    // suspension window, and on a 4-CPU runner a spinning sampler does not distribute its samples evenly over the
+    // computation. At 0.9 the control - not the behaviour under test - was what failed CI, at 0.8953. Anything
+    // comfortably above the 0.5 the real assertion allows still separates "frozen for the read" from "not frozen",
+    // which is the whole of what this comparison has to establish.
+    assertThat(fallback).as("the fallback path must still freeze the files for the whole read").isGreaterThan(0.75);
     assertThat(withSnapshot).as("the snapshot path must not hold the flush suspension for the read (fallback was %f)",
         fallback).isLessThan(0.5);
   }

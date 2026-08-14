@@ -318,12 +318,19 @@ public class Issue6070GrpcGraphBatchIT extends BaseGraphServerTest {
    * the readiness wait raises the real failure before a re-send could reach the wire either way. What it pins
    * is the contract a caller sees, which must hold however grpc-java resolves that internally: the committed
    * buffer survives exactly once, and {@code close()} adds no second, misleading failure.
+   * <p>
+   * <b>WHICH of the two raises it is a race, so this test does not bet on one</b> (issue #6168, item 3). Whether
+   * the server's error reaches the client while the body is still sending or only once {@code close()} half-closes
+   * depends on scheduling, and asserting the body specifically made this fail 4 of 6 CI runs on a PR whose diff
+   * touched no gRPC code at all. What it asserts is what actually holds: the load raises EXACTLY ONE failure,
+   * wherever it surfaces, and the committed buffer is durable exactly once.
    */
   @Test
   void aFailureOnAnInteriorFlushIsNotResentByClose() {
     grpc.command("sql", "CREATE PROPERTY `" + PERSON + "`.tag IF NOT EXISTS STRING (MANDATORY TRUE)");
 
     final AtomicReference<Throwable> fromBody = new AtomicReference<>();
+    final AtomicReference<Throwable> fromClose = new AtomicReference<>();
 
     // Chunk and server-side buffer both 2, so the first two vertices are committed as a whole buffer before the
     // buffer holding the bad one fails. The 400 that follow make sure the failure is observed by a later send
@@ -339,16 +346,20 @@ public class Issue6070GrpcGraphBatchIT extends BaseGraphServerTest {
       } catch (final RuntimeException e) {
         fromBody.set(e);
       }
-    } catch (final RuntimeException fromClose) {
-      // close() may re-raise the same failure; what it must not do is raise a different, misleading one on top
-      // of it, which is what half-closing or re-sending on a call the server already terminated produces.
-      assertThat(fromClose).as("close() must not invent a failure of its own on top of the real one")
+    } catch (final RuntimeException raisedByClose) {
+      fromClose.set(raisedByClose);
+      // close() may raise the failure the body never saw, or re-raise the same one; what it must not do is raise a
+      // different, misleading one on top of it, which is what half-closing or re-sending on a call the server
+      // already terminated produces.
+      assertThat(raisedByClose).as("close() must not invent a failure of its own on top of the real one")
           .hasMessageNotContaining("call already closed")
           .hasMessageNotContaining("already half-closed")
           .hasMessageNotContaining("Stream is already completed");
     }
 
-    assertThat(fromBody.get()).as("the load violates the schema, so it must fail during the body").isNotNull();
+    assertThat(fromBody.get() != null ? fromBody.get() : fromClose.get())
+        .as("the load violates the schema, so it must fail - in the body if the server's error got there in time, "
+            + "otherwise at close()").isNotNull();
 
     // The buffer that completed before the failure is durable, and exactly once: a chunk handed to a terminated
     // stream and then sent again by close() would show up here as a duplicate.

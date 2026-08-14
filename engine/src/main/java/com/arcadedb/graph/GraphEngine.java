@@ -43,6 +43,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.InternalBucketNaming;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
@@ -67,9 +68,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphEngine {
-  public static final String OUT_EDGES_SUFFIX = "_out_edges";
-  public static final String IN_EDGES_SUFFIX  = "_in_edges";
-
   public static final IterableGraph<Vertex> EMPTY_VERTEX_LIST = new IterableGraph<>() {
     @Override
     public Iterator<Vertex> iterator() {
@@ -115,24 +113,29 @@ public class GraphEngine {
 
   public List<Bucket> createVertexAdditionalBuckets(final LocalBucket b) {
     final Bucket[] outInBuckets = new Bucket[2];
-    if (database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
-      outInBuckets[0] = database.getSchema().getBucketByName(b.getName() + OUT_EDGES_SUFFIX);
-    else
-      outInBuckets[0] = database.getSchema().createBucket(b.getName() + OUT_EDGES_SUFFIX);
+    final String outEdgesBucket = InternalBucketNaming.outEdgesBucketName(b.getName());
+    final String inEdgesBucket = InternalBucketNaming.inEdgesBucketName(b.getName());
 
-    if (database.getSchema().existsBucket(b.getName() + IN_EDGES_SUFFIX))
-      outInBuckets[1] = database.getSchema().getBucketByName(b.getName() + IN_EDGES_SUFFIX);
+    if (database.getSchema().existsBucket(outEdgesBucket))
+      outInBuckets[0] = database.getSchema().getBucketByName(outEdgesBucket);
     else
-      outInBuckets[1] = database.getSchema().createBucket(b.getName() + IN_EDGES_SUFFIX);
+      outInBuckets[0] = database.getSchema().createBucket(outEdgesBucket);
+
+    if (database.getSchema().existsBucket(inEdgesBucket))
+      outInBuckets[1] = database.getSchema().getBucketByName(inEdgesBucket);
+    else
+      outInBuckets[1] = database.getSchema().createBucket(inEdgesBucket);
     return List.of(outInBuckets);
   }
 
   public void dropVertexType(final VertexType type) {
     for (final Bucket b : type.getBuckets(false)) {
-      if (database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
-        database.getSchema().dropBucket(b.getName() + OUT_EDGES_SUFFIX);
-      if (database.getSchema().existsBucket(b.getName() + IN_EDGES_SUFFIX))
-        database.getSchema().dropBucket(b.getName() + IN_EDGES_SUFFIX);
+      final String outEdgesBucket = InternalBucketNaming.outEdgesBucketName(b.getName());
+      final String inEdgesBucket = InternalBucketNaming.inEdgesBucketName(b.getName());
+      if (database.getSchema().existsBucket(outEdgesBucket))
+        database.getSchema().dropBucket(outEdgesBucket);
+      if (database.getSchema().existsBucket(inEdgesBucket))
+        database.getSchema().dropBucket(inEdgesBucket);
     }
 
     // DROP THE SUPER-NODE STRIPE POOL, IF THE TYPE EVER PROMOTED A VERTEX (#5156)
@@ -1896,9 +1899,9 @@ public class GraphEngine {
     final Bucket vertexBucket = database.getSchema().getBucketById(bucketId);
 
     if (direction == Vertex.DIRECTION.OUT)
-      return vertexBucket.getName() + OUT_EDGES_SUFFIX;
+      return InternalBucketNaming.outEdgesBucketName(vertexBucket.getName());
     else if (direction == Vertex.DIRECTION.IN)
-      return vertexBucket.getName() + IN_EDGES_SUFFIX;
+      return InternalBucketNaming.inEdgesBucketName(vertexBucket.getName());
 
     throw new IllegalArgumentException("Invalid direction");
   }
