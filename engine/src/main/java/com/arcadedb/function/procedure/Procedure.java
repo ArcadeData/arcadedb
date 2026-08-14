@@ -163,4 +163,40 @@ public interface Procedure {
   default boolean isWriteProcedure() {
     return false;
   }
+
+  /**
+   * Refines {@link #isWriteProcedure()} for one particular call site, given whatever that site's arguments the
+   * parser could resolve to constants.
+   * <p>
+   * {@link #isWriteProcedure()} answers for the procedure as a whole, at registration time, which for most
+   * procedures is the whole truth. It is not for a procedure that runs a caller-supplied query string
+   * ({@code apoc.do.when}): such a procedure has to answer {@code true} unconditionally, because at registration
+   * time it has no idea what its caller will pass. At a call site whose arguments are literals it does know, and
+   * this overload is where it says so - which matters because {@code isReadOnly()} on the enclosing statement
+   * decides HA routing, the {@code Database.query()} idempotency gate and the follower's forward-to-leader
+   * decision (issue #6094).
+   * <p>
+   * <b>A refinement may only narrow.</b> The caller checks {@link #isWriteProcedure()} first and only consults
+   * this overload when that answered {@code true}, so returning {@code true} here from a read-only procedure has
+   * no effect.
+   * <p>
+   * <b>{@code false} is a claim that needs proof.</b> An implementation may answer {@code false} only where it
+   * can show this call will not write - either because nothing it could run writes, or because the call cannot
+   * execute at all (its own argument checks reject it before any work starts, which is worth narrowing for:
+   * otherwise a caller on {@code Database.query()} gets {@code QueryNotIdempotentException} in place of the
+   * actionable error). Everywhere the arguments leave it genuinely unsure - a {@code null} entry, a value it
+   * cannot interpret - it must keep the conservative {@code true}; guessing "read-only" is what silently
+   * bypasses replication.
+   *
+   * @param literalArguments one entry per argument written at the call site, holding the argument's constant
+   *                         value when the parser resolved it to a literal and {@code null} otherwise (a
+   *                         parameter, a variable, any computed expression - and also a literal {@code null}, the
+   *                         two being indistinguishable here on purpose, since both must be treated
+   *                         conservatively). Never {@code null} itself; empty for a call with no arguments.
+   *
+   * @return true if this particular call can modify the database
+   */
+  default boolean isWriteProcedure(final Object[] literalArguments) {
+    return isWriteProcedure();
+  }
 }

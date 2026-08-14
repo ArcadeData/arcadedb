@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.control;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -103,6 +104,67 @@ public class DoWhen implements CypherProcedure {
   @Override
   public boolean isWriteProcedure() {
     return true;
+  }
+
+  /**
+   * Classifies one specific {@code CALL apoc.do.when(...)} site from the branch queries it was written with.
+   * {@link #isWriteProcedure()} has to answer "writes" for every call - at registration time the branch strings
+   * do not exist yet - but at a call site that spells them out as literals the answer is knowable, and the call
+   * is a write only if a branch it could actually run is one.
+   * <p>
+   * Both branches are weighed, never only the one the condition selects: {@code condition} is an arbitrary
+   * expression evaluated per row, so which branch runs is not a parse-time fact even where it happens to be
+   * written here as a literal.
+   * <p>
+   * A call that cannot get as far as running a branch cannot write, so it is not classified as a write: a wrong
+   * argument count, or a branch argument that is a literal of the wrong type, is rejected by {@link #execute}'s
+   * own checks before anything runs. Answering "writes" for those would replace their actionable error
+   * (<em>"ifQuery must be a string"</em>) with {@code QueryNotIdempotentException} for every caller using
+   * {@link Database#query}, which is a worse answer to the same mistake and tells the caller nothing.
+   * <p>
+   * What stays conservative is genuine ignorance: a branch supplied as {@code $param} (or a literal
+   * {@code null}, which is indistinguishable here), and a branch string this method cannot parse. The latter is
+   * conservative rather than "cannot run" on purpose - {@code OpenCypherQueryEngine} strips an
+   * {@code EXPLAIN}/{@code PROFILE} prefix before parsing and {@code PROFILE} does execute, so a
+   * string that fails a bare parse here is not proof that nothing runs. A wrong "read-only" would route the
+   * statement to the raw database instance on HA and let {@link Database#query} run it, which is exactly the bug
+   * this classification exists to prevent (issue #6094).
+   */
+  @Override
+  public boolean isWriteProcedure(final Object[] literalArguments) {
+    // Rejected by validateArgs() at execution before a branch can run; let that error surface.
+    if (literalArguments.length < getMinArgs() || literalArguments.length > getMaxArgs())
+      return false;
+    return branchMayWrite(literalArguments[1]) || branchMayWrite(literalArguments[2]);
+  }
+
+  /**
+   * Whether a branch argument could run something that writes. Only two answers are "yes": a query string that
+   * parses into a non-read-only statement, and an argument the parser could not resolve to a literal at all.
+   * A blank branch runs nothing ({@link #execute} returns an empty stream for it) and a non-string literal is
+   * rejected by {@code extractString} before any branch runs.
+   * <p>
+   * The parse here is deliberately recursive and it terminates. A branch string may itself contain
+   * {@code CALL apoc.do.when(...)}, so this reaches {@code SimpleCypherStatement}'s constructor, its
+   * {@code anyWriteProcedureCall}, and back into this method. Each step strictly consumes one level of the
+   * literal nesting written into the query text, which is finite and in practice shallow - every level has to
+   * escape the quoting of the level around it, so the text grows exponentially in the depth. The parser used is
+   * a fresh instance and holds no state shared with the parse in progress around it.
+   */
+  private static boolean branchMayWrite(final Object branchQuery) {
+    if (branchQuery == null)
+      // Dynamic, or a literal null - the two are indistinguishable here, so assume the worst.
+      return true;
+    if (!(branchQuery instanceof String query))
+      return false;
+    if (query.isBlank())
+      return false;
+    try {
+      return !new Cypher25AntlrParser().parse(query).isReadOnly();
+    } catch (final Exception e) {
+      // Unparseable as written. Not proof that nothing runs (see the EXPLAIN/PROFILE note above), so assume it writes.
+      return true;
+    }
   }
 
   @Override

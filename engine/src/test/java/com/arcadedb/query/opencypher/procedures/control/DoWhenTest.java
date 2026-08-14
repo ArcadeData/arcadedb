@@ -98,9 +98,15 @@ class DoWhenTest {
     assertThat(value.get("greeting")).isEqualTo("hello");
   }
 
+  /**
+   * Issued through {@code command()}, not {@code query()}: a do.when whose branch is a literal CREATE is a write,
+   * and since issue #6094 the statement is classified as one, so {@code query()}'s idempotency gate refuses it -
+   * the same convention {@code RefactorMergeNodesTest} and {@code CallStepWriteProcedureAutoCommitTest} already
+   * follow for the other write procedures. The assertions below are unchanged.
+   */
   @Test
   void writeSubQueryIsPersisted() {
-    final ResultSet rs = database.query("opencypher",
+    final ResultSet rs = database.command("opencypher",
         "CALL apoc.do.when(true, \"CREATE (n:Person {name: 'Bob'}) RETURN n\", '', {}) YIELD value RETURN value");
     assertThat(rs.hasNext()).isTrue();
     rs.next();
