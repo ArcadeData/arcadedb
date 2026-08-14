@@ -44,12 +44,21 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.MatchStatement;
+import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -106,6 +115,7 @@ public class PostgresNetworkExecutor extends Thread {
   private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS  = new ConcurrentHashMap<>();
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
+  private static final Object[]                                       NO_PARAMETERS     = new Object[0];
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -316,7 +326,8 @@ public class PostgresNetworkExecutor extends Thread {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
           portal.columns = getColumns(portal.cachedResultSet);
           if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
-            final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query);
+            final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
+                getParams(portal), portal.sqlStatement);
             if (schemaColumns != null)
               portal.columns = schemaColumns;
           }
@@ -338,7 +349,7 @@ public class PostgresNetworkExecutor extends Thread {
       // Now send RowDescription or NoData
       // For SELECT queries, we need to determine the columns from the type schema
       if (portal.isExpectingResult && portal.columns == null) {
-        portal.columns = getColumnsFromQuerySchema(portal.query);
+        portal.columns = getColumnsFromQuerySchema(portal.query, portal.sqlStatement);
       }
 
       if (portal.columns != null && !portal.columns.isEmpty()) {
@@ -405,7 +416,8 @@ public class PostgresNetworkExecutor extends Thread {
               final long serStart = System.nanoTime();
               portal.columns = getColumns(portal.cachedResultSet);
               if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
-                final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query);
+                final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
+                    getParams(portal), portal.sqlStatement);
                 if (schemaColumns != null)
                   portal.columns = schemaColumns;
               }
@@ -556,7 +568,7 @@ public class PostgresNetworkExecutor extends Thread {
       final long serStart = System.nanoTime();
       Map<String, PostgresType> columns = getColumns(cachedResultSet);
       if (columns.isEmpty() && cachedResultSet.isEmpty()) {
-        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query);
+        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS, null);
         if (schemaColumns != null)
           columns = schemaColumns;
       }
@@ -872,16 +884,25 @@ public class PostgresNetworkExecutor extends Thread {
    * This is used during DESCRIBE Statement to return RowDescription before the query is executed.
    * ArcadeDB is schema-less so we need to query actual data to discover dynamically-added properties.
    */
-  private Map<String, PostgresType> getColumnsFromQuerySchema(final String query) {
+  private Map<String, PostgresType> getColumnsFromQuerySchema(final String query, final Statement alreadyParsed) {
     if (query == null || query.isEmpty()) {
       return null;
     }
 
+    // the caller may already hold the parsed statement for this very text: parsing it a second time buys nothing
+    final Statement parsed = alreadyParsed != null ? alreadyParsed : parseStatement(query);
+
     // Prefer the parsed statement: it resolves the FROM target reliably, including the subquery
     // wrapper Spark uses for its schema probe (issue #5368)
-    final SelectStatement select = parseSelectStatement(query);
-    if (select != null)
-      return getColumnsFromSelect(select);
+    if (parsed instanceof SelectStatement || parsed instanceof MatchStatement) {
+      try {
+        return getColumnsFromStatement(parsed);
+      } catch (final Exception e) {
+        if (DEBUG)
+          LogManager.instance().log(this, Level.WARNING, "PSQL: cannot resolve the columns of '%s': %s", query, e.getMessage());
+        return null;
+      }
+    }
 
     // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
     // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
@@ -916,24 +937,101 @@ public class PostgresNetworkExecutor extends Thread {
    * discovered from a sample row or from the declared schema, or a nested subquery, resolved recursively so
    * that a probe like {@code SELECT * FROM (SELECT name FROM Character) SPARK_GEN_SUBQ_0 WHERE 1=0} (the
    * shape Spark generates, issue #5368) exposes what the innermost query really projects. Each level then
-   * narrows the columns with its own projection list.
+   * narrows the columns with its own projection list. When the target carries no discoverable schema the
+   * projection list alone names the columns (issue #6156).
    */
   private Map<String, PostgresType> getColumnsFromSelect(final SelectStatement select) {
     final FromClause target = select.getTarget();
     final FromItem item = target != null ? target.getItem() : null;
-    if (item == null)
-      return null;
 
     Map<String, PostgresType> columns = null;
-    if (item.getStatement() instanceof SelectStatement subQuery)
-      columns = getColumnsFromSelect(subQuery);
-    else if (item.getIdentifier() != null)
-      columns = getColumnsFromType(item.getIdentifier().getStringValue());
+    if (item != null) {
+      if (item.getStatement() != null)
+        columns = getColumnsFromStatement(item.getStatement());
+      else if (item.getIdentifier() != null)
+        columns = getColumnsFromType(item.getIdentifier().getStringValue());
+    }
 
-    if (columns == null || columns.isEmpty())
-      return columns;
+    if (columns != null && !columns.isEmpty()) {
+      final Map<String, PostgresType> projected = applyProjection(select.getProjection(), columns);
+      if (projected != null && !projected.isEmpty())
+        return projected;
+    }
 
-    return applyProjection(select.getProjection(), columns);
+    // The row source is not a schema type: no FROM at all, a RID, a function call such as shortestPath(), a
+    // TRAVERSE. Nothing can be discovered from the schema, but an explicit projection list still names every
+    // column the query produces, which is what Spark's probe needs (issue #6156).
+    return getColumnsFromProjection(select.getProjection());
+  }
+
+  /**
+   * Resolves the columns announced by a parsed statement. Only the two statements that project a row shape of
+   * their own are described here: SELECT through its FROM target and projection, MATCH through its RETURN list.
+   */
+  private Map<String, PostgresType> getColumnsFromStatement(final Statement statement) {
+    if (statement instanceof SelectStatement select)
+      return getColumnsFromSelect(select);
+    if (statement instanceof MatchStatement match)
+      return getColumnsFromMatch(match);
+    return null;
+  }
+
+  /**
+   * Columns announced by a MATCH statement: one per RETURN item, named after its alias or, when there is none,
+   * after the expression's default alias - exactly the naming the executor applies. Types are unknowable without
+   * running the pattern, so they are announced as text.
+   */
+  private Map<String, PostgresType> getColumnsFromMatch(final MatchStatement match) {
+    final List<Expression> returnItems = match.getReturnItems();
+    if (returnItems == null || returnItems.isEmpty())
+      return null;
+
+    final List<Identifier> returnAliases = match.getReturnAliases();
+    final Map<String, PostgresType> columns = new LinkedHashMap<>();
+    for (int i = 0; i < returnItems.size(); i++) {
+      final Identifier alias = returnAliases != null && i < returnAliases.size() ? returnAliases.get(i) : null;
+      final String name = alias != null ? alias.getStringValue() : defaultAliasOf(returnItems.get(i));
+      if (name == null)
+        // cannot tell what this item is named: announcing a partial row would be worse than announcing nothing
+        return null;
+      columns.put(name, PostgresType.VARCHAR);
+    }
+
+    return columns;
+  }
+
+  /**
+   * Columns named by an explicit projection list, used when the row source itself carries no discoverable schema.
+   * Returns null as soon as an item does not name a column on its own - a {@code *} or an exclusion, which both
+   * need the row source, or an {@code expand()}, which replaces the row with whatever it expands.
+   */
+  private Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
+    if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
+      return null;
+
+    if (projection.isExpand())
+      return null;
+
+    final Map<String, PostgresType> columns = new LinkedHashMap<>();
+    for (final ProjectionItem item : projection.getItems()) {
+      if (item.isAll() || item.exclude || item.getExpression() == null)
+        return null;
+
+      final String alias = item.getProjectionAliasAsString();
+      if (alias == null)
+        return null;
+
+      columns.put(alias, PostgresType.VARCHAR);
+    }
+
+    return columns.isEmpty() ? null : columns;
+  }
+
+  private String defaultAliasOf(final Expression expression) {
+    if (expression == null)
+      return null;
+    final Identifier defaultAlias = expression.getDefaultAlias();
+    return defaultAlias != null ? defaultAlias.getStringValue() : null;
   }
 
   /**
@@ -1010,6 +1108,11 @@ public class PostgresNetworkExecutor extends Thread {
     if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
       return columns;
 
+    if (projection.isExpand())
+      // expand() throws the row away and returns what it expands instead, so the target's columns say nothing
+      // about the result. Announcing them would be worse than announcing nothing (issue #6156).
+      return null;
+
     final Map<String, PostgresType> projected = new LinkedHashMap<>();
     for (final ProjectionItem item : projection.getItems()) {
       if (item.isAll()) {
@@ -1041,13 +1144,15 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Parses the query with the ArcadeDB SQL parser, returning null when it is not a parsable SELECT.
+   * Parses the query with the ArcadeDB SQL parser, returning null when it is not parsable.
    */
-  private SelectStatement parseSelectStatement(final String query) {
+  private Statement parseStatement(final String query) {
+    if (query == null || query.isEmpty())
+      return null;
+
     try {
       final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-      final Statement statement = sqlEngine.parse(query, (DatabaseInternal) database);
-      return statement instanceof SelectStatement select ? select : null;
+      return sqlEngine.parse(query, (DatabaseInternal) database);
     } catch (final Exception e) {
       if (DEBUG)
         LogManager.instance().log(this, Level.WARNING, "PSQL: cannot parse query '%s': %s", query, e.getMessage());
@@ -1056,16 +1161,223 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Schema-discovery fallback for SELECT queries that returned 0 rows. RowDescription must still
-   * carry column metadata so JDBC clients (Spark/PySpark probe schema with WHERE 1=0) can build
-   * a typed result set. Returns null when the query is not a SELECT or no schema match is found,
-   * letting the caller fall through to the empty-RowDescription default.
+   * Schema-discovery fallback for queries that returned 0 rows. RowDescription must still carry column metadata
+   * so JDBC clients (Spark/PySpark probe schema with WHERE 1=0) can build a typed result set. Returns null when
+   * no schema match is found, letting the caller fall through to the empty-RowDescription default.
    */
-  private Map<String, PostgresType> resolveEmptyResultSchemaColumns(final String query) {
-    if (query == null || !query.toUpperCase(Locale.ENGLISH).trim().startsWith("SELECT"))
+  private Map<String, PostgresType> resolveEmptyResultSchemaColumns(final String query, final String language,
+      final Object[] parameters, final Statement alreadyParsed) {
+    if (query == null)
       return null;
-    final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query);
+
+    // Only the SQL engine is described here: the parser below, and every shape it recognizes, is SQL's
+    if (language != null && !"sql".equalsIgnoreCase(language))
+      return null;
+
+    // the extended protocol parsed this very text when it prepared the portal: reuse it instead of parsing twice
+    final Statement parsed = alreadyParsed != null ? alreadyParsed : parseStatement(query);
+
+    // A schema probe returns no rows by construction, so replaying it without its constant-false filter is the
+    // only way to learn the columns of a row source that is not a schema type - a graph function, a TRAVERSE, a
+    // constant table (issue #6156). It is also the most faithful answer for the shapes the schema can describe,
+    // because the columns and their types come from the very rows the un-probed query would return.
+    final Map<String, PostgresType> sampled = sampleProbeColumns(parsed, parameters);
+    if (sampled != null && !sampled.isEmpty())
+      return sampled;
+
+    if (!query.toUpperCase(Locale.ENGLISH).trim().startsWith("SELECT") && !(parsed instanceof MatchStatement))
+      return null;
+
+    final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query, parsed);
     return schemaColumns != null && !schemaColumns.isEmpty() ? schemaColumns : null;
+  }
+
+  /**
+   * Runs the probe again with its constant-false filters removed and reports the columns of the first row it
+   * returns. This is what makes a probe describable no matter how its rows are computed: whatever the un-probed
+   * query would send on the wire is exactly what gets announced. Returns null when the statement carries no
+   * constant-false filter - then the empty result is the query's own answer and there is nothing to replay - or
+   * when the replay itself finds no row.
+   * <p>
+   * Note that the replay evaluates the query's projection for real, once, on one row. The original probe never
+   * did: its filter discards every row before the projection runs. So a projected function that has a side
+   * effect - a sequence's {@code next()}, a user-defined function that writes - is invoked once per probe that
+   * takes this path. The alternative is to describe a computed projection by guessing, which is what left this
+   * whole family of queries undescribable in the first place; the statically-resolvable shapes are answered
+   * without a replay by {@link #getColumnsFromQuerySchema} whenever they return rows of their own.
+   */
+  private Map<String, PostgresType> sampleProbeColumns(final Statement parsed, final Object[] parameters) {
+    if (!(parsed instanceof SelectStatement select))
+      return null;
+
+    try {
+      // the database has to be on the context: both the constant-folding below and the replay itself need it
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setConfiguration(server.getConfiguration());
+      context.setDatabase(database);
+
+      // Read the parsed statement before copying it: a query that legitimately returns no rows is the common
+      // case on this path and must not pay for an AST deep copy it turns out it cannot use.
+      if (!hasAlwaysFalseFilter(select, context))
+        return null;
+
+      final SelectStatement sample = select.copy();
+      stripProbe(sample, context);
+
+      final ResultSet resultSet = sample.execute(database, parameters != null ? parameters : NO_PARAMETERS, context);
+      final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1, false);
+      return sampleRows.isEmpty() ? null : getColumns(sampleRows);
+    } catch (final Exception e) {
+      if (DEBUG)
+        LogManager.instance().log(this, Level.WARNING, "PSQL: cannot replay the schema probe '%s': %s", parsed, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Whether the statement, or a subquery it selects from, filters on a condition that is false for every row.
+   * That is what marks the statement as a schema probe and makes it worth replaying.
+   */
+  private boolean hasAlwaysFalseFilter(final SelectStatement select, final CommandContext context) {
+    if (isAlwaysFalseFilter(select.getWhereClause(), context))
+      return true;
+
+    final SelectStatement subQuery = selectedSubQuery(select);
+    return subQuery != null && hasAlwaysFalseFilter(subQuery, context);
+  }
+
+  /**
+   * Turns a copy of the probe into the query it is a probe of, in place: the constant-false filters go, and so
+   * do the clauses that only choose which rows come back. Dropping ORDER BY, SKIP and LIMIT costs nothing - the
+   * columns of a row do not depend on where it sits in the result - and it keeps the replay from materializing
+   * and sorting a whole result set just to hand over its first row.
+   * <p>
+   * A whole WHERE clause goes, not just the constant-false term inside it, so {@code WHERE 1=0 AND name = :n}
+   * samples the unfiltered target. That rests on the caller reading nothing but column names and types off the
+   * sampled row ({@link #getColumns}): the row itself never reaches the wire. Should RowDescription ever start
+   * carrying anything derived from sample <i>values</i>, the predicate dropped here would begin to matter and
+   * only the constant-false term could be removed.
+   */
+  private void stripProbe(final SelectStatement select, final CommandContext context) {
+    if (isAlwaysFalseFilter(select.getWhereClause(), context))
+      select.setWhereClause(null);
+
+    select.orderBy = null;
+    select.skip = null;
+    select.limit = null;
+
+    final SelectStatement subQuery = selectedSubQuery(select);
+    if (subQuery != null)
+      stripProbe(subQuery, context);
+  }
+
+  private boolean isAlwaysFalseFilter(final WhereClause where, final CommandContext context) {
+    return where != null && isAlwaysFalse(where.baseExpression, context);
+  }
+
+  private SelectStatement selectedSubQuery(final SelectStatement select) {
+    final FromClause target = select.getTarget();
+    final FromItem item = target != null ? target.getItem() : null;
+    return item != null && item.getStatement() instanceof SelectStatement subQuery ? subQuery : null;
+  }
+
+  /**
+   * Tells whether a boolean expression is false for every row without looking at any of them, which is how a
+   * client marks a query as a schema probe ({@code WHERE 1=0}). The expression is read in the disjunctive normal
+   * form the planner itself uses, so the answer holds through parentheses, ANDs and ORs alike: the whole filter
+   * is false only when every alternative carries a term that is. Only comparisons between operands that need no
+   * record to be computed are evaluated, so nothing here can touch the database or throw on a missing row.
+   */
+  private boolean isAlwaysFalse(final BooleanExpression expression, final CommandContext context) {
+    if (expression == null)
+      return false;
+
+    final List<AndBlock> alternatives = expression.flatten();
+    if (alternatives == null || alternatives.isEmpty())
+      return false;
+
+    for (final AndBlock alternative : alternatives) {
+      final List<BooleanExpression> terms = alternative.getSubBlocks();
+      if (terms == null || terms.isEmpty())
+        return false;
+
+      boolean falseTerm = false;
+      for (final BooleanExpression term : terms) {
+        if (term instanceof BinaryCondition condition && isConstantFalseComparison(condition, context)) {
+          falseTerm = true;
+          break;
+        }
+      }
+
+      if (!falseTerm)
+        return false;
+    }
+
+    return true;
+  }
+
+  private boolean isConstantFalseComparison(final BinaryCondition condition, final CommandContext context) {
+    if (!isLiteral(condition.left) || !isLiteral(condition.right))
+      return false;
+
+    try {
+      return Boolean.FALSE.equals(condition.evaluate((Result) null, context));
+    } catch (final Exception e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether the expression is built out of literals alone - a number, a string, a boolean, null, or arithmetic
+   * over them.
+   * <p>
+   * This is deliberately narrower than {@link Expression#isEarlyCalculated}, which only asks whether an
+   * expression can be computed without a record. That admits any function call whose arguments need no record,
+   * and nothing on {@code SQLFunction} distinguishes a pure function from one with a side effect. The question
+   * being answered here - "is this filter a schema probe?" - is asked of every query that returns no rows, the
+   * vast majority of which are not probes at all, so it must never reach a function: a query filtering on
+   * {@code someStatefulFunction() = 42} would otherwise have that function invoked once more just to be
+   * classified.
+   */
+  private boolean isLiteral(final Expression expression) {
+    if (expression == null)
+      return false;
+
+    if (expression.isNull || expression.booleanValue != null)
+      return true;
+
+    // a RID, a JSON object, a nested condition or an array concatenation is never a literal comparison operand
+    if (expression.rid != null || expression.json != null || expression.whereCondition != null
+        || expression.arrayConcatExpression != null)
+      return false;
+
+    return isLiteral(expression.mathExpression);
+  }
+
+  private boolean isLiteral(final MathExpression expression) {
+    if (expression == null)
+      return false;
+
+    if (expression instanceof BaseExpression base) {
+      // a modifier is a method call or a field/index access applied to the value: no longer a bare literal
+      if (base.modifier != null)
+        return false;
+      if (base.number != null || base.string != null || base.isNull)
+        return true;
+      return base.expression != null && isLiteral(base.expression);
+    }
+
+    // a compound arithmetic expression is a literal one only when every one of its operands is
+    final List<MathExpression> operands = expression.childExpressions;
+    if (operands == null || operands.isEmpty())
+      return false;
+
+    for (final MathExpression operand : operands) {
+      if (!isLiteral(operand))
+        return false;
+    }
+
+    return true;
   }
 
   private void writeRowDescription(final Map<String, PostgresType> columns) {
