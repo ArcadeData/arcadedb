@@ -101,6 +101,11 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
+    public boolean isAlwaysFalse(final CommandContext context) {
+      return true;
+    }
+
+    @Override
     public List<String> getMatchPatternInvolvedAliases() {
       return null;
     }
@@ -275,6 +280,22 @@ public abstract class BooleanExpression extends SimpleNode {
    * @return
    */
   public boolean isAlwaysTrue() {
+    return false;
+  }
+
+  /**
+   * Whether the expression is false for every record, decidable from the statement alone. This is what marks a filter
+   * as a schema probe ({@code WHERE 1=0}, the shape Spark and several BI tools send to discover a query's columns) and
+   * lets the planner answer it without a scan.
+   * <p>
+   * Only comparisons between {@link Expression#isLiteral() literal} operands are folded, so nothing here reads a
+   * record, binds a parameter or calls a function: a plan built on this answer stays correct for every execution that
+   * reuses it. Like {@link #isAlwaysTrue()} this is an optimization, so it is allowed to return false negatives - a
+   * subclass that cannot decide cheaply, or at all, inherits {@code false}.
+   *
+   * @param context the context used to fold the literal comparison, never used to read data
+   */
+  public boolean isAlwaysFalse(final CommandContext context) {
     return false;
   }
 

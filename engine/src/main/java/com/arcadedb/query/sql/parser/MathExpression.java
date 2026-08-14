@@ -1096,6 +1096,22 @@ public class MathExpression extends SimpleNode {
     return true;
   }
 
+  /**
+   * A compound arithmetic expression is a literal one only when every one of its operands is. Subclasses that carry
+   * their operands somewhere else than {@link #childExpressions} (an array literal, a CASE) inherit the {@code false}
+   * an empty operand list gives: see {@link Expression#isLiteral()} for why this answer stays on the safe side.
+   */
+  public boolean isLiteral() {
+    if (childExpressions.isEmpty())
+      return false;
+
+    for (final MathExpression operand : childExpressions) {
+      if (!operand.isLiteral())
+        return false;
+    }
+    return true;
+  }
+
   public boolean isAggregate(CommandContext context) {
     for (final MathExpression expr : this.childExpressions) {
       if (expr.isAggregate(context))

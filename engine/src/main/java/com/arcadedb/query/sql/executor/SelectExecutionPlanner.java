@@ -242,9 +242,13 @@ public class SelectExecutionPlanner {
     if (info.expand && info.distinct)
       throw new CommandExecutionException("Cannot execute a statement with DISTINCT expand(), please use a subquery");
 
+    // A statement whose own text proves that it cannot return a row is answered without touching the storage. This is
+    // read off the clauses as the statement wrote them, before optimizeQuery() rearranges them into index searches.
+    final String emptyReason = emptyByConstructionReason(context);
+
     optimizeQuery(info, context);
 
-    if (handleHardwiredOptimizations(selectExecutionPlan, context))
+    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context))
       return selectExecutionPlan;
 
     handleGlobalLet(selectExecutionPlan, info, context);
@@ -266,26 +270,77 @@ public class SelectExecutionPlanner {
 
     handleFetchFromTarget(selectExecutionPlan, info, context);
 
-    if (info.globalLetPresent)
-      // do the raw fetch remotely, then do the rest on the coordinator
+    if (emptyReason != null)
+      foldEmptyByConstruction(selectExecutionPlan, info, context, emptyReason);
+    else {
+      if (info.globalLetPresent)
+        // do the raw fetch remotely, then do the rest on the coordinator
+        buildExecutionPlan(selectExecutionPlan, info);
+
+      handleLet(selectExecutionPlan, info, context);
+
+      handleWhere(selectExecutionPlan, info, context);
+
       buildExecutionPlan(selectExecutionPlan, info);
 
-    handleLet(selectExecutionPlan, info, context);
+      handleProjectionsBlock(selectExecutionPlan, info, context);
 
-    handleWhere(selectExecutionPlan, info, context);
-
-    buildExecutionPlan(selectExecutionPlan, info);
-
-    handleProjectionsBlock(selectExecutionPlan, info, context);
-
-    if (info.timeout != null)
-      selectExecutionPlan.chain(new AccumulatingTimeoutStep(info.timeout, context));
+      if (info.timeout != null)
+        selectExecutionPlan.chain(new AccumulatingTimeoutStep(info.timeout, context));
+    }
 
     if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached()
         && db.getExecutionPlanCache().getLastInvalidation() < planningStart)
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan);
 
     return selectExecutionPlan;
+  }
+
+  /**
+   * Tells whether the statement cannot return a row no matter what the database contains, and why - the reason is
+   * what the plan prints in place of the fetch it does not do. {@code null} means "not decidable from the statement",
+   * which is the answer for everything but the two shapes below.
+   * <p>
+   * Both are how a client asks for a query's columns without asking for its rows: Spark and several BI tools over the
+   * Postgres wire send one such probe per pushed-down query, against the real target (issue #6174).
+   */
+  private String emptyByConstructionReason(final CommandContext context) {
+    if (info.whereClause != null && info.whereClause.isAlwaysFalse(context))
+      return "the filter is false for every record";
+
+    if (info.limit != null && info.limit.isAlwaysEmpty())
+      return "LIMIT 0";
+
+    return null;
+  }
+
+  /**
+   * Replaces the target fetch with an {@link EmptySourceStep} and leaves the rest of the plan alone. The fetch has
+   * already been planned when this runs, and is discarded rather than skipped, so a statement that names a type that
+   * does not exist is still reported as such - only the scan goes.
+   * <p>
+   * Everything downstream of the fetch is kept and receives no row, which is exactly what it receives today from the
+   * filter step this fold removes: {@code SELECT count(*) FROM T WHERE 1=0} still counts to zero and still returns
+   * its one row, and the same clause with a GROUP BY still returns none. What the fold does skip is the per-record
+   * {@code LET} and the per-record work the projections would do, neither of which can be observed by a statement
+   * that returns no row. A {@code LET} evaluated once per statement is chained ahead of this step and still runs.
+   */
+  private void foldEmptyByConstruction(final SelectExecutionPlan plan, final QueryPlanningInfo info,
+      final CommandContext context, final String reason) {
+    // the fetch steps are dropped, not chained: close them so that a step which took something in its constructor
+    // (a sub-plan, an index reference) does not outlive the plan that will never run it
+    if (info.fetchExecutionPlan != null && !info.fetchExecutionPlan.getSteps().isEmpty())
+      info.fetchExecutionPlan.close();
+
+    info.fetchExecutionPlan = null;
+    info.planCreated = true;
+
+    plan.chain(new EmptySourceStep(context, reason));
+
+    handleProjectionsBlock(plan, info, context);
+
+    if (info.timeout != null)
+      plan.chain(new AccumulatingTimeoutStep(info.timeout, context));
   }
 
   public static void handleProjectionsBlock(final SelectExecutionPlan result, final QueryPlanningInfo info,

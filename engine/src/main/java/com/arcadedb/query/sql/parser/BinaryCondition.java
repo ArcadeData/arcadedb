@@ -49,6 +49,24 @@ public class BinaryCondition extends BooleanExpression {
     return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
   }
 
+  /**
+   * Folds the comparison at plan time, but only when both of its operands are written in the statement as literals
+   * ({@code 1 = 0}, {@code 'a' = 'b'}, {@code 1 = 1 + 1}). See {@link Expression#isLiteral()} for why a bound
+   * parameter and a function call are excluded even though both could be computed without a record.
+   */
+  @Override
+  public boolean isAlwaysFalse(final CommandContext context) {
+    if (left == null || right == null || !left.isLiteral() || !right.isLiteral())
+      return false;
+
+    try {
+      return Boolean.FALSE.equals(evaluate((Result) null, context));
+    } catch (final Exception e) {
+      // a comparison the operator cannot make (eg. between incompatible types) is left to the runtime to report
+      return false;
+    }
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" ");
