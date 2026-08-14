@@ -146,6 +146,34 @@ class PartitionPruningPlannerTest extends TestHelper {
   }
 
   @Test
+  void computedPredicateDoesNotNarrowIndexFilterBuckets() {
+    // Issue #6179: only a literal binds a partition coordinate. A value that is merely "early
+    // calculated" - here a method call over a literal, but a function call over literals reads the
+    // same - must not be evaluated while planning: that would invoke it once more than the query
+    // asked for, and a non-deterministic one would fix a bucket its per-row value no longer agrees
+    // with. Before, the path was safe only because a function in the WHERE happens to make the plan
+    // non-cacheable, a coupling in an unrelated file. The rows must still come back, unpruned.
+    createPartitionedType();
+    populate();
+
+    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = 'ac'.append('me')");
+    final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
+    final GetValueFromIndexEntryStep extract = findIndexExtract(plan);
+    assertThat(extract).isNotNull();
+    assertThat(extract.getFilterBucketIds())
+        .as("a computed value must NOT prune; every bucket must still be visible")
+        .hasSize(BUCKETS);
+
+    int count = 0;
+    while (rs.hasNext()) {
+      assertThat(rs.next().<String>getProperty("tenant_id")).isEqualTo("acme");
+      count++;
+    }
+    rs.close();
+    assertThat(count).isEqualTo(1);
+  }
+
+  @Test
   void flagSuppressesIndexFilterBucketNarrowing() {
     // With the flag set even literal queries must skip pruning; every bucket id remains visible
     // to the index extract step.

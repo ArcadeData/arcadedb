@@ -103,6 +103,17 @@ public class PCollection extends SimpleNode {
     return true;
   }
 
+  /**
+   * @see Expression#isLiteral(boolean)
+   */
+  public boolean isLiteral(final boolean allowInputParameters) {
+    for (final Expression exp : expressions) {
+      if (!exp.isLiteral(allowInputParameters))
+        return false;
+    }
+    return true;
+  }
+
   public PCollection copy() {
     final PCollection result = new PCollection();
     result.expressions = expressions == null ? null : expressions.stream().map(x -> x.copy()).collect(Collectors.toList());

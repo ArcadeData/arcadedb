@@ -100,6 +100,20 @@ public class ArrayLiteralExpression extends MathExpression {
     return true;
   }
 
+  /**
+   * {@code items} sit outside {@code childExpressions}; the inherited walker would miss them.
+   *
+   * @see Expression#isLiteral(boolean)
+   */
+  @Override
+  public boolean isLiteral(final boolean allowInputParameters) {
+    for (final Expression item : items) {
+      if (!item.isLiteral(allowInputParameters))
+        return false;
+    }
+    return true;
+  }
+
   @Override
   public boolean isAggregate(final CommandContext context) {
     for (final Expression item : items) {

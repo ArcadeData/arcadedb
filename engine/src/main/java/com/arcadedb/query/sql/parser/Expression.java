@@ -112,29 +112,24 @@ public class Expression extends SimpleNode {
   }
 
   /**
-   * Whether the expression is built out of literals alone - a number, a string, a boolean, null, or arithmetic over
-   * them - so that its value is written in the statement itself and cannot change between two executions of the same
-   * plan.
+   * Whether the expression can be computed <b>without a record</b>: no property reference, no traversal, nothing
+   * that only a row can answer. It is what lets an equality be turned into an index key, or a per-record LET into
+   * a global one.
    * <p>
-   * This is deliberately narrower than {@link #isEarlyCalculated(CommandContext)}, which only asks whether an
-   * expression can be computed without a record. That admits any function call whose arguments need no record, and
-   * nothing on {@code SQLFunction} distinguishes a pure function from one with a side effect; it also admits a bound
-   * parameter, whose value belongs to one execution and must never be baked into a cached plan. Plan-time constant
-   * folding asks this question of statements that are overwhelmingly not constant at all, so it must never reach a
-   * function: {@code WHERE someStatefulFunction() = 42} would otherwise have that function invoked just to be
-   * classified.
+   * It promises nothing else. In particular it is <b>not</b> a purity, determinism or constant-ness check: any
+   * function or method whose arguments need no record qualifies, so {@code uuid()}, {@code sysdate()} and any
+   * user-defined function over literals all answer true, and an input parameter does too. There is no marker on
+   * {@link com.arcadedb.query.sql.executor.SQLFunction} that would tell a pure function from one with a side
+   * effect ({@code com.arcadedb.function.StatelessFunction} in the sibling registry means "needs no record" as
+   * well, not "pure").
+   * <p>
+   * So a caller that only wants to <i>classify</i> an expression can use this; a caller that intends to
+   * <b>evaluate</b> it at plan time - and thereby invoke whatever it contains, once more than the query itself
+   * asks for - wants {@link #isLiteral()} instead. See issue #6179.
+   *
+   * @see #isLiteral()
+   * @see #isLiteral(boolean)
    */
-  public boolean isLiteral() {
-    if (isNull || booleanValue != null)
-      return true;
-
-    // a RID, a JSON object, a nested condition or an array concatenation is never a bare literal
-    if (rid != null || json != null || whereCondition != null || arrayConcatExpression != null)
-      return false;
-
-    return mathExpression != null && mathExpression.isLiteral();
-  }
-
   public boolean isEarlyCalculated(final CommandContext context) {
     if (isNull)
       return true;
@@ -155,6 +150,51 @@ public class Expression extends SimpleNode {
     else if (value instanceof MathExpression expression)
       return expression.isEarlyCalculated(context);
 
+    return false;
+  }
+
+  /**
+   * Whether the expression is built out of literals alone - a number, a string, a boolean, {@code null}, a RID
+   * literal, a collection of them, or arithmetic over them - so that its value is written in the statement itself
+   * and cannot change between two executions of the same plan.
+   * <p>
+   * This is deliberately narrower than {@link #isEarlyCalculated(CommandContext)}, which only asks whether an
+   * expression can be computed without a record. That admits any function call whose arguments need no record, and
+   * nothing on {@code SQLFunction} distinguishes a pure function from one with a side effect; it also admits a bound
+   * parameter, whose value belongs to one execution and must never be baked into a cached plan. Constant folding
+   * asks this question of statements that are overwhelmingly not constant at all, so it must never reach a function:
+   * {@code WHERE someStatefulFunction() = 42} would otherwise have that function invoked just to be classified.
+   * <p>
+   * It is therefore the predicate to use whenever an expression is <b>evaluated</b> to decide the shape of a plan
+   * (issues #6174 and #6179), while {@code isEarlyCalculated} is for classifying one.
+   *
+   * @see #isLiteral(boolean)
+   */
+  public boolean isLiteral() {
+    return isLiteral(false);
+  }
+
+  /**
+   * @param allowInputParameters when true an input parameter counts as a literal too: it is bound before the plan
+   *                             is built and reading it invokes nothing. Only for callers whose result does not
+   *                             outlive the execution - a value baked into a <b>cached</b> plan must not depend on
+   *                             this execution's bindings, so constant folding uses {@link #isLiteral()}.
+   *
+   * @see #isLiteral()
+   */
+  public boolean isLiteral(final boolean allowInputParameters) {
+    if (isNull || booleanValue != null)
+      return true;
+    else if (rid != null)
+      // written in the statement as #<bucket>:<position>, so it is as fixed as a number is
+      return rid.legacy || (rid.expression != null && rid.expression.isLiteral(allowInputParameters));
+    else if (mathExpression != null)
+      return mathExpression.isLiteral(allowInputParameters);
+
+    // A JSON object, a nested condition and an array concatenation are never bare literals. Neither is the
+    // inherited {@code value} field, which isEarlyCalculated() above still reads for a Number or a String: that
+    // is where the pre-ANTLR executor substituted a parameter by hand, and nothing in the tree assigns it any
+    // more. The asymmetry between the two predicates is unreachable, not a gap.
     return false;
   }
 

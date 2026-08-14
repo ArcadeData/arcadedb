@@ -191,6 +191,15 @@ public class LevelZeroIdentifier extends SimpleNode {
     return collection != null && collection.isEarlyCalculated(context);
   }
 
+  /**
+   * A function call is never a literal, whatever its arguments are.
+   *
+   * @see Expression#isLiteral(boolean)
+   */
+  public boolean isLiteral(final boolean allowInputParameters) {
+    return collection != null && collection.isLiteral(allowInputParameters);
+  }
+
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
       final LevelZeroIdentifier result = new LevelZeroIdentifier();
