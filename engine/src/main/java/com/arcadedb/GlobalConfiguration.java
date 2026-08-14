@@ -1299,7 +1299,10 @@ public enum GlobalConfiguration {
       it is rejected with a state-machine error that makes the leader step down; the write then fails with \
       ReplicatedEntryTooLargeException naming this setting. The size compared against it is the COMPRESSED \
       WAL of the transaction, so text/JSON payloads shrink far below their raw size while incompressible \
-      ones (binary blobs, base64, encrypted fields, float vectors) map roughly 1:1. Raise it when single \
+      ones (binary blobs, base64, encrypted fields, float vectors) map roughly 1:1. Compression does NOT \
+      make the transaction unbounded, though (issue #5933): every node has to materialize the WAL in full to \
+      apply it, so a second, fixed ceiling of 64MB applies to the UNCOMPRESSED WAL of one entry regardless of \
+      this setting, and a transaction above it is rejected with the same exception. Raise it when single \
       transactions or records are bigger than the default, and raise arcadedb.ha.writeBufferSize with it \
       (it must stay >= this value + 8 bytes). Cost of raising it: a directly-allocated write buffer of \
       writeBufferSize per server, plus up to this many bytes of heap per follower appender during catch-up. \

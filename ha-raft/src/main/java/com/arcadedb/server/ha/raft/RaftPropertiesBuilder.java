@@ -147,6 +147,20 @@ class RaftPropertiesBuilder {
               + minWriteBuffer + " bytes). Increase writeBufferSize or decrease appendBufferSize");
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, writeBuffer);
 
+    // #5933: the codec's decode ceiling is a wire-format constant, identical on every node, so the configured
+    // entry cap must never sit above it. An entry between the two would pass the submit gate, reach a quorum
+    // and COMMIT - and only then fail to decode on every node applying it. A committed entry cannot be taken
+    // back, so the cluster halts on that log index and replays into the same failure on every restart. Fail at
+    // startup, where the operator can act on it.
+    final long maxEntrySize = maxReplicatedEntrySize(configuration);
+    if (maxEntrySize > RaftLogEntryCodec.MAX_DECODED_ENTRY_BYTES)
+      throw new ConfigurationException(
+          "The maximum replicated Raft entry size (" + maxEntrySize + " bytes, the smaller of "
+              + "arcadedb.ha.appendBufferSize and arcadedb.ha.grpcMessageSizeMax) is above the "
+              + RaftLogEntryCodec.MAX_DECODED_ENTRY_BYTES + " bytes a Raft log entry can be decoded from. "
+              + "Lower arcadedb.ha.appendBufferSize (and arcadedb.ha.grpcMessageSizeMax with it, if that is the "
+              + "smaller of the two) to at most that value");
+
     // #4743: the gRPC frame cap is NOT the effective per-entry ceiling - the appender byte limit is
     // enforced per-entry too, and an entry above it makes the leader step down (see
     // maxReplicatedEntrySize). Surface the mismatch once at startup: without it operators tune
