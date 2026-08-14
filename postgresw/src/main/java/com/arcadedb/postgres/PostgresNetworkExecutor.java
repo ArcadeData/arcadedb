@@ -1591,9 +1591,16 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void setConfiguration(final String query) {
     final String q = query.substring("SET ".length());
+
+    // Try to split by either '=' or ' TO ' (case-insensitive)
     String[] parts = q.split("=");
     if (parts.length < 2)
-      parts = q.split(" TO ");
+      parts = q.split("(?i)\\s+TO\\s+");
+
+    if (parts.length < 2) {
+      LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
+      return;
+    }
 
     parts[0] = parts[0].trim();
     parts[1] = parts[1].trim();
