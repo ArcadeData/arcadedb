@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -107,11 +106,17 @@ public class SQLTriggerExecutor implements TriggerExecutor {
    * single-property result before, and now that it might (via {@code RETURN}), that shape is simply not idempotent
    * and is drained for its effects like any other DML body. The check runs only once a candidate row is already in
    * hand, so it costs nothing on the far more common multi-row, multi-column or non-projection results.
+   * <p>
+   * {@code $score}/{@code $similarity} are excluded from the property count: {@code ResultInternal.getPropertyNames()}
+   * adds them automatically whenever a full-text or vector search set a score, so a scored validation body like
+   * {@code SELECT ok FROM ... WHERE MATCH(...) ...} would otherwise report two property names instead of one and
+   * silently skip a veto its single real column asked for. They are metadata about how the row was found, not a
+   * column the body projected, so they take no part in deciding whether the row is a single-value answer.
    */
   private boolean consume(final Database database, final ResultSet result) {
     try (result) {
       Result first = null;
-      long   count = 0;
+      long count = 0;
       while (result.hasNext()) {
         final Result row = result.next();
         if (count == 0)
@@ -120,13 +125,29 @@ public class SQLTriggerExecutor implements TriggerExecutor {
       }
 
       if (count == 1 && first.isProjection()) {
-        final Set<String> properties = first.getPropertyNames();
-        if (properties.size() == 1 && Boolean.FALSE.equals(first.getProperty(properties.iterator().next()))
+        final String property = soleRealProperty(first);
+        if (property != null && Boolean.FALSE.equals(first.getProperty(property))
             && database.getQueryEngine("sql").analyze(sql).isIdempotent())
           return false;
       }
       return true;
     }
+  }
+
+  /**
+   * The single property name of {@code result}, ignoring the {@code $score}/{@code $similarity} scoring metadata -
+   * see {@link #consume} - or {@code null} if zero or more than one real property remains.
+   */
+  private static String soleRealProperty(final Result result) {
+    String sole = null;
+    for (final String property : result.getPropertyNames()) {
+      if ("$score".equals(property) || "$similarity".equals(property))
+        continue;
+      if (sole != null)
+        return null;
+      sole = property;
+    }
+    return sole;
   }
 
   @Override
