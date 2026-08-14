@@ -1697,11 +1697,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftPeerId leaderId = getLeaderId();
     if (leaderId == null)
       return null;
-    final String writer = resolveRoutingAddress(protocol, leaderId);
+    // Read once and passed down: the "was this declared or derived?" flag below and the address the resolver
+    // returns must come from the same map, or a future second source could make them disagree about a peer.
+    final Map<RaftPeerId, String> declared = declaredRoutingAddresses(protocol);
+
+    final String writer = resolveRoutingAddress(protocol, declared, leaderId);
     if (writer == null)
       return null;
 
-    final Map<RaftPeerId, String> declared = declaredRoutingAddresses(protocol);
     final Collection<RaftPeer> peers = raftGroup.getPeers();
 
     // Index 0 is always the writer, so one pair of arrays carries the whole view and the ambiguity check can
@@ -1716,7 +1719,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     for (final RaftPeer peer : peers) {
       if (peer.getId().equals(leaderId))
         continue;
-      final String reader = resolveRoutingAddress(protocol, peer.getId());
+      final String reader = resolveRoutingAddress(protocol, declared, peer.getId());
       if (reader == null)
         continue;
       addresses[resolved] = reader;
@@ -1831,11 +1834,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * is correct only for homogeneous deployments where every node listens on the same port (e.g. a Kubernetes
    * StatefulSet); a one-time WARNING per protocol is logged so operators declare explicit ports for
    * heterogeneous clusters. Returns {@code null} when the peer is unknown or the local port is unavailable.
+   *
+   * @param declared the declared-address map for this protocol, passed in so the caller and this method cannot
+   *                 disagree about which peers were declared
    */
-  private String resolveRoutingAddress(final HAServerPlugin.ROUTING_PROTOCOL protocol, final RaftPeerId peerId) {
+  private String resolveRoutingAddress(final HAServerPlugin.ROUTING_PROTOCOL protocol,
+      final Map<RaftPeerId, String> declared, final RaftPeerId peerId) {
     if (peerId == null)
       return null;
-    final String configured = declaredRoutingAddresses(protocol).get(peerId);
+    final String configured = declared.get(peerId);
     if (configured != null)
       return configured;
     final int localPort = localRoutingPort(protocol);

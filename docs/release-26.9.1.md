@@ -1586,14 +1586,20 @@ since the collision only proves the guess wrong, so declaring the ports of the n
 guard lives in the resolver both protocols share, and a WARNING naming the field to declare is logged once per
 protocol.
 
-**Every leader-only refusal now names the leader, not just `graphBatchLoad`.** `graphBatchLoad` was the only RPC
-that built the redirect trailers, by hand; a `ServerIsNotTheLeaderException` raised anywhere else fell through
-`GrpcErrorMapper` as a plain `NeedRetryException` - `ABORTED`, no address - so a caller could not tell "the leader
-is unknown, wait for the election" from "the leader is known and nobody told you". The mapper now attaches the
-leader's gRPC and HTTP addresses for that exception wherever it arises, and answers `FAILED_PRECONDITION` rather
-than `ABORTED`: retrying as it stands means asking the same follower again, which is the same reading the HTTP
-protocol takes when it answers 400 rather than 503. `ArcadeDbGrpcService.notTheLeader` is now just the wording
-around that shared mapping.
+**A leader-only refusal names the leader wherever it is reported, not just from `graphBatchLoad`.**
+`graphBatchLoad` was the only RPC that built the redirect trailers, by hand; a `ServerIsNotTheLeaderException`
+raised anywhere else fell through `GrpcErrorMapper` as a plain `NeedRetryException` - `ABORTED`, no address - so a
+caller could not tell "the leader is unknown, wait for the election" from "the leader is known and nobody told
+you". The mapper now attaches the leader's gRPC and HTTP addresses for that exception, and answers
+`FAILED_PRECONDITION` rather than `ABORTED`: retrying as it stands means asking the same follower again, which is
+the same reading the HTTP protocol takes when it answers 400 rather than 503. `ArcadeDbGrpcService.notTheLeader`
+is now just the wording around that shared mapping.
+
+That covers the RPCs that report through the mapper - `executeCommand`, `createRecord`, `beginTransaction`,
+`commitTransaction`, `graphBatchLoad`. The handlers that assemble a status themselves (`updateRecord`,
+`lookupByRid`, the streaming and bulk-insert paths) neither check leadership nor mutate schema, so none of them
+can raise this exception today; one that grows either has to route its errors through the mapper to stay
+redirectable, which the mapper's javadoc now says.
 
 Note that a statement sent to a follower does not normally produce a refusal at all: `RaftReplicatedDatabase`
 forwards a DDL or non-idempotent statement to the leader instead of rejecting it, and `graphBatchLoad` refuses

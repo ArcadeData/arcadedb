@@ -96,9 +96,15 @@ public final class GrpcErrorMapper {
    * <p>
    * When the cause is a {@link ServerIsNotTheLeaderException} - whether raised by an explicit leadership check
    * or by the replicated database refusing a schema change on a follower - the answer additionally names where
-   * the caller should go, on the {@link LeaderRedirectProtocol} trailers (issue #6183). Every leader-only
-   * refusal on the service is redirectable that way, instead of only the one RPC that happened to build the
-   * trailers by hand.
+   * the caller should go, on the {@link LeaderRedirectProtocol} trailers (issue #6183), instead of only the one
+   * RPC that happened to build the trailers by hand.
+   * <p>
+   * That covers the RPCs that report through this mapper: {@code executeCommand}, {@code createRecord},
+   * {@code beginTransaction}, {@code commitTransaction} and {@code graphBatchLoad}. Handlers that assemble a
+   * {@link Status} themselves ({@code updateRecord}, {@code lookupByRid}, the streaming and bulk-insert paths)
+   * do not pass here and would carry no redirect - none of them can raise this exception today, since they
+   * neither check leadership nor mutate schema, but a handler that grows either has to route its errors through
+   * this mapper to stay redirectable.
    *
    * @param t             the throwable to map (may be an {@link ExecutionException} wrapping the cause)
    * @param contextPrefix optional short prefix for the client-facing description (e.g. "Commit failed")
