@@ -22,7 +22,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 
 import java.io.IOException;
