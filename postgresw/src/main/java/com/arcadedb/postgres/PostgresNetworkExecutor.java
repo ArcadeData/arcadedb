@@ -1251,6 +1251,12 @@ public class PostgresNetworkExecutor extends Thread {
    * do the clauses that only choose which rows come back. Dropping ORDER BY, SKIP and LIMIT costs nothing - the
    * columns of a row do not depend on where it sits in the result - and it keeps the replay from materializing
    * and sorting a whole result set just to hand over its first row.
+   * <p>
+   * A whole WHERE clause goes, not just the constant-false term inside it, so {@code WHERE 1=0 AND name = :n}
+   * samples the unfiltered target. That rests on the caller reading nothing but column names and types off the
+   * sampled row ({@link #getColumns}): the row itself never reaches the wire. Should RowDescription ever start
+   * carrying anything derived from sample <i>values</i>, the predicate dropped here would begin to matter and
+   * only the constant-false term could be removed.
    */
   private void stripProbe(final SelectStatement select, final CommandContext context) {
     if (isAlwaysFalseFilter(select.getWhereClause(), context))
