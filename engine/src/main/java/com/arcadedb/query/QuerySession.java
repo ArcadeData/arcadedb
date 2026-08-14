@@ -79,8 +79,10 @@ public interface QuerySession {
     if (sessionParams == null || sessionParams.isEmpty())
       return requestParams;
     // Sized for both maps up front so putAll never resizes the table (request params win on a name clash).
+    // HashMap.newHashMap(int) is JDK 19+; JDK 17 has no such factory, so size the constructor directly against
+    // the default 0.75 load factor instead.
     final int size = sessionParams.size() + (requestParams != null ? requestParams.size() : 0);
-    final Map<String, Object> merged = HashMap.newHashMap(size);
+    final Map<String, Object> merged = new HashMap<>(size * 4 / 3 + 1);
     merged.putAll(sessionParams);
     if (requestParams != null)
       merged.putAll(requestParams);

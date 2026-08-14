@@ -734,7 +734,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * order is preserved so a replacement document reaches the record in wire order.
    */
   private static Map<String, Object> documentToMap(final Document doc) {
-    final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
+    // LinkedHashMap.newLinkedHashMap(int) is JDK 19+; JDK 17 has no such factory, so size the constructor
+    // directly against the default 0.75 load factor instead.
+    final Map<String, Object> map = new LinkedHashMap<>(doc.size() * 4 / 3 + 1);
     for (final Map.Entry<String, Object> entry : doc.entrySet())
       map.put(entry.getKey(), toMapValue(entry.getValue()));
     return map;
