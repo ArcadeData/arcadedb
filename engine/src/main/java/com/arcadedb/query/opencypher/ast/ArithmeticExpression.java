@@ -200,7 +200,14 @@ public class ArithmeticExpression implements Expression {
         case ADD -> Math.addExact(l, r);
         case SUBTRACT -> Math.subtractExact(l, r);
         case MULTIPLY -> Math.multiplyExact(l, r);
-        case DIVIDE -> { checkIntegerDivisorNotZero(op, r); yield Math.divideExact(l, r); } // truncates toward zero, guards Long.MIN_VALUE / -1
+        case DIVIDE -> {
+          // Math.divideExact(long,long) is JDK 18+; JDK 17's Math class has no long overload, so guard the one
+          // division-overflow case (Long.MIN_VALUE / -1, JLS 15.17.2) explicitly instead.
+          checkIntegerDivisorNotZero(op, r);
+          if (l == Long.MIN_VALUE && r == -1L)
+            throw new ArithmeticException("long overflow");
+          yield l / r; // truncates toward zero
+        }
         case MODULO -> { checkIntegerDivisorNotZero(op, r); yield l % r; }
         case POWER -> throw new IllegalStateException("POWER is not an integer operation");
         case CONCAT -> throw new IllegalStateException("CONCAT is not an integer operation");

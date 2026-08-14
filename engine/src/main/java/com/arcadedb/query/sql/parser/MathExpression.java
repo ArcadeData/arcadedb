@@ -756,7 +756,14 @@ public class MathExpression extends SimpleNode {
           case PLUS -> Math.addExact(left, right);
           case MINUS -> Math.subtractExact(left, right);
           case STAR -> Math.multiplyExact(left, right);
-          case SLASH -> Math.divideExact(left, right);
+          // Math.divideExact(long,long) is JDK 18+; JDK 17's Math class has no long overload. Long.MIN_VALUE / -1
+          // is the only case where `/` overflows without the JDK raising anything (JLS 15.17.2), so check for it
+          // explicitly instead.
+          case SLASH -> {
+            if (left == Long.MIN_VALUE && right == -1L)
+              throw new ArithmeticException("long overflow");
+            yield left / right;
+          }
           default -> throw new IllegalStateException("Operator " + op + " has no exact integer form");
         };
       } catch (final ArithmeticException e) {
