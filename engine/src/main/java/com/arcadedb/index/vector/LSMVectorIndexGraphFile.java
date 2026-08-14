@@ -65,11 +65,18 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   private LSMVectorIndex mainIndex;
 
   /**
+   * Says which records the graph on these pages was built over. The graph itself is addressed by ordinal and carries
+   * nothing that identifies them, so this is what makes reusing it safe (issue #6106).
+   */
+  private final LSMVectorIndexGraphManifest manifest;
+
+  /**
    * Constructor for creating a new graph file
    */
   protected LSMVectorIndexGraphFile(final DatabaseInternal database, final String name, final String filePath,
                                     final ComponentFile.MODE mode, final int pageSize) throws IOException {
     super(database, name, filePath, FILE_EXT, mode, pageSize, CURRENT_VERSION);
+    this.manifest = new LSMVectorIndexGraphManifest(getOSFile().getAbsolutePath());
   }
 
   /**
@@ -78,6 +85,14 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   protected LSMVectorIndexGraphFile(final DatabaseInternal database, final String name, final String filePath, final int id,
                                     final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
+    this.manifest = new LSMVectorIndexGraphManifest(getOSFile().getAbsolutePath());
+  }
+
+  /**
+   * @return the sidecar recording which records the persisted graph was built over
+   */
+  public LSMVectorIndexGraphManifest getManifest() {
+    return manifest;
   }
 
   @Override
@@ -174,6 +189,14 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
+
+    // The pages about to be overwritten are the ones the current manifest vouches for, and the write commits in
+    // chunks, so from here until the caller has committed there is no generation of the graph anything can promise.
+    // Dropping the manifest FIRST is what keeps a half-written graph from being described by the manifest of the
+    // one it is replacing (issue #6106). A process killed anywhere in here therefore leaves no manifest at all,
+    // which the load path reads as "cannot be verified" and judges by node count - so any failure this method can
+    // still observe replaces it with a manifest that refuses the pages outright (see the catch below).
+    manifest.invalidate();
 
     try {
       if (chunkSizeMB > 0 && chunkCallback != null) {
@@ -272,6 +295,11 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       }
 
     } catch (final Exception e) {
+      // The caller rolls back and carries on without a persisted graph. Whatever the rollback leaves on these
+      // pages - the previous generation untouched, or a partial rewrite whose earlier chunks already committed -
+      // nothing here knows which, so the manifest must refuse them rather than be simply absent: absent means
+      // "unverifiable", and unverifiable falls back to the node count this whole mechanism replaces (issue #6106).
+      manifest.markUnusable("graph persist failed: " + e);
       LogManager.instance().log(this, Level.SEVERE, "Error writing graph to pages: %s", e, e.getMessage());
       throw new IndexException("Error writing graph to pages", e);
     }

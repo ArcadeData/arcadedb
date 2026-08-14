@@ -46,6 +46,11 @@ class LSMVectorIndexMetrics {
   // many candidates the data puts between it and the query, which no fixed budget can guarantee (issue #5761), so
   // this is the signal to raise efSearch on the index or the query.
   private final AtomicLong groupedSearchesShortOfLimit = new AtomicLong(0);
+  // Times a persisted graph was reused on the strength of its node count alone, because it carries no manifest
+  // saying which records it was built over (issue #6106) - a graph written by a version older than the manifest, or
+  // one restored from a backup, which does not carry the sidecar. Non-zero means this index is still being judged by
+  // the weaker comparison; REBUILD INDEX, or any graph persist, writes a manifest and takes it off that path.
+  private final AtomicLong unverifiedGraphReuses = new AtomicLong(0);
 
   // Vector fetch source tracking
   private final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
@@ -84,6 +89,10 @@ class LSMVectorIndexMetrics {
 
   void incrementGroupedSearchesShortOfLimit() {
     groupedSearchesShortOfLimit.incrementAndGet();
+  }
+
+  void incrementUnverifiedGraphReuses() {
+    unverifiedGraphReuses.incrementAndGet();
   }
 
   // Vector fetch source tracking methods
@@ -181,6 +190,7 @@ class LSMVectorIndexMetrics {
     stats.put("graphRebuildCount", graphRebuildCount.get());
     stats.put("bruteForceScans", bruteForceScans.get());
     stats.put("groupedSearchesShortOfLimit", groupedSearchesShortOfLimit.get());
+    stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
     stats.put("compactionCount", compactionCount.get());
 
     stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
@@ -200,6 +210,7 @@ class LSMVectorIndexMetrics {
     graphRebuildCount.set(0);
     bruteForceScans.set(0);
     groupedSearchesShortOfLimit.set(0);
+    unverifiedGraphReuses.set(0);
     compactionCount.set(0);
     vectorFetchFromQuantized.set(0);
     vectorFetchFromDocuments.set(0);
