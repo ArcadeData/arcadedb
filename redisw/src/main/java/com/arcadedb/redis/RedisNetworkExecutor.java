@@ -624,7 +624,7 @@ public class RedisNetworkExecutor extends Thread {
     appendHelloEntry("server", Constants.PRODUCT.toLowerCase(Locale.ENGLISH));
     appendHelloEntry("version", Constants.getVersion());
     appendHelloEntry("proto", 2L);
-    appendHelloEntry("id", threadId());
+    appendHelloEntry("id", getId());
     appendHelloEntry("mode", "standalone");
     appendHelloEntry("role", "master");
     // "modules" maps to an empty array.
