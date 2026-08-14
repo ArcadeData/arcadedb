@@ -1098,8 +1098,10 @@ public class MathExpression extends SimpleNode {
 
   /**
    * A compound arithmetic expression is a literal one only when every one of its operands is. Subclasses that carry
-   * their operands somewhere else than {@link #childExpressions} (an array literal, a CASE) inherit the {@code false}
-   * an empty operand list gives: see {@link Expression#isLiteral()} for why this answer stays on the safe side.
+   * their operands somewhere else than {@link #childExpressions} - an array literal, a CASE, and the arithmetic
+   * parenthesis of {@code (1) = 0} - inherit the {@code false} an empty operand list gives: see
+   * {@link Expression#isLiteral()} for why this answer stays on the safe side. Those are missed folds, not unsafe
+   * ones, and each subclass is free to answer for itself if a shape ever turns out to be worth recognizing.
    */
   public boolean isLiteral() {
     if (childExpressions.isEmpty())

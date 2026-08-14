@@ -338,7 +338,6 @@ public class SelectExecutionPlanner {
       info.fetchExecutionPlan.close();
 
     info.fetchExecutionPlan = null;
-    info.planCreated = true;
 
     plan.chain(new EmptySourceStep(context, reason));
 
