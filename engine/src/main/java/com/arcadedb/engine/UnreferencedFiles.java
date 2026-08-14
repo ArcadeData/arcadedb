@@ -146,6 +146,15 @@ public class UnreferencedFiles {
    * leader's value outright - so the entry is valid only while BOTH halves are unchanged, never while they are "not
    * newer".
    * <p>
+   * <b>What the gate rests on, stated so it can be checked.</b> Because the version can move BACKWARDS, equality of
+   * the pair is only as good as this: within one database's lineage a given schema version denotes one schema
+   * CONTENT, so returning to a version means returning to the claimed-file set that version described - and the
+   * cached count is the count of that set. The file half needs no such assumption; it only ever increases, so an
+   * equal value means no file was registered or dropped in between, full stop. A stale answer therefore needs two
+   * nodes to have assigned the same version to DIFFERENT schema content, which is schema divergence - a condition
+   * that breaks replication itself long before it misreports a gauge, and is not a state this cache should be
+   * designed around.
+   * <p>
    * <b>Thread safety without a lock.</b> The gate is read BEFORE the walk and published with the count afterwards,
    * so a change that lands mid-walk tags the result with the gate it was computed under, and the next call - seeing
    * the newer gate - recomputes. Two callers racing can therefore duplicate work or overwrite each other's entry,
