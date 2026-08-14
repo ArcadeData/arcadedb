@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.compression.CompressionFactory;
+import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.ByteArrayOutputStream;
@@ -40,8 +41,51 @@ import java.util.zip.CRC32;
  */
 public final class RaftLogEntryCodec {
 
-  /** Maximum allowed size for a single byte array allocation during decoding (64 MB). */
+  /**
+   * Ceiling a PRODUCER applies to the uncompressed payload it packs into one replicated entry (64 MB).
+   * <p>
+   * Issue #5933: the submit-time gate in {@code RaftGroupCommitter.submitAndWait} measures the ENCODED entry,
+   * whose WAL this codec has already LZ4-compressed, while the applier has to materialize that WAL again in
+   * full. A well-compressing bulk transaction - repetitive, text/JSON-heavy migration data - therefore used to
+   * pass the submit gate on its compressed size, reach a Raft quorum, commit at a fixed log index, and only
+   * then fail the decode-time bound on every node that tried to apply it. A committed entry cannot be taken
+   * back, so every node halted on it and replayed into the same failure on every restart: a permanent,
+   * cluster-wide crash loop from a single oversized write.
+   * <p>
+   * The gates now agree by construction: nothing is encoded that could not be decoded. This value has to stay
+   * at or above {@code GlobalConfiguration.maxReplicatedRaftEntrySize}'s default, or an INCOMPRESSIBLE
+   * transaction that replicates fine today (raw size ~= compressed size) would start being rejected here.
+   */
   static final int MAX_ENTRY_BYTES = 64 * 1024 * 1024;
+
+  /**
+   * Ceiling a CONSUMER accepts when decoding (512 MB), deliberately well above {@link #MAX_ENTRY_BYTES}.
+   * <p>
+   * Being liberal in what is accepted is what lets a cluster ALREADY holding an oversized committed entry -
+   * written by a version that had no producer-side bound - apply it and come back up, instead of crash-looping
+   * on it forever with no operator-side recovery. It is also why the two ceilings must never be equal: a
+   * decoder no more permissive than the encoder leaves no margin for entries produced by another version.
+   * <p>
+   * This is a wire-format constant and NOT configurable on purpose. A node whose ceiling differed from its
+   * peers' would apply entries they reject, which is exactly the divergence the state machine halts to
+   * prevent. {@code RaftPropertiesBuilder} refuses at startup any configured entry cap above it.
+   */
+  static final int MAX_DECODED_ENTRY_BYTES = 512 * 1024 * 1024;
+
+  /**
+   * Upper bound on how far the LZ4 block format can expand its input, used to reject an absurd uncompressed
+   * length BEFORE the array it asks for is allocated. A block sequence spends at least a token byte plus a
+   * two-byte offset per match, and every additional length-extension byte adds at most 255 output bytes, so
+   * the ratio converges to - and never reaches - 255:1, so a well-formed block can never trip this bound.
+   * Real WAL pages sit in the low single digits, so in practice it only ever fires on a corrupt or hostile
+   * length field.
+   * <p>
+   * It is tied to the block format of {@code CompressionFactory.getDefault()}, which every section here is
+   * compressed with: swapping that for an algorithm with a higher maximum ratio means revisiting this value
+   * FIRST, or entries a peer legitimately produced would be refused - and refusing a committed entry is the
+   * cluster-wide crash loop #5933 is about.
+   */
+  private static final int MAX_LZ4_EXPANSION_RATIO = 255;
 
   /** Maximum allowed element count for collections during decoding. */
   static final int MAX_COLLECTION_SIZE = 1_000_000;
@@ -51,9 +95,64 @@ public final class RaftLogEntryCodec {
   }
 
   private static void checkByteLength(final int length, final String context) {
-    if (length < 0 || length > MAX_ENTRY_BYTES)
+    if (length < 0 || length > MAX_DECODED_ENTRY_BYTES)
       throw new IllegalStateException(
-          "Invalid byte length " + length + " in " + context + " (max " + MAX_ENTRY_BYTES + ")");
+          "Invalid byte length " + length + " in " + context + " (max " + MAX_DECODED_ENTRY_BYTES + ")");
+  }
+
+  /**
+   * Validates a length field for a section read STRAIGHT off the stream, so the array it asks for is never
+   * allocated before the entry is known to actually carry that many bytes.
+   * <p>
+   * {@code remaining} is the exact number of bytes left in the entry: the stream is backed by a
+   * {@link ByteString}, whose {@code available()} is exact and is already load-bearing in {@link #decode}
+   * (the trailing-byte corruption check and the optional-section probes both depend on it). That makes it a
+   * far tighter bound than any constant - a corrupt or forged length is refused here rather than turning into
+   * a several-hundred-MB allocation that {@code readFully} would then fail on anyway. The absolute ceiling
+   * stays as a backstop.
+   * <p>
+   * This bound does NOT apply to the length of a section that is decompressed, which is legitimately many
+   * times the bytes present; {@link #checkDecompressedLength} covers that one.
+   */
+  private static void checkByteLength(final int length, final int remaining, final String context) {
+    checkByteLength(length, context);
+    if (length > remaining)
+      throw new IllegalStateException("Invalid byte length " + length + " in " + context + ": only " + remaining
+          + " bytes remain in the entry (truncated or corrupted replication payload)");
+  }
+
+  /**
+   * Validates the uncompressed length a compressed section claims, before {@code decompress} allocates it.
+   * Beyond the absolute ceiling the claim is also bounded by what the compressed bytes present in the entry
+   * could possibly expand to, so raising {@link #MAX_DECODED_ENTRY_BYTES} cannot turn the decoder into an
+   * allocation amplifier for a corrupt length field.
+   */
+  private static void checkDecompressedLength(final int uncompressedLength, final int compressedLength,
+      final String context) {
+    checkByteLength(uncompressedLength, context);
+    if ((long) uncompressedLength > (long) compressedLength * MAX_LZ4_EXPANSION_RATIO)
+      throw new IllegalStateException("Invalid byte length " + uncompressedLength + " in " + context
+          + ": above the " + MAX_LZ4_EXPANSION_RATIO + ":1 maximum expansion ratio of the " + compressedLength
+          + " compressed bytes carried by the entry");
+  }
+
+  /**
+   * Producer-side bound, applied to every section this codec COMPRESSES (issue #5933). The submit-time gate
+   * only ever sees the compressed result, so this is the one place a payload that no node could decompress can
+   * still be stopped before it reaches the Raft log. The failure is a {@link ReplicatedEntryTooLargeException}
+   * - a {@code TransactionException} and NOT a {@code NeedRetryException} - because retrying resubmits the
+   * identical, equally undeliverable payload.
+   */
+  private static void checkProducedPayloadLength(final int length, final String databaseName, final String context) {
+    if (length > MAX_ENTRY_BYTES)
+      throw new ReplicatedEntryTooLargeException(String.format(
+          """
+          %s for database '%s' is %d bytes uncompressed, above the %d bytes of uncompressed payload a single \
+          replicated Raft entry may carry. Compression is not what bounds it: the entry is LZ4-compressed for \
+          the wire but every node has to materialize it in full to apply it, so a well-compressing bulk \
+          transaction can slip under arcadedb.ha.appendBufferSize and still be too large to apply. Reduce the \
+          batch size - fewer rows per GraphBatch / SQL transaction, or smaller records.""",
+          context, databaseName, length, MAX_ENTRY_BYTES));
   }
 
   private static void checkCollectionSize(final int size, final String context) {
@@ -121,6 +220,8 @@ public final class RaftLogEntryCodec {
 
       dos.writeByte(RaftLogEntryType.TX_ENTRY.getId());
       dos.writeUTF(databaseName);
+
+      checkProducedPayloadLength(walData.length, databaseName, "Transaction WAL");
 
       final byte[] compressed = CompressionFactory.getDefault().compress(walData);
       dos.writeInt(walData.length);       // uncompressed length (for decompression)
@@ -211,6 +312,7 @@ public final class RaftLogEntryCodec {
       dos.writeInt(walCount);
       for (int i = 0; i < walCount; i++) {
         final byte[] walData = walEntries.get(i);
+        checkProducedPayloadLength(walData.length, databaseName, "Schema change WAL entry " + (i + 1) + "/" + walCount);
         final byte[] compressedWal = CompressionFactory.getDefault().compress(walData);
         dos.writeInt(walData.length);         // uncompressed length
         dos.writeInt(compressedWal.length);   // compressed length
@@ -232,7 +334,7 @@ public final class RaftLogEntryCodec {
       for (int i = 0; i < blobCount; i++) {
         final TsSealedBlob blob = sealedFileBlobs.get(i);
         final byte[] raw = blob.bytes() != null ? blob.bytes() : new byte[0];
-        checkByteLength(raw.length, "SCHEMA_ENTRY sealed blob uncompressed");
+        checkProducedPayloadLength(raw.length, databaseName, "Sealed TimeSeries store '" + blob.fileName() + "'");
         final CRC32 crc = new CRC32();
         crc.update(raw);
         final byte[] compressed = CompressionFactory.getDefault().compress(raw);
@@ -412,9 +514,9 @@ public final class RaftLogEntryCodec {
 
   private static DecodedEntry decodeTxEntry(final DataInputStream dis, final String databaseName) throws IOException {
     final int uncompressedLength = dis.readInt();
-    checkByteLength(uncompressedLength, "TX_ENTRY uncompressed WAL");
     final int compressedLength = dis.readInt();
-    checkByteLength(compressedLength, "TX_ENTRY compressed WAL");
+    checkByteLength(compressedLength, dis.available(), "TX_ENTRY compressed WAL");
+    checkDecompressedLength(uncompressedLength, compressedLength, "TX_ENTRY uncompressed WAL");
     final byte[] compressed = new byte[compressedLength];
     dis.readFully(compressed);
     final byte[] walData = CompressionFactory.getDefault().decompress(compressed, uncompressedLength);
@@ -434,7 +536,7 @@ public final class RaftLogEntryCodec {
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
     final int schemaLen = dis.readInt();
-    checkByteLength(schemaLen, "SCHEMA_ENTRY schemaJson");
+    checkByteLength(schemaLen, dis.available(), "SCHEMA_ENTRY schemaJson");
     final byte[] schemaBytes = new byte[schemaLen];
     dis.readFully(schemaBytes);
     final String schemaJson = new String(schemaBytes, StandardCharsets.UTF_8);
@@ -457,9 +559,9 @@ public final class RaftLogEntryCodec {
         bucketDeltas = new ArrayList<>(walCount);
         for (int i = 0; i < walCount; i++) {
           final int walUncompressedLen = dis.readInt();
-          checkByteLength(walUncompressedLen, "SCHEMA_ENTRY WAL uncompressed");
           final int walCompressedLen = dis.readInt();
-          checkByteLength(walCompressedLen, "SCHEMA_ENTRY WAL compressed");
+          checkByteLength(walCompressedLen, dis.available(), "SCHEMA_ENTRY WAL compressed");
+          checkDecompressedLength(walUncompressedLen, walCompressedLen, "SCHEMA_ENTRY WAL uncompressed");
           final byte[] walCompressed = new byte[walCompressedLen];
           dis.readFully(walCompressed);
           final byte[] walData = CompressionFactory.getDefault().decompress(walCompressed, walUncompressedLen);
@@ -492,9 +594,9 @@ public final class RaftLogEntryCodec {
           final String fileName = dis.readUTF();
           final long expectedCrc = dis.readLong();
           final int uncompressedLen = dis.readInt();
-          checkByteLength(uncompressedLen, "SCHEMA_ENTRY sealed blob uncompressed");
           final int compressedLen = dis.readInt();
-          checkByteLength(compressedLen, "SCHEMA_ENTRY sealed blob compressed");
+          checkByteLength(compressedLen, dis.available(), "SCHEMA_ENTRY sealed blob compressed");
+          checkDecompressedLength(uncompressedLen, compressedLen, "SCHEMA_ENTRY sealed blob uncompressed");
           final byte[] compressed = new byte[compressedLen];
           dis.readFully(compressed);
           final byte[] raw = CompressionFactory.getDefault().decompress(compressed, uncompressedLen);
@@ -531,7 +633,7 @@ public final class RaftLogEntryCodec {
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
       throws IOException {
     final int fpLen = dis.readInt();
-    checkByteLength(fpLen, "BOOTSTRAP_FINGERPRINT fingerprint");
+    checkByteLength(fpLen, dis.available(), "BOOTSTRAP_FINGERPRINT fingerprint");
     final byte[] fpBytes = new byte[fpLen];
     dis.readFully(fpBytes);
     final String fingerprint = new String(fpBytes, StandardCharsets.UTF_8);
@@ -542,7 +644,7 @@ public final class RaftLogEntryCodec {
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
     final int length = dis.readInt();
-    checkByteLength(length, "SECURITY_USERS_ENTRY");
+    checkByteLength(length, dis.available(), "SECURITY_USERS_ENTRY");
     final byte[] bytes = new byte[length];
     dis.readFully(bytes);
     final String usersJson = new String(bytes, StandardCharsets.UTF_8);
