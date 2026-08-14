@@ -18,11 +18,13 @@
  */
 package com.arcadedb.schema.trigger;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -47,16 +49,18 @@ public class SQLTriggerExecutor implements TriggerExecutor {
   @Override
   public boolean execute(final Database database, final Record record, final Record oldRecord) {
     try {
-      // Prepare context variables for SQL execution
-      final Map<String, Object> params = new HashMap<>();
-      params.put("record", record);
-      params.put("$record", record);
+      // Bound both ways: as $record/$oldRecord (a CommandContext variable, so $record.field navigation works -
+      // see #command's javadoc) and as record/oldRecord (an input parameter, so :record/? substitution works
+      // too, as a whole value).
+      final Map<String, Object> bindings = new HashMap<>();
+      bindings.put("record", record);
+      bindings.put("$record", record);
       if (oldRecord != null) {
-        params.put("oldRecord", oldRecord);
-        params.put("$oldRecord", oldRecord);
+        bindings.put("oldRecord", oldRecord);
+        bindings.put("$oldRecord", oldRecord);
       }
 
-      return consume(database, database.command("sql", sql, params));
+      return consume(database, sqlEngine(database).command(sql, new ContextConfiguration(), bindings, bindings));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
@@ -72,15 +76,26 @@ public class SQLTriggerExecutor implements TriggerExecutor {
   @Override
   public boolean executeBeforeRead(final Database database, final RID rid) {
     try {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("rid", rid);
-      params.put("$rid", rid);
+      final Map<String, Object> bindings = new HashMap<>();
+      bindings.put("rid", rid);
+      bindings.put("$rid", rid);
 
-      return consume(database, database.command("sql", sql, params));
+      return consume(database, sqlEngine(database).command(sql, new ContextConfiguration(), bindings, bindings));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * {@code database.command("sql", ...)} only ever fills {@link com.arcadedb.query.sql.executor.CommandContext}'s
+   * input parameters, so a body that reads {@code $record}/{@code $rid} - the documented binding - saw nothing:
+   * {@code SuffixIdentifier} resolves a {@code $name} exclusively through {@code CommandContext.getVariable},
+   * a different store input parameters never populate. Going to {@link SQLQueryEngine} directly reaches the
+   * overload that seeds both.
+   */
+  private static SQLQueryEngine sqlEngine(final Database database) {
+    return (SQLQueryEngine) database.getQueryEngine("sql");
   }
 
   /**

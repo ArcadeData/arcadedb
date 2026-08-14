@@ -113,6 +113,30 @@ public class SQLQueryEngine implements QueryEngine {
     return statement.execute(executionDatabase(), parameters, context);
   }
 
+  /**
+   * Like {@link #command(String, ContextConfiguration, Map)}, but also seeds the execution's {@link CommandContext}
+   * with {@code variables}, resolvable in the statement as {@code $name}. {@code parameters} alone cannot do that:
+   * it only feeds {@link CommandContext#setInputParameters}, which backs {@code :name}/{@code ?} bind parameters -
+   * a store {@code SuffixIdentifier}'s {@code $name} resolution never consults, since that reads exclusively from
+   * {@link CommandContext#getVariable}. A caller that wants a bound value navigable as {@code $name.field} - a
+   * trigger body binding the record it fired for, for instance - needs this overload; one that only needs
+   * {@code :name}/{@code ?} substitution can keep using the {@code parameters}-only form.
+   */
+  public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters,
+      final Map<String, Object> variables) {
+    final Statement statement = parse(query, database);
+    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
+
+    final CommandContext context = new BasicCommandContext();
+    context.setInputParameters(parameters);
+    context.setConfiguration(configuration);
+    if (variables != null)
+      for (final Map.Entry<String, Object> entry : variables.entrySet())
+        context.setVariable(entry.getKey(), entry.getValue());
+
+    return statement.execute(executionDatabase(), parameters, context);
+  }
+
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Statement statement = parse(query, database);

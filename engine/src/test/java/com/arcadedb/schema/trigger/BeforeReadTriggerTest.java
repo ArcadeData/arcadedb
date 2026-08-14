@@ -231,6 +231,27 @@ class BeforeReadTriggerTest extends TestHelper {
   }
 
   /**
+   * The SQL arm of {@link #aJavaScriptBeforeReadTriggerSeesTheRidAndCanVeto()}: {@code $rid} used to bind nothing
+   * in a SQL body, for the same reason {@code $record} did not - {@code database.command("sql", sql, params)}
+   * only fills {@code CommandContext}'s input parameters, and {@code $name} resolution reads exclusively from
+   * {@code CommandContext.getVariable}, a different store. Same polarity note as the JavaScript version applies:
+   * the script ALLOWS only when it can see the RID and it is the expected one, so success is the evidence the
+   * binding works, not just that nothing threw.
+   */
+  @Test
+  void aSqlBeforeReadTriggerSeesTheRidAndCanVeto() {
+    database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(TYPE_NAME).set("name", "first").save().getIdentity());
+
+    database.command("sql", "CREATE TRIGGER sqlRidRead BEFORE READ ON TYPE " + TYPE_NAME
+        + " EXECUTE SQL 'SELECT ($rid IS NOT NULL AND $rid = " + rid[0] + ") AS ok'");
+
+    database.transaction(() -> assertThat(database.lookupByRID(rid[0], true).asDocument().<String>get("name"))
+        .as("the SQL body must see the RID of the record being read, and allow it").isEqualTo("first"));
+  }
+
+  /**
    * The JavaScript arm. It gets {@code rid}/{@code $rid} and no {@code record}, and - like the other two - must not
    * re-enter the read. Returning false from the script vetoes it, which is the JS executor's existing contract for
    * every other timing.
