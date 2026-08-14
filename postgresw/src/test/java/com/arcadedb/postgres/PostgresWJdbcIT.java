@@ -1090,6 +1090,127 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Issue #6156: the schema-discovery fallback could only describe a query whose row source is a declared type.
+   * Anything else - no FROM at all, a constant/derived table, a graph function like shortestPath()/dijkstra(),
+   * a TRAVERSE or a MATCH - came back with no RowDescription at all, so Spark saw zero columns. Replaying the
+   * probe without its constant-false filter, and falling back to the projection list, must describe them all.
+   */
+  @Test
+  void schemaProbeForTypelessAndComputedProjectionsReturnsTheDescription() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE VERTEX TYPE Hero6156 IF NOT EXISTS;
+            CREATE PROPERTY Hero6156.name IF NOT EXISTS STRING;
+            CREATE EDGE TYPE Appearance6156 IF NOT EXISTS;
+            CREATE PROPERTY Appearance6156.weight IF NOT EXISTS INTEGER;
+            INSERT INTO Hero6156 SET name = 'Napoleon';
+            INSERT INTO Hero6156 SET name = 'Myriel';
+            CREATE EDGE Appearance6156 FROM (SELECT FROM Hero6156 WHERE name = 'Napoleon')
+              TO (SELECT FROM Hero6156 WHERE name = 'Myriel') SET weight = 1;
+            """);
+      }
+
+      // No FROM at all: the row is entirely described by the projection.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n) t WHERE 1=0", "n");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT sysdate() AS now) t WHERE 1=0", "now");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT uuid() AS id) t WHERE 1=0", "id");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n, 'x' AS s) t WHERE 1=0", "n", "s");
+
+      // expand() replaces the row, so only replaying the probe can tell what it produces.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand([1,2,3]) AS n) t WHERE 1=0", "n");
+
+      // Graph functions as the row source.
+      final String shortestPath = "shortestPath((SELECT FROM Hero6156 WHERE name = 'Napoleon'), "
+          + "(SELECT FROM Hero6156 WHERE name = 'Myriel'), 'BOTH', 'Appearance6156')";
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name, @rid AS rid FROM (SELECT expand(" + shortestPath
+          + "))) SPARK_GEN_SUBQ_0 WHERE 1=0", "name", "rid");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand(" + shortestPath + ")) SPARK_GEN_SUBQ_0 WHERE 1=0", "name",
+          RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY);
+      assertProbedColumns(conn,
+          "SELECT * FROM (SELECT dijkstra((SELECT FROM Hero6156 WHERE name = 'Napoleon'), "
+              + "(SELECT FROM Hero6156 WHERE name = 'Myriel'), 'weight', 'BOTH') AS path) t WHERE 1=0", "path");
+
+      // TRAVERSE and MATCH as the row source.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT FROM (TRAVERSE out('Appearance6156') FROM "
+          + "(SELECT FROM Hero6156 WHERE name = 'Napoleon') MAXDEPTH 2)) t WHERE 1=0", "name", RID_PROPERTY, TYPE_PROPERTY,
+          CAT_PROPERTY);
+      assertProbedColumns(conn, "SELECT * FROM (MATCH {type: Hero6156, as: a}.out('Appearance6156'){as: b} "
+          + "RETURN a.name AS an, b.name AS bn) SPARK_GEN_SUBQ_0 WHERE 1=0", "an", "bn");
+
+      // A MATCH statement of its own, when it matches nothing, still has to announce its RETURN list.
+      assertProbedColumns(conn, "MATCH {type: Hero6156, as: a, where: (name = 'nobody')}.out('Appearance6156'){as: b} "
+          + "RETURN a.name AS an, b.name AS bn", "an", "bn");
+
+      // The constant-false filter is recognised through the boolean algebra around it, not by its spelling.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n) t WHERE 1=0 AND 2=2", "n");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n) t WHERE (1=0) OR (2=3)", "n");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n WHERE 1=0) t", "n");
+
+      // Only a comparison between literals marks a probe. A filter that merely happens to match nothing is left
+      // alone, and in particular one built on a function call is never evaluated to classify the query - the
+      // function could have a side effect. Here that shows up as the query staying undescribable: its row source
+      // is an expand(), so without the replay there is nothing to announce.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand([1,2,3]) AS n) t WHERE uuid() = 'nomatch'");
+      // ... and a literal comparison that holds is not a probe either, whatever else empties the result
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand([1,2,3]) AS n) t WHERE 1=1 AND uuid() = 'nomatch'");
+
+      // Dropping the constant-false filter must not disturb the clauses that only pick which rows come back.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero6156 ORDER BY name) t WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero6156) t WHERE 1=0 ORDER BY name SKIP 10 LIMIT 5", "name");
+
+      // The replay has to run with the parameters the probe was bound with.
+      try (var st = conn.prepareStatement("SELECT * FROM (SELECT name FROM Hero6156 WHERE name = ?) t WHERE 1=0")) {
+        st.setString(1, "Napoleon");
+        try (var rs = st.executeQuery()) {
+          final var meta = rs.getMetaData();
+          assertThat(meta.getColumnCount()).isEqualTo(1);
+          assertThat(meta.getColumnName(1)).isEqualTo("name");
+        }
+      }
+
+      // ... including when the constant-false term is ANDed with a real predicate in the very clause that gets
+      // dropped, leaving the bound parameter with nothing referencing it.
+      try (var st = conn.prepareStatement("SELECT name FROM Hero6156 WHERE 1=0 AND name = ?")) {
+        st.setString(1, "Napoleon");
+        try (var rs = st.executeQuery()) {
+          final var meta = rs.getMetaData();
+          assertThat(meta.getColumnCount()).isEqualTo(1);
+          assertThat(meta.getColumnName(1)).isEqualTo("name");
+          assertThat(rs.next()).isFalse();
+        }
+      }
+
+      // The projection list also answers the DESCRIBE that pgJDBC issues for PreparedStatement.getMetaData().
+      try (var st = conn.prepareStatement("SELECT 1 AS n, sysdate() AS now")) {
+        final var meta = st.getMetaData();
+        assertThat(meta).isNotNull();
+        final List<String> columns = new ArrayList<>();
+        for (int i = 1; i <= meta.getColumnCount(); i++)
+          columns.add(meta.getColumnName(i));
+        assertThat(columns).containsExactlyInAnyOrder("n", "now");
+      }
+
+      // Sanity check: the same queries without the probe filter still return their rows.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT * FROM (SELECT 1 AS n) t")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getInt("n")).isEqualTo(1);
+        }
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            DROP TYPE Appearance6156 UNSAFE;
+            DROP TYPE Hero6156 UNSAFE;
+            """);
+      }
+    }
+  }
+
   private void assertProbedColumns(final Connection conn, final String query, final String... expectedColumns)
       throws SQLException {
     try (var st = conn.createStatement()) {
