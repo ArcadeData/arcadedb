@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Expression;
@@ -52,6 +53,7 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.MatchStatement;
+import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -347,7 +349,7 @@ public class PostgresNetworkExecutor extends Thread {
       // Now send RowDescription or NoData
       // For SELECT queries, we need to determine the columns from the type schema
       if (portal.isExpectingResult && portal.columns == null) {
-        portal.columns = getColumnsFromQuerySchema(portal.query);
+        portal.columns = getColumnsFromQuerySchema(portal.query, portal.sqlStatement);
       }
 
       if (portal.columns != null && !portal.columns.isEmpty()) {
@@ -882,14 +884,13 @@ public class PostgresNetworkExecutor extends Thread {
    * This is used during DESCRIBE Statement to return RowDescription before the query is executed.
    * ArcadeDB is schema-less so we need to query actual data to discover dynamically-added properties.
    */
-  private Map<String, PostgresType> getColumnsFromQuerySchema(final String query) {
-    return getColumnsFromQuerySchema(query, parseStatement(query));
-  }
-
-  private Map<String, PostgresType> getColumnsFromQuerySchema(final String query, final Statement parsed) {
+  private Map<String, PostgresType> getColumnsFromQuerySchema(final String query, final Statement alreadyParsed) {
     if (query == null || query.isEmpty()) {
       return null;
     }
+
+    // the caller may already hold the parsed statement for this very text: parsing it a second time buys nothing
+    final Statement parsed = alreadyParsed != null ? alreadyParsed : parseStatement(query);
 
     // Prefer the parsed statement: it resolves the FROM target reliably, including the subquery
     // wrapper Spark uses for its schema probe (issue #5368)
@@ -1310,8 +1311,7 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private boolean isConstantFalseComparison(final BinaryCondition condition, final CommandContext context) {
-    if (condition.left == null || condition.right == null || !condition.left.isEarlyCalculated(context)
-        || !condition.right.isEarlyCalculated(context))
+    if (!isLiteral(condition.left) || !isLiteral(condition.right))
       return false;
 
     try {
@@ -1319,6 +1319,59 @@ public class PostgresNetworkExecutor extends Thread {
     } catch (final Exception e) {
       return false;
     }
+  }
+
+  /**
+   * Whether the expression is built out of literals alone - a number, a string, a boolean, null, or arithmetic
+   * over them.
+   * <p>
+   * This is deliberately narrower than {@link Expression#isEarlyCalculated}, which only asks whether an
+   * expression can be computed without a record. That admits any function call whose arguments need no record,
+   * and nothing on {@code SQLFunction} distinguishes a pure function from one with a side effect. The question
+   * being answered here - "is this filter a schema probe?" - is asked of every query that returns no rows, the
+   * vast majority of which are not probes at all, so it must never reach a function: a query filtering on
+   * {@code someStatefulFunction() = 42} would otherwise have that function invoked once more just to be
+   * classified.
+   */
+  private boolean isLiteral(final Expression expression) {
+    if (expression == null)
+      return false;
+
+    if (expression.isNull || expression.booleanValue != null)
+      return true;
+
+    // a RID, a JSON object, a nested condition or an array concatenation is never a literal comparison operand
+    if (expression.rid != null || expression.json != null || expression.whereCondition != null
+        || expression.arrayConcatExpression != null)
+      return false;
+
+    return isLiteral(expression.mathExpression);
+  }
+
+  private boolean isLiteral(final MathExpression expression) {
+    if (expression == null)
+      return false;
+
+    if (expression instanceof BaseExpression base) {
+      // a modifier is a method call or a field/index access applied to the value: no longer a bare literal
+      if (base.modifier != null)
+        return false;
+      if (base.number != null || base.string != null || base.isNull)
+        return true;
+      return base.expression != null && isLiteral(base.expression);
+    }
+
+    // a compound arithmetic expression is a literal one only when every one of its operands is
+    final List<MathExpression> operands = expression.childExpressions;
+    if (operands == null || operands.isEmpty())
+      return false;
+
+    for (final MathExpression operand : operands) {
+      if (!isLiteral(operand))
+        return false;
+    }
+
+    return true;
   }
 
   private void writeRowDescription(final Map<String, PostgresType> columns) {

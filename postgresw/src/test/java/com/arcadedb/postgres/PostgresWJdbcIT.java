@@ -1149,6 +1149,14 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n) t WHERE (1=0) OR (2=3)", "n");
       assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n WHERE 1=0) t", "n");
 
+      // Only a comparison between literals marks a probe. A filter that merely happens to match nothing is left
+      // alone, and in particular one built on a function call is never evaluated to classify the query - the
+      // function could have a side effect. Here that shows up as the query staying undescribable: its row source
+      // is an expand(), so without the replay there is nothing to announce.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand([1,2,3]) AS n) t WHERE uuid() = 'nomatch'");
+      // ... and a literal comparison that holds is not a probe either, whatever else empties the result
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand([1,2,3]) AS n) t WHERE 1=1 AND uuid() = 'nomatch'");
+
       // Dropping the constant-false filter must not disturb the clauses that only pick which rows come back.
       assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero6156 ORDER BY name) t WHERE 1=0", "name");
       assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero6156) t WHERE 1=0 ORDER BY name SKIP 10 LIMIT 5", "name");
