@@ -234,12 +234,8 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
   @Test
   void anUnknownTargetIsStillReported() {
     // folding must not cost the statement its target validation
-    try {
-      database.query("sql", "SELECT FROM ThisTypeDoesNotExist WHERE 1=0").close();
-      org.assertj.core.api.Assertions.fail("a missing type must be reported even when the filter is constant-false");
-    } catch (final Exception e) {
-      assertThat(e.getMessage()).contains("ThisTypeDoesNotExist");
-    }
+    assertThatThrownBy(() -> database.query("sql", "SELECT FROM ThisTypeDoesNotExist WHERE 1=0").close())
+        .hasMessageContaining("ThisTypeDoesNotExist");
   }
 
   @Test
