@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.InternalBucketNaming;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 
@@ -31,6 +32,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 /**
@@ -64,8 +66,8 @@ import java.util.function.Supplier;
  * false positive on a healthy database - the one outcome that would make this diagnostic worse than useless.
  * Manual indexes are claimed for the same reason: they are bound to no type by design. So is any bucket whose NAME
  * is derived from a type's or a claimed bucket's - the edge-list buckets of a vertex bucket, a super-node stripe
- * pool, a paired external bucket - see {@link #isDerivedFromAnOwner}, which recognises the convention rather than
- * the individual features that follow it.
+ * pool, a paired external bucket - see {@link InternalBucketNaming#ownerOf}, the one home of that convention, which
+ * recognises the SHAPE rather than the individual features that follow it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -116,19 +118,78 @@ public class UnreferencedFiles {
    * case, where there is nothing to describe, and it keeps a node that IS leaking files from paying for strings
    * every refresh throws away.
    * <p>
-   * The walk itself is NOT memoized, and the whole of it - including rebuilding the claimed-file set - runs on every
-   * refresh. That is deliberate for a diagnostic reading live state, and it is in-memory work with no I/O, but it
-   * does scale with the schema: one {@code getFileIds()} per index, each taking that index's read lock. Should a
-   * database with tens of thousands of components ever make that visible, the gate is
-   * {@code (FileManager.getModificationCount(), schema version)} - between them those two cover every way the answer
-   * can change, since a file this walk would newly report appeared either as a file (the first) or as a schema
-   * change that stopped claiming one (the second). Recorded rather than implemented: a cached count that goes stale
-   * is a worse diagnostic than a slightly expensive one.
+   * This runs the WHOLE walk, including rebuilding the claimed-file set, on every call. A caller on a timer wants
+   * {@link MemoizedCount} instead, which skips it while the answer provably cannot have changed.
    */
   public static long count(final DatabaseInternal database) {
     final long[] count = { 0 };
     walk(database, (fileId, file, reason) -> ++count[0]);
     return count[0];
+  }
+
+  /**
+   * A {@link #count} that skips the walk while the answer provably cannot have changed (issue #6168, item 1).
+   * <p>
+   * <b>Why one is needed.</b> The per-node {@code arcadedb.ha.schema.unreferenced_files} gauge is refreshed every 5
+   * seconds for every open replicated database, and each refresh rebuilt the whole claimed-file set: every type,
+   * every bucket, and one {@code getFileIds()} per index, which takes that index's read lock and allocates a list.
+   * It is in-memory with no I/O, so it is cheap on ordinary schemas, but the cost scaled with SCHEMA SIZE rather
+   * than with the size of the problem being diagnosed - on every node, forever, whether or not anything is wrong.
+   * <p>
+   * <b>Why the cached value cannot go stale</b>, which is the only reason memoizing a diagnostic is acceptable at
+   * all. The gate is the pair {@code (FileManager.getModificationCount(), schema version)}, and between them those
+   * two cover every way the answer can change: a file this walk would newly report either appeared as a FILE, which
+   * bumps the modification count on registration and on drop, or appeared because a SCHEMA change stopped claiming
+   * one, which bumps the schema version. Neither can move without invalidating the entry.
+   * <p>
+   * <b>Equality, not ordering.</b> The schema version is not monotonic on a follower - a schema reload assigns the
+   * leader's value outright - so the entry is valid only while BOTH halves are unchanged, never while they are "not
+   * newer".
+   * <p>
+   * <b>What the gate rests on, stated so it can be checked.</b> Because the version can move BACKWARDS, equality of
+   * the pair is only as good as this: within one database's lineage a given schema version denotes one schema
+   * CONTENT, so returning to a version means returning to the claimed-file set that version described - and the
+   * cached count is the count of that set. The file half needs no such assumption; it only ever increases, so an
+   * equal value means no file was registered or dropped in between, full stop. A stale answer therefore needs two
+   * nodes to have assigned the same version to DIFFERENT schema content, which is schema divergence - a condition
+   * that breaks replication itself long before it misreports a gauge, and is not a state this cache should be
+   * designed around.
+   * <p>
+   * <b>Thread safety without a lock.</b> The gate is read BEFORE the walk and published with the count afterwards,
+   * so a change that lands mid-walk tags the result with the gate it was computed under, and the next call - seeing
+   * the newer gate - recomputes. Two callers racing can therefore duplicate work or overwrite each other's entry,
+   * and both outcomes are a recompute, never a stale answer. One instance per database, held by whoever owns the
+   * refresh, so it dies with the database rather than needing to be evicted.
+   */
+  public static class MemoizedCount {
+    /** The gate and the count it produced, published as one object so a reader can never see a torn pair. */
+    private record Entry(long fileModificationCount, long schemaVersion, long count) {
+    }
+
+    private volatile Entry     entry;
+    /** How many times the walk actually ran. Diagnostic, and what the regression test asserts on. */
+    private final    AtomicLong recomputations = new AtomicLong();
+
+    /** The count, from the cache when the gate is unchanged and from a fresh {@link #count} walk otherwise. */
+    public long get(final DatabaseInternal database) {
+      final long fileModificationCount = database.getFileManager().getModificationCount();
+      final long schemaVersion = database.getSchema().getEmbedded().getVersion();
+
+      final Entry cached = entry;
+      if (cached != null && cached.fileModificationCount == fileModificationCount
+          && cached.schemaVersion == schemaVersion)
+        return cached.count;
+
+      final long counted = count(database);
+      recomputations.incrementAndGet();
+      entry = new Entry(fileModificationCount, schemaVersion, counted);
+      return counted;
+    }
+
+    /** Number of walks performed so far: the memoization is only worth anything if this stops growing. */
+    public long getRecomputations() {
+      return recomputations.get();
+    }
   }
 
   /**
@@ -163,7 +224,7 @@ public class UnreferencedFiles {
           // Purpose is restored from the schema at load time and reset to PRIMARY when it is not, so it can only be
           // used to EXCLUDE: anything not claiming to be a plain data bucket is left to whoever paired it.
           && bucket.getPurpose() == LocalBucket.Purpose.PRIMARY
-          && !isDerivedFromAnOwner(bucket.getName(), owners)) {
+          && !InternalBucketNaming.isDerivedFromAnOwner(bucket.getName(), owners)) {
         reported.set(fileId);
         consumer.accept(fileId, file, () -> "bucket '" + bucket.getName() + "' belongs to no type");
       }
@@ -216,34 +277,6 @@ public class UnreferencedFiles {
           claim(claimed, fileId);
 
     return claimed;
-  }
-
-  /**
-   * Whether a bucket no type lists is nevertheless OWNED by one, because its name is derived from a type's or a
-   * claimed bucket's - {@code Hub_sn_stripe_3}, {@code V_0_out_edges}, {@code Doc_0_ext}.
-   * <p>
-   * A GENERAL rule, and deliberately so. This started as a list of the conventions in the engine and CI found the
-   * one that list was missing (the super-node stripe pools of #5156, whose buckets no type lists and which
-   * {@code StripedEdgeList} reaches by composing the type name), which is the proof that enumerating them is not a
-   * closed problem: every internal bucket names itself after the schema object it belongs to, and the next feature
-   * to add one will follow the same convention rather than register with this class. Recognising the convention
-   * itself covers them all, including the ones not written yet.
-   * <p>
-   * What it costs is a false NEGATIVE: a genuinely orphaned bucket that happens to be named after a surviving type
-   * goes unreported. That is the right side to fail on for a diagnostic whose findings invite deletion - and the
-   * shape that motivated it is not affected, since a session abandoned before it published left no type to derive
-   * the name from.
-   * <p>
-   * Matched by successive underscore-delimited prefixes rather than by scanning the owner set, so the cost is a few
-   * hash lookups per candidate instead of one pass over every type in the schema.
-   */
-  private static boolean isDerivedFromAnOwner(final String bucketName, final Set<String> owners) {
-    for (int underscore = bucketName.indexOf('_'); underscore > 0; underscore = bucketName.indexOf('_',
-        underscore + 1))
-      if (owners.contains(bucketName.substring(0, underscore)))
-        return true;
-
-    return false;
   }
 
   /**
