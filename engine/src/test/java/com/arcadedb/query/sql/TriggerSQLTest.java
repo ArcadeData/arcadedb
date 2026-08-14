@@ -288,6 +288,33 @@ class TriggerSQLTest extends TestHelper {
     assertThat(result.hasNext()).isFalse();
   }
 
+  /**
+   * {@code UPDATE ... RETURN AFTER <field>} with a single non-{@code @this} projection item produces the exact
+   * same shape the veto check looks for - one row, one property - so a bookkeeping DML body whose returned field
+   * happens to be {@code false} must NOT be misread as {@code SELECT false}. Only a body that is actually
+   * idempotent (a {@code SELECT}) can veto; this pins the DML side of that distinction.
+   */
+  @Test
+  void beforeCreateTriggerDmlReturnSingleFalseFieldDoesNotVeto() {
+    database.command("sql", "CREATE DOCUMENT TYPE Flag");
+    database.transaction(() -> database.newDocument("Flag").set("active", true).save());
+
+    database.command("sql",
+        """
+            CREATE TRIGGER dml_return_trigger BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'UPDATE Flag SET active = false RETURN AFTER active'""");
+
+    database.transaction(() -> database.newDocument("User").set("name", "NotVetoed").save());
+
+    // the CREATE must proceed: a DML RETURN projection is not a veto, no matter what it evaluates to
+    final ResultSet user = database.query("sql", "SELECT FROM User WHERE name = 'NotVetoed'");
+    assertThat(user.hasNext()).as("a DML trigger body must never veto based on the shape of its RETURN projection").isTrue();
+
+    // and the DML body must actually have run, same as before this fix
+    final ResultSet flag = database.query("sql", "SELECT FROM Flag");
+    assertThat(flag.next().<Boolean>getProperty("active")).isFalse();
+  }
+
   @Test
   void multipleTriggersSameType() {
     database.command("sql",

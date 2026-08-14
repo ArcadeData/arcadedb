@@ -56,7 +56,7 @@ public class SQLTriggerExecutor implements TriggerExecutor {
         params.put("$oldRecord", oldRecord);
       }
 
-      return consume(database.command("sql", sql, params));
+      return consume(database, database.command("sql", sql, params));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
@@ -76,7 +76,7 @@ public class SQLTriggerExecutor implements TriggerExecutor {
       params.put("rid", rid);
       params.put("$rid", rid);
 
-      return consume(database.command("sql", sql, params));
+      return consume(database, database.command("sql", sql, params));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
@@ -92,22 +92,37 @@ public class SQLTriggerExecutor implements TriggerExecutor {
    * The drained result also decides whether the operation continues, giving a SQL body the same veto contract as
    * {@link ScriptTriggerExecutor#execute}: a body that evaluates to a single scalar {@code false} - one row, one
    * property - aborts the operation, exactly what {@code SELECT false} or {@code SELECT <condition> AS ok} looks
-   * like it should do. A multi-row or multi-column result has no unambiguous single answer, so it is drained for
-   * its effects and treated as a pass, same as DML.
+   * like it should do.
+   * <p>
+   * The shape alone is not enough to tell a veto from an accident, though: {@code UPDATE ... RETURN AFTER <field>}
+   * (or {@code RETURN BEFORE}) with a single non-{@code @this} projection item produces that exact same one-row,
+   * one-property {@link Result} - see {@code Projection.calculateSingle} - so a bookkeeping trigger like
+   * {@code UPDATE Flag SET active = false RETURN AFTER active} would trip the same check on an unrelated boolean
+   * field and silently abort the CREATE/UPDATE/DELETE that fired it, something the pre-fix code never did because
+   * it never looked at the result at all. {@link com.arcadedb.query.sql.parser.Statement#isIdempotent()} is exactly
+   * the read/write classification the engine already uses elsewhere (e.g. {@code SQLQueryEngine.query()} rejects a
+   * non-idempotent statement), and only a {@code SELECT} answers true - never {@code INSERT}/{@code UPDATE}/
+   * {@code DELETE}, {@code RETURN} clause or not. Gating on it keeps the veto contract scoped to bodies that look
+   * like {@code SELECT false}, so an existing DML trigger cannot regress: it never produced a single-row,
+   * single-property result before, and now that it might (via {@code RETURN}), that shape is simply not idempotent
+   * and is drained for its effects like any other DML body. The check runs only once a candidate row is already in
+   * hand, so it costs nothing on the far more common multi-row, multi-column or non-projection results.
    */
-  private static boolean consume(final ResultSet result) {
+  private boolean consume(final Database database, final ResultSet result) {
     try (result) {
-      Result single = null;
-      long   count  = 0;
+      Result first = null;
+      long   count = 0;
       while (result.hasNext()) {
         final Result row = result.next();
-        single = count == 0 ? row : null;
+        if (count == 0)
+          first = row;
         count++;
       }
 
-      if (count == 1 && single != null && single.isProjection()) {
-        final Set<String> properties = single.getPropertyNames();
-        if (properties.size() == 1 && Boolean.FALSE.equals(single.getProperty(properties.iterator().next())))
+      if (count == 1 && first.isProjection()) {
+        final Set<String> properties = first.getPropertyNames();
+        if (properties.size() == 1 && Boolean.FALSE.equals(first.getProperty(properties.iterator().next()))
+            && database.getQueryEngine("sql").analyze(sql).isIdempotent())
           return false;
       }
       return true;
