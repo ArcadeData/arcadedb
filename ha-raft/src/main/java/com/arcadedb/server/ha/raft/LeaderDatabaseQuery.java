@@ -110,16 +110,15 @@ public final class LeaderDatabaseQuery {
     final HttpRequest request = builder.build();
 
     if (endpoint.https()) {
-      // A dedicated client carrying the cluster trust context. HttpClient is AutoCloseable on Java 21, so the
-      // selector thread is released after the (rare, opt-in) query rather than leaked. Building one per call is
-      // fine for these infrequent paths (reconcile / opt-in presence); if this ever moves onto a hot path, cache
-      // an SSL-configured client instead.
-      try (final HttpClient client = HttpClient.newBuilder()
+      // A dedicated client carrying the cluster trust context. HttpClient is AutoCloseable on Java 21+ only; on
+      // JDK 17 (this branch's target) there is no close()/shutdown API at all, so the client's own daemon
+      // selector thread is left to time out on its own. Building one per call is fine for these infrequent paths
+      // (reconcile / opt-in presence); if this ever moves onto a hot path, cache an SSL-configured client instead.
+      final HttpClient client = HttpClient.newBuilder()
           .connectTimeout(Duration.ofSeconds(5))
           .sslContext(SnapshotInstaller.buildSSLContext(server))
-          .build()) {
-        return parse(client.send(request, HttpResponse.BodyHandlers.ofString()), endpoint.url());
-      }
+          .build();
+      return parse(client.send(request, HttpResponse.BodyHandlers.ofString()), endpoint.url());
     }
     return parse(HTTP.send(request, HttpResponse.BodyHandlers.ofString()), endpoint.url());
   }

@@ -369,7 +369,9 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
         .build();
 
     final long start = System.currentTimeMillis();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    // HttpClient is AutoCloseable on Java 21+ only; JDK 17 (this branch's target) has no close()/shutdown API.
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
       assertThat(response.statusCode()).as("a streaming client that is answered must be answered correctly")

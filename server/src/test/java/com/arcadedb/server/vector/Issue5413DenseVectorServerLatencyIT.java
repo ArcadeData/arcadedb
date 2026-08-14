@@ -225,19 +225,16 @@ class Issue5413DenseVectorServerLatencyIT extends BaseGraphServerTest {
       bodies[i] = new JSONObject().put("language", "sql").put("command", QUERY).put("params", params).toString();
     }
 
-    try {
-      return run(threads, totalQueries, (idx) -> {
-        final HttpRequest request = HttpRequest.newBuilder(uri).header("Authorization", auth)
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(bodies[idx % bodies.length])).build();
-        final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 200)
-          throw new IllegalStateException("HTTP " + response.statusCode() + ": " + response.body());
-        return response.body().length();
-      });
-    } finally {
-      client.close();
-    }
+    // HttpClient.close() is Java 21+ only; JDK 17 (this branch's target) has no close()/shutdown API.
+    return run(threads, totalQueries, (idx) -> {
+      final HttpRequest request = HttpRequest.newBuilder(uri).header("Authorization", auth)
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(bodies[idx % bodies.length])).build();
+      final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200)
+        throw new IllegalStateException("HTTP " + response.statusCode() + ": " + response.body());
+      return response.body().length();
+    });
   }
 
   private interface Lane {
