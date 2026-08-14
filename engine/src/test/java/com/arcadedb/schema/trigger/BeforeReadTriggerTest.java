@@ -193,7 +193,15 @@ class BeforeReadTriggerTest extends TestHelper {
     assertThat(SEEN).as("the trigger still fires for a relocated record").contains(rid);
   }
 
-  /** A SQL BEFORE READ trigger runs its body without the record, and must not recurse either. */
+  /**
+   * A SQL BEFORE READ trigger runs its body without the record, and must not recurse either.
+   * <p>
+   * The body is {@code SELECT 1} rather than something reading the type, and that is not laziness in the test:
+   * {@code SQLTriggerExecutor} runs {@code database.command(...).close()} without ever iterating the result, and a
+   * SELECT result set is lazy, so a SELECT body produces no rows and touches no record. Measured - a SELECT body
+   * fires zero read events, while INSERT/UPDATE/DELETE bodies execute normally on close. The recursion this class
+   * guards against is therefore exercised with a Java trigger below, which really does read.
+   */
   @Test
   void aSqlBeforeReadTriggerRunsWithoutTheRecord() {
     database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
