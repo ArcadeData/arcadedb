@@ -3522,6 +3522,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * shrink left unused is invisible in the record's own bytes; and the page can hand it away meanwhile
    * ({@code compressPage} closes the hole, an insert takes the released tail), after which this returns the smaller
    * region and the head chunk simply stops there.
+   * <p>
+   * The slot-table scan is the same one {@link #getLastRecordPositionInPage} already costs the growth path on every
+   * update that does not fit in place, against a write that then moves kilobytes of chunk content: there is nothing
+   * to cache here, because the answer is exactly the page state a concurrent commit is allowed to change.
    *
    * @param recordPositionInPage content offset of the head chunk's slot, marker included.
    *
