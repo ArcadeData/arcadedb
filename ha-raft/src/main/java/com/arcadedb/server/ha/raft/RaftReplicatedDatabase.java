@@ -50,6 +50,7 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.UnreferencedFiles;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ArcadeDBException;
@@ -183,6 +184,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private final        AtomicLong                                        schemaInstalmentsShipped = new AtomicLong();
   private final        AtomicLong                                        schemaInstalmentTotalMs  = new AtomicLong();
   private final        AtomicLong                                        schemaInstalmentMaxMs    = new AtomicLong();
+
+  /**
+   * Memoized unreferenced-file count behind the (file modification count, schema version) gate (issue #6168).
+   * <p>
+   * Lives HERE, on the database instance, rather than in a map on the server: the gauge that reads it is refreshed
+   * per open replicated database, so a per-instance holder needs no keying and no eviction - it is collected with
+   * the database it describes. See {@link UnreferencedFiles.MemoizedCount} for why the cached value cannot go stale.
+   */
+  private final        UnreferencedFiles.MemoizedCount                   unreferencedFiles        = new UnreferencedFiles.MemoizedCount();
 
   /**
    * Bookkeeping for a {@code recordFileChanges} session that ships its WAL incrementally (issue #6136).
@@ -2016,6 +2026,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /** The longest single instalment this database has shipped, in milliseconds (issue #6144). */
   public long getSchemaWalInstalmentMaxTimeMs() {
     return schemaInstalmentMaxMs.get();
+  }
+
+  /**
+   * Files this node holds that no schema component claims (issue #6143), memoized behind the gate described on
+   * {@link UnreferencedFiles.MemoizedCount}: the walk runs only when a file or the schema has actually changed
+   * since the last refresh.
+   */
+  public long getUnreferencedFilesCount() {
+    return unreferencedFiles.get(proxied);
   }
 
   @Override

@@ -53,7 +53,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       for (Bucket bucket : additionalBuckets) {
         final String oldBucketName = bucket.getName();
 
-        if (!oldBucketName.endsWith(GraphEngine.OUT_EDGES_SUFFIX) && !oldBucketName.endsWith(GraphEngine.IN_EDGES_SUFFIX))
+        if (!InternalBucketNaming.isEdgeListBucketName(oldBucketName))
           throw new SchemaException(
               "Cannot rename bucket '" + oldBucketName + "' because it does not follow the naming convention");
 

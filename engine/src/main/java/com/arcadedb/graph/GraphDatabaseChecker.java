@@ -28,6 +28,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.InternalBucketNaming;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
@@ -393,8 +394,8 @@ public class GraphDatabaseChecker {
       if (!(type instanceof LocalVertexType))
         continue;
       for (final Bucket vb : type.getBuckets(false)) {
-        addSegmentBucketIfInternal(ids, vb.getName() + GraphEngine.OUT_EDGES_SUFFIX);
-        addSegmentBucketIfInternal(ids, vb.getName() + GraphEngine.IN_EDGES_SUFFIX);
+        addSegmentBucketIfInternal(ids, InternalBucketNaming.outEdgesBucketName(vb.getName()));
+        addSegmentBucketIfInternal(ids, InternalBucketNaming.inEdgesBucketName(vb.getName()));
       }
       // Super-node stripe pool (per type). Pools are created contiguously from slot 0 (see
       // GraphEngine.dropVertexType): sweep until the first gap AT OR PAST the configured pool size, stepping over

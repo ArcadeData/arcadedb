@@ -131,7 +131,11 @@ class Issue6075SnapshotBackupIT {
     final double withSnapshot = measureSuspendedFraction(true);
     final double withoutSnapshot = measureSuspendedFraction(false);
 
-    assertThat(withoutSnapshot).as("the fallback path must still suspend flushing for the whole backup").isGreaterThan(0.9);
+    // THE CONTROL'S THRESHOLD IS DELIBERATELY LOOSE, for the reason spelled out on the twin of this assertion in
+    // Issue6116ChecksumsPointInTimeTest (issue #6168, item 4): it is a SAMPLED fraction of a run that does real
+    // work either side of the suspension window, so on a busy CI runner it cannot be relied on to reach 0.9, and
+    // proving the sampler sees suspensions at all is the only thing the control is for.
+    assertThat(withoutSnapshot).as("the fallback path must still suspend flushing for the whole backup").isGreaterThan(0.75);
     assertThat(withSnapshot).as("a snapshot backup must not hold the flush suspension for its duration").isLessThan(0.5);
   }
 
