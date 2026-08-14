@@ -175,12 +175,13 @@ class Issue5870VectorIndexIdRenumberingTest extends TestHelper {
    * the pre-compaction high-water mark used to be (which would still be correct but would defeat the point of
    * renumbering: the id space would grow unboundedly again on the very first write after every compaction).
    * <p>
-   * The insert runs after a {@link #reopenDatabase()}, not in the same session the compaction ran in: a write
-   * issued immediately after {@code COMPACT INDEX} in the same session does not reach the vector index at all,
-   * independently of this fix (confirmed by reverting it and reproducing the same symptom on unmodified code) -
-   * see issue #6105, filed separately. A reopen forces {@code loadVectorsFromPages} to recompute {@code nextId}
-   * from the (now dense) persisted file, which is the code path a real "compact, then restart, then keep
-   * writing" operational sequence actually takes, and it is what this test pins.
+   * The insert runs after a {@link #reopenDatabase()}, not in the same session the compaction ran in. That was
+   * originally forced on this test: a write issued immediately after {@code COMPACT INDEX} in the same session did
+   * not reach the vector index at all, independently of this fix, which was filed and fixed separately as issue
+   * #6105 (the schema's index registry was left keyed by the name the compaction retired) and is pinned by
+   * {@code Issue6105WriteAfterCompactionTest}. The reopen is kept because it is what this test is actually about:
+   * it forces {@code loadVectorsFromPages} to recompute {@code nextId} from the (now dense) persisted file, which
+   * is the code path a real "compact, then restart, then keep writing" operational sequence takes.
    */
   @Test
   void insertingAfterARenumberingCompactionDoesNotCollideWithAnExistingId() {

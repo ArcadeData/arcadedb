@@ -590,7 +590,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
         previousMutable = mutable;
         previousCompacted = compactedSubIndex;
         mutable = newMutable;
-        indexName = newMutable.getName();
         compactedSubIndex = null;
         currentInsertPageNum = newPages.size() - 1;
         currentMutablePages.set(1);
@@ -600,6 +599,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // which the index answers offsets into a file that no longer exists - a search landing there reads another
         // entry's bytes, or the dropped compacted component through a null reference.
         publishLocationIndex(liveEntries);
+
+        // The rename and the schema re-keying are ONE step and must stay adjacent: `indexName` is volatile and read
+        // without this lock (getName(), which is what TransactionIndexContext keys a lane by), so between these two
+        // statements the index answers to a name the schema does not know yet - a milder recurrence of the very bug
+        // this fixes. Nothing separates them today and nothing should: the registry is keyed by the name the index
+        // answers to, and everything that resolves an index by name goes through it - index maintenance queued on
+        // the transaction above all, which is silently discarded when the name it was queued under is no longer
+        // registered (issue #6105).
+        final String previousIndexName = indexName;
+        indexName = newMutable.getName();
+        ((LocalSchema) database.getSchema()).indexRenamed(previousIndexName, this);
 
         ((LocalSchema) database.getSchema()).setMigratedFileId(oldFileId, newFileId);
         database.getSchema().getEmbedded().saveConfiguration();

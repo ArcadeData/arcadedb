@@ -116,7 +116,18 @@ public class LocalSchema implements Schema {
   final               Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
-  protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
+  // Concurrent, not because the map is written often, but because it is written from threads that are not the ones
+  // reading it and the reads are on the correctness path. DDL (CREATE/DROP INDEX) has always mutated it from
+  // arbitrary user threads while queries resolve index names; since #6105 a compaction re-keys it too
+  // ({@link #indexRenamed}), and an AUTOMATIC compaction runs on the async executor - a thread the writer whose
+  // commit then has to see the new key never synchronizes with. Under a plain HashMap that publication rested on
+  // whichever file lock the two sides happened to share, which is not a guarantee anyone should have to reconstruct.
+  // Null keys and values never reach it, which is what makes the map type safe to change: the accessors below
+  // (existsIndex, getIndexByName, dropIndexInternal, checkIndexIsNotBackingAConstraint) null-guard the one name a
+  // caller supplies, and the three places that touch this field directly rather than through them pass a name that
+  // cannot be null - LocalDocumentType uses the TypeIndex's own name, and ManualIndexBuilder.create() rejects a null
+  // one up front, it being the only route by which a caller-supplied name reaches this map unmediated.
+  protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
@@ -801,7 +812,9 @@ public class LocalSchema implements Schema {
 
   @Override
   public boolean existsIndex(final String indexName) {
-    return indexMap.containsKey(indexName);
+    // Null-guarded because indexMap is a ConcurrentHashMap, which rejects a null key with an NPE where the previous
+    // HashMap simply answered "absent". Callers pass a name straight from SQL, so keep the old answer.
+    return indexName != null && indexMap.containsKey(indexName);
   }
 
   @Override
@@ -830,7 +843,7 @@ public class LocalSchema implements Schema {
    * unique = false} - which drops the flag and this index together.
    */
   private void checkIndexIsNotBackingAConstraint(final String indexName) {
-    final IndexInternal index = indexMap.get(indexName);
+    final IndexInternal index = indexName != null ? indexMap.get(indexName) : null;
     if (index == null || index.getTypeName() == null || !existsType(index.getTypeName()))
       return;
 
@@ -848,7 +861,7 @@ public class LocalSchema implements Schema {
         multipleUpdate = true;
 
       try {
-        final IndexInternal index = indexMap.get(indexName);
+        final IndexInternal index = indexName != null ? indexMap.get(indexName) : null;
         if (index == null)
           return null;
 
@@ -1229,7 +1242,9 @@ public class LocalSchema implements Schema {
 
   @Override
   public Index getIndexByName(final String indexName) {
-    final Index p = indexMap.get(indexName);
+    // Same null guard as existsIndex: a null name must still surface as "not found", not as the NPE a
+    // ConcurrentHashMap raises on a null key.
+    final Index p = indexName != null ? indexMap.get(indexName) : null;
     if (p == null)
       throw new SchemaException("Index with name '" + indexName + "' was not found");
     return p;
@@ -2495,6 +2510,41 @@ public class LocalSchema implements Schema {
 
   public Integer getMigratedFileId(final int oldFileId) {
     return migratedFileIds.get(oldFileId);
+  }
+
+  /**
+   * Re-keys {@code indexMap} after an index changed the name it answers to, so the schema keeps resolving it under
+   * {@link IndexInternal#getName()} at every moment of its life.
+   * <p>
+   * Only {@link com.arcadedb.index.vector.LSMVectorIndex} renames itself: it is named after the component file it
+   * holds and a compaction swaps that file in, a rename every node has to follow or a leader's schema stops matching
+   * the followers that rebuilt the index from the file it shipped them. Every other index type keeps its creation
+   * name for life, which is why this had no counterpart before.
+   * <p>
+   * Leaving the map keyed by the retired name is not a cosmetic inconsistency: index maintenance is queued on
+   * {@link com.arcadedb.database.TransactionIndexContext} under {@code index.getName()}, and its {@code commit()}
+   * opens by discarding the lanes of indexes the schema no longer knows - the TYPE DROP case. A freshly compacted
+   * vector index matched that filter exactly, so the first writes after a {@code COMPACT INDEX} were dropped without
+   * a word while the records themselves were written (issue #6105).
+   * <p>
+   * The new name is published BEFORE the old one is retired, so a concurrent lookup sees the index under one name or
+   * transiently under both, never under neither. The removal is conditional on the value so a name already taken over
+   * by another index - two components can only share a name after a hand-edited or restored schema, but the map is
+   * the only thing standing between that and a lost registration - is left alone.
+   *
+   * @param oldName the name the index was registered under
+   * @param index   the index, already answering to its new name
+   */
+  public void indexRenamed(final String oldName, final IndexInternal index) {
+    final String newName = index.getName();
+    if (newName == null || newName.equals(oldName))
+      return;
+
+    LogManager.instance().log(this, Level.FINE, "Index '%s' renamed to '%s'", null, oldName, newName);
+
+    indexMap.put(newName, index);
+    if (oldName != null)
+      indexMap.remove(oldName, index);
   }
 
   public boolean isDirty() {
