@@ -151,7 +151,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // gRPC routing table so a caller refused on a follower is told an address it can actually dial (issue #6091).
   private final    Map<RaftPeerId, String> grpcAddresses      = new HashMap<>();
   // Logged at most once per protocol: warns operators that routing addresses are derived, not configured.
-  private final    Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> routingFallbackWarned = createRoutingFallbackLatches();
+  private final    Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> routingFallbackWarned = createRoutingProtocolLatches();
+  // Logged at most once per protocol: warns that peers resolved to a shared address and were not advertised.
+  private final    Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> routingAmbiguityWarned = createRoutingProtocolLatches();
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
   private final    String                  clusterName;
 
@@ -1680,26 +1682,126 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Builds a single-snapshot routing table for one client protocol (leader as writer, followers as readers)
    * from one {@link #getLeaderId()} read, so a concurrent leader change cannot make the writer and reader sets
-   * mutually inconsistent. Returns {@code null} when no leader is known or the leader has no resolvable
-   * address for that protocol. Readers reflect the configured cluster membership, matching
-   * {@link #getReplicaAddresses()}; peers whose address cannot be resolved are skipped.
+   * mutually inconsistent. Returns {@code null} when no leader is known, the leader has no resolvable
+   * address for that protocol, or that address cannot be told apart from a follower's (see
+   * {@link #selectUnambiguousRouting}). Readers reflect the configured cluster membership, matching
+   * {@link #getReplicaAddresses()}; peers whose address cannot be resolved, or resolved to an address another
+   * peer claims too, are skipped.
+   * <p>
+   * The ambiguity filter is deliberately confined to the client-routing view and is <b>not</b> applied to the
+   * HTTP addresses behind {@link #getReplicaAddresses()} or {@code getStats()}: those feed cluster reporting
+   * and peer-to-peer snapshot transfer, where withholding a best-effort address does harm and no client ever
+   * auto-redirects onto it. Here an address is handed to a client precisely so it can dial it unattended.
    */
   public HAServerPlugin.RoutingTable getRoutingTable(final HAServerPlugin.ROUTING_PROTOCOL protocol) {
     final RaftPeerId leaderId = getLeaderId();
     if (leaderId == null)
       return null;
-    final String writer = resolveRoutingAddress(protocol, leaderId);
+    // Read once and passed down: the "was this declared or derived?" flag below and the address the resolver
+    // returns must come from the same map, or a future second source could make them disagree about a peer.
+    final Map<RaftPeerId, String> declared = declaredRoutingAddresses(protocol);
+
+    final String writer = resolveRoutingAddress(protocol, declared, leaderId);
     if (writer == null)
       return null;
-    final List<String> readers = new ArrayList<>();
-    for (final RaftPeer peer : raftGroup.getPeers()) {
-      if (!peer.getId().equals(leaderId)) {
-        final String reader = resolveRoutingAddress(protocol, peer.getId());
-        if (reader != null)
-          readers.add(reader);
-      }
+
+    final Collection<RaftPeer> peers = raftGroup.getPeers();
+
+    // Index 0 is always the writer, so one pair of arrays carries the whole view and the ambiguity check can
+    // see the leader and the followers at once. A peer that resolves to nothing is skipped, exactly as before.
+    //
+    // The +1 is not slack: raftGroup is final and holds the peers HA_SERVER_LIST was parsed into, while the
+    // leader comes from live Ratis state, so a leader that joined at runtime (addPeer, the Kubernetes
+    // auto-join) is not in getPeers() and the writer occupies a slot beyond it. Sizing to peers.size() would
+    // put an ArrayIndexOutOfBoundsException on the Bolt ROUTE path in exactly that window.
+    final String[] addresses = new String[peers.size() + 1];
+    final boolean[] fromConfig = new boolean[addresses.length];
+    addresses[0] = writer;
+    fromConfig[0] = declared.containsKey(leaderId);
+    int resolved = 1;
+
+    for (final RaftPeer peer : peers) {
+      if (peer.getId().equals(leaderId))
+        continue;
+      final String reader = resolveRoutingAddress(protocol, declared, peer.getId());
+      if (reader == null)
+        continue;
+      addresses[resolved] = reader;
+      fromConfig[resolved] = declared.containsKey(peer.getId());
+      ++resolved;
     }
-    return new HAServerPlugin.RoutingTable(protocol, writer, List.copyOf(readers));
+
+    final HAServerPlugin.RoutingTable table = selectUnambiguousRouting(protocol, addresses, fromConfig, resolved);
+    if (table == null || table.readers().size() < resolved - 1)
+      warnAmbiguousRouting(protocol);
+    return table;
+  }
+
+  /**
+   * Drops from a resolved routing view every address that cannot be attributed to a single peer, and returns
+   * {@code null} when the writer's own address is one of them.
+   * <p>
+   * Two peers can never legitimately answer on one {@code host:port} for one protocol - they would be fighting
+   * over the socket - so an address claimed by two peers identifies at most one of them and the resolver has no
+   * way to say which. That is not a hypothetical: with no {@code bolt:}/{@code grpc:} field declared, a peer's
+   * endpoint is derived as its Raft host plus <em>this</em> node's port, so on a cluster whose nodes differ by
+   * port rather than by host (several nodes on one machine, a dev or test deployment) every peer derives to the
+   * same address and the "leader" a follower advertises is the follower itself. A caller that redirects
+   * automatically - the point of the gRPC refusal trailers (issue #6091) - would dial the node that just
+   * refused it, be refused again, and loop.
+   * <p>
+   * A <b>declared</b> address outranks a derived one when the two collide: the operator stated it, and the
+   * collision only proves the guess wrong. Two declared addresses colliding is a configuration error with no
+   * defensible winner, so neither is advertised.
+   * <p>
+   * {@code null} is the answer both callers already handle: Bolt's ROUTE falls back to advertising this node as
+   * READ/ROUTE (never writer) and the gRPC refusal falls back to naming the leader's HTTP address. Both degrade
+   * to what they did before the address could be resolved at all, which beats a confidently wrong one.
+   * Package-private for testing.
+   *
+   * @param addresses  resolved addresses, the writer's at index 0
+   * @param fromConfig whether the address at the same index was declared rather than derived
+   * @param count      number of populated entries in both arrays
+   */
+  static HAServerPlugin.RoutingTable selectUnambiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol,
+      final String[] addresses, final boolean[] fromConfig, final int count) {
+    // address -> {peers claiming it, of which declared}. Sized for the group: this runs per ROUTE request and
+    // per refusal, never on a data path.
+    final Map<String, int[]> claims = new HashMap<>(count * 2);
+    for (int i = 0; i < count; i++) {
+      final int[] claim = claims.computeIfAbsent(addresses[i], a -> new int[2]);
+      ++claim[0];
+      if (fromConfig[i])
+        ++claim[1];
+    }
+
+    if (!identifiesOnePeer(claims.get(addresses[0]), fromConfig[0]))
+      return null;
+
+    final List<String> readers = new ArrayList<>(count - 1);
+    for (int i = 1; i < count; i++)
+      if (identifiesOnePeer(claims.get(addresses[i]), fromConfig[i]))
+        readers.add(addresses[i]);
+
+    return new HAServerPlugin.RoutingTable(protocol, addresses[0], List.copyOf(readers));
+  }
+
+  /** True when the address this claim describes belongs to exactly one peer, or to the only one that declared it. */
+  private static boolean identifiesOnePeer(final int[] claim, final boolean declared) {
+    return claim[0] == 1 || (declared && claim[1] == 1);
+  }
+
+  /** Tells the operator, once per protocol, that peers shared an address and what to write to fix it. */
+  private void warnAmbiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol) {
+    if (!routingAmbiguityWarned.get(protocol).compareAndSet(false, true))
+      return;
+    final String field = routingConfigField(protocol);
+    LogManager.instance().log(this, Level.WARNING,
+        "HA %s routing is ambiguous: two or more cluster peers resolved to the same %s address, which two listening "
+            + "sockets cannot both own. The peers that cannot be told apart are not advertised, and nothing is advertised "
+            + "at all when the leader is one of them. Declare each node's %s port explicitly with the "
+            + "'host:{raft:..,%s:..}' object syntax in %s.",
+        protocol.name(), protocol.name(), protocol.name(), field, GlobalConfiguration.HA_SERVER_LIST.getKey());
   }
 
   /**
@@ -1736,11 +1838,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * is correct only for homogeneous deployments where every node listens on the same port (e.g. a Kubernetes
    * StatefulSet); a one-time WARNING per protocol is logged so operators declare explicit ports for
    * heterogeneous clusters. Returns {@code null} when the peer is unknown or the local port is unavailable.
+   *
+   * @param declared the declared-address map for this protocol, passed in so the caller and this method cannot
+   *                 disagree about which peers were declared
    */
-  private String resolveRoutingAddress(final HAServerPlugin.ROUTING_PROTOCOL protocol, final RaftPeerId peerId) {
+  private String resolveRoutingAddress(final HAServerPlugin.ROUTING_PROTOCOL protocol,
+      final Map<RaftPeerId, String> declared, final RaftPeerId peerId) {
     if (peerId == null)
       return null;
-    final String configured = declaredRoutingAddresses(protocol).get(peerId);
+    final String configured = declared.get(peerId);
     if (configured != null)
       return configured;
     final int localPort = localRoutingPort(protocol);
@@ -1779,7 +1885,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /** One "already warned" latch per client protocol, so a derived Bolt address does not mute the gRPC warning. */
-  private static Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> createRoutingFallbackLatches() {
+  private static Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> createRoutingProtocolLatches() {
     final Map<HAServerPlugin.ROUTING_PROTOCOL, AtomicBoolean> latches = new EnumMap<>(
         HAServerPlugin.ROUTING_PROTOCOL.class);
     for (final HAServerPlugin.ROUTING_PROTOCOL protocol : HAServerPlugin.ROUTING_PROTOCOL.values())

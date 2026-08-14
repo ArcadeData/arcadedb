@@ -132,10 +132,16 @@ public interface HAServerPlugin extends ServerPlugin {
 
   /**
    * Returns a single-snapshot routing table for the given client protocol, or null when HA is inactive,
-   * no leader is currently known, or the leader has no resolvable address for that protocol. Readers reflect
-   * the configured cluster membership (parity with {@link #getReplicaAddresses()}); a down or partitioned
-   * follower is still advertised until it leaves the group, and the client fails over. Used to build the
-   * Bolt ROUTE response and to name a dialable leader when a gRPC RPC refuses work only the leader may run.
+   * no leader is currently known, or the leader has no address for that protocol that identifies it and no
+   * other peer. Readers reflect the configured cluster membership (parity with {@link #getReplicaAddresses()});
+   * a down or partitioned follower is still advertised until it leaves the group, and the client fails over.
+   * Used to build the Bolt ROUTE response and to name a dialable leader when a gRPC RPC refuses work only the
+   * leader may run.
+   * <p>
+   * An address two peers both resolve to identifies neither - two listening sockets cannot share one
+   * {@code host:port} - so such peers are left out, and nothing is returned at all when the leader is one of
+   * them (issue #6183). Callers must handle null as "no routing information", never as "this node is the
+   * writer".
    */
   default RoutingTable getRoutingTable(final ROUTING_PROTOCOL protocol) {
     return null;

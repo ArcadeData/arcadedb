@@ -33,8 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The addresses here are <b>declared</b>, with the object-form {@code grpc:} field, which is the case that has to
  * work for a heterogeneous deployment - and the only one an in-process cluster can exercise honestly, since three
- * nodes sharing localhost cannot share a port. {@link Issue6091GrpcRoutingTableDerivedIT} covers the other half,
- * the derive-from-this-node's-port fallback used when nothing is declared.
+ * nodes sharing localhost cannot share a port. The other half - the derive-from-this-node's-port fallback used when
+ * nothing is declared - is covered by {@link Issue6183AmbiguousRoutingTest} for the derive itself and by
+ * {@link Issue6183AmbiguousRoutingIT} for what a cluster of same-host peers ends up advertising, which is nothing:
+ * a derived address that fits every peer identifies none of them (issue #6183).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -91,9 +93,11 @@ class Issue6091GrpcRoutingTableIT extends BaseRaftHATest {
   }
 
   /**
-   * Bolt and gRPC resolve through the same code with different inputs. This cluster declares gRPC ports and no
-   * Bolt ones, so the two tables must disagree: if they agreed, one protocol would be reading the other's map -
-   * the single failure a shared resolver can introduce that a one-protocol test cannot see.
+   * Bolt and gRPC resolve through the same code with different inputs, so a protocol reading the other's map is
+   * the one failure a shared resolver can introduce that a one-protocol test cannot see. This cluster declares
+   * gRPC ports and no Bolt ones, which separates the two completely: gRPC resolves per peer, while Bolt derives
+   * every peer to this node's own Bolt port and is therefore suppressed as ambiguous (issue #6183). A Bolt table
+   * that came back at all - let alone one equal to the gRPC table - would mean the maps had been crossed.
    */
   @Test
   void theBoltTableIsNotTheGrpcTable() {
@@ -106,10 +110,7 @@ class Issue6091GrpcRoutingTableIT extends BaseRaftHATest {
         .getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.BOLT);
 
     assertThat(grpc.writer()).isEqualTo("localhost:" + (BASE_GRPC + leaderIndex));
-    assertThat(bolt).isNotNull();
-    assertThat(bolt.protocol()).isEqualTo(HAServerPlugin.ROUTING_PROTOCOL.BOLT);
-    // No bolt: field declared, so Bolt falls back to this node's Bolt port - which is not a gRPC port.
-    assertThat(bolt.writer()).isNotEqualTo(grpc.writer());
+    assertThat(bolt).as("three nodes on one host with no bolt: field declared cannot be told apart").isNull();
   }
 
   /**
