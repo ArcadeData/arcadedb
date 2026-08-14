@@ -2907,7 +2907,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * replicated database rejects on a follower - indistinguishable to a caller (issue #6183): same status, same
    * trailers, same typed exception rebuilt on the client. All that is left to choose here is the wording.
    */
-  private StatusRuntimeException notTheLeader(final HAServerPlugin ha, final String rpc, final String why) {
+  private static StatusRuntimeException notTheLeader(final HAServerPlugin ha, final String rpc, final String why) {
     return GrpcErrorMapper.toStatusRuntimeException(
         new ServerIsNotTheLeaderException("this server is not the cluster leader and " + why, null), rpc, ha);
   }

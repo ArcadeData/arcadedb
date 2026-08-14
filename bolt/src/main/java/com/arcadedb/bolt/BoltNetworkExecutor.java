@@ -1065,14 +1065,16 @@ public class BoltNetworkExecutor extends Thread {
       servers.add(roleEntry(readers.isEmpty() ? List.of(writer) : readers, "READ"));
       servers.add(roleEntry(routers, "ROUTE"));
     } else {
-      // No known leader. Advertise this node using the actual bound Bolt port of this connection rather
-      // than the global default.
+      // No usable routing table. Advertise this node using the actual bound Bolt port of this connection
+      // rather than the global default.
       final String address = getBoltAddress(socket.getLocalPort());
       if (ha != null) {
-        // HA is active but the leader is not known yet (e.g. mid-election): advertise this node as reader
-        // and router only - never writer, since it may be a follower. The driver keeps reading and
-        // re-routes after the TTL, receiving a writer once the leader is known, instead of sending a write
-        // to a follower and getting an error.
+        // HA is active but the cluster cannot name a writer to advertise: either no leader is known yet
+        // (mid-election), or the leader's address cannot be told apart from a follower's because the nodes
+        // share a host and no bolt: port was declared (issue #6183). Either way this node goes out as reader
+        // and router only - never writer, since it may be a follower. The driver keeps reading and re-routes
+        // after the TTL, receiving a writer once the cluster can name one, instead of sending a write to a
+        // follower and getting an error.
         servers.add(roleEntry(List.of(address), "READ"));
         servers.add(roleEntry(List.of(address), "ROUTE"));
       } else {
