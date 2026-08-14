@@ -201,5 +201,18 @@ public class OrBlock extends BooleanExpression {
     }
     return false;
   }
+
+  @Override
+  public boolean isAlwaysFalse(final CommandContext context) {
+    if (subBlocks.isEmpty())
+      return false;
+
+    // the disjunction is false only when every one of its alternatives is
+    for (final BooleanExpression exp : subBlocks) {
+      if (!exp.isAlwaysFalse(context))
+        return false;
+    }
+    return true;
+  }
 }
 /* JavaCC - OriginalChecksum=98d3077303a598705894dbb7bd4e1573 (do not edit this line) */

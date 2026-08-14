@@ -228,5 +228,15 @@ public class AndBlock extends BooleanExpression {
     }
     return true;
   }
+
+  @Override
+  public boolean isAlwaysFalse(final CommandContext context) {
+    // an empty AND block is the neutral element, ie. TRUE
+    for (final BooleanExpression exp : subBlocks) {
+      if (exp.isAlwaysFalse(context))
+        return true;
+    }
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=cf1f66cc86cfc93d357f9fcdfa4a4604 (do not edit this line) */

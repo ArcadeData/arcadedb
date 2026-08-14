@@ -44,16 +44,11 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.parser.AndBlock;
-import com.arcadedb.query.sql.parser.BaseExpression;
-import com.arcadedb.query.sql.parser.BinaryCondition;
-import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.MatchStatement;
-import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -1272,112 +1267,13 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private boolean isAlwaysFalseFilter(final WhereClause where, final CommandContext context) {
-    return where != null && isAlwaysFalse(where.baseExpression, context);
+    return where != null && where.isAlwaysFalse(context);
   }
 
   private SelectStatement selectedSubQuery(final SelectStatement select) {
     final FromClause target = select.getTarget();
     final FromItem item = target != null ? target.getItem() : null;
     return item != null && item.getStatement() instanceof SelectStatement subQuery ? subQuery : null;
-  }
-
-  /**
-   * Tells whether a boolean expression is false for every row without looking at any of them, which is how a
-   * client marks a query as a schema probe ({@code WHERE 1=0}). The expression is read in the disjunctive normal
-   * form the planner itself uses, so the answer holds through parentheses, ANDs and ORs alike: the whole filter
-   * is false only when every alternative carries a term that is. Only comparisons between operands that need no
-   * record to be computed are evaluated, so nothing here can touch the database or throw on a missing row.
-   */
-  private boolean isAlwaysFalse(final BooleanExpression expression, final CommandContext context) {
-    if (expression == null)
-      return false;
-
-    final List<AndBlock> alternatives = expression.flatten();
-    if (alternatives == null || alternatives.isEmpty())
-      return false;
-
-    for (final AndBlock alternative : alternatives) {
-      final List<BooleanExpression> terms = alternative.getSubBlocks();
-      if (terms == null || terms.isEmpty())
-        return false;
-
-      boolean falseTerm = false;
-      for (final BooleanExpression term : terms) {
-        if (term instanceof BinaryCondition condition && isConstantFalseComparison(condition, context)) {
-          falseTerm = true;
-          break;
-        }
-      }
-
-      if (!falseTerm)
-        return false;
-    }
-
-    return true;
-  }
-
-  private boolean isConstantFalseComparison(final BinaryCondition condition, final CommandContext context) {
-    if (!isLiteral(condition.left) || !isLiteral(condition.right))
-      return false;
-
-    try {
-      return Boolean.FALSE.equals(condition.evaluate((Result) null, context));
-    } catch (final Exception e) {
-      return false;
-    }
-  }
-
-  /**
-   * Whether the expression is built out of literals alone - a number, a string, a boolean, null, or arithmetic
-   * over them.
-   * <p>
-   * This is deliberately narrower than {@link Expression#isEarlyCalculated}, which only asks whether an
-   * expression can be computed without a record. That admits any function call whose arguments need no record,
-   * and nothing on {@code SQLFunction} distinguishes a pure function from one with a side effect. The question
-   * being answered here - "is this filter a schema probe?" - is asked of every query that returns no rows, the
-   * vast majority of which are not probes at all, so it must never reach a function: a query filtering on
-   * {@code someStatefulFunction() = 42} would otherwise have that function invoked once more just to be
-   * classified.
-   */
-  private boolean isLiteral(final Expression expression) {
-    if (expression == null)
-      return false;
-
-    if (expression.isNull || expression.booleanValue != null)
-      return true;
-
-    // a RID, a JSON object, a nested condition or an array concatenation is never a literal comparison operand
-    if (expression.rid != null || expression.json != null || expression.whereCondition != null
-        || expression.arrayConcatExpression != null)
-      return false;
-
-    return isLiteral(expression.mathExpression);
-  }
-
-  private boolean isLiteral(final MathExpression expression) {
-    if (expression == null)
-      return false;
-
-    if (expression instanceof BaseExpression base) {
-      // a modifier is a method call or a field/index access applied to the value: no longer a bare literal
-      if (base.modifier != null)
-        return false;
-      if (base.number != null || base.string != null || base.isNull)
-        return true;
-      return base.expression != null && isLiteral(base.expression);
-    }
-
-    // a compound arithmetic expression is a literal one only when every one of its operands is
-    final List<MathExpression> operands = expression.childExpressions;
-    if (operands == null || operands.isEmpty())
-      return false;
-
-    for (final MathExpression operand : operands) {
-      if (!isLiteral(operand))
-        return false;
-    }
-
-    return true;
   }
 
   private void writeRowDescription(final Map<String, PostgresType> columns) {

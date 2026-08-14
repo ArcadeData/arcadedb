@@ -201,6 +201,15 @@ public class WhereClause extends SimpleNode {
     return flattened;
   }
 
+  /**
+   * Whether this filter discards every record, decidable from the statement alone (eg. {@code WHERE 1=0}).
+   *
+   * @see BooleanExpression#isAlwaysFalse(CommandContext)
+   */
+  public boolean isAlwaysFalse(final CommandContext context) {
+    return baseExpression != null && baseExpression.isAlwaysFalse(context);
+  }
+
   public void setBaseExpression(final BooleanExpression baseExpression) {
     this.baseExpression = baseExpression;
   }

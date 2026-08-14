@@ -242,9 +242,13 @@ public class SelectExecutionPlanner {
     if (info.expand && info.distinct)
       throw new CommandExecutionException("Cannot execute a statement with DISTINCT expand(), please use a subquery");
 
+    // A statement whose own text proves that it cannot return a row is answered without touching the storage. This is
+    // read off the clauses as the statement wrote them, before optimizeQuery() rearranges them into index searches.
+    final String emptyReason = emptyByConstructionReason(context);
+
     optimizeQuery(info, context);
 
-    if (handleHardwiredOptimizations(selectExecutionPlan, context))
+    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context))
       return selectExecutionPlan;
 
     handleGlobalLet(selectExecutionPlan, info, context);
@@ -266,26 +270,81 @@ public class SelectExecutionPlanner {
 
     handleFetchFromTarget(selectExecutionPlan, info, context);
 
-    if (info.globalLetPresent)
-      // do the raw fetch remotely, then do the rest on the coordinator
+    if (emptyReason != null)
+      foldEmptyByConstruction(selectExecutionPlan, info, context, emptyReason);
+    else {
+      if (info.globalLetPresent)
+        // do the raw fetch remotely, then do the rest on the coordinator
+        buildExecutionPlan(selectExecutionPlan, info);
+
+      handleLet(selectExecutionPlan, info, context);
+
+      handleWhere(selectExecutionPlan, info, context);
+
       buildExecutionPlan(selectExecutionPlan, info);
 
-    handleLet(selectExecutionPlan, info, context);
+      handleProjectionsBlock(selectExecutionPlan, info, context);
 
-    handleWhere(selectExecutionPlan, info, context);
-
-    buildExecutionPlan(selectExecutionPlan, info);
-
-    handleProjectionsBlock(selectExecutionPlan, info, context);
-
-    if (info.timeout != null)
-      selectExecutionPlan.chain(new AccumulatingTimeoutStep(info.timeout, context));
+      if (info.timeout != null)
+        selectExecutionPlan.chain(new AccumulatingTimeoutStep(info.timeout, context));
+    }
 
     if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached()
         && db.getExecutionPlanCache().getLastInvalidation() < planningStart)
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan);
 
     return selectExecutionPlan;
+  }
+
+  /**
+   * Tells whether the statement cannot return a row no matter what the database contains, and why - the reason is
+   * what the plan prints in place of the fetch it does not do. {@code null} means "not decidable from the statement",
+   * which is the answer for everything but the two shapes below.
+   * <p>
+   * Both are how a client asks for a query's columns without asking for its rows: Spark and several BI tools over the
+   * Postgres wire send one such probe per pushed-down query, against the real target (issue #6174).
+   * <p>
+   * The two reasons are not decided the same way. A constant-false filter is folded only when the statement itself
+   * says so, never through a function - see {@link Expression#isLiteral()}. A {@code LIMIT 0} truncates the result to
+   * nothing whatever the filter would have done, so the filter is simply not evaluated: a predicate that raises at
+   * runtime ({@code WHERE 1/0 = 1 LIMIT 0}) stops raising, which is the one way the difference can be observed.
+   */
+  private String emptyByConstructionReason(final CommandContext context) {
+    if (info.whereClause != null && info.whereClause.isAlwaysFalse(context))
+      return "the filter is false for every record";
+
+    if (info.limit != null && info.limit.isAlwaysEmpty())
+      return "LIMIT 0";
+
+    return null;
+  }
+
+  /**
+   * Replaces the target fetch with an {@link EmptySourceStep} and leaves the rest of the plan alone. The fetch has
+   * already been planned when this runs, and is discarded rather than skipped, so a statement that names a type that
+   * does not exist is still reported as such - only the scan goes.
+   * <p>
+   * Everything downstream of the fetch is kept and receives no row, which is exactly what it receives today from the
+   * filter step this fold removes: {@code SELECT count(*) FROM T WHERE 1=0} still counts to zero and still returns
+   * its one row, and the same clause with a GROUP BY still returns none. What the fold does skip is the per-record
+   * {@code LET} and the per-record work the projections would do, neither of which can be observed by a statement
+   * that returns no row. A {@code LET} evaluated once per statement is chained ahead of this step and still runs.
+   */
+  private void foldEmptyByConstruction(final SelectExecutionPlan plan, final QueryPlanningInfo info,
+      final CommandContext context, final String reason) {
+    // the fetch steps are dropped, not chained: close them so that a step which took something in its constructor
+    // (a sub-plan, an index reference) does not outlive the plan that will never run it
+    if (info.fetchExecutionPlan != null && !info.fetchExecutionPlan.getSteps().isEmpty())
+      info.fetchExecutionPlan.close();
+
+    info.fetchExecutionPlan = null;
+
+    plan.chain(new EmptySourceStep(context, reason));
+
+    handleProjectionsBlock(plan, info, context);
+
+    if (info.timeout != null)
+      plan.chain(new AccumulatingTimeoutStep(info.timeout, context));
   }
 
   public static void handleProjectionsBlock(final SelectExecutionPlan result, final QueryPlanningInfo info,
@@ -423,8 +482,25 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().get(0), context));
+    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
+    handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
+  }
+
+  /**
+   * A hardwired plan replaces the whole step chain, so the SKIP and LIMIT of the statement have to be chained here or
+   * they are not chained at all - which is how {@code SELECT count(*) FROM T SKIP 1}, and equally
+   * {@code SELECT max(indexedProperty) FROM T SKIP 1}, used to hand back the very row they were told to skip. The
+   * single row these plans produce makes both steps cheap; {@code LIMIT 0} does not even reach this point,
+   * {@link #emptyByConstructionReason} claims it first.
+   */
+  private static void handleSkipAndLimitAfterHardwired(final SelectExecutionPlan result, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.skip != null)
+      result.chain(new SkipExecutionStep(info.skip, context));
+
+    if (info.limit != null)
+      result.chain(new LimitExecutionStep(info.limit, context));
   }
 
   private boolean handleHardwiredCountOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info,
@@ -445,13 +521,15 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info)) {
       return false;
     }
-    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().get(0), context));
+    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
+    handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
 
   /**
    * returns true if the query is minimal, ie. no WHERE condition, no UNWIND, no GROUP/ORDER BY, no LET.
-   * SKIP/LIMIT are allowed because all hardwired optimizations (count, max, min) return a single row.
+   * SKIP/LIMIT are allowed because all hardwired optimizations (count, max, min) return a single row, and because
+   * the plan chains the two steps itself - see {@link #handleSkipAndLimitAfterHardwired}.
    */
   private boolean isMinimalQuery(final QueryPlanningInfo info) {
     return info.projectionAfterOrderBy == null && info.globalLetClause == null && info.perRecordLetClause == null
@@ -549,7 +627,8 @@ public class SelectExecutionPlanner {
       return false;
 
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().get(0), maxMinInfo.isMax, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
+    handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
 

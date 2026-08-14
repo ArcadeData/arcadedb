@@ -354,6 +354,18 @@ public class BaseExpression extends MathExpression {
     return identifier != null && modifier == null && identifier.isBaseIdentifier();
   }
 
+  @Override
+  public boolean isLiteral() {
+    // a modifier is a method call or a field/index access applied to the value: no longer a bare literal
+    if (modifier != null)
+      return false;
+
+    if (number != null || string != null || isNull)
+      return true;
+
+    return expression != null && expression.isLiteral();
+  }
+
   public boolean isEarlyCalculated(CommandContext context) {
     if (number != null || inputParam != null || string != null)
       return true;
