@@ -21,10 +21,13 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Trigger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -229,6 +232,128 @@ class TriggerSQLTest extends TestHelper {
     // Verify record was not created
     final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'Test'");
     assertThat(result.hasNext()).isFalse();
+  }
+
+  /**
+   * A {@code SELECT} trigger body used to be a complete no-op: {@code SQLTriggerExecutor} closed the result set
+   * without ever iterating it, and a {@code SELECT} result set in ArcadeDB is pull-based, so nothing behind it ever
+   * ran. This proves the body now actually executes by calling a Java function with a real side effect from a plain
+   * projection - no FROM clause, no record touched, nothing eager about it except the fix.
+   */
+  @Test
+  void beforeCreateTriggerSelectBodyActuallyExecutes() throws Exception {
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("triggerProbe", SelectBodyProbe.class));
+    try {
+      SelectBodyProbe.CALLS.set(0);
+
+      database.command("sql",
+          """
+              CREATE TRIGGER select_body_trigger BEFORE CREATE ON TYPE User \
+              EXECUTE SQL 'SELECT `triggerProbe.bump`()'""");
+
+      database.transaction(() -> database.newDocument("User").set("name", "Selecta").save());
+
+      assertThat(SelectBodyProbe.CALLS.get())
+          .as("a SELECT trigger body must actually run rather than being silently skipped").isEqualTo(1);
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("triggerProbe");
+    }
+  }
+
+  /** Invoked from SQL as {@code `triggerProbe.bump`()}, see {@link #beforeCreateTriggerSelectBodyActuallyExecutes()}. */
+  public static class SelectBodyProbe {
+    static final AtomicInteger CALLS = new AtomicInteger();
+
+    public static int bump() {
+      return CALLS.incrementAndGet();
+    }
+  }
+
+  /**
+   * The SQL arm of the veto contract already in place for JavaScript ({@link #beforeCreateTriggerAbort()}) and Java
+   * ({@code TestJavaAbortTrigger}): a body that evaluates to a single scalar {@code false} aborts the operation.
+   */
+  @Test
+  void beforeCreateTriggerAbortSQL() {
+    database.command("sql",
+        """
+            CREATE TRIGGER abort_trigger_sql BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'SELECT false'""");
+
+    // Record creation should be silently aborted (no exception, just not saved)
+    database.transaction(() -> database.newDocument("User").set("name", "Test").save());
+
+    // Verify record was not created
+    final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'Test'");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  /**
+   * {@code UPDATE ... RETURN AFTER <field>} with a single non-{@code @this} projection item produces the exact
+   * same shape the veto check looks for - one row, one property - so a bookkeeping DML body whose returned field
+   * happens to be {@code false} must NOT be misread as {@code SELECT false}. Only a body that is actually
+   * idempotent (a {@code SELECT}) can veto; this pins the DML side of that distinction.
+   */
+  @Test
+  void beforeCreateTriggerDmlReturnSingleFalseFieldDoesNotVeto() {
+    database.command("sql", "CREATE DOCUMENT TYPE Flag");
+    database.transaction(() -> database.newDocument("Flag").set("active", true).save());
+
+    database.command("sql",
+        """
+            CREATE TRIGGER dml_return_trigger BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'UPDATE Flag SET active = false RETURN AFTER active'""");
+
+    database.transaction(() -> database.newDocument("User").set("name", "NotVetoed").save());
+
+    // the CREATE must proceed: a DML RETURN projection is not a veto, no matter what it evaluates to
+    final ResultSet user = database.query("sql", "SELECT FROM User WHERE name = 'NotVetoed'");
+    assertThat(user.hasNext()).as("a DML trigger body must never veto based on the shape of its RETURN projection").isTrue();
+
+    // and the DML body must actually have run, same as before this fix
+    final ResultSet flag = database.query("sql", "SELECT FROM Flag");
+    assertThat(flag.next().<Boolean>getProperty("active")).isFalse();
+  }
+
+  /**
+   * The row-count boundary of the veto check: only a single row is an unambiguous answer. A multi-row SELECT -
+   * even one where every row is the same lone {@code false} column - has no single answer to trust, so it is
+   * drained for its (non-)effects and the operation proceeds, same as any other multi-row result.
+   */
+  @Test
+  void beforeCreateTriggerMultiRowFalseDoesNotVeto() {
+    database.command("sql", "CREATE DOCUMENT TYPE Marker");
+    database.transaction(() -> {
+      database.newDocument("Marker").save();
+      database.newDocument("Marker").save();
+    });
+
+    database.command("sql",
+        """
+            CREATE TRIGGER multi_row_trigger BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'SELECT false FROM Marker'""");
+
+    database.transaction(() -> database.newDocument("User").set("name", "MultiRow").save());
+
+    final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'MultiRow'");
+    assertThat(result.hasNext()).as("a multi-row SELECT has no single answer and must not veto").isTrue();
+  }
+
+  /**
+   * The column-count boundary: a single row with more than one real property is also not an unambiguous answer,
+   * even when one of its columns is {@code false}.
+   */
+  @Test
+  void beforeCreateTriggerSingleRowMultiColumnFalseDoesNotVeto() {
+    database.command("sql",
+        """
+            CREATE TRIGGER multi_column_trigger BEFORE CREATE ON TYPE User \
+            EXECUTE SQL 'SELECT true AS a, false AS b'""");
+
+    database.transaction(() -> database.newDocument("User").set("name", "MultiColumn").save());
+
+    final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'MultiColumn'");
+    assertThat(result.hasNext()).as("a single row with more than one property has no single answer and must not veto").isTrue();
   }
 
   @Test

@@ -19,9 +19,12 @@
 package com.arcadedb.schema.trigger;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -53,10 +56,7 @@ public class SQLTriggerExecutor implements TriggerExecutor {
         params.put("$oldRecord", oldRecord);
       }
 
-      // Execute SQL with context parameters. Triggers run on every matching record; closing the
-      // ResultSet releases the per-call execution plan and avoids per-record state accumulation.
-      database.command("sql", sql, params).close();
-      return true;
+      return consume(database, database.command("sql", sql, params));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
@@ -76,12 +76,79 @@ public class SQLTriggerExecutor implements TriggerExecutor {
       params.put("rid", rid);
       params.put("$rid", rid);
 
-      database.command("sql", sql, params).close();
-      return true;
+      return consume(database, database.command("sql", sql, params));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * Drains the body's result set to exhaustion before closing it. A {@code SELECT} result set in ArcadeDB is
+   * pull-based: nothing runs until it is iterated, so a body that reads without ever being consumed executes
+   * nothing at all - a silent no-op rather than a slow or partial one. DML bodies (INSERT/UPDATE/DELETE) already
+   * execute eagerly when the command is built, so draining them here only walks their already-buffered rows.
+   * <p>
+   * The drained result also decides whether the operation continues, giving a SQL body the same veto contract as
+   * {@link ScriptTriggerExecutor#execute}: a body that evaluates to a single scalar {@code false} - one row, one
+   * property - aborts the operation, exactly what {@code SELECT false} or {@code SELECT <condition> AS ok} looks
+   * like it should do.
+   * <p>
+   * The shape alone is not enough to tell a veto from an accident, though: {@code UPDATE ... RETURN AFTER <field>}
+   * (or {@code RETURN BEFORE}) with a single non-{@code @this} projection item produces that exact same one-row,
+   * one-property {@link Result} - see {@code Projection.calculateSingle} - so a bookkeeping trigger like
+   * {@code UPDATE Flag SET active = false RETURN AFTER active} would trip the same check on an unrelated boolean
+   * field and silently abort the CREATE/UPDATE/DELETE that fired it, something the pre-fix code never did because
+   * it never looked at the result at all. {@link com.arcadedb.query.sql.parser.Statement#isIdempotent()} is exactly
+   * the read/write classification the engine already uses elsewhere (e.g. {@code SQLQueryEngine.query()} rejects a
+   * non-idempotent statement), and only a {@code SELECT} answers true - never {@code INSERT}/{@code UPDATE}/
+   * {@code DELETE}, {@code RETURN} clause or not. Gating on it keeps the veto contract scoped to bodies that look
+   * like {@code SELECT false}, so an existing DML trigger cannot regress: it never produced a single-row,
+   * single-property result before, and now that it might (via {@code RETURN}), that shape is simply not idempotent
+   * and is drained for its effects like any other DML body. The check runs only once a candidate row is already in
+   * hand, so it costs nothing on the far more common multi-row, multi-column or non-projection results.
+   * <p>
+   * {@code $score}/{@code $similarity} are excluded from the property count: {@code ResultInternal.getPropertyNames()}
+   * adds them automatically whenever a full-text or vector search set a score, so a scored validation body like
+   * {@code SELECT ok FROM ... WHERE MATCH(...) ...} would otherwise report two property names instead of one and
+   * silently skip a veto its single real column asked for. They are metadata about how the row was found, not a
+   * column the body projected, so they take no part in deciding whether the row is a single-value answer.
+   */
+  private boolean consume(final Database database, final ResultSet result) {
+    try (result) {
+      Result first = null;
+      long count = 0;
+      while (result.hasNext()) {
+        final Result row = result.next();
+        if (count == 0)
+          first = row;
+        count++;
+      }
+
+      if (count == 1 && first.isProjection()) {
+        final String property = soleRealProperty(first);
+        if (property != null && Boolean.FALSE.equals(first.getProperty(property))
+            && ((DatabaseInternal) database).getStatementCache().isIdempotent(sql))
+          return false;
+      }
+      return true;
+    }
+  }
+
+  /**
+   * The single property name of {@code result}, ignoring the {@code $score}/{@code $similarity} scoring metadata -
+   * see {@link #consume} - or {@code null} if zero or more than one real property remains.
+   */
+  private static String soleRealProperty(final Result result) {
+    String sole = null;
+    for (final String property : result.getPropertyNames()) {
+      if ("$score".equals(property) || "$similarity".equals(property))
+        continue;
+      if (sole != null)
+        return null;
+      sole = property;
+    }
+    return sole;
   }
 
   @Override
