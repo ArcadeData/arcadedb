@@ -198,6 +198,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final AtomicBoolean needsSnapshotDownload      = new AtomicBoolean(false);
   private final AtomicBoolean snapshotDownloadInProgress = new AtomicBoolean(false);
   private final AtomicBoolean catchingUp                 = new AtomicBoolean(false);
+
+  // Highest Raft-log index whose data is actually present in the local databases while a flagged
+  // stale-snapshot re-download is still outstanding; -1 when there is none (the normal case).
+  //
+  // reinitialize() can find a Ratis snapshot marker at an index the persisted applied-index file never
+  // reached (snapshotIndex > persistedApplied + HA_SNAPSHOT_GAP_TOLERANCE). The entries in
+  // (persistedApplied, snapshotIndex] were never applied here, yet seeding the marker makes Ratis
+  // report snapshotIndex as this node's applied index - so RaftHAServer.getLastAppliedIndex() (the
+  // predicate behind waitForAppliedIndex()/waitForLocalApply()) claims data this node does not hold and
+  // a LINEARIZABLE / READ_YOUR_WRITES read inside the gap is served from the stale local state
+  // (issue #6111). This field publishes the honest ceiling so those waiters clamp to it until the
+  // flagged re-download actually lands; it is cleared only by a resync that restored the state, never
+  // by merely starting one.
+  //
+  // Deliberately node-global, not per-database, and conservative on purpose: the gap is detected from
+  // the global persisted position against the (inherently global) Ratis snapshot index, so which of the
+  // co-located databases is actually short of the marker is not knowable here. A multi-database node
+  // therefore clamps reads on every database while any gap is outstanding. The alternative - guessing
+  // per-database from a global signal - is exactly the class of mistake issue #4824 fixed.
+  private final AtomicLong    staleSnapshotAppliedFloor  = new AtomicLong(-1);
+  // Wall-clock of the last retry submitted by retryUnfilledSnapshotGap(); 0 = none since the floor was
+  // last cleared. Throttles the HealthMonitor-driven backstop, which ticks far more often than a full
+  // multi-database resync costs.
+  private final AtomicLong    lastStaleSnapshotRetryMs   = new AtomicLong();
   // Set to true after applyTransaction hits a genuinely unrecoverable, node-wide condition: a JVM
   // Error (OOM, StackOverflow - the JVM itself is unstable), an unknown committed entry type (#4798,
   // rolling-upgrade safety), or an unexpected error on an entry with no single target database
@@ -403,6 +427,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * When called from {@code StateMachineUpdater.reload()} after a snapshot install, the lifecycle
    * is in {@link LifeCycle.State#PAUSED} and this method transitions it back to
    * {@link LifeCycle.State#RUNNING} so the updater can resume applying log entries.
+   * <p>
+   * <b>Stale marker (issue #6111):</b> when the marker index runs ahead of the persisted applied index
+   * by more than {@link GlobalConfiguration#HA_SNAPSHOT_GAP_TOLERANCE}, the entries it covers were never
+   * applied on this node and only the flagged re-download will bring them. The Ratis-facing applied
+   * TermIndex is still seeded from the marker - it is the only replay position Ratis has, and
+   * {@code StateMachineUpdater.reload()} requires it to match {@code getLatestSnapshot()} - but the
+   * ArcadeDB-side {@link #lastAppliedIndex} stays on the honest persisted position, the read floor is
+   * published for the apply waiters, and the "applied advanced" notification is withheld until a resync
+   * has actually restored the state.
+   * <p>
+   * The floor guards <b>reads</b> only. Writes during the same window are already guarded, and by a
+   * different mechanism: Ratis keeps feeding {@link #applyTransaction} the entries committed after the
+   * marker, and applying one on top of a database that stops at {@code persistedApplied} fails its page
+   * version check. {@link #applyTxEntry} converts that {@link WALVersionGapException} into a diverged
+   * database plus an immediate snapshot resync instead of writing mismatched pages, so the gap can never
+   * escalate from "stale data served" to "corrupted data written".
    */
   public void reinitialize() throws IOException {
     final long persistedApplied = readPersistedAppliedIndex();
@@ -413,11 +453,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final long snapshotGapTolerance = server != null
           ? server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_GAP_TOLERANCE)
           : GlobalConfiguration.HA_SNAPSHOT_GAP_TOLERANCE.getValueAsLong();
-      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + snapshotGapTolerance) {
+      final boolean staleSnapshot = persistedApplied >= 0 && snapshotIndex > persistedApplied + snapshotGapTolerance;
+      if (staleSnapshot) {
         LogManager.instance().log(this, Level.INFO,
             "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
             snapshotIndex, persistedApplied);
         needsSnapshotDownload.set(true);
+        // Entries in (persistedApplied, snapshotIndex] are not on this node. Publish the honest ceiling
+        // BEFORE the marker is seeded below, so no waiter can observe the seeded index without also
+        // observing the floor that qualifies it (issue #6111).
+        staleSnapshotAppliedFloor.set(persistedApplied);
 
         final long watchdogTimeoutMs = computeSnapshotWatchdogTimeoutMs();
         // Watchdog: if notifyLeaderChanged() doesn't fire within the configured timeout, trigger download directly
@@ -435,8 +480,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
             LogManager.instance().log(this, Level.SEVERE, "Snapshot download watchdog failed", e);
           }
         });
-      }
-      lastAppliedIndex.set(snapshotIndex);
+      } else
+        // The marker is backed by state this node really applied (or there is no persisted value to
+        // contradict it), so nothing clamps the readers.
+        staleSnapshotAppliedFloor.set(-1);
+
+      // Only a trustworthy marker may seed the ArcadeDB-side counter: takeSnapshot() reads it as the
+      // durability checkpoint it hands Ratis and pendingLocalPhase2 uses it as a replay floor, and
+      // neither may claim entries this node never applied.
+      lastAppliedIndex.set(staleSnapshot ? persistedApplied : snapshotIndex);
       // If the on-disk marker carries an inflated term (issues #575, #593), this seed records it as-is
       // (the previous applied TermIndex is null here, so no violation is possible) and the first
       // re-applied entry realigns it via the tolerant updateLastAppliedTermIndex override. The stale
@@ -446,11 +498,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this seed
       // can advance the applied index past a pending target (a follower catching up via snapshot
       // install), and notifyApplied() has no other caller on this path (issue #5846).
-      final RaftHAServer raftHA = this.raftHAServer;
-      if (raftHA != null)
-        raftHA.notifyApplied();
-    } else
+      //
+      // Withheld on the stale-marker branch: nothing this node can serve advanced, so waking a waiter
+      // whose target sits inside the gap is exactly what let it proceed on stale state (issue #6111).
+      // The resync that fills the gap notifies once it completes.
+      if (!staleSnapshot) {
+        final RaftHAServer raftHA = this.raftHAServer;
+        if (raftHA != null)
+          raftHA.notifyApplied();
+      }
+    } else {
       lastAppliedIndex.set(-1);
+      staleSnapshotAppliedFloor.set(-1);
+    }
 
     // When called from StateMachineUpdater.reload() after a snapshot install, the lifecycle is
     // PAUSED (pause() was called by SnapshotInstallationHandler). Transition back to RUNNING so
@@ -903,11 +963,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     // Regressing the marker below an existing one would let Ratis replay from an index whose log
     // entries a previous checkpoint already authorised for purging. Skip this round instead; the
-    // next snapshot after phase 2 drains advances it normally.
+    // next snapshot after phase 2 drains (or after a pending stale-snapshot resync lands, issue #6111)
+    // advances it normally.
     final var latest = storage.getLatestSnapshot();
     if (latest != null && currentIndex < latest.getIndex()) {
       HALog.log(this, HALog.BASIC,
-          "Skipping snapshot checkpoint at index %d: a phase-2 apply is still in flight and the existing marker is at %d",
+          "Skipping snapshot checkpoint at index %d: the applied position trails the existing marker at %d "
+              + "(phase-2 apply in flight, or a stale-snapshot resync still pending)",
           currentIndex, latest.getIndex());
       return RaftLog.INVALID_LOG_INDEX;
     }
@@ -1185,6 +1247,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
         lastAppliedIndex.set(snapshotIndex);
         updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
         writePersistedAppliedIndexForAllDatabases(snapshotIndex);
+        // The install brought every database up to the snapshot point, so any read floor an earlier
+        // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
+        // re-checks against the restored state instead of the floor (issue #6111).
+        clearStaleSnapshotFloor();
 
         // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
         // leader-driven snapshot install advances the applied index without going through
@@ -2470,9 +2536,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return raftDir != null ? raftDir.resolve("bootstrap-baselines") : null;
   }
 
-  private void triggerSnapshotDownload() {
+  // @VisibleForTesting
+  void triggerSnapshotDownload() {
     if (raftHAServer == null || server == null)
       return;
+    // A node cannot repair itself from itself. notifyLeaderChanged() submits this unconditionally -
+    // including on the node that just WON the election - and getLeaderHttpAddress() then resolves to
+    // this node's own HTTP address, so the "download" would copy this node's already-incomplete
+    // databases back onto themselves and report success. That is merely pointless on the pre-existing
+    // paths, but it would let resolveStaleSnapshotFloorAfterResync() durably record the marker index as
+    // applied and drop the read floor, re-opening issue #6111 on a leader and surviving restarts.
+    // Refuse instead: the floor stands, isResyncInProgress() keeps the node out of the ready set, and
+    // reads keep failing honestly until leadership moves to a peer that actually holds the entries.
+    if (raftHAServer.isLeader()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Refusing a snapshot resync: this node is the leader, so there is no peer to pull from. "
+              + "The request stays pending until leadership moves elsewhere (issue #6111)");
+      return;
+    }
     // Single-flight guard: multiple recovery paths (reinitialize watchdog, notifyLeaderChanged,
     // stale-follower recovery from the HealthMonitor) can request a download. Only one may run at
     // a time; concurrent requests are dropped. The flag also feeds isSnapshotDownloadPending() so
@@ -2492,6 +2573,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "Cannot trigger snapshot download: leader HTTP address unknown");
         return;
       }
+      // Backstop for the isLeader() check above: leadership can move between the two, and getLeaderId()
+      // can already report this node while isLeader() has not caught up. Compare the addresses too, so
+      // a self-download is impossible on either side of that window (issue #6111).
+      final String localHttpAddr = raftHAServer.getPeerHttpAddress(raftHAServer.getLocalPeerId());
+      if (localHttpAddr == null)
+        // getPeerHttpAddress() degrades to null when this node's own HTTP endpoint cannot be resolved
+        // right now. The comparison below then cannot fire, so say so rather than letting the backstop
+        // no-op invisibly: only the isLeader() check above is standing between us and a self-download.
+        LogManager.instance().log(this, Level.WARNING,
+            "Cannot resolve this node's own HTTP address; the self-resync address check is inactive for this "
+                + "attempt and only the leader-role check guards it (issue #6111)");
+      if (leaderHttpAddr.equals(localHttpAddr)) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Refusing a snapshot resync: the resolved leader address %s is this node's own. "
+                + "The request stays pending until a peer holds the leadership (issue #6111)", leaderHttpAddr);
+        return;
+      }
       final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       int resynced = 0;
@@ -2507,11 +2605,123 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "Snapshot resync completed: reinstalled %d database(s) from the leader; diverged state cleared", resynced);
       clearDivergedState();
+      // The databases now carry the leader's state, so a read floor published by a stale marker in
+      // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
+      // without it the very same gap is re-detected on the next restart and the node re-downloads
+      // forever. Then wake the waiters this resync unblocked (issue #6111).
+      resolveStaleSnapshotFloorAfterResync(resynced);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Snapshot resync failed", e);
+      // The node is still short of the entries the marker claims, so the read floor stays and the
+      // request is re-armed rather than left cleared: a later leader change picks it up. The retry that
+      // does NOT depend on an election is retryUnfilledSnapshotGap(), driven by the HealthMonitor tick -
+      // note that recoverFromPersistentLag() cannot serve here, because the re-armed flag makes
+      // isSnapshotDownloadPending() true and both it and isFollowerLaggingBeyond() then stand down
+      // (issue #6111).
+      if (staleSnapshotAppliedFloor.get() >= 0)
+        needsSnapshotDownload.set(true);
     } finally {
       snapshotDownloadInProgress.set(false);
     }
+  }
+
+  /**
+   * Completes a successful full resync with respect to the stale-snapshot read floor (issue #6111):
+   * persists the marker index as the applied position of every present database - the resync brought
+   * them all to it, and leaving the persisted value behind makes {@link #reinitialize()} re-detect the
+   * same gap on the next restart - then clears the floor and wakes the waiters it was holding back.
+   * No-op when no floor was outstanding.
+   * <p>
+   * {@code resynced} is logged rather than gated on: zero is legitimate for a node with no databases
+   * open (nothing can be stale), and it matches what {@code notifyInstallSnapshotFromLeader} already
+   * records over the same {@code getDatabaseNames()} set. It is worth seeing in the log, because a
+   * floor resolved after reinstalling zero databases is the shape an unexpectedly-empty registry would
+   * take.
+   */
+  private void resolveStaleSnapshotFloorAfterResync(final int resynced) {
+    if (staleSnapshotAppliedFloor.get() < 0)
+      return;
+    LogManager.instance().log(this, Level.INFO,
+        "Stale-snapshot read floor resolved after reinstalling %d database(s); reads are unclamped again", resynced);
+    final var snapshotInfo = storage.getLatestSnapshot();
+    if (snapshotInfo != null && snapshotInfo.getIndex() > readPersistedAppliedIndex()) {
+      writePersistedAppliedIndexForAllDatabases(snapshotInfo.getIndex());
+      // Accumulate rather than set: this runs on the lifecycleExecutor while the Ratis apply thread may
+      // already have replayed past the marker, and the counter must never regress under it.
+      lastAppliedIndex.accumulateAndGet(snapshotInfo.getIndex(), Math::max);
+    }
+    clearStaleSnapshotFloor();
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null)
+      raftHA.notifyApplied();
+  }
+
+  /**
+   * Drops the stale-snapshot read floor. Called only where a resync has actually restored the local
+   * state up to the marker - never when one is merely requested or in flight (issue #6111).
+   */
+  // @VisibleForTesting
+  void clearStaleSnapshotFloor() {
+    staleSnapshotAppliedFloor.set(-1);
+    lastStaleSnapshotRetryMs.set(0);
+  }
+
+  /**
+   * Periodic backstop for an unfilled stale-snapshot gap (issue #6111), driven by the
+   * {@link HealthMonitor} tick. Re-submits {@link #triggerSnapshotDownload()} while a read floor is
+   * still outstanding and no download is running, so a node whose first attempt failed (leader HTTP
+   * port unreachable while Raft gRPC is fine, disk full, leader not yet known) recovers on its own
+   * instead of staying clamped and not-ready until the next leader election.
+   * <p>
+   * The existing stale-follower backstop cannot cover this: it is driven by
+   * {@code commitIndex - appliedIndex}, and Ratis derives the applied index from the very marker that
+   * is ahead, so a node with an open gap reports zero lag. {@link #recoverFromPersistentLag()} would
+   * also refuse anyway, because {@link #isSnapshotDownloadPending()} stays true while the request is
+   * re-armed.
+   * <p>
+   * Throttled to one attempt per {@link #computeSnapshotWatchdogTimeoutMs()} so a persistently failing
+   * download is not retried on every tick: a full resync pulls every database from the leader, and the
+   * HealthMonitor ticks far more often than that costs.
+   */
+  public void retryUnfilledSnapshotGap() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || server == null || raftHA.isLeader())
+      return;
+    final long floor = staleSnapshotAppliedFloor.get();
+    if (floor < 0)
+      return; // no unfilled gap
+    if (snapshotDownloadInProgress.get())
+      return; // one is genuinely running; it will clear the floor or re-arm the request
+    if (raftHA.getLeaderHttpAddress() == null)
+      return; // nowhere to download from yet; notifyLeaderChanged() drives the first attempt
+
+    final long now = System.currentTimeMillis();
+    final long retryIntervalMs = computeSnapshotWatchdogTimeoutMs();
+    final long previous = lastStaleSnapshotRetryMs.get();
+    if (previous != 0 && now - previous < retryIntervalMs)
+      return;
+    if (!lastStaleSnapshotRetryMs.compareAndSet(previous, now))
+      return; // another tick won the throttle slot
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Snapshot marker is still ahead of the applied state (read floor=%d) with no download in flight: "
+            + "retrying the resync from the leader (issue #6111)", floor);
+    try {
+      lifecycleExecutor.submit(this::triggerSnapshotDownload);
+    } catch (final RejectedExecutionException ree) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot schedule the stale-snapshot resync retry: executor is shut down", ree);
+    }
+  }
+
+  /**
+   * Highest Raft-log index whose data is genuinely present in the local databases while a flagged
+   * stale-snapshot re-download is outstanding, or {@code -1} when none is (the normal case). Consumed by
+   * {@link RaftHAServer#getTrustedAppliedIndex()} to clamp the LINEARIZABLE / READ_YOUR_WRITES apply
+   * waiters, which would otherwise trust the marker index Ratis reports as applied (issue #6111).
+   */
+  public long getStaleSnapshotAppliedFloor() {
+    return staleSnapshotAppliedFloor.get();
   }
 
   /**
@@ -2662,9 +2872,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * so a follower never advertises {@code /api/v1/ready} 200 while a resync is in flight (issue #5273);
    * the flag clears once {@link #clearDivergedState()} / {@link #clearDivergedDatabase(String)} run at
    * the end of a successful resync.
+   * <p>
+   * An outstanding stale-snapshot read floor counts too (issue #6111): after a failed download neither
+   * of the other two flags is set, yet the node is still missing the entries the snapshot marker claims
+   * and must not advertise itself as ready.
    */
   public boolean isResyncInProgress() {
-    return isSnapshotDownloadPending() || !divergedDatabases.isEmpty();
+    return isSnapshotDownloadPending() || !divergedDatabases.isEmpty() || staleSnapshotAppliedFloor.get() >= 0;
   }
 
   /**

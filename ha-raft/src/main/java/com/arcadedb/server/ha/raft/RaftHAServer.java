@@ -1055,6 +1055,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   @Override
+  public void retryUnfilledSnapshotGap() {
+    if (raftServer == null || shutdownRequested)
+      return;
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm != null)
+      sm.retryUnfilledSnapshotGap();
+  }
+
+  @Override
   public void reportResyncProgress() {
     final FollowerResyncProgressTracker tracker = resyncProgressTracker;
     if (tracker == null || raftServer == null || shutdownRequested || isLeader())
@@ -2145,20 +2154,42 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     try {
       final long deadline = System.currentTimeMillis() + quorumTimeout;
       synchronized (applyNotifier) {
-        while (getLastAppliedIndex() < targetIndex) {
+        while (getTrustedAppliedIndex() < targetIndex) {
+          if (!throwOnTimeout && getStaleSnapshotAppliedFloor() >= 0) {
+            // No explicit "targetIndex > floor" test is needed, and adding one would be dead code:
+            // reaching this line means the loop condition held, i.e. getTrustedAppliedIndex() (pinned at
+            // the floor for the whole life of an outstanding gap, since Ratis' own counter starts at the
+            // marker index - above the floor by construction - and only grows) is below targetIndex.
+            //
+            // That invariant is established in ArcadeStateMachine.reinitialize()'s snapshot-gap branch:
+            // it publishes the floor as persistedApplied and only when
+            // snapshotIndex > persistedApplied + HA_SNAPSHOT_GAP_TOLERANCE, so marker > floor always
+            // holds while the floor is outstanding. Anything that changes what that branch publishes
+            // must revisit this reasoning.
+            //
+            // READ_YOUR_WRITES / bookmark: the target therefore sits inside a gap that only the pending
+            // snapshot resync can fill, so waiting out the quorum timeout cannot change the outcome.
+            // Degrade now with the same contract the timeout branch below applies (issue #6111).
+            LogManager.instance().log(this, Level.WARNING,
+                "READ_YOUR_WRITES target %d is inside a pending snapshot resync gap (trusted applied=%d): "
+                    + "consistency degraded to EVENTUAL without waiting",
+                targetIndex, getTrustedAppliedIndex());
+            return;
+          }
           final long remaining = deadline - System.currentTimeMillis();
           if (remaining <= 0) {
             if (throwOnTimeout) {
               LogManager.instance().log(this, Level.WARNING,
-                  "LINEARIZABLE read failed: local apply timeout applied=%d < readIndex=%d after %dms (failing read)",
-                  getLastAppliedIndex(), targetIndex, quorumTimeout);
+                  "LINEARIZABLE read failed: local apply timeout applied=%d < readIndex=%d after %dms "
+                      + "(staleSnapshotFloor=%d, failing read)",
+                  getTrustedAppliedIndex(), targetIndex, quorumTimeout, getStaleSnapshotAppliedFloor());
               throw new ReplicationException(
-                  "LINEARIZABLE read timed out waiting for local apply: applied=" + getLastAppliedIndex()
+                  "LINEARIZABLE read timed out waiting for local apply: applied=" + getTrustedAppliedIndex()
                       + " < readIndex=" + targetIndex);
             }
             LogManager.instance().log(this, Level.WARNING,
                 "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency degraded to EVENTUAL)",
-                getLastAppliedIndex(), targetIndex);
+                getTrustedAppliedIndex(), targetIndex);
             return;
           }
           applyNotifier.wait(Math.min(remaining, APPLY_WAIT_RECHECK_INTERVAL_MS));
@@ -2192,18 +2223,29 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
       final long deadline = System.currentTimeMillis() + quorumTimeout;
       synchronized (applyNotifier) {
-        while (getLastAppliedIndex() < commitIndex) {
+        while (getTrustedAppliedIndex() < commitIndex) {
+          if (getStaleSnapshotAppliedFloor() >= 0) {
+            // Same reasoning as waitForAppliedIndex: the loop condition already proves commitIndex sits
+            // above the floor, so no explicit comparison is needed. Only the pending snapshot resync can
+            // close the gap; this waiter is best-effort by contract, so degrade now instead of burning
+            // the whole quorum timeout (issue #6111).
+            LogManager.instance().log(this, Level.WARNING,
+                "waitForLocalApply: commit=%d is inside a pending snapshot resync gap (trusted applied=%d), "
+                    + "returning without waiting (reads may be stale)",
+                commitIndex, getTrustedAppliedIndex());
+            return;
+          }
           final long remaining = deadline - System.currentTimeMillis();
           if (remaining <= 0) {
             HALog.log(this, HALog.DETAILED, "waitForLocalApply timed out: applied=%d < commit=%d",
-                getLastAppliedIndex(), commitIndex);
+                getTrustedAppliedIndex(), commitIndex);
             return;
           }
           applyNotifier.wait(Math.min(remaining, APPLY_WAIT_RECHECK_INTERVAL_MS));
         }
       }
       HALog.log(this, HALog.TRACE, "Local apply caught up: applied=%d >= commit=%d",
-          getLastAppliedIndex(), commitIndex);
+          getTrustedAppliedIndex(), commitIndex);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     } catch (final Exception e) {
@@ -2221,6 +2263,33 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // restart re-initializes the division (issue #5271); report "unknown" instead of propagating.
       return -1;
     }
+  }
+
+  /**
+   * The applied index a read may actually rely on: {@link #getLastAppliedIndex()} clamped to the
+   * stale-snapshot read floor while one is outstanding (issue #6111).
+   * <p>
+   * Ratis derives the value {@link #getLastAppliedIndex()} reports from the snapshot marker the moment
+   * the marker is seeded, so a node that restarted onto a marker running ahead of the entries it really
+   * applied ({@code ArcadeStateMachine.reinitialize()}'s snapshot-gap branch) advertises an applied
+   * index covering data it does not hold. Using the raw value as the apply-wait predicate let a
+   * LINEARIZABLE or READ_YOUR_WRITES read inside that gap proceed against the stale local state; the
+   * clamp keeps the waiters honest until the flagged re-download lands. Reporting paths (cluster status,
+   * lag detection) deliberately keep using the raw Ratis value.
+   */
+  public long getTrustedAppliedIndex() {
+    final long applied = getLastAppliedIndex();
+    final long floor = getStaleSnapshotAppliedFloor();
+    return floor < 0 ? applied : Math.min(applied, floor);
+  }
+
+  /**
+   * The state machine's stale-snapshot read floor, or {@code -1} when there is none or the state machine
+   * is not wired yet. See {@link ArcadeStateMachine#getStaleSnapshotAppliedFloor()} (issue #6111).
+   */
+  private long getStaleSnapshotAppliedFloor() {
+    final ArcadeStateMachine sm = stateMachine;
+    return sm == null ? -1 : sm.getStaleSnapshotAppliedFloor();
   }
 
   public long getCommitIndex() {
