@@ -1509,3 +1509,45 @@ its query on every read of the type. This is the fix, not a regression, but it i
 trigger exists in an upgraded database.
 
 [#6134](https://github.com/ArcadeData/arcadedb/issues/6134)
+
+## HA never advertises a client address it cannot attribute to one node (#6183)
+
+`arcadedb.ha.serverList` grew a `grpc:` field alongside `bolt:` in #6091, so a gRPC call refused on a follower can
+name an address the caller dials directly. With neither field declared, a peer's endpoint for a protocol is derived
+as *that peer's host* plus *this node's own port*, which is right for a homogeneous deployment and wrong for a
+cluster whose nodes differ by port rather than by host - several nodes on one machine, which is what a dev or test
+deployment usually is. Every peer then derives to the same address, so the "leader" a follower advertises is the
+follower itself.
+
+That was tolerable while the only consumer was Bolt's ROUTE response, where a driver that dials a follower for a
+write gets an error and re-routes. #6091 raised the stakes: the gRPC refusal puts the address on a trailer and the
+client rebuilds a `ServerIsNotTheLeaderException` around it, so a caller written to redirect *automatically* could
+dial the same follower, be refused again, and loop.
+
+Two peers can never legitimately answer on one `host:port` for one protocol - they would be fighting over the
+socket - so an address claimed by two peers identifies at most one of them and the resolver cannot say which. The
+routing table now drops such an address and, when it is the leader's own, is not built at all. Both callers already
+handle that: Bolt's ROUTE falls back to advertising this node as READ and ROUTE, never as writer, and the gRPC
+refusal falls back to naming the leader's HTTP address with the "use its gRPC port" caveat - what each did before
+#6091, which beats a confidently wrong address. A declared address outranks a derived one when the two collide,
+since the collision only proves the guess wrong, so declaring the ports of the nodes that differ is enough. The
+guard lives in the resolver both protocols share, and a WARNING naming the field to declare is logged once per
+protocol.
+
+**Every leader-only refusal now names the leader, not just `graphBatchLoad`.** `graphBatchLoad` was the only RPC
+that built the redirect trailers, by hand; a `ServerIsNotTheLeaderException` raised anywhere else fell through
+`GrpcErrorMapper` as a plain `NeedRetryException` - `ABORTED`, no address - so a caller could not tell "the leader
+is unknown, wait for the election" from "the leader is known and nobody told you". The mapper now attaches the
+leader's gRPC and HTTP addresses for that exception wherever it arises, and answers `FAILED_PRECONDITION` rather
+than `ABORTED`: retrying as it stands means asking the same follower again, which is the same reading the HTTP
+protocol takes when it answers 400 rather than 503. `ArcadeDbGrpcService.notTheLeader` is now just the wording
+around that shared mapping.
+
+Note that a statement sent to a follower does not normally produce a refusal at all: `RaftReplicatedDatabase`
+forwards a DDL or non-idempotent statement to the leader instead of rejecting it, and `graphBatchLoad` refuses
+deliberately, because relaying a bulk load through a follower would double the traffic of the transport chosen to
+avoid exactly that. What the mapper change covers is the leadership change that lands between the forwarding
+decision and the schema write, where the caller is holding a failure it can only act on if it is told which node to
+repeat it against.
+
+[#6183](https://github.com/ArcadeData/arcadedb/issues/6183)
