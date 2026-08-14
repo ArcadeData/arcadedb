@@ -1561,3 +1561,60 @@ The Postgres wire protocol reuses this recognition instead of its own copy: the 
 are gone.
 
 [#6174](https://github.com/ArcadeData/arcadedb/issues/6174)
+
+## HA never advertises a client address it cannot attribute to one node (#6183)
+
+`arcadedb.ha.serverList` grew a `grpc:` field alongside `bolt:` in #6091, so a gRPC call refused on a follower can
+name an address the caller dials directly. With neither field declared, a peer's endpoint for a protocol is derived
+as *that peer's host* plus *this node's own port*, which is right for a homogeneous deployment and wrong for a
+cluster whose nodes differ by port rather than by host - several nodes on one machine, which is what a dev or test
+deployment usually is. Every peer then derives to the same address, so the "leader" a follower advertises is the
+follower itself.
+
+That was tolerable while the only consumer was Bolt's ROUTE response, where a driver that dials a follower for a
+write gets an error and re-routes. #6091 raised the stakes: the gRPC refusal puts the address on a trailer and the
+client rebuilds a `ServerIsNotTheLeaderException` around it, so a caller written to redirect *automatically* could
+dial the same follower, be refused again, and loop.
+
+Two peers can never legitimately answer on one `host:port` for one protocol - they would be fighting over the
+socket - so an address claimed by two peers identifies at most one of them and the resolver cannot say which. The
+routing table now drops such an address and, when it is the leader's own, is not built at all. Both callers already
+handle that: Bolt's ROUTE falls back to advertising this node as READ and ROUTE, never as writer, and the gRPC
+refusal falls back to naming the leader's HTTP address with the "use its gRPC port" caveat - what each did before
+#6091, which beats a confidently wrong address. A declared address outranks a derived one when the two collide,
+since the collision only proves the guess wrong, so declaring the ports of the nodes that differ is enough. The
+guard lives in the resolver both protocols share, and a WARNING naming the field to declare is logged once per
+protocol.
+
+**A leader-only refusal names the leader wherever it is reported, not just from `graphBatchLoad`.**
+`graphBatchLoad` was the only RPC that built the redirect trailers, by hand; a `ServerIsNotTheLeaderException`
+raised anywhere else fell through `GrpcErrorMapper` as a plain `NeedRetryException` - `ABORTED`, no address - so a
+caller could not tell "the leader is unknown, wait for the election" from "the leader is known and nobody told
+you". The mapper now attaches the leader's gRPC and HTTP addresses for that exception, and answers
+`FAILED_PRECONDITION` rather than `ABORTED`: retrying as it stands means asking the same follower again, which is
+the same reading the HTTP protocol takes when it answers 400 rather than 503. `ArcadeDbGrpcService.notTheLeader`
+is now just the wording around that shared mapping.
+
+That covers the RPCs that report through the mapper - `executeCommand`, `createRecord`, `beginTransaction`,
+`commitTransaction`, `graphBatchLoad`. The handlers that assemble a status themselves (`updateRecord`,
+`lookupByRid`, the streaming and bulk-insert paths) neither check leadership nor mutate schema, so none of them
+can raise this exception today; one that grows either has to route its errors through the mapper to stay
+redirectable, which the mapper's javadoc now says.
+
+Note that a statement sent to a follower does not normally produce a refusal at all: `RaftReplicatedDatabase`
+forwards a DDL or non-idempotent statement to the leader instead of rejecting it, and `graphBatchLoad` refuses
+deliberately, because relaying a bulk load through a follower would double the traffic of the transport chosen to
+avoid exactly that. What the mapper change covers is the leadership change that lands between the forwarding
+decision and the schema write, where the caller is holding a failure it can only act on if it is told which node to
+repeat it against.
+
+**Upgrade note**: the status a leader refusal carries changes from `ABORTED` to `FAILED_PRECONDITION` on the
+mapper's RPCs, which is client-visible for anyone switching on the gRPC status code. A client reading the
+`arcadedb-exception-class` trailer - which is what the bundled Java client does, and what the trailer is for - is
+unaffected: it rebuilds `ServerIsNotTheLeaderException` either way. A client that treats `ABORTED` as "retry this
+call" needs to treat `FAILED_PRECONDITION` plus a leader-address trailer as "dial that address and repeat it"
+instead; retrying as-is was never going to succeed, since it asks the same follower again. `graphBatchLoad`
+already answered `FAILED_PRECONDITION` and is unchanged, and on the other RPCs the condition is reachable only
+through the leadership-change window described above, so in practice almost nothing is looking at the old code.
+
+[#6183](https://github.com/ArcadeData/arcadedb/issues/6183)

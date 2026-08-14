@@ -73,7 +73,6 @@ import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.Status;
-import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -573,6 +572,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
       LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", cause);
 
+      if (cause instanceof ServerIsNotTheLeaderException) {
+        // Rethrown by executeCommandInternal because it cannot be expressed in the response envelope: it needs
+        // the trailers to name the node to go to instead (issue #6183).
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "ExecuteCommand", ha()));
+        return;
+      }
+
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
       ExecuteCommandResponse err = ExecuteCommandResponse
           .newBuilder()
@@ -795,6 +801,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         /* no-op */
       }
 
+      // "You are talking to the wrong node" is not a command result, and this envelope has nowhere to put the
+      // address of the right one: a redirect only travels on an error's trailers (issue #6183). Rethrown, once
+      // the rollback above has run, for executeCommand to map into the same refusal graphBatchLoad answers with.
+      // Every other failure keeps the success=false envelope this RPC has always used.
+      //
+      // A statement sent to a follower does not normally get here at all: RaftReplicatedDatabase.command
+      // forwards a DDL or non-idempotent statement to the leader rather than refusing it. What reaches this
+      // branch is the leadership change that lands between that decision and the schema write - the second
+      // isLeader() check inside recordFileChanges - where the caller is holding a failure it can only act on
+      // if it is told which node to repeat it against.
+      if (e instanceof ServerIsNotTheLeaderException notTheLeader)
+        throw notTheLeader;
+
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
       return ExecuteCommandResponse
           .newBuilder()
@@ -856,7 +875,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
         // Preserve the engine exception type (e.g. DuplicatedKeyException -> ALREADY_EXISTS with index/keys)
         // so the client can reconstruct it instead of receiving an opaque INTERNAL.
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "CreateRecord"));
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "CreateRecord", ha()));
       }
       return;
     }
@@ -868,7 +887,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onCompleted();
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
-      resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "CreateRecord"));
+      resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "CreateRecord", ha()));
     }
   }
 
@@ -1626,7 +1645,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.SEVERE, "Error beginning transaction: %s", cause, cause.getMessage());
       // Pass through an already-mapped status (e.g. UNAUTHENTICATED/PERMISSION_DENIED from getDatabase)
       // instead of masking it as INTERNAL, and preserve the exception type for everything else.
-      responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Failed to begin transaction"));
+      responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Failed to begin transaction", ha()));
     }
   }
 
@@ -1698,7 +1717,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // ConcurrentModificationException/NeedRetryException stays ABORTED while a permanent commit-time
       // DuplicatedKeyException becomes ALREADY_EXISTS (not retried forever), carrying the exception class
       // name so the client rebuilds the exact type.
-      rsp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Commit failed"));
+      rsp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Commit failed", ha()));
     } finally {
       // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
       // shut the executor down exactly once here.
@@ -2698,7 +2717,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // the transport chosen to avoid exactly that. It is refused before a single record is written, and
             // names an address the caller can dial, so redirecting costs it neither a partial load to reconcile
             // nor knowledge of the deployment's port-mapping convention.
-            final HAServerPlugin ha = arcadeServer != null ? arcadeServer.getHA() : null;
+            final HAServerPlugin ha = ha();
             if (ha != null && !ha.isLeader()) {
               errorSent[0] = true;
               out.onError(notTheLeader(ha, "graphBatchLoad", "a graph batch load must run on the leader"));
@@ -2882,52 +2901,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * The refusal a follower answers with when an RPC may only run on the cluster leader (issue #6091). It names
-   * where to go instead in two forms, because a message a person reads and a value a client can act on are not
-   * the same thing:
-   * <ul>
-   *   <li>the leader's client-reachable <b>gRPC</b> address on the {@code LEADER_GRPC_ADDRESS} trailer, which
-   *       is the address the refused call can be retried on. Present when the cluster can resolve one - either
-   *       a {@code grpc:} field in {@code arcadedb.ha.serverList} or a deployment homogeneous enough for the
-   *       derive-from-local-port fallback;</li>
-   *   <li>the leader's <b>HTTP</b> address on {@code LEADER_HTTP_ADDRESS}, which is always known when a leader
-   *       is but is not an address this call can be retried on. It is the diagnostic of last resort, and what
-   *       the description falls back to naming.</li>
-   * </ul>
-   * The description says the same thing in prose so an operator reading a log is not left to decode trailers,
-   * but a client redirecting itself should read the trailer: the wording is not a contract, and the client-side
-   * mapper turns the pair into a {@code ServerIsNotTheLeaderException} carrying the address, the same type the
-   * HTTP protocol raises for the same situation.
+   * The refusal a follower answers with when an RPC may only run on the cluster leader (issue #6091). Raising
+   * the engine's own {@link ServerIsNotTheLeaderException} through the shared mapper rather than assembling a
+   * status here is what keeps an explicit leadership check and an engine-raised refusal - a schema change the
+   * replicated database rejects on a follower - indistinguishable to a caller (issue #6183): same status, same
+   * trailers, same typed exception rebuilt on the client. All that is left to choose here is the wording.
    */
-  private static StatusException notTheLeader(final HAServerPlugin ha, final String rpc, final String why) {
-    // One routing-table read: writer and readers come from a single leader snapshot, so a concurrent election
-    // cannot make the address named here disagree with the leader the rest of the answer is about.
-    final HAServerPlugin.RoutingTable grpcRouting = ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC);
-    final String grpcLeader = blankToNull(grpcRouting != null ? grpcRouting.writer() : null);
-    final String httpLeader = blankToNull(ha.getLeaderAddress());
-
-    final String where;
-    if (grpcLeader != null)
-      where = "Reconnect to the leader at '" + grpcLeader + "' (gRPC address) and retry";
-    else if (httpLeader != null)
-      where = "Reconnect to the leader at '" + httpLeader + "' (HTTP address; use its gRPC port) and retry";
-    else
-      where = "The leader is currently unknown, retry once the election has settled";
-
-    final Metadata trailers = new Metadata();
-    trailers.put(GrpcErrorMapper.EXCEPTION_CLASS_KEY, ServerIsNotTheLeaderException.class.getName());
-    if (grpcLeader != null)
-      trailers.put(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS, grpcLeader);
-    if (httpLeader != null)
-      trailers.put(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS, httpLeader);
-
-    return Status.FAILED_PRECONDITION.withDescription(
-        rpc + ": this server is not the cluster leader and " + why + ". " + where).asException(trailers);
+  private static StatusRuntimeException notTheLeader(final HAServerPlugin ha, final String rpc, final String why) {
+    return GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("this server is not the cluster leader and " + why, null), rpc, ha);
   }
 
-  /** An address the cluster could not resolve and one it resolved to nothing are the same answer here. */
-  private static String blankToNull(final String address) {
-    return address != null && !address.isBlank() ? address : null;
+  /** This server's HA plugin, or null when HA is inactive: the source of the leader address on a refusal. */
+  private HAServerPlugin ha() {
+    return arcadeServer != null ? arcadeServer.getHA() : null;
   }
 
   private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {
