@@ -103,6 +103,18 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
+  void apocPrefixCompatibilityForCollToSetAndPairsMin() {
+    // Issue #6157: the last two apoc.coll.* functions a migrating customer's query catalogue still referenced.
+    assertThat(CypherFunctionRegistry.hasFunction("coll.toSet")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("coll.pairsMin")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.coll.toSet")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.coll.pairsMin")).isTrue();
+
+    assertThat(CypherFunctionRegistry.get("apoc.coll.toSet")).isSameAs(CypherFunctionRegistry.get("coll.toSet"));
+    assertThat(CypherFunctionRegistry.get("apoc.coll.pairsMin")).isSameAs(CypherFunctionRegistry.get("coll.pairsMin"));
+  }
+
+  @Test
   void apocPrefixCompatibilityForProcedures() {
     // Test that procedures can be accessed with "apoc." prefix
     assertThat(CypherProcedureRegistry.hasProcedure("apoc.merge.relationship")).isTrue();

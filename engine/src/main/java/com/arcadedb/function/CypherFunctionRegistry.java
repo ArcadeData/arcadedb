@@ -259,9 +259,11 @@ public final class CypherFunctionRegistry {
     register(new CollInsert());
     register(new CollMax());
     register(new CollMin());
+    register(new CollPairsMin());
     register(new CollRemove());
     register(new CollSort());
     register(new CollSum());
+    register(new CollToSet());
     register(new CollUnion());
     register(new CollUnionAll());
   }
