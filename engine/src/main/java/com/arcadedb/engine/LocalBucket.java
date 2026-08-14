@@ -3319,6 +3319,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // its head chunk exactly as a spill of the new content would have.
     final int firstChunkContentOffset = newPosition + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
     final int headChunkRoom = headChunkRegionEnd - firstChunkContentOffset;
+
+    // The two ways the region can disagree with the chunk it holds are NOT the same failure, and are answered
+    // differently on purpose - the fatal one first, so it is the one that speaks when both are true.
+    //
+    // A region that cannot host a single byte of content is where the arithmetic stops being safe: a chunk size of 0
+    // or below is not a shorter chunk, it is a header no reader can walk. Refused outright, in the same terms
+    // writeMultiPageRecord refuses an invalid continuation chunk. Reaching it means the page is corrupted (a
+    // neighbour's slot pointing inside this chunk's own header), and failing the transaction beats writing a header
+    // that would make the record unreadable.
+    if (headChunkRoom < 1)
+      throw new DatabaseOperationException(
+              "Head chunk of record " + originalRID + " has no room left in page " + currentPage.getPageId() + " (region ends at "
+                      + headChunkRegionEnd + ", chunk content starts at " + firstChunkContentOffset + ")");
+
+    // A region merely SMALLER than what the head chunk declares breaks an invariant of a healthy page (nothing may
+    // start inside another record's bytes), but it cannot corrupt anything from here: the head chunk is written
+    // shorter and the content that no longer fits leaves through the continuation loop below, which is the ordinary
+    // path. That is an assertion's job - loud in the tests (surefire runs with -ea), harmless in production.
     assert previousChunkSize <= headChunkRoom :
         "the head chunk of " + originalRID + " declares " + previousChunkSize + " bytes in a region of " + headChunkRoom;
 

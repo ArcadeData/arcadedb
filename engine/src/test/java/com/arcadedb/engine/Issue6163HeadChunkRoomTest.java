@@ -19,15 +19,19 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.BucketPageLayoutTestSupport;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6163: the HEAD chunk of a multi-page record used to size itself from what the page already said, and could
@@ -247,6 +251,56 @@ class Issue6163HeadChunkRoomTest extends BucketPageLayoutTestSupport {
     database.transaction(() -> assertThat(newcomer[0].asDocument(true).getString("v"))
         .as("the record that took the room must never be overwritten by a replayed head chunk").isEqualTo(tenant));
     checkDatabase();
+  }
+
+  /**
+   * The one shape of the region that is NOT safe to write through: a region that cannot host a single byte of chunk
+   * content. It says the page is corrupted - a neighbour's slot points inside this chunk's own header - and a chunk
+   * size of zero or less is not a shorter chunk, it is a header no reader can walk. It must fail the transaction
+   * rather than be written.
+   * <p>
+   * No sequence of public API calls produces this: the region always contains at least the head chunk's own
+   * footprint. So the page is corrupted by hand, in the SAME transaction as the update, which is what keeps the
+   * commit-time {@code compressPage} from re-flowing the overlap before the update runs.
+   */
+  @Test
+  void aRegionTooSmallForAnyContentIsRefusedRatherThanWritten() throws Exception {
+    final RID[] chunked = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Corrupted", 1).createProperty("v", Type.STRING);
+      // Written FIRST so the record that spills has neighbours AFTER it: its region is bounded by one of them.
+      chunked[0] = database.newDocument("Corrupted").set("v", "p").save().getIdentity();
+    });
+    fillFirstPage("Corrupted");
+    database.transaction(() -> chunked[0].asDocument(true).modify().set("v", "b".repeat(200 * 1024)).save());
+    assertThat((Long) bucketStats("Corrupted").get("totalMultiPageRecords")).as("the fixture must have spilled")
+        .isEqualTo(1L);
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Corrupted").getBuckets(false).getFirst();
+
+    database.begin();
+    try {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final MutablePage page = db.getTransaction()
+          .getPageToModify(new PageId(db, bucket.getFileId(), 0), bucket.getPageSize(), false);
+      final int headChunkPosition = (int) page.readUnsignedInt(
+          LocalBucket.PAGE_RECORD_TABLE_OFFSET + (int) chunked[0].getPosition() * Binary.INT_SERIALIZED_SIZE);
+
+      // Point the NEXT slot one byte past the head chunk's marker: its region can then hold no content at all.
+      final int recordCountInPage = page.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      assertThat(recordCountInPage).as("the fixture needs a neighbour after the chunk head").isGreaterThan(1);
+      page.writeUnsignedInt(LocalBucket.PAGE_RECORD_TABLE_OFFSET + Binary.INT_SERIALIZED_SIZE, headChunkPosition + 1);
+
+      chunked[0].asDocument(true).modify().set("v", MEDIUM).save();
+
+      // The commit wraps the refusal (a TransactionException over the DatabaseOperationException), so it is asserted
+      // on the whole chain rather than on the wrapper of the day.
+      assertThatThrownBy(database::commit).hasStackTraceContaining(DatabaseOperationException.class.getName())
+          .hasStackTraceContaining("no room left in page");
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
   }
 
   /**
