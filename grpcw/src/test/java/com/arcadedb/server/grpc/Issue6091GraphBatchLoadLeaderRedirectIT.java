@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ha.raft.BaseRaftHATest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -45,27 +46,25 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A graph batch load must not run on a follower (issue #6070). The bulk path mutates state that only the leader
- * can serialize - the schema dictionary above all - so running it on a follower races the local state-machine
- * apply in {@code Dictionary.getIdByName}, which is the corruption issue #4122 was about and the reason the
- * HTTP endpoint relays the payload to the leader instead of loading it locally.
+ * A follower refuses a graph batch load (issue #6070) and tells the caller where to go instead. Until issue #6091
+ * the only address HA could expose was the leader's <b>HTTP</b> one, so the refusal had to say "use its gRPC port"
+ * and a client redirecting itself had to already know the deployment's port-mapping convention. It now names an
+ * address that can be dialled, on the trailers as well as in the message.
  * <p>
- * {@code GraphBatchLoad} had no such guard: it took the load wherever the client happened to connect. It does not
- * relay the way HTTP does, because relaying a bulk load through a follower would double the traffic of the
- * transport chosen to avoid exactly that, so it refuses - before writing anything, and naming the leader, so the
- * caller can redirect rather than reconcile a load that got half-way. That the named address is one the caller can
- * actually dial is issue #6091, covered by {@link Issue6091GraphBatchLoadLeaderRedirectIT}.
- * <p>
- * What makes this worth a cluster test rather than a unit test is the second assertion: the same load, over the
- * same RPC, must still succeed against the leader. A guard that refused everywhere would pass a test that only
- * checked the follower.
+ * The assertion that matters is the last one: the refused load is retried <b>against the address the refusal
+ * named</b>, taken from the trailer and dialled as-is, and it succeeds. A test that only compared the string
+ * against the port it configured would pass just as well if the server had named the follower's own port - and
+ * that is precisely the mistake the derive-from-local-port fallback makes on a heterogeneous cluster, which is
+ * this cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
+class Issue6091GraphBatchLoadLeaderRedirectIT extends BaseRaftHATest {
 
-  private static final int    BASE_GRPC_PORT = 51091;
-  private static final String VERTEX_TYPE    = "Issue6070LeaderGuardNode";
+  private static final int    BASE_RAFT_PORT = 2434;
+  private static final int    BASE_HTTP_PORT = 2480;
+  private static final int    BASE_GRPC_PORT = 51101;
+  private static final String VERTEX_TYPE    = "Issue6091RedirectNode";
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user",
       Metadata.ASCII_STRING_MARSHALLER);
@@ -77,6 +76,26 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
   private ManagedChannel channel;
 
   @Override
+  protected int getServerCount() {
+    return 3;
+  }
+
+  @Override
+  protected String getServerAddresses() {
+    // Object form so each node declares the gRPC port it actually binds. Three nodes on one host cannot share a
+    // port, so this is also the deployment shape where deriving a peer's port from this node's would be wrong.
+    final StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < getServerCount(); i++) {
+      if (i > 0)
+        sb.append(",");
+      sb.append("localhost:{raft:").append(BASE_RAFT_PORT + i)
+          .append(",http:").append(BASE_HTTP_PORT + i)
+          .append(",grpc:").append(BASE_GRPC_PORT + i).append("}");
+    }
+    return sb.toString();
+  }
+
+  @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
 
@@ -84,7 +103,7 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
 
     config.setValue("arcadedb.grpc.enabled", "true");
-    config.setValue("arcadedb.grpc.port", String.valueOf(BASE_GRPC_PORT + index));
+    config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(BASE_GRPC_PORT + index));
     config.setValue("arcadedb.grpc.host", "localhost");
     config.setValue("arcadedb.grpc.reflection.enabled", "false");
     config.setValue("arcadedb.grpc.health.enabled", "false");
@@ -97,34 +116,17 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
       config.setValue(GlobalConfiguration.SERVER_PLUGINS, existingPlugins + "," + pluginEntry);
   }
 
-  @Override
-  protected int getServerCount() {
-    return 3;
-  }
-
   @AfterEach
   void teardownGrpcClient() throws InterruptedException {
-    if (channel != null) {
-      channel.shutdown();
-      channel.awaitTermination(5, TimeUnit.SECONDS);
-      channel = null;
-    }
+    closeChannel();
   }
 
   @Test
-  void aLoadOnAFollowerIsRefusedAndTheSameLoadOnTheLeaderSucceeds() throws Exception {
+  void theRefusalNamesAnAddressTheLoadActuallySucceedsOn() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = anyFollowerOf(leaderIndex);
 
-    int followerIndex = -1;
-    for (int i = 0; i < getServerCount(); i++)
-      if (i != leaderIndex) {
-        followerIndex = i;
-        break;
-      }
-    assertThat(followerIndex).as("At least one follower must exist").isGreaterThanOrEqualTo(0);
-
-    // Schema through the leader, so the guard under test is the only thing the load depends on.
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
     leaderDb.transaction(() -> {
       if (!leaderDb.getSchema().existsType(VERTEX_TYPE))
@@ -132,73 +134,61 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
     });
     waitForAllServers();
 
-    // The follower refuses, and says where to go instead.
-    final Throwable refusal = loadOneVertex(followerIndex, "onFollower");
-    assertThat(refusal).as("a load aimed at a follower must be refused, not silently taken")
-        .isInstanceOf(StatusRuntimeException.class);
+    final Throwable refusal = loadOneVertex("localhost:" + (BASE_GRPC_PORT + followerIndex), "onFollower");
+    assertThat(refusal).as("a load aimed at a follower must be refused").isInstanceOf(StatusRuntimeException.class);
 
     final StatusRuntimeException failure = (StatusRuntimeException) refusal;
-    assertThat(failure.getStatus().getCode()).as("the caller has to be able to tell this from an engine fault")
-        .isEqualTo(Status.Code.FAILED_PRECONDITION);
-    assertThat(failure.getStatus().getDescription()).contains("not the cluster leader");
+    assertThat(failure.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
 
-    // Refused before writing anything: nothing to reconcile anywhere in the cluster.
+    final Metadata trailers = failure.getTrailers();
+    assertThat(trailers).as("the refusal must carry trailers, not only prose").isNotNull();
+
+    final String advertised = trailers.get(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS);
+    assertThat(advertised).as("the leader's gRPC address must be advertised in a form a client can dial")
+        .isEqualTo("localhost:" + (BASE_GRPC_PORT + leaderIndex));
+    assertThat(advertised).as("naming the refusing node's own port would send the caller straight back here")
+        .isNotEqualTo("localhost:" + (BASE_GRPC_PORT + followerIndex));
+
+    // The HTTP address stays available as the human-readable fallback, and is a different endpoint entirely.
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS))
+        .as("the HTTP address must still be reported").isNotNull().isNotEqualTo(advertised);
+
+    // The typed redirect: the same class the HTTP protocol raises for this, carrying the same address.
+    assertThat(trailers.get(GrpcErrorMapper.EXCEPTION_CLASS_KEY))
+        .isEqualTo(ServerIsNotTheLeaderException.class.getName());
+
+    // The message says it too, in the gRPC wording rather than the HTTP-with-a-caveat one it used to.
+    assertThat(failure.getStatus().getDescription()).contains("not the cluster leader")
+        .contains("'" + advertised + "' (gRPC address)").doesNotContain("use its gRPC port");
+
+    // Nothing was written before the refusal: there is no partial load to reconcile anywhere.
     waitForAllServers();
     for (int i = 0; i < getServerCount(); i++)
       assertThat(getServerDatabase(i, getDatabaseName()).countType(VERTEX_TYPE, true))
-          .as("server %d must hold nothing from the refused load", i)
-          .isZero();
+          .as("server %d must hold nothing from the refused load", i).isZero();
 
-    // The very same load against the leader goes through, and replicates.
-    assertThat(loadOneVertex(leaderIndex, "onLeader")).as("the leader must still accept the load").isNull();
+    // And now the point of all of it: dial the advertised address verbatim and the load goes through.
+    assertThat(loadOneVertex(advertised, "onRedirect")).as("the advertised address must accept the load").isNull();
 
     waitForAllServers();
     for (int i = 0; i < getServerCount(); i++)
       assertThat(getServerDatabase(i, getDatabaseName()).countType(VERTEX_TYPE, true))
-          .as("server %d (leader=%d) must see the vertex loaded on the leader", i, leaderIndex)
-          .isEqualTo(1);
+          .as("server %d must see the redirected load", i).isEqualTo(1);
   }
 
-  /**
-   * The refusal names the leader, which is a fact about the cluster's layout. It must therefore come after the
-   * caller has been resolved against the database it asked for, the way every other RPC on this service starts.
-   * A follower asked to load into a database that cannot be reached has to answer about that database, not
-   * volunteer where the leader lives - and the difference is only observable on a follower, because that is the
-   * only place the leadership branch is reached at all.
-   */
-  @Test
-  void aFollowerResolvesTheDatabaseBeforeNamingTheLeader() throws Exception {
-    final int leaderIndex = findLeaderIndex();
-    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
-
-    int followerIndex = -1;
+  private int anyFollowerOf(final int leaderIndex) {
     for (int i = 0; i < getServerCount(); i++)
-      if (i != leaderIndex) {
-        followerIndex = i;
-        break;
-      }
-    assertThat(followerIndex).as("At least one follower must exist").isGreaterThanOrEqualTo(0);
-
-    final Throwable refusal = loadOneVertexInto(followerIndex, "unauthorized", "Issue6070NoSuchDatabase");
-
-    assertThat(refusal).as("a load naming a database that cannot be reached must be refused").isNotNull();
-    assertThat(refusal.getMessage())
-        .as("the refusal must be about the database, not about where the leader is")
-        .doesNotContain("not the cluster leader")
-        .doesNotContain("Reconnect to the leader");
+      if (i != leaderIndex)
+        return i;
+    throw new IllegalStateException("At least one follower must exist");
   }
 
   /**
-   * Runs a one-vertex load against the given server and returns the failure it ended with, or null if it
-   * succeeded.
+   * Runs a one-vertex load against the given {@code host:port} gRPC target and returns the failure it ended with,
+   * or null if it succeeded. The target is a string on purpose: it is what the server advertised.
    */
-  private Throwable loadOneVertex(final int serverIndex, final String tempId) throws Exception {
-    return loadOneVertexInto(serverIndex, tempId, getDatabaseName());
-  }
-
-  private Throwable loadOneVertexInto(final int serverIndex, final String tempId, final String databaseName)
-      throws Exception {
-    channel = ManagedChannelBuilder.forAddress("localhost", BASE_GRPC_PORT + serverIndex).usePlaintext().build();
+  private Throwable loadOneVertex(final String target, final String tempId) throws Exception {
+    channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build();
     try {
       final Channel authenticated = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
 
@@ -224,7 +214,7 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
           });
 
       observer.onNext(GraphBatchChunk.newBuilder()
-          .setDatabase(databaseName)
+          .setDatabase(getDatabaseName())
           .setCredentials(DatabaseCredentials.newBuilder()
               .setUsername("root")
               .setPassword(DEFAULT_PASSWORD_FOR_TESTS)
@@ -240,6 +230,12 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
       assertThat(done.await(30, TimeUnit.SECONDS)).as("the load must terminate one way or the other").isTrue();
       return errorRef.get();
     } finally {
+      closeChannel();
+    }
+  }
+
+  private void closeChannel() throws InterruptedException {
+    if (channel != null) {
       channel.shutdown();
       channel.awaitTermination(5, TimeUnit.SECONDS);
       channel = null;
