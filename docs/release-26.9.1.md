@@ -1608,4 +1608,13 @@ avoid exactly that. What the mapper change covers is the leadership change that 
 decision and the schema write, where the caller is holding a failure it can only act on if it is told which node to
 repeat it against.
 
+**Upgrade note**: the status a leader refusal carries changes from `ABORTED` to `FAILED_PRECONDITION` on the
+mapper's RPCs, which is client-visible for anyone switching on the gRPC status code. A client reading the
+`arcadedb-exception-class` trailer - which is what the bundled Java client does, and what the trailer is for - is
+unaffected: it rebuilds `ServerIsNotTheLeaderException` either way. A client that treats `ABORTED` as "retry this
+call" needs to treat `FAILED_PRECONDITION` plus a leader-address trailer as "dial that address and repeat it"
+instead; retrying as-is was never going to succeed, since it asks the same follower again. `graphBatchLoad`
+already answered `FAILED_PRECONDITION` and is unchanged, and on the other RPCs the condition is reachable only
+through the leadership-change window described above, so in practice almost nothing is looking at the old code.
+
 [#6183](https://github.com/ArcadeData/arcadedb/issues/6183)
