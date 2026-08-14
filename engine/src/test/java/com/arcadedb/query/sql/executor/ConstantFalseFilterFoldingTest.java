@@ -86,6 +86,29 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
   }
 
   @Test
+  void aLiteralFalseFilterIsFoldedToo() {
+    // the parser answers a bare boolean literal with the BooleanExpression.FALSE/TRUE sentinels rather than a
+    // condition, so they carry their own verdict
+    assertNoScan(planOf("SELECT FROM Character WHERE false"));
+    assertNoScan(planOf("SELECT FROM Character WHERE true AND false"));
+
+    assertScan(planOf("SELECT FROM Character WHERE true"));
+    assertThat(names("SELECT FROM Character WHERE true")).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+    assertThat(names("SELECT FROM Character WHERE false")).isEmpty();
+  }
+
+  @Test
+  void aNegatedConstantFilterIsReadWithItsNegation() {
+    // the hazard the NOT handling exists to avoid: reading "NOT (1=0)" as false would answer a filter that matches
+    // every record with no rows at all
+    assertScan(planOf("SELECT FROM Character WHERE NOT (1=0)"));
+    assertThat(names("SELECT FROM Character WHERE NOT (1=0)")).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+
+    assertScan(planOf("SELECT FROM Character WHERE NOT (name = 'Arya')"));
+    assertThat(names("SELECT FROM Character WHERE NOT (name = 'Arya')")).containsExactlyInAnyOrder("Jon", "Tyrion");
+  }
+
+  @Test
   void aSatisfiableFilterIsStillPlannedAsAScan() {
     assertScan(planOf("SELECT FROM Character WHERE name = 'Arya'"));
     assertScan(planOf("SELECT FROM Character WHERE 1=1"));
@@ -158,6 +181,20 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
 
     assertThat(rs.hasNext()).isFalse();
     rs.close();
+  }
+
+  @Test
+  void countStarWithASkipReturnsNoRow() {
+    // the hardwired count plan replaces the whole step chain, so it has to chain the statement's SKIP itself: it
+    // used to hand back the very row it was told to skip
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS total FROM Character SKIP 1")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS total FROM Character SKIP 0 LIMIT 5")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Number>getProperty("total").intValue()).isEqualTo(3);
+    }
   }
 
   @Test

@@ -479,7 +479,23 @@ public class SelectExecutionPlanner {
       return false;
 
     result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
+    handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
+  }
+
+  /**
+   * A hardwired plan replaces the whole step chain, so the SKIP and LIMIT of the statement have to be chained here or
+   * they are not chained at all - which is how {@code SELECT count(*) FROM T SKIP 1} used to hand back the very row
+   * it was told to skip. The single row these plans produce makes both steps cheap; {@code LIMIT 0} does not even
+   * reach this point, {@link #emptyByConstructionReason} claims it first.
+   */
+  private static void handleSkipAndLimitAfterHardwired(final SelectExecutionPlan result, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.skip != null)
+      result.chain(new SkipExecutionStep(info.skip, context));
+
+    if (info.limit != null)
+      result.chain(new LimitExecutionStep(info.limit, context));
   }
 
   private boolean handleHardwiredCountOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info,
@@ -501,12 +517,14 @@ public class SelectExecutionPlanner {
       return false;
     }
     result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
+    handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
 
   /**
    * returns true if the query is minimal, ie. no WHERE condition, no UNWIND, no GROUP/ORDER BY, no LET.
-   * SKIP/LIMIT are allowed because all hardwired optimizations (count, max, min) return a single row.
+   * SKIP/LIMIT are allowed because all hardwired optimizations (count, max, min) return a single row, and because
+   * the plan chains the two steps itself - see {@link #handleSkipAndLimitAfterHardwired}.
    */
   private boolean isMinimalQuery(final QueryPlanningInfo info) {
     return info.projectionAfterOrderBy == null && info.globalLetClause == null && info.perRecordLetClause == null

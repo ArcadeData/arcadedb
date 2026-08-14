@@ -140,5 +140,14 @@ public class NotBlock extends BooleanExpression {
 
     return sub.isAlwaysTrue();
   }
+
+  @Override
+  public boolean isAlwaysFalse(final CommandContext context) {
+    if (sub == null)
+      return false;
+
+    // NOT <always true> is false for every record; without the NOT this block is a pass-through
+    return negate ? sub.isAlwaysTrue() : sub.isAlwaysFalse(context);
+  }
 }
 /* JavaCC - OriginalChecksum=1926313b3f854235aaa20811c22d583b (do not edit this line) */
