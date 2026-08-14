@@ -39,8 +39,6 @@ public class ResultInternal implements Result {
   protected Map<String, Object> temporaryContent;
   protected Map<String, Object> metadata;
   protected Document element;
-  protected float score = 0f;
-  protected float similarity = 0f;
   // Tracks properties explicitly removed via removeProperty so they do not fall through to the
   // backing element. Null until first removal (lazy init to avoid allocation overhead).
   protected Set<String> tombstones;
@@ -115,48 +113,6 @@ public class ResultInternal implements Result {
     return temporaryContent == null ? Collections.emptySet() : temporaryContent.keySet();
   }
 
-  /**
-   * Gets the search score for this result.
-   * Used for full-text search relevance scoring.
-   *
-   * @return the score, or 0 if not set
-   */
-  public float getScore() {
-    return score;
-  }
-
-  /**
-   * Sets the search score for this result.
-   * Used for full-text search relevance scoring.
-   *
-   * @param score the relevance score
-   */
-  public void setScore(final float score) {
-    this.score = score;
-  }
-
-  /**
-   * Gets the similarity score for this result.
-   * Used for More Like This (MLT) queries to indicate similarity to a reference document.
-   * The similarity is normalized to 0.0-1.0 where 1.0 means most similar.
-   *
-   * @return the similarity score, or 0 if not set
-   */
-  public float getSimilarity() {
-    return similarity;
-  }
-
-  /**
-   * Sets the similarity score for this result (normalized 0.0 to 1.0).
-   * Used for SEARCH_INDEX_MORE/SEARCH_FIELDS_MORE functions.
-   * Note: No validation is performed. Callers are responsible for ensuring valid range.
-   *
-   * @param similarity the normalized similarity score (should be 0.0-1.0)
-   */
-  public void setSimilarity(final float similarity) {
-    this.similarity = similarity;
-  }
-
   public ResultInternal setProperty(final String name, Object value) {
     if (value instanceof Optional optional)
       value = optional.orElse(null);
@@ -183,9 +139,8 @@ public class ResultInternal implements Result {
   public void removeProperty(final String name) {
     if (content != null)
       content.remove(name);
-    // Always record the removal as a tombstone so getProperty does not re-surface the value: neither from
-    // the backing element nor from the virtual $score/$similarity fallback. Without this an explicitly
-    // removed $score on a content-only result would still report the internal scoring float.
+    // Always record the removal as a tombstone so getProperty does not re-surface the value from the
+    // backing element.
     if (tombstones == null)
       tombstones = new HashSet<>();
     tombstones.add(name);
@@ -193,32 +148,15 @@ public class ResultInternal implements Result {
 
   public <T> T getProperty(final String name) {
     T result;
-    // Tracks whether the key is genuinely present (even when mapped to null), so the $score/$similarity
-    // fallback below cannot override a value that was explicitly projected as null.
-    boolean present = false;
-    if (tombstones != null && tombstones.contains(name)) {
-      // Explicitly removed via removeProperty(): treat as present-and-null so the $score/$similarity
-      // fallback does not resurrect the internal field for a property the caller deliberately dropped.
+    if (tombstones != null && tombstones.contains(name))
       result = null;
-      present = true;
-    } else if (content != null && !content.isEmpty()) {
+    else if (content != null && !content.isEmpty())
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
       result = (T) content.get(name);
-      present = content.containsKey(name);
-    } else if (element != null) {
+    else if (element != null)
       result = (T) element.get(name);
-      present = element.has(name);
-    } else
+    else
       result = null;
-
-    // Fall back to the internal score/similarity field only when the key is genuinely absent. An
-    // explicitly projected null (e.g. $score = null) is preserved instead of being overridden.
-    if (!present && result == null) {
-      if ("$score".equals(name))
-        return (T) Float.valueOf(score);
-      if ("$similarity".equals(name))
-        return (T) Float.valueOf(similarity);
-    }
 
     if (!(result instanceof Record) &&
             result instanceof Identifiable identifiable &&
@@ -306,14 +244,6 @@ public class ResultInternal implements Result {
   public Set<String> getPropertyNames() {
     final Set<String> result = new LinkedHashSet<>();
 
-    // Include $score in property names if score is set
-    if (score > 0)
-      result.add("$score");
-
-    // Include $similarity in property names if similarity is set
-    if (similarity > 0)
-      result.add("$similarity");
-
     // Mirror getProperty()'s precedence: once content is present the element is never consulted, so
     // merging the element's names here would advertise columns that can only ever resolve to null
     // (issue #5613: a Cypher `RETURN n` row carries content {n: vertex} plus the vertex as element,
@@ -340,14 +270,6 @@ public class ResultInternal implements Result {
    * projection selection rather than the reported column list. See the note on {@link #toMap()}.
    */
   public boolean hasProperty(final String propName) {
-    // $score is always available as a special property
-    if ("$score".equals(propName))
-      return true;
-
-    // $similarity is always available as a special property
-    if ("$similarity".equals(propName))
-      return true;
-
     if (tombstones != null && tombstones.contains(propName))
       return false;
 
