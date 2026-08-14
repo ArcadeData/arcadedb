@@ -325,7 +325,7 @@ public class PostgresNetworkExecutor extends Thread {
           portal.columns = getColumns(portal.cachedResultSet);
           if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
             final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
-                getParams(portal));
+                getParams(portal), portal.sqlStatement);
             if (schemaColumns != null)
               portal.columns = schemaColumns;
           }
@@ -415,7 +415,7 @@ public class PostgresNetworkExecutor extends Thread {
               portal.columns = getColumns(portal.cachedResultSet);
               if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
                 final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
-                    getParams(portal));
+                    getParams(portal), portal.sqlStatement);
                 if (schemaColumns != null)
                   portal.columns = schemaColumns;
               }
@@ -566,7 +566,7 @@ public class PostgresNetworkExecutor extends Thread {
       final long serStart = System.nanoTime();
       Map<String, PostgresType> columns = getColumns(cachedResultSet);
       if (columns.isEmpty() && cachedResultSet.isEmpty()) {
-        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS);
+        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS, null);
         if (schemaColumns != null)
           columns = schemaColumns;
       }
@@ -1165,7 +1165,7 @@ public class PostgresNetworkExecutor extends Thread {
    * no schema match is found, letting the caller fall through to the empty-RowDescription default.
    */
   private Map<String, PostgresType> resolveEmptyResultSchemaColumns(final String query, final String language,
-      final Object[] parameters) {
+      final Object[] parameters, final Statement alreadyParsed) {
     if (query == null)
       return null;
 
@@ -1173,7 +1173,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (language != null && !"sql".equalsIgnoreCase(language))
       return null;
 
-    final Statement parsed = parseStatement(query);
+    // the extended protocol parsed this very text when it prepared the portal: reuse it instead of parsing twice
+    final Statement parsed = alreadyParsed != null ? alreadyParsed : parseStatement(query);
 
     // A schema probe returns no rows by construction, so replaying it without its constant-false filter is the
     // only way to learn the columns of a row source that is not a schema type - a graph function, a TRAVERSE, a
@@ -1196,6 +1197,13 @@ public class PostgresNetworkExecutor extends Thread {
    * query would send on the wire is exactly what gets announced. Returns null when the statement carries no
    * constant-false filter - then the empty result is the query's own answer and there is nothing to replay - or
    * when the replay itself finds no row.
+   * <p>
+   * Note that the replay evaluates the query's projection for real, once, on one row. The original probe never
+   * did: its filter discards every row before the projection runs. So a projected function that has a side
+   * effect - a sequence's {@code next()}, a user-defined function that writes - is invoked once per probe that
+   * takes this path. The alternative is to describe a computed projection by guessing, which is what left this
+   * whole family of queries undescribable in the first place; the statically-resolvable shapes are answered
+   * without a replay by {@link #getColumnsFromQuerySchema} whenever they return rows of their own.
    */
   private Map<String, PostgresType> sampleProbeColumns(final Statement parsed, final Object[] parameters) {
     if (!(parsed instanceof SelectStatement select))
@@ -1207,9 +1215,13 @@ public class PostgresNetworkExecutor extends Thread {
       context.setConfiguration(server.getConfiguration());
       context.setDatabase(database);
 
-      final SelectStatement sample = select.copy();
-      if (!removeAlwaysFalseFilters(sample, context))
+      // Read the parsed statement before copying it: a query that legitimately returns no rows is the common
+      // case on this path and must not pay for an AST deep copy it turns out it cannot use.
+      if (!hasAlwaysFalseFilter(select, context))
         return null;
+
+      final SelectStatement sample = select.copy();
+      stripProbe(sample, context);
 
       final ResultSet resultSet = sample.execute(database, parameters != null ? parameters : NO_PARAMETERS, context);
       final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1, false);
@@ -1222,24 +1234,44 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Drops every constant-false WHERE clause from the statement and from the subqueries it selects from, in place.
-   * Returns true when at least one was dropped, which is what identifies the statement as a schema probe.
+   * Whether the statement, or a subquery it selects from, filters on a condition that is false for every row.
+   * That is what marks the statement as a schema probe and makes it worth replaying.
    */
-  private boolean removeAlwaysFalseFilters(final SelectStatement select, final CommandContext context) {
-    boolean removed = false;
+  private boolean hasAlwaysFalseFilter(final SelectStatement select, final CommandContext context) {
+    if (isAlwaysFalseFilter(select.getWhereClause(), context))
+      return true;
 
-    final WhereClause where = select.getWhereClause();
-    if (where != null && isAlwaysFalse(where.baseExpression, context)) {
+    final SelectStatement subQuery = selectedSubQuery(select);
+    return subQuery != null && hasAlwaysFalseFilter(subQuery, context);
+  }
+
+  /**
+   * Turns a copy of the probe into the query it is a probe of, in place: the constant-false filters go, and so
+   * do the clauses that only choose which rows come back. Dropping ORDER BY, SKIP and LIMIT costs nothing - the
+   * columns of a row do not depend on where it sits in the result - and it keeps the replay from materializing
+   * and sorting a whole result set just to hand over its first row.
+   */
+  private void stripProbe(final SelectStatement select, final CommandContext context) {
+    if (isAlwaysFalseFilter(select.getWhereClause(), context))
       select.setWhereClause(null);
-      removed = true;
-    }
 
+    select.orderBy = null;
+    select.skip = null;
+    select.limit = null;
+
+    final SelectStatement subQuery = selectedSubQuery(select);
+    if (subQuery != null)
+      stripProbe(subQuery, context);
+  }
+
+  private boolean isAlwaysFalseFilter(final WhereClause where, final CommandContext context) {
+    return where != null && isAlwaysFalse(where.baseExpression, context);
+  }
+
+  private SelectStatement selectedSubQuery(final SelectStatement select) {
     final FromClause target = select.getTarget();
     final FromItem item = target != null ? target.getItem() : null;
-    if (item != null && item.getStatement() instanceof SelectStatement subQuery)
-      removed |= removeAlwaysFalseFilters(subQuery, context);
-
-    return removed;
+    return item != null && item.getStatement() instanceof SelectStatement subQuery ? subQuery : null;
   }
 
   /**

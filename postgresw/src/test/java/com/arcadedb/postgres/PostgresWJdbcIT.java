@@ -1149,6 +1149,10 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n) t WHERE (1=0) OR (2=3)", "n");
       assertProbedColumns(conn, "SELECT * FROM (SELECT 1 AS n WHERE 1=0) t", "n");
 
+      // Dropping the constant-false filter must not disturb the clauses that only pick which rows come back.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero6156 ORDER BY name) t WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero6156) t WHERE 1=0 ORDER BY name SKIP 10 LIMIT 5", "name");
+
       // The replay has to run with the parameters the probe was bound with.
       try (var st = conn.prepareStatement("SELECT * FROM (SELECT name FROM Hero6156 WHERE name = ?) t WHERE 1=0")) {
         st.setString(1, "Napoleon");
@@ -1156,6 +1160,18 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           final var meta = rs.getMetaData();
           assertThat(meta.getColumnCount()).isEqualTo(1);
           assertThat(meta.getColumnName(1)).isEqualTo("name");
+        }
+      }
+
+      // ... including when the constant-false term is ANDed with a real predicate in the very clause that gets
+      // dropped, leaving the bound parameter with nothing referencing it.
+      try (var st = conn.prepareStatement("SELECT name FROM Hero6156 WHERE 1=0 AND name = ?")) {
+        st.setString(1, "Napoleon");
+        try (var rs = st.executeQuery()) {
+          final var meta = rs.getMetaData();
+          assertThat(meta.getColumnCount()).isEqualTo(1);
+          assertThat(meta.getColumnName(1)).isEqualTo("name");
+          assertThat(rs.next()).isFalse();
         }
       }
 
