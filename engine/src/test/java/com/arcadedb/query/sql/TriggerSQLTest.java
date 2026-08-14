@@ -172,6 +172,50 @@ class TriggerSQLTest extends TestHelper {
     assertThat(result.hasNext()).isTrue();
   }
 
+  /**
+   * {@code $record} used to bind nothing in a SQL trigger body: {@code SQLTriggerExecutor} passed it through
+   * {@code database.command("sql", sql, params)}, which only fills {@code CommandContext}'s input parameters, a
+   * store {@code $name} resolution ({@code SuffixIdentifier}) never reads - it reads exclusively from
+   * {@code CommandContext.getVariable}. So {@code $record.field} silently evaluated to {@code null} in every SQL
+   * trigger body, including the documented audit-trail pattern this test mirrors. Pinned separately from the
+   * plain no-op fix (#6167) because a body that runs but can't see the record it fired for is a different failure.
+   */
+  @Test
+  void sqlTriggerBodyCanReadTheBoundRecord() {
+    database.command("sql",
+        """
+            CREATE TRIGGER user_audit AFTER CREATE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "user_created", userName = $record.name'""");
+
+    database.transaction(() -> database.newDocument("User").set("name", "Alice").save());
+
+    final ResultSet result = database.query("sql", "SELECT FROM AuditLog WHERE action = 'user_created'");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("userName")).as("$record.field must resolve to the fired record's data").isEqualTo("Alice");
+  }
+
+  /**
+   * The realistic validation use case #6167 called out: a SELECT body that inspects the record and vetoes only
+   * when a condition fails, rather than an unconditional {@code SELECT false}.
+   */
+  @Test
+  void sqlTriggerBodyCanVetoBasedOnTheBoundRecord() {
+    database.command("sql", "CREATE DOCUMENT TYPE Product");
+
+    database.command("sql",
+        """
+            CREATE TRIGGER validate_price BEFORE CREATE ON TYPE Product
+            EXECUTE SQL 'SELECT ($record.price > 0) AS ok'""");
+
+    database.transaction(() -> database.newDocument("Product").set("name", "Bad").set("price", -5).save());
+    assertThat(database.query("sql", "SELECT FROM Product WHERE name = 'Bad'").hasNext())
+        .as("a negative price must be vetoed").isFalse();
+
+    database.transaction(() -> database.newDocument("Product").set("name", "Good").set("price", 5).save());
+    assertThat(database.query("sql", "SELECT FROM Product WHERE name = 'Good'").hasNext())
+        .as("a positive price must proceed").isTrue();
+  }
+
   @Test
   void beforeUpdateTriggerSQL() {
     database.command("sql",
