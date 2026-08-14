@@ -70,7 +70,9 @@ class InternalBucketNamingTest {
   @Test
   void triesEveryUnderscorePrefixSoOwnersMayContainUnderscores() {
     assertThat(InternalBucketNaming.ownerOf("My_Type_0_out_edges", Set.of("My_Type_0"))).isEqualTo("My_Type_0");
-    // The SHORTEST matching prefix wins, which only matters when both are owners; either answer means "owned".
+    // The SHORTEST matching prefix wins. Pinned so the tie-break is a documented property rather than an accident
+    // of the loop, but it is arbitrary: what the only consumer asks is "owned by anything?", and both answers say
+    // yes. See ownerOf's javadoc before using the returned NAME for anything attribution-sensitive.
     assertThat(InternalBucketNaming.ownerOf("My_Type_0_out_edges", Set.of("My", "My_Type_0"))).isEqualTo("My");
   }
 

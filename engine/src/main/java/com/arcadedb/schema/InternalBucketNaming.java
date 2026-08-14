@@ -133,9 +133,18 @@ public class InternalBucketNaming {
    * Matched by successive underscore-delimited prefixes rather than by scanning {@code ownerNames}, so the cost is a
    * few hash lookups per candidate instead of one pass over every type in the schema. Owner names may themselves
    * contain underscores ({@code V_0}), which is why every prefix is tried and not only the first.
+   * <p>
+   * <b>The SHORTEST matching prefix wins</b>, and that tie-break is arbitrary rather than principled: with both
+   * {@code My} and {@code My_Type_0} in the owner set, {@code My_Type_0_out_edges} is attributed to {@code My}. It
+   * does not matter to the question this method exists to answer - "is this bucket owned by anything?", which is
+   * what {@link #isDerivedFromAnOwner} asks and is the only thing consumed today. A caller that uses the returned
+   * NAME for something attribution-sensitive (reporting it to an operator, deciding what to delete alongside it)
+   * has to establish which owner it wants first; this method will not have chosen it for them.
    *
    * @param bucketName the bucket whose ownership is in question
    * @param ownerNames names of the schema objects that can own a bucket: types, and buckets a type already claims
+   *
+   * @return the shortest prefix of {@code bucketName} that is in {@code ownerNames}, or {@code null} if none is
    */
   public static String ownerOf(final String bucketName, final Set<String> ownerNames) {
     for (int underscore = bucketName.indexOf('_'); underscore > 0; underscore = bucketName.indexOf('_',
