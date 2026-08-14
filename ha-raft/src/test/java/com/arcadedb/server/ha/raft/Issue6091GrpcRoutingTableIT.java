@@ -33,8 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The addresses here are <b>declared</b>, with the object-form {@code grpc:} field, which is the case that has to
  * work for a heterogeneous deployment - and the only one an in-process cluster can exercise honestly, since three
- * nodes sharing localhost cannot share a port. {@link Issue6091GrpcRoutingTableDerivedIT} covers the other half,
- * the derive-from-this-node's-port fallback used when nothing is declared.
+ * nodes sharing localhost cannot share a port. The other half - the derive-from-this-node's-port fallback used when
+ * nothing is declared - is covered by {@link Issue6183AmbiguousRoutingTest} for the derive itself and by
+ * {@link Issue6183AmbiguousRoutingIT} for what a cluster of same-host peers ends up advertising, which is nothing:
+ * a derived address that fits every peer identifies none of them (issue #6183).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

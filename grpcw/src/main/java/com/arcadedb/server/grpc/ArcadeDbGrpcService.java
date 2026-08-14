@@ -2717,7 +2717,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // the transport chosen to avoid exactly that. It is refused before a single record is written, and
             // names an address the caller can dial, so redirecting costs it neither a partial load to reconcile
             // nor knowledge of the deployment's port-mapping convention.
-            final HAServerPlugin ha = arcadeServer != null ? arcadeServer.getHA() : null;
+            final HAServerPlugin ha = ha();
             if (ha != null && !ha.isLeader()) {
               errorSent[0] = true;
               out.onError(notTheLeader(ha, "graphBatchLoad", "a graph batch load must run on the leader"));
