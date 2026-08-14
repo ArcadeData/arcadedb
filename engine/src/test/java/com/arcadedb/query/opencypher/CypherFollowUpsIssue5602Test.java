@@ -146,7 +146,10 @@ class CypherFollowUpsIssue5602Test extends TestHelper {
     final String walker = readSource(Path.of(WALKER_SOURCE));
     final List<String> unhandled = new ArrayList<>();
     for (final String type : types)
-      if (!LEAF_EXPRESSIONS.contains(type) && !walker.contains("case " + type + " "))
+      // The walker uses an if-instanceof chain rather than a pattern-matching switch (Java 17 has no pattern
+      // matching in switch), so a type is handled either as "case Type " (kept for forward-compatibility with a
+      // future switch) or as "instanceof Type " (the actual current idiom).
+      if (!LEAF_EXPRESSIONS.contains(type) && !walker.contains("case " + type + " ") && !walker.contains("instanceof " + type + " "))
         unhandled.add(type);
 
     assertThat(unhandled)
