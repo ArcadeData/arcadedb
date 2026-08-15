@@ -176,12 +176,21 @@ public class WhereClause extends SimpleNode {
     return Long.MAX_VALUE;
   }
 
+  /**
+   * Collects the {@code field = value} pairs an index estimate can be taken from, by evaluating the value side.
+   * <p>
+   * Only literals and bound parameters are evaluated, never anything {@link Expression#isEarlyCalculated} would
+   * also admit: a function call there would be invoked once per planning just to sharpen a cost estimate, which
+   * is an invocation the query never asked for and nothing on the function says is free (issue #6179). A
+   * parameter is fine - it is already bound and reading it calls nothing - and the estimate it feeds lives only
+   * as long as this planning pass.
+   */
   private Map<String, Object> getEqualityOperations(final AndBlock condition, final CommandContext context) {
     final Map<String, Object> result = new HashMap<String, Object>();
     for (final BooleanExpression expression : condition.subBlocks) {
       if (expression instanceof BinaryCondition b) {
         if (b.operator instanceof EqualsCompareOperator) {
-          if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated(context)) {
+          if (b.left.isBaseIdentifier() && b.right.isLiteral(true)) {
             result.put(b.left.toString(), b.right.execute((Result) null, context));
           }
         }

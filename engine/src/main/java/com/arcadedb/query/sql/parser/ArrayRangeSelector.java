@@ -142,6 +142,14 @@ public class ArrayRangeSelector extends SimpleNode {
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
   }
 
+  /**
+   * @see Expression#isEarlyCalculated(CommandContext)
+   */
+  public boolean isEarlyCalculated(final CommandContext context) {
+    return (fromSelector == null || fromSelector.isEarlyCalculated(context)) //
+        && (toSelector == null || toSelector.isEarlyCalculated(context));
+  }
+
   public ArrayRangeSelector copy() {
     final ArrayRangeSelector result = new ArrayRangeSelector();
     result.from = from;

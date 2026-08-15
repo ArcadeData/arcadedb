@@ -354,19 +354,16 @@ public class BaseExpression extends MathExpression {
     return identifier != null && modifier == null && identifier.isBaseIdentifier();
   }
 
+  /**
+   * @see Expression#isEarlyCalculated(CommandContext) for what "early calculated" does and does not promise.
+   */
   @Override
-  public boolean isLiteral() {
-    // a modifier is a method call or a field/index access applied to the value: no longer a bare literal
-    if (modifier != null)
+  public boolean isEarlyCalculated(final CommandContext context) {
+    // the modifier is part of the expression: `'Mr.'.append(surname)` is a literal only up to the dot, and
+    // evaluating the whole of it without a record silently resolves `surname` to null (issue #6179)
+    if (modifier != null && !modifier.isEarlyCalculated(context))
       return false;
 
-    if (number != null || string != null || isNull)
-      return true;
-
-    return expression != null && expression.isLiteral();
-  }
-
-  public boolean isEarlyCalculated(CommandContext context) {
     if (number != null || inputParam != null || string != null)
       return true;
 
@@ -374,6 +371,27 @@ public class BaseExpression extends MathExpression {
       return expression.isEarlyCalculated(context);
 
     return identifier != null && identifier.isEarlyCalculated(context);
+  }
+
+  /**
+   * @see Expression#isLiteral(boolean)
+   */
+  @Override
+  public boolean isLiteral(final boolean allowInputParameters) {
+    // a modifier is a method call or a field/index access applied to the value: no longer a bare literal
+    if (modifier != null)
+      return false;
+
+    if (number != null || string != null || isNull)
+      return true;
+
+    if (inputParam != null)
+      return allowInputParameters;
+
+    if (expression != null)
+      return expression.isLiteral(allowInputParameters);
+
+    return identifier != null && identifier.isLiteral(allowInputParameters);
   }
 
   @Override

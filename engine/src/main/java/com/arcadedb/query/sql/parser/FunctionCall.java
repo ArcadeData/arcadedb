@@ -331,6 +331,12 @@ public class FunctionCall extends SimpleNode {
     return item;
   }
 
+  /**
+   * True for <b>any</b> function whose arguments need no record - {@code uuid()}, {@code sysdate()} and any
+   * user-defined function over literals included. Nothing here says the call is pure or repeatable, so a caller
+   * that goes on to evaluate the expression at plan time invokes the function for real, once more than the query
+   * asked for. See {@link Expression#isEarlyCalculated(CommandContext)} and issue #6179.
+   */
   public boolean isEarlyCalculated(final CommandContext context) {
     if (isTraverseFunction(context))
       return false;

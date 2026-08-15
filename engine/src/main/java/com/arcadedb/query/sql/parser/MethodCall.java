@@ -196,6 +196,25 @@ public class MethodCall extends SimpleNode {
     return false;
   }
 
+  /**
+   * Whether the call can be evaluated against the value it is applied to without a record. A graph method
+   * ({@code out}, {@code in}, {@code both}, ...) walks the record's edges, and every other method resolves its
+   * arguments against the current record, so they all have to be computable on their own.
+   * <p>
+   * As with {@link Expression#isEarlyCalculated(CommandContext)}, this says nothing about the method being pure:
+   * a caller that evaluates the expression at plan time invokes it for real.
+   */
+  public boolean isEarlyCalculated(final CommandContext context) {
+    if (isGraphFunction())
+      return false;
+
+    for (final Expression param : params)
+      if (!param.isEarlyCalculated(context))
+        return false;
+
+    return true;
+  }
+
   public boolean isCacheable() {
     return isGraphFunction();
   }

@@ -2370,11 +2370,16 @@ public class SelectExecutionPlanner {
           continue;
         final int idx = idxBoxed;
 
-        if (literalSide == null || !literalSide.isEarlyCalculated(context))
-          continue;
-        // Plan-time pruning is unsafe when the literal is parameter-bound: the cached plan would
-        // reuse the first execution's bucket id for every subsequent binding.
-        if (literalSide.containsInputParameter())
+        // Only a literal is bound here, not everything Expression.isEarlyCalculated() would admit. The
+        // bucket derived below is baked into the plan, so the value it comes from must be fixed for the
+        // life of that plan and free to compute: a parameter is not (a cached plan would reuse the first
+        // execution's bucket id for every subsequent binding, which is what the isEarlyCalculated form
+        // used to exclude by hand), and a function call is neither - it would be invoked at plan time,
+        // once more than the query asked for, and a non-deterministic one would fix a bucket that its
+        // per-row value no longer agrees with. That the plan is not cached today when the WHERE holds a
+        // function is an accident of FunctionCall.isCacheable() being true only for traversals; pruning
+        // no longer leans on it. See issue #6179.
+        if (literalSide == null || !literalSide.isLiteral())
           continue;
 
         if (!bound[idx]) {

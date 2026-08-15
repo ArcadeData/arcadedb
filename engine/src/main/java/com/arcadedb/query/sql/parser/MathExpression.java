@@ -1095,6 +1095,9 @@ public class MathExpression extends SimpleNode {
     return false;
   }
 
+  /**
+   * @see Expression#isEarlyCalculated(CommandContext) for what "early calculated" does and does not promise.
+   */
   public boolean isEarlyCalculated(final CommandContext context) {
     for (final MathExpression exp : childExpressions) {
       if (!exp.isEarlyCalculated(context))
@@ -1104,18 +1107,27 @@ public class MathExpression extends SimpleNode {
   }
 
   /**
-   * A compound arithmetic expression is a literal one only when every one of its operands is. Subclasses that carry
-   * their operands somewhere else than {@link #childExpressions} - an array literal, a CASE, and the arithmetic
-   * parenthesis of {@code (1) = 0} - inherit the {@code false} an empty operand list gives: see
-   * {@link Expression#isLiteral()} for why this answer stays on the safe side. Those are missed folds, not unsafe
-   * ones, and each subclass is free to answer for itself if a shape ever turns out to be worth recognizing.
+   * @see Expression#isLiteral()
    */
   public boolean isLiteral() {
+    return isLiteral(false);
+  }
+
+  /**
+   * A compound arithmetic expression is a literal one only when every one of its operands is. A subclass that keeps
+   * its operands outside {@link #childExpressions} - an array literal, a CASE, the arithmetic parenthesis of
+   * {@code (1) = 0} - would inherit the {@code false} an empty operand list gives, which is the safe answer but a
+   * missed fold; each of those overrides this and answers for itself. A node this walker cannot see into is never
+   * mistaken for a literal.
+   *
+   * @see Expression#isLiteral(boolean)
+   */
+  public boolean isLiteral(final boolean allowInputParameters) {
     if (childExpressions.isEmpty())
       return false;
 
-    for (final MathExpression operand : childExpressions) {
-      if (!operand.isLiteral())
+    for (final MathExpression exp : childExpressions) {
+      if (!exp.isLiteral(allowInputParameters))
         return false;
     }
     return true;

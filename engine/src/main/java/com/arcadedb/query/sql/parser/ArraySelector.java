@@ -87,6 +87,13 @@ public class ArraySelector extends SimpleNode {
     return result;
   }
 
+  /**
+   * @see Expression#isEarlyCalculated(CommandContext)
+   */
+  public boolean isEarlyCalculated(final CommandContext context) {
+    return expression == null || expression.isEarlyCalculated(context);
+  }
+
   public ArraySelector copy() {
     final ArraySelector result = new ArraySelector();
     result.rid = rid == null ? null : rid.copy();

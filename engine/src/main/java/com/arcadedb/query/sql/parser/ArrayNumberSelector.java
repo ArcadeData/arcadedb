@@ -82,6 +82,13 @@ public class ArrayNumberSelector extends SimpleNode {
     return null;
   }
 
+  /**
+   * @see Expression#isEarlyCalculated(CommandContext)
+   */
+  public boolean isEarlyCalculated(final CommandContext context) {
+    return expressionValue == null || expressionValue.isEarlyCalculated(context);
+  }
+
   public ArrayNumberSelector copy() {
     final ArrayNumberSelector result = new ArrayNumberSelector();
     result.inputValue = inputValue == null ? null : inputValue.copy();
