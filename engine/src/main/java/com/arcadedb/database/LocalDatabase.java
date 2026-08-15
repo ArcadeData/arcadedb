@@ -2477,6 +2477,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       if (drop)
+        // NOT redundant with the unconditional purge further down (#6133), and it has to stay BEFORE the wait:
+        // the files of a dropped database are about to be deleted, so its queued pages must leave the pipeline
+        // here or the wait below would sit through a backlog that nobody will ever need on disk. The later call
+        // then finds nothing left to purge and only does the forgetting, which is all a drop still needs from it.
         PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
 
       // #4928: bounded wait. When it gives up (wedged flush / unwritable disk), this close becomes

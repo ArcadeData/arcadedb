@@ -167,7 +167,16 @@ class FlushPageIndex {
     pending.remove(database);
   }
 
-  /** Drops every pending page of a single dropped file. */
+  /**
+   * Drops every pending page of a single dropped file.
+   * <p>
+   * This one still walks the whole JVM-wide index - the shape #6133 removed from the pending count - and that is
+   * deliberate: every caller of {@code PageManager.deleteFile} is a one-off structural operation (dropping a bucket,
+   * an index, a bloom filter, a time-series shard, or the source files of a finished LSM compaction), never a
+   * per-record or per-page path, and the same method goes on to walk the read cache, which is larger than this index
+   * by orders of magnitude. Keep it that way: a caller that dropped files frequently would want a per-database view
+   * here, not this walk.
+   */
   void removeAllOfFile(final BasicDatabase database, final int fileId) {
     // Walked (weakly consistent, never throws) rather than removeIf'd so each removal goes through the accounting.
     for (final PageId pageId : pages.keySet())
