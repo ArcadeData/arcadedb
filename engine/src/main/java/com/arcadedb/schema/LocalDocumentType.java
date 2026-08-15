@@ -288,6 +288,12 @@ public class LocalDocumentType implements DocumentType {
    * the same inconsistency in the opposite direction. In the rollback it runs even when the restore failed, so the
    * map always agrees with whatever name the component ended up with; that case is reported separately through the
    * {@code corrupted} flag.
+   * <p>
+   * The guarantee is only that the key agrees with the component, not that the component agrees with the disk:
+   * {@link com.arcadedb.engine.PaginatedComponent#rename} moves the file and updates the {@code FileManager} before
+   * it assigns {@code componentName}, so a failure between those steps leaves the file under the new name while the
+   * component - and therefore this map - keeps the old one. That window predates this method and is not closed by
+   * it.
    */
   protected void rekeyBucket(final Bucket bucket, final String previousKey) {
     final String currentName = bucket.getName();
