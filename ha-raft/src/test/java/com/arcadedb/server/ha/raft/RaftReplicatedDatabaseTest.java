@@ -30,6 +30,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -109,6 +110,40 @@ class RaftReplicatedDatabaseTest {
     assertThat(dup.getIndexName()).isEqualTo("Account_PK");
     assertThat(dup.getKeys()).isEqualTo("[42]");
     assertThat(dup.getCurrentIndexedRID()).isEqualTo(new RID(7, 1L));
+  }
+
+  /**
+   * The answer a node gives to a write forwarded onto it by a peer whose leader address named the wrong node
+   * (issue #6191). It has to survive the hop as itself: collapsed into a plain TransactionException the caller
+   * loses both the retryability it inherits from NeedRetryException and the leader the message names.
+   */
+  @Test
+  void reconstructLeaderExceptionNotTheLeaderKeepsTypeAndLeader() {
+    final String body = "{\"error\":\"Cannot execute command\","
+        + "\"detail\":\"Refusing to forward a write that a cluster peer already forwarded to the leader\","
+        + "\"exception\":\"com.arcadedb.network.binary.ServerIsNotTheLeaderException\","
+        + "\"exceptionArgs\":\"ArcadeDB_0\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(400, body);
+
+    assertThat(result).isInstanceOf(ServerIsNotTheLeaderException.class);
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+    assertThat(((ServerIsNotTheLeaderException) result).getLeaderAddress()).isEqualTo("ArcadeDB_0");
+    assertThat(result.getMessage())
+        .isEqualTo("Refusing to forward a write that a cluster peer already forwarded to the leader");
+  }
+
+  /** The leader was unknown to the refusing node, so there is no address to carry: the type still is. */
+  @Test
+  void reconstructLeaderExceptionNotTheLeaderWithoutALeaderAddress() {
+    final String body = "{\"error\":\"Cannot execute command\",\"detail\":\"not the leader\","
+        + "\"exception\":\"com.arcadedb.network.binary.ServerIsNotTheLeaderException\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(400, body);
+
+    assertThat(result).isInstanceOf(ServerIsNotTheLeaderException.class);
+    assertThat(((ServerIsNotTheLeaderException) result).getLeaderAddress()).isNull();
+    assertThat(result.getMessage()).isEqualTo("not the leader");
   }
 
   @Test

@@ -94,6 +94,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.LeaderForwardContext;
 
 import java.io.IOException;
 import java.net.URI;
@@ -292,6 +293,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * deployments that legitimately issue writes from background threads don't get log-spammed.
    */
   private final AtomicBoolean forwardAsRootWarned = new AtomicBoolean(false);
+
+  /**
+   * Emits the "the leader resolved to this node's own address" notice only once per database, so a
+   * misconfigured cluster under load reports the configuration to fix instead of one line per refused
+   * write (issue #6191).
+   */
+  private final AtomicBoolean selfForwardWarned = new AtomicBoolean(false);
+
+  /**
+   * Emits the "a peer forwarded a write here and this node is not the leader either" notice only once per
+   * database. The refusal itself travels back to the caller; this is so the node that proved the address
+   * wrong also says so in its own log (issue #6191).
+   */
+  private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
 
   /**
    * Test-only fault-injection hook. Fires after Raft replication succeeds but BEFORE phase-2
@@ -2585,6 +2600,36 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
     final RaftHAServer raft = requireRaftServer();
+
+    // This request is already the result of a peer redirecting it to what it believed was the leader, and it
+    // arrived on a node that is not the leader either. Redirecting it once more sends it round the cycle the
+    // wrong address created; refuse instead, so the peer that forwarded it (and through it the client) gets a
+    // typed, retryable answer in one hop rather than a hang (issue #6191).
+    //
+    // Deliberately before the leader-address wait below, unlike the self-address check that follows it: waiting
+    // would only make sense if this node might forward the request onward once a leader appears, and it must
+    // not. A leadership change in flight and an address that names the wrong node are indistinguishable from
+    // here, so the caller retries - which re-resolves the leader from scratch - rather than this node posting a
+    // non-idempotent write a second time on a path that cannot prove the first one did not execute.
+    if (LeaderForwardContext.isAlreadyForwarded()) {
+      // Said once in this node's own log too: the refusal travels back to the peer that forwarded the write
+      // and from there to the client, so without this line the only node that can name the misconfiguration -
+      // the one that proved the address wrong by receiving the request - says nothing about it anywhere.
+      if (forwardedAgainWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "A cluster peer forwarded a write to this node as the leader, but this node is not the leader (db=%s). "
+                + "That peer resolved an HTTP address for the leader which does not identify it - unless leadership "
+                + "just moved, declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in "
+                + "%s. The write is refused rather than forwarded on. This notice is logged only once per database.",
+            getName(), GlobalConfiguration.HA_SERVER_LIST.getKey());
+      throw new ServerIsNotTheLeaderException(
+          "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
+              + "which is not the leader. Either leadership moved while the request was in flight - retry - or the "
+              + "HTTP address that peer resolved for the leader does not identify it, which is what declaring every "
+              + "node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
+              + " prevents", raft.getLeaderName());
+    }
+
     // During cluster startup or a leader change there is a window with no elected leader. Rather than failing
     // the forwarded write immediately (which loses the caller's transaction - issue #4728 follow-up), wait a
     // bounded time for a leader to appear and forward as soon as one does. If this node becomes the leader
@@ -2594,6 +2639,27 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (leaderHttpAddress == null)
       throw new TransactionException("Cannot forward command to leader: leader HTTP address is not available "
           + "(no leader elected within " + leaderWaitMs + "ms; tune " + GlobalConfiguration.HA_FORWARD_LEADER_WAIT_TIMEOUT_MS.getKey() + ")");
+
+    // The address resolved for the leader is this node's own, and this node is not the leader: the POST would
+    // come back here, be forwarded again, and consume one more HTTP worker thread per hop. This is what the
+    // derive fallback produces when the peers share a host and no 'http' port is declared - it pairs the
+    // leader's Raft host with THIS node's HTTP port. Refuse with the typed error the HTTP and gRPC layers
+    // already know how to report (issue #6191). The one case where the self-address is right - this node
+    // became the leader while waiting above - is left alone: that POST executes locally and terminates.
+    if (!raft.isLeader() && raft.isOwnHttpAddress(leaderHttpAddress)) {
+      if (selfForwardWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "The HTTP address resolved for the leader (%s) is this node's own, so a write forwarded to it would come "
+                + "back here and be forwarded again. Writes issued on this node are refused until the cluster can tell "
+                + "its peers' HTTP endpoints apart: declare every node's HTTP port explicitly with the "
+                + "'host:raftPort:httpPort' syntax in %s. This notice is logged only once per database.",
+            leaderHttpAddress, GlobalConfiguration.HA_SERVER_LIST.getKey());
+      throw new ServerIsNotTheLeaderException(
+          "Cannot forward the command: the HTTP address resolved for the leader (" + leaderHttpAddress
+              + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly with "
+              + "the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey(),
+          raft.getLeaderName());
+    }
 
     final JSONObject body = new JSONObject();
     body.put("language", language);
@@ -2618,8 +2684,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
 
     final String clusterToken = raftHAServer.getClusterToken();
-    if (clusterToken != null && !clusterToken.isBlank())
+    if (clusterToken != null && !clusterToken.isBlank()) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+      // One hop, and the receiving node knows it: if this address does not identify the leader, the node it
+      // does reach refuses the command instead of resolving the same wrong address and forwarding it again
+      // (issue #6191). Sent only with the token, because that is the only form in which a receiving node
+      // trusts the marker - same pairing as PostServerCommandHandler's forward.
+      builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+    }
 
     String proxiedUser = proxied.getCurrentUserName();
     if (proxiedUser == null || proxiedUser.isBlank()) {
@@ -2740,6 +2812,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     if (exceptionClass == null)
       return new TransactionException(message);
+
+    // ServerIsNotTheLeaderException carries the leader address as its second constructor argument (the HTTP
+    // layer sends it as exceptionArgs), so it too is rebuilt explicitly. Without this arm a leader-side "I am
+    // not the leader either" - the answer a node gives to a write forwarded onto it by a peer whose leader
+    // address was wrong (issue #6191) - collapsed into a plain TransactionException, and the caller lost both
+    // the retryability it inherits from NeedRetryException and the leader it names.
+    if (ServerIsNotTheLeaderException.class.getName().equals(exceptionClass))
+      return new ServerIsNotTheLeaderException(detail != null ? detail : message, exceptionArgs);
 
     // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
     // reconstructed explicitly rather than from a plain message.

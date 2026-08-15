@@ -329,6 +329,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public boolean isOwnHttpAddress(final String address) {
+    return raftHAServer != null && raftHAServer.isOwnHttpAddress(address);
+  }
+
+  @Override
   public RoutingTable getRoutingTable(final ROUTING_PROTOCOL protocol) {
     return raftHAServer != null ? raftHAServer.getRoutingTable(protocol) : null;
   }
