@@ -59,16 +59,43 @@ public class MaterializedViewScheduler {
         cancel(view.getName());
         return;
       }
-      try {
-        MaterializedViewRefresher.fullRefresh(db, view);
-      } catch (final Exception e) {
-        view.setStatus(MaterializedViewStatus.ERROR);
-        LogManager.instance().log(this, Level.SEVERE,
-            "Error in periodic refresh for view '%s': %s", e, view.getName(), e.getMessage());
-      }
+      runOneRefresh(db, view);
     }, interval, interval, TimeUnit.MILLISECONDS);
 
     tasks.put(view.getName(), future);
+  }
+
+  /**
+   * Runs one periodic pass, and lets nothing out.
+   * <p>
+   * {@code scheduleAtFixedRate} cancels a task PERMANENTLY the first time it throws - no further execution, ever,
+   * and nothing says so - so anything escaping here would stop this view refreshing for the life of the database
+   * while it kept reporting the status of its last successful pass. {@code Throwable} rather than {@code Exception}
+   * because "this view silently stopped refreshing" is a strictly worse outcome than a logged failure, whatever
+   * class the failure belongs to, and because a guard that has to be re-argued every time the refresh path changes
+   * is not a guard. The status is set here as well as in the refresher because the refresher's own bookkeeping
+   * starts only once it owns the refresh: a failure in the state-machine handover that precedes it - or in any
+   * future work that lands before that try - would otherwise leave the view reporting VALID after a pass that
+   * never ran.
+   * <p>
+   * The deliberate part of the tradeoff: a {@link VirtualMachineError} is swallowed here like anything else, so a
+   * view whose refresh keeps dying of memory pressure keeps retrying every refresh interval and logging, rather
+   * than failing loudly once. That is the intended order of preference - a task cancelled forever with nothing
+   * saying so is the worse outcome, and the retry is paced by the view's own interval rather than a spin - but it
+   * is a choice, not an oversight, and the next person to find this thread busy during an OOM should know it was
+   * made on purpose.
+   * <p>
+   * Extracted from the scheduling above so the guarantee can be tested without waiting out a tick.
+   */
+  // @VisibleForTesting
+  void runOneRefresh(final Database database, final MaterializedViewImpl view) {
+    try {
+      MaterializedViewRefresher.fullRefresh(database, view);
+    } catch (final Throwable e) {
+      view.setStatus(MaterializedViewStatus.ERROR);
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error in periodic refresh for view '%s': %s", e, view.getName(), e.getMessage());
+    }
   }
 
   public void cancel(final String viewName) {

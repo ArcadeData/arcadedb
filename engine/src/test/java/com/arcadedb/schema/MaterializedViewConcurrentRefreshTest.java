@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A refresh requested while another is already running used to be dropped, which left the view
@@ -100,6 +101,26 @@ class MaterializedViewConcurrentRefreshTest extends TestHelper {
     } finally {
       view.endRefresh();
     }
+  }
+
+  /**
+   * The refresher owns the state machine from {@code tryBeginRefresh()} to one of its two releases, and both used
+   * to sit behind {@code catch (Exception)}. A pass that failed with an {@link Error} therefore left the view
+   * latched in RUNNING for the life of the database: every later refresh found the machine busy and did nothing,
+   * so the view froze at its last successful snapshot while still reporting that snapshot's contents.
+   */
+  @Test
+  void aPassThatFailsWithAnErrorStillReleasesOwnership() {
+    final MaterializedViewImpl view = new ThrowingRefreshView(database, "ErrorPassView",
+        MaterializedViewRefreshMode.MANUAL, 0);
+
+    assertThatThrownBy(() -> MaterializedViewRefresher.fullRefresh(database, view))
+        .as("the failure still reaches the caller").isInstanceOf(ThrowingRefreshView.RefreshFailure.class);
+
+    assertThat(view.getErrorCount()).as("the failed pass is counted").isEqualTo(1);
+    assertThat(view.getStatus()).isEqualTo("ERROR");
+    assertThat(view.tryBeginRefresh()).as("a later refresh must be able to take ownership").isTrue();
+    view.endRefresh();
   }
 
   /**

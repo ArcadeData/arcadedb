@@ -22,7 +22,10 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -220,7 +223,7 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
   }
 
   @Test
-  void periodicRefreshUpdatesView() throws Exception {
+  void periodicRefreshUpdatesView() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("PeriodicSrc");
       database.getSchema().getType("PeriodicSrc").createProperty("val", Type.INTEGER);
@@ -241,16 +244,39 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       assertThat(rs.stream().count()).isEqualTo(1);
     }
 
+    final MaterializedView view = database.getSchema().getMaterializedView("PeriodicView");
+    final long refreshesBeforeTheInsert = view.getRefreshCount();
+
     // Add data after view creation
     database.transaction(() ->
       database.newDocument("PeriodicSrc").set("val", 2).save());
 
-    // Wait for the scheduler to trigger a refresh (interval = 200ms, wait 1s)
-    Thread.sleep(1_000);
+    // Wait for the scheduler to pick the row up on its own. A single sample taken a fixed time after the insert
+    // asserts on where the wall clock happened to land: on a loaded runner every one of the refresh periods it
+    // allowed for could pass without the scheduler thread being run, and the test then failed on a condition that
+    // was true a moment later (issue #6177). Polling to a deadline keeps what the test means - the PERIODIC
+    // scheduler refreshes without being asked - and reaches it as soon as it is true, so the generous ceiling
+    // costs nothing on a healthy run.
+    Awaitility.await("the periodic scheduler refreshes the view without being asked")
+        .atMost(Duration.ofSeconds(60))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          try (final ResultSet rs = database.query("sql", "SELECT FROM PeriodicView")) {
+            assertThat(rs.stream().count())
+                .as("rows in PeriodicView after %d scheduled refresh(es), status=%s, errors=%d",
+                    view.getRefreshCount() - refreshesBeforeTheInsert, view.getStatus(), view.getErrorCount())
+                .isEqualTo(2);
+          }
+        });
 
-    try (final ResultSet rs = database.query("sql", "SELECT FROM PeriodicView")) {
-      assertThat(rs.stream().count()).isEqualTo(2);
-    }
+    // The row arrived because the scheduler ran a refresh, not because something else wrote the backing type:
+    // without this the test would still pass if PERIODIC silently degraded to INCREMENTAL.
+    assertThat(view.getRefreshCount())
+        .as("the scheduler must have run at least one refresh of its own")
+        .isGreaterThan(refreshesBeforeTheInsert);
+    // Not the status: refreshes keep firing every 200ms, so a sample can legitimately land on a BUILDING pass.
+    // The error counter only ever moves on a failed pass, so it says the same thing without the race.
+    assertThat(view.getErrorCount()).as("no scheduled refresh may fail").isZero();
   }
 
   @Test
