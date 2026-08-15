@@ -1706,6 +1706,40 @@ exactly what tells a bucket scan that a slot holds a document of its own.
 
 [#6178](https://github.com/ArcadeData/arcadedb/issues/6178)
 
+## A truncated batch upload no longer applies its own bytes a second time (#6180, #6176)
+
+`POST /api/v1/batch` could load records the client never sent in that request: its own request head and a replay
+of records it had already committed. On a type with a unique index the replay collided with what it duplicated and
+the load was answered **409 Conflict** for a key the client had sent exactly once, instead of the **408** and the
+partial-commit counts a truncated upload is contracted to get. On a type without one - which is what a bulk load
+usually has - it duplicated rows and answered 200.
+
+The connection is what lies, and the reader is what asks it. Undertow's `UndertowInputStream` takes a buffer from
+the pool *before* the channel read that fails and does not give it back, so the buffer stays on the stream holding
+whatever the pool last left in it - on this connection, its own request head and the records already parsed. The
+next read is then served from that buffer without the channel being touched at all. What reaches the failure is
+`InputStreamReader`, which probes the stream between decodes (`StreamDecoder.inReady` calls `available()`) and
+**swallows** the `IOException`: the failure that should have ended the load disappears, and the parser is handed
+the replay as payload. Measured on `main` with a 520-record payload sent in two chunks: reads of 8192 and 8172
+bytes past the end of the upload, beginning at the very record the second chunk began with, and a total of 40284
+bytes consumed against the 23920 the client sent.
+
+The batch handler's own body stream now ends a body that has failed. The first failure is remembered, whether it
+surfaces on a read or on a probe; the probe answers -1 - Undertow's own "the body is finished", which the
+truncation check already reads - so the reader stops asking instead of swallowing anything, and every later read is
+refused with the recorded cause. A load that hits it takes the truncated-body path it was always meant to take:
+408, the counts needed to resume, and not one record the client did not send. The forwarding path a follower uses
+to relay a batch to the leader reads through the same guarded stream, so a cut upload cannot relay a replay of
+itself either.
+
+Every answer now carries `bytesRead`, not only the successful one. On a truncated load that is where a client
+learns how far the server got, and it is the number that says the server read no further than the client wrote:
+`bytesRead` equal to the bytes sent is now asserted by `Issue5470BatchStreamStallIT` in both of its truncation
+tests. The OpenAPI schemas for the batch response and the batch error were completed to match what both bodies
+have carried since #5618: `bytesRead`, `linesRead`, `linesSkipped` and `verticesWithoutId`.
+
+[#6180](https://github.com/ArcadeData/arcadedb/issues/6180)
+[#6176](https://github.com/ArcadeData/arcadedb/issues/6176)
 ## A materialized-view refresh is one transaction, so a failed one no longer empties the view (#6203)
 
 A full refresh looked like a single transaction and was not one. `TRUNCATE TYPE ... UNSAFE` commits the caller's

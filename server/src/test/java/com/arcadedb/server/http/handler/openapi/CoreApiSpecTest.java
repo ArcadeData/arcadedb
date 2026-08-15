@@ -73,7 +73,8 @@ class CoreApiSpecTest {
   void batchResponseCarriesTheCountsAndIdMapping() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("BatchResponse");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "verticesCreated", "edgesCreated", "elapsedMs", "bytesRead",
+        "verticesCreated", "edgesCreated", "elapsedMs",
+        "bytesRead", "linesRead", "linesSkipped", "verticesWithoutId",
         "idMapping", "idMappingOmitted", "idMappingSize");
   }
 
@@ -81,7 +82,8 @@ class CoreApiSpecTest {
   void batchFailuresCarryThePartialCommitCountsNotTheGenericError() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("BatchError");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "error", "exception", "requestId", "verticesCreated", "edgesCreated", "partialCommit");
+        "error", "exception", "requestId", "verticesCreated", "edgesCreated", "partialCommit",
+        "bytesRead", "linesRead", "linesSkipped", "verticesWithoutId");
 
     final Operation post = openAPI.getPaths().get("/api/v1/batch/{database}").getPost();
     for (final String code : List.of("400", "408")) {

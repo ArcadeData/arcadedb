@@ -73,6 +73,12 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
   private static final int CLIENT_SO_TIMEOUT_MS = STREAMING_BUDGET_MS + 30_000;
   /** More than one server-side vertex batch (PostBatchHandler flushes every 10,000 vertices). */
   private static final int TOTAL_VERTICES   = 25_000;
+  /**
+   * Long enough that the server reads each half of the payload on its own, so a pooled buffer holding only whole
+   * records is what goes back to the pool - see {@link #aTruncatedUploadIsNotServedItsOwnBytesAgain}. Far below the
+   * socket read timeout, which is what bounds it.
+   */
+  private static final int CHUNK_PAUSE_MS   = 300;
 
   @Override
   public void setTestConfiguration() {
@@ -229,10 +235,90 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
       final JSONObject result = new JSONObject(payload);
       assertThat(result.getLong("verticesCreated")).isEqualTo(vertices);
       assertThat(result.getBoolean("partialCommit")).isTrue();
+      assertThat(result.getLong("bytesRead"))
+          .as("the server may not read a byte past the last one the client sent")
+          .isEqualTo(sent.length);
 
       final JSONObject count = executeCommand(0, "sql", "SELECT count(*) as total FROM V1 WHERE id >= 3000000");
       assertThat(count.getJSONObject("result").getJSONArray("records").getJSONObject(0).getLong("total"))
           .as("only the records the client sent may be loaded")
+          .isEqualTo(vertices);
+    }
+  }
+
+  /**
+   * The same truncation, with the payload sent in two record-aligned chunks - which is what turns the defect of
+   * issue #6180 from an oddity into duplicated rows.
+   * <p>
+   * The pause makes the server read each chunk into a pooled buffer of its own, so a buffer holding NOTHING but
+   * whole records goes back to the pool. When the peer then goes away, the probe {@code InputStreamReader} makes
+   * between decodes fails inside {@code UndertowInputStream.readIntoBufferNonBlocking}, which has already taken a
+   * buffer from that pool and does not give it back: the next read is served from it without touching the
+   * connection, and the parser is handed a replay of records it has already loaded. Measured on {@code main}
+   * before the fix: reads of 8192 and 8172 bytes past the end of the payload, starting at the very record the
+   * second chunk started with, and a {@code bytesRead} of 40284 against the 23920 bytes the client sent. On a type
+   * with a unique index the replay surfaces as a 409 duplicate key rather than the 408 this asserts (issue #6176);
+   * on one without it, as silently duplicated rows and a 200.
+   * <p>
+   * Which buffer the pool hands back is not under a test's control, so this one is the SHAPE and not the detector:
+   * it caught the defect running on its own and passed against a defective handler running fourth in this class.
+   * {@link #aBodyShorterThanItsContentLengthIsNotReportedAsSuccess} is what fails every time without the fix - the
+   * replay there is the request head rather than records, which the parser rejects, so the load still ends in a 408
+   * and only {@code bytesRead} tells the two apart. Both assert the same invariant: the server reads no further
+   * than the client wrote.
+   */
+  @Test
+  void aTruncatedUploadIsNotServedItsOwnBytesAgain() throws Exception {
+    final int vertices = 520;
+    final StringBuilder body = new StringBuilder();
+    for (int i = 0; i < vertices; i++)
+      body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":").append(4_000_000 + i).append("}\n");
+
+    final byte[] sent = body.toString().getBytes(StandardCharsets.UTF_8);
+    final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
+
+    try (final Socket socket = new Socket("127.0.0.1", 2480)) {
+      socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
+
+      final OutputStream out = socket.getOutputStream();
+      out.write(("POST /api/v1/batch/" + getDatabaseName() + "?vertexBatchSize=1 HTTP/1.1\r\n"
+          + "Host: 127.0.0.1:2480\r\n"
+          + "Authorization: Basic " + auth + "\r\n"
+          + "Content-Type: application/x-ndjson\r\n"
+          + "Content-Length: 1000000\r\n"
+          + "\r\n").getBytes(StandardCharsets.UTF_8));
+
+      // Halfway is a record boundary: every record of this payload is the same length.
+      final int half = sent.length / 2;
+      out.write(sent, 0, half);
+      out.flush();
+      Thread.sleep(CHUNK_PAUSE_MS);
+      out.write(sent, half, sent.length - half);
+      out.flush();
+      Thread.sleep(CHUNK_PAUSE_MS);
+      socket.shutdownOutput();
+
+      final BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      final String statusLine = in.readLine();
+
+      String payload = null;
+      for (String l = in.readLine(); l != null; l = in.readLine())
+        if (l.startsWith("{"))
+          payload = l;
+
+      assertThat(statusLine).as("a truncated upload is a 408, never a 409 for a key the client sent once").contains("408");
+      assertThat(payload).isNotNull();
+
+      final JSONObject result = new JSONObject(payload);
+      assertThat(result.getLong("bytesRead"))
+          .as("the parser was handed bytes the client never sent")
+          .isEqualTo(sent.length);
+      assertThat(result.getLong("verticesCreated")).isEqualTo(vertices);
+      assertThat(result.getLong("linesRead")).isEqualTo(vertices);
+
+      final JSONObject count = executeCommand(0, "sql", "SELECT count(*) as total FROM V1 WHERE id >= 4000000");
+      assertThat(count.getJSONObject("result").getJSONArray("records").getJSONObject(0).getLong("total"))
+          .as("a record the client sent once is loaded once")
           .isEqualTo(vertices);
     }
   }
