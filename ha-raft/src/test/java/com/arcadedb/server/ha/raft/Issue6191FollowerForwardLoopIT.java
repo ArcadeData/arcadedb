@@ -163,8 +163,8 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
 
   /**
    * The bulk-load endpoint relays to the leader too, with a whole upload buffered per hop, so it has to
-   * enforce the same one-hop rule. Driven over real HTTP because the marker is a request header: the point
-   * is that a node receiving an already-forwarded load refuses it rather than relaying it onward.
+   * enforce the same one-hop rule. Driven over real HTTP because the marker is a request header, and sent
+   * the way a peer sends it - with the cluster token, the only form in which the marker is trusted.
    */
   @Test
   @Timeout(120)
@@ -172,14 +172,16 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
     final int leader = findLeaderIndex();
     assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int follower = firstFollower(leader);
+    final String clusterToken = getRaftPlugin(follower).getRaftHAServer().getClusterToken();
+    assertThat(clusterToken).as("peers authenticate to each other with a cluster token").isNotBlank();
 
     final HttpURLConnection conn = (HttpURLConnection) new URI(
         "http://127.0.0.1:" + getServer(follower).getHttpServer().getPort() + "/api/v1/batch/" + getDatabaseName())
         .toURL().openConnection();
     try {
       conn.setRequestMethod("POST");
-      conn.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(
-          ("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
+      conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
+      conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
       conn.setRequestProperty("Content-Type", "application/x-ndjson");
       conn.setRequestProperty(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
       conn.setDoOutput(true);
@@ -198,6 +200,48 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
     } finally {
       conn.disconnect();
     }
+  }
+
+  /**
+   * The gate on the marker: it is a statement one node makes to another, so it is honored only on a request
+   * that authenticated with the cluster token. A client that copies the header onto its own write - or a
+   * proxy that relays unknown {@code X-ArcadeDB-*} headers through - must not be able to turn a transparent
+   * forward-to-leader into a refusal for itself.
+   */
+  @Test
+  @Timeout(120)
+  void theMarkerFromAnOrdinaryClientDoesNotSuppressForwarding() throws Exception {
+    final int leader = findLeaderIndex();
+    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int follower = firstFollower(leader);
+
+    final HttpURLConnection conn = (HttpURLConnection) new URI(
+        "http://127.0.0.1:" + getServer(follower).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName())
+        .toURL().openConnection();
+    try {
+      conn.setRequestMethod("POST");
+      conn.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(
+          ("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
+      conn.setRequestProperty("Content-Type", "application/json");
+      conn.setRequestProperty(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+      conn.setDoOutput(true);
+      final byte[] payload = ("{\"language\":\"sql\",\"command\":\"CREATE VERTEX TYPE Issue6191ClientMarker\"}")
+          .getBytes(StandardCharsets.UTF_8);
+      try (final DataOutputStream out = new DataOutputStream(conn.getOutputStream())) {
+        out.write(payload);
+      }
+
+      assertThat(conn.getResponseCode())
+          .as("a client's own header must not stop this follower from forwarding its write to the leader")
+          .isEqualTo(200);
+    } finally {
+      conn.disconnect();
+    }
+
+    waitForAllServers();
+    assertThat(getServerDatabase(leader, getDatabaseName()).getSchema().existsType("Issue6191ClientMarker"))
+        .as("the write was forwarded and executed by the leader")
+        .isTrue();
   }
 
   private int firstFollower(final int leader) {

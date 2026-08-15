@@ -1256,9 +1256,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/server"))
         .header("Content-Type", "application/json")
-        // One hop only: whichever node this address really names refuses the command if it is not the leader,
-        // instead of resolving the same address and forwarding it again (issue #6191).
-        .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()));
 
     if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
@@ -1268,8 +1265,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       final String userName = user != null ? user.getName() : null;
       if (userName != null)
         builder.header("X-ArcadeDB-Forwarded-User", userName);
-      if (clusterToken != null && !clusterToken.isBlank())
+      if (clusterToken != null && !clusterToken.isBlank()) {
         builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+        // One hop only: whichever node this address really names refuses the command if it is not the leader,
+        // instead of resolving the same address and forwarding it again (issue #6191). Sent only alongside
+        // the cluster token, because that is the only form in which the receiving node trusts it - see
+        // LeaderForwardContext. The other branch below relays the client's own credentials and carries no
+        // marker; its loop protection is the self-address check above.
+        builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+      }
     } else if (authHeader != null) {
       // Basic or API token: stateless, forward as-is
       builder.header("Authorization", authHeader);

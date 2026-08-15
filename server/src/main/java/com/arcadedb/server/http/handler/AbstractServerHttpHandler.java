@@ -274,15 +274,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       ServerSecurityUser user = null;
 
-      // A peer already redirected this request to the leader, so this node must execute it or refuse it -
-      // redirecting it again sends it round the cycle a wrong leader address creates, and nothing else in the
-      // exchange says the request has been here before (issue #6191). Published onto a thread-local because
-      // one of the redirect decisions is taken deep in the engine, where the exchange is out of reach. It is
-      // read where the forwarding paths are, and its only effect there is to refuse: a client that sets the
-      // header on its own request can therefore only have its own write refused, never executed off-leader.
-      if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
-        LeaderForwardContext.markAlreadyForwarded();
-
       // Cluster-internal forwarded auth: a follower forwarded a request on behalf of an
       // end user. The original per-node session token (Bearer AU-...) cannot be resolved on
       // the leader, so the follower substitutes X-ArcadeDB-Cluster-Token plus
@@ -294,6 +285,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User"));
         if (user == null)
           return; // 401 already sent
+
+        // A peer already redirected this request to the leader, so this node must execute it or refuse it -
+        // redirecting it again sends it round the cycle a wrong leader address creates, and nothing else in
+        // the exchange says the request has been here before (issue #6191). Published onto a thread-local
+        // because one of the redirect decisions is taken deep in the engine, where the exchange is out of
+        // reach. Read only here, inside the cluster-token branch: the marker is a statement one node makes to
+        // another, and honoring it from an ordinary client request would let any caller turn its own
+        // transparent forward into a refusal by copying the header through.
+        if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
+          LeaderForwardContext.markAlreadyForwarded();
       }
 
       if (user == null) {

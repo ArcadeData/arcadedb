@@ -35,10 +35,17 @@ package com.arcadedb.server;
  * follower-to-leader redirect. {@code AbstractServerHttpHandler} publishes it onto this thread-local at the
  * request boundary and clears it in a finally block, because one of the redirect decisions is taken deep
  * inside the engine ({@code RaftReplicatedDatabase.command}) where the HTTP exchange is no longer in reach.
- * It is honored whoever sent it - a follower forwards under the cluster token, but the server-command path
- * also relays a client's own Basic/API-token credentials - because its only effect on a receiving node is to
- * refuse the redirect: a client setting the header on its own request can have that request refused, never
- * executed on a node that is not the leader.
+ * <p>
+ * It is honored <em>only</em> on a request that authenticated with the cluster token, because the marker is a
+ * statement one node makes to another. Trusting it from an ordinary client request would cost nothing in
+ * safety - its only possible effect is a refusal, never execution on a node that is not the leader - but it
+ * would let any caller (or a proxy that copies unknown {@code X-ArcadeDB-*} headers through) turn its own
+ * transparent forward-to-leader into a {@code ServerIsNotTheLeaderException}. Every follower-to-leader
+ * redirect that can loop authenticates with the cluster token, so nothing is left uncovered by the gate: the
+ * one branch that does not - a server command forwarded with a client's own Basic/API-token credentials -
+ * carries no marker at all and relies on the dial-side self-address check, which is what the reachable
+ * misconfiguration (an undeclared {@code http} port, where every peer derives to this node's own address)
+ * produces anyway.
  * <p>
  * {@code LeaderProxy} enforces the same one-hop rule for the requests it relays, reading the exchange
  * directly since it still has one.
