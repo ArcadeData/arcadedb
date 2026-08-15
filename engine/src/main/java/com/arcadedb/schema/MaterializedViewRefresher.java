@@ -55,7 +55,13 @@ public class MaterializedViewRefresher {
         view.setStatus(MaterializedViewStatus.VALID);
       } while (view.finishRefreshPassAndCheckPending());
 
-    } catch (final Exception e) {
+    } catch (final Throwable e) {
+      // Throwable, not Exception: refresh ownership is held from the tryBeginRefresh() above, and the only
+      // places that give it back are the two releases in this method. Letting an Error past them latched the
+      // view in RUNNING for the life of the database - every later refresh, periodic or manual or incremental,
+      // then found the state machine busy and either coalesced onto a pass that had already died or returned
+      // having done nothing, so the view silently froze at its last successful snapshot. The pass is still
+      // reported as failed and the Error still propagates to the caller; what changes is that the next one can run.
       view.recordRefreshError();
       view.setStatus(MaterializedViewStatus.ERROR);
       // Ownership is released here rather than in a finally: the success path already released it,
