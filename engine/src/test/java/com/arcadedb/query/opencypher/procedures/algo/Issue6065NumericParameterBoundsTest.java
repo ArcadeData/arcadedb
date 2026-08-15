@@ -169,6 +169,41 @@ class Issue6065NumericParameterBoundsTest {
       assertThat(((Number) r.getProperty("community")).intValue()).isBetween(0, 1);
   }
 
+  @Test
+  void maxKCutOnASingleNodeGraphStillHonoursTheMinimumOfTwoPartitions() {
+    // Raised in cycle 2 of the PR #6214 review: the clamp added in cycle 1 must not undercut the
+    // k >= 2 contract that algo.maxKCut validates a few lines above it. On a one-node graph a bare
+    // Math.min(rawK, n) yields k = 1 - a "cut" into a single partition - so the clamp carries a
+    // floor of 2. The allocation stays bounded either way: max(2, min(rawK, n)).
+    // algo.maxKCut loads the whole graph, so the single-node case needs its own database.
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-issue-6065-single-node");
+    if (factory.exists())
+      factory.open().drop();
+    final Database single = factory.create();
+    try {
+      single.getSchema().createVertexType("Node");
+      single.transaction(() -> single.newVertex("Node").set("name", "solo").save());
+
+      final List<Result> results = new ArrayList<>();
+      try (final ResultSet rs = single.query("opencypher",
+          "CALL algo.maxKCut($k, {seed: 42, restarts: 1, maxIterations: 1}) YIELD node, community RETURN node, community",
+          Map.of("k", 2_000_000_000))) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+
+      // The assertion has to be exact, not a range: the only observable of a one-node cut is the
+      // single community id, and `isBetween(0, 1)` would pass for k = 1 too, so it could never fail.
+      // The node's partition is the first draw of the seeded RNG, `new Random(42).nextInt(k)`, which
+      // is 1 for k = 2 and can only ever be 0 for k = 1. Asserting 1 is therefore exactly the
+      // assertion that distinguishes the floor being present from it being absent.
+      assertThat(results).hasSize(1);
+      assertThat(((Number) results.getFirst().getProperty("community")).intValue()).isEqualTo(1);
+    } finally {
+      single.drop();
+    }
+  }
+
   // ── Part B: a negative result-count bound is named, not thrown from an allocator ──
 
   @Test
