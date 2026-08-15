@@ -129,6 +129,17 @@ public class ParenthesisExpression extends MathExpression {
     return expression != null && expression.isEarlyCalculated(context);
   }
 
+  /**
+   * {@code expression} is stored outside {@code childExpressions}, so the inherited walker would answer false for
+   * a literal in parentheses. Forward to it.
+   *
+   * @see Expression#isLiteral(boolean)
+   */
+  @Override
+  public boolean isLiteral(final boolean allowInputParameters) {
+    return expression != null && expression.isLiteral(allowInputParameters);
+  }
+
   @Override
   public boolean containsInputParameter() {
     // {@code expression} is stored outside {@code childExpressions}, so the inherited

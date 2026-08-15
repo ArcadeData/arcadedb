@@ -135,6 +135,17 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
+  /**
+   * @see Expression#isEarlyCalculated(CommandContext)
+   */
+  public boolean isEarlyCalculated(final CommandContext context) {
+    for (final ArraySelector item : items)
+      if (!item.isEarlyCalculated(context))
+        return false;
+
+    return true;
+  }
+
   public ArraySingleValuesSelector copy() {
     final ArraySingleValuesSelector result = new ArraySingleValuesSelector();
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());

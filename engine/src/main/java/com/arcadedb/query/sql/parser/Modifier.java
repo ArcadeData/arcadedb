@@ -143,6 +143,34 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
+  /**
+   * Whether the whole chain can be applied to an already computed value without a record.
+   * <p>
+   * A method call or an index/range selector carries expressions of its own, and those are evaluated against
+   * the current record: {@code 'Mr.'.append(surname)} and {@code ['a','b'][idx]} both reach into it. A suffix
+   * ({@code .name}) instead reads a property of the value the modifier is applied to, so it needs no record.
+   * A condition, a right binary condition and a nested projection are filters over the items of that value
+   * whose terms can still reach the record through {@code $parent} / {@code $current}, so they are never
+   * assumed to be record-free.
+   *
+   * @see Expression#isEarlyCalculated(CommandContext)
+   */
+  public boolean isEarlyCalculated(final CommandContext context) {
+    if (methodCall != null) {
+      if (!methodCall.isEarlyCalculated(context))
+        return false;
+    } else if (arrayRange != null) {
+      if (!arrayRange.isEarlyCalculated(context))
+        return false;
+    } else if (arraySingleValues != null) {
+      if (!arraySingleValues.isEarlyCalculated(context))
+        return false;
+    } else if (condition != null || rightBinaryCondition != null || nestedProjection != null)
+      return false;
+
+    return next == null || next.isEarlyCalculated(context);
+  }
+
   public Modifier copy() {
     final Modifier result = new Modifier();
     result.squareBrackets = squareBrackets;

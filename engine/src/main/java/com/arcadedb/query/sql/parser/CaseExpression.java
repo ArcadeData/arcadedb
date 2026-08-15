@@ -193,6 +193,55 @@ public class CaseExpression extends MathExpression {
   }
 
   /**
+   * CASE branches sit outside {@code childExpressions}, so the inherited walker finds an empty list and answers
+   * true for a CASE that reads the record on every branch. Walk every branch explicitly instead (issue #6179).
+   * A simple-form WHEN is a {@link WhereClause}, and a boolean expression carries no record-free predicate of its
+   * own, so a CASE built that way is never assumed to be computable without a record.
+   *
+   * @see Expression#isEarlyCalculated(CommandContext)
+   */
+  @Override
+  public boolean isEarlyCalculated(final CommandContext context) {
+    if (caseExpression != null && !caseExpression.isEarlyCalculated(context))
+      return false;
+
+    for (final CaseAlternative alternative : alternatives) {
+      if (alternative.isSimpleForm())
+        return false;
+      if (alternative.getWhenExpression() == null || !alternative.getWhenExpression().isEarlyCalculated(context))
+        return false;
+      if (alternative.getThenExpression() == null || !alternative.getThenExpression().isEarlyCalculated(context))
+        return false;
+    }
+
+    return elseExpression == null || elseExpression.isEarlyCalculated(context);
+  }
+
+  /**
+   * Same reason as above: the branches sit outside {@code childExpressions}, so the inherited walker would report
+   * a CASE built entirely of literals as non-literal. A simple-form WHEN is a {@link WhereClause} and cannot be
+   * read as a constant, so only the extended form can qualify.
+   *
+   * @see Expression#isLiteral(boolean)
+   */
+  @Override
+  public boolean isLiteral(final boolean allowInputParameters) {
+    if (caseExpression == null || !caseExpression.isLiteral(allowInputParameters))
+      return false;
+
+    for (final CaseAlternative alternative : alternatives) {
+      if (alternative.isSimpleForm())
+        return false;
+      if (alternative.getWhenExpression() == null || !alternative.getWhenExpression().isLiteral(allowInputParameters))
+        return false;
+      if (alternative.getThenExpression() == null || !alternative.getThenExpression().isLiteral(allowInputParameters))
+        return false;
+    }
+
+    return elseExpression == null || elseExpression.isLiteral(allowInputParameters);
+  }
+
+  /**
    * Check if two values are equal, handling nulls properly.
    */
   private boolean valuesEqual(final Object a, final Object b) {
