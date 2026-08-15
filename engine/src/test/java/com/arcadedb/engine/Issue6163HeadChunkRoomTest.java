@@ -51,10 +51,17 @@ class Issue6163HeadChunkRoomTest extends BucketPageLayoutTestSupport {
   private static final String SMALL  = "s";
 
   /**
-   * The ratchet itself. A record that spilled, then shrank to nothing, then grew back to a size its head chunk's own
-   * room can hold must be stored in that head chunk alone. Before the fix the head chunk stayed at the byte count of
-   * the SMALL value and the 4 KB went to a continuation chunk on another page - permanently, since nothing ever
-   * raised the declared size again.
+   * The ratchet itself. A record that spilled, then shrank to nothing, then grew back to a size its own room can hold
+   * must be stored in that room alone. Before the fix the head chunk stayed at the byte count of the SMALL value and
+   * the 4 KB went to a continuation chunk on another page - permanently, since nothing ever raised the declared size
+   * again.
+   * <p>
+   * <b>Since #6178 the intermediate shape is not a chunk head at all.</b> A record that shrinks back inside the region
+   * its slot owns is collapsed into a plain record, and the two conditions coincide exactly: content that fits the
+   * head chunk (13 bytes of header) fits the region as a plain record (at most 5 bytes of size marker) by
+   * construction. So the ratchet is no longer merely undone by the grow-back - the state it needed cannot be reached
+   * in the first place, and the grow-back below happens on a plain record inside its page. What the test asserts is
+   * unchanged and is the property that always mattered: after the round trip the 4 KB is on this page, in one piece.
    */
   @Test
   void aHeadChunkThatShrankIsSizedAgainFromTheRoomItOwns() {
@@ -62,16 +69,18 @@ class Issue6163HeadChunkRoomTest extends BucketPageLayoutTestSupport {
     final RID chunked = sealFirstPage("Ratchet");
 
     database.transaction(() -> chunked.asDocument(true).modify().set("v", SMALL).save());
-    assertThat((Long) bucketStats("Ratchet").get("totalChunks")).as("the shrink must free the continuation chunks")
+    Map<String, Object> layout = bucketStats("Ratchet");
+    assertThat((Long) layout.get("totalChunks")).as("the shrink must free the continuation chunks").isZero();
+    assertThat((Long) layout.get("totalMultiPageRecords"))
+        .as("#6178: a record back inside its own region is a plain record again, not a chain of one chunk: " + layout)
         .isZero();
 
     database.transaction(() -> chunked.asDocument(true).modify().set("v", MEDIUM).save());
 
-    final Map<String, Object> layout = bucketStats("Ratchet");
+    layout = bucketStats("Ratchet");
     assertThat((Long) layout.get("totalChunks"))
-        .as("the head chunk owns the room this value fits in, so nothing may spill out of the page: " + layout).isZero();
-    assertThat((Long) layout.get("totalMultiPageRecords")).as("and the record is still a chunk head: " + layout)
-        .isEqualTo(1L);
+        .as("the record owns the room this value fits in, so nothing may spill out of the page: " + layout).isZero();
+    assertThat((Long) layout.get("totalMultiPageRecords")).as("and it did not have to spill again: " + layout).isZero();
 
     database.transaction(() -> assertThat(chunked.asDocument(true).getString("v")).isEqualTo(MEDIUM));
     checkDatabase();
@@ -211,12 +220,22 @@ class Issue6163HeadChunkRoomTest extends BucketPageLayoutTestSupport {
   }
 
   /**
-   * The refusal arm of that replay, and the reason it cannot be dropped: when the committed page no longer has the
-   * room - a concurrent insert took the tail the shrink released - re-applying our longer head chunk would write
-   * straight over that record. The transaction must be sent back to a retry instead.
+   * The contended form of the same round trip: a concurrent insert takes the tail the shrink released, and our
+   * grow-back needs it back.
+   * <p>
+   * <b>Since #6178 this exercises the plain-record growth replay, not the head-chunk one</b>: the shrink collapses the
+   * record out of its chain, so what the merge replays on the committed page is {@code growRecordInPage}, which makes
+   * the room by shifting the newcomer right and therefore succeeds where the head-chunk replay - which may not move
+   * anything, its footprint being fixed for the life of the record - had to refuse. The refusal arm of
+   * {@code rebaseRecordOnPage}'s head-chunk branch stays where it is: it guards a region that a concurrent commit
+   * shrank, and it is now unreachable through the public API for the same reason the ratchet is (a head chunk that
+   * declares less than its region no longer survives an update), which makes it a defence and no longer a path.
+   * <p>
+   * What must hold either way, and is what this test is really about, is the last assertion: the record that took the
+   * room is never overwritten.
    */
   @Test
-  void aHeadChunkGrowingBackRefusesTheReplayWhenTheRoomIsGone() throws Exception {
+  void aHeadChunkGrowingBackIsReplayedOverAConcurrentInsertWithoutTouchingIt() throws Exception {
     database.transaction(() -> database.getSchema().createDocumentType("Contended", 1).createProperty("v", Type.STRING));
     final RID chunked = sealFirstPage("Contended");
     database.transaction(() -> chunked.asDocument(true).modify().set("v", SMALL).save());
@@ -240,16 +259,19 @@ class Issue6163HeadChunkRoomTest extends BucketPageLayoutTestSupport {
       database.commit();
       committed = true;
     } catch (final ConcurrentModificationException e) {
-      // The expected outcome: the room our head chunk needed is committed to another record now.
+      // Also acceptable: a retry never loses data. What may not happen is a commit that overwrites the newcomer.
     } finally {
       if (database.isTransactionActive())
         database.rollback();
     }
-    assertThat(committed).as("the merge must refuse a head chunk the committed page no longer has the room for")
-        .isFalse();
 
-    database.transaction(() -> assertThat(newcomer[0].asDocument(true).getString("v"))
-        .as("the record that took the room must never be overwritten by a replayed head chunk").isEqualTo(tenant));
+    final String expected = committed ? MEDIUM : SMALL;
+    database.transaction(() -> {
+      assertThat(newcomer[0].asDocument(true).getString("v"))
+          .as("the record that took the room must never be overwritten by a replayed write").isEqualTo(tenant);
+      assertThat(chunked.asDocument(true).getString("v"))
+          .as("and our own record must hold exactly what the outcome of the commit says").isEqualTo(expected);
+    });
     checkDatabase();
   }
 

@@ -96,6 +96,15 @@ public class TransactionContext implements Transaction {
    * record's own footprint, plus the free tail of the page when it is the last record) is still there (#6129).
    */
   public static final byte SLOT_KIND_RECORD_SPILLED_TO_CHUNK = 3;
+  /**
+   * The mirror of the shape above, and the other one whose two images differ: the COLLAPSE of a chunk chain back into
+   * a plain record, when the record shrank inside the region its own slot owns (#6178). The pre-image is the head
+   * chunk (header + content, as {@code SLOT_KIND_FIRST_CHUNK} keeps it), the final image is the plain record's
+   * content, and the replay checks that the committed slot still holds that very head chunk AND that the region it
+   * re-derives from the committed page can still host the plain record. The chain behind it is freed on other pages,
+   * which its writer poisons.
+   */
+  public static final byte SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD = 4;
 
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
@@ -1090,7 +1099,7 @@ public class TransactionContext implements Transaction {
    * true one (a concurrent write to THIS record). No-op when the feature is off or the page is poisoned. The caller
    * passes the already-computed page/slot so no schema lookup happens per write.
    *
-   * @param kind which of the three slot shapes the two images describe (see {@code SLOT_KIND_*}): the replay checks
+   * @param kind which slot shape the two images describe (see {@code SLOT_KIND_*}): the replay checks
    *             the committed marker against it, so a slot whose shape changed under us is a conflict, not a merge.
    */
   public void trackRebasableUpdate(final int fileId, final int pageNumber, final int slot, final byte[] baseBody,

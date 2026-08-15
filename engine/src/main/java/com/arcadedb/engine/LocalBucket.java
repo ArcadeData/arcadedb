@@ -1868,6 +1868,40 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return true;
       }
 
+      if (kind == TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD) {
+        // #6178: the record shrank back inside its own slot and stopped being a chunk chain. The pre-image is a head
+        // chunk, so it is checked as one - and as for every other head-chunk replay, the rest of the chain is covered
+        // by the chain fingerprint the write compared before collapsing, not by anything visible here.
+        if (rs[0] != FIRST_CHUNK)
+          return false;
+        final int chunkHeaderPos = (int) (existingPos + rs[1]);
+        final byte[] committedChunk = readChunkImage(page, chunkHeaderPos);
+        if (committedChunk == null || !Arrays.equals(committedChunk, baseBody))
+          return false;
+
+        // The room is re-derived from the COMMITTED page for the same reason the head-chunk replay re-derives it
+        // (#6163): the write measured it against a page this one has moved on from, and a concurrent commit is
+        // allowed to have taken the bytes a shrink released. A region that can no longer host the plain record sends
+        // the transaction to a normal retry instead of writing over whatever took them.
+        final int chunkRegionEnd = headChunkRegionEnd(page, recordCountInPage, existingPos);
+        final int sizeLen = Binary.getNumberSpace(body.length);
+        if (existingPos + sizeLen + body.length > chunkRegionEnd)
+          return false;
+
+        // #6154: same accounting the write makes, re-derived here against the committed page rather than trusted.
+        if (chunkRegionEnd == page.getMaxContentSize()) {
+          final int committedChunkEnd = chunkHeaderPos + committedChunk.length;
+          updatePageStatistics(pageNumber, chunkRegionEnd - committedChunkEnd,
+                  committedChunkEnd - (existingPos + sizeLen + body.length));
+        }
+
+        final int sizeLenWritten = page.writeNumber(existingPos, body.length);
+        assert sizeLenWritten == sizeLen :
+            "the record size took " + sizeLenWritten + " bytes where " + sizeLen + " were budgeted";
+        page.writeByteArray(existingPos + sizeLenWritten, body, 0, body.length);
+        return true;
+      }
+
       if (kind == TransactionContext.SLOT_KIND_RECORD_SPILLED_TO_CHUNK) {
         // #6129: the record outgrew its page and became a chunk HEAD without leaving its slot. The pre-image is still
         // a plain record, so it is checked as such; what has to be re-established is the room the spill used, which
@@ -2291,6 +2325,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final byte[] chunkBaseImage = chunkRebasable ? readChunkImage(page, chunkHeaderPos) : null;
         if (chunkBaseImage == null && slotMergeOn)
           slotTx.poisonSlotRebasePage(fileId, pageId);
+
+        // #6178: THE RECORD HAS SHRUNK BACK INSIDE THE REGION ITS OWN SLOT OWNS: UN-SPILL IT.
+        //
+        // Nothing used to do this, so a record that had spilled once stayed a chunk chain for the rest of its life -
+        // 13 bytes of header for ever, every read and write on the chunk path, and check() reporting a multi-page
+        // record that is not one. It is the exact mirror of the spill (SLOT_KIND_RECORD_SPILLED_TO_CHUNK), bounded by
+        // the same rule #6163 sizes the head chunk with: the region, and not a byte more - shrinking is no licence to
+        // take a neighbour's bytes.
+        //
+        // NOT for the CONTENT record of a placeholder (updatePlaceholderContent), even though it reaches this branch
+        // whenever createRecordInternal had to spill it: such a record is identified by the NEGATIVE size marker it
+        // would have to be given back, and the plain positive marker this writes is what tells scan() and check()
+        // that a slot holds a record of its own. Collapsing one would make the placeholder's content show up a second
+        // time, as a document in its own right. It keeps its chain, which costs 13 bytes on a shape that needs a
+        // placeholder to exist at all - a legacy one, or the zero-free-tail page #6149 left as the last fallback.
+        if (!updatePlaceholderContent//
+                && collapseChunkChainToRecord(rid, buffer, page, pageId, positionInPage, recordPositionInPage, chunkHeaderPos,
+                chunkRegionEnd, chunkBaseImage, slotTx)) {
+          if (!discardRecordAfter)
+            ((RecordInternal) record).setBuffer(buffer.getNotReusable());
+          return true;
+        }
 
         // #5596: the chunk-header and chunk-content writes below are what rebaseRecordOnPage re-does on the newer
         // committed page. Only THIS page's writes are declared: updateMultiPageRecord leaves the ones it makes to
@@ -3633,11 +3689,112 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     // CHECK TO DELETE REMAINING CHUNKS IF THE RECORD SHRUNK
-    while (chunkToDeletePointer > 0) {
+    if (chunkToDeletePointer > 0) {
+      // CUT THE CHAIN AT THE LAST CHUNK THAT SURVIVES, THEN FREE WHAT FOLLOWS
       writeNextChunkPointer(currentPage, nextChunkPointerOffset, 0L, currentPage == firstPage ? firstChunkCoverage : 0);
+      freeChunkChain(originalRID, chunkToDeletePointer);
+    }
+  }
 
-      final int chunkPageId = (int) (chunkToDeletePointer / maxRecordsInPage);
-      final int chunkPositionInPage = (int) (chunkToDeletePointer % maxRecordsInPage);
+  /**
+   * Turns the head chunk of a multi-page record back into a PLAIN record when the new content fits the region that
+   * slot owns on its own page, freeing the whole chain behind it (#6178). The inverse of the spill, and the last of
+   * the three transitions between the two shapes.
+   * <p>
+   * The bound is the region and nothing else - the same one {@link #headChunkRegionEnd} derives for the head chunk
+   * itself - so a record that shrank a long way back but still does not fit its slot stays a chain rather than
+   * claiming bytes that belong to its neighbours. That makes this reachable in exactly two ways, both real: a record
+   * that spilled as the LAST record of its page owns the whole free tail and can come back from a very long way, and
+   * a record in the middle of its page owns its own footprint and comes back when it returns to roughly the size it
+   * had before it grew.
+   * <p>
+   * What is written here is one slot - the size marker and the content - inside the region, which is what makes it a
+   * single-slot write the merge can replay. The chain, on the other pages, is freed and those pages poisoned, exactly
+   * as an ordinary shrink already does with the chunks it drops.
+   * <p>
+   * It also means a chunk head that declares LESS than its region does not survive an update: content that fits the
+   * head chunk (13 bytes of header) fits the region as a plain record (at most 5 bytes of size marker), so the two
+   * conditions coincide and the chain-of-one-chunk is collapsed instead of being kept. That is the same state #6163's
+   * grow-back exists to repair, which this removes at the source rather than compensating for.
+   *
+   * @param chunkBaseImage the head chunk's pre-image when the caller found the slot rebasable, or {@code null} when
+   *                       it did not - in which case it has already poisoned the page and this only writes. When it
+   *                       is not null, {@code slotTx} is not null either: the caller could not have read it.
+   *
+   * @return true when the record was collapsed and there is nothing left for the caller to write.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean collapseChunkChainToRecord(final RID rid, final Binary buffer, final MutablePage page, final int pageId,
+                                             final int positionInPage, final int recordPositionInPage, final int chunkHeaderPos,
+                                             final int chunkRegionEnd, final byte[] chunkBaseImage,
+                                             final TransactionContext slotTx)
+          throws IOException {
+    final int bufferSize = buffer.size();
+    final int sizeBytes = Binary.getNumberSpace(bufferSize);
+    if (recordPositionInPage + sizeBytes + bufferSize > chunkRegionEnd)
+      // Still too big for its own slot: it stays a chunk chain.
+      return false;
+
+    // Read BEFORE the write below overwrites the header these two come from.
+    final long chainToFree = page.readLong(chunkHeaderPos + INT_SERIALIZED_SIZE);
+    final int previousChunkEnd = chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + page.readInt(chunkHeaderPos);
+
+    final int previousCoverage = page.beginCoveredWrite(chunkBaseImage != null ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+    try {
+      final int sizeBytesWritten = page.writeNumber(recordPositionInPage, bufferSize);
+      // The offset the body is placed at was budgeted with getNumberSpace above, and writeNumber is the only other
+      // place that decides how many bytes a size takes. They agree by construction; a future divergence would write
+      // the body past the room just proved - a silent overwrite of the next record rather than a refusal, which is
+      // exactly what this assertion exists to make loud under -ea (surefire's default).
+      assert sizeBytesWritten == sizeBytes :
+          "the record size of " + rid + " took " + sizeBytesWritten + " bytes where " + sizeBytes + " were budgeted";
+      page.writeByteArray(recordPositionInPage + sizeBytesWritten, buffer.getContent(), buffer.getContentBeginOffset(),
+              bufferSize);
+    } finally {
+      page.endCoveredWrite(previousCoverage);
+    }
+
+    // #6154: the same accounting an ordinary shrink of the head chunk makes, and for the same reason - only a slot
+    // whose region runs to the page's maximum content size moves the free tail; anywhere else the region is bounded
+    // by the neighbour that follows and nothing moves.
+    if (chunkRegionEnd == page.getMaxContentSize())
+      updatePageStatistics(pageId, chunkRegionEnd - previousChunkEnd,
+              previousChunkEnd - (recordPositionInPage + sizeBytes + bufferSize));
+
+    freeChunkChain(rid, chainToFree);
+
+    // freeChunkChain may have poisoned this very page (a chunk of the chain lived on it): re-check before tracking.
+    if (chunkBaseImage != null && !slotTx.isSlotRebasePagePoisoned(fileId, pageId))
+      slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, chunkBaseImage,
+              Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize),
+              TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD);
+
+    LogManager.instance().log(this, Level.FINE,
+            "Updated record %s by collapsing its chunk chain back into a plain record (%s threadId=%d)", null, rid, page,
+            Thread.currentThread().threadId());
+
+    return true;
+  }
+
+  /**
+   * Frees every chunk of a chain, starting at {@code chunkPointer}, by zeroing its slot-table entry on the page that
+   * holds it. Poisons every page it visits: the freed slot is a change no tracked slot image accounts for, so a page
+   * that also carries a tracked write could otherwise be re-derived from that write alone and quietly resurrect the
+   * chunk. Never throws on a chain it cannot walk - a broken pointer is logged and the walk stops there, exactly as
+   * it did when this was inlined in {@link #updateMultiPageRecord} (the record's own slot has already been rewritten
+   * by the caller, so the chunks left behind are unreachable rather than dangerous, and {@code check(fix=true)}
+   * collects them).
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private void freeChunkChain(final RID originalRID, long chunkPointer) throws IOException {
+    final TransactionContext slotTx = database.getTransactionIfExists();
+    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+
+    while (chunkPointer > 0) {
+      final int chunkPageId = (int) (chunkPointer / maxRecordsInPage);
+      final int chunkPositionInPage = (int) (chunkPointer % maxRecordsInPage);
 
       final MutablePage nextPage = database.getTransaction()
               .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
@@ -3663,8 +3820,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         break;
       }
 
-      newPosition = (int) (recordPositionInPage + recordSize[1]);
-      chunkToDeletePointer = nextPage.readLong(newPosition + INT_SERIALIZED_SIZE);
+      chunkPointer = nextPage.readLong((int) (recordPositionInPage + recordSize[1]) + INT_SERIALIZED_SIZE);
     }
   }
 
