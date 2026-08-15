@@ -1290,7 +1290,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeeded = Binary.getNumberSpace(isPlaceHolder ? (-1L * bufferSize) : bufferSize) + bufferSize;
 
       if (txPageCounter > 0) {
-        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, false);
+        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, false, -1);
         foundPage = pageAnalysis.page;
         newRecordPositionInPage = pageAnalysis.newRecordPositionInPage;
         availablePositionIndex = pageAnalysis.availablePositionIndex;
@@ -3245,6 +3245,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext slotTx = database.getTransactionIfExists();
     final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
     final MutablePage firstPage = currentPage;
+    final int headChunkPageToAvoid = headChunkPageToAvoid(firstPage, firstChunkCoverage);
 
     int bufferSize = buffer.size();
 
@@ -3298,7 +3299,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeededForChunk = bufferSize + 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
 
       final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
-              true);
+              true, headChunkPageToAvoid);
 
       if (!pageAnalysis.createNewPage) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
@@ -3383,6 +3384,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The page the continuation chunks of a record must keep off, or -1 when there is none worth protecting (#6175).
+   * <p>
+   * It is the page holding the record's HEAD chunk, and only when the caller declared that slot replayable by the
+   * disjoint-slot merge - which is exactly the case in which the page has something to lose. A continuation chunk
+   * lands through inline record-table writes no slot image accounts for, so the page that receives one is poisoned
+   * for the rest of the transaction; when the head chunk's page is the receiver, the poison falls on the one page
+   * #6129 built its machinery (SLOT_KIND_FIRST_CHUNK, the chain fingerprint, the region re-derivation) to keep
+   * mergeable, and it takes every unrelated record sharing that page down with it.
+   * <p>
+   * The reverse condition is just as deliberate: when the head chunk's slot was NOT declared (a record being created,
+   * a spill onto an already-poisoned page), the page is unmergeable anyway and refusing its free tail would cost
+   * space for nothing. That is also what keeps {@code createRecordInternal} allocating exactly as it did before -
+   * there the head chunk is written at the page's content end and takes the whole free tail, so the question cannot
+   * even arise.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static int headChunkPageToAvoid(final MutablePage headChunkPage, final int firstChunkCoverage) {
+    return firstChunkCoverage == 0 ? -1 : headChunkPage.getPageId().getPageNumber();
+  }
+
+  /**
    * Writes the "pointer to the next chunk" field of a chunk header, declaring it covered by {@code coverage}. The
    * field lives inside the chunk's own slot image, so on the page holding the HEAD chunk of the record it is part of
    * what the disjoint-slot merge replays (#6129); on any other page the caller passes 0 and the write is as
@@ -3422,6 +3445,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext slotTx = database.getTransactionIfExists();
     final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
     final MutablePage firstPage = currentPage;
+    final int headChunkPageToAvoid = headChunkPageToAvoid(firstPage, firstChunkCoverage);
 
     final int previousChunkSize = currentPage.readInt(newPosition);
     int bufferSize = buffer.size();
@@ -3524,7 +3548,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int totalSpaceNeeded = bufferSize + Binary.LONG_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
 
         final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter,
-                true);
+                true, headChunkPageToAvoid);
         if (!pageAnalysis.createNewPage) {
           nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
 
@@ -3922,9 +3946,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *
    * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
    *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param avoidPageNumber a page this allocation may NOT use, or -1 for none (#6175). Used by the continuation
+   *                        chunks of a multi-page record to keep off the page holding that record's HEAD chunk when
+   *                        the caller tracked that slot for the disjoint-slot merge: a continuation chunk is written
+   *                        through inline record-table writes no slot image accounts for, so it poisons the page it
+   *                        lands on - and that page is the one #6129 went to some trouble to keep mergeable, since a
+   *                        chunked record's update is a single-slot write on it. The locality the same-page
+   *                        preference buys is worth little to a chunk that is only ever reached by pointer, from a
+   *                        page that is already loaded; the poisoning costs every OTHER record of that page its
+   *                        merge for the whole transaction.
    */
   private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
-                                          final boolean multiPageRecord)
+                                          final boolean multiPageRecord, final int avoidPageNumber)
           throws IOException {
     if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
       synchronized (freeSpaceInPages) {
@@ -3934,7 +3967,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // TRY WITH THE CURRENT PAGE FIRST
         PageAnalysis bestPageAnalysis = null;
 
-        if (currentPageId > -1) {
+        if (currentPageId > -1 && currentPageId != avoidPageNumber) {
           // PRIORITIZE SPACE IN THE SAME PAGE
           bestPageAnalysis = getAvailableSpaceInPage(currentPageId, spaceNeeded, multiPageRecord);
           if (bestPageAnalysis.createNewPage || bestPageAnalysis.totalRecordsInPage > maxRecordsInPage)
@@ -3946,10 +3979,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             gatherPageStatistics();
 
           if (!freeSpaceInPages.isEmpty()) {
-            bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord);
+            bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord,
+                    avoidPageNumber);
             if (bestPageAnalysis == null)
               // TRY AGAIN WITH HALF SIZE, THE RECORD WILL BE SPLIT IN MULTIPLE CHUNKS
-              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2, multiPageRecord);
+              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2, multiPageRecord,
+                      avoidPageNumber);
           }
         }
 
@@ -3965,15 +4000,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     // CHECK IF THERE IS SPACE IN THE LAST PAGE
-    return getAvailableSpaceInPage(txPageCounter - 1, spaceNeeded, multiPageRecord);
+    final PageAnalysis lastPageAnalysis = getAvailableSpaceInPage(txPageCounter - 1, spaceNeeded, multiPageRecord);
+    if (txPageCounter - 1 == avoidPageNumber)
+      // The last page is the one page this allocation may not use, so a brand-new page is all that is left - and a
+      // brand-new page is one no other record is on, so poisoning it costs nobody anything.
+      lastPageAnalysis.createNewPage = true;
+    return lastPageAnalysis;
   }
 
   /**
    * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
    *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param avoidPageNumber a page this allocation may NOT use, or -1 for none: see
+   *                        {@link #findAvailableSpace(int, int, int, boolean, int)}.
    */
   private PageAnalysis findAvailableSpaceFromStatistics(final int currentPageId, final int spaceNeeded,
-                                                        final boolean multiPageRecord)
+                                                        final boolean multiPageRecord, final int avoidPageNumber)
           throws IOException {
     // Snapshot keys/values into local arrays so we can safely mutate freeSpaceInPages
     // (put/remove) inside the loop body. The snapshot is bounded by MAX_PAGES_GATHER_STATS (100).
@@ -4005,6 +4047,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int pageId = snapPageIds[s];
       if (pageId == currentPageId)
         // ALREADY EVALUATED
+        continue;
+
+      if (pageId == avoidPageNumber)
+        // OFF LIMITS FOR THIS ALLOCATION (#6175)
         continue;
 
       if (pageId >= txVisiblePageHorizon)
