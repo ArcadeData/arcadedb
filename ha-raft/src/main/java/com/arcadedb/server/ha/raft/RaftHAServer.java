@@ -135,7 +135,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    long                    quorumTimeout;
   private final    RaftGroup               raftGroup;
   private final    RaftPeerId              localPeerId;
-  private final    Map<RaftPeerId, String> httpAddresses      = new HashMap<>();
+  // Concurrent, not a plain HashMap: this is the one address map that is structurally modified while the
+  // cluster runs - RaftClusterManager puts on a peer add and removes on a peer leave - and it is read
+  // without any lock by the lag monitor, by cluster reporting, and (since issue #6191) by every write a
+  // follower forwards. A HashMap resizing under a concurrent get() is how a reader sees a stale or missing
+  // address, or spins. The siblings below are populated in the constructor and never written again, so a
+  // final field publishes them safely.
+  private final    Map<RaftPeerId, String> httpAddresses      = new ConcurrentHashMap<>();
   // Explicit HTTPS endpoints (optional 5th field in HA_SERVER_LIST). Used for encrypted
   // peer-to-peer transfers (snapshot download) when SSL is enabled.
   private final    Map<RaftPeerId, String> httpsAddresses     = new HashMap<>();
@@ -375,6 +381,44 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public String getPeerHttpAddress(final RaftPeerId peerId) {
     return resolveHttpAddress(peerId);
+  }
+
+  /**
+   * Returns this node's own HTTP address (host:port), or {@code null} when it cannot be resolved right
+   * now (the HTTP listener is not up yet). Resolved through the same path as every peer address, so a
+   * caller comparing the two compares like with like.
+   */
+  public String getLocalHttpAddress() {
+    return resolveHttpAddress(localPeerId);
+  }
+
+  /**
+   * True when {@code address} is the HTTP endpoint this node itself is listening on, i.e. dialing it would
+   * come straight back here. Answers the one question every automatic redirect has to ask before it
+   * redirects: an address resolved for a <em>peer</em> that turns out to be ours identifies nothing (issue
+   * #6191). It is what the derive fallback in {@link #resolveHttpAddress(RaftPeerId)} produces on a cluster
+   * whose nodes share a host and declare no {@code http} port - it combines the peer's Raft host with this
+   * node's HTTP port, so every peer collapses onto this node's own address.
+   * <p>
+   * A textual comparison, like the peer bookkeeping it reads: both sides come from the same resolver, so a
+   * derived address matches a derived one. It deliberately does not resolve hostnames - {@code localhost}
+   * and {@code 127.0.0.1} are not reported as the same endpoint - because the addresses only differ that
+   * way when they were declared explicitly, and a declared address is a statement about which node owns
+   * which port that this method has no business second-guessing.
+   */
+  public boolean isOwnHttpAddress(final String address) {
+    return isSameHttpEndpoint(getLocalHttpAddress(), address);
+  }
+
+  /**
+   * Whether two {@code host:port} addresses name the same listening socket. Case-insensitive, because host
+   * names are: the two sides can come from different entries of {@code HA_SERVER_LIST} and a difference in
+   * case would otherwise read as "a different node", which is the answer that lets a redirect loop live.
+   * Never resolves names, so {@code localhost} and {@code 127.0.0.1} are reported as different endpoints
+   * (see {@link #isOwnHttpAddress}). Package-private for testing.
+   */
+  static boolean isSameHttpEndpoint(final String address, final String other) {
+    return address != null && address.equalsIgnoreCase(other);
   }
 
   /**
@@ -1601,6 +1645,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return raftProperties;
   }
 
+  /**
+   * The live map of explicitly declared peer HTTP endpoints, keyed by peer id - not a copy: callers add an
+   * entry when a peer joins and drop it when one leaves. It is a {@link ConcurrentHashMap}, so writing to it
+   * while other threads resolve addresses is safe, but it rejects null keys and values.
+   */
   public Map<RaftPeerId, String> getHttpAddresses() {
     return httpAddresses;
   }

@@ -30,6 +30,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
@@ -284,6 +285,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User"));
         if (user == null)
           return; // 401 already sent
+
+        // A peer already redirected this request to the leader, so this node must execute it or refuse it -
+        // redirecting it again sends it round the cycle a wrong leader address creates, and nothing else in
+        // the exchange says the request has been here before (issue #6191). Published onto a thread-local
+        // because one of the redirect decisions is taken deep in the engine, where the exchange is out of
+        // reach. Read only here, inside the cluster-token branch: the marker is a statement one node makes to
+        // another, and honoring it from an ordinary client request would let any caller turn its own
+        // transparent forward into a refusal by copying the header through.
+        if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
+          LeaderForwardContext.markAlreadyForwarded();
       }
 
       if (user == null) {
@@ -586,7 +597,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         realException = e.getCause();
       final ArithmeticErrorException arithmetic = arithmeticError(e);
 
-      if (realException instanceof SecurityException) {
+      if (realException instanceof ServerIsNotTheLeaderException notTheLeader) {
+        // Symmetric with the un-wrapped ServerIsNotTheLeaderException arm above, reached whenever the refusal
+        // is raised inside the auto-commit transaction wrapper in DatabaseAbstractHandler - which is where the
+        // HA write path raises it: a write issued on a follower is refused before it is forwarded when the
+        // resolved leader address names nobody (issue #6191). Without this branch the answer degraded to a 500
+        // "Error on transaction commit", which names neither the leader nor the reason, and which the
+        // forwarding peer cannot rebuild into the retryable typed exception the caller is entitled to.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s",
+                        getClass().getSimpleName(), realException.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress());
+      } else if (realException instanceof SecurityException) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
@@ -736,6 +758,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       ProtocolContext.clear();
+      LeaderForwardContext.clear();
       LogManager.instance().setContext(null);
       // Invariant: the correlation context stays populated until here, AFTER observation.stop() above
       // has fired the tracing/observation handlers. LogCorrelationIT relies on reading the requestId

@@ -113,6 +113,19 @@ public interface HAServerPlugin extends ServerPlugin {
   String getReplicaAddresses();
 
   /**
+   * True when {@code address} is the HTTP endpoint this node is itself listening on. A leader address that
+   * answers true identifies nobody: dialing it comes straight back to the node that resolved it, which -
+   * on a path that redirects a client's write automatically - means the write is redirected to a node that
+   * will redirect it again (issue #6191). Callers refuse instead.
+   * <p>
+   * Defaults to {@code false} for implementations that cannot tell, which leaves them exactly where they
+   * were: the receiving side's one-hop rule ({@link LeaderForwardContext}) still bounds the cycle.
+   */
+  default boolean isOwnHttpAddress(final String address) {
+    return false;
+  }
+
+  /**
    * A client-facing wire protocol a routing view can be built for. Each names a per-peer endpoint a client
    * dials directly, which is never the Raft address the cluster uses to talk to itself, nor - for anything
    * but a homogeneous deployment - derivable from it. The name of a constant, lowercased, is also the field
