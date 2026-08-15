@@ -78,7 +78,7 @@ import java.util.logging.Level;
  * a client that stops sending (issue #5470). A body that ends early is answered with HTTP 408 and the
  * partial-commit counts, never with a 200 carrying a truncated count: both when the read fails outright and when
  * the body simply stops before the announced {@code Content-Length}, which is what a fixed-length upload cut by a
- * proxy looks like from here. The successful response carries {@code bytesRead} for the same reason.
+ * proxy looks like from here. Every response carries {@code bytesRead} for the same reason.
  * <p>
  * Response: {@code verticesCreated}, {@code edgesCreated}, {@code elapsedMs}, {@code bytesRead} and, when temporary
  * ids were used, {@code idMapping} - replaced by {@code idMappingOmitted} / {@code idMappingSize} past
@@ -253,7 +253,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // the user thread (issue #4122).
       final HAServerPlugin ha = httpServer.getServer().getHA();
       if (ha != null && !ha.isLeader())
-        return forwardBatchToLeader(exchange, ha, databaseName, user, contentType);
+        return forwardBatchToLeader(exchange, ha, databaseName, user, contentType, inputStream);
 
       final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
       final boolean isCsv = contentType.contains("text/csv");
@@ -397,7 +397,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // distinction is the difference between naming the offending line and reporting the load as truncated with
       // "the last record read is not part of the payload", which was untrue and unfixable: the line WAS in the file.
       if (e instanceof MalformedBatchRecordException && bodyEndedEarly(exchange, inputStream))
-        return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs,
+        return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs, inputStream,
             "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
                 + " announced bytes were received, the last record read (" + message + ") is not part of the payload",
             null);
@@ -422,7 +422,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       error.put("verticesCreated", verticesCreated);
       error.put("edgesCreated", edgesCreated);
       error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
-      addLineAccounting(error, stream, vertexRefs);
+      addLineAccounting(error, stream, vertexRefs, inputStream);
       return new ExecutionResponse(400, error.toString());
     } catch (final IOException e) {
       // The request body could not be read to the end: the client went away, a proxy cut the upload, or the
@@ -430,8 +430,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // reading (issue #5470). Never let this look like a completed load: reaching the end of the loop with a
       // truncated body would answer 200 with a partial count and the client would happily move on.
       final String message = e.getMessage() != null ? e.getMessage() : e.toString();
-      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs, message,
-          e.getClass().getName());
+      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs, inputStream,
+          message, e.getClass().getName());
     }
 
     // The stream ended without an error, but the client announced more than what arrived: a connection dropped
@@ -439,7 +439,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // reporting 200 with a truncated count is the worst possible outcome - the client moves on believing the load
     // completed.
     if (bodyEndedEarly(exchange, inputStream))
-      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs,
+      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs, inputStream,
           "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
               + " announced bytes were received", null);
 
@@ -450,7 +450,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // something the user has to prove with grep into something the server states with numbers.
     final long accounted = verticesCreated + edgesCreated + stream.getLinesSkipped();
     if (accounted != stream.getLinesRead())
-      return recordsDropped(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs);
+      return recordsDropped(exchange, databaseName, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
 
     // A chunked upload announces no length, so the only thing that can prove it arrived whole is the client saying
     // how much it was going to send. Without it a body that ends early - because the producer feeding the stream
@@ -459,7 +459,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     final long records = verticesCreated + edgesCreated;
     if (expectedRecords >= 0 && records != expectedRecords)
       return recordCountMismatch(exchange, databaseName, verticesCreated, edgesCreated, expectedRecords, records,
-          stream, vertexRefs);
+          stream, vertexRefs, inputStream);
 
     final long elapsed = System.currentTimeMillis() - startTime;
 
@@ -467,10 +467,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     result.put("verticesCreated", verticesCreated);
     result.put("edgesCreated", edgesCreated);
     result.put("elapsedMs", elapsed);
-    // How much of the upload the server actually consumed: on a chunked body there is nothing to compare it with
-    // server-side, so this is what lets a client verify that its whole file arrived (issue #5470).
-    result.put("bytesRead", inputStream.getBytesRead());
-    addLineAccounting(result, stream, vertexRefs);
+    addLineAccounting(result, stream, vertexRefs, inputStream);
 
     // Include temp ID mapping if any temp IDs were used, unless the load was too big for the mapping to be worth
     // (or even possible to) send back - see MAX_ID_MAPPING_IN_RESPONSE and the 'idMapping' parameter.
@@ -572,7 +569,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse truncatedBody(final HttpServerExchange exchange, final String databaseName,
       final long verticesCreated, final long edgesCreated, final BatchRecordStream stream,
-      final VertexRefResolver vertexRefs, final String message, final String exceptionClass) {
+      final VertexRefResolver vertexRefs, final CountingInputStream inputStream, final String message,
+      final String exceptionClass) {
 
     LogManager.instance().log(this, Level.WARNING,
         "Batch load on database '%s' was interrupted after %d vertices and %d edges because the request body "
@@ -587,7 +585,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // already gone, but when it does it carries the counts needed to resume instead of restarting.
     return partialPayloadResponse(exchange, 408,
         "Request body was truncated after " + verticesCreated + " vertices and " + edgesCreated + " edges: " + message,
-        exceptionClass, verticesCreated, edgesCreated, stream, vertexRefs);
+        exceptionClass, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
   }
 
   /**
@@ -598,7 +596,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse recordCountMismatch(final HttpServerExchange exchange, final String databaseName,
       final long verticesCreated, final long edgesCreated, final long expectedRecords, final long records,
-      final BatchRecordStream stream, final VertexRefResolver vertexRefs) {
+      final BatchRecordStream stream, final VertexRefResolver vertexRefs, final CountingInputStream inputStream) {
 
     final boolean truncated = records < expectedRecords;
 
@@ -611,7 +609,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     return partialPayloadResponse(exchange, truncated ? 408 : 400,
         "Expected " + expectedRecords + " records but " + records + " were received (" + verticesCreated
-            + " vertices and " + edgesCreated + " edges)", null, verticesCreated, edgesCreated, stream, vertexRefs);
+            + " vertices and " + edgesCreated + " edges)", null, verticesCreated, edgesCreated, stream, vertexRefs,
+        inputStream);
   }
 
   /**
@@ -625,7 +624,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse recordsDropped(final HttpServerExchange exchange, final String databaseName,
       final long verticesCreated, final long edgesCreated, final BatchRecordStream stream,
-      final VertexRefResolver vertexRefs) {
+      final VertexRefResolver vertexRefs, final CountingInputStream inputStream) {
 
     final long missing = stream.getLinesRead() - stream.getLinesSkipped() - verticesCreated - edgesCreated;
 
@@ -640,7 +639,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
             + " records were dropped without an error. The load is reported as failed rather than successful; the "
             + "records already committed are counted above, so do not simply re-POST the payload - that would "
             + "duplicate them",
-        null, verticesCreated, edgesCreated, stream, vertexRefs);
+        null, verticesCreated, edgesCreated, stream, vertexRefs, inputStream);
   }
 
   /**
@@ -649,7 +648,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse partialPayloadResponse(final HttpServerExchange exchange, final int status,
       final String message, final String exceptionClass, final long verticesCreated, final long edgesCreated,
-      final BatchRecordStream stream, final VertexRefResolver vertexRefs) {
+      final BatchRecordStream stream, final VertexRefResolver vertexRefs, final CountingInputStream inputStream) {
 
     final JSONObject error = new JSONObject();
     error.put("error", message);
@@ -661,7 +660,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     error.put("verticesCreated", verticesCreated);
     error.put("edgesCreated", edgesCreated);
     error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
-    addLineAccounting(error, stream, vertexRefs);
+    addLineAccounting(error, stream, vertexRefs, inputStream);
     return new ExecutionResponse(status, error.toString());
   }
 
@@ -672,11 +671,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * checked it (the server does, see {@link #recordsDropped}), and can compare it with the line count of its own
    * file - which is what issue #5618 had to be diagnosed with, by hand, after the fact.
    * <p>
+   * {@code bytesRead} is on every answer for the same reason. On a chunked body there is nothing to compare it with
+   * server-side, so it is what lets a client verify that its whole file arrived (issue #5470); on a truncated one it
+   * is how far the server got, and - since issue #6180 - the number that says the server read no further than the
+   * client wrote, which it must never do whatever the connection hands it (see
+   * {@link CountingInputStream#available()}).
+   * <p>
    * {@code verticesWithoutId} is reported only when it is not zero: those vertices are loaded and durable, but no
    * edge of the payload can ever point at them, and today the only symptom is an "unknown temporary ID" much later.
    */
   private void addLineAccounting(final JSONObject json, final BatchRecordStream stream,
-      final VertexRefResolver vertexRefs) {
+      final VertexRefResolver vertexRefs, final CountingInputStream inputStream) {
+    json.put("bytesRead", inputStream.getBytesRead());
     json.put("linesRead", stream.getLinesRead());
     json.put("linesSkipped", stream.getLinesSkipped());
 
@@ -703,11 +709,19 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   /**
    * Counts the bytes handed to the parser, so the handler can compare them with the announced
    * {@code Content-Length} - and makes sure that giving up on a load never means reading the rest of it first.
+   * <p>
+   * It is also where a request body that has FAILED stops being a request body (issue #6180). The first failure -
+   * whether it surfaces on a read or on an {@link #available()} probe - is remembered, and every later read of the
+   * same body is refused with it instead of being attempted again. See {@link #available()} for what that prevents.
    */
-  private static class CountingInputStream extends FilterInputStream {
+  // Package-private, not private: PostBatchHandlerBodyFailureTest drives it directly, which is the only way to
+  // reproduce a request body that fails on a probe and then offers bytes anyway (issue #6180).
+  static class CountingInputStream extends FilterInputStream {
     private final HttpServerExchange exchange;
     private       long              bytesRead;
     private       boolean           endOfBody;
+    /** The failure that ended this body, or {@code null} while it is still readable. */
+    private       IOException       bodyFailure;
 
     CountingInputStream(final HttpServerExchange exchange, final InputStream in) {
       super(in);
@@ -716,7 +730,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     @Override
     public int read() throws IOException {
-      final int read = super.read();
+      refuseIfBodyFailed();
+      final int read;
+      try {
+        read = super.read();
+      } catch (final IOException e) {
+        bodyFailure = e;
+        throw e;
+      }
       if (read >= 0)
         ++bytesRead;
       else
@@ -726,12 +747,69 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     @Override
     public int read(final byte[] b, final int off, final int len) throws IOException {
-      final int read = super.read(b, off, len);
+      refuseIfBodyFailed();
+      final int read;
+      try {
+        read = super.read(b, off, len);
+      } catch (final IOException e) {
+        bodyFailure = e;
+        throw e;
+      }
       if (read > 0)
         bytesRead += read;
       else if (read < 0)
         endOfBody = true;
       return read;
+    }
+
+    /**
+     * Whether the request body has already failed. A load that reaches this has read every byte the client managed
+     * to send: whatever the stream would hand over now is not payload.
+     */
+    boolean hasBodyFailed() {
+      return bodyFailure != null;
+    }
+
+    /**
+     * Refuses a read of a body that has already failed, with the failure itself rather than a wrapper: it is the
+     * reason this read cannot happen, its stack trace points at where the body really ended, and the load is
+     * answered with exactly the message it would have carried had the failure surfaced on this read in the first
+     * place.
+     */
+    private void refuseIfBodyFailed() throws IOException {
+      if (bodyFailure != null)
+        throw bodyFailure;
+    }
+
+    /**
+     * How much of the body has already arrived, and - the part that matters here - the ONE place a failed body is
+     * allowed to be probed without the failure being lost.
+     * <p>
+     * {@code InputStreamReader} probes the stream between decodes ({@code StreamDecoder.inReady}) and SWALLOWS the
+     * {@link IOException} it may raise. That is what made a cut upload apply records the client never sent (issue
+     * #6180): the probe reaches {@code UndertowInputStream.readIntoBufferNonBlocking}, which allocates a pooled
+     * buffer before the channel read that throws and does not release it, so the buffer stays on the stream holding
+     * whatever the POOL last left in it - for a connection whose first read filled it, the request head and the very
+     * records already loaded. The next read is then served from that buffer without touching the channel, and the
+     * parser is handed a replay of the payload: on a type with a unique index it surfaces as a 409 duplicate key
+     * ({@code Issue5470BatchStreamStallIT} on {@code main}), and on one without it as silently duplicated rows and a
+     * 200 (issue #6176).
+     * <p>
+     * So the failure is recorded here rather than raised: the probe answers -1, which is exactly the "the body is
+     * finished" convention {@link #drainAlreadyBuffered} already reads from Undertow, the decoder stops asking, and
+     * the next read is refused by {@link #refuseIfBodyFailed} - which sends the load down the truncated-body path it
+     * was always meant to take, with the counts the client needs to resume.
+     */
+    @Override
+    public int available() {
+      if (bodyFailure != null)
+        return -1;
+      try {
+        return super.available();
+      } catch (final IOException e) {
+        bodyFailure = e;
+        return -1;
+      }
     }
 
     /**
@@ -762,7 +840,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     @Override
     public void close() {
-      if (endOfBody || drainAlreadyBuffered(MAX_ABANDONED_BODY_DRAIN) == BufferedDrain.END_OF_BODY)
+      // A body that FAILED is not a body that ended: there is nothing to drain and the connection carrying it is
+      // gone, so it is retired below rather than handed back for the next request (issue #6180).
+      if (bodyFailure == null && (endOfBody || drainAlreadyBuffered(MAX_ABANDONED_BODY_DRAIN) == BufferedDrain.END_OF_BODY))
         return;
 
       // Retiring a connection is invisible from the outside, and it is also where an unexpected cost would show up
@@ -1036,7 +1116,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * by {@code RaftReplicatedDatabase.command()} for SQL writes.
    */
   private ExecutionResponse forwardBatchToLeader(final HttpServerExchange exchange, final HAServerPlugin ha,
-      final String databaseName, final ServerSecurityUser user, final String contentType) throws Exception {
+      final String databaseName, final ServerSecurityUser user, final String contentType,
+      final CountingInputStream body) throws Exception {
 
     // A peer already relayed this load to what it believed was the leader and it landed here, on a node that
     // is not the leader either. Relaying it on would send it round the cycle that wrong address created, one
@@ -1089,8 +1170,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (queryString != null && !queryString.isEmpty())
       url += "?" + queryString;
 
+    // The body travels through the same guarded stream the leader-side load would use, so a cut upload cannot
+    // relay a replay of its own bytes on to the leader either (issue #6180).
     final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
-        exchange.getRequestContentLength(), exchange.getInputStream());
+        exchange.getRequestContentLength(), body);
 
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
