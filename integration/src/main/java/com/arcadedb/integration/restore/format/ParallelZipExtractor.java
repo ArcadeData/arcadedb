@@ -100,6 +100,15 @@ public class ParallelZipExtractor {
   public record ExtractStats(int files, long uncompressedSize) {
   }
 
+  /**
+   * An entry and the file it will become. The target is resolved once, in the validation pass, and carried from
+   * there: the checks that produce it are the ones that decide whether the archive is acceptable at all, so
+   * recomputing them in the worker would mean the bytes are written against a second, later answer to a question
+   * already settled.
+   */
+  private record PlannedEntry(ZipEntry entry, File target) {
+  }
+
   private final int                        threads;
   private final ConsoleLogger              logger;
   private final ArrayBlockingQueue<byte[]> bufferPool;
@@ -128,21 +137,29 @@ public class ParallelZipExtractor {
       // THREADS WRITING ONE FILE HERE. NO ARCADEDB BACKUP CAN PRODUCE ONE - A DATABASE DIRECTORY HAS UNIQUE FILE
       // NAMES - SO REFUSING IS BETTER THAN INVENTING A LOCKING RULE FOR AN ARCHIVE NOBODY SHOULD BE RESTORING
       final Set<String> names = new HashSet<>(entries.size());
+      final List<PlannedEntry> plan = new ArrayList<>(entries.size());
       for (final ZipEntry entry : entries) {
-        resolveTarget(entry, databaseDirectory);
+        plan.add(new PlannedEntry(entry, resolveTarget(entry, databaseDirectory)));
         if (!names.add(entry.getName()))
           throw new IOException("The backup archive contains two entries named '%s'".formatted(entry.getName()));
       }
 
       // LARGEST FIRST: WITH ENTRIES THIS UNEVEN (A DATABASE IS A FEW BIG PAGE FILES AND A HANDFUL OF TINY ONES) THE
       // DURATION IS DECIDED BY HOW LATE THE BIGGEST ENTRY STARTS
-      entries.sort(Comparator.comparingLong(ParallelZipExtractor::entryWeight).reversed());
+      plan.sort(Comparator.comparingLong(planned -> -entryWeight(planned.entry())));
 
-      final int poolSize = Math.min(threads, entries.size());
+      final int poolSize = Math.min(threads, plan.size());
       if (poolSize < 1)
         return new ExtractStats(0, 0L);
 
       final AtomicInteger threadId = new AtomicInteger();
+      // THE QUEUE IS UNBOUNDED, WHERE THE #6072 BACKUP WRITER THIS OTHERWISE MIRRORS USES A BOUNDED ONE WITH
+      // CallerRunsPolicy, AND THE DIFFERENCE IS DELIBERATE. THERE, WORK IS PRODUCED CONTINUOUSLY WHILE THE FILE IS
+      // READ, SO THE QUEUE IS THE BACKPRESSURE THAT KEEPS CHUNK BUFFERS - MEGABYTES EACH - FROM PILING UP. HERE THE
+      // WHOLE WORKLIST IS KNOWN BEFORE THE POOL EXISTS AND IS SUBMITTED IN ONE CLOSED LOOP: ITS LENGTH IS THE NUMBER
+      // OF FILES IN A DATABASE, AND WHAT IS QUEUED IS AN ENTRY REFERENCE, NOT A BUFFER. A BOUNDED QUEUE WOULD ALSO
+      // COST SOMETHING REAL - CallerRunsPolicy WOULD MAKE THE SUBMITTING THREAD EXTRACT AN ENTRY, TAKING A BUFFER
+      // POOLED FOR THE WORKERS AND BREAKING THE "ONE BUFFER PER POOL THREAD" HEAP BOUND
       final ThreadPoolExecutor executor = new ThreadPoolExecutor(poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
           new LinkedBlockingQueue<>(), r -> {
         final Thread thread = new Thread(r, "arcadedb-restore-inflater-" + threadId.incrementAndGet());
@@ -151,15 +168,15 @@ public class ParallelZipExtractor {
       });
 
       try {
-        final List<Future<Long>> results = new ArrayList<>(entries.size());
-        for (final ZipEntry entry : entries)
-          results.add(executor.submit(uncompressEntry(zipFile, entry, databaseDirectory)));
+        final List<Future<Long>> results = new ArrayList<>(plan.size());
+        for (final PlannedEntry planned : plan)
+          results.add(executor.submit(uncompressEntry(zipFile, planned)));
 
         long databaseOrigSize = 0L;
         for (final Future<Long> result : results)
           databaseOrigSize += drain(result);
 
-        return new ExtractStats(entries.size(), databaseOrigSize);
+        return new ExtractStats(plan.size(), databaseOrigSize);
       } finally {
         // shutdownNow() ALONE IS NOT ENOUGH ON THE FAILURE PATH. IT DRAINS THE QUEUE, SO NO FURTHER ENTRY STARTS, BUT
         // THE INTERRUPT IT SENDS DOES NOT COME BACK OUT OF A FileOutputStream.write() OR A ZipFile READ - NEITHER IS
@@ -185,9 +202,10 @@ public class ParallelZipExtractor {
     }
   }
 
-  private Callable<Long> uncompressEntry(final ZipFile zipFile, final ZipEntry entry, final File databaseDirectory) {
+  private Callable<Long> uncompressEntry(final ZipFile zipFile, final PlannedEntry planned) {
     return () -> {
-      final File uncompressedFile = resolveTarget(entry, databaseDirectory);
+      final ZipEntry entry = planned.entry();
+      final File uncompressedFile = planned.target();
       final byte[] buffer = acquireBuffer();
       long origSize = 0L;
       try (final InputStream in = zipFile.getInputStream(entry);
