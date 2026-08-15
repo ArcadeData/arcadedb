@@ -65,6 +65,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -73,6 +74,13 @@ import java.util.regex.Pattern;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final HttpClient HTTP_CLIENT           = HttpClient.newHttpClient();
+
+  /**
+   * Emits the "a peer forwarded a server command here and this node is not the leader either" notice only
+   * once (issue #6191). Per handler instance, so each server in an in-process cluster says it once.
+   */
+  private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
+
   private static final String LIST_DATABASES       = "list databases";
   private static final String SHUTDOWN             = "shutdown";
   private static final String CREATE_DATABASE      = "create database";
@@ -1210,13 +1218,23 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // A peer already forwarded this command to what it believed was the leader and it arrived here, on a node
     // that is not the leader either. Forwarding it on would send it round the cycle that wrong address
     // created; refuse in one hop with the typed error instead (issue #6191).
-    if (LeaderForwardContext.isAlreadyForwarded())
+    if (LeaderForwardContext.isAlreadyForwarded()) {
+      // Also said once in this node's log: the refusal goes back to the peer and from there to the client, so
+      // otherwise the only node that can name the misconfiguration never mentions it.
+      if (forwardedAgainWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "A cluster peer forwarded a server command to this node as the leader, but this node is not the leader. "
+                + "Unless leadership just moved, the HTTP address that peer resolved for the leader does not identify "
+                + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
+                + "command is refused rather than forwarded on. This notice is logged only once.",
+            GlobalConfiguration.HA_SERVER_LIST.getKey());
       throw new ServerIsNotTheLeaderException(
           "Refusing to forward a server command that a cluster peer already forwarded to the leader: it arrived on "
               + "this node, which is not the leader. Either leadership moved while the request was in flight - retry - "
               + "or the HTTP address that peer resolved for the leader does not identify it, which is what declaring "
               + "every node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
               + " prevents", ha.getLeaderName());
+    }
 
     final String leaderHttpAddress = ha.getLeaderAddress();
     if (leaderHttpAddress == null)

@@ -302,6 +302,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private final AtomicBoolean selfForwardWarned = new AtomicBoolean(false);
 
   /**
+   * Emits the "a peer forwarded a write here and this node is not the leader either" notice only once per
+   * database. The refusal itself travels back to the caller; this is so the node that proved the address
+   * wrong also says so in its own log (issue #6191).
+   */
+  private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
+
+  /**
    * Test-only fault-injection hook. Fires after Raft replication succeeds but BEFORE phase-2
    * commit runs. Set to a non-null Consumer to simulate leader crash in this narrow window.
    * Always null in production.
@@ -2598,13 +2605,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // arrived on a node that is not the leader either. Redirecting it once more sends it round the cycle the
     // wrong address created; refuse instead, so the peer that forwarded it (and through it the client) gets a
     // typed, retryable answer in one hop rather than a hang (issue #6191).
-    if (LeaderForwardContext.isAlreadyForwarded())
+    if (LeaderForwardContext.isAlreadyForwarded()) {
+      // Said once in this node's own log too: the refusal travels back to the peer that forwarded the write
+      // and from there to the client, so without this line the only node that can name the misconfiguration -
+      // the one that proved the address wrong by receiving the request - says nothing about it anywhere.
+      if (forwardedAgainWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "A cluster peer forwarded a write to this node as the leader, but this node is not the leader (db=%s). "
+                + "That peer resolved an HTTP address for the leader which does not identify it - unless leadership "
+                + "just moved, declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in "
+                + "%s. The write is refused rather than forwarded on. This notice is logged only once per database.",
+            getName(), GlobalConfiguration.HA_SERVER_LIST.getKey());
       throw new ServerIsNotTheLeaderException(
           "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
               + "which is not the leader. Either leadership moved while the request was in flight - retry - or the "
               + "HTTP address that peer resolved for the leader does not identify it, which is what declaring every "
               + "node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
               + " prevents", raft.getLeaderName());
+    }
 
     // During cluster startup or a leader change there is a window with no elected leader. Rather than failing
     // the forwarded write immediately (which loses the caller's transaction - issue #4728 follow-up), wait a

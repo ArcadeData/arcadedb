@@ -57,7 +57,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The ambiguity is injected by emptying (or misdirecting) one follower's resolved HTTP address map for the
  * duration of a single test, rather than by configuring the cluster without HTTP ports: it reproduces exactly
  * the production condition at the point where it matters, without making cluster startup - which dials those
- * same addresses to probe peers - part of what is under test.
+ * same addresses to probe peers - part of what is under test. The map is the live one and the cluster's own
+ * background threads read it throughout; that is safe because it is a {@code ConcurrentHashMap}, which is
+ * what it has to be anyway - {@code RaftClusterManager} adds and removes entries as peers join and leave.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -106,6 +108,12 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
    * The cycle a local self-check cannot see: the resolved address names a real peer, just not the leader. The
    * second node has to be the one that stops it, and the refusal has to reach the first as itself - a
    * {@link ServerIsNotTheLeaderException} the caller can retry on, not a flattened transaction failure.
+   * <p>
+   * The <b>type</b> is the assertion that matters and it travels in the error body's {@code exception} field,
+   * which is emitted in every server mode. The message text travels in {@code detail}, which
+   * {@code AbstractServerHttpHandler.buildErrorBody} conceals when the server runs in production mode
+   * (pre-existing behaviour, not specific to this path), so the text assertion here holds because tests run
+   * in the default development mode.
    */
   @Test
   @Timeout(120)

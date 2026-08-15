@@ -24,8 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The question every automatic redirect has to answer before it dials a resolved leader address: is this
- * address my own? An address that is identifies nobody, and following it lands the request back on the node
- * that resolved it - which resolves the same address and redirects again (issue #6191).
+ * address my own? One that is identifies nobody, and following it lands the request back on the node that
+ * resolved it - which resolves the same address and redirects again (issue #6191).
  * <p>
  * Exercised directly because the address comparison is shared by the write-forwarding path and the snapshot
  * resync refusal ({@code ArcadeStateMachine.triggerSnapshotDownload}, issue #6111), and neither of those can

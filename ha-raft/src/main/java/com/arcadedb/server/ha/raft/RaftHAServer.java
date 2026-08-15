@@ -135,7 +135,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    long                    quorumTimeout;
   private final    RaftGroup               raftGroup;
   private final    RaftPeerId              localPeerId;
-  private final    Map<RaftPeerId, String> httpAddresses      = new HashMap<>();
+  // Concurrent, not a plain HashMap: this is the one address map that is structurally modified while the
+  // cluster runs - RaftClusterManager puts on a peer add and removes on a peer leave - and it is read
+  // without any lock by the lag monitor, by cluster reporting, and (since issue #6191) by every write a
+  // follower forwards. A HashMap resizing under a concurrent get() is how a reader sees a stale or missing
+  // address, or spins. The siblings below are populated in the constructor and never written again, so a
+  // final field publishes them safely.
+  private final    Map<RaftPeerId, String> httpAddresses      = new ConcurrentHashMap<>();
   // Explicit HTTPS endpoints (optional 5th field in HA_SERVER_LIST). Used for encrypted
   // peer-to-peer transfers (snapshot download) when SSL is enabled.
   private final    Map<RaftPeerId, String> httpsAddresses     = new HashMap<>();
@@ -1639,6 +1645,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return raftProperties;
   }
 
+  /**
+   * The live map of explicitly declared peer HTTP endpoints, keyed by peer id - not a copy: callers add an
+   * entry when a peer joins and drop it when one leaves. It is a {@link ConcurrentHashMap}, so writing to it
+   * while other threads resolve addresses is safe, but it rejects null keys and values.
+   */
   public Map<RaftPeerId, String> getHttpAddresses() {
     return httpAddresses;
   }

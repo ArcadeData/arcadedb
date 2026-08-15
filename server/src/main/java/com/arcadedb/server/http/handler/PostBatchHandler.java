@@ -183,6 +183,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   private static final int        MAX_ABANDONED_BODY_DRAIN   = 64 * 1024;
   private static final HttpClient HTTP_CLIENT                = HttpClient.newHttpClient();
 
+  /**
+   * Emits the "a peer relayed a batch here and this node is not the leader either" notice only once (issue
+   * #6191). Per handler instance, so each server in an in-process cluster still gets to say it once.
+   */
+  private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
+
   public PostBatchHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -1035,13 +1041,23 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // A peer already relayed this load to what it believed was the leader and it landed here, on a node that
     // is not the leader either. Relaying it on would send it round the cycle that wrong address created, one
     // held request thread and one buffered upload per hop; refuse in one hop instead (issue #6191).
-    if (LeaderForwardContext.isAlreadyForwarded())
+    if (LeaderForwardContext.isAlreadyForwarded()) {
+      // Also said once in this node's log: the refusal is relayed back to the peer and from there to the
+      // client, so otherwise the only node that can name the misconfiguration never mentions it.
+      if (forwardedAgainWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "A cluster peer forwarded a batch to this node as the leader, but this node is not the leader (db=%s). "
+                + "Unless leadership just moved, the HTTP address that peer resolved for the leader does not identify "
+                + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
+                + "load is refused rather than relayed on. This notice is logged only once.",
+            databaseName, GlobalConfiguration.HA_SERVER_LIST.getKey());
       return new ExecutionResponse(400,
           "{ \"error\" : \"Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived "
-              + "on this node, which is not the leader. Either leadership moved while the request was in flight - retry - "
-              + "or the HTTP address that peer resolved for the leader does not identify it, which is what declaring "
-              + "every node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-              + " prevents\"}");
+              + "on this node, which is not the leader. Either leadership moved while the request was in flight - "
+              + "retry - or the HTTP address that peer resolved for the leader does not identify it, which is what "
+              + "declaring every node's HTTP port ('host:raftPort:httpPort') in "
+              + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents\"}");
+    }
 
     final String leaderAddress = ha.getLeaderAddress();
     if (leaderAddress == null || leaderAddress.isBlank())

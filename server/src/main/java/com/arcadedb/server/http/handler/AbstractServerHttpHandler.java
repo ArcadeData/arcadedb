@@ -604,8 +604,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // "Error on transaction commit", which names neither the leader nor the reason, and which the
         // forwarding peer cannot rebuild into the retryable typed exception the caller is entitled to.
         LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s",
+                        getClass().getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress());
       } else if (realException instanceof SecurityException) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
