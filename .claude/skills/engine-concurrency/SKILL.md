@@ -9,7 +9,10 @@ description: Use when adding, reviewing, or debugging parallelism in ArcadeDB en
 
 **Existing JDK-common-pool callers** (tagged in source with `NOTE (concurrency)` comments referencing the rule, will migrate as workloads justify it):
 - `GraphBatch.parallelSort` (`engine/...graph/GraphBatch.java`)
-- `ArcadeStateMachine.notifyInstallSnapshotFromLeader` (`ha-raft/...`)
+
+`ArcadeStateMachine.notifyInstallSnapshotFromLeader` was on this list until issue #6202 gave it a dedicated
+single-worker executor (`arcadedb-raft-snapshot-install`); a follower snapshot install is a full database
+download, i.e. the longest-running thing the HA layer does, and it no longer parks a common-pool worker for it.
 
 ## Dedicated thread pools
 
@@ -23,7 +26,8 @@ description: Use when adding, reviewing, or debugging parallelism in ArcadeDB en
 | `TimeSeriesEngine` pool | `engine` | Time-series rollup work | configurable | n/a |
 | `BackupScheduler` | `server` | Cron-style backup jobs | scheduled executor | n/a |
 | `MaterializedViewScheduler` | `server` | Cron-style MV refresh | scheduled executor | n/a |
-| Raft HA pools | `ha-raft` | Leader election, log replication, snapshot install | configurable in Raft conf | n/a |
+| Raft HA pools | `ha-raft` | Leader election, log replication | configurable in Raft conf | n/a |
+| `ArcadeStateMachine.snapshotInstallExecutor` | `ha-raft` | Leader-initiated follower snapshot install, off the Ratis state-machine thread | 1 worker, 16-deep queue (Ratis serialises installs per division) | Abort, turned into a failed future so Ratis retries - never caller-runs, which would put the download back on the Ratis thread |
 | Undertow IO + worker | `server` | HTTP request handling | hardcoded 500 worker threads | Undertow built-in |
 | `ServerMonitor` | `server` | Periodic metric collection | scheduled executor | n/a |
 

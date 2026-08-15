@@ -517,7 +517,7 @@ class Issue6111StaleSnapshotReadFloorTest {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     final RaftHAServer mockRaft = mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(true);
-    when(mockRaft.getLeaderHttpAddress()).thenReturn("localhost:2480");
+    when(mockRaft.getUnambiguousPeerHttpAddress(LEADER_PEER_ID)).thenReturn("localhost:2480");
     sm.setRaftHAServer(mockRaft);
     try {
       sm.writePersistedAppliedIndex(PERSISTED_APPLIED, DB_NAME);
@@ -553,7 +553,8 @@ class Issue6111StaleSnapshotReadFloorTest {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     final RaftHAServer mockRaft = mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(false); // role flag has not caught up...
-    when(mockRaft.getLeaderHttpAddress()).thenReturn("localhost:2480");
+    when(mockRaft.getLeaderId()).thenReturn(LEADER_PEER_ID);
+    when(mockRaft.getUnambiguousPeerHttpAddress(LEADER_PEER_ID)).thenReturn("localhost:2480");
     when(mockRaft.getLocalHttpAddress()).thenReturn("localhost:2480"); // ...but it is us
     sm.setRaftHAServer(mockRaft);
     try {
@@ -597,9 +598,15 @@ class Issue6111StaleSnapshotReadFloorTest {
   private static RaftHAServer followerRaftHAServerMock() {
     final RaftHAServer mockRaft = mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(false);
-    when(mockRaft.getLeaderHttpAddress()).thenReturn("localhost:2480");
+    when(mockRaft.getLeaderId()).thenReturn(LEADER_PEER_ID);
+    // The resolver every resync path now goes through: it withholds an address that does not identify one
+    // peer on its own, and refusing is the whole point of it (issue #6202).
+    when(mockRaft.getUnambiguousPeerHttpAddress(LEADER_PEER_ID)).thenReturn("peer-b:2480");
     return mockRaft;
   }
+
+  /** The peer id the mocked leader answers to. */
+  private static final RaftPeerId LEADER_PEER_ID = RaftPeerId.valueOf("peer-b_2434");
 
   private static long readLastRetryMs(final ArcadeStateMachine sm) throws Exception {
     final Field f = ArcadeStateMachine.class.getDeclaredField("lastStaleSnapshotRetryMs");
