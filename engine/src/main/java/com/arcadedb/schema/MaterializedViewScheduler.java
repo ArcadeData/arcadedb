@@ -33,7 +33,7 @@ import java.util.logging.Level;
 
 public class MaterializedViewScheduler {
   private final ScheduledExecutorService  executor;
-  private final Map<String, RefreshTask> tasks = new ConcurrentHashMap<>();
+  private final Map<String, RefreshTask>  tasks = new ConcurrentHashMap<>();
 
   /**
    * @param databaseName names the scheduler thread. One scheduler is created per {@link LocalSchema}, so a JVM with

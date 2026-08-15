@@ -1723,28 +1723,38 @@ then reported `ERROR`, or `STALE` once `MaterializedViewChangeListener` overwrot
 "the data you are looking at is old" when the data was in fact gone. It stayed gone until some later refresh
 happened to succeed, which for a MANUAL view may be never.
 
-The refresh now clears the previous snapshot with a `DELETE FROM` inside the same transaction as the repopulate,
-so the pass gets the isolation every other ArcadeDB transaction has: the deletes and the inserts stay in the
-transaction's own page buffer until commit, a concurrent reader sees the previous snapshot throughout and the new
-one afterwards, and a failure anywhere rolls the whole pass back onto the previous snapshot rather than onto
-nothing.
+The refresh now writes the defining query's rows over the previous snapshot's records inside one transaction,
+deleting only the surplus and creating only the shortfall. The pass gets the isolation every other ArcadeDB
+transaction has: every write stays in the transaction's own page buffer until commit, a concurrent reader sees the
+previous snapshot throughout and the new one afterwards, and a failure anywhere rolls the whole pass back onto the
+previous snapshot rather than onto nothing. A view's rows also keep their `@rid` across a refresh, where before
+every pass gave them new ones.
 
-Neither trigger fires on the trivial case, which is why this survived the existing tests: an unindexed view
-smaller than one truncate batch was already atomic. The regression tests cover both - an index on the backing type
-(the `dropIndex` commit, at any size) and a view larger than `arcadedb.truncateBatchSize` (the in-scan commit).
+Neither trigger fires on the trivial case, which is why this survived the existing tests: an unindexed view smaller
+than one truncate batch was already atomic. The regression tests cover both - an index on the backing type (the
+`dropIndex` commit, at any size) and a view larger than `arcadedb.truncateBatchSize` (the in-scan commit).
+
+**Rewriting in place rather than clearing and repopulating is what keeps an index on the backing type from paying
+for the atomicity**, and it makes an indexed refresh cheaper than it was before. Clearing the view would give every
+row a new RID, and `TransactionIndexContext` collapses a REMOVE followed by an ADD only on the same (key, RID), so
+each pass would leave a full set of real tombstones where the truncate used to drop the index and rebuild it empty.
+Measured over 120 refreshes of a 2000-row indexed view: a flat 256KB for the old truncate, 256KB growing to 3.9MB
+and still climbing for clear-and-repopulate, and a flat 256KB for the rewrite - because
+`DocumentIndexer.updateDocument` finds the key values unchanged for every row a stable view reproduces and skips the
+index outright. Zero index writes per pass, against a full rebuild per pass before. The backing buckets stay flat
+too, since no record is freed and reallocated. A `@Tag("slow")` soak test guards the bound.
 
 **The shadow-type swap the issue proposed was rejected.** Building into a second backing type and repointing the
 view at it reads better on paper - the swap is metadata only and the old rows are dropped as files rather than
 deleted one by one - but in this engine the swap has no cheap implementation. Renaming a type renames its buckets,
 and `PaginatedComponent.rename()` first waits for every page of the *whole database* to be flushed; paying a
-database-wide flush barrier twice per refresh, on every tick of every PERIODIC view, is a worse defect than the
-one being fixed. Repointing the view at a differently named backing type avoids the barrier but makes the view's
-own name stop being the type name, which is what makes `SELECT FROM <view>` work at all and what every record's
-`@type` reports. What the single transaction costs instead is bounded and not new: it holds the pages of the old
-rows as well as the new ones - largely the same pages, since the deletes hand their free space straight back to
-the inserts - and an index on the backing type is maintained entry by entry rather than dropped and rebuilt empty.
-The repopulate was already one unbounded transaction, so a view too large to refresh in one transaction was
-already too large to refresh.
+database-wide flush barrier twice per refresh, on every tick of every PERIODIC view, is a worse defect than the one
+being fixed. Repointing the view at a differently named backing type avoids the barrier but makes the view's own
+name stop being the type name, which is what makes `SELECT FROM <view>` work at all and what every record's `@type`
+reports. What the single transaction costs instead is bounded and not new: it holds the pages of the rows it
+rewrites, and under HA the pass is one Raft log entry rather than one per truncate batch plus one for the
+repopulate. The repopulate was already one unbounded transaction, so a view too large to refresh in one transaction
+was already too large to refresh.
 
 ### The scheduler no longer pins an abandoned database to a live thread
 

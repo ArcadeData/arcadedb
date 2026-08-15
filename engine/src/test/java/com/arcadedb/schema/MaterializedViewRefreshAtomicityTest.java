@@ -20,8 +20,14 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.event.BeforeRecordCreateListener;
+import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -114,13 +120,15 @@ class MaterializedViewRefreshAtomicityTest extends TestHelper {
     assertThat(countOf("VisibilityView")).isEqualTo(5);
     insertSourceRows(5, 3);
 
-    final CountDownLatch refreshReachedFirstInsert = new CountDownLatch(1);
+    final CountDownLatch refreshReachedFirstWrite = new CountDownLatch(1);
     final CountDownLatch readerObserved = new CountDownLatch(1);
     final DocumentType backing = database.getSchema().getType("VisibilityView");
-    final AtomicInteger created = new AtomicInteger();
-    final BeforeRecordCreateListener pause = record -> {
-      if (created.incrementAndGet() == 1) {
-        refreshReachedFirstInsert.countDown();
+    final AtomicInteger written = new AtomicInteger();
+    // On the update, not the create: the refresh writes the new rows over the previous snapshot's records and only
+    // creates the shortfall, so the first write of a pass is an update whenever the view already had a row.
+    final BeforeRecordUpdateListener pause = record -> {
+      if (written.incrementAndGet() == 1) {
+        refreshReachedFirstWrite.countDown();
         try {
           readerObserved.await(30, TimeUnit.SECONDS);
         } catch (final InterruptedException e) {
@@ -143,8 +151,8 @@ class MaterializedViewRefreshAtomicityTest extends TestHelper {
 
     final long observed;
     try {
-      assertThat(refreshReachedFirstInsert.await(30, TimeUnit.SECONDS))
-          .as("the refresh reached its first insert").isTrue();
+      assertThat(refreshReachedFirstWrite.await(30, TimeUnit.SECONDS))
+          .as("the refresh reached its first write").isTrue();
       observed = countOf("VisibilityView");
     } finally {
       readerObserved.countDown();
@@ -160,8 +168,9 @@ class MaterializedViewRefreshAtomicityTest extends TestHelper {
   }
 
   /**
-   * A UNIQUE index on the backing type is the case where clearing the view and repopulating it inside one
-   * transaction has to survive the same key being removed and re-added before the uniqueness check runs.
+   * A UNIQUE index on the backing type is where rewriting the view inside one transaction has to survive the same
+   * key being written over the record that already holds it, and - once the view outgrows the previous snapshot -
+   * being added on a new record in the same transaction that carries the rest.
    */
   @Test
   void aViewWithAUniqueIndexRefreshesRepeatedly() {
@@ -180,21 +189,77 @@ class MaterializedViewRefreshAtomicityTest extends TestHelper {
     assertThat(idsFromIndexOf("UniqueIndexView")).containsExactly(0L, 1L, 2L, 3L, 4L, 5L, 6L);
   }
 
-  private void failRefreshOnRecord(final String viewName, final int failOnNthCreate) {
+  /**
+   * The cost the atomicity is not allowed to have. The truncate this replaced dropped every index on the backing
+   * type and rebuilt it empty, so an indexed view's index never grew however often it refreshed. Clearing the view
+   * with a delete instead would give every row a new RID on every pass, and {@code TransactionIndexContext}
+   * collapses a REMOVE followed by an ADD only on the same (key, RID) - so each pass would leave a full set of real
+   * tombstones behind. Measured over 120 passes of this fixture: 256KB flat for the truncate, 256KB to 3.9MB and
+   * still climbing for delete-and-recreate. Writing the rows over the previous snapshot's records keeps the key
+   * values unchanged, which {@code DocumentIndexer.updateDocument} skips outright, so nothing is written to the
+   * index at all.
+   * <p>
+   * Measured on the file size rather than the mutable page count: auto-compaction saws the page count back down at
+   * {@code arcadedb.indexCompactionMinPagesSchedule}, so it hides the growth by folding it into ever more compacted
+   * series. The bound of twice the first pass's size is deliberately loose - this guards against the growth pattern
+   * coming back, it does not measure it - and delete-and-recreate is already past it by pass 60.
+   */
+  @Test
+  @Tag("slow")
+  void refreshingAnIndexedViewRepeatedlyDoesNotGrowTheIndex() throws Exception {
+    createSourceWith(2000);
+    createView("SoakView");
+    createIndexOn("SoakView", "NOTUNIQUE");
+
+    final long afterFirst = indexBytesOf("SoakView");
+    assertThat(afterFirst).as("the index is on disk to begin with").isPositive();
+
+    for (int pass = 0; pass < 60; pass++)
+      database.getSchema().getMaterializedView("SoakView").refresh();
+
+    assertThat(idsFromIndexOf("SoakView")).hasSize(2000);
+    assertThat(indexBytesOf("SoakView"))
+        .as("60 refreshes of an unchanged indexed view must not grow its index")
+        .isLessThanOrEqualTo(afterFirst * 2);
+  }
+
+  private long indexBytesOf(final String viewName) throws Exception {
+    final FileManager files = ((DatabaseInternal) database).getFileManager();
+    long bytes = 0;
+    for (final TypeIndex index : database.getSchema().getType(viewName).getAllIndexes(false))
+      for (final IndexInternal bucketIndex : index.getIndexesOnBuckets())
+        for (final int fileId : bucketIndex.getFileIds())
+          bytes += files.getFile(fileId).getSize();
+    return bytes;
+  }
+
+  /**
+   * Fails the refresh on its {@code failOnNthWrite}-th write to the backing type. Counted over creates AND updates,
+   * so the failure lands part way through the pass whether the row is written over one of the previous snapshot's
+   * records or created because the new snapshot is longer - and stays there if that balance ever changes.
+   */
+  private void failRefreshOnRecord(final String viewName, final int failOnNthWrite) {
     final DocumentType backing = database.getSchema().getType(viewName);
-    final AtomicInteger created = new AtomicInteger();
-    final BeforeRecordCreateListener boom = record -> {
-      if (created.incrementAndGet() == failOnNthCreate)
-        throw new IllegalStateException("simulated failure part way through the repopulate");
+    final AtomicInteger written = new AtomicInteger();
+    final BeforeRecordCreateListener boomOnCreate = record -> {
+      if (written.incrementAndGet() == failOnNthWrite)
+        throw new IllegalStateException("simulated failure part way through the refresh");
       return true;
     };
-    backing.getEvents().registerListener(boom);
+    final BeforeRecordUpdateListener boomOnUpdate = record -> {
+      if (written.incrementAndGet() == failOnNthWrite)
+        throw new IllegalStateException("simulated failure part way through the refresh");
+      return true;
+    };
+    backing.getEvents().registerListener(boomOnCreate);
+    backing.getEvents().registerListener(boomOnUpdate);
     try {
       assertThatThrownBy(() -> database.getSchema().getMaterializedView(viewName).refresh())
           .as("the failure still reaches the caller")
           .isInstanceOf(IllegalStateException.class);
     } finally {
-      backing.getEvents().unregisterListener(boom);
+      backing.getEvents().unregisterListener(boomOnCreate);
+      backing.getEvents().unregisterListener(boomOnUpdate);
     }
   }
 

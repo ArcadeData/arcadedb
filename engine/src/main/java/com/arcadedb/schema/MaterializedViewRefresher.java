@@ -20,10 +20,14 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 
 public class MaterializedViewRefresher {
@@ -83,14 +87,13 @@ public class MaterializedViewRefresher {
   }
 
   /**
-   * Clears the backing type and repopulates it from the defining query, as ONE transaction.
+   * Replaces the backing type's contents with the defining query's rows, as ONE transaction.
    * <p>
-   * The clear is a {@code DELETE FROM} rather than the {@code TRUNCATE TYPE ... UNSAFE} this used to run, and the
-   * difference is the whole point (issue #6203). {@code TRUNCATE} commits the caller's transaction from the inside -
-   * {@code schema.dropIndex()} for every index on the backing type before a single record is touched, then
-   * {@code commit(); begin()} once per {@code arcadedb.truncateBatchSize} records, then once more before it rebuilds
-   * the indexes it dropped - so the refresh was a sequence of committed transactions wearing the costume of one. Both
-   * consequences were silent:
+   * The {@code TRUNCATE TYPE ... UNSAFE} this used to start with is gone, and that is the whole point (issue #6203).
+   * {@code TRUNCATE} commits the caller's transaction from the inside - {@code schema.dropIndex()} for every index on
+   * the backing type before a single record is touched, then {@code commit(); begin()} once per
+   * {@code arcadedb.truncateBatchSize} records, then once more before it rebuilds the indexes it dropped - so the
+   * refresh was a sequence of committed transactions wearing the costume of one. Both consequences were silent:
    * <ul>
    * <li>every other reader saw the view empty, or holding some prefix of the new rows, for the whole runtime of the
    * defining query - which for a view worth materialising is exactly the expensive case, and for a PERIODIC view is
@@ -99,10 +102,10 @@ public class MaterializedViewRefresher {
    * then reported ERROR or STALE, and both of those read as "the data you are looking at is old" when the data was in
    * fact gone - until some later refresh happened to succeed, which for a MANUAL view may be never.</li>
    * </ul>
-   * As one transaction the refresh gets the isolation every other ArcadeDB transaction has: the deletes and the
-   * inserts stay in the transaction's own page buffer until commit, so a concurrent reader sees the previous snapshot
-   * throughout and the new one afterwards, and a failure anywhere rolls the whole pass back onto the previous
-   * snapshot rather than onto nothing.
+   * As one transaction the refresh gets the isolation every other ArcadeDB transaction has: every write stays in the
+   * transaction's own page buffer until commit, so a concurrent reader sees the previous snapshot throughout and the
+   * new one afterwards, and a failure anywhere rolls the whole pass back onto the previous snapshot rather than onto
+   * nothing.
    * <p>
    * The rejected alternative was to build into a shadow backing type and swap the two at the end. It reads better on
    * paper - the swap is metadata only and the old rows are dropped as files rather than deleted one by one - but in
@@ -113,11 +116,24 @@ public class MaterializedViewRefresher {
    * but makes the view's own name stop being the type name, which is what makes {@code SELECT FROM <view>} work at
    * all and what every record's {@code @type} reports.
    * <p>
-   * What this costs relative to the truncate: the transaction now holds the pages of the old rows as well as the new
-   * ones - bounded in practice by the free space the deletes hand straight back to the inserts in the same buckets -
-   * and an index on the backing type is maintained entry by entry instead of being dropped and rebuilt empty. Under
-   * HA the pass is one Raft log entry rather than one per truncate batch plus one for the repopulate. None of this is
-   * a new ceiling: the repopulate was already a single unbounded transaction, so a view too large to refresh in one
+   * The new rows are written OVER the previous snapshot's records rather than into fresh ones, and only the surplus
+   * is deleted (or the shortfall created). That is not a micro-optimisation, it is what keeps an index on the backing
+   * type from paying for the atomicity. Clearing the view with a delete and repopulating with new records would give
+   * every row a new RID, and {@code TransactionIndexContext} collapses a REMOVE followed by an ADD only on the same
+   * (key, RID) - so each pass would leave a full set of real tombstones in the index, where the truncate used to drop
+   * the index and rebuild it empty. Measured over 120 refreshes of a 2000-row indexed view: delete-and-recreate grew
+   * the index from 256KB to 3.9MB and climbing, held down only by compaction it was itself provoking, against a flat
+   * 256KB for the truncate. Rewriting in place instead means {@code DocumentIndexer.updateDocument} finds the key
+   * values unchanged for every row a stable view reproduces, and skips the index entirely: zero index writes per
+   * pass, which is better than either.
+   * <p>
+   * The RIDs are collected up front rather than iterated live. An update whose content no longer fits its slot can
+   * relocate the record, and a scan that is still walking the bucket would then meet it a second time at its new
+   * home - rewriting a row already written and losing count of what is surplus.
+   * <p>
+   * What this costs relative to the truncate: the transaction holds the pages of the rows it rewrites, and under HA
+   * the pass is one Raft log entry rather than one per truncate batch plus one for the repopulate. Neither is a new
+   * ceiling - the repopulate was already a single unbounded transaction, so a view too large to refresh in one
    * transaction was already too large to refresh.
    */
   private static void refreshOnce(final Database database, final MaterializedViewImpl view) {
@@ -129,21 +145,59 @@ public class MaterializedViewRefresher {
     // would otherwise defer the commit indefinitely.
     // See: https://github.com/ArcadeData/arcadedb/issues/3941
     database.transaction(() -> {
-      // Clear the previous snapshot inside this transaction, so it stays visible until the new one replaces it.
-      database.command("sql", "DELETE FROM `" + backingTypeName + "`").close();
+      final List<RID> previousSnapshot = collectRIDs(database, backingTypeName);
+      int reused = 0;
 
-      // Execute the defining query and insert results
+      // Execute the defining query and write its rows over the previous snapshot's records
       try (final ResultSet rs = database.query("sql", view.getQuery())) {
         while (rs.hasNext()) {
           final Result result = rs.next();
-          final MutableDocument doc = database.newDocument(backingTypeName);
-          for (final String prop : result.getPropertyNames()) {
-            if (!prop.startsWith("@"))
-              doc.set(prop, result.getProperty(prop));
-          }
+          final MutableDocument doc = reused < previousSnapshot.size() ?
+              previousSnapshot.get(reused++).asDocument(true).modify() :
+              database.newDocument(backingTypeName);
+          applyRow(doc, result);
           doc.save();
         }
       }
+
+      // Whatever the new snapshot did not need
+      for (int i = reused; i < previousSnapshot.size(); i++)
+        previousSnapshot.get(i).asDocument(true).delete();
     }, false);
+  }
+
+  /** Copies one query row onto a document, dropping any property the row does not carry. */
+  private static void applyRow(final MutableDocument doc, final Result row) {
+    // A reused document still holds the columns of the row it used to carry, and whatever this row does not
+    // reproduce has to go. Snapshot the names first: getPropertyNames() is a live view of the document, so both
+    // the writes below and the removals after would otherwise mutate what is being iterated. A newly created
+    // document has none, and skipping the copy is what keeps the create path allocating exactly as it did.
+    final Set<String> previous = doc.getPropertyNames();
+    final List<String> carriedOver = previous.isEmpty() ? null : new ArrayList<>(previous);
+
+    for (final String prop : row.getPropertyNames())
+      if (!prop.startsWith("@"))
+        doc.set(prop, row.getProperty(prop));
+
+    if (carriedOver != null)
+      for (final String prop : carriedOver)
+        if (!row.hasProperty(prop))
+          doc.remove(prop);
+  }
+
+  /**
+   * The RIDs currently holding the view, in scan order. {@code countType} is a cached counter rather than a scan and
+   * is used here only as a capacity hint - the list is filled by the scan, so a stale count costs a resize and
+   * nothing else - which spares the common case, a view whose row count barely moves between refreshes, from
+   * growing the list at all.
+   */
+  private static List<RID> collectRIDs(final Database database, final String backingTypeName) {
+    final long count = database.countType(backingTypeName, false);
+    final List<RID> rids = new ArrayList<>(count > 0 && count < Integer.MAX_VALUE ? (int) count : 16);
+    database.scanType(backingTypeName, false, record -> {
+      rids.add(record.getIdentity());
+      return true;
+    });
+    return rids;
   }
 }
