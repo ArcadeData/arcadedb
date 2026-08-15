@@ -89,7 +89,8 @@ class MaterializedViewSchedulerTest {
     TestHelper.executeInNewDatabase("MaterializedViewSchedulerTest", database -> {
       final MaterializedViewScheduler scheduler = new MaterializedViewScheduler(database.getName());
       try {
-        // The backing type does not exist, so every pass fails on the TRUNCATE that starts it.
+        // Neither the backing type nor the source type exists, so every pass fails - on the scan of the backing
+        // type that collects the previous snapshot, before the defining query is even run.
         final MaterializedViewImpl view = new MaterializedViewImpl(database, "FailingView", "SELECT name FROM Source",
             "FailingView_backing", List.of("Source"), MaterializedViewRefreshMode.PERIODIC, true, 50);
 

@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
@@ -190,6 +191,61 @@ class MaterializedViewRefreshAtomicityTest extends TestHelper {
   }
 
   /**
+   * Rewriting in place pairs each new row with a previous record BY POSITION, so a defining query whose order moves
+   * between passes makes the unique keys change hands: the record that held key 4 is handed key 0, while the record
+   * that held key 0 is handed key 4, all inside one transaction. Under the truncate this could not arise - the index
+   * was dropped before any row was touched and rebuilt only once every row was in place - so it is new ground, and a
+   * spurious {@code DuplicatedKeyException} here would be exactly the kind of failure that only shows up on the one
+   * view whose query has no stable sort.
+   * <p>
+   * The permutation is driven rather than hoped for: the view sorts on a column the test rewrites between passes, so
+   * every one of the five keys lands on a different record than it did before.
+   */
+  @Test
+  void aViewWithAUniqueIndexSurvivesItsRowsChangingOrderBetweenRefreshes() {
+    database.transaction(() -> database.getSchema().createDocumentType("RefreshSource"));
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newDocument("RefreshSource").set("id", i).set("ord", i).save();
+    });
+    database.transaction(() -> database.getSchema().buildMaterializedView()
+        .withName("ReorderedView")
+        .withQuery("SELECT id FROM RefreshSource ORDER BY ord")
+        .create());
+    createIndexOn("ReorderedView", "UNIQUE");
+
+    assertThat(idsOf("ReorderedView")).containsExactly(0L, 1L, 2L, 3L, 4L);
+
+    // Same five keys, reversed order: every record is handed a key that another record still holds.
+    for (int pass = 0; pass < 3; pass++) {
+      final int direction = pass;
+      database.transaction(() -> {
+        try (final ResultSet rs = database.query("sql", "SELECT FROM RefreshSource")) {
+          while (rs.hasNext()) {
+            final MutableDocument doc = rs.next().getRecord().orElseThrow().asDocument().modify();
+            final int id = ((Number) doc.get("id")).intValue();
+            doc.set("ord", direction % 2 == 0 ? 4 - id : id).save();
+          }
+        }
+      });
+
+      database.getSchema().getMaterializedView("ReorderedView").refresh();
+
+      // In record order, not sorted: this is what proves the keys actually changed hands rather than the test
+      // asserting a permutation it never provoked.
+      assertThat(idsInRecordOrderOf("ReorderedView"))
+          .as("pass %d handed every record a key another record was still holding", pass)
+          .containsExactlyElementsOf(direction % 2 == 0 ?
+              List.of(4L, 3L, 2L, 1L, 0L) :
+              List.of(0L, 1L, 2L, 3L, 4L));
+      assertThat(idsOf("ReorderedView")).as("pass %d", pass).containsExactly(0L, 1L, 2L, 3L, 4L);
+      assertThat(idsFromIndexOf("ReorderedView"))
+          .as("the unique index agrees with the records after pass %d", pass)
+          .containsExactly(0L, 1L, 2L, 3L, 4L);
+    }
+  }
+
+  /**
    * The cost the atomicity is not allowed to have. The truncate this replaced dropped every index on the backing
    * type and rebuilt it empty, so an indexed view's index never grew however often it refreshed. Clearing the view
    * with a delete instead would give every row a new RID on every pass, and {@code TransactionIndexContext}
@@ -291,6 +347,16 @@ class MaterializedViewRefreshAtomicityTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM `" + viewName + "`")) {
       return ((Number) rs.next().getProperty("c")).longValue();
     }
+  }
+
+  /** The ids as the records hold them, unsorted, so a permutation of the rows is visible rather than normalised away. */
+  private List<Long> idsInRecordOrderOf(final String viewName) {
+    final List<Long> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT id FROM `" + viewName + "`")) {
+      while (rs.hasNext())
+        ids.add(((Number) rs.next().getProperty("id")).longValue());
+    }
+    return ids;
   }
 
   private List<Long> idsOf(final String viewName) {

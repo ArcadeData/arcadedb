@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
@@ -26,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
@@ -145,15 +147,15 @@ public class MaterializedViewRefresher {
     // would otherwise defer the commit indefinitely.
     // See: https://github.com/ArcadeData/arcadedb/issues/3941
     database.transaction(() -> {
-      final List<RID> previousSnapshot = collectRIDs(database, backingTypeName);
+      final RecordIdentities previousSnapshot = collectIdentities(database, backingTypeName);
       int reused = 0;
 
       // Execute the defining query and write its rows over the previous snapshot's records
       try (final ResultSet rs = database.query("sql", view.getQuery())) {
         while (rs.hasNext()) {
           final Result result = rs.next();
-          final MutableDocument doc = reused < previousSnapshot.size() ?
-              previousSnapshot.get(reused++).asDocument(true).modify() :
+          final MutableDocument doc = reused < previousSnapshot.size ?
+              ((Document) database.lookupByRID(previousSnapshot.get(reused++), true)).modify() :
               database.newDocument(backingTypeName);
           applyRow(doc, result);
           doc.save();
@@ -161,8 +163,8 @@ public class MaterializedViewRefresher {
       }
 
       // Whatever the new snapshot did not need
-      for (int i = reused; i < previousSnapshot.size(); i++)
-        previousSnapshot.get(i).asDocument(true).delete();
+      for (int i = reused; i < previousSnapshot.size; i++)
+        database.lookupByRID(previousSnapshot.get(i), true).delete();
     }, false);
   }
 
@@ -186,18 +188,56 @@ public class MaterializedViewRefresher {
   }
 
   /**
-   * The RIDs currently holding the view, in scan order. {@code countType} is a cached counter rather than a scan and
-   * is used here only as a capacity hint - the list is filled by the scan, so a stale count costs a resize and
-   * nothing else - which spares the common case, a view whose row count barely moves between refreshes, from
-   * growing the list at all.
+   * The identities currently holding the view, in scan order. {@code countType} is a cached counter rather than a
+   * scan and is used here only as a capacity hint - the arrays are filled by the scan, so a stale count costs a
+   * resize and nothing else - which spares the common case, a view whose row count barely moves between refreshes,
+   * from growing them at all.
    */
-  private static List<RID> collectRIDs(final Database database, final String backingTypeName) {
+  private static RecordIdentities collectIdentities(final Database database, final String backingTypeName) {
     final long count = database.countType(backingTypeName, false);
-    final List<RID> rids = new ArrayList<>(count > 0 && count < Integer.MAX_VALUE ? (int) count : 16);
+    final RecordIdentities identities = new RecordIdentities(
+        count > 0 && count < Integer.MAX_VALUE ? (int) count : 16);
     database.scanType(backingTypeName, false, record -> {
-      rids.add(record.getIdentity());
+      identities.add(record.getIdentity());
       return true;
     });
-    return rids;
+    return identities;
+  }
+
+  /**
+   * The previous snapshot's record identities, held as the two primitives a {@link RID} is made of rather than as a
+   * {@code List<RID>}.
+   * <p>
+   * This is allocated on every refresh of every view and is proportional to the view's size, and a boxed RID per row
+   * costs several times what the pair of primitives does - a reference plus an object header plus the same two
+   * fields, against 12 bytes. Identities are rebuilt one at a time as the rewrite consumes them, so at most one is
+   * ever live, and each is handed straight to {@code lookupByRID} rather than to {@code RID.asDocument()}: the
+   * latter resolves the database from the thread's {@link com.arcadedb.database.DatabaseContext}, which this refresh
+   * has no reason to depend on.
+   */
+  private static final class RecordIdentities {
+    private int[] bucketIds;
+    private long[] positions;
+    private int   size;
+
+    private RecordIdentities(final int initialCapacity) {
+      this.bucketIds = new int[initialCapacity];
+      this.positions = new long[initialCapacity];
+    }
+
+    private void add(final RID rid) {
+      if (size == bucketIds.length) {
+        final int grown = size + (size >> 1) + 1;
+        bucketIds = Arrays.copyOf(bucketIds, grown);
+        positions = Arrays.copyOf(positions, grown);
+      }
+      bucketIds[size] = rid.getBucketId();
+      positions[size] = rid.getPosition();
+      ++size;
+    }
+
+    private RID get(final int index) {
+      return new RID(bucketIds[index], positions[index]);
+    }
   }
 }
