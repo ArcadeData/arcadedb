@@ -431,6 +431,34 @@ class Issue6111StaleSnapshotReadFloorTest {
   }
 
   /**
+   * The retry throttle allows one attempt per watchdog interval, so an attempt the resync will refuse anyway
+   * costs a whole interval of not retrying. The precheck therefore asks the same questions
+   * {@code resolveSnapshotSource()} asks, including the one it used to skip: an address that resolves to this
+   * node's own is not somewhere to download from (issue #6202).
+   */
+  @Test
+  void retryStandsDownWhenTheResolvedLeaderAddressIsOurOwn(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    when(mockRaft.isLeader()).thenReturn(false);
+    when(mockRaft.getLeaderId()).thenReturn(LEADER_PEER_ID);
+    when(mockRaft.getUnambiguousPeerHttpAddress(LEADER_PEER_ID)).thenReturn("localhost:2480");
+    when(mockRaft.isOwnHttpAddress("localhost:2480")).thenReturn(true);
+    sm.setRaftHAServer(mockRaft);
+    try {
+      setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
+
+      sm.retryUnfilledSnapshotGap();
+
+      assertThat(readLastRetryMs(sm))
+          .as("a doomed attempt must not consume the one retry slot this watchdog interval has")
+          .isZero();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
    * The case the backstop exists for: a floor left behind by a failed download, nothing running, a
    * leader reachable. The retry must fire - and reach {@code triggerSnapshotDownload()}, which with no
    * databases present completes and clears the floor.

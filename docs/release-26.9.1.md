@@ -1752,10 +1752,18 @@ either way.
 
 ## The Ratis-initiated snapshot install makes the refusals the manual one makes (#6202)
 
-`ArcadeStateMachine` pulls a database snapshot from the leader on three paths, and only the manual one
-(`triggerSnapshotDownload()`) checked what it was about to dial. `notifyInstallSnapshotFromLeader` - the
-Ratis-initiated install, the one that runs when a follower's log is behind the leader's compacted log - and the
-targeted single-database resync both resolved an address and dialled it with no check at all.
+`ArcadeStateMachine` pulls a database snapshot from the leader on **six** paths, and only the manual one
+(`triggerSnapshotDownload()`) checked what it was about to dial. The other five resolved an address and dialled
+it with no check, or with only part of one:
+
+| Path | Guarded before |
+|---|---|
+| `triggerSnapshotDownload()` - watchdog / leader change / persistent-lag recovery | leader role + self address (#6111) |
+| `notifyInstallSnapshotFromLeader()` - the Ratis-initiated install, when a follower's log is behind the leader's compacted log | nothing |
+| `triggerDatabaseResync(String)` - targeted resync of one quarantined database | nothing |
+| `applyInstallDatabaseEntry` - the `forceSnapshot` restore flow | leader role only |
+| `installFromLeaderForBootstrap` - the bootstrap-fingerprint-mismatch reinstall | nothing |
+| `resyncDatabaseFromLeader` - operator-triggered emergency recovery | leader role + address known |
 
 The address is only as good as the configuration behind it. With no `http` port declared in
 `arcadedb.ha.serverList` a peer's HTTP endpoint is derived from that peer's Raft host plus **this** node's HTTP
@@ -1765,7 +1773,7 @@ peer. Neither outcome reported an error: `reconcileDatabasesFromLeader` succeede
 stale-read floor of #6111 was dropped, and the node returned to the ready set carrying whatever it had copied -
 its own incomplete databases, or a peer's that is itself behind.
 
-All three paths now ask one helper, so they cannot drift apart, and it refuses three things rather than two: this
+All six now ask one helper, so they cannot drift apart, and it refuses three things rather than two: this
 node being the leader, an address that is this node's own, and **an address that does not identify a single
 peer**. The last is the ambiguity check `selectUnambiguousRouting` makes for client routing tables (#6183),
 applied where it matters more - a confidently wrong routing address costs one redirect, a confidently wrong

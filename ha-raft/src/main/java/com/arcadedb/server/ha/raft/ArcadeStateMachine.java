@@ -2894,9 +2894,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return; // no unfilled gap
     if (snapshotDownloadInProgress.get())
       return; // one is genuinely running; it will clear the floor or re-arm the request
-    // Asked through the resolver triggerSnapshotDownload() itself uses, so this cheap precheck cannot pass a
-    // request the resync would then refuse - and burn a throttle slot doing it (issue #6202).
-    if (raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId()) == null)
+    // The same three questions resolveSnapshotSource() asks, so this cheap precheck cannot pass a request the
+    // resync would then refuse and burn a throttle slot doing it (issue #6202): the leader role is checked at the
+    // top of this method, and the resolved address must both identify a single peer and not be our own. Asked
+    // through the same two helpers rather than restated, and without resolveSnapshotSource() itself, whose
+    // unresolvable-local-address WARNING belongs to an attempt rather than to a HealthMonitor tick. When the
+    // local address cannot be resolved isOwnHttpAddress answers false, so the request goes through and that
+    // warning is emitted once by the resync, which is where it is actionable.
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId());
+    if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
       return; // nowhere to download from yet; notifyLeaderChanged() drives the first attempt
 
     final long now = System.currentTimeMillis();
