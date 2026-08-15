@@ -2497,11 +2497,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       open = false;
 
-      if (preserveWalForRecovery)
-        // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
-        // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge
-        // them so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
-        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+      // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
+      // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge them
+      // so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
+      // #6133: done on EVERY close, not only the give-up one. On a clean close the page purge itself is a
+      // no-op - the wait above proved this database's pipeline empty - but this call is also where the
+      // JVM-wide flush thread FORGETS the database: its suspend and replay-drain locks, its deferred batches,
+      // its flush-progress counter and its pending-page counter are all keyed by the Database instance, as is
+      // the page manager's snapshot barrier monitor. Skipping it on the common path pinned one dead
+      // LocalDatabase (and everything it references) per closed database for the lifetime of
+      // PageManager.INSTANCE, which any process cycling through databases pays forever.
+      PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
 
       PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
 

@@ -48,6 +48,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * visible in the map and decremented AFTER it stops being visible. The count is therefore never lower than the number
  * of indexed pages, so {@code pendingOf() == 0} proves the pipeline is empty (what the barrier and the close path
  * need), while the opposite skew is bounded by a few instructions and costs at worst one extra poll.
+ * <p>
+ * <b>The one thing that rule does NOT cover, and what covers it instead:</b> {@link #removeAllOfDatabase} drops a
+ * database's counter outright, so a {@link #putAll} for that same database running concurrently with it could leave a
+ * page indexed under a counter that is no longer there - undercounting to zero, the "a backup stamps its t0 over a
+ * half-written batch" failure. Nothing in this class prevents that; the exclusion is external and pre-existing.
+ * {@code LocalDatabase.close()/drop()} reaches the purge inside {@code executeInWriteLock}, while every commit that
+ * reaches {@code scheduleFlushOfPages} holds the matching read lock, so no page of a database can enter the index
+ * while that database is being purged from it. Do not call {@link #removeAllOfDatabase} from anywhere that does not
+ * hold that write lock.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -145,7 +154,12 @@ class FlushPageIndex {
     return removed[0];
   }
 
-  /** Drops every pending page of a database, and its counter with them (the database is closing or being dropped). */
+  /**
+   * Drops every pending page of a database, and its counter with them (the database is closing or being dropped).
+   * <p>
+   * Callers must hold the database's exclusive lock - see the class javadoc for why this one method cannot be made
+   * safe against a concurrent {@link #putAll} from inside this class.
+   */
   void removeAllOfDatabase(final BasicDatabase database) {
     pages.keySet().removeIf(pageId -> database.equals(pageId.getDatabase()));
     // Dropped AFTER the pages, never before: the other order would let a page indexed in between survive with a
@@ -175,6 +189,15 @@ class FlushPageIndex {
 
   boolean hasPendingOf(final BasicDatabase database) {
     return pendingOf(database) > 0;
+  }
+
+  /**
+   * Whether a per-database counter is still held for this database: {@code true} between its first pending page and
+   * the {@link #removeAllOfDatabase} of its close or drop. Exists so the regression test of issue #6133 can prove a
+   * clean close forgets the database instead of pinning it as a map key forever.
+   */
+  boolean isTracked(final BasicDatabase database) {
+    return pending.containsKey(database);
   }
 
   /**

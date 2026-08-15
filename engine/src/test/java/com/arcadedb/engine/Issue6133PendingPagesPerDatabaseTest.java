@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 
@@ -242,6 +243,43 @@ class Issue6133PendingPagesPerDatabaseTest extends TestHelper {
     assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
     assertThat(index.pendingOf(db)).as("everything reached the disk, so nothing is pending").isZero();
     assertThat(index.scanPendingOf(db)).isZero();
+  }
+
+  /**
+   * A plain, successful close must make the JVM-wide flush thread forget the database, not just drain it.
+   * <p>
+   * The purge that clears the per-database bookkeeping - the pending-page counter added here, and with it the
+   * pre-existing suspend locks, deferred batches and flush-progress counter - used to run only when the close was a
+   * DROP or when the flush wait gave up. On the common path nothing cleared them, so every closed database stayed
+   * pinned as a map key for the life of {@code PageManager.INSTANCE}: one dead {@code LocalDatabase}, and everything
+   * it references, per close, without bound.
+   */
+  @Test
+  void aCleanCloseForgetsTheDatabase() {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-close";
+    final PageManagerFlushThread flush = PageManager.INSTANCE.getFlushThread();
+
+    final DatabaseInternal closed = (DatabaseInternal) TestHelper.createDatabase(path);
+    try {
+      closed.getSchema().createDocumentType("Doc");
+      closed.transaction(() -> closed.newDocument("Doc").set("v", 1).save());
+      // Both entries exist now: the counter from the commit, the progress counter from the wait below.
+      assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(closed)).isTrue();
+      assertThat(flush.pageIndex.isTracked(closed)).isTrue();
+      assertThat(flush.flushedPagesPerDatabase).containsKey(closed);
+
+      closed.close();
+
+      assertThat(flush.pageIndex.isTracked(closed))
+          .as("a clean close must release the pending-page counter, not pin the closed database as its key").isFalse();
+      assertThat(flush.flushedPagesPerDatabase)
+          .as("and the flush-progress counter with it").doesNotContainKey(closed);
+      assertThat(flush.pageIndex.scanPendingOf(closed)).isZero();
+    } finally {
+      if (closed.isOpen())
+        closed.close();
+      new DatabaseFactory(path).open().drop();
+    }
   }
 
   private static List<MutablePage> pages(final DatabaseInternal database, final int fileId, final int total) {
