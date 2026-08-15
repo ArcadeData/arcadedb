@@ -82,6 +82,9 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
     final int follower = firstFollower(leader);
 
     final RaftHAServer raft = getRaftPlugin(follower).getRaftHAServer();
+    // The live map, by contract (see getHttpAddresses): writing to it is how this test puts the running node
+    // into the misconfigured state. A defensive copy there would leave these tests passing while injecting
+    // nothing, so if that accessor ever starts returning one, this is the line that has to change with it.
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     try {

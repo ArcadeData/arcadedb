@@ -2605,6 +2605,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // arrived on a node that is not the leader either. Redirecting it once more sends it round the cycle the
     // wrong address created; refuse instead, so the peer that forwarded it (and through it the client) gets a
     // typed, retryable answer in one hop rather than a hang (issue #6191).
+    //
+    // Deliberately before the leader-address wait below, unlike the self-address check that follows it: waiting
+    // would only make sense if this node might forward the request onward once a leader appears, and it must
+    // not. A leadership change in flight and an address that names the wrong node are indistinguishable from
+    // here, so the caller retries - which re-resolves the leader from scratch - rather than this node posting a
+    // non-idempotent write a second time on a path that cannot prove the first one did not execute.
     if (LeaderForwardContext.isAlreadyForwarded()) {
       // Said once in this node's own log too: the refusal travels back to the peer that forwarded the write
       // and from there to the client, so without this line the only node that can name the misconfiguration -
