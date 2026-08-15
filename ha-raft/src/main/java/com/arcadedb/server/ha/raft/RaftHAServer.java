@@ -401,10 +401,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * node's HTTP port, so every peer collapses onto this node's own address.
    * <p>
    * A textual comparison, like the peer bookkeeping it reads: both sides come from the same resolver, so a
-   * derived address matches a derived one. It deliberately does not resolve hostnames - {@code localhost}
-   * and {@code 127.0.0.1} are not reported as the same endpoint - because the addresses only differ that
-   * way when they were declared explicitly, and a declared address is a statement about which node owns
-   * which port that this method has no business second-guessing.
+   * derived address matches a derived one. It deliberately does not resolve hostnames - a declared host name
+   * is a statement about which node owns which port that this method has no business second-guessing - with
+   * the single exception of the loopback spellings, which are one socket written two ways and are what a
+   * single-machine cluster is usually configured with (issue #6204).
    */
   public boolean isOwnHttpAddress(final String address) {
     return isSameHttpEndpoint(getLocalHttpAddress(), address);
@@ -414,11 +414,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Whether two {@code host:port} addresses name the same listening socket. Case-insensitive, because host
    * names are: the two sides can come from different entries of {@code HA_SERVER_LIST} and a difference in
    * case would otherwise read as "a different node", which is the answer that lets a redirect loop live.
-   * Never resolves names, so {@code localhost} and {@code 127.0.0.1} are reported as different endpoints
-   * (see {@link #isOwnHttpAddress}). Package-private for testing.
+   * <p>
+   * Beyond the text, the one equivalence it knows is the loopback host: a hand-written server list for a
+   * single-machine cluster routinely spells one node {@code localhost} and the next {@code 127.0.0.1}, and
+   * that is precisely the deployment where the derive fallback resolves a peer onto this node's own socket
+   * (issue #6204). The equivalence is only applied when the ports are equal, which is what makes it safe -
+   * two nodes cannot both be listening on one port of one host, so "loopback on both sides, same port" is
+   * the same socket rather than an ambiguity worth preserving. It is not extended to a wildcard bind or to a
+   * different address of the loopback range: those can genuinely name another node, and answering "that is
+   * me" for one of them would refuse a write that had to be forwarded. See {@link LoopbackHosts}.
+   * <p>
+   * Package-private for testing.
    */
   static boolean isSameHttpEndpoint(final String address, final String other) {
-    return address != null && address.equalsIgnoreCase(other);
+    if (address == null || other == null)
+      return false;
+    if (address.equalsIgnoreCase(other))
+      return true;
+
+    // The last colon separates the port: an unbracketed IPv6 literal carries colons of its own, and only the
+    // last one is the separator.
+    final int addressPortAt = address.lastIndexOf(':');
+    final int otherPortAt = other.lastIndexOf(':');
+    if (addressPortAt < 0 || otherPortAt < 0)
+      return false;
+
+    // Compared in place: on a same-host cluster the port is what differs, so the common "no" costs nothing.
+    final int portLength = address.length() - addressPortAt - 1;
+    if (portLength != other.length() - otherPortAt - 1 //
+        || !address.regionMatches(addressPortAt + 1, other, otherPortAt + 1, portLength))
+      return false;
+
+    return LoopbackHosts.isLoopback(address.substring(0, addressPortAt)) //
+        && LoopbackHosts.isLoopback(other.substring(0, otherPortAt));
   }
 
   /**
