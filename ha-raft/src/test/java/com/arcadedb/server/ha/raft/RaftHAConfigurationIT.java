@@ -32,7 +32,26 @@ class RaftHAConfigurationIT {
     // Mix non-localhost IPs with localhost - this should be rejected
     assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("192.168.0.1:2434,192.168.0.1:2435,localhost:2434", 2434))
         .isInstanceOf(ServerException.class)
-        .hasMessageContaining("Found a localhost");
+        .hasMessageContaining("Found a loopback address")
+        // Both offenders are named: the list can be long, and "fix the configuration" does not say where (issue #6212).
+        .hasMessageContaining("localhost:2434")
+        .hasMessageContaining("192.168.0.1:2434");
+  }
+
+  /**
+   * The check reads {@link LoopbackHosts}, so every spelling of the loopback host trips it - not only the two
+   * the message used to name (issue #6212).
+   */
+  @Test
+  void everyLoopbackSpellingIsRejectedAmongRealHosts() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("192.168.0.1:2434,LOCALHOST:2435", 2434))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("Found a loopback address");
+
+    // The IPv6 literal only survives parsing in the object form: the colon form splits on ':'.
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("192.168.0.1:2434,[::1]:{raft:2435}", 2434))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("Found a loopback address");
   }
 
   @Test
