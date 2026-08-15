@@ -2035,4 +2035,10 @@ every entry name up front and refuses a hostile archive before writing a single 
 learns a name when it reaches it, so it stops at the bad entry with the good ones already on disk - the
 pre-existing behaviour, now pinned by a test so the difference is a recorded decision rather than an accident.
 
+A failure *during* extraction carries one guarantee that a naive pool would not give: when the extractor throws,
+no worker is still writing. Interrupting a thread does not come back out of a `FileOutputStream.write()`, so
+shutting the pool down is not enough on its own - and the caller's very next move is usually to delete the
+destination, which would then race the workers still filling it. The extractor therefore waits for its workers
+before propagating the failure.
+
 [#6086](https://github.com/ArcadeData/arcadedb/issues/6086)

@@ -89,13 +89,20 @@ public class ParallelZipExtractor {
    */
   public static final int BUFFER_SIZE = 256 * 1024;
 
+  /**
+   * How long a failed extraction waits for the workers that are still writing an entry. A worker cannot be
+   * interrupted out of a file write, so this is sized for the largest single entry a database can hold rather than
+   * for a typical one; it is a degradation bound, not a timeout anyone should reach.
+   */
+  private static final int TERMINATION_TIMEOUT_SECONDS = 60;
+
   /** What the restore needs back to log the same summary line the sequential path logs. */
   public record ExtractStats(int files, long uncompressedSize) {
   }
 
-  private final int                            threads;
-  private final ConsoleLogger                  logger;
-  private final ArrayBlockingQueue<byte[]>     bufferPool;
+  private final int                        threads;
+  private final ConsoleLogger              logger;
+  private final ArrayBlockingQueue<byte[]> bufferPool;
 
   public ParallelZipExtractor(final int threads, final ConsoleLogger logger) {
     if (threads < 1)
@@ -154,8 +161,27 @@ public class ParallelZipExtractor {
 
         return new ExtractStats(entries.size(), databaseOrigSize);
       } finally {
+        // shutdownNow() ALONE IS NOT ENOUGH ON THE FAILURE PATH. IT DRAINS THE QUEUE, SO NO FURTHER ENTRY STARTS, BUT
+        // THE INTERRUPT IT SENDS DOES NOT COME BACK OUT OF A FileOutputStream.write() OR A ZipFile READ - NEITHER IS
+        // INTERRUPTIBLE - SO UP TO poolSize-1 WORKERS WOULD STILL BE WRITING FILES AFTER THIS METHOD HAD ALREADY
+        // THROWN TO ITS CALLER. THAT MATTERS BECAUSE OF WHAT CALLERS DO NEXT: THE SERVER'S RESTORE HANDLER DELETES
+        // THE DESTINATION DIRECTORY WHEN A RESTORE FAILS, AND DELETING A TREE THAT THREADS ARE STILL WRITING INTO IS
+        // A RACE THAT LEAVES FILES BEHIND. WAITING HERE MAKES ONE GUARANTEE THE CALLER CAN RELY ON: WHEN extract()
+        // RETURNS OR THROWS, NOTHING IS STILL WRITING. THE WAIT IS BOUNDED ONLY SO A PATHOLOGICAL CASE DEGRADES TO A
+        // WARNING RATHER THAN A HANG; ON THE SUCCESS PATH EVERY TASK IS ALREADY DONE AND IT RETURNS AT ONCE
         executor.shutdownNow();
+        awaitTermination(executor, databaseDirectory);
       }
+    }
+  }
+
+  private void awaitTermination(final ThreadPoolExecutor executor, final File databaseDirectory) {
+    try {
+      if (!executor.awaitTermination(TERMINATION_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        logger.errorLine("Restore workers did not stop within %d seconds: files may still be written into '%s'",
+            TERMINATION_TIMEOUT_SECONDS, databaseDirectory.getAbsolutePath());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 

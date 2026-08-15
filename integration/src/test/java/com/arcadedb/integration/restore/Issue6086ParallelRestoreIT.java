@@ -28,6 +28,7 @@ import com.arcadedb.integration.backup.Backup;
 import com.arcadedb.integration.backup.IoThrottler;
 import com.arcadedb.integration.backup.format.ParallelZipArchiveWriter;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.integration.restore.format.ParallelZipExtractor;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -45,11 +46,14 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.zip.ZipEntry;
@@ -290,6 +294,49 @@ class Issue6086ParallelRestoreIT {
     }
   }
 
+  /**
+   * The failure that the up-front validation cannot catch: an entry that fails <b>while it is being extracted</b>,
+   * with other workers mid-write beside it. The guarantee this pins is the one a caller needs in order to clean up -
+   * the server's restore handler deletes the destination directory when a restore fails, and deleting a tree that
+   * threads are still writing into is a race - so when {@code extract} throws, no worker may still be writing.
+   * <p>
+   * The failure is injected where it is deterministic and portable: a directory planted at the target path of the
+   * largest entry, which makes that entry's {@code FileOutputStream} throw the moment it opens. Largest, because
+   * entries are handed out largest first, so it fails while the others have only just started their megabytes.
+   * The extractor is driven directly rather than through {@code Restore}, which would delete the planted directory
+   * along with the rest of the destination before extracting.
+   */
+  @Test
+  void aFailureMidExtractionLeavesNoWorkerStillWriting() throws Exception {
+    final String archive = "target/parallel-restore-failing.zip";
+    final File destination = new File(RESTORED_PATH);
+    try {
+      // THE PAYLOAD IS ALL ZEROES, WHICH IS THE POINT: IT COSTS A FEW HUNDRED KB OF ARCHIVE AND STILL MAKES THE
+      // SURVIVING WORKER WRITE 192 MB, SO "IS ANYTHING STILL WRITING?" IS A QUESTION WITH A STABLE ANSWER RATHER
+      // THAN A RACE THAT HAPPENS TO GO THE TEST'S WAY. THE POISONED ENTRY IS DECLARED LARGER SO IT IS HANDED OUT
+      // FIRST AND FAILS WHILE THE OTHER WORKER IS AT THE START OF ITS OWN
+      try (final FileOutputStream out = new FileOutputStream(archive)) {
+        final ParallelZipArchiveWriter writer = new ParallelZipArchiveWriter(out, 1, 2, new IoThrottler(0));
+        writer.addEntry("poisoned.bin", System.currentTimeMillis(), new ZeroInputStream(256L * 1024 * 1024));
+        writer.addEntry("payload.bin", System.currentTimeMillis(), new ZeroInputStream(192L * 1024 * 1024));
+        writer.close();
+      }
+
+      FileUtils.deleteRecursively(destination);
+      assertThat(new File(destination, "poisoned.bin").mkdirs()).isTrue();
+
+      assertThatThrownBy(() -> new ParallelZipExtractor(2, new ConsoleLogger(0)).extract(new File(archive), destination))
+          .isInstanceOf(IOException.class);
+
+      assertThat(liveRestoreThreads()).as("a worker was still running when extract() threw").isEmpty();
+      // AND THE FILE IT WAS WRITING IS WHOLE, NOT A PREFIX A LATE WORKER WAS STILL EXTENDING
+      assertThat(new File(destination, "payload.bin")).hasSize(192L * 1024 * 1024);
+    } finally {
+      new File(archive).delete();
+      FileUtils.deleteRecursively(destination);
+    }
+  }
+
   /** An archive with no entries at all is not a restore, on either path. */
   @ParameterizedTest
   @ValueSource(ints = { 0, 8 })
@@ -344,6 +391,36 @@ class Issue6086ParallelRestoreIT {
     for (final String name : expectedNames)
       assertThat(Files.mismatch(new File(expected, name).toPath(), new File(actual, name).toPath())).as(name)
           .isEqualTo(-1L);
+  }
+
+  /** A large entry that costs neither heap nor archive: a stream of zeroes, of a length the test picks. */
+  private static final class ZeroInputStream extends InputStream {
+    private long remaining;
+
+    private ZeroInputStream(final long length) {
+      this.remaining = length;
+    }
+
+    @Override
+    public int read() {
+      return remaining-- > 0 ? 0 : -1;
+    }
+
+    @Override
+    public int read(final byte[] b, final int off, final int len) {
+      if (remaining <= 0)
+        return -1;
+      final int produced = (int) Math.min(len, remaining);
+      Arrays.fill(b, off, off + produced, (byte) 0);
+      remaining -= produced;
+      return produced;
+    }
+  }
+
+  /** The extractor's own workers, by the name it gives them, that are still alive. */
+  private static List<String> liveRestoreThreads() {
+    return Thread.getAllStackTraces().keySet().stream().filter(Thread::isAlive)
+        .map(Thread::getName).filter(name -> name.startsWith("arcadedb-restore-inflater-")).toList();
   }
 
   /** A hand-built archive: the restore has to defend itself against ZIPs no ArcadeDB backup would ever produce. */
