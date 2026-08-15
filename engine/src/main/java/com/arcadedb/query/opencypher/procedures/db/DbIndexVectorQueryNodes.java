@@ -157,17 +157,31 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * through {@link Integer#parseInt}, which threw a bare {@code NumberFormatException} for exactly
    * the same magnitudes the {@link Number} branch next to it accepted - the two branches now agree.
    * </p>
+   * <p>
+   * A negative {@code k} has no such reading and is rejected by name, mirroring
+   * {@code AbstractAlgoProcedure.extractCount()}. {@code LSMVectorIndex.findNeighborsFromVector}
+   * clamps with {@code Math.min(k, candidateCount)}, which leaves a negative value negative, so
+   * without this check it reaches {@code new ArrayList<>(k)} and surfaces as a bare
+   * {@code IllegalArgumentException: Illegal Capacity} that never mentions {@code k}.
+   * </p>
    */
   private static int extractLimit(final Object arg) {
+    final int limit;
     if (arg instanceof Number n)
-      return NumberUtils.saturateToInt(n);
-
-    final String text = arg.toString().trim();
-    try {
-      return NumberUtils.saturateToInt(new BigDecimal(text));
-    } catch (final NumberFormatException e) {
-      throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must be a number, got '" + text + "'", e);
+      limit = NumberUtils.saturateToInt(n);
+    else {
+      final String text = arg.toString().trim();
+      try {
+        limit = NumberUtils.saturateToInt(new BigDecimal(text));
+      } catch (final NumberFormatException e) {
+        throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must be a number, got '" + text + "'", e);
+      }
     }
+
+    if (limit < 0)
+      throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must not be negative, got " + limit);
+
+    return limit;
   }
 
   /**

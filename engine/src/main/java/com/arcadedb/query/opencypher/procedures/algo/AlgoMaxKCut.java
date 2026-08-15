@@ -45,7 +45,8 @@ import java.util.stream.Stream;
  *
  * <p>Parameters:
  * <ul>
- *   <li>{@code k} (int, required) – number of partitions (k ≥ 2)</li>
+ *   <li>{@code k} (int, required) – number of partitions (k ≥ 2; clamped to the node count, since a
+ *       cut into more parts than there are nodes can only leave the surplus parts empty)</li>
  *   <li>{@code config} (map, optional):
  *     <ul>
  *       <li>{@code maxIterations} (int, default 100) – local-search passes per restart</li>
