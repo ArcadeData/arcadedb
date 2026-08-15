@@ -115,10 +115,15 @@ public class DatabaseBackupConfig {
     checkRange("maxMBPerSecond", maxMBPerSecond, MIN_MAX_MB_PER_SECOND, Integer.MAX_VALUE);
   }
 
+  /**
+   * The message is word-for-word the one {@code BackupSettings.checkIntSetting} raises for the same setting, so the
+   * two places that can refuse a compression value - this one when {@code backup.json} is read, that one when the
+   * value reaches the {@code Backup} - read identically in the log.
+   */
   private static void checkRange(final String name, final Integer value, final int min, final int max) {
     if (value != null && (value < min || value > max))
       throw new IllegalArgumentException(
-          "Backup setting '%s' must be between %d and %d, got: %d".formatted(name, min, max, value));
+          "Backup setting '%s' must be between %d and %d, found %d".formatted(name, min, max, value));
   }
 
   public void mergeWithDefaults(final DatabaseBackupConfig defaults) {

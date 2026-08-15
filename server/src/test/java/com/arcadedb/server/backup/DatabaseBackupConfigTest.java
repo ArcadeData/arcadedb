@@ -28,6 +28,7 @@ import java.time.LocalTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Unit tests for DatabaseBackupConfig and its nested configuration classes.
@@ -920,5 +921,25 @@ class DatabaseBackupConfigTest {
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> backup.setMaxMBPerSecond(DatabaseBackupConfig.MIN_MAX_MB_PER_SECOND - 1))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * A compression value can be refused in two places - here when {@code backup.json} is read, and inside the
+   * {@code Backup} setter when it is pushed through - and an operator grepping the log should not have to know which
+   * one spoke. Pins the two messages to each other rather than to a literal, so aligning one and forgetting the other
+   * fails instead of merely reading oddly.
+   */
+  @Test
+  void aRefusedValueReadsTheSameWhicheverLayerRefusedIt() {
+    final int outOfRange = DatabaseBackupConfig.MAX_COMPRESSION_THREADS + 1;
+
+    final Throwable fromConfig = catchThrowable(
+        () -> DatabaseBackupConfig.fromJSON("mydb", new JSONObject().put("compressionThreads", outOfRange)));
+    final Throwable fromBackup = catchThrowable(
+        () -> new Backup((Database) null, "wording.zip").setCompressionThreads(outOfRange));
+
+    assertThat(fromConfig).isNotNull();
+    assertThat(fromBackup).isNotNull();
+    assertThat(fromConfig).hasMessage(fromBackup.getMessage());
   }
 }
