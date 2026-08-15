@@ -1618,3 +1618,90 @@ already answered `FAILED_PRECONDITION` and is unchanged, and on the other RPCs t
 through the leadership-change window described above, so in practice almost nothing is looking at the old code.
 
 [#6183](https://github.com/ArcadeData/arcadedb/issues/6183)
+
+## A concurrent update of a placeholder-backed record is a conflict, not a silent overwrite (#6141)
+
+Two transactions updating the same record could both commit, with the second silently dropping the first write and
+no `ConcurrentModificationException` raised anywhere, when that record's content sat behind a **placeholder
+pointer**: 8 bytes in the record's own slot, the content on another page.
+
+The reason is that a record update is deferred. `TransactionContext.addUpdatedRecord` pins the record's OWN page at
+`save()` time, and the write itself runs at commit, after the file's commit lock is taken - so every other page the
+write touches is loaded fresh, at the newest committed version, and can never fail a page-version check. For a
+placeholder-backed record that is the whole record: the pinned page holds the pointer, which an update the content
+record can absorb never touches (a modified page with an empty modified range is dropped at commit), and the
+content page is pinned by nobody. Both writers read it fresh under the lock and the last one won.
+
+The fingerprint #6129 introduced for the chunk chain of a multi-page record answers exactly this question, for
+exactly this reason, so it is generalised rather than duplicated. `LocalBucket.chunkChainTailFingerprint` becomes
+`offPageContentFingerprint` - "the part of the record that does not live in its own slot" - and covers the
+placeholder's content record as well as the chain past a head chunk. It is taken when the record is taken for
+update, the same moment its page is pinned, and compared at commit before the write.
+
+The two uses differ in two ways, both deliberate. The placeholder half is captured whether or not the disjoint-slot
+merge is enabled: for that record shape it is the only conflict detection there is, while the chain tail is a merge
+precondition that the unconditional page poisoning already covers when the merge is off. And a mismatch raises a
+retryable `ConcurrentModificationException` rather than merely excluding a page from the merge.
+
+Both arms of the update path are covered: the update the content record absorbs, and the one that no longer fits it
+and has to delete the content record and re-spill. An unrelated concurrent update - including one landing on the
+content record's own page - still commits, because the fingerprint is about that one record and not about the page.
+
+Since #6149 new placeholders are only produced on a page with a free tail of exactly zero, so what this reaches in
+practice is databases written before that change plus that one remaining fallback. The defect itself predates both.
+
+[#6141](https://github.com/ArcadeData/arcadedb/issues/6141)
+
+## A record's continuation chunks keep off the page holding its own head chunk (#6175)
+
+The allocator preferred that page twice over: `findAvailableSpace` starts with "prioritize space in the same page",
+and when that fails it scans the free-space statistics from the lowest page id up - so a chain routinely came home
+to the page holding its head chunk. Measured on a 9-byte record grown to 200 KB while sharing its page with one
+neighbour (64 KB pages): chunk 1 to a new page, chunk 2 to a new page, **chunk 3 to page 0 - the head chunk's own
+page** - chunk 4 to a new page.
+
+A continuation chunk is written through inline record-table writes that no tracked slot image accounts for, so the
+page that receives one is poisoned for the rest of the transaction. When that page is the head chunk's own, the
+poison falls on the one page #6129 built `SLOT_KIND_FIRST_CHUNK`, the chain fingerprint and the region
+re-derivation to keep mergeable - a chunked record's update is a single-slot write on it - and it takes every
+unrelated record sharing that page down with it. In the measured fixture, a concurrent update of the untouched
+neighbour turned into a hard `ConcurrentModificationException`.
+
+`findAvailableSpace` now takes a page to avoid, and the two chunk-allocation loops pass the head chunk's page -
+but only when the caller declared that slot replayable. When it did not (a record being created, a spill onto a
+page that is poisoned anyway) the page has nothing left to lose and refusing its free tail would cost space for
+nothing, which is also what leaves record creation allocating exactly as it did before. Only that one page is
+excluded, so the chain's own earlier pages and every other record's pages are reused as they were: rewriting a
+chunked record ten times leaves the bucket's page count where it was.
+
+[#6175](https://github.com/ArcadeData/arcadedb/issues/6175)
+
+## A record that shrinks back inside its slot is a plain record again (#6178)
+
+Once a record had spilled it stayed a chunk chain for the rest of its life. However far it shrank back,
+`updateMultiPageRecord` freed the continuation chunks and left a chain of exactly one chunk - a marker, a 4-byte
+size, an 8-byte next pointer that is 0, and the content. That cost 13 bytes per record permanently, routed every
+read and write through the chunk path, and made `CHECK DATABASE` report a multi-page record that was not one.
+
+An update whose content fits the region the record's slot owns on its own page now writes it back as a plain
+record and frees the chain. It is the mirror of the spill, with a slot kind of its own
+(`SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD`) so the disjoint-slot merge can replay it: the pre-image is a head chunk,
+the final image a plain record, and the replay re-derives the region from the committed page exactly as the
+head-chunk replay does before writing. The bound is the region and not a byte more - the same rule #6163 sizes the
+head chunk with - so a record that shrank a long way but still does not fit its slot stays a chain rather than
+claiming a neighbour's bytes.
+
+**This removes the state #6163's grow-back exists to repair, rather than compensating for it.** Content that fits
+the head chunk (13 bytes of header) fits the region as a plain record (at most 5 bytes of size marker), so the two
+conditions coincide: a head chunk that declares less than its region no longer survives an update, and a persisted
+chunk head always fills its region. Measured by instrumenting the grow-back: with the collapse disabled,
+`Issue6163HeadChunkRoomTest` alone drives it 12 times, every one of them from a head chunk that had ratcheted down
+to 11 bytes; with the collapse enabled, zero. The #6163 machinery stays as the defence for a region that grows for
+another reason, and its replay refusal costs nothing.
+
+One chunk head is deliberately never collapsed: the CONTENT record of a placeholder, which
+`createRecordInternal` spills into a chain of its own when no page can host it whole. Such a record is identified
+by the negative size marker a plain collapse would replace with a positive one, and a positive size marker is
+exactly what tells a bucket scan that a slot holds a document of its own.
+
+[#6178](https://github.com/ArcadeData/arcadedb/issues/6178)

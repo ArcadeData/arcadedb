@@ -121,10 +121,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * more byte of content; it can never make the two sides disagree.
    */
   private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
-  /** No fingerprint could be taken of a record's chunk-chain tail: see {@link #chunkChainTailFingerprint(RID)}. */
-  public static final    long                      NO_CHUNK_TAIL_FINGERPRINT        = 0L;
-  /** The record has no chunk beyond its head: a real value, distinct from "unknown". */
-  private static final   long                      EMPTY_CHUNK_TAIL_FINGERPRINT     = 1L;
+  /**
+   * No fingerprint could be taken of the part of a record that lives off its own page: see
+   * {@link #offPageContentFingerprint(RID, BasePage, boolean)}.
+   */
+  public static final    long                      NO_OFF_PAGE_FINGERPRINT          = 0L;
+  /**
+   * The record has nothing off its own page - a chunk chain of one chunk, all of it in the head. A real value,
+   * distinct from "unknown", and also where a hash that lands on {@link #NO_OFF_PAGE_FINGERPRINT} is moved to.
+   */
+  private static final   long                      EMPTY_OFF_PAGE_FINGERPRINT       = 1L;
   private static final   long                      FNV_OFFSET_BASIS                 = 0xcbf29ce484222325L;
   private static final   long                      FNV_PRIME                        = 0x100000001b3L;
   private static final   int                       CHUNKS_BEFORE_LOOP_DETECTION     = 64;
@@ -515,66 +521,160 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Fingerprint of the chunk chain of {@code rid} PAST its head chunk, or {@link #NO_CHUNK_TAIL_FINGERPRINT} when
-   * there is nothing to fingerprint (the record is not a multi-page one) or the chain cannot be walked.
+   * Fingerprint of the part of the record {@code rid} that does NOT live in its own slot, or
+   * {@link #NO_OFF_PAGE_FINGERPRINT} when there is no such part (an ordinary record) or it cannot be read.
+   * <p>
+   * A record update is deferred: {@code TransactionContext.addUpdatedRecord} pins the record's own page at
+   * {@code save()} time and the write runs at commit, after the file's commit lock is taken - so every OTHER page the
+   * write touches is loaded fresh, at the newest committed version, and can never fail a page-version check. Whatever
+   * a record keeps outside its own slot is therefore invisible to MVCC, and this is what makes it visible again:
+   * taken twice, once when the record is taken for update and once at commit before the write, the two values are
+   * equal exactly when no concurrent transaction has touched that part of the record meanwhile.
+   * <p>
+   * Two record shapes have such a part, and both are answered here because both are taken at the same moment, for the
+   * same reason:
+   * <ul>
+   * <li>a multi-page record's chunk chain PAST its head chunk (#6129). The head chunk is the only part on the page
+   * the disjoint-slot merge replays, so the byte-for-byte pre-image check it makes sees that and nothing else; a
+   * mismatch here keeps the page on the ordinary retry path it took before that merge existed. Only walked when the
+   * merge is on ({@code withChunkChainTail}): with it off the head chunk's page is poisoned unconditionally and a
+   * concurrent write to the record fails the version check on it anyway, so the walk would buy nothing.</li>
+   * <li>the CONTENT record behind a placeholder POINTER (#6141). Here the slot holds 8 bytes of pointer and the
+   * record's WHOLE content is off-page, so nothing at all was version-checked: two transactions updating such a
+   * record both loaded the content page fresh under the commit lock and the second one silently won. A mismatch is a
+   * genuine concurrent modification and the update path raises a retryable
+   * {@link com.arcadedb.exception.ConcurrentModificationException} on it. Always taken - unlike the chain tail, it is
+   * the only thing standing between that record and a lost update.</li>
+   * </ul>
    * <p>
    * {@code recordPage} is the page the record lives on, which every caller has just pinned
    * ({@link #fetchPageInTransaction(RID)} returns it): taking it as a parameter keeps this off the update path's
    * allocation budget, since resolving it again would cost a {@link PageId} per updated record.
    * <p>
-   * The disjoint-slot merge replays a record's slot on ONE page, and of a multi-page record only the head chunk lives
-   * there: the byte-for-byte pre-image check it makes therefore sees the head chunk and nothing else. This is what
-   * covers the rest (#6129). Taken twice - once when the record is taken for update, once at commit before the chain
-   * is rewritten - the two values are equal exactly when no concurrent transaction has touched the record's tail
-   * meanwhile, which is the condition under which replaying the head chunk cannot drop somebody else's write.
+   * It reads through the transaction, so a page this transaction has already rewritten is fingerprinted as this
+   * transaction sees it, and the chain walk never allocates per chunk: one page-sized scratch buffer is reused for
+   * the whole chain.
    * <p>
-   * It walks the chain through the transaction, so a chunk this transaction has already rewritten is fingerprinted as
-   * this transaction sees it, and it never allocates per chunk: one page-sized scratch buffer is reused for the whole
-   * chain.
-   * <p>
-   * What goes into it is (chunk RID, chunk size, chunk content) for every chunk of the tail, which makes the identity
-   * it establishes stronger than "the same bytes": two states with the same fingerprint hold byte-identical chunks at
-   * the same slots. That is what makes an ABA on a continuation slot - a chunk freed and its slot reused meanwhile -
-   * a non-event: a concurrent transaction that ended up reproducing this exact tail reproduced this exact record
-   * content, so there is no write of theirs left to drop.
+   * What goes into it is (RID, size, content) for every chunk of the tail or for the content record, which makes the
+   * identity it establishes stronger than "the same bytes": two states with the same fingerprint hold byte-identical
+   * data at the same slots. That is what makes an ABA - a chunk or a content record freed and its slot reused
+   * meanwhile - a non-event: a concurrent transaction that ended up reproducing this exact image reproduced this
+   * exact record content, so there is no write of theirs left to drop.
    * <p>
    * A 64-bit FNV-1a, not a cryptographic digest. An ACCIDENTAL collision has a ~2^-64 chance of costing a lost update
    * on a record two transactions are rewriting at the same time. A DELIBERATE one buys its author nothing: both
-   * colliding tails are content of the same record, so engineering one requires write access to that record - and
+   * colliding images are content of the same record, so engineering one requires write access to that record - and
    * whoever has it can already overwrite it by committing last, which is the very outcome the collision would
    * produce. There is no third party whose data a collision could reach.
    *
+   * @param withChunkChainTail whether a multi-page record's chain has to be walked, i.e. whether the disjoint-slot
+   *                           merge that consumes it is enabled for this transaction.
+   *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  public long chunkChainTailFingerprint(final RID rid, final BasePage recordPage) {
+  public long offPageContentFingerprint(final RID rid, final BasePage recordPage, final boolean withChunkChainTail) {
     try {
       if (recordPage == null)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
       final int recordPositionInPage = getRecordPositionInPage(recordPage, positionInPage);
       if (recordPositionInPage == 0)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final long[] recordSize = recordPage.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] != FIRST_CHUNK)
-        // Not a multi-page record: the whole of it is on the page the merge replays, nothing left to cover.
-        return NO_CHUNK_TAIL_FINGERPRINT;
+      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+        return placeholderContentFingerprint(
+                new RID(fileId, recordPage.readLong((int) (recordPositionInPage + recordSize[1]))));
+
+      if (recordSize[0] != FIRST_CHUNK || !withChunkChainTail)
+        // An ordinary record: the whole of it is in its own slot, nothing left to cover.
+        return NO_OFF_PAGE_FINGERPRINT;
 
       return chunkChainTailFingerprint(recordPage, (int) (recordPositionInPage + recordSize[1]));
     } catch (final Exception e) {
-      // A chain that cannot be walked (a page that is gone, a broken pointer) simply cannot be vouched for.
+      // A record whose off-page part cannot be read (a page that is gone, a broken pointer) cannot be vouched for.
       return unwalkableChunkChain(e, rid);
     }
   }
 
   /**
-   * The one outcome both fingerprint walks share: the chain could not be read, so there is nothing to compare against
-   * and the head chunk stays unmergeable. Failing closed is always safe here, which is exactly why the catch that
-   * leads to it must not become a place a real defect can hide: the assertion draws the line between "this database's
-   * chain is broken" - which this method exists to tolerate, as {@link #findBrokenChunkChain} does - and a bug in the
-   * walk itself, which under {@code -ea} (surefire's default) fails a test loudly instead of degrading into a page
-   * that is silently never merged. It costs nothing in a production JVM, where the tolerance is unconditional.
+   * Fingerprint of the CONTENT record a placeholder pointer references, {@code contentRID} included so that a content
+   * record relocated onto another slot is a different image even when every byte of it is the same (#6141).
+   * <p>
+   * Never throws, and returns {@link #NO_OFF_PAGE_FINGERPRINT} for anything that is not a readable placeholder
+   * content record. The two sides of the comparison read that differently, on purpose: at capture time it means
+   * "there is nothing here to vouch for" and the update simply goes unchecked, exactly as it did before this existed;
+   * at commit time it can only mean that what WAS a content record no longer is one, which is the concurrent
+   * modification the caller is looking for.
+   * <p>
+   * A content record that is itself a chunk chain is covered too: {@code createRecordInternal} spills one into chunks
+   * like any other record when no page can host it whole, and the chain then belongs to the image just as much as the
+   * head does.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private long placeholderContentFingerprint(final RID contentRID) {
+    try {
+      final int contentPageId = (int) (contentRID.getPosition() / maxRecordsInPage);
+      if (contentPageId >= getTotalPages())
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      final BasePage contentPage = database.getTransaction()
+              .getPage(new PageId(database, file.getFileId(), contentPageId), pageSize);
+      if (contentPage == null)
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      final int positionInPage = (int) (contentRID.getPosition() % maxRecordsInPage);
+      if (positionInPage >= contentPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return NO_OFF_PAGE_FINGERPRINT;
+      final int recordPositionInPage = getRecordPositionInPage(contentPage, positionInPage);
+      if (recordPositionInPage == 0)
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      final long[] recordSize = contentPage.readNumberAndSize(recordPositionInPage);
+
+      long fingerprint = fnv1a(FNV_OFFSET_BASIS, contentRID.getPosition());
+      fingerprint = fnv1a(fingerprint, recordSize[0]);
+
+      final int contentOffset;
+      final int contentSize;
+      if (recordSize[0] == FIRST_CHUNK) {
+        // The content record outgrew its own page in turn: its head chunk here, the rest through the chain below.
+        final int chunkHeaderPos = (int) (recordPositionInPage + recordSize[1]);
+        contentSize = contentPage.readInt(chunkHeaderPos);
+        contentOffset = chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+        final long tail = chunkChainTailFingerprint(contentPage, chunkHeaderPos);
+        if (tail == NO_OFF_PAGE_FINGERPRINT)
+          return NO_OFF_PAGE_FINGERPRINT;
+        fingerprint = fnv1a(fingerprint, tail);
+      } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
+        // A placeholder content record stores its size NEGATED.
+        contentSize = (int) (recordSize[0] * -1L);
+        contentOffset = (int) (recordPositionInPage + recordSize[1]);
+      } else
+        // Not a placeholder content record (nor a chunk head): the pointer does not lead where it used to.
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      if (contentSize < 0 || contentOffset + contentSize > contentPage.getMaxContentSize())
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      fingerprint = fnv1a(fingerprint, contentPage, contentOffset, contentSize);
+
+      return fingerprint == NO_OFF_PAGE_FINGERPRINT ? EMPTY_OFF_PAGE_FINGERPRINT : fingerprint;
+    } catch (final Exception e) {
+      return unwalkableChunkChain(e, contentRID);
+    }
+  }
+
+  /**
+   * The one outcome every fingerprint walk shares: the record's off-page part could not be read, so there is nothing
+   * to compare against - the head chunk stays unmergeable, and a placeholder's update stays unchecked at capture time
+   * or is refused at commit time. Failing closed is always safe here, which is exactly why the catch that leads to it
+   * must not become a place a real defect can hide: the assertion draws the line between "this database's chain is
+   * broken" - which this method exists to tolerate, as {@link #findBrokenChunkChain} does - and a bug in the walk
+   * itself, which under {@code -ea} (surefire's default) fails a test loudly instead of degrading into a page that is
+   * silently never merged. It costs nothing in a production JVM, where the tolerance is unconditional.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -583,15 +683,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // offsets straight out of the page, so an I/O or bounds failure is data talking and must stay tolerated, while
     // neither of these two can come from the page content once the walk has checked for a page that is gone.
     assert !(e instanceof NullPointerException || e instanceof ClassCastException) :
-        "the chunk-chain fingerprint must only ever fail on an unreadable chain: " + e;
+        "the off-page fingerprint must only ever fail on an unreadable record: " + e;
 
-    LogManager.instance().log(this, Level.FINE, "Unable to fingerprint the chunk chain of %s", e, walked);
-    return NO_CHUNK_TAIL_FINGERPRINT;
+    LogManager.instance().log(this, Level.FINE, "Unable to fingerprint the off-page content of %s", e, walked);
+    return NO_OFF_PAGE_FINGERPRINT;
   }
 
   /**
-   * Same as {@link #chunkChainTailFingerprint(RID)}, starting from an already-resolved head chunk. Never throws: a
-   * chain it cannot walk is simply one it cannot vouch for.
+   * The chunk-chain half of {@link #offPageContentFingerprint(RID, BasePage, boolean)}, starting from an
+   * already-resolved head chunk. Never throws: a chain it cannot walk is simply one it cannot vouch for.
    *
    * @param headChunkHeaderPos offset of the head chunk's size field, i.e. right after its marker.
    */
@@ -607,16 +707,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     long pointer = headChunkPage.readLong(headChunkHeaderPos + INT_SERIALIZED_SIZE);
     if (pointer == 0)
       // A single-chunk record: its whole content is in the head chunk, which the pre-image check already covers.
-      return EMPTY_CHUNK_TAIL_FINGERPRINT;
+      return EMPTY_OFF_PAGE_FINGERPRINT;
 
     long fingerprint = FNV_OFFSET_BASIS;
-    byte[] scratch = null;
     final int totalPages = getTotalPages();
     // Exact loop detection, as in findBrokenChunkChain and for the same reason: a chain can legitimately hold more
     // chunks than the bucket has pages (chunks share pages after reuse), so any count-based bound either bails on a
     // valid chain or lets a corrupted one walk for a very long time first. Revisiting a pointer is the only certain
     // loop signal, and a chain that never revisits one is finite by construction. Allocated only if the chain turns
-    // out to be long: a record of a handful of chunks - which is what every realistic one is - walks allocation-free.
+    // out to be long: a record of a handful of chunks - which is what every realistic one is - is the whole reason
+    // this walk allocates nothing at all.
     LongHashSet visitedChunks = null;
 
     for (int chunk = 0; pointer > 0; ++chunk) {
@@ -624,41 +724,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (visitedChunks == null)
           visitedChunks = new LongHashSet();
         if (!visitedChunks.add(pointer))
-          return NO_CHUNK_TAIL_FINGERPRINT;
+          return NO_OFF_PAGE_FINGERPRINT;
       }
 
       final int chunkPageId = (int) (pointer / maxRecordsInPage);
       final int chunkPositionInPage = (int) (pointer % maxRecordsInPage);
       if (chunkPageId >= totalPages)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final BasePage chunkPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
       if (chunkPage == null)
         // The page the chain points at is gone: nothing to vouch for.
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
       final int chunkPositionInPageOffset = getRecordPositionInPage(chunkPage, chunkPositionInPage);
       if (chunkPositionInPageOffset == 0)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final long[] chunkMarker = chunkPage.readNumberAndSize(chunkPositionInPageOffset);
       if (chunkMarker[0] != NEXT_CHUNK)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final int headerPos = (int) (chunkPositionInPageOffset + chunkMarker[1]);
       final int chunkSize = chunkPage.readInt(headerPos);
       if (chunkSize < 0 || headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize > chunkPage.getMaxContentSize())
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       // The chunk's own identity goes in too: a chain relocated onto other slots is a different tail even when every
       // byte of content is the same.
       fingerprint = fnv1a(fingerprint, pointer);
       fingerprint = fnv1a(fingerprint, chunkSize);
-
-      if (scratch == null)
-        scratch = new byte[pageSize];
-      chunkPage.readByteArray(headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE, scratch, 0, chunkSize);
-      for (int i = 0; i < chunkSize; ++i)
-        fingerprint = (fingerprint ^ (scratch[i] & 0xFFL)) * FNV_PRIME;
+      fingerprint = fnv1a(fingerprint, chunkPage, headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE, chunkSize);
 
       pointer = chunkPage.readLong(headerPos + INT_SERIALIZED_SIZE);
     }
@@ -667,7 +762,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // unknown. The two therefore alias - a real tail can be indistinguishable from a single-chunk record - which is
     // sound because BOTH sides of the comparison go through this same remap, and is of the same ~2^-64 order as the
     // collision the fingerprint already accepts.
-    return fingerprint == NO_CHUNK_TAIL_FINGERPRINT ? EMPTY_CHUNK_TAIL_FINGERPRINT : fingerprint;
+    return fingerprint == NO_OFF_PAGE_FINGERPRINT ? EMPTY_OFF_PAGE_FINGERPRINT : fingerprint;
+  }
+
+  /**
+   * Folds {@code length} bytes of {@code page}, from {@code offset}, into {@code fingerprint}: the byte loop both
+   * fingerprint walks share.
+   * <p>
+   * It reads the page one ABSOLUTE byte at a time rather than copying the range into a scratch array first, which is
+   * what makes a fingerprint of any size allocate nothing - the walks run twice per update of the record they cover,
+   * once when it is taken for update and once at commit, and a chunk or a content record is up to a page long. The
+   * FNV loop has to touch every byte either way, so what the copy bought was a bulk read; what it cost was a
+   * content-sized allocation per call. Absolute reads also leave the page buffer's position where they found it,
+   * unlike the bulk read they replace.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static long fnv1a(final long fingerprint, final BasePage page, final int offset, final int length) {
+    long folded = fingerprint;
+    for (int i = 0; i < length; ++i)
+      folded = (folded ^ (page.readByte(offset + i) & 0xFFL)) * FNV_PRIME;
+    return folded;
   }
 
   /** Folds the 8 bytes of {@code value} into {@code fingerprint}, least significant first. */
@@ -1187,7 +1302,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeeded = Binary.getNumberSpace(isPlaceHolder ? (-1L * bufferSize) : bufferSize) + bufferSize;
 
       if (txPageCounter > 0) {
-        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, false);
+        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, false, -1);
         foundPage = pageAnalysis.page;
         newRecordPositionInPage = pageAnalysis.newRecordPositionInPage;
         availablePositionIndex = pageAnalysis.availablePositionIndex;
@@ -1765,6 +1880,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return true;
       }
 
+      if (kind == TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD) {
+        // #6178: the record shrank back inside its own slot and stopped being a chunk chain. The pre-image is a head
+        // chunk, so it is checked as one - and as for every other head-chunk replay, the rest of the chain is covered
+        // by the chain fingerprint the write compared before collapsing, not by anything visible here.
+        if (rs[0] != FIRST_CHUNK)
+          return false;
+        final int chunkHeaderPos = (int) (existingPos + rs[1]);
+        final byte[] committedChunk = readChunkImage(page, chunkHeaderPos);
+        if (committedChunk == null || !Arrays.equals(committedChunk, baseBody))
+          return false;
+
+        // The room is re-derived from the COMMITTED page for the same reason the head-chunk replay re-derives it
+        // (#6163): the write measured it against a page this one has moved on from, and a concurrent commit is
+        // allowed to have taken the bytes a shrink released. A region that can no longer host the plain record sends
+        // the transaction to a normal retry instead of writing over whatever took them.
+        //
+        // No test reaches this refusal, and that is a statement about the engine rather than about the tests: a
+        // region only shrinks when something is committed between this slot and its neighbour, and the room next to
+        // a chunk head is released by the very transaction being replayed here - a collapse - which cannot have
+        // committed yet. What could still do it is a compressPage that re-flows the page under us. So it stays, as
+        // the head-chunk branch's own refusal above does, and neither is reachable by fabricating a page state
+        // without testing the fabrication instead of the engine.
+        final int chunkRegionEnd = headChunkRegionEnd(page, recordCountInPage, existingPos);
+        final int sizeLen = Binary.getNumberSpace(body.length);
+        if (existingPos + sizeLen + body.length > chunkRegionEnd)
+          return false;
+
+        // #6154: same accounting the write makes, re-derived here against the committed page rather than trusted.
+        if (chunkRegionEnd == page.getMaxContentSize()) {
+          final int committedChunkEnd = chunkHeaderPos + committedChunk.length;
+          updatePageStatistics(pageNumber, chunkRegionEnd - committedChunkEnd,
+                  committedChunkEnd - (existingPos + sizeLen + body.length));
+        }
+
+        final int sizeLenWritten = page.writeNumber(existingPos, body.length);
+        assert sizeLenWritten == sizeLen :
+            "the record size took " + sizeLenWritten + " bytes where " + sizeLen + " were budgeted";
+        page.writeByteArray(existingPos + sizeLenWritten, body, 0, body.length);
+        return true;
+      }
+
       if (kind == TransactionContext.SLOT_KIND_RECORD_SPILLED_TO_CHUNK) {
         // #6129: the record outgrew its page and became a chunk HEAD without leaving its slot. The pre-image is still
         // a plain record, so it is checked as such; what has to be re-established is the room the spill used, which
@@ -2125,6 +2281,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         // FOUND A RECORD POINTED FROM A PLACEHOLDER
         final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
+
+        // #6141: this slot holds 8 bytes of pointer and the record's WHOLE content lives on another page - a page
+        // this transaction pinned nothing on, and which the write below therefore reaches at its newest committed
+        // version, under the commit lock. Neither the version check nor any pre-image check can see a concurrent
+        // update of this record: both writers read the content page fresh and the second one used to win silently.
+        // Comparing the content against the fingerprint taken when the record was taken for update
+        // (TransactionContext.addUpdatedRecord) is what makes that conflict visible, and it is the only thing that
+        // can - so this check is NOT conditional on any merge being enabled. Absent fingerprint = this update never
+        // went through addUpdatedRecord (a commit-time replay), and there is no "before" to compare against.
+        final Long capturedContent = slotTx == null ? null : slotTx.getOffPageFingerprint(rid);
+        if (capturedContent != null && capturedContent != placeholderContentFingerprint(placeHolderContentRID))
+          throw new ConcurrentModificationException(
+                  "Record " + rid + " was modified by a concurrent transaction. Please retry the operation");
+
         if (updateRecordInternal(record, placeHolderContentRID, true, discardRecordAfter)) {
           // UPDATE PLACEHOLDER CONTENT, THE PLACEHOLDER POINTER STAY THE SAME. Nothing was written to THIS page, so
           // it is left exactly as this transaction found it - no poisoning (#6129): the content record's page is the
@@ -2174,6 +2344,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final byte[] chunkBaseImage = chunkRebasable ? readChunkImage(page, chunkHeaderPos) : null;
         if (chunkBaseImage == null && slotMergeOn)
           slotTx.poisonSlotRebasePage(fileId, pageId);
+
+        // #6178: THE RECORD HAS SHRUNK BACK INSIDE THE REGION ITS OWN SLOT OWNS: UN-SPILL IT.
+        //
+        // Nothing used to do this, so a record that had spilled once stayed a chunk chain for the rest of its life -
+        // 13 bytes of header for ever, every read and write on the chunk path, and check() reporting a multi-page
+        // record that is not one. It is the exact mirror of the spill (SLOT_KIND_RECORD_SPILLED_TO_CHUNK), bounded by
+        // the same rule #6163 sizes the head chunk with: the region, and not a byte more - shrinking is no licence to
+        // take a neighbour's bytes.
+        //
+        // NOT for the CONTENT record of a placeholder (updatePlaceholderContent), even though it reaches this branch
+        // whenever createRecordInternal had to spill it: such a record is identified by the NEGATIVE size marker it
+        // would have to be given back, and the plain positive marker this writes is what tells scan() and check()
+        // that a slot holds a record of its own. Collapsing one would make the placeholder's content show up a second
+        // time, as a document in its own right. It keeps its chain, which costs 13 bytes on a shape that needs a
+        // placeholder to exist at all - a legacy one, or the zero-free-tail page #6149 left as the last fallback.
+        if (!updatePlaceholderContent//
+                && collapseChunkChainToRecord(rid, buffer, page, pageId, positionInPage, recordPositionInPage, chunkHeaderPos,
+                chunkRegionEnd, chunkBaseImage, slotTx)) {
+          if (!discardRecordAfter)
+            ((RecordInternal) record).setBuffer(buffer.getNotReusable());
+          return true;
+        }
 
         // #5596: the chunk-header and chunk-content writes below are what rebaseRecordOnPage re-does on the newer
         // committed page. Only THIS page's writes are declared: updateMultiPageRecord leaves the ones it makes to
@@ -3128,6 +3320,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext slotTx = database.getTransactionIfExists();
     final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
     final MutablePage firstPage = currentPage;
+    final int headChunkPageToAvoid = headChunkPageToAvoid(firstPage, firstChunkCoverage);
 
     int bufferSize = buffer.size();
 
@@ -3181,7 +3374,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeededForChunk = bufferSize + 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
 
       final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
-              true);
+              true, headChunkPageToAvoid);
 
       if (!pageAnalysis.createNewPage) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
@@ -3266,6 +3459,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The page the continuation chunks of a record must keep off, or -1 when there is none worth protecting (#6175).
+   * <p>
+   * It is the page holding the record's HEAD chunk, and only when the caller declared that slot replayable by the
+   * disjoint-slot merge - which is exactly the case in which the page has something to lose. A continuation chunk
+   * lands through inline record-table writes no slot image accounts for, so the page that receives one is poisoned
+   * for the rest of the transaction; when the head chunk's page is the receiver, the poison falls on the one page
+   * #6129 built its machinery (SLOT_KIND_FIRST_CHUNK, the chain fingerprint, the region re-derivation) to keep
+   * mergeable, and it takes every unrelated record sharing that page down with it.
+   * <p>
+   * The reverse condition is just as deliberate: when the head chunk's slot was NOT declared (a record being created,
+   * a spill onto an already-poisoned page), the page is unmergeable anyway and refusing its free tail would cost
+   * space for nothing. That is also what keeps {@code createRecordInternal} allocating exactly as it did before -
+   * there the head chunk is written at the page's content end and takes the whole free tail, so the question cannot
+   * even arise.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static int headChunkPageToAvoid(final MutablePage headChunkPage, final int firstChunkCoverage) {
+    return firstChunkCoverage == 0 ? -1 : headChunkPage.getPageId().getPageNumber();
+  }
+
+  /**
    * Writes the "pointer to the next chunk" field of a chunk header, declaring it covered by {@code coverage}. The
    * field lives inside the chunk's own slot image, so on the page holding the HEAD chunk of the record it is part of
    * what the disjoint-slot merge replays (#6129); on any other page the caller passes 0 and the write is as
@@ -3305,6 +3520,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext slotTx = database.getTransactionIfExists();
     final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
     final MutablePage firstPage = currentPage;
+    final int headChunkPageToAvoid = headChunkPageToAvoid(firstPage, firstChunkCoverage);
 
     final int previousChunkSize = currentPage.readInt(newPosition);
     int bufferSize = buffer.size();
@@ -3407,7 +3623,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int totalSpaceNeeded = bufferSize + Binary.LONG_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
 
         final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter,
-                true);
+                true, headChunkPageToAvoid);
         if (!pageAnalysis.createNewPage) {
           nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
 
@@ -3492,11 +3708,112 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     // CHECK TO DELETE REMAINING CHUNKS IF THE RECORD SHRUNK
-    while (chunkToDeletePointer > 0) {
+    if (chunkToDeletePointer > 0) {
+      // CUT THE CHAIN AT THE LAST CHUNK THAT SURVIVES, THEN FREE WHAT FOLLOWS
       writeNextChunkPointer(currentPage, nextChunkPointerOffset, 0L, currentPage == firstPage ? firstChunkCoverage : 0);
+      freeChunkChain(originalRID, chunkToDeletePointer);
+    }
+  }
 
-      final int chunkPageId = (int) (chunkToDeletePointer / maxRecordsInPage);
-      final int chunkPositionInPage = (int) (chunkToDeletePointer % maxRecordsInPage);
+  /**
+   * Turns the head chunk of a multi-page record back into a PLAIN record when the new content fits the region that
+   * slot owns on its own page, freeing the whole chain behind it (#6178). The inverse of the spill, and the last of
+   * the three transitions between the two shapes.
+   * <p>
+   * The bound is the region and nothing else - the same one {@link #headChunkRegionEnd} derives for the head chunk
+   * itself - so a record that shrank a long way back but still does not fit its slot stays a chain rather than
+   * claiming bytes that belong to its neighbours. That makes this reachable in exactly two ways, both real: a record
+   * that spilled as the LAST record of its page owns the whole free tail and can come back from a very long way, and
+   * a record in the middle of its page owns its own footprint and comes back when it returns to roughly the size it
+   * had before it grew.
+   * <p>
+   * What is written here is one slot - the size marker and the content - inside the region, which is what makes it a
+   * single-slot write the merge can replay. The chain, on the other pages, is freed and those pages poisoned, exactly
+   * as an ordinary shrink already does with the chunks it drops.
+   * <p>
+   * It also means a chunk head that declares LESS than its region does not survive an update: content that fits the
+   * head chunk (13 bytes of header) fits the region as a plain record (at most 5 bytes of size marker), so the two
+   * conditions coincide and the chain-of-one-chunk is collapsed instead of being kept. That is the same state #6163's
+   * grow-back exists to repair, which this removes at the source rather than compensating for.
+   *
+   * @param chunkBaseImage the head chunk's pre-image when the caller found the slot rebasable, or {@code null} when
+   *                       it did not - in which case it has already poisoned the page and this only writes. When it
+   *                       is not null, {@code slotTx} is not null either: the caller could not have read it.
+   *
+   * @return true when the record was collapsed and there is nothing left for the caller to write.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean collapseChunkChainToRecord(final RID rid, final Binary buffer, final MutablePage page, final int pageId,
+                                             final int positionInPage, final int recordPositionInPage, final int chunkHeaderPos,
+                                             final int chunkRegionEnd, final byte[] chunkBaseImage,
+                                             final TransactionContext slotTx)
+          throws IOException {
+    final int bufferSize = buffer.size();
+    final int sizeBytes = Binary.getNumberSpace(bufferSize);
+    if (recordPositionInPage + sizeBytes + bufferSize > chunkRegionEnd)
+      // Still too big for its own slot: it stays a chunk chain.
+      return false;
+
+    // Read BEFORE the write below overwrites the header these two come from.
+    final long chainToFree = page.readLong(chunkHeaderPos + INT_SERIALIZED_SIZE);
+    final int previousChunkEnd = chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + page.readInt(chunkHeaderPos);
+
+    final int previousCoverage = page.beginCoveredWrite(chunkBaseImage != null ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+    try {
+      final int sizeBytesWritten = page.writeNumber(recordPositionInPage, bufferSize);
+      // The offset the body is placed at was budgeted with getNumberSpace above, and writeNumber is the only other
+      // place that decides how many bytes a size takes. They agree by construction; a future divergence would write
+      // the body past the room just proved - a silent overwrite of the next record rather than a refusal, which is
+      // exactly what this assertion exists to make loud under -ea (surefire's default).
+      assert sizeBytesWritten == sizeBytes :
+          "the record size of " + rid + " took " + sizeBytesWritten + " bytes where " + sizeBytes + " were budgeted";
+      page.writeByteArray(recordPositionInPage + sizeBytesWritten, buffer.getContent(), buffer.getContentBeginOffset(),
+              bufferSize);
+    } finally {
+      page.endCoveredWrite(previousCoverage);
+    }
+
+    // #6154: the same accounting an ordinary shrink of the head chunk makes, and for the same reason - only a slot
+    // whose region runs to the page's maximum content size moves the free tail; anywhere else the region is bounded
+    // by the neighbour that follows and nothing moves.
+    if (chunkRegionEnd == page.getMaxContentSize())
+      updatePageStatistics(pageId, chunkRegionEnd - previousChunkEnd,
+              previousChunkEnd - (recordPositionInPage + sizeBytes + bufferSize));
+
+    freeChunkChain(rid, chainToFree);
+
+    // freeChunkChain may have poisoned this very page (a chunk of the chain lived on it): re-check before tracking.
+    if (chunkBaseImage != null && !slotTx.isSlotRebasePagePoisoned(fileId, pageId))
+      slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, chunkBaseImage,
+              Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize),
+              TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD);
+
+    LogManager.instance().log(this, Level.FINE,
+            "Updated record %s by collapsing its chunk chain back into a plain record (%s threadId=%d)", null, rid, page,
+            Thread.currentThread().threadId());
+
+    return true;
+  }
+
+  /**
+   * Frees every chunk of a chain, starting at {@code chunkPointer}, by zeroing its slot-table entry on the page that
+   * holds it. Poisons every page it visits: the freed slot is a change no tracked slot image accounts for, so a page
+   * that also carries a tracked write could otherwise be re-derived from that write alone and quietly resurrect the
+   * chunk. Never throws on a chain it cannot walk - a broken pointer is logged and the walk stops there, exactly as
+   * it did when this was inlined in {@link #updateMultiPageRecord} (the record's own slot has already been rewritten
+   * by the caller, so the chunks left behind are unreachable rather than dangerous, and {@code check(fix=true)}
+   * collects them).
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private void freeChunkChain(final RID originalRID, long chunkPointer) throws IOException {
+    final TransactionContext slotTx = database.getTransactionIfExists();
+    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+
+    while (chunkPointer > 0) {
+      final int chunkPageId = (int) (chunkPointer / maxRecordsInPage);
+      final int chunkPositionInPage = (int) (chunkPointer % maxRecordsInPage);
 
       final MutablePage nextPage = database.getTransaction()
               .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
@@ -3522,8 +3839,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         break;
       }
 
-      newPosition = (int) (recordPositionInPage + recordSize[1]);
-      chunkToDeletePointer = nextPage.readLong(newPosition + INT_SERIALIZED_SIZE);
+      chunkPointer = nextPage.readLong((int) (recordPositionInPage + recordSize[1]) + INT_SERIALIZED_SIZE);
     }
   }
 
@@ -3805,9 +4121,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *
    * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
    *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param avoidPageNumber a page this allocation may NOT use, or -1 for none (#6175). Used by the continuation
+   *                        chunks of a multi-page record to keep off the page holding that record's HEAD chunk when
+   *                        the caller tracked that slot for the disjoint-slot merge: a continuation chunk is written
+   *                        through inline record-table writes no slot image accounts for, so it poisons the page it
+   *                        lands on - and that page is the one #6129 went to some trouble to keep mergeable, since a
+   *                        chunked record's update is a single-slot write on it. The locality the same-page
+   *                        preference buys is worth little to a chunk that is only ever reached by pointer, from a
+   *                        page that is already loaded; the poisoning costs every OTHER record of that page its
+   *                        merge for the whole transaction.
    */
   private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
-                                          final boolean multiPageRecord)
+                                          final boolean multiPageRecord, final int avoidPageNumber)
           throws IOException {
     if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
       synchronized (freeSpaceInPages) {
@@ -3817,7 +4142,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // TRY WITH THE CURRENT PAGE FIRST
         PageAnalysis bestPageAnalysis = null;
 
-        if (currentPageId > -1) {
+        if (currentPageId > -1 && currentPageId != avoidPageNumber) {
           // PRIORITIZE SPACE IN THE SAME PAGE
           bestPageAnalysis = getAvailableSpaceInPage(currentPageId, spaceNeeded, multiPageRecord);
           if (bestPageAnalysis.createNewPage || bestPageAnalysis.totalRecordsInPage > maxRecordsInPage)
@@ -3829,10 +4154,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             gatherPageStatistics();
 
           if (!freeSpaceInPages.isEmpty()) {
-            bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord);
+            bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord,
+                    avoidPageNumber);
             if (bestPageAnalysis == null)
               // TRY AGAIN WITH HALF SIZE, THE RECORD WILL BE SPLIT IN MULTIPLE CHUNKS
-              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2, multiPageRecord);
+              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2, multiPageRecord,
+                      avoidPageNumber);
           }
         }
 
@@ -3848,15 +4175,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     // CHECK IF THERE IS SPACE IN THE LAST PAGE
-    return getAvailableSpaceInPage(txPageCounter - 1, spaceNeeded, multiPageRecord);
+    final PageAnalysis lastPageAnalysis = getAvailableSpaceInPage(txPageCounter - 1, spaceNeeded, multiPageRecord);
+    if (txPageCounter - 1 == avoidPageNumber)
+      // The last page is the one page this allocation may not use, so a brand-new page is all that is left - and a
+      // brand-new page is one no other record is on, so poisoning it costs nobody anything.
+      lastPageAnalysis.createNewPage = true;
+    return lastPageAnalysis;
   }
 
   /**
    * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
    *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param avoidPageNumber a page this allocation may NOT use, or -1 for none: see
+   *                        {@link #findAvailableSpace(int, int, int, boolean, int)}.
    */
   private PageAnalysis findAvailableSpaceFromStatistics(final int currentPageId, final int spaceNeeded,
-                                                        final boolean multiPageRecord)
+                                                        final boolean multiPageRecord, final int avoidPageNumber)
           throws IOException {
     // Snapshot keys/values into local arrays so we can safely mutate freeSpaceInPages
     // (put/remove) inside the loop body. The snapshot is bounded by MAX_PAGES_GATHER_STATS (100).
@@ -3888,6 +4222,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int pageId = snapPageIds[s];
       if (pageId == currentPageId)
         // ALREADY EVALUATED
+        continue;
+
+      if (pageId == avoidPageNumber)
+        // OFF LIMITS FOR THIS ALLOCATION (#6175)
         continue;
 
       if (pageId >= txVisiblePageHorizon)

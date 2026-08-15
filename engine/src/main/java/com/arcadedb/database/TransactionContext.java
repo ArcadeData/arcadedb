@@ -96,6 +96,15 @@ public class TransactionContext implements Transaction {
    * record's own footprint, plus the free tail of the page when it is the last record) is still there (#6129).
    */
   public static final byte SLOT_KIND_RECORD_SPILLED_TO_CHUNK = 3;
+  /**
+   * The mirror of the shape above, and the other one whose two images differ: the COLLAPSE of a chunk chain back into
+   * a plain record, when the record shrank inside the region its own slot owns (#6178). The pre-image is the head
+   * chunk (header + content, as {@code SLOT_KIND_FIRST_CHUNK} keeps it), the final image is the plain record's
+   * content, and the replay checks that the committed slot still holds that very head chunk AND that the region it
+   * re-derives from the committed page can still host the plain record. The chain behind it is freed on other pages,
+   * which its writer poisons.
+   */
+  public static final byte SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD = 4;
 
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
@@ -138,11 +147,12 @@ public class TransactionContext implements Transaction {
   // non-rebasable write to it (delete, multi-page/placeholder record, a record spilled out of the page) poisons it.
   private       Map<Long, SlotRebaseBuffer>          slotRebaseByPage;
   private       LongHashSet                          slotRebasePoisonedPages;
-  // #6129: per updated record that outgrew its page, the fingerprint of its chunk chain PAST the head chunk, taken
-  // when the record was taken for update. The head chunk is the only part of such a record that lives on the page the
-  // slot merge replays, so this is what tells the commit that the rest of the record is still the one it read.
-  // Only records that really are chunk chains get an entry, so an ordinary update costs nothing but the marker read.
-  private       Map<RID, Long>                       chunkTailFingerprints;
+  // #6129, #6141: per updated record that keeps content OUTSIDE its own slot, the fingerprint of that content taken
+  // when the record was taken for update - the chunk chain past the head chunk of a multi-page record, the content
+  // record behind a placeholder pointer. Those pages are loaded fresh under the commit lock and can never fail a
+  // version check, so this is the only thing that tells the commit the rest of the record is still the one it read.
+  // Only records that really have such a part get an entry, so an ordinary update costs nothing but the marker read.
+  private       Map<RID, Long>                       offPageFingerprints;
   private       boolean                              slotMerge;
   // #5279: the insert slots this transaction claimed on EXISTING bucket pages, so concurrent inserts into the same
   // page get different slots (hence different RIDs) and commute instead of conflicting. Held in parallel primitive
@@ -498,18 +508,17 @@ public class TransactionContext implements Transaction {
     if (updatedRecords.put(record.getIdentity(), record) == null) {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
       final MutablePage recordPage = bucket.fetchPageInTransaction(rid);
-      if (slotMerge) {
-        // #6129: same moment, and the same reason, as the page pinned right above - it is the view of the record this
-        // update is based on. For a record that outgrew its page only its HEAD chunk lives on that page, so the
-        // fingerprint of the rest of the chain is what lets the commit tell whether it is still updating the record it
-        // read. Without it the merge could replay the head chunk of a record somebody else has meanwhile rewritten
-        // past that chunk, and silently drop their write.
-        final long fingerprint = bucket.chunkChainTailFingerprint(rid, recordPage);
-        if (fingerprint != LocalBucket.NO_CHUNK_TAIL_FINGERPRINT) {
-          if (chunkTailFingerprints == null)
-            chunkTailFingerprints = new HashMap<>();
-          chunkTailFingerprints.put(rid, fingerprint);
-        }
+      // #6129, #6141: same moment, and the same reason, as the page pinned right above - it is the view of the record
+      // this update is based on. The pin covers the record's own slot and nothing else, so a record that keeps content
+      // on another page (the chunk chain of a multi-page record past its head, the content record behind a placeholder
+      // pointer) has that part covered by nothing: the write reaches it at commit, on a page loaded fresh under the
+      // lock, which no version check can ever refuse. The fingerprint is what lets the commit tell whether it is still
+      // updating the record it read.
+      final long fingerprint = bucket.offPageContentFingerprint(rid, recordPage, slotMerge);
+      if (fingerprint != LocalBucket.NO_OFF_PAGE_FINGERPRINT) {
+        if (offPageFingerprints == null)
+          offPageFingerprints = new HashMap<>();
+        offPageFingerprints.put(rid, fingerprint);
       }
     }
     updateRecordInCache(record);
@@ -966,6 +975,18 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * The fingerprint of the content record {@code rid} kept OUTSIDE its own slot when this transaction took it for
+   * update, or {@code null} when there was none to take - either because the record had no such part, or because this
+   * update never went through {@link #addUpdatedRecord(Record)} (the commit-time rebase paths, which re-write a
+   * record the transaction did not take for update).
+   *
+   * @see LocalBucket#offPageContentFingerprint(RID, com.arcadedb.engine.BasePage, boolean)
+   */
+  public Long getOffPageFingerprint(final RID rid) {
+    return offPageFingerprints == null ? null : offPageFingerprints.get(rid);
+  }
+
+  /**
    * Tells whether the chunk chain of {@code rid} still holds, past its head chunk, exactly what it held when this
    * transaction took the record for update (#6129). The head chunk is the only part of a multi-page record that lives
    * on the page the slot merge would replay, so it is the only part the pre-image check can see; this is what closes
@@ -976,11 +997,9 @@ public class TransactionContext implements Transaction {
    *                {@link #addUpdatedRecord(Record)} time.
    */
   public boolean isChunkChainTailUnchanged(final RID rid, final long current) {
-    if (chunkTailFingerprints == null)
-      return false;
-    final Long captured = chunkTailFingerprints.get(rid);
+    final Long captured = getOffPageFingerprint(rid);
     // Absent means either that this update never went through addUpdatedRecord (no "before" to compare with) or that
-    // the record was not a chunk chain then, and {@code current} is NO_CHUNK_TAIL_FINGERPRINT when the walk could not
+    // the record had nothing off its page then, and {@code current} is NO_OFF_PAGE_FINGERPRINT when the walk could not
     // complete: none of those may vouch for the tail.
     return captured != null && captured == current;
   }
@@ -1080,7 +1099,7 @@ public class TransactionContext implements Transaction {
    * true one (a concurrent write to THIS record). No-op when the feature is off or the page is poisoned. The caller
    * passes the already-computed page/slot so no schema lookup happens per write.
    *
-   * @param kind which of the three slot shapes the two images describe (see {@code SLOT_KIND_*}): the replay checks
+   * @param kind which slot shape the two images describe (see {@code SLOT_KIND_*}): the replay checks
    *             the committed marker against it, so a slot whose shape changed under us is a conflict, not a merge.
    */
   public void trackRebasableUpdate(final int fileId, final int pageNumber, final int slot, final byte[] baseBody,
@@ -1423,7 +1442,7 @@ public class TransactionContext implements Transaction {
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
     slotRebaseTrackedBytes = 0;
-    chunkTailFingerprints = null;
+    offPageFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
@@ -2008,7 +2027,7 @@ public class TransactionContext implements Transaction {
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
     slotRebaseTrackedBytes = 0;
-    chunkTailFingerprints = null;
+    offPageFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();

@@ -1,0 +1,309 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.database;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.Test;
+
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #6178: once a record had spilled it stayed a chunk chain for the rest of its life. However far it shrank
+ * back, {@code updateMultiPageRecord} freed the continuation chunks and left a chain of exactly one chunk - a
+ * FIRST_CHUNK marker, a 4-byte size, an 8-byte next pointer that is 0, and the content - costing 13 bytes per record
+ * for ever, routing every read and write through the chunk path, and making {@code check()} report a multi-page
+ * record that is not one any more.
+ * <p>
+ * The transition back is the mirror of {@code SLOT_KIND_RECORD_SPILLED_TO_CHUNK}, which exists for exactly the
+ * opposite one, and is bounded by the same rule #6163 sizes the head chunk with: the region the slot owns on its own
+ * page. A record that no longer fits it stays a chain, because shrinking is not licence to take a neighbour's bytes.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
+  /**
+   * The common shape after #6163: a record that spilled as the LAST record of its page owns the whole free tail as
+   * its region, so it can shrink a long way back and still fit. It must come back as a plain record, not as a chain
+   * of one chunk.
+   */
+  @Test
+  void aRecordShrinkingBackIntoItsRegionBecomesAPlainRecordAgain() {
+    database.transaction(() -> database.getSchema().createDocumentType("Shrinking", 1).createProperty("v", Type.STRING));
+
+    final RID last = fillFirstPage("Shrinking");
+
+    // Spills as the page's LAST record: its head chunk takes the record's own footprint plus the whole free tail.
+    database.transaction(() -> last.asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
+    assertThat((Long) bucketStats("Shrinking").get("totalMultiPageRecords")).as("the record must have spilled")
+        .isEqualTo(1L);
+
+    final String small = "s".repeat(1024);
+    database.transaction(() -> last.asDocument(true).modify().set("v", small).save());
+
+    final Map<String, Object> layout = bucketStats("Shrinking");
+    assertThat((Long) layout.get("totalMultiPageRecords")).as("the record no longer needs a chain: " + layout).isZero();
+    assertThat((Long) layout.get("totalChunks")).as("and no chunk must be left behind: " + layout).isZero();
+
+    database.transaction(() -> assertThat(last.asDocument(true).getString("v")).isEqualTo(small));
+    checkDatabase();
+  }
+
+  /**
+   * The other end of the same rule: a record whose slot sits in the MIDDLE of its page owns only the handful of bytes
+   * its own footprint covers - 14 of them when the spill had to enlarge the slot to reach a chunk header - so it
+   * collapses only when it shrinks back inside those, and stays a chain for anything larger.
+   */
+  @Test
+  void aRecordInTheMiddleOfItsPageCollapsesOnlyWithinItsOwnFootprint() {
+    final RID[] tiny = new RID[1];
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Middle", 1).createProperty("v", Type.STRING);
+      // Written FIRST so it is never the last record of the page, hence never given the free tail.
+      tiny[0] = database.newDocument("Middle").set("v", "p").save().getIdentity();
+    });
+    fillFirstPage("Middle");
+
+    database.transaction(() -> tiny[0].asDocument(true).modify().set("v", "b".repeat(200 * 1024)).save());
+    assertThat((Long) bucketStats("Middle").get("totalMultiPageRecords")).isEqualTo(1L);
+
+    // Still far larger than the 14 bytes the slot owns: the record stays a chunk chain.
+    final String stillBig = "m".repeat(20 * 1024);
+    database.transaction(() -> tiny[0].asDocument(true).modify().set("v", stillBig).save());
+
+    Map<String, Object> layout = bucketStats("Middle");
+    assertThat((Long) layout.get("totalMultiPageRecords"))
+        .as("a record that does not fit its own slot must stay a chain: " + layout).isEqualTo(1L);
+    database.transaction(() -> assertThat(tiny[0].asDocument(true).getString("v")).isEqualTo(stillBig));
+
+    // Back to what it was when it was created: now it fits, and the chain goes.
+    database.transaction(() -> tiny[0].asDocument(true).modify().set("v", "p").save());
+
+    layout = bucketStats("Middle");
+    assertThat((Long) layout.get("totalMultiPageRecords")).as("back inside its slot, it is a plain record: " + layout)
+        .isZero();
+    assertThat((Long) layout.get("totalChunks")).as("with the whole chain freed: " + layout).isZero();
+
+    database.transaction(() -> assertThat(tiny[0].asDocument(true).getString("v")).isEqualTo("p"));
+    checkDatabase();
+  }
+
+  /**
+   * The collapse is a single-slot write like the spill it undoes, so it has to be replayable: a concurrent update of
+   * another record on the same page must still merge instead of failing the transaction.
+   * <p>
+   * This is also where the collapse meets #6175, and the reason no separate test is needed for the pair. Freeing the
+   * chain poisons every page it visits, so a chain that had come home to the head chunk's own page would poison the
+   * very page this replay needs - which is exactly what #6175 stops. Measured on this fixture: with the exclusion
+   * disabled the chain runs 1, 2, 0, 3 (chunk 3 lands on the head page); with it, 1, 2, 3, 4. Verified reaching
+   * {@code rebaseRecordOnPage} with {@code SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD} rather than merely committing, so the
+   * new replay is what this passes through and not some other path.
+   */
+  @Test
+  void theCollapseIsReplayedOnACommittedPage() throws InterruptedException {
+    final RID[] collapsing = new RID[1];
+    final RID[] neighbour = new RID[1];
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Merged", 1).createProperty("v", Type.STRING);
+      collapsing[0] = database.newDocument("Merged").set("v", "p").save().getIdentity();
+      neighbour[0] = database.newDocument("Merged").set("v", "n").save().getIdentity();
+    });
+
+    database.transaction(() -> collapsing[0].asDocument(true).modify().set("v", "b".repeat(200 * 1024)).save());
+    assertThat((Long) bucketStats("Merged").get("totalMultiPageRecords")).isEqualTo(1L);
+
+    // The premise, proved rather than assumed: with the merge switched OFF the same interleaving must FAIL, which is
+    // what shows the two records really do share a page.
+    database.getConfiguration().setValue(GlobalConfiguration.TX_PAGE_SLOT_MERGE, false);
+    try {
+      assertThat(collapseSurvives(collapsing[0], neighbour[0], "q", "without the merge"))
+          .as("the collapsing record and the neighbour must share a page").isFalse();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.TX_PAGE_SLOT_MERGE, true);
+    }
+
+    // Re-spilled by the rolled-back attempt? No - the failed transaction changed nothing. Collapse it for real.
+    assertThat(collapseSurvives(collapsing[0], neighbour[0], "p", "rewritten")).isTrue();
+
+    final Map<String, Object> layout = bucketStats("Merged");
+    assertThat((Long) layout.get("totalMultiPageRecords")).as("the collapse must have gone through: " + layout).isZero();
+
+    database.transaction(() -> {
+      assertThat(collapsing[0].asDocument(true).getString("v")).isEqualTo("p");
+      assertThat(neighbour[0].asDocument(true).getString("v")).isEqualTo("rewritten");
+    });
+    checkDatabase();
+  }
+
+  /**
+   * A concurrent update of the SAME record is still a conflict, collapse or no collapse: the chain this transaction
+   * is about to free is the one it read, and the pre-image plus the chain fingerprint have to say so.
+   */
+  @Test
+  void aConcurrentUpdateOfTheSameRecordStillConflicts() throws InterruptedException {
+    final RID[] collapsing = new RID[1];
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Contended", 1).createProperty("v", Type.STRING);
+      collapsing[0] = database.newDocument("Contended").set("v", "p").save().getIdentity();
+      database.newDocument("Contended").set("v", "n").save();
+    });
+
+    database.transaction(() -> collapsing[0].asDocument(true).modify().set("v", "b".repeat(200 * 1024)).save());
+
+    database.begin();
+    collapsing[0].asDocument(true).modify().set("v", "p").save();
+
+    final Thread concurrent = new Thread(
+        () -> database.transaction(() -> collapsing[0].asDocument(true).modify().set("v", "c".repeat(200 * 1024)).save()));
+    concurrent.start();
+    concurrent.join();
+
+    try {
+      database.commit();
+      throw new AssertionError("two transactions rewriting the same record must conflict");
+    } catch (final ConcurrentModificationException expected) {
+      // THE CONTRACT
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    database.transaction(() -> assertThat(collapsing[0].asDocument(true).getString("v")).isEqualTo("c".repeat(200 * 1024)));
+    checkDatabase();
+  }
+
+  /**
+   * The one chunk head that must NOT be collapsed: the CONTENT record of a placeholder, which
+   * {@code createRecordInternal} spills into a chain of its own whenever no page can host it whole. Such a record is
+   * identified by the NEGATIVE size marker a plain collapse would replace with a positive one - and a positive size
+   * marker is exactly what tells {@code scan()} that a slot holds a document of its own, so collapsing it would make
+   * the placeholder's content appear a second time, as a record in its own right.
+   */
+  @Test
+  void aPlaceholderContentStoredAsAChainIsNeverCollapsed() {
+    final RID[] placeholder = new RID[1];
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Surrogate", 1).createProperty("v", Type.STRING);
+      placeholder[0] = database.newDocument("Surrogate").set("v", "p").save().getIdentity();
+    });
+    // A page with no free tail at all is the only shape that still produces a placeholder pointer (#6149).
+    sealFirstPage("Surrogate");
+
+    // 200 KB fits no page whole, so the content record created behind the pointer spills into a chain itself.
+    final String huge = "h".repeat(200 * 1024);
+    database.transaction(() -> placeholder[0].asDocument(true).modify().set("v", huge).save());
+
+    Map<String, Object> layout = bucketStats("Surrogate");
+    assertThat((Long) layout.get("totalPlaceholderRecords")).as("the fixture must really be a placeholder: " + layout)
+        .isEqualTo(1L);
+    // Two chains: the record that sealed page 0 when it spilled, and the placeholder's content record - which is what
+    // makes this fixture the one this test needs, and not merely a placeholder with a plain content record.
+    assertThat((Long) layout.get("totalMultiPageRecords"))
+        .as("the placeholder's content must itself have spilled into a chain: " + layout).isEqualTo(2L);
+
+    final long recordsBefore = countRecords("Surrogate");
+    // NOT one: a scan already hands this content out TWICE on unmodified main - once through the pointer, once as
+    // the chunk head in its own right, because createRecordInternal writes FIRST_CHUNK where it would have written
+    // the negative size marker that hides a content record. Filed separately as #6196 and deliberately not fixed
+    // here; asserted as it IS so that this test says what it measures, and so that fixing it turns this line red
+    // rather than leaving it quietly wrong.
+    final long copiesBefore = countRecordsHolding("Surrogate", huge);
+    assertThat(copiesBefore).as("pre-existing #6196: a chunked placeholder content is scanned as a record of its own")
+        .isEqualTo(2L);
+
+    // Back to a handful of bytes: the content record's own chain shrinks, and stays a chain.
+    database.transaction(() -> placeholder[0].asDocument(true).modify().set("v", "p").save());
+
+    layout = bucketStats("Surrogate");
+    assertThat((Long) layout.get("totalPlaceholderRecords")).as("the pointer must still be a pointer: " + layout)
+        .isEqualTo(1L);
+    assertThat(countRecords("Surrogate")).as("and the collapse must not have added a record of its own")
+        .isEqualTo(recordsBefore);
+    // What the guard is worth, stated against the shape above: the content is no MORE visible than it already was.
+    // Collapsing it would have given the content record a plain positive size marker, which is precisely what makes
+    // a slot a document in its own right - the same duplication as #6196, on a record that had escaped it.
+    assertThat(countRecordsHolding("Surrogate", "p")).as("the collapse must not multiply the placeholder's content")
+        .isEqualTo(copiesBefore);
+
+    database.transaction(() -> assertThat(placeholder[0].asDocument(true).getString("v")).isEqualTo("p"));
+    checkDatabase();
+  }
+
+  /**
+   * Records a full SCAN returns - the count that would change if a content record became visible on its own.
+   * {@code count(@rid)} and not {@code count(*)}: the latter answers from the bucket's cached counter without
+   * scanning a page, so it could not see the difference this test is about.
+   */
+  private long countRecords(final String typeName) {
+    final long[] total = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + typeName)) {
+        total[0] = ((Number) rs.next().getProperty("c")).longValue();
+      }
+    });
+    return total[0];
+  }
+
+  /**
+   * Records a scan returns holding exactly {@code value} - the sharper form of the count above, and the one that
+   * would notice the placeholder's content being handed out a second time under a RID of its own.
+   */
+  private long countRecordsHolding(final String typeName, final String value) {
+    final long[] total = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + typeName + " where v = ?", value)) {
+        total[0] = ((Number) rs.next().getProperty("c")).longValue();
+      }
+    });
+    return total[0];
+  }
+
+  /**
+   * Shrinks {@code collapsing} back inside its slot and, before committing, has another thread commit a change to a
+   * record sharing that page. Returns true when our commit went through.
+   */
+  private boolean collapseSurvives(final RID collapsing, final RID neighbour, final String value,
+      final String neighbourValue) throws InterruptedException {
+    database.begin();
+    collapsing.asDocument(true).modify().set("v", value).save();
+
+    final Thread concurrent = new Thread(
+        () -> database.transaction(() -> neighbour.asDocument(true).modify().set("v", neighbourValue).save()));
+    concurrent.start();
+    concurrent.join();
+
+    try {
+      database.commit();
+      return true;
+    } catch (final ConcurrentModificationException e) {
+      return false;
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+  }
+}
