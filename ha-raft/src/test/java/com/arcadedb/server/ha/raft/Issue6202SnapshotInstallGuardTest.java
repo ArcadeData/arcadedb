@@ -20,6 +20,9 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.DefaultLogger;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.server.ArcadeDBServer;
 
 import org.apache.ratis.proto.RaftProtos;
@@ -36,9 +39,14 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -150,6 +158,96 @@ class Issue6202SnapshotInstallGuardTest {
     }
   }
 
+  /**
+   * A refusal is the expected outcome of a guard, and Ratis re-drives the install, so on a misconfigured cluster
+   * - or in the window after an election before the leader-role flag catches up - it fires on every attempt.
+   * Logged as the two request-driven resync paths log the same refusal: WARNING, message only. It used to fall
+   * into the install's generic {@code catch (Exception)} and come out as a SEVERE with a stack trace, which is
+   * what log-based alerting keys on.
+   */
+  @Test
+  void aRefusalIsLoggedAsAWarningAndNotAsAFault(@TempDir final Path tempDir) throws Exception {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.isLeader()).thenReturn(false);
+    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(LOCAL_HTTP);
+    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+
+    final List<LoggedLine> logged = new CopyOnWriteArrayList<>();
+    final Logger previous = installCapturingLogger(logged);
+    final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
+    sm.setRaftHAServer(raft);
+    try {
+      assertThatThrownBy(() -> sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(),
+          TermIndex.valueOf(9L, FIRST_LOG_INDEX)).get(30, TimeUnit.SECONDS)).isNotNull();
+
+      final LoggedLine refusal = logged.stream()
+          .filter(l -> l.message().startsWith("Refusing a leader-initiated snapshot install"))
+          .findFirst()
+          .orElse(null);
+      assertThat(refusal).as("the refusal must be logged, so an operator can see why the node stays behind")
+          .isNotNull();
+      assertThat(refusal.level()).isEqualTo(Level.WARNING);
+      assertThat(refusal.throwable())
+          .as("a guard firing as designed carries no stack trace worth printing")
+          .isNull();
+
+      assertThat(logged.stream().map(LoggedLine::message))
+          .as("and it must not ALSO come out of the generic failure arm as a SEVERE fault")
+          .noneMatch(m -> m.startsWith("Error during snapshot installation from leader"));
+    } finally {
+      LogManager.instance().setLogger(previous);
+      sm.close();
+    }
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Serialising the resync paths must not outlive the state machine
+  // -----------------------------------------------------------------------------------------------
+
+  /**
+   * The install waits for {@code snapshotDownloadLock} rather than racing whatever holds it, and it is the one
+   * resync path that may block - it owns its executor thread. That wait has to be interruptible, or a
+   * {@code close()} would be held open for the length of somebody else's download; {@code lockInterruptibly()}
+   * is what makes {@code shutdownNow()} able to unwind it, and this is the only path in the new locking code
+   * without other coverage.
+   */
+  @Test
+  void closingTheStateMachineUnwindsAnInstallParkedBehindAnInFlightResync(@TempDir final Path tempDir)
+      throws Exception {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.isLeader()).thenReturn(false);
+    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
+    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+
+    final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
+    sm.setRaftHAServer(raft);
+
+    // Stands in for a request-driven resync already running: the install must queue behind it, not proceed.
+    final ReentrantLock resyncLock = snapshotDownloadLock(sm);
+    resyncLock.lock();
+    try {
+      final CompletableFuture<TermIndex> install = sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(),
+          TermIndex.valueOf(9L, FIRST_LOG_INDEX));
+
+      for (int i = 0; i < 500 && !resyncLock.hasQueuedThreads(); i++)
+        Thread.sleep(10);
+      assertThat(resyncLock.hasQueuedThreads())
+          .as("the install must park on the lock instead of running concurrently with the in-flight resync")
+          .isTrue();
+
+      sm.close();
+
+      // Bounded rather than get(): an install that is NOT unwound never completes, and a regression must fail
+      // this test rather than hang the module's run.
+      assertThatThrownBy(() -> install.get(30, TimeUnit.SECONDS))
+          .as("shutdownNow() must unwind the parked install rather than wait out a download it cannot see")
+          .hasRootCauseInstanceOf(InterruptedException.class)
+          .hasStackTraceContaining("Interrupted while waiting for an in-flight resync to finish");
+    } finally {
+      resyncLock.unlock();
+    }
+  }
+
   // -----------------------------------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------------------------------
@@ -220,6 +318,48 @@ class Issue6202SnapshotInstallGuardTest {
         .setDirectory(dir.toFile())
         .setOption(RaftStorage.StartupOption.FORMAT)
         .build();
+  }
+
+  /** One line the capturing logger saw. */
+  private record LoggedLine(Level level, String message, Throwable throwable) {
+  }
+
+  /**
+   * Installs a {@link Logger} that records every line, returning the previous one for restore. Restores a fresh
+   * {@link DefaultLogger} rather than the live instance, which is the sanctioned test pattern here.
+   */
+  private static Logger installCapturingLogger(final List<LoggedLine> logged) {
+    final Logger capturing = new Logger() {
+      @Override
+      public void log(final Object requester, final Level level, final String message, final Throwable throwable,
+          final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
+          final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
+          final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
+          final Object arg15, final Object arg16, final Object arg17) {
+        if (message != null)
+          logged.add(new LoggedLine(level, message, throwable));
+      }
+
+      @Override
+      public void log(final Object requester, final Level level, final String message, final Throwable throwable,
+          final String context, final Object... args) {
+        if (message != null)
+          logged.add(new LoggedLine(level, message, throwable));
+      }
+
+      @Override
+      public void flush() {
+      }
+    };
+    final Logger previous = new DefaultLogger();
+    LogManager.instance().setLogger(capturing);
+    return previous;
+  }
+
+  private static ReentrantLock snapshotDownloadLock(final ArcadeStateMachine sm) throws Exception {
+    final Field f = ArcadeStateMachine.class.getDeclaredField("snapshotDownloadLock");
+    f.setAccessible(true);
+    return (ReentrantLock) f.get(sm);
   }
 
   private static void setStaleSnapshotAppliedFloor(final ArcadeStateMachine sm, final long floor) throws Exception {

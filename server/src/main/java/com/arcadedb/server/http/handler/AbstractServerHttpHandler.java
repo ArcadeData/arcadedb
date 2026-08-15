@@ -538,6 +538,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // chains did, since only their wrapper arms ever consulted getCause(). Unwrapping unconditionally would
     // change what a mapping keyed on the OUTER type answers: an IllegalArgumentException that happens to carry
     // a DuplicatedKeyException cause is a 400, not a 409.
+    //
+    // One level is sufficient because at most one is produced: DatabaseAbstractHandler.executeInTransaction
+    // rethrows a RuntimeException unchanged rather than re-wrapping it (#6201), so a failure arrives here either
+    // as itself or under a single planner/commit wrapper. That is a coupling, not a coincidence - a change that
+    // reintroduces double-wrapping has to deepen the walk here too, or the mapping it buries silently degrades to
+    // the generic 500 this method exists to stop producing.
     final Throwable cause = e.getCause() != null && isGenericWrapper(e) ? e.getCause() : e;
 
     // ServerSecurityException is not a SecurityException (it extends ServerException), so both are probed.

@@ -1271,7 +1271,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // carrying whatever it copied. Refusing is the honest disposition - Ratis retries the install.
       final SnapshotSource source = resolveSnapshotSource(leaderId);
       if (source.refused())
-        throw new IllegalStateException("Refusing a leader-initiated snapshot install: " + source.refusal());
+        throw new SnapshotRefusedException(source.refusal());
 
       final String leaderHttpAddr = source.httpAddress();
       final String leaderHttpsAddr = raftHAServer.getPeerHttpsAddress(leaderId);
@@ -1328,6 +1328,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       clearDivergedState();
       return installedTermIndex;
 
+    } catch (final SnapshotRefusedException e) {
+      // A refusal is the expected, retried outcome this guard exists to produce, not a fault: Ratis re-drives
+      // the install, so on a misconfigured cluster - or in the window right after an election, before the
+      // leader-role flag catches up - it fires on every attempt. Logged at WARNING and without a stack trace,
+      // like the same refusal on the two request-driven paths; a SEVERE per retry would trip log-based alerting
+      // for a guard that is working as designed.
+      LogManager.instance().log(this, Level.WARNING, SNAPSHOT_INSTALL_REFUSED + "%s", e.reason());
+      throw new RuntimeException("Error during Raft snapshot installation", e);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
       throw new RuntimeException("Error during Raft snapshot installation", e);
@@ -1335,6 +1343,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
       snapshotDownloadLock.unlock();
       if (acquiredSnapshotFlag)
         snapshotDownloadInProgress.set(false);
+    }
+  }
+
+  /** Prefix of both the refusal exception's message and the WARNING it is logged with. */
+  private static final String SNAPSHOT_INSTALL_REFUSED = "Refusing a leader-initiated snapshot install: ";
+
+  /**
+   * A snapshot resync that {@link #resolveSnapshotSource} refused before it started. A distinct type only so the
+   * install path can tell it apart from a genuine installation failure in its catch chain and log it at the
+   * severity its disposition deserves - the two request-driven paths return rather than throw, and never had to
+   * make the distinction.
+   */
+  private static final class SnapshotRefusedException extends IllegalStateException {
+    private final String reason;
+
+    private SnapshotRefusedException(final String reason) {
+      super(SNAPSHOT_INSTALL_REFUSED + reason);
+      this.reason = reason;
+    }
+
+    /** The refusal on its own, so the log line can carry a literal prefix rather than a fully formatted message. */
+    String reason() {
+      return reason;
     }
   }
 
