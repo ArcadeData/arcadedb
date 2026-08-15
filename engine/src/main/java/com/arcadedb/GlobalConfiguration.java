@@ -613,6 +613,23 @@ public enum GlobalConfiguration {
       invalid.""",
       Integer.class, 0),
 
+  RESTORE_THREADS("arcadedb.restore.threads", SCOPE.JVM,
+      """
+      Number of threads used to restore a full backup. ZIP entries are independent files, so they are inflated and \
+      written concurrently, one entry per thread. -1 (the default) sizes the pool automatically at the available \
+      processors capped at 8; 0 selects the legacy single-threaded stream walk, kept as an escape hatch. Unlike a \
+      backup, a restore does not run alongside the database it is working on - that database does not exist yet - \
+      which is why the automatic sizing claims whole cores rather than half of them. The parallel path needs random \
+      access to the archive and is therefore used only for a plain local file: an archive read over http(s) is a \
+      one-shot stream and an encrypted one is a single cipher stream, and both fall back to the sequential walk \
+      automatically, whatever this setting says. Peak heap is bounded by construction at one copy buffer per thread \
+      (256 KB) plus the JDK inflater's own buffer, so under 3 MB at 8 threads. Parallelism is per entry: a database \
+      made of one dominant file cannot be split, because a ZIP entry is a single deflate stream that has to be \
+      inflated serially.""",
+      // SAME BOUND AS RestoreSettings.MAX_RESTORE_THREADS, WHICH THE CLI AND THE Restore API VALIDATE AGAINST. THE
+      // ENGINE CANNOT DEPEND ON THE INTEGRATION MODULE, SO THE LITERAL IS REPEATED: CHANGE ONE AND CHANGE THE OTHER
+      Integer.class, -1, integerRangeAsStrings(-1, 256)),
+
   // SQL
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
