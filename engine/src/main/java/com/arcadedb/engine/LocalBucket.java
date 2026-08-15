@@ -1895,6 +1895,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // (#6163): the write measured it against a page this one has moved on from, and a concurrent commit is
         // allowed to have taken the bytes a shrink released. A region that can no longer host the plain record sends
         // the transaction to a normal retry instead of writing over whatever took them.
+        //
+        // No test reaches this refusal, and that is a statement about the engine rather than about the tests: a
+        // region only shrinks when something is committed between this slot and its neighbour, and the room next to
+        // a chunk head is released by the very transaction being replayed here - a collapse - which cannot have
+        // committed yet. What could still do it is a compressPage that re-flows the page under us. So it stays, as
+        // the head-chunk branch's own refusal above does, and neither is reachable by fabricating a page state
+        // without testing the fabrication instead of the engine.
         final int chunkRegionEnd = headChunkRegionEnd(page, recordCountInPage, existingPos);
         final int sizeLen = Binary.getNumberSpace(body.length);
         if (existingPos + sizeLen + body.length > chunkRegionEnd)
