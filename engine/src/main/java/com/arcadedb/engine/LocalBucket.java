@@ -659,10 +659,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (contentSize < 0 || contentOffset + contentSize > contentPage.getMaxContentSize())
         return NO_OFF_PAGE_FINGERPRINT;
 
-      final byte[] scratch = new byte[contentSize];
-      contentPage.readByteArray(contentOffset, scratch, 0, contentSize);
-      for (int i = 0; i < contentSize; ++i)
-        fingerprint = (fingerprint ^ (scratch[i] & 0xFFL)) * FNV_PRIME;
+      fingerprint = fnv1a(fingerprint, contentPage, contentOffset, contentSize);
 
       return fingerprint == NO_OFF_PAGE_FINGERPRINT ? EMPTY_OFF_PAGE_FINGERPRINT : fingerprint;
     } catch (final Exception e) {
@@ -713,13 +710,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return EMPTY_OFF_PAGE_FINGERPRINT;
 
     long fingerprint = FNV_OFFSET_BASIS;
-    byte[] scratch = null;
     final int totalPages = getTotalPages();
     // Exact loop detection, as in findBrokenChunkChain and for the same reason: a chain can legitimately hold more
     // chunks than the bucket has pages (chunks share pages after reuse), so any count-based bound either bails on a
     // valid chain or lets a corrupted one walk for a very long time first. Revisiting a pointer is the only certain
     // loop signal, and a chain that never revisits one is finite by construction. Allocated only if the chain turns
-    // out to be long: a record of a handful of chunks - which is what every realistic one is - walks allocation-free.
+    // out to be long: a record of a handful of chunks - which is what every realistic one is - is the whole reason
+    // this walk allocates nothing at all.
     LongHashSet visitedChunks = null;
 
     for (int chunk = 0; pointer > 0; ++chunk) {
@@ -756,12 +753,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // byte of content is the same.
       fingerprint = fnv1a(fingerprint, pointer);
       fingerprint = fnv1a(fingerprint, chunkSize);
-
-      if (scratch == null)
-        scratch = new byte[pageSize];
-      chunkPage.readByteArray(headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE, scratch, 0, chunkSize);
-      for (int i = 0; i < chunkSize; ++i)
-        fingerprint = (fingerprint ^ (scratch[i] & 0xFFL)) * FNV_PRIME;
+      fingerprint = fnv1a(fingerprint, chunkPage, headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE, chunkSize);
 
       pointer = chunkPage.readLong(headerPos + INT_SERIALIZED_SIZE);
     }
@@ -771,6 +763,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // sound because BOTH sides of the comparison go through this same remap, and is of the same ~2^-64 order as the
     // collision the fingerprint already accepts.
     return fingerprint == NO_OFF_PAGE_FINGERPRINT ? EMPTY_OFF_PAGE_FINGERPRINT : fingerprint;
+  }
+
+  /**
+   * Folds {@code length} bytes of {@code page}, from {@code offset}, into {@code fingerprint}: the byte loop both
+   * fingerprint walks share.
+   * <p>
+   * It reads the page one ABSOLUTE byte at a time rather than copying the range into a scratch array first, which is
+   * what makes a fingerprint of any size allocate nothing - the walks run twice per update of the record they cover,
+   * once when it is taken for update and once at commit, and a chunk or a content record is up to a page long. The
+   * FNV loop has to touch every byte either way, so what the copy bought was a bulk read; what it cost was a
+   * content-sized allocation per call. Absolute reads also leave the page buffer's position where they found it,
+   * unlike the bulk read they replace.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static long fnv1a(final long fingerprint, final BasePage page, final int offset, final int length) {
+    long folded = fingerprint;
+    for (int i = 0; i < length; ++i)
+      folded = (folded ^ (page.readByte(offset + i) & 0xFFL)) * FNV_PRIME;
+    return folded;
   }
 
   /** Folds the 8 bytes of {@code value} into {@code fingerprint}, least significant first. */

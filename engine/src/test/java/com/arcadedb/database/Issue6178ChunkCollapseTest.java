@@ -112,6 +112,13 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
   /**
    * The collapse is a single-slot write like the spill it undoes, so it has to be replayable: a concurrent update of
    * another record on the same page must still merge instead of failing the transaction.
+   * <p>
+   * This is also where the collapse meets #6175, and the reason no separate test is needed for the pair. Freeing the
+   * chain poisons every page it visits, so a chain that had come home to the head chunk's own page would poison the
+   * very page this replay needs - which is exactly what #6175 stops. Measured on this fixture: with the exclusion
+   * disabled the chain runs 1, 2, 0, 3 (chunk 3 lands on the head page); with it, 1, 2, 3, 4. Verified reaching
+   * {@code rebaseRecordOnPage} with {@code SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD} rather than merely committing, so the
+   * new replay is what this passes through and not some other path.
    */
   @Test
   void theCollapseIsReplayedOnACommittedPage() throws InterruptedException {
