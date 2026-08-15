@@ -35,6 +35,7 @@ import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -99,7 +100,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     validateArgs(args);
 
     final String indexSpec = args[0].toString();
-    final int limit = args[1] instanceof Number n ? NumberUtils.saturateToInt(n) : Integer.parseInt(args[1].toString());
+    final int limit = extractLimit(args[1]);
 
     Object key = args[2];
     if (key == null)
@@ -145,6 +146,28 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     }
 
     return results.stream();
+  }
+
+  /**
+   * Narrows the {@code k} argument to an {@code int}, saturating at the int bounds instead of
+   * failing, whether it arrives as a {@link Number} or as a numeric string.
+   * <p>
+   * A result-count bound has a sensible "as many as exist" reading, so a value above
+   * {@link Integer#MAX_VALUE} saturates rather than being rejected. The string fallback used to go
+   * through {@link Integer#parseInt}, which threw a bare {@code NumberFormatException} for exactly
+   * the same magnitudes the {@link Number} branch next to it accepted - the two branches now agree.
+   * </p>
+   */
+  private static int extractLimit(final Object arg) {
+    if (arg instanceof Number n)
+      return NumberUtils.saturateToInt(n);
+
+    final String text = arg.toString().trim();
+    try {
+      return NumberUtils.saturateToInt(new BigDecimal(text));
+    } catch (final NumberFormatException e) {
+      throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must be a number, got '" + text + "'", e);
+    }
   }
 
   /**

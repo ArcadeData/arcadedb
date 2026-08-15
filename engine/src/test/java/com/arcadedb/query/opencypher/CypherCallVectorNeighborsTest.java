@@ -191,6 +191,47 @@ class CypherCallVectorNeighborsTest extends TestHelper {
   }
 
   @Test
+  void queryNodesKAsANumericStringAboveIntRangeSaturatesLikeTheNumberBranch() {
+    // Issue #6065 Part B2: `k` is read as `args[1] instanceof Number ? saturateToInt(n) : <string fallback>`.
+    // Since #5924 the Number branch saturates, but the string fallback was still Integer.parseInt, so
+    // the very same magnitude that returned all 5 neighbours as a Long threw a bare
+    // NumberFormatException as a String. The two branches now agree.
+    final Map<String, Object> params = new HashMap<>();
+    params.put("vec", new float[]{0.0f, 0.0f, 1.0f});
+    params.put("k", "2147483648");
+
+    try (ResultSet results = database.query("opencypher",
+        "CALL db.index.vector.queryNodes('Doc[embedding]', $k, $vec) YIELD node, score RETURN node.name AS name, score",
+        params)) {
+
+      final List<String> names = new ArrayList<>();
+      while (results.hasNext())
+        names.add(results.next().getProperty("name"));
+
+      assertThat(names).hasSize(5);
+    }
+  }
+
+  @Test
+  void queryNodesKAsAnOrdinaryNumericStringStillWorks() {
+    // Guards the saturation above against over-reach: an in-range numeric string is unchanged.
+    final Map<String, Object> params = new HashMap<>();
+    params.put("vec", new float[]{1.0f, 0.0f, 0.0f});
+    params.put("k", "2");
+
+    try (ResultSet results = database.query("opencypher",
+        "CALL db.index.vector.queryNodes('Doc[embedding]', $k, $vec) YIELD node, score RETURN node.name AS name, score",
+        params)) {
+
+      final List<String> names = new ArrayList<>();
+      while (results.hasNext())
+        names.add(results.next().getProperty("name"));
+
+      assertThat(names).hasSize(2);
+    }
+  }
+
+  @Test
   void queryNodesWithReturnPattern() {
     // Exact Neo4j pattern from the user's benchmark query
     final Map<String, Object> params = new HashMap<>();
