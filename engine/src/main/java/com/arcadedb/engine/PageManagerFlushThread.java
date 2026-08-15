@@ -78,12 +78,14 @@ public class PageManagerFlushThread extends Thread {
   private final        ConcurrentHashMap<Database, Object>                      replayDrainLocks    = new ConcurrentHashMap<>();
 
   /**
-   * O(1) index: pageId → most recent MutablePage in the flush queue or currently being flushed.
+   * O(1) index: pageId → most recent MutablePage in the flush queue or currently being flushed, plus the O(1)
+   * per-database count of those entries the drains poll (issue #6133 - see {@link FlushPageIndex}).
    * <p>
-   * Package-private (instead of private) so the white-box regression test for issue #4544 can set up
-   * and assert on entries directly.
+   * Package-private (instead of private) so the white-box regression tests for issues #4544 and #6133 can set up
+   * and assert on entries directly. Every mutation must go through its methods: the pending-page count is
+   * maintained there and nowhere else.
    */
-  final                ConcurrentHashMap<PageId, MutablePage> pageIndex = new ConcurrentHashMap<>();
+  final                FlushPageIndex                         pageIndex = new FlushPageIndex();
 
   /**
    * Maximum bytes of dirty pages that may sit deferred (in {@link #deferredByDatabase}) while flushing is
@@ -149,8 +151,7 @@ public class PageManagerFlushThread extends Thread {
 
     // Index pages BEFORE enqueueing so that getCachedPageFromMutablePageInQueue()
     // can find them even if the queue.offer() hasn't completed yet.
-    for (final MutablePage page : pages)
-      pageIndex.put(page.getPageId(), page);
+    pageIndex.putAll(pages);
 
     // TRY TO INSERT THE PAGE IN THE QUEUE UNTIL THE THREAD IS STILL RUNNING
     while (running) {
@@ -159,8 +160,7 @@ public class PageManagerFlushThread extends Thread {
     }
 
     // Failed to enqueue (shutdown in progress) — remove from index
-    for (final MutablePage page : pages)
-      pageIndex.remove(page.getPageId());
+    pageIndex.removeAll(pages);
 
     LogManager.instance()
         .log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database (running=%s queue=%d)", pages, running,
@@ -213,9 +213,9 @@ public class PageManagerFlushThread extends Thread {
     long lastFlushed = flushedCounter.get();
     long lastProgressAt = System.currentTimeMillis();
     while (true) {
-      final int pending = countPendingPagesOfDatabase(database, false);
+      final int pending = pageIndex.pendingOf(database);
 
-      if (pending == 0)
+      if (pending <= 0)
         return true;
 
       final long now = System.currentTimeMillis();
@@ -372,7 +372,7 @@ public class PageManagerFlushThread extends Thread {
    * committer can queue a page.
    */
   boolean hasPendingPagesOfDatabase(final Database database) {
-    return countPendingPagesOfDatabase(database, true) > 0;
+    return pageIndex.hasPendingOf(database);
   }
 
   /**
@@ -385,10 +385,12 @@ public class PageManagerFlushThread extends Thread {
    * flush thread wedged on a dead disk must not be able to hold the global lock for the 60 s the progress-based
    * timeout allows, which would stall every committer of every database in the JVM.
    * <p>
-   * Polls at 1 ms rather than spinning, deliberately: {@link #countPendingPagesOfDatabase} walks the JVM-WIDE
-   * {@link #pageIndex}, so a spin loop would turn one cheap check into hundreds of O(n) scans of a map whose size
-   * grows with exactly the backlog that makes this wait non-trivial in the first place - and all of them under the
-   * global lock. One extra millisecond in the rare case where a page IS in flight is the better trade.
+   * Polls at 1 ms rather than spinning. The check itself is now O(1) (issue #6133 - it used to walk the JVM-wide
+   * {@link #pageIndex}, so a spin turned one cheap check into hundreds of scans of a map whose size grows with
+   * exactly the backlog that makes this wait non-trivial, all of them under the global lock), but what a spin would
+   * be waiting for has not changed: a page reaching the disk, which is a synchronous file write away and orders of
+   * magnitude longer than any sane spin. One extra millisecond in the rare case where a page IS in flight is still
+   * the better trade than burning a core under a JVM-wide lock.
    *
    * @return {@code true} when the pipeline emptied, {@code false} when the deadline expired first (the caller
    *     proceeds with a t0 that may sit slightly behind the last committed transaction, and says so).
@@ -439,22 +441,6 @@ public class PageManagerFlushThread extends Thread {
           Thread.currentThread().interrupt();
       }
     }
-  }
-
-  /**
-   * Pages of the database still anywhere in the flush pipeline.
-   *
-   * @param stopAtFirst return as soon as one is found, for the callers that only need the boolean
-   */
-  private int countPendingPagesOfDatabase(final Database database, final boolean stopAtFirst) {
-    int pending = 0;
-    for (final PageId key : pageIndex.keySet())
-      if (database.equals(key.getDatabase())) {
-        ++pending;
-        if (stopAtFirst)
-          return pending;
-      }
-    return pending;
   }
 
   public void waitForCurrentFlushToComplete(final Database database) throws InterruptedException {
@@ -680,16 +666,10 @@ public class PageManagerFlushThread extends Thread {
 
   /**
    * Removes a just-flushed page from the {@link #pageIndex}, but ONLY if the indexed value is still the
-   * exact same instance that was flushed. A later transaction may have queued a NEWER {@link MutablePage}
-   * for the same {@link PageId}; that newer entry must survive so reads keep seeing the latest version.
-   * <p>
-   * Reference identity ({@code indexed == page}) is used here on purpose instead of {@code remove(key, value)}:
-   * {@link BasePage#equals} keys on the mutable {@code version} field, which is an unreliable discriminator
-   * for a hash-map value (issue #4544). The atomic {@code computeIfPresent} guarantees the check-and-remove
-   * happens as a single operation under the same concurrency guarantees as {@code remove(key, value)}.
+   * exact same instance that was flushed (issue #4544 - see {@link FlushPageIndex#removeIfSame}).
    */
   void removeFromFlushIndex(final MutablePage page) {
-    pageIndex.computeIfPresent(page.getPageId(), (id, indexed) -> indexed == page ? null : indexed);
+    pageIndex.removeIfSame(page);
   }
 
   /** Sum of the in-RAM size of every page in a deferred batch, used to bound the deferred backlog (issue #4728). */
@@ -722,8 +702,8 @@ public class PageManagerFlushThread extends Thread {
           pagesToFlush.pages.clear();
         }
 
-    // Also clean index entries for pages currently being flushed
-    pageIndex.entrySet().removeIf(e -> database.equals(e.getKey().getDatabase()));
+    // Also clean index entries for pages currently being flushed, and forget the database's pending count with them
+    pageIndex.removeAllOfDatabase(database);
 
     // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
@@ -755,8 +735,7 @@ public class PageManagerFlushThread extends Thread {
         deferredRAMBytes.addAndGet(-removePagesOfFileFromBatch(pagesToFlush, database, fileId));
 
     // Finally clean any index entry for a page currently being flushed.
-    pageIndex.entrySet()
-        .removeIf(e -> database.equals(e.getKey().getDatabase()) && e.getKey().getFileId() == fileId);
+    pageIndex.removeAllOfFile(database, fileId);
   }
 
   /**

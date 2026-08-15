@@ -59,7 +59,7 @@ class Issue4544FlushIndexIdentityTest extends TestHelper {
     final MutablePage newer = new MutablePage(pageId, 1024, new byte[1024], 6, 0);
 
     // A later transaction has queued the newer page: it is the current value in the flush index.
-    flush.pageIndex.put(pageId, newer);
+    flush.pageIndex.put(newer);
 
     // Both pages share the same PageId, so they always compare equal under BasePage.equals (which keys on
     // pageId only, see #4722). A value-based remove(key, value) would therefore happily evict the newer entry
@@ -83,7 +83,7 @@ class Issue4544FlushIndexIdentityTest extends TestHelper {
     final PageId pageId = new PageId(database, 4, 2);
     final MutablePage page = new MutablePage(pageId, 1024, new byte[1024], 9, 0);
 
-    flush.pageIndex.put(pageId, page);
+    flush.pageIndex.put(page);
     flush.removeFromFlushIndex(page);
 
     assertThat(flush.pageIndex.containsKey(pageId)).isFalse();

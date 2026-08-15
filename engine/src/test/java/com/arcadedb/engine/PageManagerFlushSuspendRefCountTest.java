@@ -179,7 +179,7 @@ class PageManagerFlushSuspendRefCountTest extends TestHelper {
       final PageId pageId = new PageId(database, 999_888, 0);
       final MutablePage page = new MutablePage(pageId, 1024, new byte[1024], 0, 0);
       final PagesToFlush batch = new PagesToFlush(List.of(page));
-      flush.pageIndex.put(pageId, page);
+      flush.pageIndex.put(page);
       flush.queue.offer(batch);
       flush.flushPagesFromQueueToDisk(null, 1_000L);
       assertThat(flush.queue).isEmpty(); // THE BATCH WAS DEFERRED, NOT LEFT IN THE QUEUE
