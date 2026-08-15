@@ -100,7 +100,7 @@ public class LSMVectorIndexGraphManifest {
   /**
    * Fingerprint of the ordinal &rarr; record correspondence a graph is built over: for every ordinal, the vector id
    * and the RID it resolves to. FNV-1a over the whole sequence, the same construction
-   * {@code LocalBucket.chunkChainTailFingerprint} uses.
+   * {@code LocalBucket.offPageContentFingerprint} uses.
    * <p>
    * An ordinal whose RID cannot be resolved contributes a distinct marker rather than being skipped: skipping would
    * make an unresolvable ordinal invisible, so a live set that lost exactly that record would fingerprint the same.

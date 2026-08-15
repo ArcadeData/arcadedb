@@ -121,10 +121,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * more byte of content; it can never make the two sides disagree.
    */
   private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
-  /** No fingerprint could be taken of a record's chunk-chain tail: see {@link #chunkChainTailFingerprint(RID)}. */
-  public static final    long                      NO_CHUNK_TAIL_FINGERPRINT        = 0L;
-  /** The record has no chunk beyond its head: a real value, distinct from "unknown". */
-  private static final   long                      EMPTY_CHUNK_TAIL_FINGERPRINT     = 1L;
+  /**
+   * No fingerprint could be taken of the part of a record that lives off its own page: see
+   * {@link #offPageContentFingerprint(RID, BasePage, boolean)}.
+   */
+  public static final    long                      NO_OFF_PAGE_FINGERPRINT          = 0L;
+  /**
+   * The record has nothing off its own page - a chunk chain of one chunk, all of it in the head. A real value,
+   * distinct from "unknown", and also where a hash that lands on {@link #NO_OFF_PAGE_FINGERPRINT} is moved to.
+   */
+  private static final   long                      EMPTY_OFF_PAGE_FINGERPRINT       = 1L;
   private static final   long                      FNV_OFFSET_BASIS                 = 0xcbf29ce484222325L;
   private static final   long                      FNV_PRIME                        = 0x100000001b3L;
   private static final   int                       CHUNKS_BEFORE_LOOP_DETECTION     = 64;
@@ -515,66 +521,163 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Fingerprint of the chunk chain of {@code rid} PAST its head chunk, or {@link #NO_CHUNK_TAIL_FINGERPRINT} when
-   * there is nothing to fingerprint (the record is not a multi-page one) or the chain cannot be walked.
+   * Fingerprint of the part of the record {@code rid} that does NOT live in its own slot, or
+   * {@link #NO_OFF_PAGE_FINGERPRINT} when there is no such part (an ordinary record) or it cannot be read.
+   * <p>
+   * A record update is deferred: {@code TransactionContext.addUpdatedRecord} pins the record's own page at
+   * {@code save()} time and the write runs at commit, after the file's commit lock is taken - so every OTHER page the
+   * write touches is loaded fresh, at the newest committed version, and can never fail a page-version check. Whatever
+   * a record keeps outside its own slot is therefore invisible to MVCC, and this is what makes it visible again:
+   * taken twice, once when the record is taken for update and once at commit before the write, the two values are
+   * equal exactly when no concurrent transaction has touched that part of the record meanwhile.
+   * <p>
+   * Two record shapes have such a part, and both are answered here because both are taken at the same moment, for the
+   * same reason:
+   * <ul>
+   * <li>a multi-page record's chunk chain PAST its head chunk (#6129). The head chunk is the only part on the page
+   * the disjoint-slot merge replays, so the byte-for-byte pre-image check it makes sees that and nothing else; a
+   * mismatch here keeps the page on the ordinary retry path it took before that merge existed. Only walked when the
+   * merge is on ({@code withChunkChainTail}): with it off the head chunk's page is poisoned unconditionally and a
+   * concurrent write to the record fails the version check on it anyway, so the walk would buy nothing.</li>
+   * <li>the CONTENT record behind a placeholder POINTER (#6141). Here the slot holds 8 bytes of pointer and the
+   * record's WHOLE content is off-page, so nothing at all was version-checked: two transactions updating such a
+   * record both loaded the content page fresh under the commit lock and the second one silently won. A mismatch is a
+   * genuine concurrent modification and the update path raises a retryable
+   * {@link com.arcadedb.exception.ConcurrentModificationException} on it. Always taken - unlike the chain tail, it is
+   * the only thing standing between that record and a lost update.</li>
+   * </ul>
    * <p>
    * {@code recordPage} is the page the record lives on, which every caller has just pinned
    * ({@link #fetchPageInTransaction(RID)} returns it): taking it as a parameter keeps this off the update path's
    * allocation budget, since resolving it again would cost a {@link PageId} per updated record.
    * <p>
-   * The disjoint-slot merge replays a record's slot on ONE page, and of a multi-page record only the head chunk lives
-   * there: the byte-for-byte pre-image check it makes therefore sees the head chunk and nothing else. This is what
-   * covers the rest (#6129). Taken twice - once when the record is taken for update, once at commit before the chain
-   * is rewritten - the two values are equal exactly when no concurrent transaction has touched the record's tail
-   * meanwhile, which is the condition under which replaying the head chunk cannot drop somebody else's write.
+   * It reads through the transaction, so a page this transaction has already rewritten is fingerprinted as this
+   * transaction sees it, and the chain walk never allocates per chunk: one page-sized scratch buffer is reused for
+   * the whole chain.
    * <p>
-   * It walks the chain through the transaction, so a chunk this transaction has already rewritten is fingerprinted as
-   * this transaction sees it, and it never allocates per chunk: one page-sized scratch buffer is reused for the whole
-   * chain.
-   * <p>
-   * What goes into it is (chunk RID, chunk size, chunk content) for every chunk of the tail, which makes the identity
-   * it establishes stronger than "the same bytes": two states with the same fingerprint hold byte-identical chunks at
-   * the same slots. That is what makes an ABA on a continuation slot - a chunk freed and its slot reused meanwhile -
-   * a non-event: a concurrent transaction that ended up reproducing this exact tail reproduced this exact record
-   * content, so there is no write of theirs left to drop.
+   * What goes into it is (RID, size, content) for every chunk of the tail or for the content record, which makes the
+   * identity it establishes stronger than "the same bytes": two states with the same fingerprint hold byte-identical
+   * data at the same slots. That is what makes an ABA - a chunk or a content record freed and its slot reused
+   * meanwhile - a non-event: a concurrent transaction that ended up reproducing this exact image reproduced this
+   * exact record content, so there is no write of theirs left to drop.
    * <p>
    * A 64-bit FNV-1a, not a cryptographic digest. An ACCIDENTAL collision has a ~2^-64 chance of costing a lost update
    * on a record two transactions are rewriting at the same time. A DELIBERATE one buys its author nothing: both
-   * colliding tails are content of the same record, so engineering one requires write access to that record - and
+   * colliding images are content of the same record, so engineering one requires write access to that record - and
    * whoever has it can already overwrite it by committing last, which is the very outcome the collision would
    * produce. There is no third party whose data a collision could reach.
    *
+   * @param withChunkChainTail whether a multi-page record's chain has to be walked, i.e. whether the disjoint-slot
+   *                           merge that consumes it is enabled for this transaction.
+   *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  public long chunkChainTailFingerprint(final RID rid, final BasePage recordPage) {
+  public long offPageContentFingerprint(final RID rid, final BasePage recordPage, final boolean withChunkChainTail) {
     try {
       if (recordPage == null)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
       final int recordPositionInPage = getRecordPositionInPage(recordPage, positionInPage);
       if (recordPositionInPage == 0)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final long[] recordSize = recordPage.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] != FIRST_CHUNK)
-        // Not a multi-page record: the whole of it is on the page the merge replays, nothing left to cover.
-        return NO_CHUNK_TAIL_FINGERPRINT;
+      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+        return placeholderContentFingerprint(
+                new RID(fileId, recordPage.readLong((int) (recordPositionInPage + recordSize[1]))));
+
+      if (recordSize[0] != FIRST_CHUNK || !withChunkChainTail)
+        // An ordinary record: the whole of it is in its own slot, nothing left to cover.
+        return NO_OFF_PAGE_FINGERPRINT;
 
       return chunkChainTailFingerprint(recordPage, (int) (recordPositionInPage + recordSize[1]));
     } catch (final Exception e) {
-      // A chain that cannot be walked (a page that is gone, a broken pointer) simply cannot be vouched for.
+      // A record whose off-page part cannot be read (a page that is gone, a broken pointer) cannot be vouched for.
       return unwalkableChunkChain(e, rid);
     }
   }
 
   /**
-   * The one outcome both fingerprint walks share: the chain could not be read, so there is nothing to compare against
-   * and the head chunk stays unmergeable. Failing closed is always safe here, which is exactly why the catch that
-   * leads to it must not become a place a real defect can hide: the assertion draws the line between "this database's
-   * chain is broken" - which this method exists to tolerate, as {@link #findBrokenChunkChain} does - and a bug in the
-   * walk itself, which under {@code -ea} (surefire's default) fails a test loudly instead of degrading into a page
-   * that is silently never merged. It costs nothing in a production JVM, where the tolerance is unconditional.
+   * Fingerprint of the CONTENT record a placeholder pointer references, {@code contentRID} included so that a content
+   * record relocated onto another slot is a different image even when every byte of it is the same (#6141).
+   * <p>
+   * Never throws, and returns {@link #NO_OFF_PAGE_FINGERPRINT} for anything that is not a readable placeholder
+   * content record. The two sides of the comparison read that differently, on purpose: at capture time it means
+   * "there is nothing here to vouch for" and the update simply goes unchecked, exactly as it did before this existed;
+   * at commit time it can only mean that what WAS a content record no longer is one, which is the concurrent
+   * modification the caller is looking for.
+   * <p>
+   * A content record that is itself a chunk chain is covered too: {@code createRecordInternal} spills one into chunks
+   * like any other record when no page can host it whole, and the chain then belongs to the image just as much as the
+   * head does.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private long placeholderContentFingerprint(final RID contentRID) {
+    try {
+      final int contentPageId = (int) (contentRID.getPosition() / maxRecordsInPage);
+      if (contentPageId >= getTotalPages())
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      final BasePage contentPage = database.getTransaction()
+              .getPage(new PageId(database, file.getFileId(), contentPageId), pageSize);
+      if (contentPage == null)
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      final int positionInPage = (int) (contentRID.getPosition() % maxRecordsInPage);
+      if (positionInPage >= contentPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return NO_OFF_PAGE_FINGERPRINT;
+      final int recordPositionInPage = getRecordPositionInPage(contentPage, positionInPage);
+      if (recordPositionInPage == 0)
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      final long[] recordSize = contentPage.readNumberAndSize(recordPositionInPage);
+
+      long fingerprint = fnv1a(FNV_OFFSET_BASIS, contentRID.getPosition());
+      fingerprint = fnv1a(fingerprint, recordSize[0]);
+
+      final int contentOffset;
+      final int contentSize;
+      if (recordSize[0] == FIRST_CHUNK) {
+        // The content record outgrew its own page in turn: its head chunk here, the rest through the chain below.
+        final int chunkHeaderPos = (int) (recordPositionInPage + recordSize[1]);
+        contentSize = contentPage.readInt(chunkHeaderPos);
+        contentOffset = chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+        final long tail = chunkChainTailFingerprint(contentPage, chunkHeaderPos);
+        if (tail == NO_OFF_PAGE_FINGERPRINT)
+          return NO_OFF_PAGE_FINGERPRINT;
+        fingerprint = fnv1a(fingerprint, tail);
+      } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
+        // A placeholder content record stores its size NEGATED.
+        contentSize = (int) (recordSize[0] * -1L);
+        contentOffset = (int) (recordPositionInPage + recordSize[1]);
+      } else
+        // Not a placeholder content record (nor a chunk head): the pointer does not lead where it used to.
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      if (contentSize < 0 || contentOffset + contentSize > contentPage.getMaxContentSize())
+        return NO_OFF_PAGE_FINGERPRINT;
+
+      final byte[] scratch = new byte[contentSize];
+      contentPage.readByteArray(contentOffset, scratch, 0, contentSize);
+      for (int i = 0; i < contentSize; ++i)
+        fingerprint = (fingerprint ^ (scratch[i] & 0xFFL)) * FNV_PRIME;
+
+      return fingerprint == NO_OFF_PAGE_FINGERPRINT ? EMPTY_OFF_PAGE_FINGERPRINT : fingerprint;
+    } catch (final Exception e) {
+      return unwalkableChunkChain(e, contentRID);
+    }
+  }
+
+  /**
+   * The one outcome every fingerprint walk shares: the record's off-page part could not be read, so there is nothing
+   * to compare against - the head chunk stays unmergeable, and a placeholder's update stays unchecked at capture time
+   * or is refused at commit time. Failing closed is always safe here, which is exactly why the catch that leads to it
+   * must not become a place a real defect can hide: the assertion draws the line between "this database's chain is
+   * broken" - which this method exists to tolerate, as {@link #findBrokenChunkChain} does - and a bug in the walk
+   * itself, which under {@code -ea} (surefire's default) fails a test loudly instead of degrading into a page that is
+   * silently never merged. It costs nothing in a production JVM, where the tolerance is unconditional.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -583,15 +686,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // offsets straight out of the page, so an I/O or bounds failure is data talking and must stay tolerated, while
     // neither of these two can come from the page content once the walk has checked for a page that is gone.
     assert !(e instanceof NullPointerException || e instanceof ClassCastException) :
-        "the chunk-chain fingerprint must only ever fail on an unreadable chain: " + e;
+        "the off-page fingerprint must only ever fail on an unreadable record: " + e;
 
-    LogManager.instance().log(this, Level.FINE, "Unable to fingerprint the chunk chain of %s", e, walked);
-    return NO_CHUNK_TAIL_FINGERPRINT;
+    LogManager.instance().log(this, Level.FINE, "Unable to fingerprint the off-page content of %s", e, walked);
+    return NO_OFF_PAGE_FINGERPRINT;
   }
 
   /**
-   * Same as {@link #chunkChainTailFingerprint(RID)}, starting from an already-resolved head chunk. Never throws: a
-   * chain it cannot walk is simply one it cannot vouch for.
+   * The chunk-chain half of {@link #offPageContentFingerprint(RID, BasePage, boolean)}, starting from an
+   * already-resolved head chunk. Never throws: a chain it cannot walk is simply one it cannot vouch for.
    *
    * @param headChunkHeaderPos offset of the head chunk's size field, i.e. right after its marker.
    */
@@ -607,7 +710,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     long pointer = headChunkPage.readLong(headChunkHeaderPos + INT_SERIALIZED_SIZE);
     if (pointer == 0)
       // A single-chunk record: its whole content is in the head chunk, which the pre-image check already covers.
-      return EMPTY_CHUNK_TAIL_FINGERPRINT;
+      return EMPTY_OFF_PAGE_FINGERPRINT;
 
     long fingerprint = FNV_OFFSET_BASIS;
     byte[] scratch = null;
@@ -624,30 +727,30 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (visitedChunks == null)
           visitedChunks = new LongHashSet();
         if (!visitedChunks.add(pointer))
-          return NO_CHUNK_TAIL_FINGERPRINT;
+          return NO_OFF_PAGE_FINGERPRINT;
       }
 
       final int chunkPageId = (int) (pointer / maxRecordsInPage);
       final int chunkPositionInPage = (int) (pointer % maxRecordsInPage);
       if (chunkPageId >= totalPages)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final BasePage chunkPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
       if (chunkPage == null)
         // The page the chain points at is gone: nothing to vouch for.
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
       final int chunkPositionInPageOffset = getRecordPositionInPage(chunkPage, chunkPositionInPage);
       if (chunkPositionInPageOffset == 0)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final long[] chunkMarker = chunkPage.readNumberAndSize(chunkPositionInPageOffset);
       if (chunkMarker[0] != NEXT_CHUNK)
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       final int headerPos = (int) (chunkPositionInPageOffset + chunkMarker[1]);
       final int chunkSize = chunkPage.readInt(headerPos);
       if (chunkSize < 0 || headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize > chunkPage.getMaxContentSize())
-        return NO_CHUNK_TAIL_FINGERPRINT;
+        return NO_OFF_PAGE_FINGERPRINT;
 
       // The chunk's own identity goes in too: a chain relocated onto other slots is a different tail even when every
       // byte of content is the same.
@@ -667,7 +770,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // unknown. The two therefore alias - a real tail can be indistinguishable from a single-chunk record - which is
     // sound because BOTH sides of the comparison go through this same remap, and is of the same ~2^-64 order as the
     // collision the fingerprint already accepts.
-    return fingerprint == NO_CHUNK_TAIL_FINGERPRINT ? EMPTY_CHUNK_TAIL_FINGERPRINT : fingerprint;
+    return fingerprint == NO_OFF_PAGE_FINGERPRINT ? EMPTY_OFF_PAGE_FINGERPRINT : fingerprint;
   }
 
   /** Folds the 8 bytes of {@code value} into {@code fingerprint}, least significant first. */
@@ -2125,6 +2228,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         // FOUND A RECORD POINTED FROM A PLACEHOLDER
         final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
+
+        // #6141: this slot holds 8 bytes of pointer and the record's WHOLE content lives on another page - a page
+        // this transaction pinned nothing on, and which the write below therefore reaches at its newest committed
+        // version, under the commit lock. Neither the version check nor any pre-image check can see a concurrent
+        // update of this record: both writers read the content page fresh and the second one used to win silently.
+        // Comparing the content against the fingerprint taken when the record was taken for update
+        // (TransactionContext.addUpdatedRecord) is what makes that conflict visible, and it is the only thing that
+        // can - so this check is NOT conditional on any merge being enabled. Absent fingerprint = this update never
+        // went through addUpdatedRecord (a commit-time replay), and there is no "before" to compare against.
+        final Long capturedContent = slotTx == null ? null : slotTx.getOffPageFingerprint(rid);
+        if (capturedContent != null && capturedContent != placeholderContentFingerprint(placeHolderContentRID))
+          throw new ConcurrentModificationException(
+                  "Record " + rid + " was modified by a concurrent transaction. Please retry the operation");
+
         if (updateRecordInternal(record, placeHolderContentRID, true, discardRecordAfter)) {
           // UPDATE PLACEHOLDER CONTENT, THE PLACEHOLDER POINTER STAY THE SAME. Nothing was written to THIS page, so
           // it is left exactly as this transaction found it - no poisoning (#6129): the content record's page is the
