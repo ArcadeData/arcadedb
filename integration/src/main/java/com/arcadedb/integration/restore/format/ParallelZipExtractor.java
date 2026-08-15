@@ -206,6 +206,17 @@ public class ParallelZipExtractor {
     return () -> {
       final ZipEntry entry = planned.entry();
       final File uncompressedFile = planned.target();
+
+      // THE FILESYSTEM'S OWN ANSWER TO "IS THIS THE SAME FILE?", WHICH COMPARING NAMES CANNOT GIVE: ON A
+      // CASE-INSENSITIVE FILESYSTEM - THE DEFAULT ON macOS AND WINDOWS - 'Doc_0.bucket' AND 'doc_0.bucket' ARE TWO
+      // DISTINCT ENTRY NAMES AND ONE FILE, WHICH IS THE VERY RACE THE DUPLICATE-NAME CHECK EXISTS TO PREVENT. IT
+      // CANNOT BE DECIDED UP FRONT WITHOUT GUESSING AT THE FILESYSTEM (AND GUESSING WRONG WOULD REFUSE AN ARCHIVE
+      // THAT RESTORES PERFECTLY WELL ON A CASE-SENSITIVE ONE), SO IT IS ASKED HERE, WHERE THE ANSWER IS AUTHORITATIVE.
+      // THE DESTINATION IS ALWAYS A FRESHLY CREATED DIRECTORY, SO NOTHING ELSE CAN MAKE THIS FAIL
+      if (!uncompressedFile.createNewFile())
+        throw new IOException(
+            "Cannot restore entry '%s': '%s' already exists".formatted(entry.getName(), uncompressedFile));
+
       final byte[] buffer = acquireBuffer();
       long origSize = 0L;
       try (final InputStream in = zipFile.getInputStream(entry);

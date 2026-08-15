@@ -25,8 +25,17 @@ package com.arcadedb.integration.importer;
  * @author Luca Garulli
  */
 public class ConsoleLogger {
-  private final int         verboseLevel;
-  private       LogListener listener;
+  private final int          verboseLevel;
+  /**
+   * Serializes the notifications, because a listener is written once and called from wherever the logger is used, and
+   * since #6086 that includes several threads at a time: a parallel restore logs one line per archive entry from its
+   * worker pool. The listeners in the tree write those lines to a stream nobody synchronizes - the server's SSE
+   * progress channel writes straight to the exchange's output stream - so two lines arriving at once would interleave
+   * into a corrupt event rather than merely arriving out of order. Serializing here keeps that guarantee in one place
+   * instead of asking every implementation of a one-method interface to remember it.
+   */
+  private final Object       listenerLock = new Object();
+  private volatile LogListener listener;
 
   @FunctionalInterface
   public interface LogListener {
@@ -48,8 +57,7 @@ public class ConsoleLogger {
 
     final String msg = args.length == 0 ? text : text.formatted(args);
     System.out.println(msg);
-    if (listener != null)
-      listener.onLogLine(msg);
+    notifyListener(msg);
   }
 
   public void log(final int level, final String text, final Object... args) {
@@ -65,8 +73,16 @@ public class ConsoleLogger {
   public void errorLine(final String text, final Object... args) {
     final String msg = args.length == 0 ? text : text.formatted(args);
     System.out.println(msg);
-    if (listener != null)
-      listener.onLogLine(msg);
+    notifyListener(msg);
+  }
+
+  private void notifyListener(final String msg) {
+    final LogListener current = listener;
+    if (current == null)
+      return;
+    synchronized (listenerLock) {
+      current.onLogLine(msg);
+    }
   }
 
   public int getVerboseLevel() {

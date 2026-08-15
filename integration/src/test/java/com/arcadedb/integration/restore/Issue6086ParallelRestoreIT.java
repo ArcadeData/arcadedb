@@ -337,6 +337,36 @@ class Issue6086ParallelRestoreIT {
     }
   }
 
+  /**
+   * Two names that differ only in case are one file on a case-insensitive filesystem (the default on macOS and
+   * Windows) and two files on a case-sensitive one, so the up-front name comparison cannot answer this and must not
+   * try: guessing "collision" would refuse an archive that restores perfectly well on Linux, where two ArcadeDB types
+   * named {@code Doc} and {@code doc} give exactly such a pair of bucket files. The filesystem is asked instead, at
+   * the moment the file is created, so this test asserts whichever answer the filesystem it runs on gives.
+   */
+  @Test
+  void twoNamesDifferingOnlyInCaseFollowTheFilesystem() throws Exception {
+    final String archive = "target/parallel-restore-case.zip";
+    final File destination = new File(RESTORED_PATH);
+    try {
+      writeArchive(archive, "Cased.bin", "cased.bin");
+      FileUtils.deleteRecursively(destination);
+      assertThat(destination.mkdirs()).isTrue();
+
+      if (isCaseInsensitive(destination))
+        assertThatThrownBy(() -> new ParallelZipExtractor(2, new ConsoleLogger(0)).extract(new File(archive), destination))
+            .isInstanceOf(IOException.class).hasMessageContaining("already exists");
+      else {
+        assertThat(new ParallelZipExtractor(2, new ConsoleLogger(0)).extract(new File(archive), destination).files())
+            .isEqualTo(2);
+        assertThat(destination.list()).containsExactlyInAnyOrder("Cased.bin", "cased.bin");
+      }
+    } finally {
+      new File(archive).delete();
+      FileUtils.deleteRecursively(destination);
+    }
+  }
+
   /** An archive with no entries at all is not a restore, on either path. */
   @ParameterizedTest
   @ValueSource(ints = { 0, 8 })
@@ -414,6 +444,17 @@ class Issue6086ParallelRestoreIT {
       Arrays.fill(b, off, off + produced, (byte) 0);
       remaining -= produced;
       return produced;
+    }
+  }
+
+  /** Asks the filesystem under {@code directory} whether it distinguishes two names by case. */
+  private static boolean isCaseInsensitive(final File directory) throws IOException {
+    final File probe = new File(directory, "CaseProbe");
+    try {
+      assertThat(probe.createNewFile()).isTrue();
+      return new File(directory, "caseprobe").exists();
+    } finally {
+      probe.delete();
     }
   }
 
