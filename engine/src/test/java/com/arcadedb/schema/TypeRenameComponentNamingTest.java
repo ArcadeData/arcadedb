@@ -330,7 +330,8 @@ class TypeRenameComponentNamingTest extends TestHelper {
     assertThat(database.getSchema().existsBucket("renamed.Multi_0")).as("no leftover key under the new name").isFalse();
     assertThat(database.getSchema().existsBucket("renamed.Multi_1")).as("no leftover key under the new name").isFalse();
 
-    // A bucket that is no longer reachable by its own name cannot be queried, and its name looks free to reuse.
+    // The two lookups a stale key would have broken: the bucket answers to its own name again, and that name is
+    // still taken, so nothing can be created over the file it already owns.
     database.transaction(() -> assertThat(database.query("sql", "select from BUCKET:Multi_0").stream().count())
         .as("the rolled-back bucket is still addressable by name").isPositive());
     assertThatThrownBy(() -> database.getSchema().createBucket("Multi_0"))
