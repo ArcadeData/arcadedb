@@ -158,6 +158,14 @@ public class DatabaseChecker {
     // happened to find some. unreachableEdgeRecords is the orphan count (an edge record no adjacency list
     // references, so no traversal reaches it though countType counts it); the two edgesMissing* keys are the
     // per-side breakdown, IN only for a bidirectional edge type. missingReferenceBack is left exactly as it was.
+    //
+    // THE THREE ARE NOT DISJOINT, which matters to anything rendering them as a summary (Studio, an HTTP client):
+    // an orphaned BIDIRECTIONAL edge is one record that increments all three, and an orphaned unidirectional one
+    // increments unreachableEdgeRecords and edgesMissingOutReference. They answer "how many edges have this
+    // defect", each independently, not "which bucket does each defective edge fall into", so summing them
+    // double-counts. unreachableEdgeRecords is the one to show as the orphan total; the other two are the
+    // per-direction detail behind it plus the half-linked edges that are still reachable from one side.
+
     result.put("unreachableEdgeRecords", 0L);
     result.put("edgesMissingOutReference", 0L);
     result.put("edgesMissingInReference", 0L);
@@ -497,15 +505,6 @@ public class DatabaseChecker {
   }
 
   /**
-   * Merges the records a sub-check actually deleted into {@code deletedRecordsAfterFix}.
-   * <p>
-   * Absent before, which made the field answer a different question depending on which pass did the removing: the
-   * bucket-wide {@code LocalBucket.check} listed what it deleted, while the vertex and edge arms deleted silently
-   * and reported only an {@code autoFix} count. The distinction was invisible while a broken-chain record was
-   * always removed by the bucket pass; once the arms could remove it first, the same repair stopped listing the
-   * same record. Reported by whichever pass performs it, or the field cannot be read at all.
-   */
-  /**
    * Unions one edge scan's ORPHAN EDGE RECORD RIDs into the cross-type list (issue #6090). Merged by hand rather
    * than through {@link #updateStats}, which only folds {@code Long} values - the same reason
    * {@code corruptedRecords} is merged here. The count beside it stays exact even when this set hit its cap.
@@ -516,6 +515,15 @@ public class DatabaseChecker {
       ((LinkedHashSet<RID>) result.get("unreachableEdgeRecordsFound")).addAll(unreachable);
   }
 
+  /**
+   * Merges the records a sub-check actually deleted into {@code deletedRecordsAfterFix}.
+   * <p>
+   * Absent before, which made the field answer a different question depending on which pass did the removing: the
+   * bucket-wide {@code LocalBucket.check} listed what it deleted, while the vertex and edge arms deleted silently
+   * and reported only an {@code autoFix} count. The distinction was invisible while a broken-chain record was
+   * always removed by the bucket pass; once the arms could remove it first, the same repair stopped listing the
+   * same record. Reported by whichever pass performs it, or the field cannot be read at all.
+   */
   private void mergeDeletedRecords(final Map<String, Object> stats) {
     final Collection<RID> deleted = (Collection<RID>) stats.get("deletedRecordsAfterFix");
     if (deleted != null)

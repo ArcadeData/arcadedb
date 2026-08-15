@@ -1938,6 +1938,11 @@ The probe is now **direction-aware**, and what it establishes is reported:
 `missingReferenceBack` is deliberately untouched - both probes still run and it is still bumped once per side
 that holds no reference - so anything parsing today's result keeps reading the same number.
 
+The three new counters are **not disjoint**, which matters if you render them as a summary: one orphaned
+bidirectional edge increments all three. Each answers "how many edges have this defect" independently, so
+summing them double-counts. `unreachableEdgeRecords` is the orphan total; the other two are the per-direction
+detail behind it, plus the half-linked edges that are still reachable from one side.
+
 Reclaiming them is a new, explicit clause: **`CHECK DATABASE FIX DELETE ORPHANS`**. It is not folded into plain
 `FIX`, and the reason is a data-loss path rather than a taste for options. The detection cannot distinguish
 "this record is garbage a failed bulk load left behind" from "this vertex lost its head-chunk pointer, so its
