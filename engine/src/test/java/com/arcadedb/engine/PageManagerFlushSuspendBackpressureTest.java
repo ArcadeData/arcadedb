@@ -59,7 +59,7 @@ class PageManagerFlushSuspendBackpressureTest extends TestHelper {
     for (int i = 0; i < batches; i++) {
       final PageId pageId = new PageId(database, 9, i);
       final MutablePage page = new MutablePage(pageId, PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
-      flush.pageIndex.put(pageId, page);
+      flush.pageIndex.put(page);
       flush.queue.offer(new PagesToFlush(List.of(page)));
     }
 
@@ -91,7 +91,7 @@ class PageManagerFlushSuspendBackpressureTest extends TestHelper {
     for (int i = 0; i < batches; i++) {
       final PageId pageId = new PageId(database, 9, i);
       final MutablePage page = new MutablePage(pageId, PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
-      flush.pageIndex.put(pageId, page);
+      flush.pageIndex.put(page);
       flush.queue.offer(new PagesToFlush(List.of(page)));
     }
 

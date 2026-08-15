@@ -82,8 +82,8 @@ class FlushRobustnessTest extends TestHelper {
     final int healthyPageNum = healthyBucket.getTotalPages();
     final PageId healthyPageId = new PageId(db, healthyBucket.getFileId(), healthyPageNum);
     final MutablePage healthyPage = new MutablePage(healthyPageId, pageSize, new byte[pageSize], 0, 0);
-    flush.pageIndex.put(brokenPageId, brokenPage);
-    flush.pageIndex.put(healthyPageId, healthyPage);
+    flush.pageIndex.put(brokenPage);
+    flush.pageIndex.put(healthyPage);
     flush.queue.offer(new PagesToFlush(List.of(brokenPage, healthyPage)));
 
     // #4928: the broken page's IOException must be contained: the batch continues, the healthy page reaches
@@ -95,7 +95,7 @@ class FlushRobustnessTest extends TestHelper {
     // re-reading getTotalPages() here would inflate the expectation past what was written.
     assertThat(healthyOnDisk.getSize()).as("the healthy page of the batch must still be flushed (#4928)")
         .isGreaterThanOrEqualTo((long) (healthyPageNum + 1) * pageSize);
-    assertThat(flush.pageIndex).as("no page may leak in the flush index (#4928)").isEmpty();
+    assertThat(flush.pageIndex.isEmpty()).as("no page may leak in the flush index (#4928)").isTrue();
 
     // #4930: the reopen path must NOT have re-created the dropped file on disk.
     assertThat(brokenOsFile).as("a dropped file must not be resurrected by the channel-reopen path (#4930)")
@@ -109,7 +109,7 @@ class FlushRobustnessTest extends TestHelper {
     final PageManagerFlushThread flush = new PageManagerFlushThread(PageManager.INSTANCE, db.getConfiguration());
     // A pending entry that nothing will ever flush (the thread is never started): zero progress by design.
     final PageId stuckPageId = new PageId(db, 0, 3_000_000);
-    flush.pageIndex.put(stuckPageId, new MutablePage(stuckPageId, 1024, new byte[1024], 0, 0));
+    flush.pageIndex.put(new MutablePage(stuckPageId, 1024, new byte[1024], 0, 0));
 
     // The no-progress window is read per call from the database's own configuration.
     db.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 300L);
@@ -144,8 +144,7 @@ class FlushRobustnessTest extends TestHelper {
       // Wedge the close: a pending page nothing will ever flush, and a short no-progress window.
       db.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 300L);
       stuckPageId = new PageId(db, 0, 3_000_000);
-      PageManager.INSTANCE.getFlushThread().pageIndex
-          .put(stuckPageId, new MutablePage(stuckPageId, 1024, new byte[1024], 0, 0));
+      PageManager.INSTANCE.getFlushThread().pageIndex.put(new MutablePage(stuckPageId, 1024, new byte[1024], 0, 0));
 
       // #4928: the close must COMPLETE (bounded wait), and because pages could not be flushed it must be
       // crash-equivalent: WAL files and lock file preserved so the next open recovers.
