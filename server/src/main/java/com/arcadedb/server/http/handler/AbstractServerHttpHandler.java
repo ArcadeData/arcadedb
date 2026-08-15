@@ -626,15 +626,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
-    // The request payload is missing a property, carries a null where a value is required, or holds the wrong
-    // type for it: a malformed request, not a server fault. Without this it degraded to 500 (issue #5935).
-    final JSONException invalidJson = firstOf(e, cause, JSONException.class);
-    if (invalidJson != null) {
-      logUserError(invalidJson);
-      sendErrorResponse(exchange, 400, "Invalid JSON payload", invalidJson, null);
-      return;
-    }
-
     // The whole chain is searched here rather than only the two throwables above, because the arithmetic error
     // is wrapped differently depending on how the request arrived: directly, inside the auto-commit wrapper, or
     // with the JDK ArithmeticException it came from as its own cause. An integer overflow or a division by zero
@@ -647,6 +638,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
+    // chain had: a statement whose text failed to parse is reported as the parsing failure it is, even when the
+    // parser's own cause happens to be a JSONException. Both answer 400, so the order decides the message and the
+    // wire contract's exception field, not the status - and "the query text is invalid" is the actionable half,
+    // while how the parser tripped over it is an implementation detail.
+    //
     // A parsing/semantic validation error (malformed query, unknown variable, invalid MERGE rebind, unsupported
     // Gremlin syntax such as Groovy closures, ...) is a client error - the query text is invalid, not an
     // internal server fault. Surfaced with the real validation message so API consumers can fix the query,
@@ -655,6 +652,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (parsing != null) {
       logUserError(parsing);
       sendErrorResponse(exchange, 400, "Cannot execute command", parsing, null);
+      return;
+    }
+
+    // The request payload is missing a property, carries a null where a value is required, or holds the wrong
+    // type for it: a malformed request, not a server fault. Without this it degraded to 500 (issue #5935).
+    final JSONException invalidJson = firstOf(e, cause, JSONException.class);
+    if (invalidJson != null) {
+      logUserError(invalidJson);
+      sendErrorResponse(exchange, 400, "Invalid JSON payload", invalidJson, null);
       return;
     }
 

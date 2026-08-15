@@ -170,6 +170,43 @@ class Issue6201ErrorStatusParityTest {
   }
 
   /**
+   * Collapsing three orderings into one means the surviving order has to be the right one where they disagreed.
+   * A statement whose text failed to parse is reported as the parsing failure it is, even when the parser's own
+   * cause is a {@code JSONException} - which is what the {@code CommandExecutionException|CommandParsingException}
+   * chain did, and which is the actionable half for a client: the query text is invalid, and how the parser
+   * tripped over it is an implementation detail. Both answer 400, so this pins the message and the wire
+   * contract's {@code exception} field rather than the status.
+   */
+  @Test
+  void aParseFailureIsReportedAsOneEvenWhenItsCauseIsMalformedJson() {
+    final HandledResponse response = handle(
+        new CommandParsingException("Unknown variable 'x'", new JSONException("Missing property 'command'")));
+
+    assertThat(response.statusCode).isEqualTo(400);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.getString("error")).isEqualTo("Cannot execute command");
+    assertThat(json.getString("exception")).isEqualTo(CommandParsingException.class.getName());
+  }
+
+  /**
+   * The other side of that order: a malformed payload that is NOT a parse failure still answers as one, so
+   * moving the parsing arm ahead of the JSON arm did not swallow the #5935 mapping.
+   */
+  @Test
+  void aMalformedPayloadIsStillReportedAsInvalidJson() {
+    for (final RuntimeException malformed : List.of(
+        new JSONException("Missing property 'command'"),
+        new CommandExecutionException("Error on command execution", new JSONException("Missing property 'command'")),
+        new TransactionException("Error on executing command", new JSONException("Missing property 'command'")))) {
+      final HandledResponse response = handle(malformed);
+      assertThat(response.statusCode).isEqualTo(400);
+      assertThat(new JSONObject(response.body).getString("error"))
+          .as("shape=%s", malformed.getClass().getSimpleName())
+          .isEqualTo("Invalid JSON payload");
+    }
+  }
+
+  /**
    * The un-wrapped fallbacks the classification still has to distinguish once nothing more specific matched, so
    * collapsing the three chains into one did not collapse the three generic 500s into one message.
    */
