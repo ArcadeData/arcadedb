@@ -1453,6 +1453,12 @@ public class GraphDatabaseChecker {
       final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
     final AtomicLong missingReferenceBack = new AtomicLong();
+    // The three #6090 counters below, and the two above, are AtomicLong for CAPTURE, not for concurrency. This
+    // scan is strictly single-threaded - CheckReport says so on its own plain-long fields, and the sets beside
+    // these are not thread-safe either - but they are incremented from inside the checkEndpoints lambda, and a
+    // local a lambda mutates has to be a mutable box. CheckReport could drop its atomics precisely because they
+    // became FIELDS of an object; these are locals of the method, so a box is what there is. Do not read them as
+    // a claim that anything here runs in parallel.
     /** #6090: edge records reachable from NO adjacency list - the orphan count. Exact, never capped. */
     final AtomicLong unreachableEdgeRecords = new AtomicLong();
     /** #6090: edges absent from their OUT vertex's OUT list. A defect for every edge type. */
