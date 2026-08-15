@@ -82,7 +82,6 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     InetAddress[] resolve(String host) throws UnknownHostException;
   }
 
-  private static final Set<String> LOOPBACK_IPS = Set.of("127.0.0.1", "0:0:0:0:0:0:0:1", "::1");
   // Minimum spacing between miss-triggered re-resolutions. Bounds DNS load under a connection flood
   // (at startup or from a non-peer) while letting the allowlist converge within ~1s.
   private static final long        MISS_RESOLVE_FLOOR_MS = 1_000L;
@@ -252,7 +251,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
   private synchronized void doResolve() {
     final long now = clock.getAsLong();
-    final Set<String> effective = new HashSet<>(LOOPBACK_IPS);
+    final Set<String> effective = new HashSet<>(LoopbackHosts.IPS);
     int covered = 0;
     for (final String host : peerHosts) {
       Set<String> fresh = null;
