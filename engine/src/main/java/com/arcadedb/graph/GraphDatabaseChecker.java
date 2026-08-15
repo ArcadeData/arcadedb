@@ -1591,9 +1591,13 @@ public class GraphDatabaseChecker {
             if (outProbed && outUnreferenced) {
               edgesMissingOutReference.incrementAndGet();
 
-              // UNREACHABLE means BOTH lists were walked and neither names the record. The IN side is required
-              // even for a unidirectional type: the type could have been created bidirectional and altered since,
-              // and a record some list still names must never be called an orphan.
+              // UNREACHABLE means BOTH lists were walked and neither names the record - required even for a
+              // unidirectional type, whose IN list is not expected to name the edge at all. NOT because the flag
+              // can be flipped under us: LocalEdgeType.bidirectional is final, unlike lightweight/unique, so
+              // ALTER TYPE cannot change it. It is because "no list references this record" is the claim the
+              // deletion rests on, and only a walk can establish it - a type dropped and recreated over the same
+              // data, or an entry an older build left in an IN list, both make the record reachable while the
+              // schema says it should not be. Costs one probe that already ran for missingReferenceBack anyway.
               if (inProbed && inUnreferenced) {
                 unreachableEdgeRecords.incrementAndGet();
                 CollectionUtils.addBounded(unreachableEdgeRecordsFound, maxCorrupted, edgeRID);
@@ -1609,6 +1613,11 @@ public class GraphDatabaseChecker {
                   // used there does not leave the edge type's indexes pointing at a record that is gone.
                   report.corrupt(edgeRID);
               } else
+                // DELIBERATELY NOT SUPPRESSED for an edge the endpoint checks above already flagged corrupted (a
+                // dangling link whose OUT list happens not to name it either): the two findings are different -
+                // "its target is gone" and "its source does not list it" - and the second is what tells an
+                // operator the adjacency is damaged too, rather than only the far end. Reachable only when both
+                // hold, so it is not a warning per dangling edge.
                 report.warn("edge " + edgeRID + " is not referenced back by its outgoing vertex " + edge.getOut()
                     + ": it is missing from that vertex's OUT list");
             }
