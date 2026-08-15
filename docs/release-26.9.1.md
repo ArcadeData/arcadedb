@@ -1773,6 +1773,12 @@ peer. Neither outcome reported an error: `reconcileDatabasesFromLeader` succeede
 stale-read floor of #6111 was dropped, and the node returned to the ready set carrying whatever it had copied -
 its own incomplete databases, or a peer's that is itself behind.
 
+The two paths that re-resolve the address on **every download attempt** - `SnapshotInstaller.install` takes
+address suppliers precisely because leadership can move mid-operation - re-guard it on every attempt too, through
+both the HTTP and the HTTPS supplier. Guarding only the call site would leave the refusal a point-in-time check
+that attempt 3 walks straight past, and guarding only HTTP would leave it unreachable on an SSL cluster, where
+`downloadWithRetry` prefers the HTTPS endpoint and only falls back to HTTP when it comes back null.
+
 All six now ask one helper, so they cannot drift apart, and it refuses three things rather than two: this
 node being the leader, an address that is this node's own, and **an address that does not identify a single
 peer**. The last is the ambiguity check `selectUnambiguousRouting` makes for client routing tables (#6183),

@@ -239,6 +239,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The Ratis-initiated install waits for it; the two request-driven paths take it with {@code tryLock} and fold
    * into whatever holds it, exactly as they already fold into a lost CAS - they run on the single-threaded
    * {@link #lifecycleExecutor} and must not park it for the length of a download.
+   * <p>
+   * <b>Three of the six snapshot-pull paths are deliberately outside it</b>, and it is a choice rather than a
+   * gap. {@code applyInstallDatabaseEntry}'s {@code forceSnapshot} branch and {@link #installFromLeaderForBootstrap}
+   * run on the Ratis apply thread as part of applying a committed entry: they are already serialised against each
+   * other by that single thread, they cannot fold (skipping leaves the database absent or diverged, which is the
+   * state the entry exists to repair), and they must not park the apply loop - and with it replication for every
+   * database on this node - for the length of a download it did not start. {@link #resyncDatabaseFromLeader} runs
+   * on the operator's HTTP worker thread and reports its outcome to them synchronously, so folding would answer
+   * "done" for work it did not do. What makes an actual overlap visible rather than silent is
+   * {@code SnapshotInstaller}'s own {@code INSTALLS_IN_FLIGHT} set, which logs a WARNING naming the database when
+   * two installs share one directory - the detector for the assumption this lock cannot enforce everywhere.
    */
   private final ReentrantLock snapshotDownloadLock = new ReentrantLock();
 
@@ -2177,9 +2188,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // install() treats as "no leader to pull from" and retries - rather than handing back an address that
       // names this node or no single peer (issue #6202).
       SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-          this::guardedLeaderHttpAddress,
-          () -> raft != null ? raft.getLeaderHttpsAddress() : null,
-          clusterToken, server);
+          this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
     } catch (final IOException e) {
@@ -2227,13 +2236,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
         "Operator-triggered resync of database '%s' from leader: dropping local copy and re-acquiring full snapshot", dbName);
 
     try {
-      // Resolve the leader address on each retry (it can change mid-operation if leadership moves).
+      // Resolve the leader address on each retry (it can change mid-operation if leadership moves) - and re-guard
+      // it on each retry with it, or the refusal above is a point-in-time check that a later attempt walks
+      // straight past onto this node's own address (issue #6202). The check above is still worth making: it turns
+      // an already-doomed request into an immediate, descriptive refusal instead of a failed download.
       // install() keeps the local copy open and serving during the download and only closes + swaps
       // once a complete snapshot is on disk, rolling back on failure. A failed resync therefore never
       // leaves the database closed (the cause of the operator-visible DatabaseIsClosedException).
       final String clusterToken = raft.getClusterToken();
       SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-          raft::getLeaderHttpAddress, raft::getLeaderHttpsAddress, clusterToken, server);
+          this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
     } catch (final IOException e) {
       throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
@@ -2733,8 +2745,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * The leader's HTTP address when a snapshot may be pulled from it, {@code null} when it may not. The
-   * supplier-shaped form of {@link #resolveSnapshotSource}, for {@code SnapshotInstaller.install} overloads that
-   * re-resolve the address on every retry.
+   * supplier-shaped form of {@link #resolveSnapshotSource}, for the {@code SnapshotInstaller.install} overloads
+   * that re-resolve the address on every download attempt.
+   * <p>
+   * Guarding the call site once is not enough for those: the whole reason they take a supplier is that leadership
+   * can move mid-operation, and an up-front check says nothing about the address attempt 3 will resolve. Every
+   * attempt asks again (issue #6202).
+   * <p>
+   * This is the arm that logs the refusal - see {@link #guardedLeaderHttpsAddress()} for why that is exactly one
+   * line per attempt whether or not SSL is on.
    */
   private String guardedLeaderHttpAddress() {
     final RaftHAServer raftHA = this.raftHAServer;
@@ -2746,6 +2765,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return null;
     }
     return source.httpAddress();
+  }
+
+  /**
+   * The leader's HTTPS address under the same guard, or {@code null}. Needed as well as the HTTP arm because
+   * {@code downloadWithRetry} prefers the HTTPS endpoint when SSL is enabled and only falls back to the HTTP one
+   * when it comes back null - so guarding HTTP alone would leave the guard unreachable on an SSL cluster.
+   * <p>
+   * Silent by design, which is what keeps the pair to one log line per attempt: a refusal makes this return null,
+   * and the caller then consults the HTTP arm, which logs. When it does NOT refuse there is nothing to log, and
+   * the HTTP arm is not consulted at all.
+   */
+  private String guardedLeaderHttpsAddress() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || resolveSnapshotSource(raftHA.getLeaderId()).refused())
+      return null;
+    return raftHA.getLeaderHttpsAddress();
   }
 
   // @VisibleForTesting

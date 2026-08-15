@@ -201,6 +201,48 @@ class Issue6202SnapshotInstallGuardTest {
   }
 
   // -----------------------------------------------------------------------------------------------
+  // A path that re-resolves the address on every retry must re-guard it on every retry
+  // -----------------------------------------------------------------------------------------------
+
+  /**
+   * {@code SnapshotInstaller.install} takes address SUPPLIERS precisely because leadership can move mid-operation,
+   * so a guard applied once at the call site says nothing about the address attempt 3 resolves. The operator
+   * resync checked up front and then handed over the raw resolver, which is the same failure #6202 fixes,
+   * reopened on a later attempt.
+   * <p>
+   * Driven by making the resolver answer a good peer once - satisfying the up-front check - and this node's own
+   * address from then on, which is what a leadership change onto this node looks like to the supplier.
+   */
+  @Test
+  void everyDownloadAttemptOfAnOperatorResyncIsReGuarded(@TempDir final Path tempDir) throws Exception {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.isLeader()).thenReturn(false);
+    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(LEADER_PEER_ID));
+    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    // First call: a genuine peer, so the up-front refusal does not fire. Every call after it: this node itself.
+    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID)))
+        .thenReturn("peer-b:2480", LOCAL_HTTP);
+
+    final List<LoggedLine> logged = new CopyOnWriteArrayList<>();
+    final Logger previous = installCapturingLogger(logged);
+    final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
+    sm.setRaftHAServer(raft);
+    try {
+      assertThatThrownBy(() -> sm.resyncDatabaseFromLeader("testdb"))
+          .as("the download must fail rather than pull this node's own database onto itself")
+          .isInstanceOf(ReplicationException.class)
+          .hasMessageContaining("Failed to resync database 'testdb'");
+
+      assertThat(logged.stream().map(LoggedLine::message))
+          .as("and the attempt must say it was refused, not merely that no address was known")
+          .anyMatch(m -> m.startsWith("Refusing to pull a snapshot"));
+    } finally {
+      LogManager.instance().setLogger(previous);
+      sm.close();
+    }
+  }
+
+  // -----------------------------------------------------------------------------------------------
   // Serialising the resync paths must not outlive the state machine
   // -----------------------------------------------------------------------------------------------
 
@@ -305,6 +347,8 @@ class Issue6202SnapshotInstallGuardTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
+    // No backoff to sit through: the download paths under test never reach the network, they are refused first.
+    config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(new ArcadeDBServer(config));
