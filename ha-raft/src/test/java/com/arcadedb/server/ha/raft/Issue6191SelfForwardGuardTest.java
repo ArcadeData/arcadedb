@@ -58,12 +58,13 @@ class Issue6191SelfForwardGuardTest {
   }
 
   /**
-   * No name resolution: the two spellings only ever differ this way when they were declared explicitly, and a
-   * declared address is a statement about which node owns which port that this comparison does not overrule.
+   * A declared host name is a statement about which node owns which port, and no name resolution happens
+   * here to overrule it. The spellings of the loopback address are the one exception, in
+   * {@link Issue6204LoopbackEndpointTest}.
    */
   @Test
-  void loopbackSpellingsAreNotUnified() {
-    assertThat(RaftHAServer.isSameHttpEndpoint("localhost:2480", "127.0.0.1:2480")).isFalse();
+  void aHostNameIsNotUnifiedWithAnIp() {
+    assertThat(RaftHAServer.isSameHttpEndpoint("db0.example.com:2480", "10.0.0.7:2480")).isFalse();
   }
 
   /** An address that could not be resolved is not evidence of anything, in either position. */
