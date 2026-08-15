@@ -1705,3 +1705,76 @@ by the negative size marker a plain collapse would replace with a positive one, 
 exactly what tells a bucket scan that a slot holds a document of its own.
 
 [#6178](https://github.com/ArcadeData/arcadedb/issues/6178)
+
+## A materialized-view refresh is one transaction, so a failed one no longer empties the view (#6203)
+
+A full refresh looked like a single transaction and was not one. `TRUNCATE TYPE ... UNSAFE` commits the caller's
+transaction from the inside: `schema.dropIndex()` for every index on the backing type before a single record is
+touched, then `commit(); begin()` once per `arcadedb.truncateBatchSize` records, then once more before it rebuilds
+the indexes it dropped. Wrapping that in `database.transaction()` bought nothing, and both consequences were
+silent.
+
+Every other reader saw the view empty, or holding some prefix of the new rows, for the whole runtime of the
+defining query - which for a view worth materialising is exactly the expensive case, and for a PERIODIC view is
+every tick. Nothing distinguished that from a legitimately empty or small result.
+
+Worse, a defining query that threw after the truncate had committed left the backing type with zero rows. The view
+then reported `ERROR`, or `STALE` once `MaterializedViewChangeListener` overwrote it, and both of those read as
+"the data you are looking at is old" when the data was in fact gone. It stayed gone until some later refresh
+happened to succeed, which for a MANUAL view may be never.
+
+The refresh now writes the defining query's rows over the previous snapshot's records inside one transaction,
+deleting only the surplus and creating only the shortfall. The pass gets the isolation every other ArcadeDB
+transaction has: every write stays in the transaction's own page buffer until commit, a concurrent reader sees the
+previous snapshot throughout and the new one afterwards, and a failure anywhere rolls the whole pass back onto the
+previous snapshot rather than onto nothing. A view's rows also keep their `@rid` across a refresh, where before
+every pass gave them new ones.
+
+Neither trigger fires on the trivial case, which is why this survived the existing tests: an unindexed view smaller
+than one truncate batch was already atomic. The regression tests cover both - an index on the backing type (the
+`dropIndex` commit, at any size) and a view larger than `arcadedb.truncateBatchSize` (the in-scan commit).
+
+**Rewriting in place rather than clearing and repopulating is what keeps an index on the backing type from paying
+for the atomicity**, and it makes an indexed refresh cheaper than it was before. Clearing the view would give every
+row a new RID, and `TransactionIndexContext` collapses a REMOVE followed by an ADD only on the same (key, RID), so
+each pass would leave a full set of real tombstones where the truncate used to drop the index and rebuild it empty.
+Measured over 120 refreshes of a 2000-row indexed view: a flat 256KB for the old truncate, 256KB growing to 3.9MB
+and still climbing for clear-and-repopulate, and a flat 256KB for the rewrite - because
+`DocumentIndexer.updateDocument` finds the key values unchanged for every row a stable view reproduces and skips the
+index outright. Zero index writes per pass, against a full rebuild per pass before. The backing buckets stay flat
+too, since no record is freed and reallocated. A `@Tag("slow")` soak test guards the bound.
+
+**The shadow-type swap the issue proposed was rejected.** Building into a second backing type and repointing the
+view at it reads better on paper - the swap is metadata only and the old rows are dropped as files rather than
+deleted one by one - but in this engine the swap has no cheap implementation. Renaming a type renames its buckets,
+and `PaginatedComponent.rename()` first waits for every page of the *whole database* to be flushed; paying a
+database-wide flush barrier twice per refresh, on every tick of every PERIODIC view, is a worse defect than the one
+being fixed. Repointing the view at a differently named backing type avoids the barrier but makes the view's own
+name stop being the type name, which is what makes `SELECT FROM <view>` work at all and what every record's `@type`
+reports. What the single transaction costs instead is bounded and not new: it holds the pages of the rows it
+rewrites, and under HA the pass is one Raft log entry rather than one per truncate batch plus one for the
+repopulate. The repopulate was already one unbounded transaction, so a view too large to refresh in one transaction
+was already too large to refresh.
+
+### The scheduler no longer pins an abandoned database to a live thread
+
+`MaterializedViewScheduler` guarded against a database abandoned without `close()` by holding it through a
+`WeakReference` and cancelling the task once that cleared. It could not clear, for two independent reasons.
+
+The refresh runs a transaction on the scheduler thread, which installs a `DatabaseContext` entry keyed by the
+database path holding a strong reference to the database, and the scheduler never removed it - so after the very
+first refresh the weak reference was moot. `TimeSeriesMaintenanceScheduler.runMaintenance()` documents the same
+hazard and takes the entry back down in a `finally`; the refresh now does too, removing only a context that pass
+installed itself.
+
+The task also captured the `MaterializedViewImpl` strongly, and a view holds its own database, so the reference
+that was weak was not the only one. Both are weak now. The task keeps the view's name as a `String` and cancels
+itself when either reference clears, unregistering itself only while it is still the task registered for that view
+- a task that self-cancels after an `ALTER MATERIALIZED VIEW` or a schema reload must leave its replacement
+scheduled.
+
+Finally, the scheduler is created per `LocalSchema` but its thread was called `ArcadeDB-MV-Scheduler` with no
+discriminator, so a JVM with several open databases got several identically named threads and a thread dump could
+not say which was which. The database name is now part of it.
+
+[#6203](https://github.com/ArcadeData/arcadedb/issues/6203)
