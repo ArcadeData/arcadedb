@@ -2675,15 +2675,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/command/" + getName()))
         .header("Content-Type", "application/json")
-        // One hop, and the receiving node knows it: if this address does not identify the leader, the node it
-        // does reach refuses the command instead of resolving the same wrong address and forwarding again
-        // (issue #6191).
-        .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
 
     final String clusterToken = raftHAServer.getClusterToken();
-    if (clusterToken != null && !clusterToken.isBlank())
+    if (clusterToken != null && !clusterToken.isBlank()) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+      // One hop, and the receiving node knows it: if this address does not identify the leader, the node it
+      // does reach refuses the command instead of resolving the same wrong address and forwarding it again
+      // (issue #6191). Sent only with the token, because that is the only form in which a receiving node
+      // trusts the marker - same pairing as PostServerCommandHandler's forward.
+      builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+    }
 
     String proxiedUser = proxied.getCurrentUserName();
     if (proxiedUser == null || proxiedUser.isBlank()) {

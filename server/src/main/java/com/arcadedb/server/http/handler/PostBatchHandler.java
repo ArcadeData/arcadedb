@@ -1051,12 +1051,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
                 + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
                 + "load is refused rather than relayed on. This notice is logged only once.",
             databaseName, GlobalConfiguration.HA_SERVER_LIST.getKey());
-      return new ExecutionResponse(400,
-          "{ \"error\" : \"Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived "
+      return new ExecutionResponse(400, new JSONObject()
+          .put("error", "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived "
               + "on this node, which is not the leader. Either leadership moved while the request was in flight - "
               + "retry - or the HTTP address that peer resolved for the leader does not identify it, which is what "
               + "declaring every node's HTTP port ('host:raftPort:httpPort') in "
-              + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents\"}");
+              + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents")
+          .toString());
     }
 
     final String leaderAddress = ha.getLeaderAddress();
@@ -1068,10 +1069,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // derive fallback produces exactly this on a cluster whose peers share a host and declare no HTTP port,
     // because it pairs the leader's Raft host with THIS node's HTTP port (issue #6191).
     if (ha.isOwnHttpAddress(leaderAddress))
-      return new ExecutionResponse(400,
-          "{ \"error\" : \"Cannot forward batch to leader: the HTTP address resolved for the leader (" + leaderAddress
-              + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly with "
-              + "the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + "\"}");
+      return new ExecutionResponse(400, new JSONObject()
+          .put("error", "Cannot forward batch to leader: the HTTP address resolved for the leader (" + leaderAddress
+              + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly "
+              + "with the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey())
+          .toString());
 
     final String clusterToken = ha.getClusterToken();
     if (clusterToken == null || clusterToken.isBlank())
