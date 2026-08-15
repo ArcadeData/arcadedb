@@ -36,6 +36,7 @@ import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -1206,9 +1207,30 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (ha == null || ha.isLeader())
       return null;
 
+    // A peer already forwarded this command to what it believed was the leader and it arrived here, on a node
+    // that is not the leader either. Forwarding it on would send it round the cycle that wrong address
+    // created; refuse in one hop with the typed error instead (issue #6191).
+    if (LeaderForwardContext.isAlreadyForwarded())
+      throw new ServerIsNotTheLeaderException(
+          "Refusing to forward a server command that a cluster peer already forwarded to the leader: it arrived on "
+              + "this node, which is not the leader. Either leadership moved while the request was in flight - retry - "
+              + "or the HTTP address that peer resolved for the leader does not identify it, which is what declaring "
+              + "every node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
+              + " prevents", ha.getLeaderName());
+
     final String leaderHttpAddress = ha.getLeaderAddress();
     if (leaderHttpAddress == null)
       throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
+
+    // Dialing an address that resolves to this node comes straight back here, and this node is not the
+    // leader. That is what the derive fallback produces when the peers share a host and no HTTP port is
+    // declared: it pairs the leader's Raft host with THIS node's HTTP port (issue #6191).
+    if (ha.isOwnHttpAddress(leaderHttpAddress))
+      throw new ServerIsNotTheLeaderException(
+          "Cannot forward the server command: the HTTP address resolved for the leader (" + leaderHttpAddress
+              + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly with "
+              + "the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey(),
+          ha.getLeaderName());
 
     final HeaderValues authValues = exchange.getRequestHeaders().get("Authorization");
     final String authHeader = authValues != null ? authValues.getFirst() : null;
@@ -1216,6 +1238,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/server"))
         .header("Content-Type", "application/json")
+        // One hop only: whichever node this address really names refuses the command if it is not the leader,
+        // instead of resolving the same address and forwarding it again (issue #6191).
+        .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()));
 
     if (authHeader != null && authHeader.startsWith("Bearer AU-")) {

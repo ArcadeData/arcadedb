@@ -2576,15 +2576,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Backstop for the isLeader() check above: leadership can move between the two, and getLeaderId()
       // can already report this node while isLeader() has not caught up. Compare the addresses too, so
       // a self-download is impossible on either side of that window (issue #6111).
-      final String localHttpAddr = raftHAServer.getPeerHttpAddress(raftHAServer.getLocalPeerId());
-      if (localHttpAddr == null)
-        // getPeerHttpAddress() degrades to null when this node's own HTTP endpoint cannot be resolved
-        // right now. The comparison below then cannot fire, so say so rather than letting the backstop
-        // no-op invisibly: only the isLeader() check above is standing between us and a self-download.
+      if (raftHAServer.getLocalHttpAddress() == null)
+        // The resolver degrades to null when this node's own HTTP endpoint cannot be resolved right now.
+        // The check below then cannot fire, so say so rather than letting the backstop no-op invisibly:
+        // only the isLeader() check above is standing between us and a self-download.
         LogManager.instance().log(this, Level.WARNING,
             "Cannot resolve this node's own HTTP address; the self-resync address check is inactive for this "
                 + "attempt and only the leader-role check guards it (issue #6111)");
-      if (leaderHttpAddr.equals(localHttpAddr)) {
+      // The same question the write-forwarding path asks before it dials a resolved leader address
+      // (issue #6191), asked through the same helper so the two cannot drift apart.
+      if (raftHAServer.isOwnHttpAddress(leaderHttpAddr)) {
         LogManager.instance().log(this, Level.WARNING,
             "Refusing a snapshot resync: the resolved leader address %s is this node's own. "
                 + "The request stays pending until a peer holds the leadership (issue #6111)", leaderHttpAddr);

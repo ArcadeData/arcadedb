@@ -378,6 +378,44 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Returns this node's own HTTP address (host:port), or {@code null} when it cannot be resolved right
+   * now (the HTTP listener is not up yet). Resolved through the same path as every peer address, so a
+   * caller comparing the two compares like with like.
+   */
+  public String getLocalHttpAddress() {
+    return resolveHttpAddress(localPeerId);
+  }
+
+  /**
+   * True when {@code address} is the HTTP endpoint this node itself is listening on, i.e. dialing it would
+   * come straight back here. Answers the one question every automatic redirect has to ask before it
+   * redirects: an address resolved for a <em>peer</em> that turns out to be ours identifies nothing (issue
+   * #6191). It is what the derive fallback in {@link #resolveHttpAddress(RaftPeerId)} produces on a cluster
+   * whose nodes share a host and declare no {@code http} port - it combines the peer's Raft host with this
+   * node's HTTP port, so every peer collapses onto this node's own address.
+   * <p>
+   * A textual comparison, like the peer bookkeeping it reads: both sides come from the same resolver, so a
+   * derived address matches a derived one. It deliberately does not resolve hostnames - {@code localhost}
+   * and {@code 127.0.0.1} are not reported as the same endpoint - because the addresses only differ that
+   * way when they were declared explicitly, and a declared address is a statement about which node owns
+   * which port that this method has no business second-guessing.
+   */
+  public boolean isOwnHttpAddress(final String address) {
+    return isSameHttpEndpoint(getLocalHttpAddress(), address);
+  }
+
+  /**
+   * Whether two {@code host:port} addresses name the same listening socket. Case-insensitive, because host
+   * names are: the two sides can come from different entries of {@code HA_SERVER_LIST} and a difference in
+   * case would otherwise read as "a different node", which is the answer that lets a redirect loop live.
+   * Never resolves names, so {@code localhost} and {@code 127.0.0.1} are reported as different endpoints
+   * (see {@link #isOwnHttpAddress}). Package-private for testing.
+   */
+  static boolean isSameHttpEndpoint(final String address, final String other) {
+    return address != null && address.equalsIgnoreCase(other);
+  }
+
+  /**
    * Returns the HTTPS address (host:httpsPort) for a peer, or {@code null} when no HTTPS endpoint can
    * be resolved. The endpoint is taken from the explicit 5th field of the server list when present;
    * otherwise, on a homogeneous cluster, it is derived from the peer's Raft host plus this node's

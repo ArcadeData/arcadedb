@@ -543,16 +543,19 @@ class Issue6111StaleSnapshotReadFloorTest {
    * Same refusal via the address comparison rather than the role flag: leadership can move between the
    * {@code isLeader()} check and the address resolution, and {@code getLeaderId()} can report this node
    * while {@code isLeader()} has not caught up.
+   * <p>
+   * The comparison itself moved into {@code RaftHAServer.isOwnHttpAddress} when the write-forwarding path
+   * started asking the same question (issue #6191), and is unit-tested there; what this test pins is that
+   * the resync path asks it at all when the role flag still says "follower".
    */
   @Test
   void aResolvedLeaderAddressEqualToOurOwnIsAlsoRefused(@TempDir final Path tempDir) throws Exception {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final RaftPeerId localId = RaftPeerId.valueOf("local-peer");
     final RaftHAServer mockRaft = mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(false); // role flag has not caught up...
     when(mockRaft.getLeaderHttpAddress()).thenReturn("localhost:2480");
-    when(mockRaft.getLocalPeerId()).thenReturn(localId);
-    when(mockRaft.getPeerHttpAddress(localId)).thenReturn("localhost:2480"); // ...but it is us
+    when(mockRaft.getLocalHttpAddress()).thenReturn("localhost:2480");
+    when(mockRaft.isOwnHttpAddress("localhost:2480")).thenReturn(true); // ...but it is us
     sm.setRaftHAServer(mockRaft);
     try {
       sm.writePersistedAppliedIndex(PERSISTED_APPLIED, DB_NAME);
