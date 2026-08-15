@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
 
 import java.lang.ref.WeakReference;
@@ -31,12 +32,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 public class MaterializedViewScheduler {
-  private final ScheduledExecutorService executor;
-  private final Map<String, ScheduledFuture<?>> tasks = new ConcurrentHashMap<>();
+  private final ScheduledExecutorService  executor;
+  private final Map<String, RefreshTask>  tasks = new ConcurrentHashMap<>();
 
-  public MaterializedViewScheduler() {
+  /**
+   * @param databaseName names the scheduler thread. One scheduler is created per {@link LocalSchema}, so a JVM with
+   *                     several open databases has several of these threads, and an undiscriminated name leaves a
+   *                     thread dump unable to say which database a thread belongs to.
+   */
+  public MaterializedViewScheduler(final String databaseName) {
     this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
-      final Thread t = new Thread(r, "ArcadeDB-MV-Scheduler");
+      final Thread t = new Thread(r, "ArcadeDB-MV-Scheduler-" + databaseName);
       t.setDaemon(true);
       return t;
     });
@@ -52,17 +58,10 @@ public class MaterializedViewScheduler {
     // as TimeSeriesMaintenanceScheduler.schedule() already does
     cancel(view.getName());
 
-    final WeakReference<Database> dbRef = new WeakReference<>(database);
-    final ScheduledFuture<?> future = executor.scheduleAtFixedRate(() -> {
-      final Database db = dbRef.get();
-      if (db == null || !db.isOpen()) {
-        cancel(view.getName());
-        return;
-      }
-      runOneRefresh(db, view);
-    }, interval, interval, TimeUnit.MILLISECONDS);
+    final RefreshTask task = new RefreshTask(database, view);
+    task.future = executor.scheduleAtFixedRate(task, interval, interval, TimeUnit.MILLISECONDS);
 
-    tasks.put(view.getName(), future);
+    tasks.put(view.getName(), task);
   }
 
   /**
@@ -85,27 +84,99 @@ public class MaterializedViewScheduler {
    * is a choice, not an oversight, and the next person to find this thread busy during an OOM should know it was
    * made on purpose.
    * <p>
+   * The refresh runs a transaction, which installs a {@link DatabaseContext} entry keyed by the database path on
+   * whichever thread runs it, and that entry holds a strong reference to the database. On the scheduler thread -
+   * which outlives every request and is never recycled - it has to be taken back down again, or a database
+   * abandoned without {@code close()} stays reachable from a live thread, with its whole page cache, for the life
+   * of the JVM, and {@link RefreshTask}'s weak references can never clear (issue #6203).
+   * {@code TimeSeriesMaintenanceScheduler.runMaintenance()} documents the same hazard. Only a context this call
+   * installed is removed: the method is package-visible so a test can drive one pass without waiting out a tick,
+   * and tearing down a caller's own context would be a side effect nobody asked for.
+   * <p>
    * Extracted from the scheduling above so the guarantee can be tested without waiting out a tick.
    */
   // @VisibleForTesting
   void runOneRefresh(final Database database, final MaterializedViewImpl view) {
+    final String databasePath = database.getDatabasePath();
+    final boolean contextInstalledHere = DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null;
     try {
       MaterializedViewRefresher.fullRefresh(database, view);
     } catch (final Throwable e) {
       view.setStatus(MaterializedViewStatus.ERROR);
       LogManager.instance().log(this, Level.SEVERE,
           "Error in periodic refresh for view '%s': %s", e, view.getName(), e.getMessage());
+    } finally {
+      if (contextInstalledHere)
+        DatabaseContext.INSTANCE.removeContext(databasePath);
     }
   }
 
   public void cancel(final String viewName) {
-    final ScheduledFuture<?> future = tasks.remove(viewName);
-    if (future != null)
-      future.cancel(false);
+    final RefreshTask task = tasks.remove(viewName);
+    if (task != null)
+      task.future.cancel(false);
   }
 
   public void shutdown() {
     executor.shutdownNow();
     tasks.clear();
+  }
+
+  /**
+   * One view's periodic pass, holding nothing it does not have to.
+   * <p>
+   * Both references are weak on purpose. A database closed the normal way already stops this task -
+   * {@code LocalSchema.close()} calls {@link #shutdown()} - so they exist for exactly one case: a database
+   * abandoned without ever being closed. For them to do that job NEITHER may be strong, because the two objects are
+   * reachable from each other: {@link MaterializedViewImpl} holds its database, and the database's schema holds the
+   * view. Holding the view strongly here would pin the database just as effectively as holding the database
+   * strongly, which is why this leaked with a {@code WeakReference<Database>} already in place (issue #6203).
+   * Everything else the task needs is a {@code String}. The enclosing scheduler, captured by this inner class, has
+   * no reference of its own back to the database.
+   */
+  private final class RefreshTask implements Runnable {
+    private final String                              viewName;
+    private final WeakReference<Database>             databaseRef;
+    private final WeakReference<MaterializedViewImpl> viewRef;
+    /**
+     * Assigned by {@code schedule()} as soon as the task is scheduled, and BEFORE the task is published to
+     * {@code tasks} - so anything found in that map has one, and {@link #cancel} never has to test for it. Only
+     * {@link #cancelSelf()}, which runs from inside the task itself, can observe it unset.
+     */
+    private volatile ScheduledFuture<?> future;
+
+    private RefreshTask(final Database database, final MaterializedViewImpl view) {
+      this.viewName = view.getName();
+      this.databaseRef = new WeakReference<>(database);
+      this.viewRef = new WeakReference<>(view);
+    }
+
+    @Override
+    public void run() {
+      final Database database = databaseRef.get();
+      final MaterializedViewImpl view = viewRef.get();
+      if (database == null || view == null || !database.isOpen()) {
+        cancelSelf();
+        return;
+      }
+      runOneRefresh(database, view);
+    }
+
+    /**
+     * Cancels this task, and unregisters it only while it is still the task registered for the view. A blind
+     * {@code cancel(viewName)} would cancel whatever is registered under that name, which after a re-schedule
+     * (schema reload, ALTER MATERIALIZED VIEW) is the replacement task rather than this one - and the view would
+     * then stop refreshing with nothing saying so.
+     */
+    private void cancelSelf() {
+      final ScheduledFuture<?> mine = future;
+      if (mine == null)
+        // The first run beat schedule()'s assignment by the width of one statement, so there is nothing to cancel
+        // yet and nothing registered under this name to unregister. The field is volatile and assigned right
+        // after, so the next tick - one interval away - takes this branch's place and cancels then.
+        return;
+      tasks.remove(viewName, this);
+      mine.cancel(false);
+    }
   }
 }
