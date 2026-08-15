@@ -142,6 +142,33 @@ class Issue6065NumericParameterBoundsTest {
       assertThat((List<?>) r.getProperty("embedding")).hasSize(AbstractAlgoProcedure.MAX_EMBEDDING_DIMENSION);
   }
 
+  @Test
+  void maxKCutClampsAHugeKAgainstTheGraphSizeInsteadOfAllocatingForIt() {
+    // Raised in review of PR #6214: issue #6065 asserted algo.maxKCut's k "already clamps against n
+    // downstream" - it did not. Only `k < 2` was rejected, and `new double[k]` is allocated once per
+    // node per local-search pass per restart, so a huge k was the same allocation-DoS shape this
+    // issue closes for embeddingDimension. A k-cut into more parts than there are nodes can only
+    // leave the surplus parts empty, so clamping (rather than rejecting) is the honest reading here.
+    final List<Result> results = drain(
+        "CALL algo.maxKCut($k, {seed: 42, restarts: 1, maxIterations: 1}) YIELD node, community RETURN node, community",
+        Map.of("k", 2_000_000_000));
+
+    assertThat(results).hasSize(4);
+    for (final Result r : results)
+      assertThat(((Number) r.getProperty("community")).intValue()).isBetween(0, 3);
+  }
+
+  @Test
+  void maxKCutStillHonoursASmallK() {
+    // Guards the clamp against over-reach: k below the node count is untouched.
+    final List<Result> results = drain(
+        "CALL algo.maxKCut(2, {seed: 42}) YIELD node, community RETURN node, community", Map.of());
+
+    assertThat(results).hasSize(4);
+    for (final Result r : results)
+      assertThat(((Number) r.getProperty("community")).intValue()).isBetween(0, 1);
+  }
+
   // ── Part B: a negative result-count bound is named, not thrown from an allocator ──
 
   @Test
