@@ -1390,7 +1390,7 @@ public class LocalSchema implements Schema {
 
   public synchronized MaterializedViewScheduler getMaterializedViewScheduler() {
     if (materializedViewScheduler == null)
-      materializedViewScheduler = new MaterializedViewScheduler();
+      materializedViewScheduler = new MaterializedViewScheduler(database.getName());
     return materializedViewScheduler;
   }
 
