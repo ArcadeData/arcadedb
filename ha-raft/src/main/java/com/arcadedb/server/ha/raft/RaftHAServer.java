@@ -440,8 +440,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return false;
 
     // Compared in place: on a same-host cluster the port is what differs, so the common "no" costs nothing.
+    // A zero-length port would compare equal to another zero-length port and satisfy the condition the whole
+    // equivalence rests on without there being a port at all, so it is refused first (issue #6212).
     final int portLength = address.length() - addressPortAt - 1;
-    if (portLength != other.length() - otherPortAt - 1 //
+    if (portLength == 0 //
+        || portLength != other.length() - otherPortAt - 1 //
         || !address.regionMatches(addressPortAt + 1, other, otherPortAt + 1, portLength))
       return false;
 

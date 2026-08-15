@@ -216,21 +216,30 @@ final class RaftPeerAddressResolver {
         peerNames.put(peer.getId(), peerName);
     }
 
-    // Validate: mixing localhost/127.0.0.1 with non-localhost addresses is a misconfiguration
-    boolean hasLocalhost = false;
-    boolean hasNonLocalhost = false;
+    // Validate: mixing the loopback host with real hosts is a misconfiguration. A loopback address names a
+    // different machine on every node that reads it, so it identifies no peer.
+    String loopbackPeer = null;
+    String remotePeer = null;
     for (final RaftPeer peer : peers) {
-      final String host = peer.getAddress().split(":")[0].trim();
-      if (LoopbackHosts.isLoopback(host))
-        hasLocalhost = true;
-      else
-        hasNonLocalhost = true;
+      final String address = peer.getAddress();
+      // Split on the last colon, not the first: the host of an object-form entry can be a bracketed IPv6
+      // literal, and splitting on every colon would hand this check a fragment instead of a host (issue #6212).
+      final int portAt = address.lastIndexOf(':');
+      final String host = (portAt < 0 ? address : address.substring(0, portAt)).trim();
+      if (LoopbackHosts.isLoopback(host)) {
+        if (loopbackPeer == null)
+          loopbackPeer = address;
+      } else if (remotePeer == null)
+        remotePeer = address;
     }
-    if (hasLocalhost && hasNonLocalhost)
+    // Names both offenders: every spelling of the loopback host trips this check, so naming one of them in the
+    // message describes the wrong list to whoever wrote another (issue #6212), and a long list does not say
+    // by itself which entry to look at.
+    if (loopbackPeer != null && remotePeer != null)
       throw new ServerException(
-          """
-          Found a localhost (127.0.0.1) in the server list among non-localhost servers. \
-          Please fix the server list configuration.""");
+          "Found a loopback address ('" + loopbackPeer + "') in the server list among servers on other hosts ('"
+              + remotePeer + "'): a loopback address resolves to a different machine on every node that reads it, "
+              + "so it cannot identify a peer. Please fix the server list configuration.");
 
     return new ParsedPeerList(
         Collections.unmodifiableList(peers),

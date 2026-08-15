@@ -104,6 +104,19 @@ class Issue6204LoopbackEndpointTest {
     assertThat(RaftHAServer.isSameHttpEndpoint("localhost", "localhost")).isTrue();
   }
 
+  /**
+   * A trailing colon leaves an empty port on both sides, and an empty port matches an empty port - which would
+   * satisfy the "same port" condition the whole equivalence rests on without there being a port at all (issue
+   * #6212). A hand-written server list is exactly where a trailing colon comes from.
+   */
+  @Test
+  void anEmptyPortIsNotAPort() {
+    assertThat(RaftHAServer.isSameHttpEndpoint("localhost:", "127.0.0.1:")).isFalse();
+    assertThat(RaftHAServer.isSameHttpEndpoint("localhost:", "localhost:2480")).isFalse();
+    // Identical text stays a match: there the caller is comparing one address with itself, whatever it is.
+    assertThat(RaftHAServer.isSameHttpEndpoint("localhost:", "localhost:")).isTrue();
+  }
+
   @Test
   void theLoopbackSpellingsAreRecognisedOnTheirOwn() {
     assertThat(LoopbackHosts.isLoopback("localhost")).isTrue();
