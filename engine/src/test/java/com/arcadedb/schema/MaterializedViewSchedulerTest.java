@@ -20,9 +20,11 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
@@ -68,6 +70,61 @@ class MaterializedViewSchedulerTest {
 
         assertThat(task.isCancelled()).isTrue();
         assertThat((Object) scheduledTask(scheduler, view.getName())).isNull();
+      } finally {
+        scheduler.shutdown();
+      }
+    });
+  }
+
+  /**
+   * {@code scheduleAtFixedRate} cancels a task permanently the first time it throws, so a single failed pass used
+   * to be able to stop a view refreshing for the life of the database with nothing saying so. The tick must
+   * therefore let nothing out, whatever the refresh throws.
+   */
+  @Test
+  void aRefreshThatKeepsFailingKeepsTheScheduleAlive() throws Exception {
+    TestHelper.executeInNewDatabase("MaterializedViewSchedulerTest", database -> {
+      final MaterializedViewScheduler scheduler = new MaterializedViewScheduler();
+      try {
+        // The backing type does not exist, so every pass fails on the TRUNCATE that starts it.
+        final MaterializedViewImpl view = new MaterializedViewImpl(database, "FailingView", "SELECT name FROM Source",
+            "FailingView_backing", List.of("Source"), MaterializedViewRefreshMode.PERIODIC, true, 50);
+
+        scheduler.schedule(database, view);
+        final ScheduledFuture<?> task = scheduledTask(scheduler, view.getName());
+
+        Awaitility.await("the failing refresh runs more than once")
+            .atMost(Duration.ofSeconds(60))
+            .pollInterval(Duration.ofMillis(20))
+            .until(() -> view.getErrorCount() >= 3);
+
+        assertThat(task.isCancelled()).as("a failed pass must not cancel the schedule").isFalse();
+        assertThat(task.isDone()).as("the task must still be pending its next run").isFalse();
+        // Not the status: with a 50ms interval the sample can legitimately land on a pass that has just set
+        // BUILDING. The error counter only ever moves on a failed pass, and it is what the wait above is on.
+      } finally {
+        scheduler.shutdown();
+      }
+    });
+  }
+
+  /**
+   * The same guarantee for the failure classes {@code catch (Exception)} never covered, checked without waiting
+   * out a tick.
+   */
+  @Test
+  void anErrorThrownByARefreshDoesNotEscapeTheTick() throws Exception {
+    TestHelper.executeInNewDatabase("MaterializedViewSchedulerTest", database -> {
+      final MaterializedViewScheduler scheduler = new MaterializedViewScheduler();
+      try {
+        final MaterializedViewImpl view = new ThrowingRefreshView(database, "ThrowingView",
+            MaterializedViewRefreshMode.PERIODIC, TimeUnit.HOURS.toMillis(1));
+
+        scheduler.runOneRefresh(database, view);
+
+        assertThat(view.getErrorCount()).as("the failed pass is still counted").isEqualTo(1);
+        assertThat(view.getStatus()).isEqualTo("ERROR");
+        assertThat(view.tryBeginRefresh()).as("the next pass can still take ownership").isTrue();
       } finally {
         scheduler.shutdown();
       }

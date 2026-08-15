@@ -59,16 +59,34 @@ public class MaterializedViewScheduler {
         cancel(view.getName());
         return;
       }
-      try {
-        MaterializedViewRefresher.fullRefresh(db, view);
-      } catch (final Exception e) {
-        view.setStatus(MaterializedViewStatus.ERROR);
-        LogManager.instance().log(this, Level.SEVERE,
-            "Error in periodic refresh for view '%s': %s", e, view.getName(), e.getMessage());
-      }
+      runOneRefresh(db, view);
     }, interval, interval, TimeUnit.MILLISECONDS);
 
     tasks.put(view.getName(), future);
+  }
+
+  /**
+   * Runs one periodic pass, and lets nothing out.
+   * <p>
+   * {@code scheduleAtFixedRate} cancels a task PERMANENTLY the first time it throws - no further execution, ever,
+   * and nothing says so - so anything escaping here would stop this view refreshing for the life of the database
+   * while it kept reporting the status of its last successful pass. {@code Throwable} rather than {@code Exception}
+   * because "this view silently stopped refreshing" is a strictly worse outcome than a logged failure, whatever
+   * class the failure belongs to, and because a guard that has to be re-argued every time the refresh path changes
+   * is not a guard. The status is set here as well as in the refresher: an {@code Error} bypasses the refresher's
+   * own bookkeeping in versions of it that do not catch one.
+   * <p>
+   * Extracted from the scheduling above so the guarantee can be tested without waiting out a tick.
+   */
+  // @VisibleForTesting
+  void runOneRefresh(final Database database, final MaterializedViewImpl view) {
+    try {
+      MaterializedViewRefresher.fullRefresh(database, view);
+    } catch (final Throwable e) {
+      view.setStatus(MaterializedViewStatus.ERROR);
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error in periodic refresh for view '%s': %s", e, view.getName(), e.getMessage());
+    }
   }
 
   public void cancel(final String viewName) {
