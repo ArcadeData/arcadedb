@@ -77,7 +77,7 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
     // Reproduce the state a page is in between commit and flush: published in the flush thread's index (so reads
     // resolve it from there) while the disk still holds the same version.
     final MutablePage pending = page.modify();
-    pageManager.getFlushThread().pageIndex.put(pageId, pending);
+    pageManager.getFlushThread().pageIndex.put(pending);
 
     // Replicated/recovery WAL entry bumping the page by one version.
     final WALFile.WALPage walPage = new WALFile.WALPage();
