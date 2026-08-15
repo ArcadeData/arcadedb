@@ -18,6 +18,9 @@
  */
 package com.arcadedb.server.backup;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.integration.backup.Backup;
+import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -749,5 +752,173 @@ class DatabaseBackupConfigTest {
     final DatabaseBackupConfig.ScheduleConfig config = new DatabaseBackupConfig.ScheduleConfig();
 
     assertThat(config.hasTimeWindow()).isFalse();
+  }
+
+  // ============ Per-database compression overrides (issue #6087) ============
+
+  @Test
+  void compressionOverridesAreUnsetByDefault() {
+    final DatabaseBackupConfig config = new DatabaseBackupConfig("mydb");
+
+    // null IS THE "DEFER TO GlobalConfiguration" STATE - THE WHOLE BACKWARD-COMPATIBILITY GUARANTEE RESTS ON IT
+    assertThat(config.getCompressionLevel()).isNull();
+    assertThat(config.getCompressionThreads()).isNull();
+    assertThat(config.getMaxMBPerSecond()).isNull();
+  }
+
+  @Test
+  void fromJsonWithCompressionOverrides() {
+    final JSONObject json = new JSONObject()
+        .put("compressionLevel", 9)
+        .put("compressionThreads", 2)
+        .put("maxMBPerSecond", 64);
+
+    final DatabaseBackupConfig config = DatabaseBackupConfig.fromJSON("archivedb", json);
+
+    assertThat(config.getCompressionLevel()).isEqualTo(9);
+    assertThat(config.getCompressionThreads()).isEqualTo(2);
+    assertThat(config.getMaxMBPerSecond()).isEqualTo(64);
+  }
+
+  /**
+   * A {@code backup.json} written before this setting existed must load and behave exactly as it did: every override
+   * stays unset, so the global configuration still decides.
+   */
+  @Test
+  void fromJsonWithoutCompressionOverridesLeavesThemUnset() {
+    final JSONObject json = new JSONObject()
+        .put("enabled", true)
+        .put("runOnServer", "$leader");
+
+    final DatabaseBackupConfig config = DatabaseBackupConfig.fromJSON("legacydb", json);
+
+    assertThat(config.getCompressionLevel()).isNull();
+    assertThat(config.getCompressionThreads()).isNull();
+    assertThat(config.getMaxMBPerSecond()).isNull();
+  }
+
+  @Test
+  void toJsonOmitsUnsetCompressionOverrides() {
+    final DatabaseBackupConfig config = new DatabaseBackupConfig("mydb");
+    config.setCompressionLevel(6);
+
+    final JSONObject json = config.toJSON();
+
+    assertThat(json.has("compressionLevel")).isTrue();
+    assertThat(json.getInt("compressionLevel")).isEqualTo(6);
+    // WRITING A RESOLVED DEFAULT BACK WOULD FREEZE TODAY'S GLOBAL VALUE INTO THE FILE
+    assertThat(json.has("compressionThreads")).isFalse();
+    assertThat(json.has("maxMBPerSecond")).isFalse();
+  }
+
+  @Test
+  void compressionOverridesSurviveAJsonRoundTrip() {
+    final DatabaseBackupConfig config = new DatabaseBackupConfig("mydb");
+    config.setCompressionLevel(1);
+    config.setCompressionThreads(0);
+    config.setMaxMBPerSecond(0);
+
+    final DatabaseBackupConfig reloaded = DatabaseBackupConfig.fromJSON("mydb", config.toJSON());
+
+    assertThat(reloaded.getCompressionLevel()).isEqualTo(1);
+    assertThat(reloaded.getCompressionThreads()).isZero();
+    assertThat(reloaded.getMaxMBPerSecond()).isZero();
+  }
+
+  @Test
+  void mergeWithDefaultsFillsOnlyTheUnsetCompressionOverrides() {
+    final DatabaseBackupConfig config = new DatabaseBackupConfig("mydb");
+    config.setCompressionLevel(9);
+
+    final DatabaseBackupConfig defaults = new DatabaseBackupConfig("_defaults");
+    defaults.setCompressionLevel(1);
+    defaults.setCompressionThreads(4);
+    defaults.setMaxMBPerSecond(32);
+
+    config.mergeWithDefaults(defaults);
+
+    assertThat(config.getCompressionLevel()).isEqualTo(9); // the database's own value wins
+    assertThat(config.getCompressionThreads()).isEqualTo(4);
+    assertThat(config.getMaxMBPerSecond()).isEqualTo(32);
+  }
+
+  @Test
+  void mergeWithDefaultsLeavesEverythingUnsetWhenNeitherLevelSaysAnything() {
+    final DatabaseBackupConfig config = new DatabaseBackupConfig("mydb");
+
+    config.mergeWithDefaults(new DatabaseBackupConfig("_defaults"));
+
+    assertThat(config.getCompressionLevel()).isNull();
+    assertThat(config.getCompressionThreads()).isNull();
+    assertThat(config.getMaxMBPerSecond()).isNull();
+  }
+
+  @Test
+  void validateRejectsAnOutOfRangeCompressionLevel() {
+    assertThatThrownBy(() -> DatabaseBackupConfig.fromJSON("mydb", new JSONObject().put("compressionLevel", 10)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("compressionLevel");
+
+    assertThatThrownBy(() -> DatabaseBackupConfig.fromJSON("mydb", new JSONObject().put("compressionLevel", -1)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("compressionLevel");
+  }
+
+  @Test
+  void validateRejectsAnOutOfRangeCompressionThreadCount() {
+    assertThatThrownBy(() -> DatabaseBackupConfig.fromJSON("mydb", new JSONObject().put("compressionThreads", -2)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("compressionThreads");
+
+    assertThatThrownBy(() -> DatabaseBackupConfig.fromJSON("mydb",
+        new JSONObject().put("compressionThreads", DatabaseBackupConfig.MAX_COMPRESSION_THREADS + 1)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("compressionThreads");
+  }
+
+  @Test
+  void validateRejectsANegativeMaxMBPerSecond() {
+    assertThatThrownBy(() -> DatabaseBackupConfig.fromJSON("mydb", new JSONObject().put("maxMBPerSecond", -1)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("maxMBPerSecond");
+  }
+
+  @Test
+  void validateAcceptsTheBoundaryValues() {
+    final JSONObject json = new JSONObject()
+        .put("compressionLevel", DatabaseBackupConfig.MAX_COMPRESSION_LEVEL)
+        .put("compressionThreads", DatabaseBackupConfig.MIN_COMPRESSION_THREADS)
+        .put("maxMBPerSecond", DatabaseBackupConfig.MIN_MAX_MB_PER_SECOND);
+
+    final DatabaseBackupConfig config = DatabaseBackupConfig.fromJSON("mydb", json);
+
+    assertThat(config.getCompressionLevel()).isEqualTo(9);
+    assertThat(config.getCompressionThreads()).isEqualTo(-1);
+    assertThat(config.getMaxMBPerSecond()).isZero();
+  }
+
+  /**
+   * The server module reaches the backup reflectively and so cannot reference {@code BackupSettings} in production
+   * code; the bounds are repeated in {@link DatabaseBackupConfig} instead. This is the guard that they never drift -
+   * without it, a config accepted here could still be refused by {@code Backup.setCompressionThreads} at 3am.
+   */
+  @Test
+  void compressionOverrideBoundsMatchTheBackupApi() {
+    assertThat(DatabaseBackupConfig.MAX_COMPRESSION_THREADS).isEqualTo(BackupSettings.MAX_COMPRESSION_THREADS);
+
+    // THE Backup SETTERS ARE THE AUTHORITY: ASK THEM DIRECTLY RATHER THAN RESTATING THEIR LITERALS HERE
+    final Backup backup = new Backup((Database) null, "bounds.zip");
+    backup.setCompressionLevel(DatabaseBackupConfig.MIN_COMPRESSION_LEVEL);
+    backup.setCompressionLevel(DatabaseBackupConfig.MAX_COMPRESSION_LEVEL);
+    backup.setCompressionThreads(DatabaseBackupConfig.MIN_COMPRESSION_THREADS);
+    backup.setCompressionThreads(DatabaseBackupConfig.MAX_COMPRESSION_THREADS);
+    backup.setMaxMBPerSecond(DatabaseBackupConfig.MIN_MAX_MB_PER_SECOND);
+
+    assertThatThrownBy(() -> backup.setCompressionLevel(DatabaseBackupConfig.MAX_COMPRESSION_LEVEL + 1))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> backup.setCompressionThreads(DatabaseBackupConfig.MIN_COMPRESSION_THREADS - 1))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> backup.setMaxMBPerSecond(DatabaseBackupConfig.MIN_MAX_MB_PER_SECOND - 1))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }
