@@ -1351,6 +1351,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
       throw new RuntimeException("Error during Raft snapshot installation", e);
     } finally {
+      // Released in this order on purpose: the flag is the broader signal - isSnapshotDownloadPending() feeds the
+      // HealthMonitor's decision not to start anything - so it must not read false while this install still holds
+      // the lock. The converse window it leaves (lock free, flag still true) costs a concurrent request one folded
+      // attempt, which the next retryUnfilledSnapshotGap() tick re-drives; swapping the two would only move the
+      // window, not close it, and would move it to the side where something new can be started under a held lock.
       snapshotDownloadLock.unlock();
       if (acquiredSnapshotFlag)
         snapshotDownloadInProgress.set(false);

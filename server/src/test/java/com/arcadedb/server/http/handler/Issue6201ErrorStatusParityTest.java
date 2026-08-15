@@ -33,6 +33,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import io.micrometer.observation.ObservationRegistry;
@@ -95,6 +96,8 @@ class Issue6201ErrorStatusParityTest {
       new MappedFailure("ServerIsNotTheLeaderException", 400,
           () -> new ServerIsNotTheLeaderException("Not the leader", "192.168.0.1:2480")),
       new MappedFailure("SecurityException", 403, () -> new SecurityException("Not allowed")),
+      // Not a SecurityException - it extends ServerException - so asking for either type alone is a half-answer.
+      new MappedFailure("ServerSecurityException", 403, () -> new ServerSecurityException("Not allowed")),
       new MappedFailure("QueryNotIdempotentException", 400,
           () -> new QueryNotIdempotentException("Query is not idempotent")),
       new MappedFailure("JSONException", 400, () -> new JSONException("Missing property 'command'")),
@@ -146,6 +149,24 @@ class Issue6201ErrorStatusParityTest {
     // The typed exception survives too: the remote Java driver and the HA leader-exception reconstruction both
     // rebuild the retryable type from this field, and a generic TransactionException is not retryable.
     assertThat(json.getString("exception")).isEqualTo(ConcurrentModificationException.class.getName());
+  }
+
+  /**
+   * The last-resort walk: a security refusal buried under wrappers the classification does not recognise is still
+   * a 403, and it must not matter which of the two unrelated security types it is. The walk used to test only
+   * {@code SecurityException}, so the same refusal answered 403 one level up and a generic 500 two levels down.
+   */
+  @Test
+  void aSecurityFailureBuriedUnderUnrecognisedWrappersIsStill403() {
+    for (final RuntimeException buried : List.of(
+        new IllegalStateException("outer", new RuntimeException("middle", new SecurityException("Not allowed"))),
+        new IllegalStateException("outer", new RuntimeException("middle", new ServerSecurityException("Not allowed"))))) {
+      final HandledResponse response = handle(buried);
+      assertThat(response.statusCode)
+          .as("a security refusal at depth 2 must still be 403 (body=%s)", response.body)
+          .isEqualTo(403);
+      assertThat(new JSONObject(response.body).getString("error")).isEqualTo("Security error");
+    }
   }
 
   /**

@@ -546,10 +546,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // the generic 500 this method exists to stop producing.
     final Throwable cause = e.getCause() != null && isGenericWrapper(e) ? e.getCause() : e;
 
-    // ServerSecurityException is not a SecurityException (it extends ServerException), so both are probed.
-    Throwable security = firstOf(e, cause, ServerSecurityException.class);
-    if (security == null)
-      security = firstOf(e, cause, SecurityException.class);
+    final Throwable security = isSecurityFailure(e) ? e : isSecurityFailure(cause) ? cause : null;
     if (security != null) {
       // PASS SecurityException TO THE CLIENT
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
@@ -702,12 +699,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
-    // Last resort, and the only place the cause chain is walked to any depth for a SecurityException: a
-    // security failure buried under an unrecognised wrapper must still be answered as one. Deliberately below
-    // every arm above, so a recognised mapping keeps deciding - which is where this walk already sat, in the
-    // catch-Throwable arm.
+    // Last resort, and the only place the cause chain is walked to any depth for a security failure: one buried
+    // under an unrecognised wrapper must still be answered as one. Deliberately below every arm above, so a
+    // recognised mapping keeps deciding - which is where this walk already sat, in the catch-Throwable arm. It
+    // asks isSecurityFailure like the shallow probe does: the walk used to test only SecurityException, so a
+    // ServerSecurityException buried two levels deep came out as a generic 500 while the same exception one
+    // level up came out as 403.
     for (Throwable deep = e; deep != null; deep = deep.getCause())
-      if (deep instanceof SecurityException) {
+      if (isSecurityFailure(deep)) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
                 SecurityException.class.getSimpleName(), deep.getMessage());
         sendErrorResponse(exchange, 403, "Security error", deep, null);
@@ -719,6 +718,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     LogManager.instance()
             .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
     sendErrorResponse(exchange, 500, "Internal error", e, null);
+  }
+
+  /**
+   * Whether {@code e} is a security refusal the client must be told about as a 403. Two unrelated types express
+   * one thing: {@link ServerSecurityException} extends {@code ServerException}, NOT {@link SecurityException}, so
+   * neither {@code instanceof} implies the other and asking for one of them is always a half-answer. Written once
+   * so the shallow probe and the last-resort cause walk cannot disagree about what counts.
+   */
+  private static boolean isSecurityFailure(final Throwable e) {
+    return e instanceof SecurityException || e instanceof ServerSecurityException;
   }
 
   /**
