@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.procedures.db.DbLabels;
@@ -30,6 +31,7 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.logging.Level;
 import java.util.stream.Stream;
 
 /**
@@ -105,22 +107,34 @@ final class BoltSystemProcedures {
    *
    * @return the records to stream, or null when the query must be left to the Cypher engine - which happens
    * when the call carries arguments (the registry rejects those with the same error the native {@code CALL}
-   * path reports) or when the procedure is not registered
+   * path reports), when the procedure is not registered, and when running it raises anything at all
    */
   static Served serveSchemaProcedure(final Database database, final String normalized) {
     final boolean labels = normalized.contains(LABELS);
     final boolean relationships = normalized.contains(RELATIONSHIPS);
     final boolean propertyKeys = normalized.contains(PROPERTY_KEYS);
 
-    if (labels && relationships && propertyKeys)
-      return serveCombined(database, normalized);
+    try {
+      if (labels && relationships && propertyKeys)
+        return serveCombined(database, normalized);
 
-    if (labels)
-      return serveOne(database, normalized, LABELS);
-    if (relationships)
-      return serveOne(database, normalized, RELATIONSHIPS);
-    if (propertyKeys)
-      return serveOne(database, normalized, PROPERTY_KEYS);
+      if (labels)
+        return serveOne(database, normalized, LABELS);
+      if (relationships)
+        return serveOne(database, normalized, RELATIONSHIPS);
+      if (propertyKeys)
+        return serveOne(database, normalized, PROPERTY_KEYS);
+    } catch (final Exception e) {
+      // The Bolt executor calls its system-query interception before the try/catch that classifies query
+      // errors (CommandParsingException vs. retryable conflict vs. plain failure), so an exception escaping
+      // here would reach the connection loop's catch-all unclassified. Running a registry procedure is a
+      // wider surface than the direct schema iteration this branch used to do, so it declines instead: all
+      // three procedures are read-only, which makes re-running the query through the engine free of side
+      // effects and gets the client the engine's own, properly classified error.
+      LogManager.instance().log(BoltSystemProcedures.class, Level.FINE,
+          "Error serving schema procedure from the registry, leaving the query to the engine", e);
+      return null;
+    }
 
     // Defensive: the caller reaches here only through isSchemaProcedureQuery(), which tests the same three
     // substrings, so no name can be missing. Kept so the two ever diverging declines the query rather than
@@ -172,8 +186,14 @@ final class BoltSystemProcedures {
   }
 
   /**
-   * Looks the procedure up, refusing the call when it carries arguments so that the query engine gets it and
-   * reports the arity error the registry entry declares. All three procedures take none.
+   * Looks the procedure up, refusing any call that carries arguments so that the query engine gets it.
+   * <p>
+   * The refusal is not a statement about these procedures' arity - it is that this path only has the query
+   * TEXT and cannot evaluate an argument, so whatever a call passes has to be interpreted where arguments
+   * are evaluated. Today all three declare zero arguments and the engine answers with the registry's arity
+   * error; a procedure that later grew an optional argument would be executed there with it, which is the
+   * same outcome, reached the same way.
+   * </p>
    */
   private static CypherProcedure procedureFor(final String normalized, final String procedureName) {
     if (callHasArguments(normalized, procedureName))

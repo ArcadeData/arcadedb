@@ -20,6 +20,10 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
+import com.arcadedb.query.opencypher.procedures.db.DbLabels;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -31,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -50,6 +55,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class Issue6151BoltSchemaProcedureTest {
   private static final String DB_PATH = "./target/databases/Issue6151BoltSchemaProcedureTest";
+
+  /** The introspection query Neo4j Desktop sends: the three procedures unioned, each collected into a list. */
+  private static final String COMBINED_QUERY =
+      "CALL db.labels() YIELD label RETURN collect(label) AS result "
+          + "UNION CALL db.relationshipTypes() YIELD relationshipType RETURN collect(relationshipType) AS result "
+          + "UNION CALL db.propertyKeys() YIELD propertyKey RETURN collect(propertyKey) AS result";
 
   private Database db;
 
@@ -103,11 +114,7 @@ class Issue6151BoltSchemaProcedureTest {
   @Test
   @DisplayName("the combined UNION query Neo4j Desktop sends collects the engine's values")
   void theCombinedDesktopQueryCollectsTheEngineValues() {
-    final String query = "CALL db.labels() YIELD label RETURN collect(label) AS result "
-        + "UNION CALL db.relationshipTypes() YIELD relationshipType RETURN collect(relationshipType) AS result "
-        + "UNION CALL db.propertyKeys() YIELD propertyKey RETURN collect(propertyKey) AS result";
-
-    final BoltSystemProcedures.Served served = serve(query);
+    final BoltSystemProcedures.Served served = serve(COMBINED_QUERY);
     assertThat(served).isNotNull();
     assertThat(served.fields()).containsExactly("result");
     assertThat(served.rows()).hasSize(3);
@@ -158,6 +165,33 @@ class Issue6151BoltSchemaProcedureTest {
   }
 
   @Test
+  @DisplayName("the combined query with no database selected yields no rows rather than failing")
+  void theCombinedQueryWithoutADatabaseIsEmpty() {
+    final BoltSystemProcedures.Served served = BoltSystemProcedures.serveSchemaProcedure(null,
+        BoltSystemProcedures.normalize(COMBINED_QUERY));
+    assertThat(served).isNotNull();
+    assertThat(served.fields()).containsExactly("result");
+    assertThat(served.rows()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("a procedure that blows up declines the query instead of escaping the interception")
+  void aFailingProcedureLeavesTheQueryToTheEngine() {
+    // The Bolt executor runs the interception before the try/catch that classifies query errors, so anything
+    // escaping here would reach the connection loop unclassified. Declining sends the query to the engine.
+    CypherProcedureRegistry.registerOrReplace(new ExplodingLabels());
+    try {
+      assertThat(serve("CALL db.labels()")).isNull();
+      assertThat(serve(COMBINED_QUERY)).isNull();
+    } finally {
+      CypherProcedureRegistry.registerOrReplace(new DbLabels());
+    }
+
+    // Restored: the same call is served again.
+    assertThat(serve("CALL db.labels()")).isNotNull();
+  }
+
+  @Test
   @DisplayName("procedure-name matching survives a locale whose lowercasing rewrites I")
   void matchingIsLocaleIndependent() {
     final Locale original = Locale.getDefault();
@@ -203,5 +237,41 @@ class Issue6151BoltSchemaProcedureTest {
       }
     }
     return values;
+  }
+
+  /**
+   * Stands in for {@code db.labels} in the registry and fails on execution, standing for any future registry
+   * entry whose work is less trivial than iterating the schema.
+   */
+  private static class ExplodingLabels implements CypherProcedure {
+    @Override
+    public String getName() {
+      return DbLabels.NAME;
+    }
+
+    @Override
+    public int getMinArgs() {
+      return 0;
+    }
+
+    @Override
+    public int getMaxArgs() {
+      return 0;
+    }
+
+    @Override
+    public String getDescription() {
+      return "Test double that fails on execution";
+    }
+
+    @Override
+    public List<String> getYieldFields() {
+      return List.of("label");
+    }
+
+    @Override
+    public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
+      throw new IllegalStateException("procedure blew up");
+    }
   }
 }
