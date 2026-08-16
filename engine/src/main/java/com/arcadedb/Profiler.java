@@ -254,6 +254,8 @@ public class Profiler {
     final long edgeAppendMerges = pStats.edgeAppendMerges;
     final long txPageSlotMerges = pStats.txPageSlotMerges;
     final long mergesDeclinedByCoverage = pStats.mergesDeclinedByCoverage;
+    final long chunkChainReadRevalidations = pStats.chunkChainReadRevalidations;
+    final long chunkChainReadRetries = pStats.chunkChainReadRetries;
     final long evictionRuns = pStats.evictionRuns;
     final long pagesEvicted = pStats.pagesEvicted;
     final int readCachePages = pStats.readCachePages;
@@ -281,6 +283,10 @@ public class Profiler {
     json.put("edgeAppendMerges", new JSONObject().put("count", edgeAppendMerges));
     json.put("txPageSlotMerges", new JSONObject().put("count", txPageSlotMerges));
     json.put("mergesDeclinedByCoverage", new JSONObject().put("count", mergesDeclinedByCoverage));
+    // #6217: the read-path twin of txPageSlotMerges - a chunked read that met a moved page and completed anyway -
+    // and, next to it, the reads that had to restart because the record itself had moved.
+    json.put("chunkChainReadRevalidations", new JSONObject().put("count", chunkChainReadRevalidations));
+    json.put("chunkChainReadRetries", new JSONObject().put("count", chunkChainReadRetries));
 
     json.put("writeTx", new JSONObject().put("count", writeTx));
     json.put("readTx", new JSONObject().put("count", readTx));
@@ -435,6 +441,8 @@ public class Profiler {
       final long edgeAppendMerges = pStats.edgeAppendMerges;
       final long txPageSlotMerges = pStats.txPageSlotMerges;
       final long mergesDeclinedByCoverage = pStats.mergesDeclinedByCoverage;
+      final long chunkChainReadRevalidations = pStats.chunkChainReadRevalidations;
+      final long chunkChainReadRetries = pStats.chunkChainReadRetries;
       final long evictionRuns = pStats.evictionRuns;
       final long pagesEvicted = pStats.pagesEvicted;
       final int readCachePages = pStats.readCachePages;
@@ -498,6 +506,11 @@ public class Profiler {
       // without declaring its coverage (see MutablePage.beginCoveredWrite).
       buffer.append("%n    edgeAppendMerges=%d txPageSlotMerges=%d mergesDeclinedByCoverage=%d".formatted(
           edgeAppendMerges, txPageSlotMerges, mergesDeclinedByCoverage));
+
+      // #6217: the same reading, one line down, for the READ path of a record too big for its page. Revalidations are
+      // false conflicts that did not happen; retries are reads thrown away because the record really had moved.
+      buffer.append("%n    chunkChainReadRevalidations=%d chunkChainReadRetries=%d".formatted(
+          chunkChainReadRevalidations, chunkChainReadRetries));
 
       // #6116: printed unconditionally, zeros included. "No window is open" is the answer an operator is looking for
       // most of the time, and a line that appears only sometimes cannot be read as one.

@@ -65,7 +65,9 @@ class EngineMetricsBinderTest {
         // exports and what makes rate(seconds)/rate(count) the average barrier latency
         "arcadedb.engine.snapshot.windows.overflowed", "arcadedb.engine.snapshot.windows.failed",
         "arcadedb.engine.snapshot.barrier.count", "arcadedb.engine.snapshot.barrier.seconds",
-        "arcadedb.engine.snapshot.barrier.inexact" }) {
+        "arcadedb.engine.snapshot.barrier.inexact",
+        // #6217: the read-path twin of the page merges above
+        "arcadedb.engine.record.chunked.read.revalidations", "arcadedb.engine.record.chunked.read.retries" }) {
       final FunctionCounter counter = registry.find(name).functionCounter();
       assertThat(counter).as(name).isNotNull();
       assertThat(Double.isNaN(counter.count())).as(name).isFalse();

@@ -122,6 +122,16 @@ public abstract class BasePage {
     return (int) this.content.getByte(PAGE_HEADER_SIZE + index) & 0xFF;
   }
 
+  /**
+   * Whether {@code length} bytes of this page, from {@code index}, are the same as {@code length} bytes of
+   * {@code other}, from {@code otherIndex}: {@link Binary#isSameRegionAs} against the page's own content, so a
+   * caller comparing a record image against the page it came from neither copies the region out first nor walks it
+   * a byte at a time (#6217).
+   */
+  public boolean isSameContentAs(final int index, final Binary other, final int otherIndex, final int length) {
+    return this.content.isSameRegionAs(PAGE_HEADER_SIZE + index, other, otherIndex, length);
+  }
+
   public void readByteArray(final int index, final byte[] buffer) {
     this.content.getByteArray(PAGE_HEADER_SIZE + index, buffer);
   }

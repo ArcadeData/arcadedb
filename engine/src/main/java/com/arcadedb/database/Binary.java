@@ -661,6 +661,25 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     System.arraycopy(content, buffer.arrayOffset() + startPosition, content, buffer.arrayOffset() + destPosition, length);
   }
 
+  /**
+   * Whether {@code length} bytes of this buffer, from {@code index}, are the same as {@code length} bytes of
+   * {@code other}, from {@code otherIndex}. Both indexes are absolute, so neither buffer's position is read or
+   * moved - the two regions being compared usually belong to buffers somebody else is reading through.
+   * <p>
+   * One {@link Arrays#equals(byte[], int, int, byte[], int, int)} rather than a byte loop: it is a JIT intrinsic
+   * that compares a machine word (and, where the hardware has it, a vector) at a time and stops at the first
+   * difference, which is what makes comparing regions the size of a page affordable at all (#6217). Every
+   * {@code Binary} is backed by a heap array - the {@link ByteBuffer} constructor calls {@code array()} - so there
+   * is no direct-buffer case to fall back for.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  public boolean isSameRegionAs(final int index, final Binary other, final int otherIndex, final int length) {
+    final int from = buffer.arrayOffset() + index;
+    final int otherFrom = other.buffer.arrayOffset() + otherIndex;
+    return Arrays.equals(content, from, from + length, other.content, otherFrom, otherFrom + length);
+  }
+
   public byte[] getContent() {
     return content;
   }

@@ -48,6 +48,35 @@ class BinaryStructureTest {
     assertThat(new String(bytes)).isEqualTo("ciao");
   }
 
+  /**
+   * #6217: the bulk region comparison a chunked read validates itself with. The properties that matter to it are
+   * that both indexes are ABSOLUTE and independent (the same bytes at different offsets in the two buffers must
+   * compare equal), that neither buffer's position moves, and that a buffer whose content does not start at array
+   * index 0 - which is what a page view is - is compared from where its content really begins.
+   */
+  @Test
+  void isSameRegionAs() {
+    final Binary one = new Binary("--hello world--".getBytes());
+    final Binary other = new Binary("hello world".getBytes());
+
+    one.position(3);
+    other.position(7);
+
+    assertThat(one.isSameRegionAs(2, other, 0, 11)).isTrue();
+    assertThat(one.isSameRegionAs(2, other, 0, 0)).as("an empty region is the same as any other").isTrue();
+    assertThat(one.isSameRegionAs(8, other, 6, 5)).as("the same bytes at different offsets").isTrue();
+    assertThat(one.isSameRegionAs(2, other, 1, 10)).as("shifted by one, so 'hello worl' against 'ello world'").isFalse();
+    assertThat(one.isSameRegionAs(0, other, 0, 11)).isFalse();
+
+    assertThat(one.position()).as("comparing must not move either position").isEqualTo(3);
+    assertThat(other.position()).isEqualTo(7);
+
+    // A buffer whose content begins past the start of its array, as every page view is.
+    final Binary sliced = new Binary(java.nio.ByteBuffer.wrap("--hello world".getBytes()).position(2).slice());
+    assertThat(sliced.isSameRegionAs(0, other, 0, 11)).isTrue();
+    assertThat(other.isSameRegionAs(0, sliced, 0, 11)).isTrue();
+  }
+
   private void addValues(final BinaryStructure blob) {
     int size = 0;
     assertThat(blob.size()).isEqualTo(size);
