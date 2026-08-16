@@ -25,6 +25,7 @@ import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -50,6 +51,18 @@ import java.util.regex.Pattern;
 
 /**
  * POST /api/v1/cluster/verify/{database} - verifies database consistency across cluster nodes.
+ * <p>
+ * On the leader it CRCs every file of the local database and fans the same request out to every other peer,
+ * comparing their checksums against its own. On any other node - and on any node serving a query a peer fanned
+ * out to it - it answers with its local checksums and nothing else.
+ * <p>
+ * Both halves of that split matter, because this endpoint's whole job is to tell an operator whether the
+ * cluster's copies agree, and both ways of getting it wrong point the same way (issue #6221): a node that
+ * compares itself against itself matches on every file and is reported as a peer that <em>agrees</em>, and a
+ * fan-out that lands back on the leader fans out again, multiplying by (N-1) per level with a full CRC of the
+ * database at each. So every peer is dialled through {@link PeerDialAddress}, a peer with no address of its own
+ * is reported as unverified rather than consistent, and the query carries the one-hop marker that stops a node
+ * from fanning out a request that was itself fanned out.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -176,8 +189,16 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
     final JSONObject response = new JSONObject();
 
-    // Non-leader: return local checksums only
-    if (!raftHAServer.isLeader()) {
+    // Non-leader, or a query a peer already fanned out to us: return local checksums only.
+    //
+    // The marker is the bound the address checks cannot provide (issue #6221). A resolved peer address can name a
+    // real node that is not the one meant - which no local self-check can see - and if that node is a leader it
+    // fans out again, multiplying by (N-1) per level and CRC-ing every byte of the database before each fan-out.
+    // Honored only on a request that authenticated with the cluster token, so a client cannot use it to suppress
+    // a verify of its own; that is the same gate, and the same header, the write-forward paths use, because it
+    // states the same thing: a peer already relayed this request, so this node answers it rather than relaying it
+    // on.
+    if (LeaderForwardContext.isAlreadyForwarded() || !raftHAServer.isLeader()) {
       response.put("localChecksums", localChecksums);
       response.put("files", localFiles);
       response.put("localServer", server.getServerName());
@@ -197,6 +218,9 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     final List<CompletableFuture<JSONObject>> futures = new ArrayList<>();
     final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+      // This node is not a peer of itself: skipped here rather than refused in queryPeer so it is absent from the
+      // report instead of listed as a peer that could not be verified. Every OTHER peer is dialled through the
+      // guard, because an id that is not ours says nothing about where the address resolved for it points.
       if (peer.getId().equals(raftHAServer.getLocalPeerId()))
         continue;
       futures.add(submitPeerQuery(raftHAServer, peer, databaseName, localChecksums, user, useSsl));
@@ -217,12 +241,23 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
     result.put("peers", peerResults);
 
-    boolean allConsistent = true;
-    for (int i = 0; i < peerResults.length(); i++)
-      if (!"CONSISTENT".equals(peerResults.getJSONObject(i).getString("status", "ERROR")))
-        allConsistent = false;
+    // Three outcomes, not two: a peer this node could not compare against is not a peer that agrees with it
+    // (issue #6221). Rolling an unverified peer up as ALL_CONSISTENT hands the operator a clean bill of health
+    // from the divergence detector at the moment they are asking precisely because they suspect divergence, and
+    // rolling it up as INCONSISTENCY_DETECTED sends them looking for a divergence nobody has observed. The
+    // distinction is in the peer entries either way; overallStatus is what alerting keys on.
+    boolean anyMismatch = false;
+    boolean anyUnverified = false;
+    for (int i = 0; i < peerResults.length(); i++) {
+      final String peerStatus = peerResults.getJSONObject(i).getString("status", "ERROR");
+      if ("INCONSISTENT".equals(peerStatus))
+        anyMismatch = true;
+      else if (!"CONSISTENT".equals(peerStatus))
+        anyUnverified = true;
+    }
 
-    result.put("overallStatus", allConsistent ? "ALL_CONSISTENT" : "INCONSISTENCY_DETECTED");
+    result.put("overallStatus", anyMismatch ? "INCONSISTENCY_DETECTED"
+        : anyUnverified ? "VERIFICATION_INCOMPLETE" : "ALL_CONSISTENT");
     response.put("result", result);
     return new ExecutionResponse(200, response.toString());
   }
@@ -254,6 +289,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * Queries a single peer for its checksums and compares them against the leader's. Always returns
    * a JSONObject describing the outcome (CONSISTENT, INCONSISTENT, or ERROR); never throws so the
    * caller can safely join on the CompletableFuture.
+   * <p>
+   * The address it dials is the guarded one (issue #6221). The best-effort {@code getPeerHttpAddress} is still
+   * what the report shows - an operator diagnosing the refusal needs to see the address that was refused - but it
+   * is not dialled: on a cluster whose nodes share a host and declare no {@code http} port it is this node's own,
+   * and comparing this node against itself matches on every file and is reported as the peer agreeing.
    */
   private JSONObject queryPeer(final RaftHAServer raftHAServer, final RaftPeer peer, final String databaseName,
       final JSONObject localChecksums, final ServerSecurityUser user, final boolean useSsl) {
@@ -262,20 +302,28 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     final String peerHttpAddr = raftHAServer.getPeerHttpAddress(peer.getId());
     peerResult.put("httpAddress", peerHttpAddr);
 
+    final PeerDialAddress dial = PeerDialAddress.resolve(raftHAServer, peer.getId(), "peer");
+    if (dial.refused()) {
+      peerResult.put("status", "ERROR");
+      peerResult.put("error", "not verified: " + dial.refusal());
+      return peerResult;
+    }
+
     try {
       // Peers only advertise their plain HTTP port; the HTTPS listener (when SSL is enabled) binds a
       // separate port. Forcing an https scheme onto the plain HTTP port fails with "Unsupported or
       // unrecognized SSL message" (issue #4470). When SSL is enabled, prefer the peer's resolved HTTPS
       // endpoint (explicit 5th field of HA_SERVER_LIST, or derived from the local HTTPS port);
-      // otherwise fall back to plain HTTP on the always-present HTTP listener.
-      String endpoint = peerHttpAddr;
+      // otherwise fall back to plain HTTP on the always-present HTTP listener. Both endpoints come from the
+      // guard: the HTTPS one is read from a different field of the server list, with its own derive fallback
+      // onto THIS node's HTTPS port, so a cluster that declares distinct http ports and omits the https ones
+      // passes the HTTP check with every peer's HTTPS endpoint still collapsed onto our own. A withheld HTTPS
+      // address arrives here as null and takes the same route an absent one always has (issue #6221).
+      String endpoint = dial.httpAddress();
       boolean https = false;
-      if (useSsl) {
-        final String peerHttpsAddr = raftHAServer.getPeerHttpsAddress(peer.getId());
-        if (peerHttpsAddr != null) {
-          endpoint = peerHttpsAddr;
-          https = true;
-        }
+      if (useSsl && dial.httpsAddress() != null) {
+        endpoint = dial.httpsAddress();
+        https = true;
       }
 
       final String url = (https ? "https" : "http") + "://" + endpoint
@@ -297,6 +345,10 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
           // Forward the initiating user's identity so that authorization on the peer evaluates
           // against the actual caller (matching LeaderProxy's pattern).
           conn.setRequestProperty("X-ArcadeDB-Forwarded-User", user.getName());
+          // One hop, whatever this address turns out to name: the node that serves this query answers with its
+          // own checksums instead of fanning out again (issue #6221). Set inside the token branch because the
+          // marker is only honored on a token-authenticated request.
+          conn.setRequestProperty(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
         }
 
         conn.setDoOutput(true);

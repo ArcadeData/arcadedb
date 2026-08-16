@@ -380,18 +380,24 @@ function verifyDatabase(databaseName) {
     var result = (data && data.result) ? data.result : data;
     var status = result.overallStatus || "UNKNOWN";
     var ok = status === "ALL_CONSISTENT";
+    // VERIFICATION_INCOMPLETE is neither: no divergence was observed, but a peer could not be verified at all,
+    // so it must not be shown as agreement nor as a divergence somebody has to go and find (issue #6221).
+    var incomplete = status === "VERIFICATION_INCOMPLETE";
     var html = '<div style="font-size:0.85rem;">'
-      + '<div class="mb-2"><b>Status:</b> <span class="badge ' + (ok ? "bg-success" : "bg-danger") + '">'
+      + '<div class="mb-2"><b>Status:</b> <span class="badge ' + (ok ? "bg-success" : (incomplete ? "bg-warning text-dark" : "bg-danger")) + '">'
       + escapeHtml(status) + '</span></div>';
+    if (incomplete)
+      html += '<div class="mb-2 text-muted">At least one peer could not be verified; see its error below.</div>';
     var peers = result.peers || [];
     if (peers.length > 0) {
-      html += '<table class="table table-sm" style="font-size:0.8rem;"><thead><tr><th>Peer</th><th>Status</th></tr></thead><tbody>';
+      html += '<table class="table table-sm" style="font-size:0.8rem;"><thead><tr><th>Peer</th><th>Status</th><th>Detail</th></tr></thead><tbody>';
       for (var i = 0; i < peers.length; i++) {
         var p = peers[i];
         var pStatus = p.status || "-";
         var badge = pStatus === "CONSISTENT" ? "bg-success" : (pStatus === "ERROR" ? "bg-secondary" : "bg-danger");
         html += '<tr><td>' + escapeHtml(p.peerId || p.httpAddress || "-") + '</td>'
-          + '<td><span class="badge ' + badge + '">' + escapeHtml(pStatus) + '</span></td></tr>';
+          + '<td><span class="badge ' + badge + '">' + escapeHtml(pStatus) + '</span></td>'
+          + '<td>' + escapeHtml(p.error || "") + '</td></tr>';
       }
       html += '</tbody></table>';
     }

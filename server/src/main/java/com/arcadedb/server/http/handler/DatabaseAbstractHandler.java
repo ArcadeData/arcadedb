@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
@@ -111,7 +112,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     } else
       database = null;
 
-    final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
+    final int retries = resolveRetries(payload,
+        database != null ? database.getConfiguration() : httpServer.getServer().getConfiguration());
 
     // Resolve HA database for read consistency (may be wrapped inside ServerDatabase).
     final HAReplicatedDatabase haDbForRead = resolveHAReplicatedDatabase(database);
@@ -228,6 +230,33 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         throw new TransactionException("Error on executing command", e);
       }
     }, false, retries);
+  }
+
+  /**
+   * How many attempts an auto-committed request gets: the {@code retries} field of the payload when the client
+   * asked for a specific number, {@link GlobalConfiguration#TX_RETRIES} otherwise.
+   * <p>
+   * The default used to be a hard-coded 1, which meant nothing retried unless the client asked for retries it had
+   * no reason to know existed. That was invisible until #6201: the auto-commit wrapper converted every exception
+   * into a {@code TransactionException}, so {@code LocalDatabase.transaction}'s
+   * {@code catch (NeedRetryException | DuplicatedKeyException)} never matched anything raised while the command
+   * ran and the value was dead. It is live now, so an MVCC conflict that a second attempt would have committed is
+   * answered 503 on the first.
+   * <p>
+   * Following {@code TX_RETRIES} is what makes the HTTP entry point behave like every other one - the embedded
+   * {@code Database.transaction(txBlock)} and {@code RemoteDatabase} both take their attempt count from it - and
+   * it is a knob an operator can already turn per database, including down to 1. Re-running a command that is not
+   * idempotent is safe here for the reason it is safe there: the engine retries only after rolling the
+   * transaction back, so the retried attempt starts from committed state and nothing the failed one wrote
+   * survives to be duplicated. Only the two conflict families are retried at all; every other failure propagates
+   * on the first attempt.
+   * <p>
+   * Package-private for direct unit testing.
+   */
+  static int resolveRetries(final JSONObject payload, final ContextConfiguration configuration) {
+    if (payload != null && !payload.isNull("retries"))
+      return payload.getInt("retries");
+    return configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES);
   }
 
   /**
