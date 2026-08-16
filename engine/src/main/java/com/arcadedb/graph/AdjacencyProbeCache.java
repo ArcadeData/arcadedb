@@ -61,9 +61,14 @@ import java.util.Map;
  * such, and such an entry carries no adjacency entries for the first bound to see. Eviction is
  * least-recently-probed on both, so a hub - the list that pays for itself - is the one that stays, and a single list
  * bigger than the budget is never cached at all -
- * such a list is answered by the original {@code EdgeLinkedList} probe, which is where the cycle-guarded chain walk
- * lives. {@code maxEntries <= 0} disables the cache entirely and every probe takes that original path, which is the
- * pre-#6062 behaviour and the escape hatch if the memory is ever unwelcome.
+ * such a list is answered by the original {@code EdgeLinkedList} probe. {@code maxEntries <= 0} disables the cache
+ * entirely and every probe takes that original path, which is the pre-#6062 behaviour and the escape hatch if the
+ * memory is ever unwelcome.
+ * <p>
+ * A SELF-REFERENCING CHUNK ends the materialising walk rather than feeding it forever: the guard the direct
+ * {@code containsEdge}/{@code containsVertex} walks always had is now in {@link EdgeVertexIterator} too, which is
+ * what this class materialises through - and which the checker's own walk of a vertex's list goes through as well,
+ * where the missing guard meant a check that never returned.
  * <p>
  * STALENESS IS THE CALLER'S JOB, and there is exactly one caller. A cached image is only valid while the list it was
  * built from does not change. The edge pass writes nothing while it scans; the vertex pass prunes dangling entries,
@@ -248,7 +253,7 @@ final class AdjacencyProbeCache {
       cachedEntries += built.entryCount;
     // ALSO after storing a remembered failure: it holds no adjacency entries, so only the list-count bound can
     // ever evict one, and that bound is only tested here.
-    evictUntilWithinBudget(key);
+    evictUntilWithinBudget();
     return built;
   }
 
@@ -306,13 +311,12 @@ final class AdjacencyProbeCache {
    * check: they carry no adjacency entries, so the first bound alone would let them accumulate one per damaged list
    * for the whole pass.
    */
-  private void evictUntilWithinBudget(final Key keep) {
+  private void evictUntilWithinBudget() {
+    // size() > 1 is what protects the image just stored: the map is access-ordered and a put counts as an access,
+    // so that one is the most recent and can only be the eldest when it is the only one left.
     while ((cachedEntries > maxEntries || images.size() > MAX_CACHED_LISTS) && images.size() > 1) {
       final Iterator<Map.Entry<Key, ListImage>> eldest = images.entrySet().iterator();
-      final Map.Entry<Key, ListImage> candidate = eldest.next();
-      if (candidate.getKey().equals(keep))
-        break;
-      cachedEntries -= candidate.getValue().entryCount;
+      cachedEntries -= eldest.next().getValue().entryCount;
       eldest.remove();
     }
   }
@@ -382,19 +386,14 @@ final class AdjacencyProbeCache {
 
     /**
      * Mirrors {@code MutableEdgeSegment.getFirstEdgeConnectedToVertex}: the entry matches when its neighbour is the
-     * one asked about AND its edge sits in one of the filtered buckets. A null filter accepts any edge bucket, which
-     * is why it has to sweep the map rather than index into it - the two-argument {@code isConnectedTo} passes null.
+     * one asked about AND its edge sits in one of the filtered buckets. The filter is always concrete here - the
+     * checker's probe always names an edge type, which is what {@link #bucketFilterOf} resolves - so there is no
+     * accept-any-bucket branch to sweep the map for. An edge type with no buckets yields an empty filter and
+     * therefore false, exactly as {@code containsVertex} does with the same array.
      */
     private boolean containsNeighbour(final RID neighbour, final int[] edgeBucketFilter) {
       final int vertexBucketId = neighbour.getBucketId();
       final long vertexPosition = neighbour.getPosition();
-
-      if (edgeBucketFilter == null) {
-        for (final Map.Entry<Long, LongHashSet> entry : neighbours.entrySet())
-          if ((int) (entry.getKey() & 0xFFFFFFFFL) == vertexBucketId && entry.getValue().contains(vertexPosition))
-            return true;
-        return false;
-      }
 
       for (int i = 0; i < edgeBucketFilter.length; i++) {
         final LongHashSet positions = neighbours.get(neighbourKey(edgeBucketFilter[i], vertexBucketId));

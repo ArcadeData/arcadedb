@@ -49,8 +49,18 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
     if (currentPosition.get() < currentContainer.getUsed())
       return true;
 
+    final RID currentIdentity = currentContainer.getIdentity();
     currentContainer = currentContainer.getPrevious();
     if (currentContainer != null) {
+      // A CHUNK POINTING AT ITSELF ends the walk, the same guard EdgeLinkedList.containsEdge/containsVertex have
+      // had all along and this iterator did not: on such a chain - corruption, and the corruption CHECK DATABASE
+      // exists to survive - the walk yielded the chunk's entries forever. The checker walks a vertex's own edge
+      // list through here, so the effect was a check that never returned rather than one that reported the damage.
+      // The sibling iterators (EdgeIterator, VertexIterator, RIDIterator, IteratorFilterBase) still lack it.
+      if (currentIdentity != null && currentIdentity.equals(currentContainer.getIdentity())) {
+        currentContainer = null;
+        return false;
+      }
       currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
       return currentPosition.get() < currentContainer.getUsed();
     }

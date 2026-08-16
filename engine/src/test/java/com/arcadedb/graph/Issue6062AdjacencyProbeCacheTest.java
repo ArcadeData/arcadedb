@@ -20,13 +20,16 @@ package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
+import com.arcadedb.utility.Pair;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -239,6 +242,47 @@ class Issue6062AdjacencyProbeCacheTest extends TestHelper {
     assertThat((Long) partial.get("adjacencyEntriesScanned"))
         .as("the over-budget list must be walked to the budget once, not once per probe")
         .isLessThanOrEqualTo(5L * DEGREE);
+  }
+
+  /**
+   * A CHUNK POINTING AT ITSELF must end the walk, not feed it forever.
+   * <p>
+   * {@code EdgeLinkedList.containsEdge}/{@code containsVertex} have always broken out of such a chain; the iterator
+   * behind {@code entryIterator()} did not - and the checker walks a vertex's own edge list through it, so this
+   * shape of corruption meant a {@code CHECK DATABASE} that never returned. This PR gives the same iterator a second
+   * consumer (the probe cache materialises through it), which is why the guard belongs here now.
+   * <p>
+   * Asserted by walking under a HARD CAP rather than by running the check under a timeout: an unterminating walk
+   * does not fail a test, it hangs the build, and a regression has to come back as a red test. Without the guard the
+   * walk reaches the cap and the assertion fails in milliseconds.
+   */
+  @Test
+  void aSelfReferencingChunkEndsTheWalkInsteadOfFeedingItForever() {
+    final RID hub = createHubWithDistinctSpokes();
+
+    // Point the hub's IN head chunk at itself.
+    database.transaction(() -> {
+      final RID head = ((VertexInternal) hub.asVertex(true)).getInEdgesHeadChunk();
+      final MutableEdgeSegment segment = (MutableEdgeSegment) database.lookupByRID(head, true);
+      segment.setPrevious(segment);
+      ((DatabaseInternal) database).updateRecord(segment);
+    });
+
+    final int cap = 8 * DEGREE;
+    final int[] walked = new int[1];
+    database.transaction(() -> {
+      final EdgeLinkedList list = ((DatabaseInternal) database).getGraphEngine()
+          .getEdgeHeadChunk((VertexInternal) hub.asVertex(true), Vertex.DIRECTION.IN);
+      final Iterator<Pair<RID, RID>> entries = list.entryIterator();
+      while (walked[0] <= cap && entries.hasNext()) {
+        entries.next();
+        ++walked[0];
+      }
+    });
+
+    assertThat(walked[0])
+        .as("the self-loop must end the walk; without the guard it yields the chunk's entries forever")
+        .isLessThanOrEqualTo(DEGREE);
   }
 
   /** A healthy graph stays healthy: the cache must not invent a finding either. */
