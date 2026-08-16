@@ -618,6 +618,8 @@ public class PageManagerFlushThread extends Thread {
     // end of the method, so the caller still observes its own cancellation and the re-enqueue phase below runs
     // interrupt-free.
     boolean restoreCallerInterrupt = false;
+    // The FIRST unexpected failure of the page loop below, re-raised once the whole backlog has been drained.
+    Throwable unexpected = null;
     try {
       // Serialized against detachPendingPages: the detach must either see these batches (and take its page out of
       // them) or run after they have all reached the disk. Otherwise a superseded copy written here could land after
@@ -657,6 +659,18 @@ public class PageManagerFlushThread extends Thread {
                   }
                 } catch (final IOException e) {
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+                } catch (final Throwable e) {
+                  // ONE PAGE'S UNEXPECTED FAILURE MUST NOT ABANDON THE REST OF THE BACKLOG (review of #6223). Letting
+                  // it escape this loop left every page after it in the batch without the finally below: still in
+                  // pageIndex, so this database's pending count stays above zero and the next close waits out the
+                  // whole flushAllPagesTimeout before giving up. Contained like the I/O failures above - the page is
+                  // recovered from the WAL, its ack was never given - and re-raised once the backlog is drained, so
+                  // the caller still learns that the resume failed.
+                  if (unexpected == null)
+                    unexpected = e;
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Unexpected error on flushing deferred page '%s' to disk, the page will be recovered from the WAL on restart",
+                      e, page);
                 } finally {
                   // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
                   addDeferredRAM(database, -page.getPhysicalSize());
@@ -669,7 +683,7 @@ public class PageManagerFlushThread extends Thread {
         }
       }
 
-      } finally {
+    } finally {
       // PHASES 2 TO 4 RUN EVEN IF PHASE 1 THREW. Its per-page loop contains every failure it expects (a dropped
       // file, an interrupt, an I/O error), but an UNEXPECTED exception escaping it used to abort the rest of the
       // resume outright: the batches deferred during Phase 1 stayed undetached - their pages pinned in pageIndex
@@ -677,6 +691,14 @@ public class PageManagerFlushThread extends Thread {
       // charge stayed on the cap. The caller's own finally heals the suspension COUNT, but nothing healed those.
       // Pre-existing shape, flagged in review of #6223 and closed here rather than left open, because the phases
       // below are pure bookkeeping: they cannot fail, and the exception still propagates after them.
+      //
+      // THE ONE CASE THIS DOES NOT COVER, and the reason it is an accepted residual rather than an oversight: the
+      // per-page finally itself throwing. Every failure of the WRITE is contained per page now, so the loop always
+      // reaches the end of the backlog; a finally that fails abandons the pages after it, which keep their pageIndex
+      // entry, so this database's pending count stays above zero and its next close waits out
+      // arcadedb.flushAllPagesTimeout before giving up - preserving the WAL, so those pages are recovered on the
+      // next open rather than lost. Covering it would put a try/finally around the release of every deferred page,
+      // on the resume path of every one of them, to defend against three field reads on a MutablePage.
 
       // Phase 2 + Phase 3a: under the per-database lock, clear the suspension refcount AND atomically detach
       // any batches deferred during Phase 1. Holding the lock makes this transition mutually exclusive with
@@ -727,6 +749,17 @@ public class PageManagerFlushThread extends Thread {
       if (restoreCallerInterrupt)
         // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
         Thread.currentThread().interrupt();
+    }
+
+    if (unexpected != null) {
+      // Raised only now, with the backlog drained and the suspension cleared: the caller must still learn that its
+      // resume failed, but not at the price of a pipeline left holding pages nothing will ever take out of it.
+      if (unexpected instanceof final RuntimeException runtime)
+        throw runtime;
+      if (unexpected instanceof final Error error)
+        throw error;
+      throw new RuntimeException("Error on flushing the deferred pages of database '" + database.getName() + "'",
+          unexpected);
     }
   }
 
