@@ -207,10 +207,25 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
         new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
     schema.registerFile(dictionary);
 
+    // getTotalPages() HERE, and not the page-cache probe peekHeaderPage() uses (#6258, item 3), because the two
+    // answer different questions and only this one can be asked at this point. The hazard item 3 closes is a page
+    // committed into the cache but not yet written to the file, which makes the physical size lag; that window
+    // cannot open here:
+    //   - to get past the lookup above, NO component under this name is registered in the schema, so nothing in
+    //     this session has committed a page to this dictionary yet;
+    //   - the freshly built component's page count is seeded from the file FileManager.getOrCreateFile() returned
+    //     for this NAME, and that file is non-empty only when the open-time directory scan registered one - i.e.
+    //     its bytes were written by a previous session and flushed before it closed, which is exactly the case
+    //     where the physical size IS authoritative;
+    //   - a dictionary created during this session is registered on the line above, so every later call returns at
+    //     the lookup, and its file (created empty) reports 0 pages, which is the right answer for a new dictionary.
+    // The probe could not stand in either: this component carries a freshly allocated file id, while the file it
+    // adopts is registered under the id encoded in its name, so page 0 of THIS id is nowhere to be found.
     if (dictionary.getTotalPages() > 0)
-      // The component was absent from the schema but its file is on disk. Adopt what is there:
-      // writing a fresh header would silently reset the id space and orphan every id already stored
-      // in a data page.
+      // The component was absent from the schema but its file is on disk (a cold open whose schema lost the
+      // reference - the ordinary one rebuilds the component through PaginatedComponentFactoryHandler and returns at
+      // the lookup above). Adopt what is there: writing a fresh header would silently reset the id space and orphan
+      // every id already stored in a data page.
       dictionary.load();
     else {
       dictionary.initHeaderPage();
