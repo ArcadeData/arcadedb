@@ -150,7 +150,9 @@ public class SQLQueryEngine implements QueryEngine {
    * The database a statement executes against, and therefore the one {@code CommandContext.getDatabase()} returns.
    * <p>
    * Statements that commit mid-execution - {@code TRUNCATE TYPE}/{@code BUCKET} batching every
-   * {@link com.arcadedb.GlobalConfiguration#TRUNCATE_BATCH_SIZE} records, {@code REBUILD INDEX}, {@code BatchStep} -
+   * {@link com.arcadedb.GlobalConfiguration#TRUNCATE_BATCH_SIZE} records <i>when no transaction was active and the
+   * statement therefore owns one</i> (issue #6220 - inside a caller's transaction it commits nothing),
+   * {@code REBUILD INDEX}, {@code BatchStep} -
    * call {@code commit()} on whatever this returns. Handing them the raw instance means those commits go straight to
    * {@code LocalDatabase.commit()}, which on an HA leader applies the pages locally and never proposes them to Raft:
    * followers then trail by exactly those page versions and the next replicated entry touching one of them fails the

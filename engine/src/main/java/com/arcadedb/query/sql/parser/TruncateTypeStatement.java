@@ -38,6 +38,20 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 
 import java.util.*;
 
+/**
+ * {@code TRUNCATE TYPE <type> [POLYMORPHIC] [UNSAFE]}.
+ * <p>
+ * The statement has two execution paths, picked by who owns the transaction - see
+ * {@link TruncateRecordDeleter} for the rule and why it exists (issue #6220). Inside a caller's transaction the
+ * deletes join it and the indexes are maintained per record, so a {@code ROLLBACK} puts every record back. With no
+ * transaction active the statement owns one and takes the fast path: drop the indexes, delete in small committed
+ * batches, rebuild the (empty) indexes.
+ * <p>
+ * Which one a caller gets is therefore entirely up to the caller. Embedded, the fast path is
+ * {@code database.command("sql", "TRUNCATE TYPE ...")} with no {@code begin()} around it. Over HTTP the request's
+ * auto-commit transaction is what makes the statement transactional, so {@code "autoCommit": false} in the request
+ * payload selects the fast path for a bulk clear that does not need to be undoable.
+ */
 public class TruncateTypeStatement extends DDLStatement {
   public Identifier typeName;
   public boolean    polymorphic = false;
@@ -83,78 +97,123 @@ public class TruncateTypeStatement extends DDLStatement {
       }
     }
 
-    // Capture index definitions BEFORE truncating records (issue #4352): scanning + record-by-record
-    // delete with in-loop batched commit can leave LSM-Tree indexes full of stale tombstones, so the
-    // index ends up in an inconsistent state (infinite-loop iteration, spurious duplicate-key errors).
-    // It's faster and safer to drop the indexes, clear the records, then recreate the (empty) indexes.
+    final boolean transactional = db.isTransactionActive();
+    if (transactional)
+      truncateInCallerTransaction(db);
+    else
+      truncateInOwnTransaction(db, schema, typez);
+
+    final ResultInternal result = new ResultInternal(context.getDatabase());
+    result.setProperty("operation", "truncate type");
+    result.setProperty("typeName", typeName.getStringValue());
+    // Which of the two paths ran, so a caller can tell whether its ROLLBACK will put the records back. The old
+    // behaviour was indistinguishable from the transactional one right up to the rollback that silently kept most of
+    // the deletes (issue #6220), and an answer nobody can read is half a fix.
+    result.setProperty("transactional", transactional);
+    rs.add(result);
+
+    return rs;
+  }
+
+  /**
+   * The caller owns the transaction, so this is one more operation inside it: every record is deleted in that
+   * transaction, with the indexes maintained per record exactly as {@code DELETE FROM} does, and a {@code ROLLBACK}
+   * puts all of them back (issue #6220).
+   * <p>
+   * Neither of the two speed-ups the {@linkplain #truncateInOwnTransaction own-transaction path} uses is available
+   * here, and both for the same reason: they commit. Dropping the indexes is a schema change, which
+   * {@code LocalSchema.recordFileChanges} applies immediately; batching means calling {@code commit()} on the
+   * caller's transaction. Either one turns a subsequent {@code ROLLBACK} into a partial, silent data loss.
+   */
+  private void truncateInCallerTransaction(final Database db) {
+    final RuntimeException failure = TruncateRecordDeleter.deleteAll(db, 0,
+        callback -> db.scanType(typeName.getStringValue(), polymorphic, callback::test));
+
+    // Report the failure rather than a partial truncate masquerading as success (issue #4817). The caller's
+    // transaction is left untouched, so its own rollback undoes the deletes that did happen.
+    if (failure != null)
+      throw failure;
+  }
+
+  /**
+   * No transaction was active, so the statement owns one and can use the fast path: drop the indexes, delete the
+   * records in small committed batches, rebuild the (empty) indexes.
+   * <p>
+   * The index drop/rebuild is not only a speed-up (issue #4352): scanning + record-by-record delete with an in-loop
+   * batched commit can leave LSM-Tree indexes full of stale tombstones, so the index ends up in an inconsistent state
+   * (infinite-loop iteration, spurious duplicate-key errors). Dropping the indexes, clearing the records and
+   * recreating the (empty) indexes is both faster and safer - and it is only ever correct here, where no caller
+   * transaction can be committed through.
+   */
+  private void truncateInOwnTransaction(final Database db, final Schema schema, final DocumentType typez) {
+    // Capture index definitions BEFORE truncating records: the drop below is a committed schema change and the
+    // definitions are all that is left to rebuild from.
     final List<IndexDefinition> indexDefs = collectIndexDefinitions(typez, polymorphic);
     for (final IndexDefinition def : indexDefs)
       schema.dropIndex(def.name);
 
-    // Commit cadence: one transaction per batch. In HA each committed transaction becomes one Raft log
-    // entry, so a small batch keeps that entry small and lets the leader's per-follower append pipeline
-    // emit heartbeats between batches instead of stalling on a single multi-MB entry (issue #4817).
     final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
 
-    // Delete the records, committing one (small) transaction per batch. The batch commit happens inside
-    // the scan callback, but LocalBucket.scan wraps every callback in a try/catch that logs any
-    // exception as a per-record "Error on loading record" and keeps scanning - so an HA leader change
-    // that interrupts a mid-scan commit used to be silently turned into a partial truncate reported as
-    // success, with the dropped indexes then rebuilt over the records that were never deleted (issue
-    // #4817). Catch the failure here, before that swallowing catch sees it, stop the scan and surface
-    // it below instead.
-    final RuntimeException[] deletionFailureHolder = { null };
-    final long[] count = { 0 };
-    db.scanType(typeName.getStringValue(), polymorphic, rec -> {
-      try {
-        rec.delete();
-        if (++count[0] % batchSize == 0 && db.isTransactionActive()) {
-          db.commit();
-          db.begin();
-        }
-        return true;
-      } catch (final RuntimeException e) {
-        deletionFailureHolder[0] = e;
-        return false; // stop the scan; the failure is rethrown after the indexes are restored
-      }
-    });
-    RuntimeException deletionFailure = deletionFailureHolder[0];
+    // The statement's own transaction. Without it every delete below would fail with "Transaction not begun" unless
+    // the database happens to run with autoTransaction on, which is what made this whole path unreachable before
+    // issue #6220 - the batching and the index drop/rebuild only ever ran on a caller's transaction, which is
+    // precisely where they must not.
+    db.begin();
 
-    // Index builds run in their own transactions (TypeIndexBuilder.create wraps each bucket's build
-    // in a database.transaction(..., joinCurrent=false, ...)), so they observe disk state rather than
-    // the in-flight deletes pending in our current transaction. Commit + begin so the empty buckets
-    // are visible to the upcoming index build; otherwise the recreated index would be populated with
-    // the records we just logically deleted but not yet flushed.
-    if (deletionFailure == null && !indexDefs.isEmpty() && db.isTransactionActive()) {
+    RuntimeException deletionFailure = null;
+    try {
       try {
-        db.commit();
-        db.begin();
+        deletionFailure = TruncateRecordDeleter.deleteAll(db, batchSize,
+            callback -> db.scanType(typeName.getStringValue(), polymorphic, callback::test));
       } catch (final RuntimeException e) {
         deletionFailure = e;
       }
-    }
 
-    // Recreate the indexes from the saved definitions in every case: on success they start empty since
-    // all records are gone; on failure they are rebuilt over whatever records remain, so the schema is
-    // never left without the indexes it had (the dropIndex above is already committed). A subsequent
-    // retry/run re-drops and re-empties them.
-    if (!indexDefs.isEmpty()) {
-      if (!db.isTransactionActive())
-        db.begin();
-      for (final IndexDefinition def : indexDefs)
-        recreateIndex(schema, def);
+      // Index builds run in their own transactions (TypeIndexBuilder.create wraps each bucket's build
+      // in a database.transaction(..., joinCurrent=false, ...)), so they observe disk state rather than
+      // the in-flight deletes pending in our current transaction. Commit + begin so the empty buckets
+      // are visible to the upcoming index build; otherwise the recreated index would be populated with
+      // the records we just logically deleted but not yet flushed.
+      if (deletionFailure == null && !indexDefs.isEmpty() && db.isTransactionActive()) {
+        try {
+          db.commit();
+          db.begin();
+        } catch (final RuntimeException e) {
+          deletionFailure = e;
+        }
+      }
+
+      // Recreate the indexes from the saved definitions in every case: on success they start empty since
+      // all records are gone; on failure they are rebuilt over whatever records remain, so the schema is
+      // never left without the indexes it had (the dropIndex above is already committed). A subsequent
+      // retry/run re-drops and re-empties them.
+      if (!indexDefs.isEmpty()) {
+        if (!db.isTransactionActive())
+          db.begin();
+        for (final IndexDefinition def : indexDefs)
+          recreateIndex(schema, def);
+      }
+
+      // Close the transaction this statement opened, so the caller gets its thread back without one on it. On
+      // failure the last, uncommitted batch is rolled back rather than committed: the rebuild above ran in its own
+      // transactions and therefore indexed those records as still present, so keeping them is what leaves the index
+      // and the buckets agreeing.
+      if (db.isTransactionActive()) {
+        if (deletionFailure == null)
+          db.commit();
+        else
+          db.rollback();
+      }
+    } finally {
+      // Whatever escaped the block above - an index rebuild that failed, a commit that threw - this statement's
+      // own transaction must not be left on the caller's thread for somebody else's next command to inherit.
+      if (db.isTransactionActive())
+        db.rollback();
     }
 
     // Report the failure rather than a partial truncate masquerading as success (issue #4817).
     if (deletionFailure != null)
       throw deletionFailure;
-
-    final ResultInternal result = new ResultInternal(context.getDatabase());
-    result.setProperty("operation", "truncate type");
-    result.setProperty("typeName", typeName.getStringValue());
-    rs.add(result);
-
-    return rs;
   }
 
   private void recreateIndex(final Schema schema, final IndexDefinition def) {
