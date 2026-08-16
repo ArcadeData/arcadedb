@@ -45,7 +45,8 @@ import java.util.stream.Stream;
  *
  * <p>Parameters:
  * <ul>
- *   <li>{@code k} (int, required) – number of partitions (k ≥ 2)</li>
+ *   <li>{@code k} (int, required) – number of partitions (k ≥ 2; clamped to the node count, since a
+ *       cut into more parts than there are nodes can only leave the surplus parts empty)</li>
  *   <li>{@code config} (map, optional):
  *     <ul>
  *       <li>{@code maxIterations} (int, default 100) – local-search passes per restart</li>
@@ -101,9 +102,9 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final int k = args[0] instanceof Number kn ? extractInt(kn, "k") : 2;
-    if (k < 2)
-      throw new IllegalArgumentException(getName() + "(): k must be ≥ 2, got " + k);
+    final int rawK = args[0] instanceof Number kn ? extractInt(kn, "k") : 2;
+    if (rawK < 2)
+      throw new IllegalArgumentException(getName() + "(): k must be ≥ 2, got " + rawK);
 
     final Map<String, Object> config = args.length > 1 ? extractMap(args[1], "config") : null;
     final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? extractInt(n, "maxIterations") : 100;
@@ -119,6 +120,14 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    // Clamp to the graph size, same as AlgoHierarchicalClustering's numClusters: a cut into more
+    // parts than there are nodes can only leave the surplus parts empty, and the per-node gain array
+    // (`new double[k]`, allocated once per node per pass per restart) would otherwise be sized off an
+    // unclamped k - a multi-GB allocation attempt for e.g. algo.maxKCut(2000000000) on a tiny graph.
+    // The floor of 2 keeps the clamp from undercutting the k >= 2 contract validated above: on a
+    // single-node graph a bare Math.min would hand the local search k = 1, i.e. a "cut" into one
+    // partition, which is not the degenerate-but-valid answer to what the caller asked for.
+    final int k = Math.max(2, Math.min(rawK, n));
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     // Build weighted adjacency (null weightProperty → all weights = 1.0)
