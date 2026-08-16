@@ -95,7 +95,7 @@
         <logback-classic.version>1.6.2</logback-classic.version>
         <micrometer.version>1.17.0</micrometer.version>
         <micrometer-tracing.version>1.7.0</micrometer-tracing.version>
-        <opentelemetry.version>1.64.0</opentelemetry.version>
+        <opentelemetry.version>1.65.0</opentelemetry.version>
         <postgres.version>42.7.13</postgres.version>
         <jackson.version>2.22.1</jackson.version>
 
