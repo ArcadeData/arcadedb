@@ -191,8 +191,11 @@ public class OrBlock extends BooleanExpression {
 
   @Override
   public boolean isAlwaysTrue(final CommandContext context) {
-    // an empty OR block is the neutral element, ie. FALSE - and this answer is load-bearing since the planner drops
-    // the filter on it, so an undecidable block has to say no rather than inherit the AND block's verdict
+    // A disjunction with no alternatives is not a filter anyone wrote - the parser cannot produce one - so both
+    // verdicts decline it rather than reason from the neutral element, and for the same reason: each answer is
+    // load-bearing (true drops the filter, false-for-every-record replaces the plan with an empty source), and
+    // neither is worth deducing for a shape that only ever arrives by accident. Declining costs an optimisation
+    // nobody can trigger; deducing costs correctness the first time some rewrite hands over an emptied block.
     if (subBlocks.isEmpty())
       return false;
 
@@ -206,6 +209,7 @@ public class OrBlock extends BooleanExpression {
 
   @Override
   public boolean isAlwaysFalse(final CommandContext context) {
+    // see isAlwaysTrue above: an empty disjunction is declined by both verdicts, not read as the neutral element
     if (subBlocks.isEmpty())
       return false;
 

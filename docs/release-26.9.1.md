@@ -2287,9 +2287,13 @@ entry. A residual that is true for every record is now recognised as no filter a
 the parallel-index paths, so the plan is the one the same statement without the constant term would have got. The
 index itself was never at risk: it was selected before and after, the residual only rode along behind it.
 
-One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. `OR` is
-false when it has no alternatives, and the answer is now load-bearing, so it answers `false` - the conservative
-verdict, which at worst costs an optimisation.
+One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. It now
+answers `false`, matching what `isAlwaysFalse` has always answered for the same block. Neither verdict reads it as
+the neutral element, even though that reading (an `OR` with no alternatives is `FALSE`) is available: the parser
+cannot produce an empty `OrBlock`, both answers are load-bearing - one drops the filter, the other replaces the plan
+with an empty source - and deducing either for a block that can only arrive by accident would trade correctness for
+an optimisation nothing can trigger. An empty `AndBlock`, by contrast, is exactly what a filter with no terms left
+looks like, so it does answer `isAlwaysTrue`, and that is what lets an emptied residual condition drop its step.
 
 **API note for code that extends the SQL parser**: `BooleanExpression.isAlwaysTrue()` is replaced by
 `isAlwaysTrue(CommandContext)` rather than kept alongside it, so an out-of-tree subclass that overrode the no-argument

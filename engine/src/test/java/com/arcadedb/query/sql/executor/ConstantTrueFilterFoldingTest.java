@@ -162,12 +162,19 @@ class ConstantTrueFilterFoldingTest extends TestHelper {
   }
 
   @Test
-  void anEmptyDisjunctionIsNotTrueForEveryRecord() {
-    // OR is false when it has no alternatives. The parser does not produce an empty OrBlock today, but the verdict
-    // is load-bearing now that the planner drops a filter on it, so it is pinned directly rather than by reachability
+  void anEmptyDisjunctionIsDeclinedByBothVerdicts() {
+    // The parser does not produce an empty OrBlock, so this is pinned directly rather than by reachability. Both
+    // verdicts decline it instead of reading it as the neutral element (which would be FALSE), and deliberately:
+    // each answer is load-bearing - isAlwaysTrue drops the filter, isAlwaysFalse replaces the plan with an empty
+    // source - so deducing either one for a block that only ever arrives by accident trades correctness for an
+    // optimisation nobody can trigger.
     assertThat(new OrBlock().isAlwaysTrue(null)).isFalse();
-    // ...and an empty AND block is the other neutral element, which its own verdict has always said
+    assertThat(new OrBlock().isAlwaysFalse(null)).isFalse();
+
+    // an empty AND block, by contrast, is what a filter with no terms left actually looks like, and it keeps every
+    // record: that verdict is reachable and is what lets an emptied residual condition drop its filter step
     assertThat(new AndBlock().isAlwaysTrue(null)).isTrue();
+    assertThat(new AndBlock().isAlwaysFalse(null)).isFalse();
   }
 
   @Test
