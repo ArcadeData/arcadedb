@@ -83,7 +83,7 @@ public record PeerDialAddress(String httpAddress, String refusal) {
       return refuse("the " + role + " is unknown");
 
     if (peerId.equals(raft.getLocalPeerId()))
-      return refuse("the " + role + " " + peerId + " is this node itself, and a node cannot answer its own request");
+      return refuse("the " + role + " " + peerId + " is this node itself, and dialling it would come straight back here");
 
     final String httpAddress = raft.getUnambiguousPeerHttpAddress(peerId);
     if (httpAddress == null)

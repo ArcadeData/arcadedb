@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.net.HttpURLConnection;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -154,6 +155,53 @@ class Issue6221VerifyFanOutGuardIT extends BaseRaftHATest {
   }
 
   /**
+   * The same rule applied to the case that has nothing to do with addressing: a peer that the guard passes and
+   * the network then refuses. It is not a peer that agrees, and it is not an observed divergence either - it used
+   * to be rolled up as {@code INCONSISTENCY_DETECTED}, which sends an operator hunting for a divergence nobody
+   * has seen when the truth is that a node is down.
+   * <p>
+   * The unreachable address is a real, unambiguous, not-ours endpoint that nothing is listening on, so the dial
+   * guard hands it over and the connection is refused: this pins the classification rather than the guard, which
+   * is what makes it worth having next to the tests above.
+   */
+  @Test
+  @Timeout(120)
+  void aPeerTheNetworkRefusesIsUnverifiedRatherThanDivergent() throws Exception {
+    final int leader = findLeaderIndex();
+    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int unreachable = firstFollower(leader);
+
+    final RaftHAServer raft = getRaftPlugin(leader).getRaftHAServer();
+    final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
+    final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
+    try {
+      // A port nothing listens on: the address identifies one peer and is not this node's, so it is dialled.
+      httpAddresses.put(RaftPeerId.valueOf(peerIdForIndex(unreachable)), "127.0.0.1:" + closedPort());
+
+      final JSONObject result = verifyOnLeader(leader).getJSONObject("result");
+
+      final JSONArray peers = result.getJSONArray("peers");
+      int errors = 0;
+      int consistent = 0;
+      for (int i = 0; i < peers.length(); i++) {
+        final String status = peers.getJSONObject(i).getString("status", "");
+        if ("ERROR".equals(status))
+          ++errors;
+        else if ("CONSISTENT".equals(status))
+          ++consistent;
+      }
+      assertThat(errors).as("the peer nothing answers for could not be verified: %s", peers).isEqualTo(1);
+      assertThat(consistent).as("the reachable peer was still compared and still agrees").isEqualTo(1);
+
+      assertThat(result.getString("overallStatus", ""))
+          .as("a node being down is not a divergence, and it is not agreement either")
+          .isEqualTo("VERIFICATION_INCOMPLETE");
+    } finally {
+      httpAddresses.putAll(declared);
+    }
+  }
+
+  /**
    * Control: with the addresses the cluster actually has, the verify contacts every peer and reports agreement.
    * Without it the two tests above would also pass against a build that refused every peer.
    */
@@ -208,6 +256,24 @@ class Issue6221VerifyFanOutGuardIT extends BaseRaftHATest {
     } finally {
       conn.disconnect();
     }
+  }
+
+  /**
+   * A local port nothing is listening on: bound to let the OS pick a free one, then released. A port that was
+   * free a moment ago is the closest a test can get to "connection refused" without hard-coding a number some
+   * other process on the CI runner may own.
+   */
+  private static int closedPort() throws Exception {
+    try (final ServerSocket socket = new ServerSocket(0)) {
+      return socket.getLocalPort();
+    }
+  }
+
+  private int firstFollower(final int leader) {
+    for (int i = 0; i < getServerCount(); i++)
+      if (i != leader)
+        return i;
+    throw new IllegalStateException("no follower in a " + getServerCount() + "-node cluster");
   }
 
   @FunctionalInterface

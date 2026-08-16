@@ -1910,3 +1910,54 @@ Two things the same method carried:
   parking the single-threaded lifecycle executor.
 
 [#6202](https://github.com/ArcadeData/arcadedb/issues/6202)
+
+## The cluster-verify endpoint reports a peer it could not contact as unverified, not as agreeing (#6221)
+
+`POST /api/v1/cluster/verify/{database}` exists to tell an operator whether the cluster's copies of a database
+agree, and it resolved each peer's HTTP endpoint through the best-effort resolver. With no `http` port declared in
+`arcadedb.ha.serverList` that endpoint is derived from the peer's Raft host plus **this** node's HTTP port, so on a
+cluster whose nodes share a host and differ by port - several nodes on one machine, a compose file, a developer
+laptop - every peer collapses onto the address of the node doing the resolving. Two things then went wrong at
+once, and both pointed the reassuring way:
+
+- the leader compared itself against itself, matched on every file, and recorded the **peer** as `CONSISTENT`,
+  rolling up to `overallStatus: ALL_CONSISTENT` - a clean bill of health from the divergence detector for a node
+  that was never contacted, produced at the moment an operator is asking precisely because they suspect
+  divergence;
+- the query landed back on the leader, where `isLeader()` is still true, so it fanned out again: (N-1) in-flight
+  requests per level, each level CRC-ing every byte of every file before recursing, each hop holding an Undertow
+  worker thread. The peer connect/read timeouts bound one hop, not the depth.
+
+Every peer is now dialled through one helper, `PeerDialAddress`, which answers "may this node dial that one, and
+at which address?" next to the resolution rather than at each call site: it refuses an absent peer, this node
+itself, an address that identifies no single peer (#6202) and an address that is this node's own, including the
+loopback spellings of #6204. The six snapshot-resync paths of #6202 now delegate to it as well, so the endpoint
+that checks the cluster and the paths that repair it cannot drift apart. The fan-out also carries the one-hop
+marker the write-forward paths have set since #6191, so a node serving a query a peer fanned out to it answers
+with its own checksums instead of fanning out again - the bound no local self-check can provide, for an address
+that names the wrong *peer* rather than this node.
+
+**Observable change for HA alerting.** A peer that could not be verified is now reported as
+`status: ERROR` with the reason, and `overallStatus` has a third value, `VERIFICATION_INCOMPLETE`:
+
+| outcome | before | now |
+|---|---|---|
+| every peer compared and agreed | `ALL_CONSISTENT` | `ALL_CONSISTENT` |
+| a compared peer's checksums differ | `INCONSISTENCY_DETECTED` | `INCONSISTENCY_DETECTED` |
+| a peer could not be verified (unreachable, timed out, or no address identifies it) | `INCONSISTENCY_DETECTED` | `VERIFICATION_INCOMPLETE` |
+
+`ALL_CONSISTENT` is no longer reachable while any peer is unverified - an unverified peer is not a consistent one
+- and a node being down is no longer reported as a divergence somebody has to go and find. Alerting that keys on
+`overallStatus != "ALL_CONSISTENT"` is unaffected; alerting that keys on `INCONSISTENCY_DETECTED` specifically
+should add `VERIFICATION_INCOMPLETE` to keep catching "a node is unreachable". Studio shows the new status as a
+warning and renders each peer's error alongside its status.
+
+Also in the same change: `retries` on an auto-committed request (`POST /api/v1/command`, `/api/v1/batch`, and
+every other handler that auto-commits) defaulted to a hard-coded 1, so nothing retried unless the client asked
+for retries it had no reason to know existed. That was dead code until #6201 made the wrapper stop flattening
+exceptions, and live afterwards - an MVCC conflict a second attempt would have committed was answered 503 on the
+first. It now follows `arcadedb.txRetries`, the attempt count the embedded `Database.transaction(...)` and
+`RemoteDatabase` already take, and which an operator can turn per database. The engine still retries only the two
+conflict families, caps a duplicated key at one retry, and rolls the transaction back before every attempt.
+
+[#6221](https://github.com/ArcadeData/arcadedb/issues/6221)
