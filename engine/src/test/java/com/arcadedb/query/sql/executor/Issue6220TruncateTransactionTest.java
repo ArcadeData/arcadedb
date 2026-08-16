@@ -20,8 +20,12 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Record;
+import com.arcadedb.event.BeforeRecordDeleteListener;
 
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -194,6 +198,66 @@ class Issue6220TruncateTransactionTest extends TestHelper {
     assertThat(database.countType("Fresh", false)).isEqualTo(1L);
     assertThat(database.query("sql", "SELECT FROM Fresh WHERE n = 1").stream().count()).isEqualTo(1L);
     assertThat(database.query("sql", "SELECT FROM Fresh WHERE n = 2").stream().count()).isZero();
+  }
+
+  /**
+   * The fast path drops the indexes with a committed schema change, so whatever it does about the failure it must
+   * not be able to end with the type missing an index it had: nothing later can undo that drop.
+   * <p>
+   * The rollback of the statement's own transaction does not, and cannot, take the rebuilt indexes with it -
+   * {@code TypeIndexBuilder.create()} goes through {@code LocalSchema.recordFileChanges}, which persists the schema
+   * itself and wraps each per-bucket build in its own {@code joinCurrent=false} transaction. This test is what says
+   * so out loud: it asserts the surviving records, the index that indexes them, and their agreement, none of which
+   * would hold if the rollback reached either the drop or the rebuild.
+   */
+  @Test
+  void aFailedTruncateOnTheFastPathStillLeavesTheTypeWithItsIndexes() {
+    database.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE, 10);
+
+    database.command("sql", "CREATE DOCUMENT TYPE Boom");
+    database.command("sql", "CREATE PROPERTY Boom.n INTEGER");
+    database.command("sql", "CREATE INDEX ON Boom(n) UNIQUE");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 35; i++)
+        database.command("sql", "INSERT INTO Boom SET n = ?", i);
+    });
+
+    final AtomicInteger deletes = new AtomicInteger();
+    final BeforeRecordDeleteListener boom = (final Record record) -> {
+      if (deletes.incrementAndGet() == 25)
+        throw new RuntimeException("simulated mid-truncate failure");
+      return true;
+    };
+    database.getSchema().getType("Boom").getEvents().registerListener(boom);
+    try {
+      assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE `Boom` UNSAFE"))
+          .hasMessageContaining("simulated mid-truncate failure");
+    } finally {
+      database.getSchema().getType("Boom").getEvents().unregisterListener(boom);
+    }
+
+    assertThat(database.isTransactionActive()).as("a failed truncate leaves no transaction behind").isFalse();
+    assertThat(database.getSchema().getType("Boom").getAllIndexes(true))
+        .as("the dropped index is committed, so a failure must never leave the type without it").isNotEmpty();
+
+    // Whatever survived the truncate, the index and the buckets must agree about it: every surviving record is
+    // reachable through the index, and the index points at nothing that is gone. Bounded on both sides so the
+    // agreement cannot be the vacuous 0 == 0: the committed batches really did delete, and the uncommitted one
+    // really did come back.
+    final long surviving = database.countType("Boom", false);
+    assertThat(surviving).as("the committed batches deleted, the last uncommitted one was rolled back")
+        .isGreaterThan(0L).isLessThan(35L);
+    assertThat(database.getSchema().getIndexByName("Boom[n]").countEntries()).isEqualTo(surviving);
+    for (final Result r : database.query("sql", "SELECT n FROM Boom").stream().toList())
+      assertThat(database.query("sql", "SELECT FROM Boom WHERE n = ?", r.<Integer>getProperty("n")).stream().count())
+          .as("record n=%s is reachable through the rebuilt index", r.<Integer>getProperty("n")).isEqualTo(1L);
+
+    // and a retry now completes the truncate cleanly through the same path
+    database.command("sql", "TRUNCATE TYPE `Boom` UNSAFE").close();
+    assertThat(database.countType("Boom", false)).isZero();
+    database.transaction(() -> database.command("sql", "INSERT INTO Boom SET n = 1"));
+    assertThat(database.query("sql", "SELECT FROM Boom WHERE n = 1").stream().count()).isEqualTo(1L);
   }
 
   @Test

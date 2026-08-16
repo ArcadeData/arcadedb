@@ -25,6 +25,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -37,6 +38,7 @@ import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 
 import java.util.*;
+import java.util.logging.Level;
 
 /**
  * {@code TRUNCATE TYPE <type> [POLYMORPHIC] [UNSAFE]}.
@@ -166,6 +168,10 @@ public class TruncateTypeStatement extends DDLStatement {
         deletionFailure = TruncateRecordDeleter.deleteAll(db, batchSize,
             callback -> db.scanType(typeName.getStringValue(), polymorphic, callback::test));
       } catch (final RuntimeException e) {
+        // Not a duplicate of deleteAll's own handling: that one catches what the per-record callback raises and
+        // hands it back as a value, and this one catches what the SCAN raises around the callback - resolving the
+        // type's buckets, reading a page - which never reaches the callback at all. Both have to end at the same
+        // place, because the index rebuild below runs either way.
         deletionFailure = e;
       }
 
@@ -187,6 +193,11 @@ public class TruncateTypeStatement extends DDLStatement {
       // all records are gone; on failure they are rebuilt over whatever records remain, so the schema is
       // never left without the indexes it had (the dropIndex above is already committed). A subsequent
       // retry/run re-drops and re-empties them.
+      //
+      // This survives the rollback below, and has to: TypeIndexBuilder.create() goes through
+      // LocalSchema.recordFileChanges, which persists the schema itself and wraps each per-bucket build in its own
+      // joinCurrent=false transaction - none of which this transaction can take back. The begin() is only here
+      // because the build path expects a transaction context to nest from.
       if (!indexDefs.isEmpty()) {
         if (!db.isTransactionActive())
           db.begin();
@@ -199,16 +210,32 @@ public class TruncateTypeStatement extends DDLStatement {
       // transactions and therefore indexed those records as still present, so keeping them is what leaves the index
       // and the buckets agreeing.
       if (db.isTransactionActive()) {
-        if (deletionFailure == null)
-          db.commit();
-        else
-          db.rollback();
+        try {
+          if (deletionFailure == null)
+            db.commit();
+          else
+            db.rollback();
+        } catch (final RuntimeException e) {
+          // A commit that fails IS the failure to report. A rollback that fails while a failure is already on its
+          // way out must not replace it - the deletion failure is the one that says what went wrong.
+          if (deletionFailure == null)
+            deletionFailure = e;
+          else
+            deletionFailure.addSuppressed(e);
+        }
       }
     } finally {
-      // Whatever escaped the block above - an index rebuild that failed, a commit that threw - this statement's
-      // own transaction must not be left on the caller's thread for somebody else's next command to inherit.
+      // Whatever escaped the block above - an index rebuild that failed - this statement's own transaction must not
+      // be left on the caller's thread for somebody else's next command to inherit. Reported rather than thrown, for
+      // the same reason as above: the exception on its way out is the informative one.
       if (db.isTransactionActive())
-        db.rollback();
+        try {
+          db.rollback();
+        } catch (final RuntimeException e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on rolling back the transaction opened by TRUNCATE TYPE '%s'", e,
+                  typeName.getStringValue());
+        }
     }
 
     // Report the failure rather than a partial truncate masquerading as success (issue #4817).
