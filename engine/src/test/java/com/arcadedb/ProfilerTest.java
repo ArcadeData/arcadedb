@@ -64,4 +64,21 @@ class ProfilerTest {
     final String dump = out.toString();
     assertThat(dump).contains("edgeAppendMerges=").contains("txPageSlotMerges=").contains("mergesDeclinedByCoverage=");
   }
+
+  /**
+   * #6217: the read-path pair of the counters above - a chunked read that met a moved page and completed anyway, and
+   * one that had to restart because the record itself had moved - carries the same operator question ("is contention
+   * being absorbed, or paid for?") and must leave the process the same way.
+   */
+  @Test
+  void chunkChainReadCountersAreExposed() {
+    final JSONObject json = Profiler.INSTANCE.toJSON();
+    assertThat(json.has("chunkChainReadRevalidations")).isTrue();
+    assertThat(json.has("chunkChainReadRetries")).isTrue();
+    assertThat(json.getJSONObject("chunkChainReadRevalidations").has("count")).isTrue();
+
+    final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
+    assertThat(out.toString()).contains("chunkChainReadRevalidations=").contains("chunkChainReadRetries=");
+  }
 }

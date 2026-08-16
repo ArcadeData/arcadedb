@@ -78,7 +78,7 @@ public class PageManager extends LockContext {
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
   private volatile long                               maxRAM;
   final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
-  // #5636: the counters below, down to totalMergesDeclinedByCoverage, are exported as Prometheus COUNTERS (see
+  // #5636: the counters below, down to totalChunkChainReadRetries, are exported as Prometheus COUNTERS (see
   // EngineMetricsBinder), which requires them never to decrease for the lifetime of the JVM. They are deliberately
   // reset nowhere - note close() resets only totalReadCacheRAM above, which is an instantaneous gauge. Adding a
   // "reset stats" affordance that touched them would make each reset read as a counter reset and fabricate a rate()
@@ -93,6 +93,8 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
+  private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
+  private final    AtomicLong                        totalChunkChainReadRetries            = new AtomicLong();
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   // #6116: the snapshot totals below are exported as Prometheus counters together with the ones above, and
@@ -192,6 +194,10 @@ public class PageManager extends LockContext {
     public long txPageSlotMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
     public long mergesDeclinedByCoverage;
+    /** See {@link PageManager#incrementChunkChainReadRevalidations()}: the read-path twin of {@code txPageSlotMerges}. */
+    public long chunkChainReadRevalidations;
+    /** See {@link PageManager#incrementChunkChainReadRetries()}: chunked reads restarted because the record itself moved. */
+    public long chunkChainReadRetries;
     public long evictionRuns;
     public long pagesEvicted;
     public int  readCachePages;
@@ -1002,6 +1008,34 @@ public class PageManager extends LockContext {
     totalMergesDeclinedByCoverage.incrementAndGet();
   }
 
+  /**
+   * Counts a chunk-chain read that met a moved page and completed anyway (#6217): a page the read walked was at a
+   * newer version by the time the read validated it, and none of the bytes this record owns on that page had
+   * changed, so the assembled record is the committed one and the read returns it. Before #6217 that read failed and
+   * was retried, and after {@code arcadedb.txRetries} attempts it raised a {@link ConcurrentModificationException}
+   * on a record no writer had touched - continuation chunks of unrelated records share pages by design.
+   * <p>
+   * This is the read-path twin of {@link #incrementTxPageSlotMerges()}: both count a false conflict that did NOT
+   * happen, so a rise here is contention being absorbed rather than a problem. Watch it next to
+   * {@link PPageManagerStats#chunkChainReadRetries}, which counts the reads that had to restart because the record
+   * really had moved.
+   * <p>
+   * COUNTING SEMANTICS: one per read ATTEMPT that completed after comparing, however many of its pages had moved.
+   */
+  public void incrementChunkChainReadRevalidations() {
+    totalChunkChainReadRevalidations.incrementAndGet();
+  }
+
+  /**
+   * Counts a chunk-chain read ATTEMPT thrown away because the record itself changed under it, or because the chain
+   * could not be walked (see {@link #incrementChunkChainReadRevalidations()} for the case that no longer counts as
+   * one). The last attempt of a read that gives up contributes here too, right before it raises
+   * {@link ConcurrentModificationException}, so this is "restarts", not "failed reads".
+   */
+  public void incrementChunkChainReadRetries() {
+    totalChunkChainReadRetries.incrementAndGet();
+  }
+
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
     final PageId pageId = page.getPageId();
 
@@ -1250,6 +1284,8 @@ public class PageManager extends LockContext {
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
+    stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();
+    stats.chunkChainReadRetries = totalChunkChainReadRetries.get();
     stats.evictionRuns = evictionRuns.get();
     stats.pagesEvicted = pagesEvicted.get();
     stats.snapshotWindowsOpened = totalSnapshotWindowsOpened.get();
