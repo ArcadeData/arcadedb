@@ -4349,7 +4349,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Rows the caller can receive at most: limit groups of groupSize each. Used as the floor on the
       // beam exactly the way the ungrouped path uses k, so the two efSearch policies stay in step.
-      final int maxRows = limit * groupSize;
+      //
+      // Issue #6066: the product is taken in long and clamped to the candidates this index can address, for
+      // the same reason the ungrouped path clamps k (issue #5924). Neither factor is bounded anywhere on the
+      // way in - this method is public API and the SQL layer's over-fetch cap only guards the
+      // `vector.neighbors` entry point - and maxRows is an eager allocation size (`new ArrayList<>(maxRows)`
+      // below). A plain int multiplication fails in both directions: limit=groupSize=50_000 is 2.5e9, which
+      // wraps to a negative capacity and kills the search with an "Illegal Capacity" that names neither
+      // input, and a product that does not wrap is still a capacity no heap can serve. The clamp cannot cost
+      // a row - a grouped search cannot return more rows than the index holds vectors, and a beam wider than
+      // the graph has nothing extra to look at. A stale read of vectorIndex.size()/deltaVectors.size() here
+      // only makes it slightly conservative, never unsafe, which is why it is taken outside the read lock
+      // below exactly as the ungrouped clamp is.
+      final int maxRows = (int) Math.min((long) limit * groupSize,
+          Math.max(vectorIndex.size(), 0) + (long) deltaVectors.size());
       boolean readLockHeld = false;
       lock.readLock().lock();
       readLockHeld = true;
@@ -4390,7 +4403,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           else if (metadata.efSearch != 100)
             effectiveEfSearch = Math.max(maxRows, metadata.efSearch);
           else
-            effectiveEfSearch = graphSize < 10_000 ? Math.max(maxRows, 100) : Math.max(maxRows * 2, 20);
+            // The doubling is the second multiplication issue #6066 covers. maxRows is already clamped to the
+            // index's own vector count, so it can only overflow on an index past ~1.07e9 vectors in one
+            // bucket, but the long is free and the alternative is a negative beam width.
+            effectiveEfSearch = graphSize < 10_000 ?
+                Math.max(maxRows, 100) :
+                (int) Math.min(Integer.MAX_VALUE, Math.max((long) maxRows * 2, 20));
 
           final int candidateBudget = Math.min(graphSize,
               (int) Math.min(Integer.MAX_VALUE, (long) effectiveEfSearch * GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR));
