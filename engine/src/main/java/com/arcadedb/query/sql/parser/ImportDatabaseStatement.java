@@ -149,6 +149,10 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   public Statement copy() {
     final ImportDatabaseStatement result = new ImportDatabaseStatement();
     result.url = this.url;
+    // WITHOUT THIS, A COPY SILENTLY DROPS EVERY 'WITH ...' SETTING - THE SAME DEFECT BackupDatabaseStatement HAD
+    // (#6080). FOR IMPORT THE SETTINGS ARE THE STATEMENT: WITHOUT THEM AN 'IMPORT DATABASE WITH vertices=...' HAS NO
+    // SOURCE AT ALL
+    result.settings.putAll(this.settings);
     return result;
   }
 }

@@ -81,6 +81,16 @@ public class Backup {
     }
   }
 
+  /**
+   * The settings this backup will run with. Every caller that configures a {@code Backup} from another module does so
+   * through a reflective boundary (SQL's {@code BACKUP DATABASE}, the server's scheduled backup), where a mis-wired
+   * setter fails silently; this is what lets those call sites be tested against what actually reached the instance
+   * instead of against the archive it happened to produce.
+   */
+  public BackupSettings getSettings() {
+    return settings;
+  }
+
   public Backup setEncryptionAlgorithm(final String algorithm) {
     settings.encryptionAlgorithm = algorithm;
     return this;

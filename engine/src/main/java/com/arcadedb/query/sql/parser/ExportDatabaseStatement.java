@@ -133,6 +133,12 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   public Statement copy() {
     final ExportDatabaseStatement result = new ExportDatabaseStatement();
     result.url = this.url;
+    // WITHOUT THESE, A COPY SILENTLY DROPS EVERY 'WITH ...' SETTING AND FALLS BACK TO THE DEFAULT FORMAT - THE SAME
+    // DEFECT BackupDatabaseStatement HAD (#6080). COPY THE WHOLE STATE, NOT THE URL ALONE, SO THE COPY STAYS CORRECT
+    // THE MOMENT THIS STATEMENT REACHES A PATH THAT COPIES IT
+    result.format = this.format;
+    result.overwrite = this.overwrite;
+    result.settings.putAll(this.settings);
     return result;
   }
 

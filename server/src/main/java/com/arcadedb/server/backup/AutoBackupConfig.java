@@ -107,6 +107,9 @@ public class AutoBackupConfig {
         dbConfig.setRunOnServer(defaults.getRunOnServer());
         dbConfig.setSchedule(defaults.getSchedule());
         dbConfig.setRetention(defaults.getRetention());
+        dbConfig.setCompressionLevel(defaults.getCompressionLevel());
+        dbConfig.setCompressionThreads(defaults.getCompressionThreads());
+        dbConfig.setMaxMBPerSecond(defaults.getMaxMBPerSecond());
       }
     } else {
       // Merge database-specific config with defaults
