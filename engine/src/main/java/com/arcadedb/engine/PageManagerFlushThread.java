@@ -164,6 +164,14 @@ public class PageManagerFlushThread extends Thread {
    */
   private final Object deferredRAMLock = new Object();
 
+  /**
+   * How many times {@link #repairNegativeDeferredRAM} had to reset a negative total. Reported once (a drift of this
+   * kind repeats), and package-private because the repair would otherwise HIDE the very bugs the regression tests of
+   * #6200 exist to catch: a double release lands on zero after the clamp, indistinguishable from correct accounting.
+   * The tests assert this stays at zero.
+   */
+  final AtomicLong deferredRAMDriftRepairs = new AtomicLong();
+
   public static class PagesToFlush {
     public final BasicDatabase     database;
     public final List<MutablePage> pages;
@@ -747,9 +755,10 @@ public class PageManagerFlushThread extends Thread {
    * per-database split and the derived total in step (issue #6200), and releases the committers waiting on the cap
    * when the total drops back under it.
    * <p>
-   * The two counters are not updated atomically with respect to each other, and do not need to be: the total is what
-   * the cap is read from and it is a single {@code AtomicLong}, while the per-database value is a gauge. A reader
-   * that catches the pair mid-update sees a per-database sum off by one batch from the total for a few instructions.
+   * The two counters are not updated atomically with respect to each other, and do not need to be: a reader that
+   * catches the pair mid-update sees a per-database sum off by one batch from the total for a few instructions.
+   * What they DO have to agree on is the amount that moves, which is why a release takes from the per-database
+   * counter first and moves only what it actually got - see the release branch.
    */
   private void addDeferredRAM(final BasicDatabase database, final long delta) {
     if (delta == 0)
@@ -762,8 +771,33 @@ public class PageManagerFlushThread extends Thread {
       // whose bookkeeping was already purged by its close, and re-creating it with a negative value would both
       // report a nonsensical gauge and re-pin the closed instance as a map key.
       final AtomicLong bytes = deferredRAMByDatabase.get(database);
-      if (bytes != null)
-        bytes.addAndGet(delta);
+      if (bytes == null)
+        // AND IT RELEASES NOTHING FROM THE TOTAL EITHER, which is why this returns rather than falling through.
+        return;
+
+      // THE PER-DATABASE COUNTER IS THE AUTHORITY ON WHAT MAY BE RELEASED: the take is atomic and clamped at zero,
+      // and only what the counter actually still held moves off the JVM-wide total.
+      //
+      // Without that the same bytes are released twice. releaseResidualDeferredRAM takes a database's whole
+      // remaining charge in ONE getAndSet(0) plus subtraction, and it is not mutually exclusive with the per-page
+      // releases of that same database's resume: Phase 1 walks the deferred batches holding only replayDrainLock,
+      // while the purge (close/drop) takes neither that nor anything else Phase 1 holds. So a purge landing
+      // mid-resume takes bytes Phase 1 has not released yet, and Phase 1 then releases them again. A null check
+      // alone does NOT cover it - this reference can be read BEFORE the purge removes the entry and used after -
+      // which is why the guard is on the VALUE rather than on the entry.
+      //
+      // Getting it wrong drives the JVM-wide total NEGATIVE, and that total is what the cap is read from, so the
+      // #4728 backpressure would be silently disabled for every OTHER suspended database in the process until
+      // enough new deferrals pushed it back over the cap.
+      final long releasing = -delta;
+      final long before = bytes.getAndAccumulate(releasing, (current, amount) -> current - Math.min(current, amount));
+      final long applied = Math.min(before, releasing);
+      if (applied <= 0)
+        // ALREADY TAKEN, BY THE RESIDUAL RELEASE OR BY A RACING ONE: NOTHING OF THIS CHARGE IS LEFT TO MOVE
+        return;
+
+      addDeferredRAMTotal(-applied);
+      return;
     }
 
     addDeferredRAMTotal(delta);
@@ -776,6 +810,36 @@ public class PageManagerFlushThread extends Thread {
     // monitor once instead of once per page, and a backlog that is growing never touches it at all.
     if (delta < 0 && maxDeferredRAM > 0 && previous >= maxDeferredRAM && previous + delta < maxDeferredRAM)
       signalDeferredRAM();
+
+    if (previous + delta < 0)
+      repairNegativeDeferredRAM();
+  }
+
+  /**
+   * Last-resort guard on the ONE number the #4728 cap is read from.
+   * <p>
+   * Every release is of bytes a matching deferral put there, so with correct accounting the total cannot go below
+   * zero - not even transiently, since a page has to be deferred before it can be released. A negative value is
+   * therefore a bug, and unlike the per-database gauge (which {@link #getDeferredRAMBytesOf} merely clamps for
+   * display) it is not cosmetic: the cap test is {@code total >= maxDeferredRAM}, so a total left below zero
+   * DISABLES the backpressure for every suspended database in the process until enough new deferrals climb back
+   * over the cap - the OOM this whole mechanism exists to prevent, silently re-enabled.
+   * <p>
+   * So it is both reported - once per process, because a drift of this kind repeats - and repaired. Reporting alone
+   * would leave the protection off; repairing alone would hide the bug that turned it off.
+   */
+  private void repairNegativeDeferredRAM() {
+    // getAndAccumulate, so the value REPORTED is the negative one that was found rather than the zero it became,
+    // and so a total another thread has already repaired is left alone instead of being re-reported.
+    final long negative = deferredRAMBytes.getAndAccumulate(0, (current, ignored) -> current < 0 ? 0 : current);
+    if (negative >= 0)
+      // ANOTHER THREAD GOT THERE FIRST: NOTHING WAS FOUND NEGATIVE HERE, SO NOTHING IS COUNTED OR SAID
+      return;
+
+    if (deferredRAMDriftRepairs.getAndIncrement() == 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "The deferred page-flush backlog accounting went negative (%d bytes) and was reset to zero: this is a bug in the accounting, please report it. Until the reset the '%s' cap could not throttle the committers of a suspended database",
+          null, negative, GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM.getKey());
   }
 
   /**
@@ -847,6 +911,9 @@ public class PageManagerFlushThread extends Thread {
    * database left suspended cannot keep a committer parked past {@code closeAndJoin}.
    */
   public void awaitDeferredBacklogUnderCap(final BasicDatabase database) throws InterruptedException {
+    // The instanceof is a cast, not a filter: every page in the flush pipeline comes from a local Database (that is
+    // what owns a PageManager at all), and the suspension bookkeeping this reads is keyed by Database. A
+    // BasicDatabase that is not one has never been deferred and so can never be over the cap.
     if (maxDeferredRAM <= 0 || !(database instanceof final Database db) || !isSuspended(db))
       // NOT SUSPENDED: THE COMMON CASE, AND TWO MAP READS AWAY FROM THE PUBLICATION IT MUST NOT SLOW DOWN
       return;

@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageManagerFlushThread.PagesToFlush;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -375,6 +376,58 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
   }
 
   /**
+   * A purge landing in the middle of its OWN database's resume must not release the same bytes twice.
+   * <p>
+   * The resume walks the deferred batches holding only {@code replayDrainLock}, releasing them page by page; the
+   * purge takes neither that lock nor anything else the resume holds, and its {@code releaseResidualDeferredRAM}
+   * takes the database's whole remaining charge out of the JVM-wide total in one subtraction. The straggling
+   * per-page releases that follow must then subtract NOTHING - they were already covered by that bulk one.
+   * <p>
+   * Getting it wrong drives the total negative, and the total is what the cap is read from: {@code total >= cap}
+   * answers false for every suspended database in the process until enough new deferrals climb back over it, so the
+   * #4728 OOM protection would be off for databases that have nothing to do with the one that was purged. That is
+   * why this asserts the total is exactly zero and never negative, on every iteration.
+   */
+  @Test
+  void aPurgeRacingItsOwnResumeReleasesTheSameBytesOnlyOnce() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManagerFlushThread flush = cappedFlushThread();
+
+    for (int i = 0; i < 100; i++) {
+      flush.setSuspended(db, true);
+      // ONE long batch rather than many short ones: the window is inside Phase 1's per-page loop, so the loop has
+      // to be long enough for the purge to land in it.
+      enqueueBatch(flush, db, i, 400);
+      flush.flushPagesFromQueueToDisk(null, 20L);
+      assertThat(flush.deferredRAMBytes.get()).isPositive();
+
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread resumer = new Thread(() -> {
+        try {
+          flush.setSuspended(db, false);
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      }, "issue6200-resumer-" + i);
+      final Thread purger = new Thread(() -> flush.removeAllPagesOfDatabase(db), "issue6200-purge-resume-" + i);
+
+      resumer.start();
+      purger.start();
+      resumer.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+      purger.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+
+      assertThat(failure.get()).isNull();
+      // The drift counter, NOT just the total: the negative-total repair would otherwise hide exactly this bug, by
+      // clamping a double release back to the zero a correct run also ends on.
+      assertThat(flush.deferredRAMDriftRepairs.get()).as(
+          "iteration %d: the JVM-wide total must never be released twice for the same bytes - a negative total silently disables the cap for every other suspended database",
+          i).isZero();
+      assertThat(flush.deferredRAMBytes.get()).as("iteration %d", i).isZero();
+      assertThat(flush.getDeferredRAMBytesOf(db)).as("iteration %d", i).isZero();
+    }
+  }
+
+  /**
    * Constructing the flush thread directly does NOT start the background thread, so the pipeline only moves when the
    * test moves it.
    */
@@ -390,5 +443,16 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
     flush.pageIndex.put(page);
     flush.queue.offer(new PagesToFlush(List.of(page)));
     return page;
+  }
+
+  /** One batch of {@code pages} small pages, for the races whose window is inside a per-page loop. */
+  private static void enqueueBatch(final PageManagerFlushThread flush, final DatabaseInternal database, final int round,
+      final int pages) {
+    final int pageSize = 1024;
+    final List<MutablePage> batch = new ArrayList<>(pages);
+    for (int i = 0; i < pages; i++)
+      batch.add(new MutablePage(new PageId(database, FILE_ID, round * pages + i), pageSize, new byte[pageSize], 0, 0));
+    flush.pageIndex.putAll(batch);
+    flush.queue.offer(new PagesToFlush(batch));
   }
 }
