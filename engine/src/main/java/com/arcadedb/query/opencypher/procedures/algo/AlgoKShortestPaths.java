@@ -27,7 +27,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -90,7 +89,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
     final Vertex startNode        = extractVertex(args[0], "startNode");
     final Vertex endNode          = extractVertex(args[1], "endNode");
-    final int k                   = NumberUtils.saturateToInt((Number) args[2]);
+    final int k                   = extractCount((Number) args[2], "k");
     final String[] relTypes       = args.length > 3 ? extractRelTypes(args[3]) : null;
     final String weightProperty   = args.length > 4 ? extractString(args[4], "weightProperty") : null;
 

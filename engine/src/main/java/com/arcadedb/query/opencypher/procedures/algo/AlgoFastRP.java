@@ -41,7 +41,7 @@ import java.util.stream.Stream;
  *
  * <p>Config map parameters (all optional):
  * <ul>
- *   <li>{@code dimensions} (int, default 128) – embedding vector size</li>
+ *   <li>{@code dimensions} (int, default 128, max {@value AbstractAlgoProcedure#MAX_EMBEDDING_DIMENSION}) – embedding vector size</li>
  *   <li>{@code iterations} (int, default 4) – propagation depth</li>
  *   <li>{@code normalization} (double, default 0.0) – degree-normalization exponent α:
  *       weight of neighbour j contributing to node i is proportional to
@@ -97,7 +97,7 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
-    final int dimensions = config != null && config.get("dimensions") instanceof Number n ? extractInt(n, "dimensions") : 128;
+    final int dimensions = config != null && config.get("dimensions") instanceof Number n ? extractEmbeddingDimension(n, "dimensions") : 128;
     final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 4;
     final double normStrength = config != null && config.get("normalization") instanceof Number n ? n.doubleValue() : 0.0;
     final double selfInfluence = config != null && config.get("selfInfluence") instanceof Number n ? n.doubleValue() : 0.0;

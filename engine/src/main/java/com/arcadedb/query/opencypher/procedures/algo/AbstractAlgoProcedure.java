@@ -47,6 +47,18 @@ import java.util.Map;
  */
 public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
+  /**
+   * Hard upper bound for every embedding-dimension-shaped parameter (`embeddingDimension`,
+   * `dimensions`, ...). These size a per-node {@code double[]} row, so the allocation grows as
+   * {@code nodeCount * dimension} with no graph-derived ceiling to clamp against - a single
+   * in-range-but-huge value is an allocation-DoS on a graph of any size.
+   * <p>
+   * 4096 sits comfortably above every dimension in practical use (the widest mainstream text
+   * embeddings are 3072-wide) while capping one embedding row at 32 KB.
+   * </p>
+   */
+  public static final int MAX_EMBEDDING_DIMENSION = 4096;
+
   // ── Embedding math utilities ─────────────────────────────────────────────
 
   /** Normalises {@code vec} to unit L2 length in-place; no-op if the vector is zero. */
@@ -170,6 +182,51 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     } catch (final ArithmeticException e) {
       throw new IllegalArgumentException(getName() + "(): " + paramName + " is out of range for an int: " + value, e);
     }
+  }
+
+  /**
+   * Narrows an embedding-dimension-shaped config value to {@code int} and bounds it to
+   * {@code [1, MAX_EMBEDDING_DIMENSION]}.
+   * <p>
+   * Unlike a top-k / result-count bound, which clamps against the graph's node count
+   * ({@code Math.min(k, n)}) because "as many as exist" is the natural reading, an embedding
+   * dimension has no graph-derived bound to clamp against: it multiplies the per-node allocation
+   * regardless of how small the graph is. A large but perfectly in-range value such as
+   * {@code {embeddingDimension: 1000000000}} therefore survives {@link #extractInt} and then asks
+   * for a {@code new double[n][1000000000]} (~8 GB even at {@code n == 1}).
+   * </p>
+   * <p>
+   * The value is rejected rather than silently clamped: there is no "correct" dimension to fall back
+   * to, and quietly returning embeddings of a different width than the caller asked for would be a
+   * worse failure than a clear error.
+   * </p>
+   */
+  protected int extractEmbeddingDimension(final Number value, final String paramName) {
+    final int dimension = extractInt(value, paramName);
+    if (dimension < 1)
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " must be at least 1, got " + dimension);
+    if (dimension > MAX_EMBEDDING_DIMENSION)
+      throw new IllegalArgumentException(
+          getName() + "(): " + paramName + " must not exceed " + MAX_EMBEDDING_DIMENSION + ", got " + dimension);
+    return dimension;
+  }
+
+  /**
+   * Narrows a result-count bound (top-k, number of paths, ...) to {@code int}, saturating at the int
+   * bounds rather than wrapping, and rejects a negative value with a message naming the parameter.
+   * <p>
+   * Saturation is deliberate here - "more results than can possibly exist" has the sensible reading
+   * "as many as exist", and each caller clamps against the graph afterwards. A negative count has no
+   * such reading, and without this check it reaches an array/collection allocation and surfaces as a
+   * bare {@code NegativeArraySizeException} or {@code IllegalArgumentException: Illegal Capacity},
+   * neither of which names the offending parameter.
+   * </p>
+   */
+  protected int extractCount(final Number value, final String paramName) {
+    final int count = NumberUtils.saturateToInt(value);
+    if (count < 0)
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " must not be negative, got " + count);
+    return count;
   }
 
   /** @see GraphEngine#getAllVertices(Database, String[]) */

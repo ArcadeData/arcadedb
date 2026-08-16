@@ -42,7 +42,7 @@ import java.util.stream.Stream;
  *
  * <p>Config map parameters (all optional):
  * <ul>
- *   <li>{@code embeddingDimension} (int, default 128) – output embedding size</li>
+ *   <li>{@code embeddingDimension} (int, default 128, max {@value AbstractAlgoProcedure#MAX_EMBEDDING_DIMENSION}) – output embedding size</li>
  *   <li>{@code iterations} (int, default 4) – number of message-passing rounds</li>
  *   <li>{@code relTypes} (String, default all) – comma-separated edge type names</li>
  *   <li>{@code direction} (String, default BOTH)</li>
@@ -93,7 +93,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
-    final int embDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractInt(n, "embeddingDimension") : 128;
+    final int embDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
     final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 4;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
