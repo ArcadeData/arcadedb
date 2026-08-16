@@ -75,9 +75,9 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
   /** The value {@link #batch} takes when the threshold is crossed; it doubles from there, this does not. */
   private final long          degradeBatch;
   /** Entries to take from the source holding the turn before rotating: 1 until the threshold, then widening. */
-  private       long          batch   = 1L;
+  private       long          batch;
   /** Entries already taken from the source holding the turn in this visit. */
-  private       long          taken   = 0L;
+  private       long          taken;
   /** Rotations since the last doubling of {@link #batch}; a full round is {@code activeCount} of them. */
   private       int           rotationsInRound;
   /** True once {@link #browsed} has reached {@link #degradeAfter}, i.e. once {@link #batch} may grow. */
@@ -124,11 +124,19 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     this.activeCount = sources.length;
     this.degradeAfter = degradeAfter;
     this.degradeBatch = Math.max(1L, degradeBatch);
-    // A non-positive threshold is never REACHED by the counter (it starts at 1), so the widening starts armed.
-    if (degradeAfter <= 0) {
-      this.widening = true;
-      this.batch = this.degradeBatch;
-    }
+    armWidening();
+  }
+
+  /**
+   * The starting state of the widening, shared by the constructor and {@link #reset()}: one entry per turn until
+   * the threshold. A NON-POSITIVE threshold is never reached by {@link #browsed} (which starts at 1), so it arms
+   * the widening straight away instead - which is how "degrade from the very first entry" is expressed.
+   */
+  private void armWidening() {
+    widening = degradeAfter <= 0;
+    batch = widening ? degradeBatch : 1L;
+    taken = 0L;
+    rotationsInRound = 0;
   }
 
   @Override
@@ -167,6 +175,9 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     ++browsed;
 
     // Crossing the threshold arms the widening and starts the first wide visit on the source holding the turn.
+    // The quota is RE-BASED, not extended: this entry becomes the 1st of that source's `degradeBatch`-long visit
+    // rather than being counted both as the last one-per-turn entry and as the first wide one, so every source's
+    // first wide visit is the same length whichever of them happened to hold the turn at the crossing.
     if (browsed == degradeAfter) {
       widening = true;
       batch = degradeBatch;
@@ -204,10 +215,7 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     turn = 0;
     pending = -1;
     browsed = 0L;
-    taken = 0L;
-    rotationsInRound = 0;
-    widening = degradeAfter <= 0;
-    batch = widening ? degradeBatch : 1L;
+    armWidening();
   }
 
   /**
