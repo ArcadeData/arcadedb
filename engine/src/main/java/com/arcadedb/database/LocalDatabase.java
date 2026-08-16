@@ -1477,13 +1477,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } else {
         try {
           bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
-        } catch (final BrokenChunkChainException e) {
-          // See the identical arm on the vertex branch above (#6258).
-          if (!tolerateBrokenChain || forceBrokenChainDelete)
-            throw e;
-          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
-          bucket.deleteRecord(record.getIdentity(), true);
         } catch (final ConcurrentModificationException e) {
+          // NO BrokenChunkChainException ARM HERE, unlike the vertex branch above, and the asymmetry is real rather
+          // than an omission (code review on #6258): deleteRecordInternal walks the chunk chain itself and never
+          // loads the record, so it reports a break as the #4932 retry signal and the structural probe below is
+          // still what tells the two apart. The vertex branch differs because reaching a vertex's edge lists means
+          // READING it, which is where the loader's own verdict comes from. Add the arm here the day
+          // deleteRecordInternal learns to name a broken chain as one.
           if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
           logBrokenChainForcePhysicalDelete(record.getIdentity(), e);

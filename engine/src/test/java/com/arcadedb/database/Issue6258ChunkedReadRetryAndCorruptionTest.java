@@ -52,6 +52,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue6258ChunkedReadRetryAndCorruptionTest extends BucketPageLayoutTestSupport {
   private static final String TYPE = "ChunkedRecord";
 
+  /** {@code LocalBucket.FIRST_CHUNK} (-2) and {@code NEXT_CHUNK} (-3), as the single zigzag byte each is stored as. */
+  private static final byte FIRST_CHUNK_MARKER = 3;
+  private static final byte NEXT_CHUNK_MARKER  = 5;
+
   @Override
   protected boolean isCheckingDatabaseIntegrity() {
     // Two of the tests below deliberately inject on-disk corruption, which the post-test integrity check would
@@ -173,6 +177,31 @@ class Issue6258ChunkedReadRetryAndCorruptionTest extends BucketPageLayoutTestSup
   }
 
   /**
+   * The same shape, one hop further out, where the walk's cheap guard cannot see it: chunk 2 pointing back at chunk 1
+   * is a cycle no comparison of consecutive chunks detects, so the walk followed it forever - growing its trace and
+   * the record it was assembling with every lap, on a record that could never be assembled. It now carries the exact
+   * detector the confirmation walk always had (a visited-pointer set, allocated only once a chain is long enough to
+   * need one), so the loop ends in the same corruption verdict as the self-reference above (code review on #6258).
+   */
+  @Test
+  void aChainThatLoopsPastItsFirstHopIsAlsoReportedAsCorruption() {
+    final RID[] rids = createChunkedRecords(TYPE);
+    final int bucketId = rids[0].getBucketId();
+
+    // head -> chunk1 -> chunk2 -> ... becomes head -> chunk1 -> chunk2 -> chunk1 -> ...
+    final long chunk1 = nextChunkPointerOf(bucketId, rids[0].getPosition(), FIRST_CHUNK_MARKER);
+    final long chunk2 = nextChunkPointerOf(bucketId, chunk1, NEXT_CHUNK_MARKER);
+    assertThat(chunk1).as("the fixture must give record 0 a chain of at least three chunks").isPositive();
+    assertThat(chunk2).as("the fixture must give record 0 a chain of at least three chunks").isPositive();
+
+    writeNextChunkPointer(bucketId, chunk2, NEXT_CHUNK_MARKER, chunk1);
+
+    // "visited twice" is the EXACT detector's wording, not the self-reference guard's: asserting it is what keeps
+    // this test honest, since a cycle caught by the cheap guard would prove nothing about the one added here.
+    assertBrokenChainIsReportedWithoutRetrying(rids[0], "visited twice");
+  }
+
+  /**
    * The boundary between the two items: a record that really moved under the read is contention, and must keep being
    * reported as contention. Only a chain that does not PARSE - and that still does not parse against the newest
    * committed image, with the read's own chunks proven current - is corruption.
@@ -229,31 +258,59 @@ class Issue6258ChunkedReadRetryAndCorruptionTest extends BucketPageLayoutTestSup
         .isZero();
   }
 
-  /**
-   * Overwrites the next-chunk pointer of the head chunk of {@code rid}, which {@link #createChunkedRecords} left at
-   * slot {@code rid.getPosition()} of page 0. Layout after the record's size marker:
-   * {@code [chunkSize:int][nextChunkPointer:long][content...]}.
-   */
+  /** Overwrites the next-chunk pointer of the head chunk of {@code rid}, which lives at slot 0..n of page 0. */
   private void corruptHeadChunkPointer(final RID rid, final long nextChunkPointer) {
+    writeNextChunkPointer(rid.getBucketId(), rid.getPosition(), FIRST_CHUNK_MARKER, nextChunkPointer);
+  }
+
+  /** The pointer to the next chunk carried by the chunk at {@code chunkPointer}, or 0 when it is the last one. */
+  private long nextChunkPointerOf(final int bucketId, final long chunkPointer, final byte marker) {
+    final long[] read = new long[1];
+    ((DatabaseInternal) database).transaction(
+        () -> read[0] = onChunkPointerField(bucketId, chunkPointer, marker, null));
+    return read[0];
+  }
+
+  /** Points the chunk at {@code chunkPointer} somewhere else, which is how every corruption here is injected. */
+  private void writeNextChunkPointer(final int bucketId, final long chunkPointer, final byte marker,
+      final long nextChunkPointer) {
+    ((DatabaseInternal) database).transaction(
+        () -> onChunkPointerField(bucketId, chunkPointer, marker, nextChunkPointer));
+  }
+
+  /**
+   * Reads (when {@code newValue} is null) or overwrites the next-chunk pointer field of one chunk of a chain,
+   * addressed the way the chain itself addresses it: {@code chunkPointer = pageNumber * maxRecordsInPage + slot}. The
+   * on-page layout after the record's size marker is {@code [chunkSize:int][nextChunkPointer:long][content...]}, and
+   * the marker itself is one zigzag-encoded byte for both of the values used here.
+   *
+   * @return the pointer as it was BEFORE any write.
+   */
+  private long onChunkPointerField(final int bucketId, final long chunkPointer, final byte marker,
+      final Long newValue) {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int bucketId = rid.getBucketId();
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(bucketId)).getPageSize();
-    final int slot = (int) rid.getPosition();
+    final int maxRecordsInPage = bucketOf(TYPE).getMaxRecordsInPage();
+    final int pageNumber = (int) (chunkPointer / maxRecordsInPage);
+    final int slot = (int) (chunkPointer % maxRecordsInPage);
 
-    db.transaction(() -> {
-      try {
-        final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, bucketId, 0), pageSize, false);
-        // PAGE_RECORD_TABLE_OFFSET == PAGE_RECORD_COUNT_IN_PAGE_OFFSET(0) + SHORT_SERIALIZED_SIZE; one uint per slot.
-        final int recordOffset = (int) page.readUnsignedInt(
-            Binary.SHORT_SERIALIZED_SIZE + slot * Binary.INT_SERIALIZED_SIZE);
+    try {
+      final MutablePage page = db.getTransaction()
+          .getPageToModify(new PageId(db, bucketId, pageNumber), pageSize, false);
+      // PAGE_RECORD_TABLE_OFFSET == PAGE_RECORD_COUNT_IN_PAGE_OFFSET(0) + SHORT_SERIALIZED_SIZE; one uint per slot.
+      final int recordOffset = (int) page.readUnsignedInt(
+          Binary.SHORT_SERIALIZED_SIZE + slot * Binary.INT_SERIALIZED_SIZE);
 
-        // Confirm the record really is a multi-page head: FIRST_CHUNK (-2) is zigzag-encoded as the single byte 0x03.
-        assertThat(page.readByte(recordOffset)).as("record %s must be a multi-page FIRST_CHUNK", rid).isEqualTo((byte) 3);
+      assertThat(page.readByte(recordOffset))
+          .as("chunk %d/%d must carry the expected chunk marker", pageNumber, slot).isEqualTo(marker);
 
-        page.writeLong(recordOffset + 1 + Binary.INT_SERIALIZED_SIZE, nextChunkPointer);
-      } catch (final Exception e) {
-        throw new RuntimeException(e);
-      }
-    });
+      final int pointerOffset = recordOffset + 1 + Binary.INT_SERIALIZED_SIZE;
+      final long previous = page.readLong(pointerOffset);
+      if (newValue != null)
+        page.writeLong(pointerOffset, newValue);
+      return previous;
+    } catch (final Exception e) {
+      throw new RuntimeException(e);
+    }
   }
 }

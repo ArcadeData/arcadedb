@@ -2651,8 +2651,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Structurally walks the chunk chain of a multi-page record WITHOUT MVCC version validation to detect a broken
    * chain: a continuation pointer to an out-of-range page, a slot that was cleaned, or a marker that is no longer
    * {@link #NEXT_CHUNK}. Used by {@link #check(int, boolean)}, which otherwise validates only the first chunk's
-   * on-page size and would never notice a broken chain. Returns {@code null} when the chain is intact, or a short
-   * human-readable reason when it is broken. Never throws.
+   * on-page size and would never notice a broken chain. Never throws.
+   * <p>
+   * Returns a short human-readable reason when the chain is broken, and {@code null} when it could not be PROVED
+   * broken - which covers both a chain that walks cleanly and one whose walk could not load a page at all. Every
+   * caller reads the two the same way (leave the record alone), and conflating them is deliberate: an I/O fault is
+   * not evidence of anything about the record, and since #6258 a confirmed break costs the record its retries and
+   * sends the operator to {@code CHECK DATABASE FIX}, which deletes it.
    *
    * @param fromNewestCommitted reads the continuation pages straight from the {@link PageManager} instead of through
    *                            the transaction, so the walk sees the newest committed image rather than whatever this
@@ -2691,9 +2696,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           return "next chunk pointer out of range at chunk " + chunkId;
 
         final PageId nextPageIdentity = new PageId(database, file.getFileId(), nextPageId);
-        chunkPage = fromNewestCommitted ?
-                database.getPageManager().getImmutablePage(nextPageIdentity, pageSize, false, true) :
-                database.getTransaction().getPage(nextPageIdentity, pageSize);
+        try {
+          chunkPage = fromNewestCommitted ?
+                  database.getPageManager().getImmutablePage(nextPageIdentity, pageSize, false, true) :
+                  database.getTransaction().getPage(nextPageIdentity, pageSize);
+        } catch (final IOException e) {
+          // A page that cannot be LOADED AT ALL is an I/O fault, not a broken chain, and must not be answered as one
+          // - the line #6217 drew for validateChainRead, which this walk had not been held to (code review on #6258).
+          // It matters more here than it used to: since #6258 a confirmed break is a PERMANENT verdict that stops the
+          // retries and tells the operator to run CHECK DATABASE FIX, which deletes the record. One bad read of a
+          // healthy record must not reach that conclusion, and the callers all read null as "cannot prove a break":
+          // this walk retries, the tolerant delete keeps its retry semantics, and check() reports nothing to fix.
+          LogManager.instance().log(this, Level.FINE,
+                  "Unable to load page %s while walking the chunk chain of %s", e, nextPageIdentity, rid);
+          return null;
+        }
+
         if (chunkPage == null)
           // Defensive: neither page source answers null while it is allowed to materialise a missing page. A null
           // here would still not be proof of a broken chain, so it must not be reported as one.
@@ -3252,6 +3270,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       String brokenChainReason = null;
       Exception brokenChainCause = null;
 
+      // Exact cycle detection, on the same terms as offPageContentFingerprint's walk: revisiting a continuation
+      // pointer is the only certain loop signal, and a chain that never revisits one is finite by construction. The
+      // set is allocated only once a chain turns out to be long, so the records that exist in practice - a handful of
+      // chunks - pay nothing for it. The self-reference check further down stays: it is free, and it names the loop
+      // for the chain that doubles back on its very first hop, long before this threshold (code review on #6258).
+      LongHashSet visitedChunks = null;
+
       boolean chainInconsistent = false;
       final Binary record = new Binary();
       try {
@@ -3305,6 +3330,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             brokenChainReason = "chain loop detected at chunk " + (chunks - 1) + " (" + chunkPageId + "/"
                     + chunkPositionInPage + ")";
             break;
+          }
+
+          if (chunks >= CHUNKS_BEFORE_LOOP_DETECTION) {
+            if (visitedChunks == null)
+              visitedChunks = new LongHashSet();
+            if (!visitedChunks.add(nextChunkPointer)) {
+              brokenChainReason = "chain loop detected at chunk " + (chunks - 1) + " (" + chunkPageId + "/"
+                      + chunkPositionInPage + " visited twice)";
+              break;
+            }
           }
 
           page = nextPage;
