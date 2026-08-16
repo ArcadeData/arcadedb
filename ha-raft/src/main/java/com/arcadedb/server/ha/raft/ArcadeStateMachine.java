@@ -68,15 +68,19 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 /**
@@ -161,6 +165,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
   });
 
   /**
+   * Runs a leader-initiated snapshot install off the Ratis state-machine thread, which must not block.
+   * <p>
+   * This was {@code CompletableFuture.supplyAsync(...)} with no executor, i.e. the JDK common ForkJoinPool,
+   * against the "No JDK common ForkJoinPool" rule at the head of {@code QueryEngineManager}'s class javadoc: that
+   * pool is shared with user-supplied scripts (Gremlin, Polyglot) and with JDK internals, and a snapshot install
+   * is a full database download - the longest-running thing the HA layer does. It has its own thread now
+   * (issue #6202), which is also what lets the install wait on {@link #snapshotDownloadLock} instead of racing
+   * the request-driven resyncs.
+   * <p>
+   * One worker, because Ratis serialises installs per division and {@code SnapshotInstaller} works over one set
+   * of database directories; a bounded queue and {@code AbortPolicy} rather than caller-runs, because running on
+   * the caller is precisely the outcome the offload exists to prevent - a rejection is turned into a failed
+   * future so Ratis retries the install rather than the Ratis thread carrying the download.
+   */
+  private final ThreadPoolExecutor snapshotInstallExecutor = createSnapshotInstallExecutor();
+
+  private static ThreadPoolExecutor createSnapshotInstallExecutor() {
+    return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(16), r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-snapshot-install");
+      t.setDaemon(true);
+      return t;
+    }, new ThreadPoolExecutor.AbortPolicy());
+  }
+
+  /**
    * Removes dropped database directories away from the apply loop. Deliberately not the lifecycleExecutor: a
    * deletion is unbounded in the size of the database and would delay the snapshot-download triggers that
    * executor carries.
@@ -198,6 +227,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final AtomicBoolean needsSnapshotDownload      = new AtomicBoolean(false);
   private final AtomicBoolean snapshotDownloadInProgress = new AtomicBoolean(false);
   private final AtomicBoolean catchingUp                 = new AtomicBoolean(false);
+
+  /**
+   * Serialises the resync paths against each other (issue #6202). {@link #snapshotDownloadInProgress} was the
+   * only interlock, and it does not serialise: {@link #notifyInstallSnapshotFromLeader} proceeds when it LOSES
+   * the CAS rather than standing down, because standing down would report an install it never performed. Two
+   * downloads over one set of database directories were argued benign - both pull from the same leader and
+   * {@code SnapshotInstaller} swaps atomically - but that argument is about today's installer, not about the
+   * interlock, and it would outlive whoever remembers it. The lock states the invariant instead of deriving it.
+   * <p>
+   * The Ratis-initiated install waits for it; the two request-driven paths take it with {@code tryLock} and fold
+   * into whatever holds it, exactly as they already fold into a lost CAS - they run on the single-threaded
+   * {@link #lifecycleExecutor} and must not park it for the length of a download.
+   * <p>
+   * <b>Three of the six snapshot-pull paths are deliberately outside it</b>, and it is a choice rather than a
+   * gap. {@code applyInstallDatabaseEntry}'s {@code forceSnapshot} branch and {@link #installFromLeaderForBootstrap}
+   * run on the Ratis apply thread as part of applying a committed entry: they are already serialised against each
+   * other by that single thread, they cannot fold (skipping leaves the database absent or diverged, which is the
+   * state the entry exists to repair), and they must not park the apply loop - and with it replication for every
+   * database on this node - for the length of a download it did not start. {@link #resyncDatabaseFromLeader} runs
+   * on the operator's HTTP worker thread and reports its outcome to them synchronously, so folding would answer
+   * "done" for work it did not do. What makes an actual overlap visible rather than silent is
+   * {@code SnapshotInstaller}'s own {@code INSTALLS_IN_FLIGHT} set, which logs a WARNING naming the database when
+   * two installs share one directory - the detector for the assumption this lock cannot enforce everywhere.
+   */
+  private final ReentrantLock snapshotDownloadLock = new ReentrantLock();
 
   // Highest Raft-log index whose data is actually present in the local databases while a flagged
   // stale-snapshot re-download is still outstanding; -1 when there is none (the normal case).
@@ -1169,8 +1223,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * downloaded from the leader. Delegates to {@link SnapshotInstaller#install} for crash-safe
    * installation with marker files and atomic directory swap.
    * <p>
-   * Runs asynchronously via {@link CompletableFuture#supplyAsync} to avoid blocking the
-   * Ratis state machine thread.
+   * Runs asynchronously on {@link #snapshotInstallExecutor} to avoid blocking the Ratis state machine thread.
    */
   @Override
   public CompletableFuture<TermIndex> notifyInstallSnapshotFromLeader(
@@ -1179,99 +1232,157 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.INFO,
         "HA resync started (mode=snapshot, reason=leader snapshot install): firstLogIndex=%s", firstTermIndexInLog);
 
-    // Runs on the JDK common ForkJoinPool via supplyAsync(). Apache-ratis uses a dedicated pool
-    // to avoid blocking Ratis internal threads, so this offload IS necessary - we must not run
-    // the snapshot download synchronously on the caller. The remaining concern is the common
-    // pool itself: it is shared with user-supplied scripts (Gremlin, Polyglot), and a long
-    // snapshot download could starve user code under exceptional conditions. Snapshot installs
-    // are rare (only on follower (re)joining) and serialised inside Ratis, so this is operationally
-    // tolerable today. See QueryEngineManager class javadoc - "No JDK common ForkJoinPool" rule -
-    // for the migration target; the cleanup item is to fork onto a dedicated executor (sized via
-    // a future {@code arcadedb.haSnapshotInstallThreads} knob) once we add one.
-    return CompletableFuture.supplyAsync(() -> {
-      // Participate in the same single-flight protocol as triggerSnapshotDownload() so that
-      // isSnapshotDownloadPending() returns true during this install and the HealthMonitor's
-      // recoverFromPersistentLag() does not initiate a new concurrent triggerSnapshotDownload().
-      // We use CAS (not unconditional set) to avoid clearing a flag owned by a concurrently
-      // running triggerSnapshotDownload():
-      //  - if we win (flag false->true): we own the flag and MUST clear it in finally.
-      //  - if we lose (flag already true, another download in progress): we skip the flag and let
-      //    the other download complete; we still proceed with reconcileDatabasesFromLeader() because
-      //    the two installs both pull from the same leader and SnapshotInstaller is crash-safe with
-      //    atomic directory swaps. NOTE: the two calls are not serialized by this flag; ordering
-      //    is only guaranteed when we win the CAS. Eliminating the residual race requires a mutex
-      //    or waiting on the in-flight download, which is deferred as a future improvement.
-      final boolean acquiredSnapshotFlag = snapshotDownloadInProgress.compareAndSet(false, true);
-      try {
-        final RaftPeerId leaderId = RaftPeerId.valueOf(
-            roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
-        final String leaderHttpAddr = raftHAServer.getPeerHttpAddress(leaderId);
-        final String leaderHttpsAddr = raftHAServer.getPeerHttpsAddress(leaderId);
+    try {
+      return CompletableFuture.supplyAsync(() -> installSnapshotFromLeader(roleInfoProto, firstTermIndexInLog),
+          snapshotInstallExecutor);
+    } catch (final RejectedExecutionException e) {
+      // The offload exists so the download does not run on the Ratis thread, so a rejection must not be answered
+      // by running it here. Ratis retries the install; a failed future leaves this node visibly behind until it
+      // does, which is the state it is in (issue #6202).
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot schedule the leader-initiated snapshot install: the install executor rejected it", e);
+      return CompletableFuture.failedFuture(
+          new IllegalStateException("Snapshot install executor rejected the task", e));
+    }
+  }
 
-        if (leaderHttpAddr == null)
-          throw new RuntimeException("Cannot determine leader HTTP address for snapshot download");
+  /** The body of {@link #notifyInstallSnapshotFromLeader}, run on {@link #snapshotInstallExecutor}. */
+  private TermIndex installSnapshotFromLeader(final RaftProtos.RoleInfoProto roleInfoProto,
+      final TermIndex firstTermIndexInLog) {
+    // Participate in the same single-flight protocol as triggerSnapshotDownload() so that
+    // isSnapshotDownloadPending() returns true during this install and the HealthMonitor's
+    // recoverFromPersistentLag() does not initiate a new concurrent triggerSnapshotDownload().
+    // We use CAS (not unconditional set) to avoid clearing a flag owned by a concurrently
+    // running triggerSnapshotDownload():
+    //  - if we win (flag false->true): we own the flag and MUST clear it in finally.
+    //  - if we lose (flag already true, another download in progress): we skip the flag but still perform the
+    //    install, because standing down would report an install that never happened.
+    // Losing the CAS used to mean the two downloads ran concurrently over one set of database directories -
+    // benign only for as long as SnapshotInstaller keeps swapping atomically. snapshotDownloadLock states the
+    // exclusion outright: this path waits for it (it owns its thread and may block), while the request-driven
+    // paths fold into whatever holds it (issue #6202).
+    final boolean acquiredSnapshotFlag = snapshotDownloadInProgress.compareAndSet(false, true);
+    try {
+      // Interruptibly, so close()'s shutdownNow() can unwind a thread parked behind an in-flight resync instead
+      // of holding the shutdown open for the length of somebody else's download.
+      snapshotDownloadLock.lockInterruptibly();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      if (acquiredSnapshotFlag)
+        snapshotDownloadInProgress.set(false);
+      throw new RuntimeException("Interrupted while waiting for an in-flight resync to finish", e);
+    }
+    try {
+      final RaftPeerId leaderId = RaftPeerId.valueOf(
+          roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
 
-        final String clusterToken = raftHAServer.getClusterToken();
+      // The guards the manual resync path has always made, which this one had none of (issue #6202): a derived
+      // address can name this node itself or the wrong peer, and reconcileDatabasesFromLeader would succeed,
+      // the install would be recorded, the read floor dropped, and the node would return to the ready set
+      // carrying whatever it copied. Refusing is the honest disposition - Ratis retries the install.
+      final SnapshotSource source = resolveSnapshotSource(leaderId);
+      if (source.refused())
+        throw new SnapshotRefusedException(source.refusal());
 
-        reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      final String leaderHttpAddr = source.httpAddress();
+      final String leaderHttpsAddr = raftHAServer.getPeerHttpsAddress(leaderId);
+      final String clusterToken = raftHAServer.getClusterToken();
 
-        // Compute the installed snapshot TermIndex. firstTermIndexInLog is the first log entry
-        // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
-        // Returning firstTermIndexInLog itself (as the old code did) caused two bugs:
-        // 1. SnapshotInstallationHandler called state.reloadStateMachine(firstTermIndexInLog) which
-        //    purged log entries up to firstTermIndexInLog.getIndex() instead of getIndex()-1.
-        // 2. StateMachineUpdater.reload() calls getLatestSnapshot().getIndex() and expects it to match
-        //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
-        //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
-        final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
-        // Use firstTermIndexInLog.getTerm() as the snapshot term. The true last-entry term inside
-        // the snapshot is opaque to us (ArcadeDB ships database files, not Ratis snapshot chunks),
-        // so we use the term of the first available log entry as a safe upper bound. This value is
-        // only used to name the marker file (snapshot.term_index) and as metadata for Ratis's
-        // snapshotIndex tracking; it does not affect data correctness.
-        final long snapshotTerm = firstTermIndexInLog.getTerm();
-        final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
+      reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
 
-        // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
-        // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
-        // registerSnapshotMarker() writes the empty marker file and updates the latest-snapshot
-        // reference; see its javadoc for why a file-less, null-digest marker is safe for ArcadeDB.
-        if (!registerSnapshotMarker(snapshotTerm, snapshotIndex))
-          throw new IOException("Failed to register snapshot marker at index " + snapshotIndex);
+      // Compute the installed snapshot TermIndex. firstTermIndexInLog is the first log entry
+      // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
+      // Returning firstTermIndexInLog itself (as the old code did) caused two bugs:
+      // 1. SnapshotInstallationHandler called state.reloadStateMachine(firstTermIndexInLog) which
+      //    purged log entries up to firstTermIndexInLog.getIndex() instead of getIndex()-1.
+      // 2. StateMachineUpdater.reload() calls getLatestSnapshot().getIndex() and expects it to match
+      //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
+      //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
+      final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
+      // Use firstTermIndexInLog.getTerm() as the snapshot term. The true last-entry term inside
+      // the snapshot is opaque to us (ArcadeDB ships database files, not Ratis snapshot chunks),
+      // so we use the term of the first available log entry as a safe upper bound. This value is
+      // only used to name the marker file (snapshot.term_index) and as metadata for Ratis's
+      // snapshotIndex tracking; it does not affect data correctness.
+      final long snapshotTerm = firstTermIndexInLog.getTerm();
+      final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
 
-        // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
-        // knows which log entries have been consumed by this install. A full state-machine install
-        // brings EVERY present database to the snapshot point, so record the snapshot index for each
-        // of them too (not just the global position) - this keeps the per-database bootstrap
-        // replay-skip honest after a full resync (issue #4824).
-        lastAppliedIndex.set(snapshotIndex);
-        updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
-        writePersistedAppliedIndexForAllDatabases(snapshotIndex);
-        // The install brought every database up to the snapshot point, so any read floor an earlier
-        // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
-        // re-checks against the restored state instead of the floor (issue #6111).
-        clearStaleSnapshotFloor();
+      // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
+      // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
+      // registerSnapshotMarker() writes the empty marker file and updates the latest-snapshot
+      // reference; see its javadoc for why a file-less, null-digest marker is safe for ArcadeDB.
+      if (!registerSnapshotMarker(snapshotTerm, snapshotIndex))
+        throw new IOException("Failed to register snapshot marker at index " + snapshotIndex);
 
-        // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
-        // leader-driven snapshot install advances the applied index without going through
-        // applyTransaction(), the only other notifyApplied() call site (issue #5846).
-        final RaftHAServer raftHA = this.raftHAServer;
-        if (raftHA != null)
-          raftHA.notifyApplied();
+      // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
+      // knows which log entries have been consumed by this install. A full state-machine install
+      // brings EVERY present database to the snapshot point, so record the snapshot index for each
+      // of them too (not just the global position) - this keeps the per-database bootstrap
+      // replay-skip honest after a full resync (issue #4824).
+      lastAppliedIndex.set(snapshotIndex);
+      updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
+      writePersistedAppliedIndexForAllDatabases(snapshotIndex);
+      // The install brought every database up to the snapshot point, so any read floor an earlier
+      // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
+      // re-checks against the restored state instead of the floor (issue #6111).
+      clearStaleSnapshotFloor();
 
-        LogManager.instance().log(this, Level.INFO,
-            "HA resync finished (mode=snapshot, result=ok): snapshotIndex=%d", snapshotIndex);
-        clearDivergedState();
-        return installedTermIndex;
+      // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
+      // leader-driven snapshot install advances the applied index without going through
+      // applyTransaction(), the only other notifyApplied() call site (issue #5846).
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null)
+        raftHA.notifyApplied();
 
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
-        throw new RuntimeException("Error during Raft snapshot installation", e);
-      } finally {
-        if (acquiredSnapshotFlag)
-          snapshotDownloadInProgress.set(false);
-      }
-    });
+      LogManager.instance().log(this, Level.INFO,
+          "HA resync finished (mode=snapshot, result=ok): snapshotIndex=%d", snapshotIndex);
+      clearDivergedState();
+      return installedTermIndex;
+
+    } catch (final SnapshotRefusedException e) {
+      // A refusal is the expected, retried outcome this guard exists to produce, not a fault: Ratis re-drives
+      // the install, so on a misconfigured cluster - or in the window right after an election, before the
+      // leader-role flag catches up - it fires on every attempt. Logged at WARNING and without a stack trace,
+      // like the same refusal on the two request-driven paths; a SEVERE per retry would trip log-based alerting
+      // for a guard that is working as designed.
+      LogManager.instance().log(this, Level.WARNING, SNAPSHOT_INSTALL_REFUSED + "%s", e.reason());
+      throw new RuntimeException("Error during Raft snapshot installation", e);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
+      throw new RuntimeException("Error during Raft snapshot installation", e);
+    } finally {
+      // Released in this order on purpose: the flag is the broader signal - isSnapshotDownloadPending() feeds the
+      // HealthMonitor's decision not to start anything - so it must not read false while this install still holds
+      // the lock. The converse window it leaves (lock free, flag still true) costs a concurrent request one folded
+      // attempt, which the next retryUnfilledSnapshotGap() tick re-drives; swapping the two would only move the
+      // window, not close it, and would move it to the side where something new can be started under a held lock.
+      snapshotDownloadLock.unlock();
+      if (acquiredSnapshotFlag)
+        snapshotDownloadInProgress.set(false);
+    }
+  }
+
+  /** Prefix of both the refusal exception's message and the WARNING it is logged with. */
+  private static final String SNAPSHOT_INSTALL_REFUSED = "Refusing a leader-initiated snapshot install: ";
+
+  /**
+   * A snapshot resync that {@link #resolveSnapshotSource} refused before it started. A distinct type only so the
+   * install path can tell it apart from a genuine installation failure in its catch chain and log it at the
+   * severity its disposition deserves - the two request-driven paths return rather than throw, and never had to
+   * make the distinction.
+   */
+  private static final class SnapshotRefusedException extends IllegalStateException {
+    private final String reason;
+
+    private SnapshotRefusedException(final String reason) {
+      super(SNAPSHOT_INSTALL_REFUSED + reason);
+      this.reason = reason;
+    }
+
+    /** The refusal on its own, so the log line can carry a literal prefix rather than a fully formatted message. */
+    String reason() {
+      return reason;
+    }
   }
 
   public long getElectionCount() {
@@ -1843,7 +1954,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       }
 
-      final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
+      // Same refusals as every other path that pulls a snapshot, through the same helper (issue #6202): a
+      // derived address that names this node would "restore" the local copy from itself and report success,
+      // which is worse than the failure the caller already handles below.
+      final SnapshotSource source = resolveSnapshotSource(raftHAServer.getLeaderId());
+      if (source.refused())
+        throw new RuntimeException("Cannot reinstall database '" + databaseName + "' from the leader: "
+            + source.refusal());
+
+      final String leaderHttpAddr = source.httpAddress();
       final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       try {
@@ -2070,10 +2189,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // failed bootstrap install never leaves the database closed.
       final RaftHAServer raft = raftHAServer;
       final String clusterToken = raft != null ? raft.getClusterToken() : null;
+      // Resolved through the same guard as every other snapshot pull: the supplier answers null - which
+      // install() treats as "no leader to pull from" and retries - rather than handing back an address that
+      // names this node or no single peer (issue #6202).
       SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-          () -> raft != null ? raft.getLeaderHttpAddress() : null,
-          () -> raft != null ? raft.getLeaderHttpsAddress() : null,
-          clusterToken, server);
+          this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
     } catch (final IOException e) {
@@ -2110,21 +2230,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new ReplicationException("Cannot resync database '" + dbName
           + "' on the leader: the leader holds the authoritative copy. Run the resync on the diverged follower.");
 
-    if (raft.getLeaderHttpAddress() == null)
-      throw new ReplicationException("Cannot resync database '" + dbName
-          + "': the leader is currently unknown (election in progress?). Retry once a leader is elected.");
+    final SnapshotSource source = resolveSnapshotSource(raft.getLeaderId());
+    if (source.refused())
+      // The two checks this path used to make by hand (is this the leader, is the address known) are two of the
+      // three the helper makes, and the third - an address that identifies no single peer - is the one an
+      // operator most needs told about before a database is replaced (issue #6202).
+      throw new ReplicationException("Cannot resync database '" + dbName + "': " + source.refusal());
 
     LogManager.instance().log(this, Level.WARNING,
         "Operator-triggered resync of database '%s' from leader: dropping local copy and re-acquiring full snapshot", dbName);
 
     try {
-      // Resolve the leader address on each retry (it can change mid-operation if leadership moves).
+      // Resolve the leader address on each retry (it can change mid-operation if leadership moves) - and re-guard
+      // it on each retry with it, or the refusal above is a point-in-time check that a later attempt walks
+      // straight past onto this node's own address (issue #6202). The check above is still worth making: it turns
+      // an already-doomed request into an immediate, descriptive refusal instead of a failed download.
       // install() keeps the local copy open and serving during the download and only closes + swaps
       // once a complete snapshot is on disk, rolling back on failure. A failed resync therefore never
       // leaves the database closed (the cause of the operator-visible DatabaseIsClosedException).
       final String clusterToken = raft.getClusterToken();
       SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-          raft::getLeaderHttpAddress, raft::getLeaderHttpsAddress, clusterToken, server);
+          this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
     } catch (final IOException e) {
       throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
@@ -2536,24 +2662,136 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return raftDir != null ? raftDir.resolve("bootstrap-baselines") : null;
   }
 
+  /**
+   * The HTTP address a snapshot resync may pull from, or the reason it may not. Exactly one field is set.
+   *
+   * @param httpAddress the leader's HTTP endpoint, when the resync may proceed
+   * @param refusal     why it may not, phrased to be logged after "Refusing a snapshot resync: "
+   */
+  private record SnapshotSource(String httpAddress, String refusal) {
+    static SnapshotSource refuse(final String reason) {
+      return new SnapshotSource(null, reason);
+    }
+
+    boolean refused() {
+      return refusal != null;
+    }
+  }
+
+  /**
+   * Answers whether a snapshot resync from {@code leaderId} may be attempted, and with which address.
+   * <p>
+   * Every resync path asks it - the manual {@link #triggerSnapshotDownload()}, the targeted
+   * {@code triggerDatabaseResync(String)} and the Ratis-initiated {@link #notifyInstallSnapshotFromLeader} -
+   * because a resync that pulls from the wrong node is not recoverable and not even visible: the reconcile
+   * succeeds, the install is recorded, and the node returns to the ready set carrying whatever it copied. The
+   * Ratis-initiated path had none of these checks at all (issue #6202), and duplicating them would have made a
+   * fourth hand-maintained copy of a rule the first three already disagreed about.
+   * <p>
+   * Three refusals:
+   * <ul>
+   * <li><b>This node is the leader.</b> A node cannot repair itself from itself. {@code notifyLeaderChanged()}
+   * submits a resync unconditionally - including on the node that just WON the election - and the leader address
+   * then resolves to this node's own, so the "download" would copy this node's already-incomplete databases back
+   * onto themselves and report success. That is merely pointless on some paths, but it lets
+   * {@link #resolveStaleSnapshotFloorAfterResync} durably record the marker index as applied and drop the read
+   * floor, re-opening issue #6111 and surviving restarts.</li>
+   * <li><b>No address identifies the leader on its own.</b> With no {@code http} port declared in
+   * {@code HA_SERVER_LIST} a peer's address is derived from its Raft host plus THIS node's HTTP port, so on a
+   * cluster whose nodes differ by port rather than by host every peer collapses onto one address and it names at
+   * most one of them. {@link RaftHAServer#getUnambiguousPeerHttpAddress} withholds an address two peers claim -
+   * the ambiguity check the client-routing tables already make (issue #6183), which belongs here more, because
+   * here a confidently wrong address does durable damage rather than costing one redirect.</li>
+   * <li><b>The address is this node's own.</b> The backstop for the first refusal: leadership can move between
+   * the two checks, and {@code getLeaderId()} can already report this node while {@code isLeader()} has not
+   * caught up. The same comparison the write-forwarding path makes before it dials a resolved leader address, so
+   * the two cannot drift apart (issue #6191).</li>
+   * </ul>
+   * Refusing leaves the node visibly behind - the floor stands, {@link #isResyncInProgress()} keeps it out of the
+   * ready set, reads keep failing honestly - which is the state it is actually in. Ratis retries the install and
+   * the {@link HealthMonitor} re-arms the manual path, so a refusal is not a dead end either.
+   */
+  private SnapshotSource resolveSnapshotSource(final RaftPeerId leaderId) {
+    // Read once into a local: the field is volatile and a teardown can null it between two reads, which would
+    // turn a refusal into a NullPointerException on the install path.
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return SnapshotSource.refuse("the HA server is not available on this node");
+
+    if (raftHA.isLeader())
+      return SnapshotSource.refuse("this node is the leader, so there is no peer to pull from. "
+          + "The request stays pending until leadership moves elsewhere (issue #6111)");
+
+    if (leaderId == null)
+      return SnapshotSource.refuse("the leader is unknown");
+
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(leaderId);
+    if (leaderHttpAddr == null)
+      return SnapshotSource.refuse("no HTTP address identifies leader " + leaderId + " on its own - it is either "
+          + "unresolvable or shared with another peer, and reconciling databases from the wrong node cannot be "
+          + "undone. Declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
+          + " (issue #6202)");
+
+    // Resolved once and compared once: reading it twice would let the two comparisons disagree.
+    final String localHttpAddr = raftHA.getLocalHttpAddress();
+    if (localHttpAddr == null)
+      // The resolver degrades to null when this node's own HTTP endpoint cannot be resolved right now. The check
+      // below then cannot fire, so say so rather than letting the backstop no-op invisibly: only the leader-role
+      // check is standing between us and a self-download.
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot resolve this node's own HTTP address; the self-resync address check is inactive for this "
+              + "attempt and only the leader-role check guards it (issue #6111)");
+    else if (RaftHAServer.isSameHttpEndpoint(localHttpAddr, leaderHttpAddr))
+      return SnapshotSource.refuse("the resolved leader address " + leaderHttpAddr + " is this node's own. "
+          + "The request stays pending until a peer holds the leadership (issue #6111)");
+
+    return new SnapshotSource(leaderHttpAddr, null);
+  }
+
+  /**
+   * The leader's HTTP address when a snapshot may be pulled from it, {@code null} when it may not. The
+   * supplier-shaped form of {@link #resolveSnapshotSource}, for the {@code SnapshotInstaller.install} overloads
+   * that re-resolve the address on every download attempt.
+   * <p>
+   * Guarding the call site once is not enough for those: the whole reason they take a supplier is that leadership
+   * can move mid-operation, and an up-front check says nothing about the address attempt 3 will resolve. Every
+   * attempt asks again (issue #6202).
+   * <p>
+   * This is the arm that logs the refusal - see {@link #guardedLeaderHttpsAddress()} for why that is exactly one
+   * line per attempt whether or not SSL is on.
+   */
+  private String guardedLeaderHttpAddress() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return null;
+    final SnapshotSource source = resolveSnapshotSource(raftHA.getLeaderId());
+    if (source.refused()) {
+      LogManager.instance().log(this, Level.WARNING, "Refusing to pull a snapshot: %s", source.refusal());
+      return null;
+    }
+    return source.httpAddress();
+  }
+
+  /**
+   * The leader's HTTPS address under the same guard, or {@code null}. Needed as well as the HTTP arm because
+   * {@code downloadWithRetry} prefers the HTTPS endpoint when SSL is enabled and only falls back to the HTTP one
+   * when it comes back null - so guarding HTTP alone would leave the guard unreachable on an SSL cluster.
+   * <p>
+   * Silent by design, which is what keeps the pair to one log line per attempt: a refusal makes this return null,
+   * and the caller then consults the HTTP arm, which logs. When it does NOT refuse there is nothing to log, and
+   * the HTTP arm is not consulted at all.
+   */
+  private String guardedLeaderHttpsAddress() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || resolveSnapshotSource(raftHA.getLeaderId()).refused())
+      return null;
+    return raftHA.getLeaderHttpsAddress();
+  }
+
   // @VisibleForTesting
   void triggerSnapshotDownload() {
     if (raftHAServer == null || server == null)
       return;
-    // A node cannot repair itself from itself. notifyLeaderChanged() submits this unconditionally -
-    // including on the node that just WON the election - and getLeaderHttpAddress() then resolves to
-    // this node's own HTTP address, so the "download" would copy this node's already-incomplete
-    // databases back onto themselves and report success. That is merely pointless on the pre-existing
-    // paths, but it would let resolveStaleSnapshotFloorAfterResync() durably record the marker index as
-    // applied and drop the read floor, re-opening issue #6111 on a leader and surviving restarts.
-    // Refuse instead: the floor stands, isResyncInProgress() keeps the node out of the ready set, and
-    // reads keep failing honestly until leadership moves to a peer that actually holds the entries.
-    if (raftHAServer.isLeader()) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Refusing a snapshot resync: this node is the leader, so there is no peer to pull from. "
-              + "The request stays pending until leadership moves elsewhere (issue #6111)");
-      return;
-    }
     // Single-flight guard: multiple recovery paths (reinitialize watchdog, notifyLeaderChanged,
     // stale-follower recovery from the HealthMonitor) can request a download. Only one may run at
     // a time; concurrent requests are dropped. The flag also feeds isSnapshotDownloadPending() so
@@ -2567,51 +2805,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
     try {
-      final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
-      if (leaderHttpAddr == null) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot trigger snapshot download: leader HTTP address unknown");
+      // A leader-initiated install holds the lock without owning the flag when it lost the CAS, so the flag alone
+      // does not prove nothing is running. Folded rather than awaited: this runs on the single-threaded
+      // lifecycleExecutor, which must not be parked for the length of a download (issue #6202).
+      if (!snapshotDownloadLock.tryLock()) {
+        LogManager.instance().log(this, Level.INFO,
+            "Snapshot resync already in progress (leader-initiated install); folding this request into it");
         return;
       }
-      // Backstop for the isLeader() check above: leadership can move between the two, and getLeaderId()
-      // can already report this node while isLeader() has not caught up. Compare the addresses too, so
-      // a self-download is impossible on either side of that window (issue #6111).
-      // Resolved once and compared once: the same question the write-forwarding path asks before it dials a
-      // resolved leader address, through the same comparison so the two cannot drift apart (issue #6191).
-      final String localHttpAddr = raftHAServer.getLocalHttpAddress();
-      if (localHttpAddr == null)
-        // The resolver degrades to null when this node's own HTTP endpoint cannot be resolved right now.
-        // The check below then cannot fire, so say so rather than letting the backstop no-op invisibly:
-        // only the isLeader() check above is standing between us and a self-download.
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot resolve this node's own HTTP address; the self-resync address check is inactive for this "
-                + "attempt and only the leader-role check guards it (issue #6111)");
-      if (RaftHAServer.isSameHttpEndpoint(localHttpAddr, leaderHttpAddr)) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Refusing a snapshot resync: the resolved leader address %s is this node's own. "
-                + "The request stays pending until a peer holds the leadership (issue #6111)", leaderHttpAddr);
-        return;
-      }
-      final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
-      final String clusterToken = raftHAServer.getClusterToken();
-      int resynced = 0;
-      for (final String dbName : server.getDatabaseNames()) {
-        // install() keeps the database open during the download and rolls back on failure, so a
-        // watchdog-triggered resync never leaves it closed.
-        if (server.existsDatabase(dbName)) {
-          SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-              leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
-          resynced++;
+      try {
+        final SnapshotSource source = resolveSnapshotSource(raftHAServer.getLeaderId());
+        if (source.refused()) {
+          LogManager.instance().log(this, Level.WARNING, "Refusing a snapshot resync: %s", source.refusal());
+          return;
         }
+        final String leaderHttpAddr = source.httpAddress();
+        downloadAllDatabasesFrom(leaderHttpAddr);
+      } finally {
+        snapshotDownloadLock.unlock();
       }
-      LogManager.instance().log(this, Level.INFO,
-          "Snapshot resync completed: reinstalled %d database(s) from the leader; diverged state cleared", resynced);
-      clearDivergedState();
-      // The databases now carry the leader's state, so a read floor published by a stale marker in
-      // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
-      // without it the very same gap is re-detected on the next restart and the node re-downloads
-      // forever. Then wake the waiters this resync unblocked (issue #6111).
-      resolveStaleSnapshotFloorAfterResync(resynced);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Snapshot resync failed", e);
       // The node is still short of the entries the marker claims, so the read floor stays and the
@@ -2625,6 +2837,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } finally {
       snapshotDownloadInProgress.set(false);
     }
+  }
+
+  /**
+   * Reinstalls every present database from {@code leaderHttpAddr} and resolves the state a full resync clears.
+   * The caller has already established that the address may be pulled from ({@link #resolveSnapshotSource}) and
+   * holds {@link #snapshotDownloadLock}.
+   */
+  private void downloadAllDatabasesFrom(final String leaderHttpAddr) throws IOException {
+    final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+    final String clusterToken = raftHAServer.getClusterToken();
+    int resynced = 0;
+    for (final String dbName : server.getDatabaseNames()) {
+      // install() keeps the database open during the download and rolls back on failure, so a
+      // watchdog-triggered resync never leaves it closed.
+      if (server.existsDatabase(dbName)) {
+        SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+            leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        resynced++;
+      }
+    }
+    LogManager.instance().log(this, Level.INFO,
+        "Snapshot resync completed: reinstalled %d database(s) from the leader; diverged state cleared", resynced);
+    clearDivergedState();
+    // The databases now carry the leader's state, so a read floor published by a stale marker in
+    // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
+    // without it the very same gap is re-detected on the next restart and the node re-downloads
+    // forever. Then wake the waiters this resync unblocked (issue #6111).
+    resolveStaleSnapshotFloorAfterResync(resynced);
   }
 
   /**
@@ -2694,7 +2934,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return; // no unfilled gap
     if (snapshotDownloadInProgress.get())
       return; // one is genuinely running; it will clear the floor or re-arm the request
-    if (raftHA.getLeaderHttpAddress() == null)
+    // The same three questions resolveSnapshotSource() asks, so this cheap precheck cannot pass a request the
+    // resync would then refuse and burn a throttle slot doing it (issue #6202): the leader role is checked at the
+    // top of this method, and the resolved address must both identify a single peer and not be our own. Asked
+    // through the same two helpers rather than restated, and without resolveSnapshotSource() itself, whose
+    // unresolvable-local-address WARNING belongs to an attempt rather than to a HealthMonitor tick. When the
+    // local address cannot be resolved isOwnHttpAddress answers false, so the request goes through and that
+    // warning is emitted once by the resync, which is where it is actionable.
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId());
+    if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
       return; // nowhere to download from yet; notifyLeaderChanged() drives the first attempt
 
     final long now = System.currentTimeMillis();
@@ -2750,22 +2998,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
           return;
         }
         try {
-          final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
-          if (leaderHttpAddr == null) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Cannot resync quarantined database '%s': leader HTTP address unknown", dbName);
+          if (!snapshotDownloadLock.tryLock()) {
+            HALog.log(this, HALog.BASIC,
+                "Snapshot download already in progress (leader-initiated install), skipping targeted resync of '%s'",
+                dbName);
             return;
           }
-          final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
-          final String clusterToken = raftHAServer.getClusterToken();
-          // install() keeps the database open during the download and rolls back on failure, so a
-          // targeted resync never leaves it closed.
-          if (server.existsDatabase(dbName)) {
-            SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-                leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
-            LogManager.instance().log(this, Level.INFO,
-                "Targeted snapshot resync of quarantined database '%s' completed", dbName);
-            clearDivergedDatabase(dbName);
+          try {
+            // Same refusals as the two full-resync paths, through the same helper: a targeted resync reinstalls a
+            // whole database from the resolved address, so an address naming this node or the wrong peer does the
+            // same durable damage here (issue #6202).
+            final SnapshotSource source = resolveSnapshotSource(raftHAServer.getLeaderId());
+            if (source.refused()) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Refusing a targeted snapshot resync of quarantined database '%s': %s", dbName, source.refusal());
+              return;
+            }
+            final String leaderHttpAddr = source.httpAddress();
+            final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+            final String clusterToken = raftHAServer.getClusterToken();
+            // install() keeps the database open during the download and rolls back on failure, so a
+            // targeted resync never leaves it closed.
+            if (server.existsDatabase(dbName)) {
+              SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+                  leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+              LogManager.instance().log(this, Level.INFO,
+                  "Targeted snapshot resync of quarantined database '%s' completed", dbName);
+              clearDivergedDatabase(dbName);
+            }
+          } finally {
+            snapshotDownloadLock.unlock();
           }
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE,
@@ -2908,6 +3170,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public void close() throws IOException {
     lifecycleExecutor.shutdownNow();
+    snapshotInstallExecutor.shutdownNow();
     deferredDatabaseDeleter.close();
     super.close();
   }

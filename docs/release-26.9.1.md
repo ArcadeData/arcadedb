@@ -1812,3 +1812,101 @@ discriminator, so a JVM with several open databases got several identically name
 not say which was which. The database name is now part of it.
 
 [#6203](https://github.com/ArcadeData/arcadedb/issues/6203)
+
+## A retryable conflict raised while a command runs is retried, and reported as retryable (#6201)
+
+`DatabaseAbstractHandler` runs `execute()` inside the engine's retrying transaction and converted **every**
+exception the handler raised into a `TransactionException`. Two dispatchers key on the exception type, and the
+wrapper broke both.
+
+`LocalDatabase.transaction(...)` decides what to retry with `catch (NeedRetryException | DuplicatedKeyException)`.
+A conflict raised while the command ran - a `save()` losing an MVCC race, an index update hitting a concurrent
+key - arrived there already wrapped, matched neither arm, fell into the generic `catch (Throwable)` and
+propagated on the first attempt. Only a conflict detected by the wrapper's own `commit()` was ever retried, so
+the `retries` a client asks for had no effect on most of the conflict surface.
+
+The HTTP error mapping keys on the type too, and the wrapped arm had no `NeedRetryException` branch, so the same
+conflict was answered `500 "Error on transaction commit"` - which names neither the reason nor that the write can
+be re-driven. `PostBatchHandler` documents the contract the other way round ("NeedRetryException -> 503, security
+-> 403, RecordNotFoundException -> 404, ... are left to the base handler"), and that was true only when no
+transaction wrapper was active. A client whose retry policy keys on 503 gave up on a write that would have
+succeeded on retry.
+
+The wrapper now rethrows a `RuntimeException` unchanged and wraps only the checked exceptions
+`TransactionScope.execute()` cannot declare. Every ArcadeDB exception is unchecked, so both dispatchers see the
+type they dispatch on.
+
+**The mapping itself is now written once.** It was three hand-written `instanceof` chains - one for an exception
+that reached the boundary as itself, one inside the `CommandExecutionException` arm and one inside the
+`TransactionException` arm - and every mapping added since had to be added to each separately: #4350 (duplicated
+key), #5064/#5075 (committed remotely), #5191 (parsing), #5219, #5602 (arithmetic), #5935 (malformed JSON), #6191
+(not the leader). The half that was missed each time took a second issue to notice, and #6201 is that second
+issue for `NeedRetryException` and `RecordNotFoundException`. A single ordered classification, applied to the
+exception and - for the generic wrappers only - to its cause, closes those two and every other asymmetry at once:
+a wrapped `IllegalArgumentException`, a wrapped `ServerSecurityException` and a wrapped `HttpSessionException`
+were each mapped by one or two of the three chains and not the rest. `Issue6201ErrorStatusParityTest` pins the
+property rather than the arms - the same exception raised inside and outside the wrapper must answer the same
+status - so a mapping added to one branch and not another fails there rather than in a future issue.
+
+One nuance the three chains had disagreed on is now stated rather than inherited: a `CommandExecutionException`
+that nothing more specific matched is reported *as itself*, because the engine raises it to say what failed
+("Backup failed for database 'x' to directory 'y'") and its cause is often just plumbing; a `TransactionException`
+is reported *as its cause*, because that wrapper is put on by the plumbing and its message says nothing the
+status label does not. Neither loses information - the error body's `detail` field renders the whole cause chain
+either way.
+
+[#6201](https://github.com/ArcadeData/arcadedb/issues/6201)
+
+## The Ratis-initiated snapshot install makes the refusals the manual one makes (#6202)
+
+`ArcadeStateMachine` pulls a database snapshot from the leader on **six** paths, and only the manual one
+(`triggerSnapshotDownload()`) checked what it was about to dial. The other five resolved an address and dialled
+it with no check, or with only part of one:
+
+| Path | Guarded before |
+|---|---|
+| `triggerSnapshotDownload()` - watchdog / leader change / persistent-lag recovery | leader role + self address (#6111) |
+| `notifyInstallSnapshotFromLeader()` - the Ratis-initiated install, when a follower's log is behind the leader's compacted log | nothing |
+| `triggerDatabaseResync(String)` - targeted resync of one quarantined database | nothing |
+| `applyInstallDatabaseEntry` - the `forceSnapshot` restore flow | leader role only |
+| `installFromLeaderForBootstrap` - the bootstrap-fingerprint-mismatch reinstall | nothing |
+| `resyncDatabaseFromLeader` - operator-triggered emergency recovery | leader role + address known |
+
+The address is only as good as the configuration behind it. With no `http` port declared in
+`arcadedb.ha.serverList` a peer's HTTP endpoint is derived from that peer's Raft host plus **this** node's HTTP
+port, so on a cluster whose nodes share a host - several nodes on one machine, a compose file, a developer laptop
+- every peer collapses onto this node's own endpoint, and on a cluster with mixed ports it can name the wrong
+peer. Neither outcome reported an error: `reconcileDatabasesFromLeader` succeeded, the install was recorded, the
+stale-read floor of #6111 was dropped, and the node returned to the ready set carrying whatever it had copied -
+its own incomplete databases, or a peer's that is itself behind.
+
+The two paths that re-resolve the address on **every download attempt** - `SnapshotInstaller.install` takes
+address suppliers precisely because leadership can move mid-operation - re-guard it on every attempt too, through
+both the HTTP and the HTTPS supplier. Guarding only the call site would leave the refusal a point-in-time check
+that attempt 3 walks straight past, and guarding only HTTP would leave it unreachable on an SSL cluster, where
+`downloadWithRetry` prefers the HTTPS endpoint and only falls back to HTTP when it comes back null.
+
+All six now ask one helper, so they cannot drift apart, and it refuses three things rather than two: this
+node being the leader, an address that is this node's own, and **an address that does not identify a single
+peer**. The last is the ambiguity check `selectUnambiguousRouting` makes for client routing tables (#6183),
+applied where it matters more - a confidently wrong routing address costs one redirect, a confidently wrong
+snapshot source cannot be undone. Refusing leaves the follower out of the ready set and visibly behind, which is
+the state it is actually in; Ratis retries the install and the `HealthMonitor` re-arms the manual path.
+
+Two things the same method carried:
+
+- The install ran on the JDK common `ForkJoinPool` (`CompletableFuture.supplyAsync` with no executor), against
+  the rule at the head of `QueryEngineManager`'s class javadoc - that pool is shared with Gremlin and Polyglot
+  user code and with JDK internals, and a snapshot install is a full database download, the longest-running thing
+  the HA layer does. It has a dedicated single-worker executor now (`arcadedb-raft-snapshot-install`), with a
+  bounded queue and an abort policy turned into a failed future: caller-runs would put the download back on the
+  Ratis thread the offload exists to protect.
+- The single-flight `AtomicBoolean` did not serialise. The install proceeds when it *loses* the CAS - standing
+  down would report an install it never performed - so it could run concurrently with a request-driven resync
+  over one set of database directories. That was argued benign because both pull from the same leader and
+  `SnapshotInstaller` swaps atomically, but the argument is about today's installer and would outlive whoever
+  remembers it. A lock states the exclusion instead: the install waits for it (it owns its thread now), while the
+  request-driven paths fold into whatever holds it, exactly as they already fold into a lost CAS rather than
+  parking the single-threaded lifecycle executor.
+
+[#6202](https://github.com/ArcadeData/arcadedb/issues/6202)

@@ -50,14 +50,14 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // thread IT) ran in the same shared, reused JVM fork (failsafe reuseForks=true/forkCount=1 for the
   // whole module). Both stalls were confirmed real via the test's own embedded log timestamps, not a
   // log-flush artifact. Not reproducible locally in isolation, nor under an emulated 4-CPU/3.9GB-heap
-  // constraint matching the CI runner - only in the full-suite adjacency. The project's own
-  // engine-concurrency skill documents ArcadeStateMachine.notifyInstallSnapshotFromLeader as a
-  // not-yet-migrated user of the JDK common ForkJoinPool, which is also shared with JDK GC/reference
-  // handler internals - exactly the "long-running [GC-heavy] work starves engine work" failure shape
-  // this looks like. This bump is a mitigation, not a fix: it only widens the ceiling on the rare
-  // stalled path (withResyncRetry()/awaitValue()/awaitCountOn() all return as soon as the condition
-  // is met), while the real fix - isolating heavy ITs into their own fork, or migrating the common-
-  // pool caller - is tracked as a follow-up rather than attempted here.
+  // constraint matching the CI runner - only in the full-suite adjacency. The suspected cause was
+  // ArcadeStateMachine.notifyInstallSnapshotFromLeader running its download on the JDK common
+  // ForkJoinPool, which is also shared with JDK GC/reference handler internals - exactly the
+  // "long-running [GC-heavy] work starves engine work" failure shape this looks like. That caller has
+  // its own executor since issue #6202, so half of the suspicion is gone; the timeout stays until a
+  // CI run shows it can come down, and the other half of the fix - isolating heavy ITs into their own
+  // fork - is still a follow-up. The bump costs nothing when nothing stalls: withResyncRetry(),
+  // awaitValue() and awaitCountOn() all return as soon as the condition is met.
   private static final long RESYNC_RETRY_TIMEOUT_MS = 120_000;
 
   /**
