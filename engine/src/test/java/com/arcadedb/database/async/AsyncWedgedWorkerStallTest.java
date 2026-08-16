@@ -21,6 +21,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 import com.arcadedb.exception.DatabaseOperationException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -79,14 +80,13 @@ class AsyncWedgedWorkerStallTest extends TestHelper {
       for (int i = 0; i < 2; i++)
         assertThat(async.scheduleTask(0, noOpTask(), false, 0)).isTrue();
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       assertThatThrownBy(() -> async.scheduleTask(0, noOpTask(), true, 0))
           .as("a producer must not hang forever on a worker wedged in user code")
           .isInstanceOf(DatabaseOperationException.class)
           .hasMessageContaining("stalled");
-      assertThat(System.currentTimeMillis() - start)
-          .as("the backstop must fire after the configured no-progress bound, not the wedge duration")
-          .isLessThan(10_000);
+      stopwatch.assertGaveUpWithin(10_000,
+          "the backstop firing after the configured no-progress bound from a producer that waits out the wedge");
     } finally {
       release.countDown();
     }
