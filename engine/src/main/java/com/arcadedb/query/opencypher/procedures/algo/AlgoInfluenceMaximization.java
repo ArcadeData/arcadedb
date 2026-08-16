@@ -125,6 +125,11 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
         // Simulate IC spread from seeds ∪ {candidate}
         double totalSpread = 0.0;
         for (int sim = 0; sim < simulations; sim++) {
+          // Deliberately the unthrottled check(), not checkPeriodically(), unlike node2vec's and maxKCut's
+          // inner loops. Throttling pays off only where one iteration can be cheaper than the check itself,
+          // and simulateIC allocates and zero-fills two arrays of size n before the cascade starts, so it is
+          // never O(1) on any graph shape. Throttling to 1024 would instead make abort latency
+          // 1024 x O(n + m) cascades, worst on exactly the large graphs where the deadline matters most.
           guard.check();
           totalSpread += simulateIC(adj, seeds, round, candidate, n, propagationProbability, rng);
         }

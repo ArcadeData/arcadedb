@@ -400,6 +400,12 @@ class Issue6216AlgoWorkKnobBoundsTest {
     // in place and 24.0 s with it removed, so 5 s sits roughly 16x above the passing case and 5x below the
     // failing one. Wide enough not to be a stopwatch on a slow machine, tight enough that it cannot pass
     // while the sampling loop is unabortable.
+    //
+    // A latency assertion is the CI-flakiest shape there is, so the margins are what matter: both numbers
+    // scale together on a slower runner, and it takes a machine 15x slower than the reference to make the
+    // passing case reach 5 s (where the failing case would be at 360 s), or 5x faster to bring the failing
+    // case under it. If it ever does flake, raise the bound rather than dropping the assertion - "it throws"
+    // alone passes with the checkpoint removed, which is how the first version of this test was wrong.
     assertThat(elapsed).as("the deadline must be observed inside the sampling loop, not after it")
         .isLessThan(5_000L);
   }

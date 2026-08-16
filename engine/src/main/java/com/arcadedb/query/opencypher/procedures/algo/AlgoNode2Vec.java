@@ -135,6 +135,9 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     // A context window wider than the walk already spans the whole walk, so clamping it changes no result.
     // Without the clamp `pos + window` wraps int for a large windowSize, leaving winEnd below winStart: the
     // Skip-gram inner loop then never runs and the procedure quietly returns untrained embeddings.
+    // The ceiling is walkLen and not walkLen - 1 on purpose: winStart and winEnd are clamped to
+    // [0, walkLen - 1] anyway, so the tighter bound buys nothing and would send windowSize to 0 at
+    // walkLength 1, below the minimum of 1 the extraction above enforces.
     final int window = Math.min(rawWindow, walkLen);
 
     // ── Phase 1: Generate biased random walks ──────────────────────────────
@@ -182,22 +185,31 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     // W: input embeddings, WCtx: context embeddings
     final double[][] W = new double[n][dim];
     final double[][] WCtx = new double[n][dim];
-    // Xavier initialisation for W
+    // Xavier initialisation for W.
+    // Every remaining O(nodeCount) / O(totalWalks) loop below carries a checkpoint too. "Bounded by the walk
+    // budget" is not a time bound for any of them: the budget is tunable and accepts a negative value meaning
+    // no limit, in which case totalWalks is capped only by Integer.MAX_VALUE - the same reasoning that put a
+    // checkpoint in algo.randomWalk's step loop.
     final double scale = 1.0 / Math.sqrt(dim);
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       for (int d = 0; d < dim; d++)
         W[i][d] = (rng.nextDouble() * 2.0 - 1.0) * scale;
+    }
     // WCtx initialised to zero (standard word2vec)
 
     // Walk index array for shuffling
     final int[] walkOrder = new int[totalWalks];
-    for (int i = 0; i < totalWalks; i++)
+    for (int i = 0; i < totalWalks; i++) {
+      guard.checkPeriodically(i);
       walkOrder[i] = i;
+    }
 
     final double[] grad = new double[dim]; // accumulated gradient for center node
     for (int epoch = 0; epoch < epochs; epoch++) {
       // Shuffle walk order
       for (int i = totalWalks - 1; i > 0; i--) {
+        guard.checkPeriodically(i);
         final int j = rng.nextInt(i + 1);
         final int tmp = walkOrder[i];
         walkOrder[i] = walkOrder[j];
