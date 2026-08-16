@@ -92,10 +92,13 @@ public class MaterializedViewRefresher {
    * Replaces the backing type's contents with the defining query's rows, as ONE transaction.
    * <p>
    * The {@code TRUNCATE TYPE ... UNSAFE} this used to start with is gone, and that is the whole point (issue #6203).
-   * {@code TRUNCATE} commits the caller's transaction from the inside - {@code schema.dropIndex()} for every index on
-   * the backing type before a single record is touched, then {@code commit(); begin()} once per
-   * {@code arcadedb.truncateBatchSize} records, then once more before it rebuilds the indexes it dropped - so the
-   * refresh was a sequence of committed transactions wearing the costume of one. Both consequences were silent:
+   * {@code TRUNCATE} committed the caller's transaction from the inside - {@code schema.dropIndex()} for every index
+   * on the backing type before a single record was touched, then {@code commit(); begin()} once per
+   * {@code arcadedb.truncateBatchSize} records, then once more before it rebuilt the indexes it dropped - so the
+   * refresh was a sequence of committed transactions wearing the costume of one. (The statement itself was fixed
+   * afterwards, in issue #6220: it now commits nothing when it runs inside a caller's transaction. The refresh does
+   * not go back to it, because writing the new rows over the old ones is a better fit for an indexed view than a
+   * clear-and-repopulate - see the last paragraph.) Both consequences were silent:
    * <ul>
    * <li>every other reader saw the view empty, or holding some prefix of the new rows, for the whole runtime of the
    * defining query - which for a view worth materialising is exactly the expensive case, and for a PERIODIC view is
