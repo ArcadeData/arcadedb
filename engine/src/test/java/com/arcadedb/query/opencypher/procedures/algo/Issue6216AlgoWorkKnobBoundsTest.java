@@ -123,6 +123,20 @@ class Issue6216AlgoWorkKnobBoundsTest {
   }
 
   @Test
+  void node2VecRejectsAWalkMatrixWhoseFootprintOverflowsEvenLongArithmetic() {
+    // Both knobs at Integer.MAX_VALUE put the byte estimate itself past a long: 4 nodes x 2147483647 walks
+    // of (36 + 4 x 2147483647) bytes each is about 7.4e19, against a long ceiling of 9.2e18. saturatingProduct
+    // has to saturate rather than wrap, because a wrapped estimate can come back small enough to pass the
+    // budget check - the precise failure the long arithmetic exists to prevent - and the message then says
+    // "over" the ceiling instead of quoting a figure it cannot represent.
+    assertThatThrownBy(
+        () -> drain("CALL algo.node2vec({walksPerNode: 2147483647, walkLength: 2147483647}) YIELD node RETURN node"))
+        .as("an estimate past Long.MAX_VALUE must saturate, never wrap into a passing value")
+        .hasStackTraceContaining("over " + Long.MAX_VALUE + " bytes")
+        .hasStackTraceContaining("walksPerNode=2147483647 x walkLength=2147483647 over 4 nodes");
+  }
+
+  @Test
   void node2VecRejectsMoreWalksThanAJavaArrayCanHoldEvenWithTheBudgetDisabled() {
     // The budget is what normally catches an oversized matrix, but the long product must still be refused on
     // its own account when the budget is switched off: 2^32 rows do not fit a Java array whatever the heap is.
