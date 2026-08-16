@@ -119,6 +119,19 @@ class Issue6151BoltSchemaProcedureTest {
   }
 
   @Test
+  @DisplayName("the combined query declines as a whole when any of its three calls carries an argument")
+  void theCombinedQueryDeclinesWhenOneCallCarriesAnArgument() {
+    final String query = "CALL db.labels() YIELD label RETURN collect(label) AS result "
+        + "UNION CALL db.relationshipTypes('unexpected') YIELD relationshipType "
+        + "RETURN collect(relationshipType) AS result "
+        + "UNION CALL db.propertyKeys() YIELD propertyKey RETURN collect(propertyKey) AS result";
+
+    // One bad call sends the whole batch to the engine: answering the other two here would hand back a
+    // result set for a query the engine would have rejected.
+    assertThat(serve(query)).isNull();
+  }
+
+  @Test
   @DisplayName("a call carrying arguments is left to the engine, which rejects it on arity")
   void aCallWithArgumentsIsLeftToTheEngine() {
     assertThat(serve("CALL db.labels('unexpected')")).isNull();

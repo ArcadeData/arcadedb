@@ -122,6 +122,9 @@ final class BoltSystemProcedures {
     if (propertyKeys)
       return serveOne(database, normalized, PROPERTY_KEYS);
 
+    // Defensive: the caller reaches here only through isSchemaProcedureQuery(), which tests the same three
+    // substrings, so no name can be missing. Kept so the two ever diverging declines the query rather than
+    // answering it with nothing.
     return null;
   }
 
