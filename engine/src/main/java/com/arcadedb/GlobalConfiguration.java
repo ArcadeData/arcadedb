@@ -474,10 +474,12 @@ public enum GlobalConfiguration {
       """
       Maximum amount of RAM (in MB) of dirty pages the page-flush thread may defer in memory while flushing \
       is suspended (during an HA snapshot ship or a full backup, when the on-disk files must stay stable). \
-      Once the deferred backlog crosses this cap the flush thread stops draining its bounded queue, so \
-      committing threads are throttled instead of the deferred backlog growing without limit and exhausting \
-      the heap (issue #4728: a busy leader shipping a multi-GB snapshot OOM'd). Set to 0 to disable the cap \
-      (unbounded, pre-4728 behavior).""",
+      Once the deferred backlog crosses this cap the committing threads of the SUSPENDED databases are \
+      throttled, instead of the deferred backlog growing without limit and exhausting the heap (issue #4728: \
+      a busy leader shipping a multi-GB snapshot OOM'd). The cap is JVM-wide because the heap it bounds is, \
+      but the throttling is not: a database that is not suspended is never held by it, since its pages go \
+      straight to disk and relieve the backlog rather than add to it (issue #6200). Set to 0 to disable the \
+      cap (unbounded, pre-4728 behavior).""",
       Long.class, 512),
 
   PAGE_SNAPSHOT_ENABLED("arcadedb.pageSnapshotEnabled", SCOPE.DATABASE,

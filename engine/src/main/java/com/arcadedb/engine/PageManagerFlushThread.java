@@ -24,6 +24,7 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
@@ -60,8 +61,31 @@ public class PageManagerFlushThread extends Thread {
   // its suspension window can never overlap the resume's page writes (issue #5068).
   private final        Set<Database>                                            resumingDatabases   = ConcurrentHashMap.newKeySet();
   private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
-  /** Poll interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)} for callers that expect to wait. */
+  /** Fallback wake-up interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)} - see {@link #flushWaitPollMillis}. */
   private final static long                                                     DEFAULT_FLUSH_WAIT_POLL_MILLIS = 10;
+  /**
+   * Fallback wake-up interval of the RESIDUAL drain, {@link #waitPendingPagesOfDatabaseUntil}. Deliberately shorter
+   * than the bulk one: that wait runs with the JVM-wide page-manager lock held, so its worst case - the interval
+   * itself, reached only if a drain notification is ever lost - is a stall of every committer in the process.
+   */
+  private final static long                                                     RESIDUAL_DRAIN_WAIT_POLL_MILLIS = 1;
+  /**
+   * Fallback wake-up interval of {@link #awaitDeferredBacklogUnderCap}. The release of the cap is signalled, so this
+   * only bounds how often a parked committer re-reads the conditions that are NOT signalled: its database ceasing to
+   * be suspended, and the shutdown flag.
+   */
+  private final static long                                                     DEFERRED_BACKLOG_WAIT_POLL_MILLIS = 100;
+  /** How long a committer may be held by the deferred-backlog cap before saying so, once, at WARNING. */
+  private final static long                                                     DEFERRED_BACKLOG_WARN_MILLIS      = 10_000;
+  /**
+   * Fallback wake-up interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)}, per instance so the
+   * regression test of issue #6199 can stretch it far enough to prove the wait is released by the drain
+   * notification of {@link FlushPageIndex#awaitDrain} and not by the interval elapsing.
+   * <p>
+   * Since #6199 this is NOT the latency of the wait: a drained pipeline wakes the waiter immediately. It only
+   * bounds how often the no-progress timeout below is re-evaluated, and how long a lost notification would cost.
+   */
+  long                                                                          flushWaitPollMillis = DEFAULT_FLUSH_WAIT_POLL_MILLIS;
   // Package-private so the white-box regression test for issue #5068 can fabricate an in-flight batch and
   // deterministically exercise an interrupt during waitForCurrentFlushToComplete.
   final                AtomicReference<PagesToFlush>                            nextPagesToFlush    = new AtomicReference<>();
@@ -89,8 +113,8 @@ public class PageManagerFlushThread extends Thread {
 
   /**
    * Maximum bytes of dirty pages that may sit deferred (in {@link #deferredByDatabase}) while flushing is
-   * suspended, before the flush thread stops draining its bounded queue and lets {@code scheduleFlushOfPages}
-   * throttle the committing threads. {@code 0} disables the cap (unbounded, pre-#4728 behavior).
+   * suspended, before the committing threads OF THE SUSPENDED DATABASES are throttled in
+   * {@link #awaitDeferredBacklogUnderCap}. {@code 0} disables the cap (unbounded, pre-#4728 behavior).
    */
   private final        long                                   maxDeferredRAM;
 
@@ -108,8 +132,45 @@ public class PageManagerFlushThread extends Thread {
   /**
    * Running total of bytes currently deferred across all suspended databases. Package-private so the white-box
    * regression test for issue #4728 can assert the backlog stays bounded.
+   * <p>
+   * Derived, never assigned outside {@link #addDeferredRAM}: it is the sum of {@link #deferredRAMByDatabase}, kept
+   * incrementally because the cap is read on the commit path and iterating a map there to re-derive it would put an
+   * O(open databases) walk in front of every publication.
    */
   final                AtomicLong                             deferredRAMBytes = new AtomicLong();
+
+  /**
+   * The same total, split by database (issue #6200). The backlog is strictly per-database - only the batches of
+   * SUSPENDED databases are ever deferred - so this is the number that actually explains a backlog, and the one
+   * {@code arcadedb.pagemanager.deferred_ram_bytes} needs to be tagged by database (item 2 of #6087), which the
+   * single JVM-wide total could not express. An entry is created with a database's first deferred batch and dropped
+   * when its backlog ends - its last suspender resumed, or it was closed or dropped, both through
+   * {@link #releaseResidualDeferredRAM} - so it is bounded by the number of open databases and empty whenever
+   * nothing is deferred anywhere.
+   */
+  final ConcurrentHashMap<BasicDatabase, AtomicLong> deferredRAMByDatabase = new ConcurrentHashMap<>();
+
+  /**
+   * Monitor of the committer-side backpressure of issue #4728: waiters park here while the deferred backlog is over
+   * the cap, and {@link #addDeferredRAM} notifies them when it drops back under. Bounded waits, so a suspension
+   * released without freeing any RAM (nothing was deferred) still lets its committers out.
+   * <p>
+   * ONE monitor for every suspended database, not one per database, because the condition they are all waiting on is
+   * one number: the JVM-wide total, which any database's release can move under the cap. Splitting it per database
+   * would mean notifying every one of them on every release anyway - the same wake-ups through more monitors. The
+   * herd is bounded by construction: the signal fires only on the DOWNWARD crossing of the cap (not per released
+   * page), on a resume, on a purge and on shutdown, and every woken committer re-reads the total and either
+   * proceeds or parks again.
+   */
+  private final Object deferredRAMLock = new Object();
+
+  /**
+   * How many times {@link #repairNegativeDeferredRAM} had to reset a negative total. Reported once (a drift of this
+   * kind repeats), and package-private because the repair would otherwise HIDE the very bugs the regression tests of
+   * #6200 exist to catch: a double release lands on zero after the clamp, indistinguishable from correct accounting.
+   * The tests assert this stays at zero.
+   */
+  final AtomicLong deferredRAMDriftRepairs = new AtomicLong();
 
   public static class PagesToFlush {
     public final BasicDatabase     database;
@@ -122,7 +183,26 @@ public class PageManagerFlushThread extends Thread {
       // wrap here so a later drop does not throw UnsupportedOperationException - without adding an allocation to
       // the common path.
       this.pages = pages == null || pages instanceof ArrayList ? pages : new ArrayList<>(pages);
-      this.database = pages == null || pages.isEmpty() ? null : pages.get(0).pageId.getDatabase();
+      this.database = pages == null || pages.isEmpty() ? null : pages.getFirst().pageId.getDatabase();
+      // A BATCH CARRIES THE PAGES OF ONE DATABASE, and from here on the whole pipeline reads that off the FIRST
+      // page: the suspension check that decides whether to defer, the deferred map's key, the per-database RAM
+      // charge and the committer-side cap all key on `database` above (review of #6223). A mixed batch would not
+      // throw anywhere - it would silently charge one database for another's pages and throttle the wrong
+      // committers, which is the exact class of quiet accounting drift this class spent #6200 removing. Asserted
+      // rather than checked: every caller satisfies it today (one transaction's pages, or one component's), and an
+      // unconditional scan would put an O(batch) walk on the publication path to defend against a bug that has to
+      // be introduced here first. Assertions are on in the test lanes, which is where such a bug would be written.
+      assert isSingleDatabase(this.pages) : "a flush batch must carry the pages of ONE database, got " + this.pages;
+    }
+
+    private static boolean isSingleDatabase(final List<MutablePage> pages) {
+      if (pages == null || pages.isEmpty())
+        return true;
+      final BasicDatabase first = pages.getFirst().pageId.getDatabase();
+      for (int i = 1; i < pages.size(); i++)
+        if (!first.equals(pages.get(i).pageId.getDatabase()))
+          return false;
+      return true;
     }
   }
 
@@ -237,7 +317,11 @@ public class PageManagerFlushThread extends Thread {
       }
 
       try {
-        Thread.sleep(DEFAULT_FLUSH_WAIT_POLL_MILLIS);
+        // Parks on the database's drain signal rather than sleeping (#6199): the wait ends the moment the last page
+        // of this database leaves the pipeline, and the interval only bounds how often the timeout above is
+        // re-evaluated. On a process cycling through many databases the old sleep rounded every close, rename,
+        // compaction and backup suspension up to the next poll boundary even when the pipeline was already empty.
+        pageIndex.awaitDrain(database, flushWaitPollMillis);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
@@ -246,18 +330,15 @@ public class PageManagerFlushThread extends Thread {
   }
 
   protected void flushPagesFromQueueToDisk(final Database database, final long timeout) throws InterruptedException, IOException {
-    // Backpressure (issue #4728): while a database is suspended (HA snapshot ship / full backup) its dirty
-    // pages cannot be written to disk and pile up in the unbounded deferredByDatabase map. On a busy leader
-    // shipping a multi-GB snapshot this exhausted the heap. Once the deferred backlog crosses the cap, stop
-    // draining the bounded queue: it fills up and scheduleFlushOfPages() throttles the committing threads, so
-    // the dirty pages stay in the (separately bounded) page cache instead of growing the deferred map forever.
-    // Gate on `running`: during shutdown the queue must still be drained to reach the SHUTDOWN_THREAD marker,
-    // otherwise a database left suspended with a full backlog would spin the run loop forever and block join().
-    if (running && maxDeferredRAM > 0 && deferredRAMBytes.get() >= maxDeferredRAM) {
-      Thread.sleep(timeout);
-      return;
-    }
-
+    // NO CAP CHECK HERE ANY MORE (issue #6200). The backpressure of #4728 used to live at this exact point: once
+    // the deferred backlog crossed the cap the flush thread stopped polling ALTOGETHER, so the bounded queue filled
+    // and scheduleFlushOfPages throttled the committing threads - of EVERY open database, not just of the suspended
+    // one whose backlog it was, and (because publishPages holds the JVM-wide page-manager lock across the enqueue)
+    // by blocking them inside that lock. A leader shipping a multi-GB snapshot of database A therefore stalled the
+    // committers of unrelated databases B and C, whose pages could have been written to disk immediately and whose
+    // flushing would have RELIEVED the heap rather than added to it. The cap now throttles the committers of the
+    // suspended databases directly, before that lock is taken - see awaitDeferredBacklogUnderCap - and this thread
+    // always drains.
     final PagesToFlush pagesToFlush = queue.poll(timeout, TimeUnit.MILLISECONDS);
 
     if (pagesToFlush != null) {
@@ -281,7 +362,7 @@ public class PageManagerFlushThread extends Thread {
               synchronized (suspendLock(db)) {
                 if (isSuspended(db)) {
                   deferredByDatabase.computeIfAbsent(db, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
-                  deferredRAMBytes.addAndGet(batchRAM(pagesToFlush));
+                  addDeferredRAM(db, batchRAM(pagesToFlush));
                   return;
                 }
               }
@@ -385,12 +466,14 @@ public class PageManagerFlushThread extends Thread {
    * flush thread wedged on a dead disk must not be able to hold the global lock for the 60 s the progress-based
    * timeout allows, which would stall every committer of every database in the JVM.
    * <p>
-   * Polls at 1 ms rather than spinning. The check itself is now O(1) (issue #6133 - it used to walk the JVM-wide
-   * {@link #pageIndex}, so a spin turned one cheap check into hundreds of scans of a map whose size grows with
-   * exactly the backlog that makes this wait non-trivial, all of them under the global lock), but what a spin would
-   * be waiting for has not changed: a page reaching the disk, which is a synchronous file write away and orders of
-   * magnitude longer than any sane spin. One extra millisecond in the rare case where a page IS in flight is still
-   * the better trade than burning a core under a JVM-wide lock.
+   * <b>Parks on the drain signal rather than polling (issue #6199).</b> It used to sleep 1 ms per round, and it does
+   * that under the JVM-wide lock, so every one of those milliseconds was a millisecond in which no committer of any
+   * database in the process could publish a page - a cost paid even when the pages had landed 999 us earlier. The
+   * lock hold is now the time the writes actually take. Neither a spin nor a shorter sleep was the answer: what the
+   * wait is waiting for is a synchronous file write, orders of magnitude longer than any sane spin, and a shorter
+   * sleep would burn a core under a JVM-wide lock to improve the average without touching the worst case.
+   * {@link #RESIDUAL_DRAIN_WAIT_POLL_MILLIS} survives as the bound on a hypothetical lost notification, which is why
+   * it stays at the 1 ms this used to sleep: the worst case is unchanged, the common case is immediate.
    *
    * @return {@code true} when the pipeline emptied, {@code false} when the deadline expired first (the caller
    *     proceeds with a t0 that may sit slightly behind the last committed transaction, and says so).
@@ -398,9 +481,10 @@ public class PageManagerFlushThread extends Thread {
   boolean waitPendingPagesOfDatabaseUntil(final Database database, final long deadlineMillis)
       throws InterruptedException {
     while (hasPendingPagesOfDatabase(database)) {
-      if (System.currentTimeMillis() >= deadlineMillis)
+      final long remaining = deadlineMillis - System.currentTimeMillis();
+      if (remaining <= 0)
         return false;
-      Thread.sleep(1);
+      pageIndex.awaitDrain(database, Math.min(remaining, RESIDUAL_DRAIN_WAIT_POLL_MILLIS));
     }
     return true;
   }
@@ -538,6 +622,9 @@ public class PageManagerFlushThread extends Thread {
         resumingDatabases.remove(database);
         lock.notifyAll();
       }
+      // The database is no longer suspended, so its committers are no longer subject to the deferred-backlog cap
+      // even if the backlog of some OTHER suspended database is still over it (issue #6200).
+      signalDeferredRAM();
     }
     return true;
   }
@@ -550,98 +637,149 @@ public class PageManagerFlushThread extends Thread {
     // end of the method, so the caller still observes its own cancellation and the re-enqueue phase below runs
     // interrupt-free.
     boolean restoreCallerInterrupt = false;
-    // Serialized against detachPendingPages: the detach must either see these batches (and take its page out of
-    // them) or run after they have all reached the disk. Otherwise a superseded copy written here could land after
-    // a replicated write and roll the page version backwards.
-    synchronized (replayDrainLock(database)) {
-      final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
-      if (deferred != null) {
-        for (final PagesToFlush batch : deferred) {
-          if (!batch.database.isOpen())
-            continue;
-          synchronized (batch.pages) {
-            for (final MutablePage page : batch.pages) {
-              if (!batch.database.isOpen())
-                break;
-              try {
-                pageManager.flushPage(page);
-              } catch (final DatabaseMetadataException e) {
-                // FILE DELETED, CONTINUE WITH THE NEXT PAGES
-                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
-              } catch (final InterruptedIOException e) {
-                // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
-                // retry the write once.
-                restoreCallerInterrupt = true;
-                Thread.interrupted();
+    // The FIRST unexpected failure of the page loop below, re-raised once the whole backlog has been drained.
+    Throwable unexpected = null;
+    try {
+      // Serialized against detachPendingPages: the detach must either see these batches (and take its page out of
+      // them) or run after they have all reached the disk. Otherwise a superseded copy written here could land after
+      // a replicated write and roll the page version backwards.
+      synchronized (replayDrainLock(database)) {
+        final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
+        if (deferred != null) {
+          for (final PagesToFlush batch : deferred) {
+            synchronized (batch.pages) {
+              for (final MutablePage page : batch.pages) {
                 try {
-                  pageManager.flushPage(page);
-                } catch (final DatabaseMetadataException | IOException e2) {
-                  // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
-                  // would skip the unsuspend phases below, leaving the database suspended with batches stranded
-                  // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
-                  // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
-                  LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                  // A page whose database closed mid-unsuspend is NOT written - there is nothing left to write it
+                  // to - but it still leaves the backlog through the finally below. Skipping it (which is what the
+                  // `continue`/`break` here used to do) stranded its bytes in the deferred accounting for the life
+                  // of the process, and every LATER suspension would then be throttled by that much: the drift the
+                  // blanket "reset the counter when nothing is deferred anywhere" net existed to absorb. Releasing
+                  // it at the source is exact, and per database, so no reset can ever wipe a sibling's live count.
+                  if (batch.database.isOpen())
+                    pageManager.flushPage(page);
+                } catch (final DatabaseMetadataException e) {
+                  // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+                  LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+                } catch (final InterruptedIOException e) {
+                  // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
+                  // retry the write once.
+                  restoreCallerInterrupt = true;
                   Thread.interrupted();
+                  try {
+                    pageManager.flushPage(page);
+                  } catch (final DatabaseMetadataException | IOException e2) {
+                    // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
+                    // would skip the unsuspend phases below, leaving the database suspended with batches stranded
+                    // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
+                    // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
+                    LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                    Thread.interrupted();
+                  }
+                } catch (final IOException e) {
+                  LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+                } catch (final Throwable e) {
+                  // ONE PAGE'S UNEXPECTED FAILURE MUST NOT ABANDON THE REST OF THE BACKLOG (review of #6223). Letting
+                  // it escape this loop left every page after it in the batch without the finally below: still in
+                  // pageIndex, so this database's pending count stays above zero and the next close waits out the
+                  // whole flushAllPagesTimeout before giving up. Contained like the I/O failures above - the page is
+                  // recovered from the WAL, its ack was never given - and re-raised once the backlog is drained, so
+                  // the caller still learns that the resume failed.
+                  if (unexpected == null)
+                    unexpected = e;
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Unexpected error on flushing deferred page '%s' to disk, the page will be recovered from the WAL on restart",
+                      e, page);
+                } finally {
+                  // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
+                  addDeferredRAM(database, -page.getPhysicalSize());
+                  removeFromFlushIndex(page);
+                  bumpFlushProgress(page);
                 }
-              } catch (final IOException e) {
-                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
-              } finally {
-                // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
-                deferredRAMBytes.addAndGet(-page.getPhysicalSize());
-                removeFromFlushIndex(page);
-                bumpFlushProgress(page);
               }
             }
           }
         }
       }
-    }
 
-    // Phase 2 + Phase 3a: under the per-database lock, clear the suspension refcount AND atomically detach
-    // any batches deferred during Phase 1. Holding the lock makes this transition mutually exclusive with
-    // the suspended-check + defer in flushPagesFromQueueToDisk: once the flag is cleared no further batch
-    // can be added to deferredByDatabase for this database, and every batch deferred up to that point is
-    // detached exactly once. A single detach therefore suffices - nothing can repopulate the map behind us.
-    // New suspenders are still gated out by resumingDatabases (removed by the caller AFTER Phase 3b), so
-    // the count going 1 to 0 here cannot interleave with a concurrent acquire.
-    final ConcurrentLinkedQueue<PagesToFlush> newDeferred;
-    synchronized (suspendLock(database)) {
-      suspended.remove(database);
-      newDeferred = deferredByDatabase.remove(database);
-    }
+    } finally {
+      // PHASES 2 TO 4 RUN EVEN IF PHASE 1 THREW. Its per-page loop contains every failure it expects (a dropped
+      // file, an interrupt, an I/O error), but an UNEXPECTED exception escaping it used to abort the rest of the
+      // resume outright: the batches deferred during Phase 1 stayed undetached - their pages pinned in pageIndex
+      // forever, so the next close of that database would wait for a drain that can never happen - and its RAM
+      // charge stayed on the cap. The caller's own finally heals the suspension COUNT, but nothing healed those.
+      // Pre-existing shape, flagged in review of #6223 and closed here rather than left open, because the phases
+      // below are pure bookkeeping: they cannot fail, and the exception still propagates after them.
+      //
+      // THE ONE CASE THIS DOES NOT COVER, and the reason it is an accepted residual rather than an oversight: the
+      // per-page finally itself throwing. Every failure of the WRITE is contained per page now, so the loop always
+      // reaches the end of the backlog; a finally that fails abandons the pages after it, which keep their pageIndex
+      // entry, so this database's pending count stays above zero and its next close waits out
+      // arcadedb.flushAllPagesTimeout before giving up - preserving the WAL, so those pages are recovered on the
+      // next open rather than lost. Covering it would put a try/finally around the release of every deferred page,
+      // on the resume path of every one of them, to defend against three field reads on a MutablePage.
 
-    // Phase 3b: re-enqueue the detached batches into the main queue so the background thread picks them up.
-    // They are appended to the tail of the queue, so if any post-unsuspend commits have already been
-    // enqueued they will be flushed first. WAL-based recovery guarantees correctness even if the flush order
-    // differs from commit order. This blocking re-enqueue is deliberately done OUTSIDE the lock: queue.offer
-    // can block when the queue is full, and the only consumer that drains the queue (the flush thread) needs
-    // the same per-database lock to make progress, so holding it across the offer would deadlock.
-    if (newDeferred != null) {
-      for (final PagesToFlush batch : newDeferred) {
-        // The batch moves back to the main queue and leaves the deferred backlog accounting (issue #4728).
-        deferredRAMBytes.addAndGet(-batchRAM(batch));
-        while (running) {
-          try {
-            if (queue.offer(batch, 1, TimeUnit.SECONDS))
+      // Phase 2 + Phase 3a: under the per-database lock, clear the suspension refcount AND atomically detach
+      // any batches deferred during Phase 1. Holding the lock makes this transition mutually exclusive with
+      // the suspended-check + defer in flushPagesFromQueueToDisk: once the flag is cleared no further batch
+      // can be added to deferredByDatabase for this database, and every batch deferred up to that point is
+      // detached exactly once. A single detach therefore suffices - nothing can repopulate the map behind us.
+      // New suspenders are still gated out by resumingDatabases (removed by the caller AFTER Phase 3b), so
+      // the count going 1 to 0 here cannot interleave with a concurrent acquire.
+      final ConcurrentLinkedQueue<PagesToFlush> newDeferred;
+      synchronized (suspendLock(database)) {
+        suspended.remove(database);
+        newDeferred = deferredByDatabase.remove(database);
+      }
+
+      // Phase 3b: re-enqueue the detached batches into the main queue so the background thread picks them up.
+      // They are appended to the tail of the queue, so if any post-unsuspend commits have already been
+      // enqueued they will be flushed first. WAL-based recovery guarantees correctness even if the flush order
+      // differs from commit order. This blocking re-enqueue is deliberately done OUTSIDE the lock: queue.offer
+      // can block when the queue is full, and the only consumer that drains the queue (the flush thread) needs
+      // the same per-database lock to make progress, so holding it across the offer would deadlock.
+      if (newDeferred != null) {
+        for (final PagesToFlush batch : newDeferred) {
+          // The batch moves back to the main queue and leaves the deferred backlog accounting (issue #4728).
+          addDeferredRAM(database, -batchRAM(batch));
+          while (running) {
+            try {
+              if (queue.offer(batch, 1, TimeUnit.SECONDS))
+                break;
+              LogManager.instance().log(this, Level.WARNING,
+                  "Page flush queue is full while re-enqueueing deferred batch for database '%s'; retrying", database.getName());
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
               break;
-            LogManager.instance().log(this, Level.WARNING,
-                "Page flush queue is full while re-enqueueing deferred batch for database '%s'; retrying", database.getName());
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            break;
+            }
           }
         }
       }
+
+      // Phase 4: this database's backlog has provably ended, so release whatever is still charged to it - and ONLY
+      // to it. The suspension was cleared under suspendLock in Phase 2 and resumingDatabases keeps a new suspender
+      // out until the caller's finally, so nothing can defer another of its batches behind us (the same argument
+      // Phase 2 rests on). With Phase 1 now releasing every page it skips, this should always find zero; it stays as
+      // the per-database safety net that the old blanket "if nothing is deferred anywhere, zero the counters" reset
+      // was - that one read `deferredByDatabase.isEmpty()` on this thread while the flush thread could be deferring
+      // the FIRST batch of an unrelated database, and would then wipe that database's fresh charge (review of #6200).
+      releaseResidualDeferredRAM(database);
+
+      if (restoreCallerInterrupt)
+        // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
+        Thread.currentThread().interrupt();
     }
 
-    // Safety net: once nothing is deferred for any database the backlog is provably empty, so reset the counter
-    // to absorb any drift from edge cases above (a batch skipped because its database closed mid-unsuspend).
-    if (deferredByDatabase.isEmpty())
-      deferredRAMBytes.set(0);
-
-    if (restoreCallerInterrupt)
-      // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
-      Thread.currentThread().interrupt();
+    if (unexpected != null) {
+      // Raised only now, with the backlog drained and the suspension cleared: the caller must still learn that its
+      // resume failed, but not at the price of a pipeline left holding pages nothing will ever take out of it.
+      if (unexpected instanceof final RuntimeException runtime)
+        throw runtime;
+      if (unexpected instanceof final Error error)
+        throw error;
+      throw new RuntimeException("Error on flushing the deferred pages of database '" + database.getName() + "'",
+          unexpected);
+    }
   }
 
   public boolean isSuspended(final Database database) {
@@ -660,6 +798,9 @@ public class PageManagerFlushThread extends Thread {
 
   public void closeAndJoin() throws InterruptedException {
     running = false;
+    // Release any committer parked on the deferred-backlog cap: its database may still be suspended, and the
+    // backlog is only relieved by a resume that shutdown is not going to wait for (issue #6200).
+    signalDeferredRAM();
     queue.offer(SHUTDOWN_THREAD);
     join();
   }
@@ -670,6 +811,216 @@ public class PageManagerFlushThread extends Thread {
    */
   void removeFromFlushIndex(final MutablePage page) {
     pageIndex.removeIfSame(page);
+  }
+
+  /**
+   * Moves {@code delta} bytes into (positive) or out of (negative) the deferred backlog of a database, keeping the
+   * per-database split and the derived total in step (issue #6200), and releases the committers waiting on the cap
+   * when the total drops back under it.
+   * <p>
+   * The two counters are not updated atomically with respect to each other, and do not need to be: a reader that
+   * catches the pair mid-update sees a per-database sum off by one batch from the total for a few instructions.
+   * What they DO have to agree on is the amount that moves, which is why a release takes from the per-database
+   * counter first and moves only what it actually got - see the release branch.
+   */
+  private void addDeferredRAM(final BasicDatabase database, final long delta) {
+    if (delta == 0)
+      return;
+
+    if (delta > 0)
+      deferredRAMByDatabase.computeIfAbsent(database, k -> new AtomicLong()).addAndGet(delta);
+    else {
+      // A release NEVER creates an entry: the only way to reach one here without a matching deferral is a database
+      // whose bookkeeping was already purged by its close, and re-creating it with a negative value would both
+      // report a nonsensical gauge and re-pin the closed instance as a map key.
+      final AtomicLong bytes = deferredRAMByDatabase.get(database);
+      if (bytes == null)
+        // AND IT RELEASES NOTHING FROM THE TOTAL EITHER, which is why this returns rather than falling through.
+        return;
+
+      // THE PER-DATABASE COUNTER IS THE AUTHORITY ON WHAT MAY BE RELEASED: the take is atomic and clamped at zero,
+      // and only what the counter actually still held moves off the JVM-wide total.
+      //
+      // Without that the same bytes are released twice. releaseResidualDeferredRAM takes a database's whole
+      // remaining charge in ONE getAndSet(0) plus subtraction, and it is not mutually exclusive with the per-page
+      // releases of that same database's resume: Phase 1 walks the deferred batches holding only replayDrainLock,
+      // while the purge (close/drop) takes neither that nor anything else Phase 1 holds. So a purge landing
+      // mid-resume takes bytes Phase 1 has not released yet, and Phase 1 then releases them again. A null check
+      // alone does NOT cover it - this reference can be read BEFORE the purge removes the entry and used after -
+      // which is why the guard is on the VALUE rather than on the entry.
+      //
+      // Getting it wrong drives the JVM-wide total NEGATIVE, and that total is what the cap is read from, so the
+      // #4728 backpressure would be silently disabled for every OTHER suspended database in the process until
+      // enough new deferrals pushed it back over the cap.
+      final long releasing = -delta;
+      final long before = bytes.getAndAccumulate(releasing, (current, amount) -> current - Math.min(current, amount));
+      final long applied = Math.min(before, releasing);
+      if (applied <= 0)
+        // ALREADY TAKEN, BY THE RESIDUAL RELEASE OR BY A RACING ONE: NOTHING OF THIS CHARGE IS LEFT TO MOVE
+        return;
+
+      addDeferredRAMTotal(-applied);
+      return;
+    }
+
+    addDeferredRAMTotal(delta);
+  }
+
+  /** Moves the JVM-wide total alone, for the residual release that has already zeroed the per-database part. */
+  private void addDeferredRAMTotal(final long delta) {
+    final long previous = deferredRAMBytes.getAndAdd(delta);
+    // Signal only on the DOWNWARD crossing of the cap, so a resume that writes thousands of deferred pages takes the
+    // monitor once instead of once per page, and a backlog that is growing never touches it at all.
+    if (delta < 0 && maxDeferredRAM > 0 && previous >= maxDeferredRAM && previous + delta < maxDeferredRAM)
+      signalDeferredRAM();
+
+    if (previous + delta < 0)
+      repairNegativeDeferredRAM();
+  }
+
+  /**
+   * Last-resort guard on the ONE number the #4728 cap is read from.
+   * <p>
+   * Every release is of bytes a matching deferral put there, so with correct accounting the total cannot go below
+   * zero - not even transiently, since a page has to be deferred before it can be released. A negative value is
+   * therefore a bug, and unlike the per-database gauge (which {@link #getDeferredRAMBytesOf} merely clamps for
+   * display) it is not cosmetic: the cap test is {@code total >= maxDeferredRAM}, so a total left below zero
+   * DISABLES the backpressure for every suspended database in the process until enough new deferrals climb back
+   * over the cap - the OOM this whole mechanism exists to prevent, silently re-enabled.
+   * <p>
+   * So it is both reported - once per process, because a drift of this kind repeats - and repaired. Reporting alone
+   * would leave the protection off; repairing alone would hide the bug that turned it off.
+   */
+  private void repairNegativeDeferredRAM() {
+    // getAndAccumulate, so the value REPORTED is the negative one that was found rather than the zero it became,
+    // and so a total another thread has already repaired is left alone instead of being re-reported.
+    final long negative = deferredRAMBytes.getAndAccumulate(0, (current, ignored) -> current < 0 ? 0 : current);
+    if (negative >= 0)
+      // ANOTHER THREAD GOT THERE FIRST: NOTHING WAS FOUND NEGATIVE HERE, SO NOTHING IS COUNTED OR SAID
+      return;
+
+    if (deferredRAMDriftRepairs.getAndIncrement() == 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "The deferred page-flush backlog accounting went negative (%d bytes) and was reset to zero: this is a bug in the accounting, please report it. Until the reset the '%s' cap could not throttle the committers of a suspended database",
+          null, negative, GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM.getKey());
+  }
+
+  /**
+   * Releases whatever a database is STILL charged for once its backlog has provably ended - its last suspender
+   * resumed, or it was closed or dropped - and forgets its entry.
+   * <p>
+   * Strictly per database, which is the point: the blanket reset this replaces zeroed the total and the whole split
+   * whenever {@code deferredByDatabase} was observed empty, a check made on the resuming thread while the flush
+   * thread could be deferring the FIRST batch of an unrelated database, and that database's fresh charge was then
+   * wiped - its cap defeated until its next mutation (review of #6200). Nothing here can touch another database.
+   * <p>
+   * With the accounting now exact at the source (every path that takes a page out of the backlog releases its bytes,
+   * including the pages skipped because their database closed mid-unsuspend) this should always find zero. It stays
+   * because the alternative to healing a hypothetical drift is a total stuck above the cap, which would throttle the
+   * committers of every later suspension in the process.
+   */
+  private void releaseResidualDeferredRAM(final BasicDatabase database) {
+    final AtomicLong bytes = deferredRAMByDatabase.remove(database);
+    if (bytes == null)
+      return;
+    final long residual = bytes.getAndSet(0);
+    if (residual != 0) {
+      LogManager.instance().log(this, Level.FINE,
+          "Released %d residual deferred bytes of database '%s' whose backlog ended", null, residual, database.getName());
+      addDeferredRAMTotal(-residual);
+    }
+  }
+
+  private void signalDeferredRAM() {
+    synchronized (deferredRAMLock) {
+      deferredRAMLock.notifyAll();
+    }
+  }
+
+  /**
+   * Whether a deferred-batch queue is still held for this database. Exists so the regression test of issue #6200
+   * can prove that purging a SUSPENDED database leaves no queue behind - one nothing would ever resume, pinning the
+   * closed instance as a map key and its pages in RAM for the life of the process.
+   */
+  boolean hasDeferredBatches(final BasicDatabase database) {
+    return deferredByDatabase.containsKey(database);
+  }
+
+  /** Bytes of dirty pages currently deferred for a single database (issue #6200, gauge of item 2 of #6087). */
+  public long getDeferredRAMBytesOf(final BasicDatabase database) {
+    final AtomicLong bytes = deferredRAMByDatabase.get(database);
+    return bytes != null ? Math.max(0L, bytes.get()) : 0L;
+  }
+
+  /**
+   * The committer-side half of the #4728 backpressure, and the reason the flush thread no longer has to stop
+   * draining for everybody (issue #6200).
+   * <p>
+   * While a database is suspended (HA snapshot ship, full backup) its dirty pages cannot be written to disk and pile
+   * up in {@link #deferredByDatabase}; on a busy leader shipping a multi-GB snapshot that exhausted the heap. The cap
+   * that bounds it has to be JVM-wide, because heap is: what does NOT follow is that the RESPONSE should be. Only
+   * the batches of suspended databases are ever deferred, so only their committers can grow the backlog, and only
+   * they are held here. A database that is not suspended is never delayed by this: its pages go straight to the
+   * disk, which strictly RELIEVES the heap pressure the cap exists to bound.
+   * <p>
+   * <b>This must be called BEFORE the page-manager lock is taken</b>, which is why it is a separate step of
+   * {@code PageManager.publishPages} rather than a check inside {@code scheduleFlushOfPages}. Publication holds that
+   * JVM-wide lock across both the page write and the flush enqueue, so a committer parked while holding it stalls
+   * every committer of every database - the very coupling this method removes.
+   * <p>
+   * <b>And it must hold nothing the resume needs</b>, since the resume is what releases the backlog it waits for.
+   * Checked for both entry points (review of #6223): a committer arrives through {@code publishPages}, before its
+   * {@code lock()}; index compaction arrives through {@code writePages}, and cannot hold that lock at all, because
+   * {@code LockContext.lock()} is PROTECTED and {@code com.arcadedb.index.lsm} neither shares the package nor
+   * subclasses {@link PageManager} - a structural bar, not a property of the path it happens to take today (the
+   * {@code updatePageVersion} it calls first does NOT lock; only {@code validateAndBumpVersions} wraps that).
+   * Nothing outside this class can hold {@link #suspendLock} or {@link #replayDrainLock} at all, the resume takes no
+   * database lock, and a waiter parked below has released {@link #deferredRAMLock} by definition. So the only thing
+   * a parked caller holds is its own transaction's file locks, which the resume never asks for.
+   * <p>
+   * The wait ends when the backlog drops under the cap (the suspension resumed and wrote its deferred batches, or
+   * the database was dropped) or when this database stops being suspended. It is bounded per round so a suspension
+   * released without freeing any RAM still lets its committers out, and it stops waiting during shutdown so a
+   * database left suspended cannot keep a committer parked past {@code closeAndJoin}.
+   * <p>
+   * <b>Only the ASYNCHRONOUS writers reach this</b>, and nothing is missing by it: what the cap bounds is
+   * {@link #deferredByDatabase}, and {@link #flushPagesFromQueueToDisk} is the single place anything is ever put
+   * there. A synchronous {@code writePages} goes straight to {@code flushPage} without passing through this thread
+   * at all, so it cannot add a byte to the backlog and has nothing to be held for.
+   */
+  public void awaitDeferredBacklogUnderCap(final BasicDatabase database) throws InterruptedException {
+    // The instanceof is a cast, not a filter: every page in the flush pipeline comes from a local Database (that is
+    // what owns a PageManager at all), and the suspension bookkeeping this reads is keyed by Database. A
+    // BasicDatabase that is not one has never been deferred and so can never be over the cap.
+    if (maxDeferredRAM <= 0 || !(database instanceof final Database db) || !isSuspended(db))
+      // NOT SUSPENDED: THE COMMON CASE, AND TWO MAP READS AWAY FROM THE PUBLICATION IT MUST NOT SLOW DOWN
+      return;
+
+    final long beginTime = System.currentTimeMillis();
+    boolean reported = false;
+    while (true) {
+      synchronized (deferredRAMLock) {
+        if (!running || deferredRAMBytes.get() < maxDeferredRAM || !isSuspended(db))
+          return;
+        deferredRAMLock.wait(DEFERRED_BACKLOG_WAIT_POLL_MILLIS);
+      }
+
+      // Reported from OUTSIDE the monitor: a log write is a file write, and holding this monitor across it would
+      // make the resume that is releasing the backlog queue behind it. Once per held committer, not once per round:
+      // a long suspension throttles many of them, and the point is to name the database whose backlog is doing it.
+      if (!reported && System.currentTimeMillis() - beginTime > DEFERRED_BACKLOG_WARN_MILLIS) {
+        reported = true;
+        // Both backlogs, and the JVM-wide one named as such: the cap is on the total across every suspended
+        // database, so the backlog holding this database's committers is very often NOT its own - which is the
+        // whole subject of #6200, and precisely what an operator reading a single figure would misread. The
+        // elapsed hold is reported rather than the threshold that triggered the report: the threshold is a
+        // constant, while how long this committer has actually been held is the number the operator came for.
+        LogManager.instance().log(this, Level.WARNING,
+            "Commits on database '%s' have been throttled for %d ms: page flushing is suspended (backup or HA snapshot) and the JVM-wide deferred backlog is %s, of which %s is this database's own, at or above the '%s' cap",
+            null, db.getName(), System.currentTimeMillis() - beginTime, FileUtils.getSizeAsString(deferredRAMBytes.get()),
+            FileUtils.getSizeAsString(getDeferredRAMBytesOf(db)), GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM.getKey());
+      }
+    }
   }
 
   /** Sum of the in-RAM size of every page in a deferred batch, used to bound the deferred backlog (issue #4728). */
@@ -707,18 +1058,41 @@ public class PageManagerFlushThread extends Thread {
 
     // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
+    //
+    // The suspension flag and the deferred batches are dropped UNDER the database's own suspend monitor - the same
+    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.offer, and the
+    // same argument Phase 2 of the resume rests on. Without it the flush thread could observe "suspended" just
+    // before this method runs and offer its batch just after, re-creating a deferred queue for a database this
+    // method has already forgotten: nothing would ever resume it, so the batch, the map entry pinning the closed
+    // instance and its RAM charge would all leak for the life of the process - and that leaked charge would
+    // throttle the committers of every later suspension in the JVM. Ordering the flag before the detach matters
+    // for the same reason it does in Phase 2: once it is clear, no further batch can be deferred (review of #6200).
+    final ConcurrentLinkedQueue<PagesToFlush> droppedDeferred;
+    synchronized (suspendLock(database)) {
+      suspended.remove(database);
+      resumingDatabases.remove(database);
+      droppedDeferred = deferredByDatabase.remove(database);
+    }
+    // Only now, or a defer racing the block above would resolve a FRESH monitor and be excluded by nothing.
     suspendLocks.remove(database);
     replayDrainLocks.remove(database);
-    suspended.remove(database);
-    resumingDatabases.remove(database);
     flushedPagesPerDatabase.remove(database);
-    final ConcurrentLinkedQueue<PagesToFlush> droppedDeferred = deferredByDatabase.remove(database);
-    if (droppedDeferred != null) {
+
+    // Deliberately outside that monitor: batchRAM takes each batch's own monitor, and the one nesting this class
+    // allows is suspendLock BEFORE batch.pages (what the defer path does). These batches are already detached, so
+    // no one else can be looking at them, and keeping the accounting out here avoids widening that nesting.
+    if (droppedDeferred != null)
       for (final PagesToFlush batch : droppedDeferred)
-        deferredRAMBytes.addAndGet(-batchRAM(batch));
-      if (deferredByDatabase.isEmpty())
-        deferredRAMBytes.set(0);
-    }
+        addDeferredRAM(database, -batchRAM(batch));
+
+    // The database is gone: drop its per-database backlog entry with the rest of its bookkeeping, taking whatever
+    // it was still charged for out of the JVM-wide total with it - dropping the entry alone would leave the total
+    // inflated by that much forever, throttling every later suspension (#6200).
+    releaseResidualDeferredRAM(database);
+
+    // Its committers cannot be throttled by a database that no longer exists, and neither can anyone else be by ITS
+    // backlog: wake every waiter so they re-read a total that just lost this database's share.
+    signalDeferredRAM();
   }
 
   /** Drops every pending {@link MutablePage} of a single dropped file from the queue, the deferred batches and the index. */
@@ -732,7 +1106,7 @@ public class PageManagerFlushThread extends Thread {
     if (deferred != null)
       for (final PagesToFlush pagesToFlush : deferred)
         // These pages leave the deferred backlog, so release their reserved RAM accounting (issue #4728).
-        deferredRAMBytes.addAndGet(-removePagesOfFileFromBatch(pagesToFlush, database, fileId));
+        addDeferredRAM(database, -removePagesOfFileFromBatch(pagesToFlush, database, fileId));
 
     // Finally clean any index entry for a page currently being flushed.
     pageIndex.removeAllOfFile(database, fileId);
@@ -794,7 +1168,7 @@ public class PageManagerFlushThread extends Thread {
       if (deferred != null)
         for (final PagesToFlush batch : deferred)
           // The copies leave the deferred backlog, so release their reserved RAM accounting (issue #4728).
-          deferredRAMBytes.addAndGet(-removePagesOfPageIdFromBatch(batch, pageId, detached));
+          addDeferredRAM(database, -removePagesOfPageIdFromBatch(batch, pageId, detached));
 
       // The indexed copy is missing from every batch only in the mid-enqueue window ruled out above, but adding it
       // here keeps the caller's contract - "the pipeline no longer holds this page" - true without relying on it.

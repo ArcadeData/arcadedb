@@ -313,8 +313,13 @@ class Issue5279ConcurrentUpdateTest extends BucketPageLayoutTestSupport {
     assertThat(conflicts.get()).as("connecting two vertices of one's own must not conflict").isLessThanOrEqualTo(1);
 
     database.transaction(() -> {
+      // Every vertex transaction retries until it commits, so all of them are there...
       assertThat(database.countType("Node", false)).isEqualTo(2L + 2L * threadCount * edgesPerThread);
-      assertThat(database.countType("Link", false)).isEqualTo(1L + (long) threadCount * edgesPerThread);
+      // ...but the edge transaction runs at attempts=1, so a conflict tolerated above means that edge was NOT
+      // created. Counting the conflicts out is what makes the two assertions agree: expecting the full total while
+      // allowing one conflict asserts both that a conflict may happen and that it may not, and the run where one
+      // DOES happen then fails here (160 against 161) instead of at the tolerance meant to absorb it.
+      assertThat(database.countType("Link", false)).isEqualTo(1L + (long) threadCount * edgesPerThread - conflicts.get());
     });
   }
 

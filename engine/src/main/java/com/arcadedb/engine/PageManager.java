@@ -907,7 +907,8 @@ public class PageManager extends LockContext {
   /**
    * Bytes of dirty pages currently held in memory because flushing is suspended on some database (a full backup, an HA
    * snapshot ship, an HA verify). Once this crosses {@link com.arcadedb.GlobalConfiguration#FLUSH_SUSPEND_MAX_DEFERRED_RAM}
-   * the flush thread stops draining its queue and committing threads are throttled instead, so this is the direct
+   * the committing threads OF THE SUSPENDED DATABASES are throttled (issue #6200 - before it, the flush thread stopped
+   * draining its queue altogether, which throttled the committers of every open database), so this is the direct
    * measure of how much a long suspension is costing writers.
    *
    * @return 0 when no suspension is in progress, or when the page manager is closed.
@@ -915,6 +916,34 @@ public class PageManager extends LockContext {
   public long getDeferredRAMBytes() {
     final PageManagerFlushThread thread = flushThread;
     return thread != null ? thread.deferredRAMBytes.get() : 0L;
+  }
+
+  /**
+   * The same backlog as {@link #getDeferredRAMBytes}, for a single database (issue #6200): the number that says WHICH
+   * suspension is costing the heap, which the JVM-wide total cannot.
+   *
+   * @return 0 when that database has nothing deferred, or when the page manager is closed.
+   */
+  public long getDeferredRAMBytesOf(final BasicDatabase database) {
+    final PageManagerFlushThread thread = flushThread;
+    return thread != null ? thread.getDeferredRAMBytesOf(database) : 0L;
+  }
+
+  /**
+   * Holds the caller while the deferred backlog of ITS database is over the cap (issue #4728). A no-op unless that
+   * database is currently suspended - see {@link PageManagerFlushThread#awaitDeferredBacklogUnderCap}, and note that
+   * this must never be called with the page-manager lock held (issue #6200).
+   * <p>
+   * ASSUMPTION, shared with {@code PagesToFlush} and therefore with the whole flush pipeline: a batch carries the
+   * pages of ONE database, so the first page names it. Every caller satisfies it - a publication is one
+   * transaction's pages, and the direct {@code writePages} callers (LSM compaction, bloom filter, sparse segment
+   * builder) write one component of one database - and a mixed batch would already mis-key the deferral, the
+   * per-database pending count and the suspension check long before it reached here. Do not introduce one.
+   */
+  private void awaitDeferredBacklogUnderCap(final List<MutablePage> pages) throws InterruptedException {
+    if (flushThread == null || pages == null || pages.isEmpty())
+      return;
+    flushThread.awaitDeferredBacklogUnderCap(pages.getFirst().getPageId().getDatabase());
   }
 
   /**
@@ -1135,13 +1164,20 @@ public class PageManager extends LockContext {
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    // OUTSIDE THE LOCK, AND THAT IS THE ENTIRE POINT (issue #6200): while a database is suspended its dirty pages
+    // pile up in RAM, and the cap that bounds that backlog is served by holding ITS committers here. Held one line
+    // lower - inside lock() - the wait would be served while holding a JVM-WIDE lock, so throttling the committers
+    // of the one suspended database would stall the committers of every other database with them.
+    if (asyncFlush)
+      awaitDeferredBacklogUnderCap(pagesToWrite);
+
     lock();
     try {
       // Write pages (and put in readCache) BEFORE updating pageCount, otherwise concurrent
       // transactions can observe pageCount > readCache state and treat the new page as a
       // pre-existing empty page (sparse-file semantics), allowing two records' chunk chains
       // to land on the same physical slot.
-      writePages(pagesToWrite, asyncFlush);
+      writePagesNoBackpressure(pagesToWrite, asyncFlush);
 
       if (newPages != null)
         for (final MutablePage p : newPages.values()) {
@@ -1357,6 +1393,19 @@ public class PageManager extends LockContext {
   }
 
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
+    // Entry point of the asynchronous writers that do NOT go through publishPages (LSM index compaction): they hold
+    // no page-manager lock, so the deferred-backlog cap of #4728 can be served right here (issue #6200).
+    if (asyncFlush)
+      awaitDeferredBacklogUnderCap(updatedPages);
+    writePagesNoBackpressure(updatedPages, asyncFlush);
+  }
+
+  /**
+   * {@link #writePages} without the deferred-backlog wait, for the one caller that has already served it before
+   * taking the page-manager lock: {@link #publishPages} (issue #6200).
+   */
+  private void writePagesNoBackpressure(final List<MutablePage> updatedPages, final boolean asyncFlush)
+      throws IOException, InterruptedException {
     if (asyncFlush) {
       for (final MutablePage page : updatedPages)
         putPageInReadCache(new CachedPage(page, true));
