@@ -78,7 +78,17 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
   private       long          batch;
   /** Entries already taken from the source holding the turn in this visit. */
   private       long          taken;
-  /** Rotations since the last doubling of {@link #batch}; a full round is {@code activeCount} of them. */
+  /**
+   * Rotations since the last doubling of {@link #batch}; a full round is {@code activeCount} of them.
+   * <p>
+   * Deliberately counts only the visits that ran their batch out, not the ones cut short by a source going
+   * exhausted - those drop the source, so they shrink {@link #activeCount}, which is the very bound this is
+   * compared against. The doubling cadence is therefore approximate when the sources are uneven in length, and
+   * that is the intended reading: what this class promises is a BOUND on the batch's growth (and so on the
+   * switch count and the rank error), never an exact round length. Counting a dropped source as a rotation
+   * would make the cadence no more exact and would double the batch for the survivors on the strength of a
+   * visit that never happened.
+   */
   private       int           rotationsInRound;
   /** True once {@link #browsed} has reached {@link #degradeAfter}, i.e. once {@link #batch} may grow. */
   private       boolean       widening;
