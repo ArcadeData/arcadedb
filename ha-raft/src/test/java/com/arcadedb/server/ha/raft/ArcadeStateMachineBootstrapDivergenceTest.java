@@ -308,4 +308,40 @@ class ArcadeStateMachineBootstrapDivergenceTest {
 
     assertThat(sm.getBootstrapUnreconciledDatabases()).isEmpty();
   }
+
+  /**
+   * The probe throttle: one attempt per window, and a second attempt inside it stands down. Without this
+   * the health tick (seconds apart) would make the leader hash every database directory it holds on every
+   * tick, forever, to reach a conclusion that only changes when an operator acts.
+   */
+  @Test
+  void theProbeIsThrottledToOneAttemptPerWindow() {
+    final ArcadeStateMachine sm = newStateMachine();
+
+    assertThat(sm.claimBootstrapDivergenceCheckSlot(1_000_000L, 300_000L))
+        .as("the first attempt claims the slot").isTrue();
+    assertThat(sm.claimBootstrapDivergenceCheckSlot(1_000_001L, 300_000L))
+        .as("an attempt inside the window stands down").isFalse();
+    assertThat(sm.claimBootstrapDivergenceCheckSlot(1_299_999L, 300_000L))
+        .as("still inside the window").isFalse();
+    assertThat(sm.claimBootstrapDivergenceCheckSlot(1_300_000L, 300_000L))
+        .as("the next window re-arms").isTrue();
+  }
+
+  /**
+   * The whole verification stands down when there is no Raft server to name a leader, and does so
+   * WITHOUT burning the throttle slot: a node that spends its first ticks without a leader must still get
+   * a full-rate first probe once one appears.
+   */
+  @Test
+  void verificationWithoutARaftServerIsANoOpThatKeepsTheThrottleSlot() {
+    final ArcadeStateMachine sm = applyStaleBaseline(newStateMachine());
+
+    sm.verifyBootstrapDivergence();
+
+    assertThat(sm.getBootstrapUnreconciledDatabases())
+        .as("the mark is untouched when the check cannot run").containsExactly(DB_A);
+    assertThat(sm.claimBootstrapDivergenceCheckSlot(1_000_000L, 300_000L))
+        .as("no throttle slot was consumed").isTrue();
+  }
 }

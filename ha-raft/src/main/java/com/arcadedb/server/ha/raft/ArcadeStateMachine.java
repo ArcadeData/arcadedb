@@ -2395,21 +2395,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
       return; // no leader to compare against yet
 
-    final long now = System.currentTimeMillis();
     // Floored at the snapshot cadence so a WAN cluster that has widened its watchdog does not get probed
     // more often than it resyncs.
-    final long checkIntervalMs = Math.max(BOOTSTRAP_DIVERGENCE_CHECK_INTERVAL_MS, computeSnapshotWatchdogTimeoutMs());
-    final long previous = lastBootstrapDivergenceCheckMs.get();
-    if (previous != 0 && now - previous < checkIntervalMs)
+    if (!claimBootstrapDivergenceCheckSlot(System.currentTimeMillis(),
+        Math.max(BOOTSTRAP_DIVERGENCE_CHECK_INTERVAL_MS, computeSnapshotWatchdogTimeoutMs())))
       return;
-    if (!lastBootstrapDivergenceCheckMs.compareAndSet(previous, now))
-      return; // another tick won the throttle slot
 
     final Set<String> pending = new HashSet<>(bootstrapUnreconciledDatabases);
     final String clusterToken = raftHA.getClusterToken();
     try {
       // Off the HealthMonitor thread: the probe is a blocking HTTP call to the leader and the monitor
       // tick drives the Ratis lifecycle checks behind it.
+      //
+      // On the lifecycleExecutor like every other leader-facing task, and bounded so it cannot become the
+      // thing this module's CLAUDE.md warns about: the executor is single-threaded and already runs
+      // multi-minute full resyncs on it, so what matters is that this task's worst case is small next to
+      // those. It is - BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS (5 s) at most, at most once per check window
+      // (>= 5 minutes), against downloads measured in minutes. A queued resync therefore waits seconds in
+      // the worst case, not for the length of a download.
       lifecycleExecutor.submit(() -> {
         final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
             leaderHttpAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
@@ -2425,6 +2428,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.WARNING,
           "Cannot schedule the bootstrap-divergence verification: executor is shut down", ree);
     }
+  }
+
+  /**
+   * Claims the one bootstrap-divergence probe slot per {@code intervalMs} window, returning whether the
+   * caller may probe. A lost CAS means another tick took the slot, so this one stands down rather than
+   * probing twice. Extracted (package-private) so the throttle is testable without a live leader: the
+   * rest of {@link #verifyBootstrapDivergence()} needs a reachable peer to reach it.
+   */
+  // @VisibleForTesting
+  boolean claimBootstrapDivergenceCheckSlot(final long now, final long intervalMs) {
+    final long previous = lastBootstrapDivergenceCheckMs.get();
+    if (previous != 0 && now - previous < intervalMs)
+      return false;
+    return lastBootstrapDivergenceCheckMs.compareAndSet(previous, now);
   }
 
   /**
