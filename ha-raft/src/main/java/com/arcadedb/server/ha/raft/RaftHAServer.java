@@ -144,7 +144,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<RaftPeerId, String> httpAddresses      = new ConcurrentHashMap<>();
   // Explicit HTTPS endpoints (optional 5th field in HA_SERVER_LIST). Used for encrypted
   // peer-to-peer transfers (snapshot download) when SSL is enabled.
-  private final    Map<RaftPeerId, String> httpsAddresses     = new HashMap<>();
+  // ConcurrentHashMap like its HTTP sibling, not because anything mutates it today - it is filled once in the
+  // constructor - but because it is READ from other threads (the verify endpoint's peer-query pool since issue
+  // #6221, the resync executors before it), and the day an addPeer overload starts declaring an https port the
+  // map type must not be the thing that has to be remembered.
+  private final    Map<RaftPeerId, String> httpsAddresses     = new ConcurrentHashMap<>();
   // Logged at most once: warns operators that HTTP addresses are derived (not explicitly configured).
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
@@ -465,6 +469,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * This node's own HTTPS address (host:port), or {@code null} when SSL is disabled or it cannot be resolved
+   * right now. The HTTPS counterpart of {@link #getLocalHttpAddress()}, resolved through the same path as every
+   * peer's HTTPS address so a caller comparing the two compares like with like (issue #6221).
+   */
+  public String getLocalHttpsAddress() {
+    return resolveHttpsAddress(localPeerId);
+  }
+
+  /**
    * Leader-driven recovery for a persistently STALLED replica (issue #4728). Invoked by
    * {@link ClusterMonitor} on the leader's lag-monitor thread once a replica's {@code matchIndex} has
    * not advanced for {@link GlobalConfiguration#HA_STALLED_REPLICA_RESYNC_DURATION_MS} while the
@@ -485,24 +498,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (targetId.equals(localPeerId))
       return; // never resync the leader itself
 
+    // Through the guard, like every other unattended dial of a resolved peer address (issue #6221). This one
+    // carries the most destructive payload of them all - "drop your copy of every database and download it
+    // again" - so an address that names the wrong follower costs a healthy node its local copies, and the id
+    // check above cannot see that: it says who we MEAN, not where the address points.
+    final PeerDialAddress dial = PeerDialAddress.resolve(this, targetId, "stalled replica");
+    if (dial.refused()) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot force resync of stalled replica '%s': %s", peerId,
+          dial.refusal());
+      return;
+    }
+
     // On an SSL-enabled cluster the follower listens on HTTPS (a different port from plain HTTP), so
     // prefer its HTTPS endpoint; mirror SnapshotInstaller's behaviour and fall back to plain HTTP
     // only when no HTTPS endpoint is known.
     final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-    boolean https = false;
-    String followerAddr = null;
-    if (useSSL) {
-      followerAddr = getPeerHttpsAddress(targetId);
-      if (followerAddr != null)
-        https = true;
-    }
-    if (followerAddr == null)
-      followerAddr = getPeerHttpAddress(targetId);
-    if (followerAddr == null) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Cannot force resync of stalled replica '%s': its address is unknown", peerId);
-      return;
-    }
+    final boolean https = useSSL && dial.httpsAddress() != null;
+    final String followerAddr = https ? dial.httpsAddress() : dial.httpAddress();
 
     final String clusterToken = getClusterToken();
     if (clusterToken == null || clusterToken.isEmpty()) {
@@ -1569,15 +1581,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return resolveHttpAddress(getLeaderId());
   }
 
-  /**
-   * Returns the HTTPS address (host:httpsPort) of the current Raft leader, or {@code null} when no
-   * HTTPS endpoint can be resolved (SSL disabled, no local HTTPS listener, or leader unknown).
-   * See {@link #getPeerHttpsAddress(RaftPeerId)}.
-   */
-  public String getLeaderHttpsAddress() {
-    return resolveHttpsAddress(getLeaderId());
-  }
-
   public RaftClient getClient() {
     return raftClient;
   }
@@ -1898,10 +1901,38 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * whatever it copied.
    */
   public String getUnambiguousPeerHttpAddress(final RaftPeerId peerId) {
-    final String address = resolveHttpAddress(peerId);
+    return unambiguousPeerAddress(peerId, false);
+  }
+
+  /**
+   * The HTTPS address of {@code peerId}, but only when it identifies that peer and no other; {@code null}
+   * otherwise. The HTTPS twin of {@link #getUnambiguousPeerHttpAddress}, and not a formality: the two endpoints
+   * are read from two independent maps - the 3rd field of {@link GlobalConfiguration#HA_SERVER_LIST} against its
+   * 5th - each with its own derive fallback onto <em>this</em> node's port for that protocol. A cluster that
+   * declares distinct {@code http} ports and omits the {@code https} one therefore passes the HTTP check and
+   * still collapses every peer's HTTPS endpoint onto this node's own, so the HTTP verdict cannot stand in for
+   * this one (issue #6221).
+   * <p>
+   * Returns {@code null} when SSL is disabled or no HTTPS listener is up, exactly as
+   * {@link #getPeerHttpsAddress} does: a caller that cannot resolve an HTTPS endpoint falls back to the plain
+   * HTTP one, which is the always-present listener, and a withheld address is meant to take the same route as an
+   * unknown one.
+   */
+  public String getUnambiguousPeerHttpsAddress(final RaftPeerId peerId) {
+    return unambiguousPeerAddress(peerId, true);
+  }
+
+  /**
+   * Shared body of the two accessors above: an address is handed out only when the peer asked about is the only
+   * one that resolves to it, or the only one that declared it. Parameterized by protocol rather than duplicated,
+   * so the HTTPS arm cannot answer a different question from the HTTP one.
+   */
+  private String unambiguousPeerAddress(final RaftPeerId peerId, final boolean https) {
+    final String address = https ? resolveHttpsAddress(peerId) : resolveHttpAddress(peerId);
     if (address == null)
       return null;
 
+    final Map<RaftPeerId, String> declared = https ? httpsAddresses : httpAddresses;
     final Collection<RaftPeer> peers = raftGroup.getPeers();
     // Index 0 is always the peer asked about. The +1 is not slack: raftGroup holds the peers HA_SERVER_LIST was
     // parsed into, so a peer that joined at runtime (addPeer, the Kubernetes auto-join) is not in getPeers() and
@@ -1909,17 +1940,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String[] addresses = new String[peers.size() + 1];
     final boolean[] fromConfig = new boolean[addresses.length];
     addresses[0] = address;
-    fromConfig[0] = httpAddresses.containsKey(peerId);
+    fromConfig[0] = declared.containsKey(peerId);
     int resolved = 1;
 
     for (final RaftPeer peer : peers) {
       if (peer.getId().equals(peerId))
         continue;
-      final String other = resolveHttpAddress(peer);
+      final String other = https ? resolveHttpsAddress(peer.getId()) : resolveHttpAddress(peer);
       if (other == null)
         continue;
       addresses[resolved] = other;
-      fromConfig[resolved] = httpAddresses.containsKey(peer.getId());
+      fromConfig[resolved] = declared.containsKey(peer.getId());
       ++resolved;
     }
 

@@ -1280,12 +1280,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // address can name this node itself or the wrong peer, and reconcileDatabasesFromLeader would succeed,
       // the install would be recorded, the read floor dropped, and the node would return to the ready set
       // carrying whatever it copied. Refusing is the honest disposition - Ratis retries the install.
-      final SnapshotSource source = resolveSnapshotSource(leaderId);
+      final PeerDialAddress source = resolveSnapshotSource(leaderId);
       if (source.refused())
         throw new SnapshotRefusedException(source.refusal());
 
       final String leaderHttpAddr = source.httpAddress();
-      final String leaderHttpsAddr = raftHAServer.getPeerHttpsAddress(leaderId);
+      // Both endpoints from the verdict: the reconciler prefers the encrypted one whenever it is non-null and
+      // threads it into every branch, so a raw HTTPS address here would walk this path - the automatic one, the
+      // one that had no checks at all before #6202 - straight back into the bug (issue #6221).
+      final String leaderHttpsAddr = source.httpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
 
       reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
@@ -1957,13 +1960,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Same refusals as every other path that pulls a snapshot, through the same helper (issue #6202): a
       // derived address that names this node would "restore" the local copy from itself and report success,
       // which is worse than the failure the caller already handles below.
-      final SnapshotSource source = resolveSnapshotSource(raftHAServer.getLeaderId());
+      final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
       if (source.refused())
         throw new RuntimeException("Cannot reinstall database '" + databaseName + "' from the leader: "
             + source.refusal());
 
       final String leaderHttpAddr = source.httpAddress();
-      final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+      // The guard's own HTTPS endpoint rather than the raw resolver's: it is declared and derived independently
+      // of the HTTP one, so the HTTP verdict does not cover it (issue #6221). Null falls back to plain HTTP.
+      final String leaderHttpsAddr = source.httpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       try {
         // install() keeps the database open during the download and rolls back on failure, so a
@@ -2230,7 +2235,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new ReplicationException("Cannot resync database '" + dbName
           + "' on the leader: the leader holds the authoritative copy. Run the resync on the diverged follower.");
 
-    final SnapshotSource source = resolveSnapshotSource(raft.getLeaderId());
+    final PeerDialAddress source = resolveSnapshotSource(raft.getLeaderId());
     if (source.refused())
       // The two checks this path used to make by hand (is this the leader, is the address known) are two of the
       // three the helper makes, and the third - an address that identifies no single peer - is the one an
@@ -2663,22 +2668,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * The HTTP address a snapshot resync may pull from, or the reason it may not. Exactly one field is set.
-   *
-   * @param httpAddress the leader's HTTP endpoint, when the resync may proceed
-   * @param refusal     why it may not, phrased to be logged after "Refusing a snapshot resync: "
-   */
-  private record SnapshotSource(String httpAddress, String refusal) {
-    static SnapshotSource refuse(final String reason) {
-      return new SnapshotSource(null, reason);
-    }
-
-    boolean refused() {
-      return refusal != null;
-    }
-  }
-
-  /**
    * Answers whether a snapshot resync from {@code leaderId} may be attempted, and with which address.
    * <p>
    * Every resync path asks it - the manual {@link #triggerSnapshotDownload()}, the targeted
@@ -2688,64 +2677,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Ratis-initiated path had none of these checks at all (issue #6202), and duplicating them would have made a
    * fourth hand-maintained copy of a rule the first three already disagreed about.
    * <p>
-   * Three refusals:
+   * The refusal that is specific to a resync is made here; the rest is the general question "may this node dial
+   * that one, and at which address?", which {@link PeerDialAddress#resolve} answers for every caller that acts on
+   * a resolved peer address unattended (issue #6221):
    * <ul>
    * <li><b>This node is the leader.</b> A node cannot repair itself from itself. {@code notifyLeaderChanged()}
    * submits a resync unconditionally - including on the node that just WON the election - and the leader address
    * then resolves to this node's own, so the "download" would copy this node's already-incomplete databases back
    * onto themselves and report success. That is merely pointless on some paths, but it lets
    * {@link #resolveStaleSnapshotFloorAfterResync} durably record the marker index as applied and drop the read
-   * floor, re-opening issue #6111 and surviving restarts.</li>
-   * <li><b>No address identifies the leader on its own.</b> With no {@code http} port declared in
-   * {@code HA_SERVER_LIST} a peer's address is derived from its Raft host plus THIS node's HTTP port, so on a
-   * cluster whose nodes differ by port rather than by host every peer collapses onto one address and it names at
-   * most one of them. {@link RaftHAServer#getUnambiguousPeerHttpAddress} withholds an address two peers claim -
-   * the ambiguity check the client-routing tables already make (issue #6183), which belongs here more, because
-   * here a confidently wrong address does durable damage rather than costing one redirect.</li>
-   * <li><b>The address is this node's own.</b> The backstop for the first refusal: leadership can move between
-   * the two checks, and {@code getLeaderId()} can already report this node while {@code isLeader()} has not
-   * caught up. The same comparison the write-forwarding path makes before it dials a resolved leader address, so
-   * the two cannot drift apart (issue #6191).</li>
+   * floor, re-opening issue #6111 and surviving restarts. A role check rather than an identity one: it fires
+   * before the address is even resolved, and it is the one refusal that is about what this node <em>is</em>
+   * rather than about where the other one lives.</li>
+   * <li><b>Everything {@link PeerDialAddress#resolve} refuses</b> - an unknown leader, an address that identifies
+   * no single peer (issue #6202), an address that is this node's own (issue #6191). The last is also the backstop
+   * for the leader-role check above: leadership can move between the two, and {@code getLeaderId()} can already
+   * report this node while {@code isLeader()} has not caught up.</li>
    * </ul>
    * Refusing leaves the node visibly behind - the floor stands, {@link #isResyncInProgress()} keeps it out of the
    * ready set, reads keep failing honestly - which is the state it is actually in. Ratis retries the install and
    * the {@link HealthMonitor} re-arms the manual path, so a refusal is not a dead end either.
    */
-  private SnapshotSource resolveSnapshotSource(final RaftPeerId leaderId) {
+  private PeerDialAddress resolveSnapshotSource(final RaftPeerId leaderId) {
     // Read once into a local: the field is volatile and a teardown can null it between two reads, which would
     // turn a refusal into a NullPointerException on the install path.
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA == null)
-      return SnapshotSource.refuse("the HA server is not available on this node");
+      return PeerDialAddress.refuse("the HA server is not available on this node");
 
     if (raftHA.isLeader())
-      return SnapshotSource.refuse("this node is the leader, so there is no peer to pull from. "
+      return PeerDialAddress.refuse("this node is the leader, so there is no peer to pull from. "
           + "The request stays pending until leadership moves elsewhere (issue #6111)");
 
-    if (leaderId == null)
-      return SnapshotSource.refuse("the leader is unknown");
-
-    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(leaderId);
-    if (leaderHttpAddr == null)
-      return SnapshotSource.refuse("no HTTP address identifies leader " + leaderId + " on its own - it is either "
-          + "unresolvable or shared with another peer, and reconciling databases from the wrong node cannot be "
-          + "undone. Declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-          + " (issue #6202)");
-
-    // Resolved once and compared once: reading it twice would let the two comparisons disagree.
-    final String localHttpAddr = raftHA.getLocalHttpAddress();
-    if (localHttpAddr == null)
-      // The resolver degrades to null when this node's own HTTP endpoint cannot be resolved right now. The check
-      // below then cannot fire, so say so rather than letting the backstop no-op invisibly: only the leader-role
-      // check is standing between us and a self-download.
-      LogManager.instance().log(this, Level.WARNING,
-          "Cannot resolve this node's own HTTP address; the self-resync address check is inactive for this "
-              + "attempt and only the leader-role check guards it (issue #6111)");
-    else if (RaftHAServer.isSameHttpEndpoint(localHttpAddr, leaderHttpAddr))
-      return SnapshotSource.refuse("the resolved leader address " + leaderHttpAddr + " is this node's own. "
-          + "The request stays pending until a peer holds the leadership (issue #6111)");
-
-    return new SnapshotSource(leaderHttpAddr, null);
+    return PeerDialAddress.resolve(raftHA, leaderId, "leader");
   }
 
   /**
@@ -2764,7 +2728,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA == null)
       return null;
-    final SnapshotSource source = resolveSnapshotSource(raftHA.getLeaderId());
+    final PeerDialAddress source = resolveSnapshotSource(raftHA.getLeaderId());
     if (source.refused()) {
       LogManager.instance().log(this, Level.WARNING, "Refusing to pull a snapshot: %s", source.refusal());
       return null;
@@ -2780,12 +2744,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Silent by design, which is what keeps the pair to one log line per attempt: a refusal makes this return null,
    * and the caller then consults the HTTP arm, which logs. When it does NOT refuse there is nothing to log, and
    * the HTTP arm is not consulted at all.
+   * <p>
+   * The HTTPS endpoint is the guard's own, not the raw resolver's: it is read from a different field of
+   * {@code HA_SERVER_LIST} than the HTTP one and derives onto a different local port, so a cluster that declares
+   * distinct {@code http} ports and omits the {@code https} ones passes the HTTP check while every peer's HTTPS
+   * endpoint still resolves to this node (issue #6221). Withheld, it returns null here and the download falls back
+   * to the guarded HTTP endpoint, which is the route an unresolvable HTTPS endpoint has always taken.
    */
   private String guardedLeaderHttpsAddress() {
     final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA == null || resolveSnapshotSource(raftHA.getLeaderId()).refused())
+    if (raftHA == null)
       return null;
-    return raftHA.getLeaderHttpsAddress();
+    return resolveSnapshotSource(raftHA.getLeaderId()).httpsAddress();
   }
 
   // @VisibleForTesting
@@ -2814,13 +2784,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       }
       try {
-        final SnapshotSource source = resolveSnapshotSource(raftHAServer.getLeaderId());
+        final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
         if (source.refused()) {
           LogManager.instance().log(this, Level.WARNING, "Refusing a snapshot resync: %s", source.refusal());
           return;
         }
-        final String leaderHttpAddr = source.httpAddress();
-        downloadAllDatabasesFrom(leaderHttpAddr);
+        downloadAllDatabasesFrom(source);
       } finally {
         snapshotDownloadLock.unlock();
       }
@@ -2840,12 +2809,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Reinstalls every present database from {@code leaderHttpAddr} and resolves the state a full resync clears.
-   * The caller has already established that the address may be pulled from ({@link #resolveSnapshotSource}) and
-   * holds {@link #snapshotDownloadLock}.
+   * Reinstalls every present database from {@code source} and resolves the state a full resync clears. Takes the
+   * whole verdict rather than one address so the encrypted endpoint reaching the installer is the guarded one
+   * too (issue #6221). The caller has already established that it may be pulled from
+   * ({@link #resolveSnapshotSource}) and holds {@link #snapshotDownloadLock}.
    */
-  private void downloadAllDatabasesFrom(final String leaderHttpAddr) throws IOException {
-    final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+  private void downloadAllDatabasesFrom(final PeerDialAddress source) throws IOException {
+    final String leaderHttpAddr = source.httpAddress();
+    final String leaderHttpsAddr = source.httpsAddress();
     final String clusterToken = raftHAServer.getClusterToken();
     int resynced = 0;
     for (final String dbName : server.getDatabaseNames()) {
@@ -3008,14 +2979,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
             // Same refusals as the two full-resync paths, through the same helper: a targeted resync reinstalls a
             // whole database from the resolved address, so an address naming this node or the wrong peer does the
             // same durable damage here (issue #6202).
-            final SnapshotSource source = resolveSnapshotSource(raftHAServer.getLeaderId());
+            final PeerDialAddress source = resolveSnapshotSource(raftHAServer.getLeaderId());
             if (source.refused()) {
               LogManager.instance().log(this, Level.WARNING,
                   "Refusing a targeted snapshot resync of quarantined database '%s': %s", dbName, source.refusal());
               return;
             }
             final String leaderHttpAddr = source.httpAddress();
-            final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+            final String leaderHttpsAddr = source.httpsAddress();
             final String clusterToken = raftHAServer.getClusterToken();
             // install() keeps the database open during the download and rolls back on failure, so a
             // targeted resync never leaves it closed.
