@@ -7330,6 +7330,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.fix = true;
     }
 
+    // Parse DELETE ORPHANS flag (#6090): opt-in reclaim of edge records no vertex's edge list references.
+    // ORPHANS alone identifies the clause - it is the only place the token appears in this statement.
+    if (checkCtx.ORPHANS() != null) {
+      stmt.deleteOrphans = true;
+    }
+
     // Parse COMPRESS flag
     if (checkCtx.COMPRESS() != null) {
       stmt.compress = true;

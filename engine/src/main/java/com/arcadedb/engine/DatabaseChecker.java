@@ -68,6 +68,8 @@ public class DatabaseChecker {
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
   private       boolean             compress     = false;
+  /** #6090: see {@link #setDeleteOrphanEdgeRecords(boolean)} for why this is not part of {@link #fix}. */
+  private       boolean             deleteOrphanEdgeRecords = false;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
   /**
@@ -151,6 +153,23 @@ public class DatabaseChecker {
     result.put("prunedDanglingEntries", 0L);
     result.put("reconnectedEdges", 0L);
     result.put("invalidLinks", 0L);
+    // Issue #6090: the ORPHAN EDGE RECORD findings, seeded so a clean run publishes zeros rather than omitting the
+    // keys - "does this database hold any?" must be answerable from the result of every run, not only from one that
+    // happened to find some. unreachableEdgeRecords is the orphan count (an edge record no adjacency list
+    // references, so no traversal reaches it though countType counts it); the two edgesMissing* keys are the
+    // per-side breakdown, IN only for a bidirectional edge type. missingReferenceBack is left exactly as it was.
+    //
+    // THE THREE ARE NOT DISJOINT, which matters to anything rendering them as a summary (Studio, an HTTP client):
+    // an orphaned BIDIRECTIONAL edge is one record that increments all three, and an orphaned unidirectional one
+    // increments unreachableEdgeRecords and edgesMissingOutReference. They answer "how many edges have this
+    // defect", each independently, not "which bucket does each defective edge fall into", so summing them
+    // double-counts. unreachableEdgeRecords is the one to show as the orphan total; the other two are the
+    // per-direction detail behind it plus the half-linked edges that are still reachable from one side.
+
+    result.put("unreachableEdgeRecords", 0L);
+    result.put("edgesMissingOutReference", 0L);
+    result.put("edgesMissingInReference", 0L);
+    result.put("unreachableEdgeRecordsFound", new LinkedHashSet<RID>());
     result.put("warnings", new LinkedHashSet<>());
     // Issue #6143: files this node holds that no schema component claims. Report-only, always present so a clean
     // run says "none" rather than saying nothing, and empty under a RECORD scope, which cannot answer the question.
@@ -486,6 +505,17 @@ public class DatabaseChecker {
   }
 
   /**
+   * Unions one edge scan's ORPHAN EDGE RECORD RIDs into the cross-type list (issue #6090). Merged by hand rather
+   * than through {@link #updateStats}, which only folds {@code Long} values - the same reason
+   * {@code corruptedRecords} is merged here. The count beside it stays exact even when this set hit its cap.
+   */
+  private void mergeUnreachableEdgeRecords(final Map<String, Object> stats) {
+    final Collection<RID> unreachable = (Collection<RID>) stats.get("unreachableEdgeRecordsFound");
+    if (unreachable != null)
+      ((LinkedHashSet<RID>) result.get("unreachableEdgeRecordsFound")).addAll(unreachable);
+  }
+
+  /**
    * Merges the records a sub-check actually deleted into {@code deletedRecordsAfterFix}.
    * <p>
    * Absent before, which made the field answer a different question depending on which pass did the removing: the
@@ -751,7 +781,7 @@ public class DatabaseChecker {
 
       final Map<String, Object> stats;
       if (type instanceof LocalEdgeType)
-        stats = graphChecker.checkEdges(type.getName(), rids, fix, verboseLevel,
+        stats = graphChecker.checkEdges(type.getName(), rids, fix, deleteOrphanEdgeRecords, verboseLevel,
             Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
       else
         stats = graphChecker.checkVertices(type.getName(), rids, fix, verboseLevel,
@@ -760,6 +790,7 @@ public class DatabaseChecker {
       updateStats(stats);
       ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
       ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeUnreachableEdgeRecords(stats);
       mergeDeletedRecords(stats);
       mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
           (Map<RID, String>) stats.get("missingReferenceErrors"));
@@ -868,13 +899,14 @@ public class DatabaseChecker {
       final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
       final Map<String, Object> stats = new GraphDatabaseChecker(database)
           .setProgress(progressCallback, "Checking edges '" + type.getName() + "'", currentStep, totalSteps)
-          .checkEdges(type.getName(), fix, verboseLevel,
+          .checkEdges(type.getName(), null, fix, deleteOrphanEdgeRecords, verboseLevel,
               Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
 
       updateStats(stats);
 
       ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
       ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeUnreachableEdgeRecords(stats);
       mergeDeletedRecords(stats);
       mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
           (Map<RID, String>) stats.get("missingReferenceErrors"));
@@ -968,6 +1000,23 @@ public class DatabaseChecker {
 
   public DatabaseChecker setCompress(final boolean compress) {
     this.compress = compress;
+    return this;
+  }
+
+  /**
+   * Opt-in for reclaiming ORPHAN EDGE RECORDS (issue #6090): edge records no vertex's adjacency list references.
+   * Only meaningful together with {@link #setFix(boolean)}, which performs the removal.
+   * <p>
+   * SEPARATE FROM {@code FIX} ON PURPOSE, and the reason is a data-loss path rather than a taste for options. The
+   * detection cannot distinguish "this record is garbage a failed load left behind" from "this vertex lost its
+   * head-chunk pointer, so its perfectly good edges look unreferenced" - a null head chunk reads exactly like a
+   * vertex with no edges. In the second case the edge records are the ONLY surviving description of that
+   * adjacency and the thing {@code RESTORE VERTEX} rebuilds it from, so a repair that deletes them by default
+   * would turn a recoverable database into an unrecoverable one. Reporting is therefore always on; removing is
+   * always asked for.
+   */
+  public DatabaseChecker setDeleteOrphanEdgeRecords(final boolean deleteOrphanEdgeRecords) {
+    this.deleteOrphanEdgeRecords = deleteOrphanEdgeRecords;
     return this;
   }
 
