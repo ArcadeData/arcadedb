@@ -379,6 +379,32 @@ class Issue6216AlgoWorkKnobBoundsTest {
   }
 
   @Test
+  void node2VecHonoursTheCommandTimeoutInsideOneNegativeSamplingLoop() {
+    // negSamples is the innermost knob and the only one with neither a heap ceiling (the walk budget prices
+    // the walk matrix, not the sampling) nor a maximum. One (position, context) pair costs negSamples x dim,
+    // and the nearest enclosing checkpoint runs BEFORE the sampling starts.
+    //
+    // Unlike the single-long-walk case, the unguarded version does eventually throw - at the next context
+    // checkpoint, once the whole sampling loop has run - so "it throws" proves nothing here and the assertion
+    // has to be about latency. walkLength 2 with windowSize 1 gives one context pair per position, so the
+    // unguarded run has to grind through 200 million x 128 operations before it can notice the deadline.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
+
+    final long start = System.currentTimeMillis();
+    assertThatThrownBy(() -> drain("CALL algo.node2vec({embeddingDimension: 128, walkLength: 2, walksPerNode: 1, "
+        + "windowSize: 1, negSamples: 200000000, iterations: 1, seed: 17}) YIELD node RETURN node"))
+        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+    final long elapsed = System.currentTimeMillis() - start;
+
+    // The bound comes from measurement, not taste: the whole test method runs in 0.33 s with the checkpoint
+    // in place and 24.0 s with it removed, so 5 s sits roughly 16x above the passing case and 5x below the
+    // failing one. Wide enough not to be a stopwatch on a slow machine, tight enough that it cannot pass
+    // while the sampling loop is unabortable.
+    assertThat(elapsed).as("the deadline must be observed inside the sampling loop, not after it")
+        .isLessThan(5_000L);
+  }
+
+  @Test
   void randomWalkHonoursTheCommandTimeoutEvenWithTheWalkMemoryBudgetDisabled() {
     // The budget is the only thing bounding `steps`, and it accepts "negative = no limit". With it disabled a
     // huge steps value is neither memory- nor - without a checkpoint in the step loop - time-bounded. The walk

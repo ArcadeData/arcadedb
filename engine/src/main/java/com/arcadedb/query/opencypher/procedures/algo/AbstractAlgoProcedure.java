@@ -256,6 +256,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * Heap cost of one row of a walk matrix on top of its payload: 16-byte array header, 4-byte length, 4 bytes of
    * padding and the 8-byte reference the enclosing array holds. Walk rows are typically short, so this overhead
    * is a real part of the footprint rather than a rounding error.
+   * <p>
+   * A heuristic for a budget check, not a guarantee: the true figure moves with the JVM's object layout
+   * (compressed oops on or off, alignment). It does not need to be exact - it only has to keep the estimate in
+   * the right order of magnitude - so there is nothing to "correct" here short of measuring a specific JVM.
    */
   protected static final long WALK_ROW_OVERHEAD_BYTES = 32L;
 

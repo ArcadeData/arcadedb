@@ -236,6 +236,11 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
 
             // Negative samples: target = 0
             for (int ns = 0; ns < negSamples; ns++) {
+              // negSamples is the innermost knob of all, and the only one with neither a heap ceiling nor a
+              // maximum: one (position, context) pair costs negSamples x dim. The enclosing checkpoint runs
+              // before the sampling starts, so without one here a single pair is unabortable however long it
+              // takes - the same "checkpoint outside the unbounded loop" shape closed above for windowSize.
+              guard.checkPeriodically(ns);
               int neg = rng.nextInt(n);
               if (neg == center || neg == ctxNode)
                 neg = (neg + 1) % n;
