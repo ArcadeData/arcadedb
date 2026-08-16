@@ -145,12 +145,7 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
           db.newDocument("TestType").set("name", "deferred-" + i).save();
       });
 
-      // Wait for the flush thread to move the committed batch into the deferred backlog. The deadline only bounds a
-      // hang: the flush thread polls its queue on a 1s timeout, so 60s is orders of magnitude above the worst-case
-      // deferral latency even on the loaded runners that made #5326 visible in the first place.
-      final long deadline = System.currentTimeMillis() + 60_000;
-      while (flushThread.deferredRAMBytes.get() == 0 && System.currentTimeMillis() < deadline)
-        Thread.sleep(10);
+      awaitEveryCommittedBatchDeferred(flushThread);
 
       final MutablePage pending = flushThread.pageIndex.get(pageId);
       assertThat(pending).as("the committed page must still be pending in the flush pipeline").isNotNull();
@@ -227,9 +222,7 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
         });
       }
 
-      final long deadline = System.currentTimeMillis() + 60_000;
-      while (flushThread.deferredRAMBytes.get() == 0 && System.currentTimeMillis() < deadline)
-        Thread.sleep(10);
+      awaitEveryCommittedBatchDeferred(flushThread);
 
       final MutablePage newest = flushThread.pageIndex.get(pageId);
       assertThat(newest).as("the twice-committed page must still be pending in the flush pipeline").isNotNull();
@@ -273,5 +266,25 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
     pageManager.removePageFromCache(pageId);
     final ImmutablePage reloaded = pageManager.getImmutablePage(pageId, pageSize, false, true);
     assertThat(reloaded.getVersion()).isEqualTo(replicatedVersion);
+  }
+
+  /**
+   * Waits until EVERY batch committed while suspended has been polled out of the flush queue and parked in the
+   * deferred backlog.
+   * <p>
+   * The condition is the drained pipeline, not {@code deferredRAMBytes > 0}: with more than one commit, the first
+   * deferral says nothing about the second batch, which can still be sitting in the queue - and a copy of the page
+   * that is in the QUEUE rather than in the deferred map is detached without touching the deferred accounting, so
+   * the "both copies left the backlog" assertion would see one page's worth and fail, blaming the detach for a race
+   * in the wait. The deadline only bounds a hang: the flush thread polls on a 1 s timeout, so 60 s is orders of
+   * magnitude above the worst-case deferral latency even on the loaded runners that made #5326 visible.
+   */
+  private static void awaitEveryCommittedBatchDeferred(final PageManagerFlushThread flushThread) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while (System.currentTimeMillis() < deadline) {
+      if (flushThread.deferredRAMBytes.get() > 0 && flushThread.queue.isEmpty() && flushThread.nextPagesToFlush.get() == null)
+        return;
+      Thread.sleep(10);
+    }
   }
 }

@@ -98,39 +98,31 @@ public class TruncateBucketStatement extends DDLStatement {
       }
     }
 
-    // Delete all records in the bucket, committing one transaction per (small) batch so that in HA each
-    // Raft log entry stays small and leader heartbeats are not starved by a single multi-MB entry. The
-    // batch commit runs inside the scan callback, but LocalBucket.scan swallows any callback exception
-    // (including a commit failure from an HA leader change) as a per-record "Error on loading record"
-    // and keeps scanning - which silently turned a failure into a partial truncate reported as success
-    // (issue #4817). Catch the failure here, before that swallowing catch sees it, stop the scan and
-    // rethrow it so the command fails loudly.
-    final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
+    // Delete all records in the bucket. Who owns the transaction decides whether the deletion may be split into
+    // small committed batches - see TruncateRecordDeleter: inside a caller's transaction it may not, or a later
+    // ROLLBACK would put back only the last, uncommitted batch (issue #6220).
+    final RuntimeException deletionFailure;
+    final boolean transactional = db.isTransactionActive();
+    if (transactional) {
+      deletionFailure = TruncateRecordDeleter.deleteAll(db, 0, callback -> db.scanBucket(resolvedBucketName, callback::test));
+    } else {
+      final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
 
-    final RuntimeException[] deletionFailure = { null };
-    final long[] count = { 0 };
-    db.scanBucket(resolvedBucketName, record -> {
-      try {
-        record.delete();
-        if (++count[0] % batchSize == 0 && db.isTransactionActive()) {
-          db.commit();
-          db.begin();
-        }
-        return true;
-      } catch (final RuntimeException e) {
-        deletionFailure[0] = e;
-        return false; // stop the scan; surface the failure below
-      }
-    });
+      // A bucket owns no indexes, so there is nothing to do between the last delete and the close-out: no hook.
+      deletionFailure = TruncateRecordDeleter.deleteAllInOwnTransaction(db, batchSize,
+          callback -> db.scanBucket(resolvedBucketName, callback::test), null, "BUCKET '" + resolvedBucketName + "'");
+    }
 
-    if (deletionFailure[0] != null)
-      throw deletionFailure[0];
+    if (deletionFailure != null)
+      throw deletionFailure;
 
     // Build result
     final ResultInternal result = new ResultInternal(db);
     result.setProperty("operation", "truncate bucket");
     result.setProperty("bucketName", resolvedBucketName);
     result.setProperty("bucketId", bucket.getFileId());
+    // Which of the two paths ran, so a caller can tell whether its ROLLBACK will put the records back (issue #6220).
+    result.setProperty("transactional", transactional);
 
     rs.add(result);
     return rs;

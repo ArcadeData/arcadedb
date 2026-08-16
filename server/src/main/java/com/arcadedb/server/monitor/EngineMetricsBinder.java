@@ -96,6 +96,14 @@ public final class EngineMetricsBinder implements MeterBinder {
     counter(registry, "arcadedb.engine.page.merges.slot", "Commit-time disjoint-slot page merges", "txPageSlotMerges");
     counter(registry, "arcadedb.engine.page.merges.declined", "Page merges declined for lack of declared coverage",
         "mergesDeclinedByCoverage");
+    // #6217: the read-path twin of the merges above. A record too big for its page is read by walking its chunk
+    // chain, and the chunks of unrelated records share pages: a revalidation is a read that met one of those writes
+    // and completed anyway, a retry is a read thrown away because the record itself had moved. Retries climbing
+    // while revalidations stay flat is real contention on one record; the opposite is the mechanism working.
+    counter(registry, "arcadedb.engine.record.chunked.read.revalidations",
+        "Chunked reads that completed after a page they walked had moved", "chunkChainReadRevalidations");
+    counter(registry, "arcadedb.engine.record.chunked.read.retries",
+        "Chunked reads restarted because the record changed under them", "chunkChainReadRetries");
     counter(registry, "arcadedb.engine.tx.write", "Write transactions", "writeTx");
     counter(registry, "arcadedb.engine.tx.read", "Read transactions", "readTx");
     counter(registry, "arcadedb.engine.tx.rollbacks", "Transaction rollbacks", "txRollbacks");
@@ -158,7 +166,11 @@ public final class EngineMetricsBinder implements MeterBinder {
         "snapshotOldestWindowAge");
 
     // #6087: the companion reading for the OTHER path. While a reader freezes the files with a flush suspension,
-    // dirty pages pile up here; crossing arcadedb.flushSuspendMaxDeferredRAM throttles committing threads outright.
+    // dirty pages pile up here; crossing arcadedb.flushSuspendMaxDeferredRAM throttles the committing threads of the
+    // SUSPENDED databases (since #6200 - before it the flush thread stopped draining its queue altogether, so the
+    // committers of every OPEN database were throttled with them). This reading stays JVM-wide because the cap is,
+    // and the per-database split that item 2 of #6087 wants to tag it by now exists as
+    // PageManager.getDeferredRAMBytesOf.
     gauge(registry, "arcadedb.engine.flush.deferred.bytes", "Dirty page bytes deferred by a flush suspension",
         "deferredRAM");
   }

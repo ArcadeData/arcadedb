@@ -26,6 +26,8 @@ import com.arcadedb.engine.PageManagerFlushThread.PagesToFlush;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,13 +36,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * accumulated without bound in {@link PageManagerFlushThread}'s deferred map while page flushing was suspended.
  * <p>
  * The fix caps the deferred backlog ({@code arcadedb.flushSuspendMaxDeferredRAM}). Once the cap is reached the
- * flush thread stops draining its bounded queue, which then fills and backpressures the committing threads
- * instead of letting the deferred map grow until the heap is exhausted.
+ * committing threads of the suspended database are throttled, instead of the deferred map growing until the heap
+ * is exhausted.
+ * <p>
+ * <b>Where that throttling happens moved in #6200</b>, and this test moved with it. It used to be the flush thread
+ * that stopped draining its bounded queue, which then filled and backpressured the committers - all of them, of
+ * every open database, and inside the JVM-wide page-manager lock that publication holds. The cap is now served on
+ * the committer side of the suspended database only ({@code awaitDeferredBacklogUnderCap}), before that lock is
+ * taken, and the flush thread always drains. The bound this test exists for is unchanged and is asserted below in
+ * its new form: past the cap, no further page of the suspended database can be published.
  */
 class PageManagerFlushSuspendBackpressureTest extends TestHelper {
 
-  private static final int PAGE_SIZE = 256 * 1024;          // 256 KB per page
-  private static final int CAP_MB    = 1;                   // 1 MB deferred cap -> 4 pages fit exactly
+  private static final int  PAGE_SIZE = 256 * 1024;          // 256 KB per page
+  private static final int  CAP_MB    = 1;                   // 1 MB deferred cap -> 4 pages fit exactly
+  private static final long CAP_BYTES = (long) CAP_MB * 1024 * 1024;
 
   @Test
   void deferredBacklogStaysBoundedWhileSuspended() throws Exception {
@@ -53,28 +63,45 @@ class PageManagerFlushSuspendBackpressureTest extends TestHelper {
 
     final Database db = (Database) database;
     flush.setSuspended(db, true);
+    try {
+      // Enqueue 4 single-page batches: exactly what fits under the 1 MB cap.
+      final int batches = 4;
+      for (int i = 0; i < batches; i++) {
+        final PageId pageId = new PageId(database, 9, i);
+        final MutablePage page = new MutablePage(pageId, PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
+        flush.pageIndex.put(page);
+        flush.queue.offer(new PagesToFlush(List.of(page)));
+      }
 
-    // Enqueue 6 single-page batches: 4 fit under the 1 MB cap, the remaining 2 must stay in the queue.
-    final int batches = 6;
-    for (int i = 0; i < batches; i++) {
-      final PageId pageId = new PageId(database, 9, i);
-      final MutablePage page = new MutablePage(pageId, PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
-      flush.pageIndex.put(page);
-      flush.queue.offer(new PagesToFlush(List.of(page)));
+      // Drive the flush thread by hand: with the database suspended every batch is deferred, never written.
+      for (int i = 0; i < batches; i++)
+        flush.flushPagesFromQueueToDisk(null, 20L);
+
+      assertThat(flush.deferredRAMBytes.get()).isEqualTo(4L * PAGE_SIZE);
+      assertThat(flush.deferredRAMBytes.get()).isGreaterThanOrEqualTo(CAP_BYTES);
+
+      // The backlog is at the cap, so the next committer of THIS database is held before it can publish anything
+      // more into it - which is what keeps the deferred map from growing until the heap is exhausted.
+      final CountDownLatch published = new CountDownLatch(1);
+      final Thread committer = new Thread(() -> {
+        try {
+          flush.awaitDeferredBacklogUnderCap(db);
+          published.countDown();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }, "issue4728-committer");
+      committer.start();
+      try {
+        assertThat(published.await(500, TimeUnit.MILLISECONDS)).as(
+            "past the cap no further page of the suspended database may be published").isFalse();
+      } finally {
+        committer.interrupt();
+        committer.join(TimeUnit.SECONDS.toMillis(10));
+      }
+    } finally {
+      flush.setSuspended(db, false);
     }
-
-    // Drive the flush thread by hand. Each call either defers one batch (under cap) or, once the cap is hit,
-    // returns without polling. A short timeout keeps the over-cap sleeps fast.
-    for (int i = 0; i < batches + 4; i++)
-      flush.flushPagesFromQueueToDisk(null, 20L);
-
-    final long capBytes = (long) CAP_MB * 1024 * 1024;
-    // The deferred backlog never exceeds the cap...
-    assertThat(flush.deferredRAMBytes.get()).isLessThanOrEqualTo(capBytes);
-    // ...and exactly the 4 pages that fit were deferred.
-    assertThat(flush.deferredRAMBytes.get()).isEqualTo(4L * PAGE_SIZE);
-    // ...leaving the remaining 2 batches stuck in the queue (this is the writer backpressure signal).
-    assertThat(flush.queue).hasSize(2);
   }
 
   @Test
