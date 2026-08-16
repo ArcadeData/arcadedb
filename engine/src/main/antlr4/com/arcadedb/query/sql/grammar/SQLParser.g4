@@ -1101,6 +1101,9 @@ checkDatabaseStatement
       (BUCKET (identifier | INTEGER_LITERAL) (COMMA (identifier | INTEGER_LITERAL))*)?
       (RECORD rid (COMMA rid)*)?
       (FIX)?
+      // Issue #6090: opt-in reclaim of ORPHAN EDGE RECORDS (edge records no vertex's edge list references).
+      // Deliberately its own clause rather than part of FIX - see DatabaseChecker.setDeleteOrphanEdgeRecords.
+      (DELETE ORPHANS)?
       (COMPRESS)?
     ;
 
@@ -1697,6 +1700,7 @@ identifier
     | REFERENCES
     | ADDBUCKET
     | REMOVEBUCKET
+    | ORPHANS
     | FORCE
     | OPTIMIZE
     | INVERSE

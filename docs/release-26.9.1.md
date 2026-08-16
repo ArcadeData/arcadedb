@@ -1910,3 +1910,55 @@ Two things the same method carried:
   parking the single-threaded lifecycle executor.
 
 [#6202](https://github.com/ArcadeData/arcadedb/issues/6202)
+
+## `CHECK DATABASE` now reports an orphan edge record, and can reclaim one on request (#6090)
+
+An **orphan edge record** is an edge record that exists physically in an edge-type bucket, whose `@out`/`@in`
+name valid vertices, but which no vertex's edge list points back at: `countType()` counts it, no traversal
+reaches it. `GraphDatabaseChecker.checkEdges` already scanned every edge record and already probed both
+endpoints for a back-reference - the scan and the direction were both right - and then discarded the answer.
+Both call sites did nothing but `missingReferenceBack.incrementAndGet()`. No warning named the record, nothing
+entered `corruptedRecords`, and so `CHECK DATABASE FIX` never reclaimed one.
+
+The published counter could not stand in for the finding either, because it is not edge-type aware. A
+perfectly healthy **unidirectional** edge is legitimately absent from its target's IN list and bumps it by 1; a
+genuinely orphaned bidirectional edge bumps it by 2. One aggregate, no breakdown, no RIDs - on a database that
+uses unidirectional edge types at all, the signal is buried. The honest way to answer "does my database hold
+any?" was to run a full traversal yourself and compare it against `countType`.
+
+The probe is now **direction-aware**, and what it establishes is reported:
+
+- an edge absent from its OUT vertex's OUT list is a defect for every edge type - no outgoing traversal reaches
+  it - and is counted under `edgesMissingOutReference`;
+- an edge absent from its IN vertex's IN list is a defect only when the type is BIDIRECTIONAL, counted under
+  `edgesMissingInReference`;
+- an edge **neither** list names is an orphan record: warned with its RID and both endpoints, counted under
+  `unreachableEdgeRecords` and named in `unreachableEdgeRecordsFound`.
+
+`missingReferenceBack` is deliberately untouched - both probes still run and it is still bumped once per side
+that holds no reference - so anything parsing today's result keeps reading the same number.
+
+The three new counters are **not disjoint**, which matters if you render them as a summary: one orphaned
+bidirectional edge increments all three. Each answers "how many edges have this defect" independently, so
+summing them double-counts. `unreachableEdgeRecords` is the orphan total; the other two are the per-direction
+detail behind it, plus the half-linked edges that are still reachable from one side.
+
+Reclaiming them is a new, explicit clause: **`CHECK DATABASE FIX DELETE ORPHANS`**. It is not folded into plain
+`FIX`, and the reason is a data-loss path rather than a taste for options. The detection cannot distinguish
+"this record is garbage a failed bulk load left behind" from "this vertex lost its head-chunk pointer, so its
+perfectly good edges look unreferenced" - a null head chunk reads exactly like a vertex with no edges. In the
+second case the edge records are the only surviving description of that adjacency and the thing `RESTORE
+VERTEX` rebuilds it from, so a repair that deleted them by default would turn a recoverable database into an
+unrecoverable one. Reporting is therefore always on; removing is always asked for, and `DELETE ORPHANS` without
+`FIX` is refused rather than silently implying it.
+
+The classification is conservative by construction: an edge is called unreachable only when **both** probes
+positively established the absence. A far endpoint that could not be loaded is already reported as a dangling
+link, and one whose list could not be walked is left to `checkVertices`, which runs after this pass and
+rebuilds the chain from the surviving edge records - neither may be answered by deleting the record that repair
+reads from.
+
+#6089 stopped `GraphBatch` from creating orphans on a failed flush; this is what finds the ones an older build
+already left behind.
+
+[#6090](https://github.com/ArcadeData/arcadedb/issues/6090)
