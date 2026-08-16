@@ -3416,11 +3416,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (contentPos + chunkSize > page.getMaxContentSize())
         return false;
 
-      for (int i = 0; i < chunkSize; ++i)
-        if (page.readByte(contentPos + i) != record.getByte(contentOffset + i))
-          return false;
-
-      return true;
+      // A chunk is up to a page long, so the content comparison is bulk (one intrinsified Arrays.equals over the two
+      // heap arrays, stopping at the first difference) rather than a byte loop through the accessors.
+      return page.isSameContentAs(contentPos, record, contentOffset, chunkSize);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unable to re-read chunk %d of page %s during a chunked read", e, slot,
               page.getPageId());
