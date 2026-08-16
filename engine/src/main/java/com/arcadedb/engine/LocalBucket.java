@@ -134,6 +134,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   long                      FNV_OFFSET_BASIS                 = 0xcbf29ce484222325L;
   private static final   long                      FNV_PRIME                        = 0x100000001b3L;
   private static final   int                       CHUNKS_BEFORE_LOOP_DETECTION     = 64;
+  /**
+   * Layout of the trace {@link #loadMultiPageRecord} keeps of the chain it walked, one stride per chunk consumed, so
+   * the read can be validated against what it actually READ instead of against the version of the pages that read
+   * happened to touch (#6217). Four longs in one flat array rather than an object per chunk: this is the read path of
+   * every record too big for its page, and the trace is thrown away at the end of the read.
+   * <p>
+   * The two things NOT in it are the ones that are derivable: a chunk's content offset inside the assembled record is
+   * the sum of the sizes before it, and the pointer a chunk carries to the next one is that chunk's own
+   * (page, slot) - which is why the validation can check the chain's SHAPE, and not only its bytes, without storing
+   * anything more.
+   */
+  private static final   int                       CHAIN_TRACE_STRIDE               = 4;
+  private static final   int                       CHAIN_TRACE_PAGE_NUMBER          = 0;
+  private static final   int                       CHAIN_TRACE_PAGE_VERSION         = 1;
+  private static final   int                       CHAIN_TRACE_SLOT                 = 2;
+  private static final   int                       CHAIN_TRACE_CHUNK_SIZE           = 3;
+  /** No page the read walked has moved since: the chain is trivially the one that was read. */
+  private static final   int                       CHAIN_READ_UNCHANGED             = 0;
+  /** A page the read walked has moved, but not one byte this record owns on it: the read stands (#6217). */
+  private static final   int                       CHAIN_READ_REVALIDATED           = 1;
+  /** The record itself moved under the read: what was assembled may be a mix of two commits, so it is thrown away. */
+  private static final   int                       CHAIN_READ_CHANGED               = 2;
   private static final   long                      MINIMUM_SPACE_LEFT_IN_PAGE       = 50L;
   private static final   int                       MAX_PAGES_GATHER_STATS           = 100;
   private static final   long                      MAX_TIMEOUT_GATHER_STATS         = 5000L;
@@ -3164,14 +3186,34 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Loads a multi-page record with version validation to detect concurrent modifications.
-   * Under READ_COMMITTED isolation (the default), pages are not cached in the transaction,
-   * so different pages of a multi-page record can be read from different commit points.
-   * This can cause silent data corruption when another transaction modifies the record
-   * between page reads. To detect this, we validate that the first page version hasn't
-   * changed after reading all chunks. If it has, the read is automatically retried (up to
-   * {@link GlobalConfiguration#TX_RETRIES} times) to handle transient conflicts transparently.
-   * This ensures read-only queries do not fail with ConcurrentModificationException.
+   * Loads a multi-page record, validating that what it assembled is one committed state of the record and not a mix
+   * of two.
+   * <p>
+   * Under READ_COMMITTED isolation (the default) the transaction caches no page, so every chunk of the chain is
+   * loaded independently and a concurrent commit landing between two of those loads would otherwise be assembled into
+   * a record that never existed - typically a truncated one, surfacing as a {@code BufferUnderflowException} on
+   * deserialization. A read that finds such a mix is retried (up to {@link GlobalConfiguration#TX_RETRIES} times), so
+   * read-only queries absorb ordinary contention instead of failing with a
+   * {@link ConcurrentModificationException}.
+   * <p>
+   * <b>What is validated is the RECORD, not the pages it lives on (#6217).</b> This walk used to re-check the VERSION
+   * of every page the chain touched, and a page version moves when ANY record on it moves - continuation chunks of
+   * different records share pages because the allocator packs them there on purpose - so a reader was failed by
+   * writes that had not touched a single byte of its own record, and after the retry budget it raised a
+   * {@code ConcurrentModificationException} on an untouched record. It is the read-path twin of the false conflict
+   * the disjoint-slot merge removed from the write path in #5381/#6129/#6175.
+   * <p>
+   * The version is still the FAST path - a page that has not moved cannot hold a chunk that has - but a page that HAS
+   * moved is now asked the precise question instead: is the chunk this record owns on it still, byte for byte, the
+   * one this read consumed? Marker, declared size, next-chunk pointer and content are compared against the trace kept
+   * during the walk ({@link #CHAIN_TRACE_STRIDE}), which covers the chain's shape as well as its bytes: a chunk that
+   * moved to another slot, a chain that gained or lost one, a head chunk that collapsed back into a plain record
+   * (#6178) all change one of the four. When every chunk answers yes, the assembled record is exactly what a fresh
+   * read of the newest committed state would produce, so the read stands.
+   * <p>
+   * A byte comparison rather than the 64-bit fold {@code offPageContentFingerprint} uses on the commit side: it costs
+   * the same walk, is paid only on a page that actually moved, and unlike a hash it cannot be wrong. The commit side
+   * has to compare two points in TIME and can only carry a number across them; a read holds both images at once.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -3179,19 +3221,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                      long[] recordSize) throws IOException {
     final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
     final PageId firstPageId = firstPage.pageId;
+    final int firstChunkSlot = (int) (originalRID.getPosition() % maxRecordsInPage);
 
     for (int retry = 0; retry <= maxRetries; retry++) {
-      // Track ALL page versions during the chain walk for consistency validation.
-      // Under READ_COMMITTED isolation, each page is loaded independently from disk/cache.
-      // A concurrent commit between page loads can produce an inconsistent mix of old and new
-      // chunk data, leading to truncated records (BufferUnderflowException on deserialization).
-      final List<long[]> pageVersions = new ArrayList<>(); // [fileId, pageNumber, version]
-      pageVersions.add(new long[] { firstPage.pageId.getFileId(), firstPage.pageId.getPageNumber(), firstPage.getVersion() });
+      // Trace of the chunks this attempt consumed, in chain order: where each one was, at which version of its page,
+      // and how long it was. Sized for the chains that exist in practice and grown only by a record that has more.
+      long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
+      int chunks = 0;
 
       boolean chainInconsistent = false;
       final Binary record = new Binary();
       try {
         BasePage page = firstPage;
+        int currentSlot = firstChunkSlot;
         int currentRecordPositionInPage = recordPositionInPage;
         long[] currentRecordSize = recordSize;
 
@@ -3203,6 +3245,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
                   chunkSize);
           record.append(chunk);
+
+          if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
+            chainTrace = Arrays.copyOf(chainTrace, chainTrace.length * 2);
+          final int trace = chunks * CHAIN_TRACE_STRIDE;
+          chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER] = page.pageId.getPageNumber();
+          chainTrace[trace + CHAIN_TRACE_PAGE_VERSION] = page.getVersion();
+          chainTrace[trace + CHAIN_TRACE_SLOT] = currentSlot;
+          chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
+          ++chunks;
 
           if (nextChunkPointer == 0)
             break;
@@ -3230,7 +3281,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                             + chunkPositionInPage);
 
           page = nextPage;
-          pageVersions.add(new long[] { page.pageId.getFileId(), page.pageId.getPageNumber(), page.getVersion() });
+          currentSlot = chunkPositionInPage;
           currentRecordPositionInPage = nextRecordPositionInPage;
 
           currentRecordSize = page.readNumberAndSize(currentRecordPositionInPage);
@@ -3245,22 +3296,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       if (!chainInconsistent) {
-        // Validate ALL page versions: re-check each page to detect concurrent modifications.
-        // If any page was modified during our read, the assembled data may be inconsistent.
-        for (final long[] pv : pageVersions) {
-          final BasePage currentPage = database.getPageManager()
-                  .getImmutablePage(new PageId(database, (int) pv[0], (int) pv[1]), pageSize, false, true);
-          if (currentPage != null && currentPage.getVersion() != pv[2]) {
-            chainInconsistent = true;
-            break;
-          }
-        }
+        // OUTSIDE the catch above, deliberately and as the page-version loop this replaced already was: everything
+        // the validation reads OUT OF A PAGE is answered by isChunkStillTheOneRead, which never throws and reads a
+        // chunk it cannot make sense of as a chunk that changed. What is left to come out of here is the failure to
+        // LOAD a page at all, which is an I/O error and not a conflict - absorbing it would spend the retry budget
+        // on a broken disk and then report it as "the record was modified during read".
+        final int verdict = validateChainRead(chainTrace, chunks, record);
+        if (verdict == CHAIN_READ_REVALIDATED)
+          database.getPageManager().incrementChunkChainReadRevalidations();
+        chainInconsistent = verdict == CHAIN_READ_CHANGED;
       }
 
       if (!chainInconsistent) {
         record.position(0);
         return record;
       }
+
+      database.getPageManager().incrementChunkChainReadRetries();
 
       // Retry by re-fetching the first page with fresh data
       if (retry < maxRetries) {
@@ -3271,7 +3323,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (firstPage == null)
           throw new ConcurrentModificationException(
                   "First page of multi-page record " + originalRID + " was removed during read");
-        recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
+        recordPositionInPage = getRecordPositionInPage(firstPage, firstChunkSlot);
         if (recordPositionInPage == 0)
           throw new ConcurrentModificationException(
                   "Multi-page record " + originalRID + " was deleted during read");
@@ -3283,6 +3335,95 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     throw new DatabaseOperationException("Failed to load multi-page record " + originalRID);
+  }
+
+  /**
+   * Decides whether the chain {@link #loadMultiPageRecord} just walked is still the one it read (#6217).
+   * <p>
+   * Every chunk is checked against the NEWEST committed image of its page: unchanged page version means unchanged
+   * chunk and costs a cache lookup, a moved page is compared byte for byte against what the read consumed. A page
+   * that cannot be read at all is left alone, exactly as the version check that preceded this did - there is nothing
+   * to compare against, and failing a read on it would be inventing a conflict.
+   *
+   * @return {@link #CHAIN_READ_UNCHANGED}, {@link #CHAIN_READ_REVALIDATED} or {@link #CHAIN_READ_CHANGED}.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private int validateChainRead(final long[] chainTrace, final int chunks, final Binary record) throws IOException {
+    int verdict = CHAIN_READ_UNCHANGED;
+    int contentOffset = 0;
+
+    for (int chunk = 0; chunk < chunks; ++chunk) {
+      final int trace = chunk * CHAIN_TRACE_STRIDE;
+      final int chunkSize = (int) chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE];
+
+      final BasePage currentPage = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), (int) chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]),
+                      pageSize, false, true);
+
+      if (currentPage != null && currentPage.getVersion() != chainTrace[trace + CHAIN_TRACE_PAGE_VERSION]) {
+        // The pointer this chunk carries is the NEXT chunk's own (page, slot), so the chain's shape is checked with
+        // the trace and nothing else: a chain that gained or lost a chunk, or whose next chunk was relocated, fails
+        // here even when every byte of content is the same.
+        final long nextChunkPointer = chunk + 1 < chunks ?
+                chainTrace[(chunk + 1) * CHAIN_TRACE_STRIDE + CHAIN_TRACE_PAGE_NUMBER] * (long) maxRecordsInPage
+                        + chainTrace[(chunk + 1) * CHAIN_TRACE_STRIDE + CHAIN_TRACE_SLOT] :
+                0L;
+
+        if (!isChunkStillTheOneRead(currentPage, (int) chainTrace[trace + CHAIN_TRACE_SLOT],
+                chunk == 0 ? FIRST_CHUNK : NEXT_CHUNK, chunkSize, nextChunkPointer, record, contentOffset))
+          return CHAIN_READ_CHANGED;
+
+        verdict = CHAIN_READ_REVALIDATED;
+      }
+
+      contentOffset += chunkSize;
+    }
+
+    return verdict;
+  }
+
+  /**
+   * Whether {@code slot} of {@code page} still holds, byte for byte, the chunk a read consumed from it: the marker
+   * that says which kind of chunk it is, the size it declares, the pointer it carries to the next one, and its
+   * content - which lives in {@code record}, from {@code contentOffset}, because that is where the read copied it.
+   * <p>
+   * Never throws: a chunk that cannot be read where one was is a chunk that changed, which is the answer this
+   * question wants for it anyway.
+   */
+  private boolean isChunkStillTheOneRead(final BasePage page, final int slot, final long expectedMarker,
+                                         final int chunkSize, final long nextChunkPointer, final Binary record,
+                                         final int contentOffset) {
+    try {
+      if (slot >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return false;
+
+      final int chunkPositionInPage = getRecordPositionInPage(page, slot);
+      if (chunkPositionInPage == 0)
+        // The slot was freed: this chunk is no longer part of any record.
+        return false;
+
+      final long[] marker = page.readNumberAndSize(chunkPositionInPage);
+      if (marker[0] != expectedMarker)
+        return false;
+
+      final int headerPos = (int) (chunkPositionInPage + marker[1]);
+      if (page.readInt(headerPos) != chunkSize
+              || page.readLong(headerPos + INT_SERIALIZED_SIZE) != nextChunkPointer)
+        return false;
+
+      final int contentPos = headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+      if (contentPos + chunkSize > page.getMaxContentSize())
+        return false;
+
+      // A chunk is up to a page long, so the content comparison is bulk (one intrinsified Arrays.equals over the two
+      // heap arrays, stopping at the first difference) rather than a byte loop through the accessors.
+      return page.isSameContentAs(contentPos, record, contentOffset, chunkSize);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Unable to re-read chunk %d of page %s during a chunked read", e, slot,
+              page.getPageId());
+      return false;
+    }
   }
 
   private int getRecordPositionInPage(final BasePage page, final int positionInPage) throws IOException {
