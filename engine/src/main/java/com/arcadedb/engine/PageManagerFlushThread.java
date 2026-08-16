@@ -802,6 +802,15 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
+  /**
+   * Whether a deferred-batch queue is still held for this database. Exists so the regression test of issue #6200
+   * can prove that purging a SUSPENDED database leaves no queue behind - one nothing would ever resume, pinning the
+   * closed instance as a map key and its pages in RAM for the life of the process.
+   */
+  boolean hasDeferredBatches(final BasicDatabase database) {
+    return deferredByDatabase.containsKey(database);
+  }
+
   /** Bytes of dirty pages currently deferred for a single database (issue #6200, gauge of item 2 of #6087). */
   public long getDeferredRAMBytesOf(final BasicDatabase database) {
     final AtomicLong bytes = deferredRAMByDatabase.get(database);
@@ -891,12 +900,29 @@ public class PageManagerFlushThread extends Thread {
 
     // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
+    //
+    // The suspension flag and the deferred batches are dropped UNDER the database's own suspend monitor - the same
+    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.offer, and the
+    // same argument Phase 2 of the resume rests on. Without it the flush thread could observe "suspended" just
+    // before this method runs and offer its batch just after, re-creating a deferred queue for a database this
+    // method has already forgotten: nothing would ever resume it, so the batch, the map entry pinning the closed
+    // instance and its RAM charge would all leak for the life of the process - and that leaked charge would
+    // throttle the committers of every later suspension in the JVM. Ordering the flag before the detach matters
+    // for the same reason it does in Phase 2: once it is clear, no further batch can be deferred (review of #6200).
+    final ConcurrentLinkedQueue<PagesToFlush> droppedDeferred;
+    synchronized (suspendLock(database)) {
+      suspended.remove(database);
+      resumingDatabases.remove(database);
+      droppedDeferred = deferredByDatabase.remove(database);
+    }
+    // Only now, or a defer racing the block above would resolve a FRESH monitor and be excluded by nothing.
     suspendLocks.remove(database);
     replayDrainLocks.remove(database);
-    suspended.remove(database);
-    resumingDatabases.remove(database);
     flushedPagesPerDatabase.remove(database);
-    final ConcurrentLinkedQueue<PagesToFlush> droppedDeferred = deferredByDatabase.remove(database);
+
+    // Deliberately outside that monitor: batchRAM takes each batch's own monitor, and the one nesting this class
+    // allows is suspendLock BEFORE batch.pages (what the defer path does). These batches are already detached, so
+    // no one else can be looking at them, and keeping the accounting out here avoids widening that nesting.
     if (droppedDeferred != null)
       for (final PagesToFlush batch : droppedDeferred)
         addDeferredRAM(database, -batchRAM(batch));

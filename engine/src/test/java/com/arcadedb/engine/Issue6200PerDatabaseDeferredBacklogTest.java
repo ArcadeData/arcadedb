@@ -291,6 +291,90 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
   }
 
   /**
+   * Purging a database that is STILL suspended takes its whole backlog with it - the deferred queue, its share of
+   * the total, and the suspension flag - and leaves the databases that are still suspended untouched.
+   * <p>
+   * Nothing ever resumes a database that is gone, so anything left behind here is permanent: a queue pinning the
+   * closed instance as a map key with its pages in RAM, and a charge on the JVM-wide total that would throttle the
+   * committers of every LATER suspension in the process.
+   */
+  @Test
+  void purgingASuspendedDatabaseTakesItsWholeBacklogWithIt() throws Exception {
+    final DatabaseInternal purgedDb = (DatabaseInternal) database;
+    final Database survivingDb = TestHelper.createDatabase("target/databases/" + getClass().getSimpleName() + "-purge");
+    try {
+      final PageManagerFlushThread flush = cappedFlushThread();
+      flush.setSuspended(purgedDb, true);
+      flush.setSuspended(survivingDb, true);
+      try {
+        enqueue(flush, purgedDb, 0);
+        enqueue(flush, (DatabaseInternal) survivingDb, 0);
+        flush.flushPagesFromQueueToDisk(null, 20L);
+        flush.flushPagesFromQueueToDisk(null, 20L);
+        assertThat(flush.deferredRAMBytes.get()).isEqualTo(2L * PAGE_SIZE);
+
+        flush.removeAllPagesOfDatabase(purgedDb);
+
+        assertThat(flush.hasDeferredBatches(purgedDb)).as("no deferred queue may outlive the database").isFalse();
+        assertThat(flush.getDeferredRAMBytesOf(purgedDb)).isZero();
+        assertThat(flush.isSuspended(purgedDb)).as("a database that is gone cannot be suspended").isFalse();
+
+        assertThat(flush.getDeferredRAMBytesOf(survivingDb)).as("and the sibling keeps its own backlog")
+            .isEqualTo(PAGE_SIZE);
+        assertThat(flush.deferredRAMBytes.get()).isEqualTo((long) PAGE_SIZE);
+      } finally {
+        flush.setSuspended(survivingDb, false);
+      }
+    } finally {
+      survivingDb.drop();
+    }
+  }
+
+  /**
+   * The same purge, racing the flush thread's poll of one of that database's batches.
+   * <p>
+   * The defer is decided under the database's suspend monitor, so the purge has to drop the suspension flag and
+   * detach the deferred queue under that SAME monitor: otherwise the flush thread can read "suspended" just before
+   * the purge and offer its batch just after it, re-creating a queue for a database the purge already forgot.
+   * <p>
+   * The interleaving is a few instructions wide, so this stresses it rather than forcing it: measured against the
+   * unguarded version it fails about one run in three, around iteration 100. What it pins deterministically is the
+   * invariant either order must leave - no queue, no charge - which is also what a future refactor would break.
+   */
+  @Test
+  void aBatchPolledWhileTheDatabaseIsPurgedIsNeverLeftDeferredForIt() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManagerFlushThread flush = cappedFlushThread();
+
+    for (int i = 0; i < 200; i++) {
+      flush.setSuspended(db, true);
+      enqueue(flush, db, i);
+
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread poller = new Thread(() -> {
+        try {
+          flush.flushPagesFromQueueToDisk(null, 100L);
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      }, "issue6200-poller-" + i);
+      final Thread purger = new Thread(() -> flush.removeAllPagesOfDatabase(db), "issue6200-purger-" + i);
+
+      poller.start();
+      purger.start();
+      poller.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+      purger.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+
+      assertThat(failure.get()).isNull();
+      assertThat(flush.hasDeferredBatches(db)).as("iteration %d: a purged database must be left with no deferred queue", i)
+          .isFalse();
+      assertThat(flush.getDeferredRAMBytesOf(db)).as("iteration %d", i).isZero();
+      assertThat(flush.deferredRAMBytes.get()).as("iteration %d: nothing may stay charged to a purged database", i)
+          .isZero();
+    }
+  }
+
+  /**
    * Constructing the flush thread directly does NOT start the background thread, so the pipeline only moves when the
    * test moves it.
    */
