@@ -230,7 +230,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * <p>
    * The ceiling therefore never shows up in a successful response: a 200 either carries everything within
    * {@code statedLimit} or was cut by {@code statedLimit} itself, which is why the caller reports
-   * {@code statedLimit} back as the effective {@code limit} of the response.
+   * {@code statedLimit} back as the effective {@code limit} of the response. A caller that stated nothing can
+   * never reach the refusal at all, because {@link #getDefaultRowLimit()} is already bounded by the ceiling and
+   * so cannot produce a {@code statedLimit} above it.
+   * <p>
+   * One inexactness is inherited rather than introduced: for the {@code graph} and {@code studio} serializers
+   * the cap counts graph elements and the row that reaches it is expanded whole, so a response whose last row
+   * crosses the ceiling can carry a few elements more than it (see {@link SerializationOutcome}). The ceiling
+   * bounds the rows a response materializes exactly; the element count it bounds within one row's expansion.
    */
   protected SerializationOutcome serializeResultSetBounded(final Database database, final String serializer,
       final int statedLimit, final int maxResultRows, final JSONObject response, final ResultSet qResult,

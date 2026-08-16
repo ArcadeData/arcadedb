@@ -2265,6 +2265,20 @@ A finite default was chosen over a disabled one because every other resource cei
 a ceiling an operator has to discover before it protects anything protects nobody. At 1,000,000 it sits 50x
 above the default page cap, so a realistic paging or export client never meets it.
 
+The two settings cannot be configured into disagreeing. `httpQueryDefaultLimit` is itself lowered to the
+ceiling when it is configured above it (or left unlimited while the ceiling is not), so a caller that states
+no limit at all is never refused - it gets the ordinary reported truncation it has always got, at the lower of
+the two values. The refusal is for a caller that asked to go past the ceiling, never for one served by the
+default.
+
+Two things the ceiling deliberately does not bound, both worth knowing before sizing it. It bounds the size of
+a response, not the peak cost of refusing one: the rows are serialized up to the ceiling before the result
+turns out to exceed it, and the work is then thrown away, so a client that routinely brushes the ceiling
+produces real garbage rather than merely a smaller payload - the same trade the gRPC path makes, and the price
+of never truncating silently. And it bounds the response, not the work a command does to produce it: a write
+that returns its rows (`UPDATE ... RETURN AFTER`) applies to every matching record before the response is
+built, and is then rolled back with the refusal, so the ceiling is not a guard against write amplification.
+
 Two paths that used to escape any bound are bounded at the fetch rather than at serialization: the `LIMIT` the
 POST endpoints push down into a command that states none is now capped by the ceiling (an unlimited `limit`
 used to push nothing down at all), and `profileExecution: detailed`, which drains the whole result set into

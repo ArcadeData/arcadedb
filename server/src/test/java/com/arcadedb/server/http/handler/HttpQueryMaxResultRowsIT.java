@@ -251,6 +251,39 @@ class HttpQueryMaxResultRowsIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aCeilingBelowTheDefaultCapTruncatesInsteadOfRefusing() throws Exception {
+    // A deployment whose two settings disagree must not turn ordinary default-cap traffic into 413s: the
+    // refusal is for a caller that asked to go past the ceiling, and this caller asked for nothing at all.
+    // The default is lowered to the ceiling instead, and the truncation is reported as it always was.
+    final int lowCeiling = DEFAULT_LIMIT / 2;
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, lowCeiling);
+    try {
+      final JSONObject response = query(new JSONObject()
+          .put("language", "sql")
+          .put("command", "SELECT i FROM " + TYPE_NAME));
+
+      assertThat(response.getJSONArray("result").length()).isEqualTo(lowCeiling);
+      assertThat(response.getInt("returned")).isEqualTo(lowCeiling);
+      assertThat(response.getInt("limit")).isEqualTo(lowCeiling);
+      assertThat(response.getBoolean("truncated")).isTrue();
+
+      // The GET endpoint, which pushes no LIMIT down, must agree.
+      final JSONObject viaGet = get("SELECT i FROM " + TYPE_NAME, null);
+      assertThat(viaGet.getJSONArray("result").length()).isEqualTo(lowCeiling);
+      assertThat(viaGet.getBoolean("truncated")).isTrue();
+
+      // A caller that DOES state a cap above the ceiling is still refused, so the clamp above has not turned
+      // the ceiling off for everybody.
+      assertThat(send("query", new JSONObject()
+          .put("language", "sql")
+          .put("command", "SELECT i FROM " + TYPE_NAME)
+          .put("limit", -1)).statusCode()).isEqualTo(413);
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, CEILING);
+    }
+  }
+
+  @Test
   void theCeilingCanBeTurnedOff() throws Exception {
     // -1 restores the pre-#5719 behaviour for a deployment that needs an unbounded escape hatch.
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, -1);

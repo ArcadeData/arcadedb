@@ -136,9 +136,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Maximum number of rows an endpoint serializes into a single response when the caller states no limit of its
    * own. A non-positive value means unlimited. Shared by every row-returning endpoint so one setting governs
    * them all (issue #5711).
+   * <p>
+   * Bounded by the hard ceiling, so a default configured above it (or left unlimited while the ceiling is not)
+   * is lowered rather than refused. Without that clamp a deployment whose two settings disagree would answer a
+   * caller that stated <i>nothing</i> with a 413: the cap it never asked for would exceed the ceiling, and the
+   * refusal is meant for a caller that asked to go past it, never for one served by the default. What a
+   * no-limit caller gets instead is the ordinary truncation it has always got, at the lower of the two values,
+   * reported as usual with {@code truncated} (issue #5719).
    */
   protected int getDefaultRowLimit() {
-    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT);
+    return applyMaxResultRows(
+        httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT),
+        getMaxResultRows());
   }
 
   /**
