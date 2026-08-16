@@ -39,6 +39,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 ;
 
@@ -225,15 +226,14 @@ public class OpenCypherWhereClauseTest {
 
     final String pathologicalInput = "a".repeat(40) + "!";
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> database.query("opencypher", "RETURN $input =~ '(.*a){20}$' AS result",
         Map.of("input", pathologicalInput)).next())
         .isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // Generous upper bound: proves the query was aborted near the configured deadline rather than
     // merely being slow (the unbounded match takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
   }
 
   @Test
@@ -253,15 +253,14 @@ public class OpenCypherWhereClauseTest {
         database.command("opencypher", "CREATE (p:PerRowPathological {name: $name})", Map.of("name", pathological));
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(
         () -> database.query("opencypher", "MATCH (p:PerRowPathological) WHERE p.name =~ '(.*a){20}$' RETURN p.name").next())
         .isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-row budgets would take >= 2000ms; a query-wide shared deadline keeps the whole
     // scan close to the single configured 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one query-wide deadline, not one 200ms budget per row");
   }
 
   @Test

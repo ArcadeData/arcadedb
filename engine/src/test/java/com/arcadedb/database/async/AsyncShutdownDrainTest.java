@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -101,7 +102,10 @@ class AsyncShutdownDrainTest extends TestHelper {
   }
 
   @Test
-  @Timeout(30)
+  // #6260: JUnit's timeout is plain wall clock and cannot be discounted for a stop-the-world pause the way the
+  // assertion below is, so it has to be wide enough that only a genuine hang trips it. Pre-fix, close() returns
+  // when the 60s wedge ends: this leaves the assertion room to fail with its own explanation instead.
+  @Timeout(120)
   void closeDoesNotHangOnAWedgedAsyncWorker() throws Exception {
     // #5080: database.close()/drop() drained the async executor via an UNBOUNDED waitCompletion(), so a
     // worker wedged inside a user task (here a 60s sleep, standing in for an infinite loop or stuck I/O)
@@ -123,18 +127,20 @@ class AsyncShutdownDrainTest extends TestHelper {
       async.setTransactionUseWAL(true);
 
       final CountDownLatch blockerStarted = new CountDownLatch(1);
-      // Wedged far longer than both the 1s close timeout and the 30s test timeout: pre-fix, the unbounded
-      // waitCompletion() would block close() until it finished (~60s), tripping @Timeout.
+      // Wedged far longer than the 1s close timeout and than the bound below: pre-fix, the unbounded
+      // waitCompletion() would block close() until it finished (~60s).
       async.scheduleTask(0, blockerTask(blockerStarted, 60_000), true, 0);
       assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
 
-      final long begin = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       db.close();
-      final long elapsed = System.currentTimeMillis() - begin;
 
-      assertThat(elapsed)
-          .as("close() must give up the async drain after ASYNC_CLOSE_TIMEOUT instead of hanging on a wedged worker")
-          .isLessThan(15_000L);
+      // #6260: this measured 27,396ms in a full-suite run with the code behaving correctly - the JVM had
+      // simply stopped the world for most of the window. The bound is a tripwire between a ~3s bounded
+      // shutdown and the 60s wedge, so it is discounted for JVM stalls rather than widened towards the 60s
+      // it has to stay clear of.
+      stopwatch.assertGaveUpWithin(15_000L,
+          "a close() that gives up the async drain after ASYNC_CLOSE_TIMEOUT from one that hangs on the 60s wedged worker");
     } finally {
       // #5105 review: drop even if the assertion failed, so a failure does not leak the wedged worker's
       // 60s thread or the DB directory. The bounded close config above keeps this final close bounded too.
@@ -147,7 +153,9 @@ class AsyncShutdownDrainTest extends TestHelper {
   }
 
   @Test
-  @Timeout(30)
+  // #6260: same reasoning as above - the method's own budget is a 10s await, so a 24s stop-the-world pause
+  // would trip a 30s timeout on a run where nothing was wrong.
+  @Timeout(120)
   void forceShutdownStillInterruptsWorkerWhenCallerThreadIsInterrupted() throws Exception {
     // #5105 review (finding 1): when close() drains from an already-interrupted thread, waitCompletion
     // returns false and re-sets the interrupt flag. async.close()'s shutdown uses interruptible steps, so
