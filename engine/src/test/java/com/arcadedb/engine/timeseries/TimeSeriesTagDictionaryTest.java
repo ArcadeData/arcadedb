@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -208,6 +209,54 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
     // ...and a third wave, to prove the trigger is the growth and not the reload count
     writer.internAll(List.of("host_e"));
     assertThat(follower.getById(5)).isEqualTo("host_e");
+  }
+
+  /**
+   * The self-heal must not be gated on this instance's page counter (issue #6198). That counter is seeded
+   * from the physical file size and afterwards only the schema-registered component gets it bumped at
+   * commit, so a second instance built while the writer's committed pages are still in the flush queue
+   * reads zero pages for a file that already holds a header and a data page. Gating on it made the
+   * lookup answer {@code null} in exactly the state the self-heal exists for - which is why the sibling
+   * test above passed alone and failed in a full-suite run, where the flush queue is behind.
+   * <p>
+   * The flush is suspended here to pin that state down instead of racing the flusher for it.
+   */
+  @Test
+  void anIdIsResolvedWhileTheWriterPagesAreStillInTheFlushQueue() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final AtomicReference<TimeSeriesTagDictionary> followerRef = new AtomicReference<>();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    // suspendFlushAndExecute() swallows whatever the callback throws, so nothing is asserted in here:
+    // the fixture is built, any failure is carried out, and the assertions run below.
+    db.getPageManager().suspendFlushAndExecute(db, () -> {
+      try {
+        final TimeSeriesTagDictionary writer = createDictionary("tags_unflushed");
+        writer.internAll(List.of("host_a", "host_b", "host_c"));
+        followerRef.set(new TimeSeriesTagDictionary(db, "tags_unflushed",
+            db.getDatabasePath() + "/tags_unflushed", writer.getFileId()));
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+
+    if (failure.get() != null)
+      throw new IllegalStateException("Failed to build the unflushed-writer fixture", failure.get());
+
+    final TimeSeriesTagDictionary follower = followerRef.get();
+    assertThat(follower).isNotNull();
+    // The fixture: not one page of this file had reached the disk when the follower was built
+    assertThat(follower.getTotalPages()).isZero();
+    assertThat(follower.size()).isZero();
+
+    assertThat(follower.getById(2)).isEqualTo("host_b");
+    assertThat(follower.size()).isEqualTo(3);
+    assertThat(follower.getById(1)).isEqualTo("host_a");
+    assertThat(follower.getById(3)).isEqualTo("host_c");
+    // The reload also brought the page counter in step, so a later append cannot allocate over a page
+    // that already holds entries
+    assertThat(follower.getTotalPages()).isEqualTo(2);
   }
 
   /**
