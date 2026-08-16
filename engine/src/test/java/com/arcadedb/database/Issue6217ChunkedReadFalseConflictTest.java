@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -50,12 +49,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue6217ChunkedReadFalseConflictTest extends BucketPageLayoutTestSupport {
-  private static final int RECORDS        = 12;
   private static final int WRITER_THREADS = 4;
   private static final int ROUNDS         = 25;
-
-  /** Payload length every record ends up with once they have all spilled out of their shared page. */
-  private int spilledPayloadSize;
 
   /**
    * The issue itself, made deterministic. Under {@code REPEATABLE_READ} the reading transaction caches the pages it
@@ -185,7 +180,7 @@ class Issue6217ChunkedReadFalseConflictTest extends BucketPageLayoutTestSupport 
               final char filler = (char) ('a' + round % 26);
               // Record 0 is deliberately left out of the writers' share: every conflict the reader can see is
               // therefore a conflict with a write to somebody ELSE's record.
-              for (int i = 1 + id; i < RECORDS; i += WRITER_THREADS) {
+              for (int i = 1 + id; i < CHUNKED_RECORDS; i += WRITER_THREADS) {
                 final int record = i;
                 try {
                   database.transaction(
@@ -233,61 +228,5 @@ class Issue6217ChunkedReadFalseConflictTest extends BucketPageLayoutTestSupport 
     final byte[][] content = new byte[1][];
     database.transaction(() -> content[0] = bucket.getRecordInternal(rid, false).toByteArray());
     return content[0];
-  }
-
-  /** Creates {@code RECORDS} records whose slots all live on page 0 and grows them until every one has spilled. */
-  private RID[] createChunkedRecords(final String typeName) {
-    final RID[] rids = new RID[RECORDS];
-    database.transaction(() -> {
-      database.getSchema().createDocumentType(typeName, 1).createProperty("payload", Type.STRING);
-      for (int i = 0; i < RECORDS; i++)
-        rids[i] = database.newDocument(typeName).set("payload", "r" + i).save().getIdentity();
-    });
-
-    // A record only spills once its page cannot host its growth, and a record that spilled leaves its head chunk
-    // behind, so the shared page fills up in steps: keep growing everybody until the last one has left.
-    for (int size = 1_000; size <= 24_000; size += 1_000) {
-      spilledPayloadSize = size;
-      database.transaction(() -> {
-        for (int i = 0; i < RECORDS; i++)
-          rids[i].asDocument(true).modify().set("payload", payload(i, 'x')).save();
-      });
-
-      if (RECORDS == (Long) bucketStats(typeName).get("totalMultiPageRecords"))
-        return rids;
-    }
-    throw new AssertionError(
-        "Not every record of " + typeName + " spilled into a chunk chain: " + bucketStats(typeName));
-  }
-
-  /** Same length for every record and every round, so a rewrite reuses the chunk chain the record already has. */
-  private String payload(final int record, final char filler) {
-    final String marker = "r" + record + "-";
-    return marker + String.valueOf(filler).repeat(spilledPayloadSize - marker.length());
-  }
-
-  private LocalBucket bucketOf(final String typeName) {
-    return (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
-  }
-
-  /** Runs {@code body} on a thread of its own, so it commits in a transaction other than the caller's. */
-  private void inAnotherThread(final Runnable body) {
-    final List<Throwable> errors = new CopyOnWriteArrayList<>();
-    final Thread thread = new Thread(() -> {
-      try {
-        body.run();
-      } catch (final Throwable e) {
-        errors.add(e);
-      }
-    }, "issue6217-writer");
-    thread.start();
-    try {
-      thread.join();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new AssertionError(e);
-    }
-    if (!errors.isEmpty())
-      throw new AssertionError("the concurrent write failed: " + errors.getFirst(), errors.getFirst());
   }
 }

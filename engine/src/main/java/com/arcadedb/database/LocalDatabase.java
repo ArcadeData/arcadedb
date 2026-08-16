@@ -40,6 +40,7 @@ import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -1426,6 +1427,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           LogManager.instance().log(this, Level.WARNING,
               "Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; "
                   + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());
+        } catch (final BrokenChunkChainException e) {
+          // The loader itself confirmed the chunk chain is structurally broken (#6258), so there is nothing left to
+          // disambiguate here: the body cannot be assembled and never will be. Same tolerant path as the branch below,
+          // minus the structural probe that branch has to run because a ConcurrentModificationException does not say
+          // which of the two problems it is. Still gated on the opt-in: forcing through is an admin decision either way.
+          if (!tolerateBrokenChain)
+            throw e;
+          forceBrokenChainDelete = true;
+          logBrokenChainForceDelete(record.getIdentity(), e);
         } catch (final ConcurrentModificationException e) {
           // The record body could not be assembled for a consistent read, so its indexed keys and EXTERNAL pointers could
           // not be read for cleanup. loadMultiPageRecord throws this after exhausting TX_RETRIES, but exhausted retries do
@@ -1447,6 +1457,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } else if (record instanceof Vertex) {
         try {
           graphEngine.deleteVertex((VertexInternal) record, forceBrokenChainDelete);
+        } catch (final BrokenChunkChainException e) {
+          // The record body could not be assembled to reach the vertex's edge lists, and the loader has already
+          // confirmed why (#6258): no structural probe needed, only the opt-in and the guard against re-forcing a
+          // delete that was already forced.
+          if (!tolerateBrokenChain || forceBrokenChainDelete)
+            throw e;
+          logBrokenChainForceDelete(record.getIdentity(), e);
+          graphEngine.deleteVertex((VertexInternal) record, true);
         } catch (final ConcurrentModificationException e) {
           // The physical removal can raise the #4932 retry signal even when index cleanup did not (e.g. the type has no
           // index left to read, so the broken chain is only discovered here). Fall back to force ONLY when the chain is
@@ -1459,6 +1477,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } else {
         try {
           bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
+        } catch (final BrokenChunkChainException e) {
+          // See the identical arm on the vertex branch above (#6258).
+          if (!tolerateBrokenChain || forceBrokenChainDelete)
+            throw e;
+          logBrokenChainForceDelete(record.getIdentity(), e);
+          bucket.deleteRecord(record.getIdentity(), true);
         } catch (final ConcurrentModificationException e) {
           if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
@@ -1492,7 +1516,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
-  private void logBrokenChainForceDelete(final RID rid, final ConcurrentModificationException e) {
+  private void logBrokenChainForceDelete(final RID rid, final Exception e) {
     LogManager.instance().log(this, Level.WARNING,
         "Cannot read record %s for index/external cleanup on delete (broken multi-page chunk chain): %s. Deleting the "
             + "record anyway; run a database check to repair any dangling index entries.", rid, e.getMessage());

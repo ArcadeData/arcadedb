@@ -27,6 +27,7 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
@@ -268,7 +269,8 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   public synchronized void load() throws IOException {
-    if (getTotalPages() == 0) {
+    if (peekHeaderPage() == null) {
+      // NOTHING WAS EVER STORED
       loaded = true;
       return;
     }
@@ -385,26 +387,41 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
 
   /**
    * Entry count as stored in the header page, which is what an id arriving from outside this instance
-   * has to be measured against. Read in a transaction of its own, like {@link #load()}, since this is
-   * reachable from inside a scan. A header that cannot be read degrades to the in-RAM count, so the
+   * has to be measured against. A header that cannot be read degrades to the in-RAM count, so the
    * caller declines to reload rather than reloading once per row.
    */
   private int peekStoredEntryCount() {
-    if (getTotalPages() == 0)
-      return entryCount;
-
-    database.begin();
     try {
-      return database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize)
-          .readInt(HEADER_ENTRY_COUNT_OFFSET);
+      final BasePage header = peekHeaderPage();
+      return header == null ? entryCount : header.readInt(HEADER_ENTRY_COUNT_OFFSET);
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Error reading the header of TimeSeries tag dictionary '%s': %s", e, getName(), e.getMessage());
       return entryCount;
-    } finally {
-      if (database.isTransactionActive())
-        database.rollback();
     }
+  }
+
+  /**
+   * The header page as the {@link PageManager} has it, or {@code null} when this dictionary has no page 0 at all -
+   * the one honest answer to "is there anything stored here", and the reason this does not ask
+   * {@link #getTotalPages()} (#6258, item 3).
+   * <p>
+   * {@code getTotalPages()} answers from this component's own page counter, which is seeded from the PHYSICAL size
+   * of the file when the component is constructed and bumped when THIS instance commits a page. Neither is the
+   * question. A page committed by somebody else - the leader's entries arriving on an HA follower through the Raft
+   * WAL, which is the entire reason this self-heal exists - is in the page cache long before the asynchronous flush
+   * thread gives the file a size, so a dictionary asked for such an id measured it against a page count of zero,
+   * declined to reload, and handed back {@code null} for a tag that was sitting right there. Same lesson as #5976,
+   * which took the physical file size out of the "does this page exist" decision on the transaction read path.
+   * <p>
+   * Read straight from the page manager rather than through a transaction, and that is deliberate on both counts:
+   * the newest committed header is precisely what a STALENESS test wants (a caller's REPEATABLE_READ snapshot would
+   * answer with the count this instance already knows about), and it costs one cache lookup instead of the
+   * begin/rollback pair this used to run on every miss. {@code isNew=true, createIfNotExists=false} is the
+   * combination that returns {@code null} for an absent page instead of creating one or throwing.
+   */
+  private BasePage peekHeaderPage() throws IOException {
+    return database.getPageManager().getImmutablePage(new PageId(database, fileId, 0), pageSize, true, false);
   }
 
   /**

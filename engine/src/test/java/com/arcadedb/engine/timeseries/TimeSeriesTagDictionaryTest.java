@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.schema.LocalSchema;
 import org.junit.jupiter.api.Test;
 
@@ -208,6 +209,70 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
     // ...and a third wave, to prove the trigger is the growth and not the reload count
     writer.internAll(List.of("host_e"));
     assertThat(follower.getById(5)).isEqualTo("host_e");
+  }
+
+  /**
+   * #6258, item 3: the self-heal must not be keyed on the PHYSICAL size of the file.
+   * <p>
+   * This is what made {@link #aSecondWaveOfIdsIsAlsoResolvedByReloading} flake on CI while passing everywhere else,
+   * and it was never a timing artefact of the test. A dictionary page is committed into the page cache immediately
+   * and written to the file by the asynchronous flush thread whenever it gets round to it. An instance that opens in
+   * that window sees a file of zero bytes, so its page counter says the dictionary is empty - and the reload that
+   * exists precisely to resolve an id it never interned itself declined to run, handing back {@code null} for a value
+   * sitting in the page cache. On a loaded machine the window is wide enough to hit; on an HA follower, where every
+   * id arrives from the leader, it is the whole failure mode.
+   * <p>
+   * Made deterministic by holding the flush thread for the entire fixture, so the file is provably still empty when
+   * the second instance opens - which the preconditions below ASSERT rather than assume, because a fixture that
+   * quietly stopped producing an unflushed file would go on passing while testing nothing.
+   */
+  @Test
+  void anIdIsResolvedWhileItsPageIsStillOnlyInTheCache() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    final long[] fileSize = new long[1];
+    final int[] followerPages = new int[1];
+    final String[] resolved = new String[2];
+    final int[] followerSize = new int[1];
+    final Throwable[] failure = new Throwable[1];
+
+    db.getPageManager().suspendFlushAndExecute(db, () -> {
+      try {
+        // Created INSIDE the suspension, header page included: everything this dictionary ever wrote is in the page
+        // cache and not one byte of it has reached the file.
+        final TimeSeriesTagDictionary writer = new TimeSeriesTagDictionary(db, "tags_unflushed",
+            db.getDatabasePath() + "/tags_unflushed");
+        ((LocalSchema) db.getSchema()).registerFile(writer);
+        writer.initHeaderPage();
+        writer.internAll(List.of("host_a", "host_b", "host_c"));
+
+        // The follower of the two tests above, opened while the file is still empty - which is what an HA follower
+        // does whenever it re-opens between the leader's write and the flush that follows it.
+        final TimeSeriesTagDictionary follower = new TimeSeriesTagDictionary(db, "tags_unflushed",
+            db.getDatabasePath() + "/tags_unflushed", writer.getFileId());
+
+        fileSize[0] = ((PaginatedComponentFile) db.getFileManager().getFile(writer.getFileId())).getSize();
+        followerPages[0] = follower.getTotalPages();
+        resolved[0] = follower.getById(2);
+        resolved[1] = follower.getById(3);
+        followerSize[0] = follower.size();
+      } catch (final Throwable e) {
+        // suspendFlushAndExecute swallows whatever the callback throws, so carry it out by hand.
+        failure[0] = e;
+      }
+    });
+
+    if (failure[0] != null)
+      throw new AssertionError("the fixture failed: " + failure[0], failure[0]);
+
+    assertThat(fileSize[0])
+        .as("precondition: the dictionary's pages must still be unwritten, or this test proves nothing").isZero();
+    assertThat(followerPages[0])
+        .as("precondition: an instance opened on that file must therefore count no pages at all").isZero();
+
+    assertThat(resolved[0]).as("an id whose page is committed but unflushed must still resolve").isEqualTo("host_b");
+    assertThat(resolved[1]).isEqualTo("host_c");
+    assertThat(followerSize[0]).as("and the reload it triggered must have loaded the whole dictionary").isEqualTo(3);
   }
 
   /**
