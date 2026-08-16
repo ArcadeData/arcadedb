@@ -190,14 +190,16 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isAlwaysTrue() {
+  public boolean isAlwaysTrue(final CommandContext context) {
+    // an empty OR block is the neutral element, ie. FALSE - and this answer is load-bearing since the planner drops
+    // the filter on it, so an undecidable block has to say no rather than inherit the AND block's verdict
     if (subBlocks.isEmpty())
-      return true;
+      return false;
 
-    for (BooleanExpression exp : subBlocks) {
-      if (exp.isAlwaysTrue()) {
+    // the disjunction is true as soon as one of its alternatives is
+    for (final BooleanExpression exp : subBlocks) {
+      if (exp.isAlwaysTrue(context))
         return true;
-      }
     }
     return false;
   }

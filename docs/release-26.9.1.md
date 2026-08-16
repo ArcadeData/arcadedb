@@ -2234,3 +2234,57 @@ purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to t
 nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
+
+## An always-true filter is dropped at plan time instead of being evaluated once per record (#6184)
+
+The mirror of #6174. That issue taught the planner to recognise a filter that is false for every record; a filter
+that is *true* for every record was still built as a filter step and evaluated per record, so `SELECT FROM C` and
+`SELECT FROM C WHERE 1=1` - the same query, written twice - produced two different plans:
+
+```
+SELECT FROM C                    -> + FETCH FROM TYPE C
+                                      + FETCH FROM BUCKET 1 (C_0) ASC
+
+SELECT FROM C WHERE 1=1          -> + FETCH FROM TYPE C WITH FILTER
+                                      + SCAN WITH FILTER BUCKET 1 (C_0)
+                                        1 = 1
+```
+
+The second paid a predicate evaluation per record, and lost the plain bucket fetch, to learn something the
+statement had already said.
+
+Nothing was stuck for want of a rule. `BooleanExpression.isAlwaysTrue()` had existed all along and was overridden
+by `AndBlock`, `OrBlock`, `ParenthesisBlock` and `NotBlock` - but **no leaf could implement it**, because the
+signature took no `CommandContext` and folding a comparison needs one to reach `operator.execute(...)`. So
+`BinaryCondition` never overrode it and the recursion always bottomed out at `false`: the method had no consumer
+outside the AST's own recursion, and `NOT (1=1)` was not folded as always-*false* either, even though
+`NotBlock.isAlwaysFalse` delegates to exactly this method for its negated branch.
+
+`isAlwaysTrue` now takes a `CommandContext`, the shape `isAlwaysFalse` got when it was introduced. The no-argument
+form is gone rather than kept alongside it - it had no caller outside the four AST classes that recursed into it,
+so two forms would only have been two things to keep consistent. `BinaryCondition` folds both verdicts through one
+private helper under the same restriction: **both** operands must be `Expression.isLiteral()`, which excludes a
+bound parameter (the plan outlives the execution that bound it) and a function call (nothing on `SQLFunction` marks
+a function as pure). `WHERE ? = 1` and `WHERE uuid() IS NOT NULL` are therefore still planned as scans, as they
+must be.
+
+The planner drops the where clause in `init()`, before the clauses are rearranged into index searches, so
+everything downstream sees the statement it would have seen without a `WHERE` at all: the projected properties
+computed for column pushdown, the choice between `FetchFromTypeWithFilterStep` and `FetchFromTypeExecutionStep`,
+and the hardwired `count(*)` plan. `NOT (1=0)` folds to always-true and `NOT (1=1)` to the always-false
+`EMPTY RESULT` of #6174, both for free through the existing `NotBlock` delegation.
+
+Dropping a filter is a wider step than folding one to an empty result: an always-false fold can only be wrong by
+returning too few rows, while dropping an always-true filter changes which fetch step is chosen. The regression
+test therefore compares the folded plan against the plan of the same statement written without its `WHERE` - step
+class by step class, so the fetch step and the bucket steps under it both have to agree - and then compares the
+records returned, their order, and the `readRecord` count.
+
+One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. `OR` is
+false when it has no alternatives, and the answer is now load-bearing, so it answers `false` - the conservative
+verdict, which at worst costs an optimisation.
+
+The value here is smaller than #6174's: nothing sends `WHERE 1=1` as a probe the way Spark sends `WHERE 1=0`, so
+this is symmetry and a small constant per record rather than a full scan avoided.
+
+[#6184](https://github.com/ArcadeData/arcadedb/issues/6184)

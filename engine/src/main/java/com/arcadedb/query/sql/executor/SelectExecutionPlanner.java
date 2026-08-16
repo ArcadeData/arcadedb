@@ -153,6 +153,15 @@ public class SelectExecutionPlanner {
       info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
     }
 
+    // A filter that keeps every record (WHERE 1=1, WHERE true) says nothing the statement did not already say, so it
+    // is dropped here rather than pushed into the fetch: everything downstream - the projected properties computed
+    // just below, the choice between FetchFromTypeWithFilterStep and FetchFromTypeExecutionStep, the hardwired
+    // count(*) plan - then sees the statement it would have seen without a WHERE at all. Decided off the clauses as
+    // the statement wrote them, before optimizeQuery() rearranges them into index searches, and only for
+    // literal-only comparisons, so the verdict holds for every execution that reuses the cached plan.
+    if (info.whereClause != null && info.whereClause.isAlwaysTrue(context))
+      info.whereClause = null;
+
     info.projectedProperties = computeProjectedProperties(info);
   }
 
