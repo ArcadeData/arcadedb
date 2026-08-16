@@ -18,10 +18,13 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -185,6 +188,26 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * Same as {@link #extractInt(Number, String)} plus an inclusive lower bound, rejected by name.
+   * <p>
+   * Use for the knobs that multiply the amount of work an algorithm performs - iteration counts, restarts,
+   * simulation counts, walks per node, context window widths. Below its minimum such a knob does not mean
+   * "a smaller run", it means an algorithm that cannot produce the result it was asked for, and without this
+   * check the value is either silently absorbed (a zero restart count returns the untouched random assignment,
+   * a zero epoch count returns untrained embeddings, a zero simulation count divides by zero and yields NaN) or
+   * surfaces as a bare {@code NegativeArraySizeException} from the allocator that never names the parameter.
+   *
+   * @param minimum smallest accepted value, inclusive
+   */
+  protected int extractInt(final Number value, final String paramName, final int minimum) {
+    final int extracted = extractInt(value, paramName);
+    if (extracted < minimum)
+      throw new IllegalArgumentException(
+          getName() + "(): " + paramName + " must be at least " + minimum + ", got " + extracted);
+    return extracted;
+  }
+
+  /**
    * Narrows an embedding-dimension-shaped config value to {@code int} and bounds it to
    * {@code [1, MAX_EMBEDDING_DIMENSION]}.
    * <p>
@@ -227,6 +250,129 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     if (count < 0)
       throw new IllegalArgumentException(getName() + "(): " + paramName + " must not be negative, got " + count);
     return count;
+  }
+
+  // ── Work bounds ──────────────────────────────────────────────────────────
+
+  /**
+   * Heap cost of one row of a walk matrix on top of its payload: 16-byte array header, 4-byte length, 4 bytes of
+   * padding and the 8-byte reference the enclosing array holds. Walk rows are typically short, so this overhead
+   * is a real part of the footprint rather than a rounding error.
+   * <p>
+   * A heuristic for a budget check, not a guarantee: the true figure moves with the JVM's object layout
+   * (compressed oops on or off, alignment). It does not need to be exact - it only has to keep the estimate in
+   * the right order of magnitude - so there is nothing to "correct" here short of measuring a specific JVM.
+   */
+  protected static final long WALK_ROW_OVERHEAD_BYTES = 32L;
+
+  /** Heap cost of one entry of a walk buffer, which is an {@code int}. */
+  protected static final long WALK_ENTRY_BYTES = 4L;
+
+  /**
+   * Rejects, before a single byte is allocated, a random-walk buffer whose estimated heap footprint exceeds
+   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY}.
+   * <p>
+   * The knobs that size these buffers ({@code walksPerNode}, {@code walkLength}, {@code steps}) have no
+   * graph-derived ceiling to clamp against, so they are bounded here by the resource they actually consume
+   * rather than by a guessed per-knob maximum: the budget scales with the JVM heap and is tunable, and the
+   * estimate is computed in saturating {@code long} arithmetic, so a product that would wrap {@code int} is
+   * caught here instead of surfacing as a {@code NegativeArraySizeException} from inside the walk generator.
+   *
+   * @param db             database whose configuration carries the budget
+   * @param estimatedBytes estimated footprint, computed with {@link #saturatingProduct(long, long)}
+   * @param detail         breakdown of the knobs that produced the estimate, for the error message
+   */
+  protected void checkWalkBudget(final Database db, final long estimatedBytes, final String detail) {
+    final long budget = db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY);
+    if (budget < 0 || estimatedBytes <= budget)
+      return;
+    throw new IllegalArgumentException(getName() + "(): the random walk buffer would need "
+        + (estimatedBytes == Long.MAX_VALUE ? "over " + Long.MAX_VALUE : Long.toString(estimatedBytes)) + " bytes ("
+        + detail + "), more than the " + budget + " bytes allowed. Set "
+        + GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY.getKey() + " to raise the limit");
+  }
+
+  /** Multiplies two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping. */
+  protected static long saturatingProduct(final long a, final long b) {
+    try {
+      return Math.multiplyExact(a, b);
+    } catch (final ArithmeticException e) {
+      return Long.MAX_VALUE;
+    }
+  }
+
+  /**
+   * Cooperative abort check for the CPU-bound loops of the algorithm procedures.
+   * <p>
+   * The knobs that drive those loops ({@code iterations}, {@code restarts}, {@code simulations},
+   * {@code walksPerNode}, ...) multiply time rather than a single allocation, and for time there is no honest
+   * ceiling to pick: how long a run may legitimately take is a property of the graph, the hardware and the
+   * caller's patience, not of the parameter. So a large value is not forbidden, it is made abortable - by
+   * interrupting the query thread, and by the {@code arcadedb.command.timeout} deadline, which until now only
+   * the SQL SELECT planner honoured.
+   * <p>
+   * The interrupt flag is CLEARED rather than restored, matching {@code ShortestPathStep} and
+   * {@code SQLFunctionShortestPath}: the exception aborts the whole call, and leaving the flag set would poison
+   * the next task to run on a pooled query thread. The clock is read only when a deadline is actually
+   * configured, so the default (timeout disabled) costs one flag test per iteration and no syscall.
+   */
+  protected final class WorkGuard {
+    /**
+     * Iterations between two checks in {@link #checkPeriodically(int)}. One less than a power of two so the
+     * throttle is a single AND, and small enough that the work between two checks stays well under a
+     * millisecond for any realistic inner-loop body.
+     */
+    private static final int CHECK_INTERVAL_MASK = 1023;
+
+    private final long timeoutMillis;
+    private final long deadline;
+
+    private WorkGuard(final long timeoutMillis) {
+      this.timeoutMillis = timeoutMillis;
+      this.deadline = timeoutMillis > 0 ? System.currentTimeMillis() + timeoutMillis : Long.MAX_VALUE;
+    }
+
+    /**
+     * Aborts the call if the query thread was interrupted or the command deadline has passed. Call from a
+     * loop whose single iteration already costs enough to swallow a flag test.
+     */
+    public void check() {
+      if (Thread.interrupted())
+        throw new CommandExecutionException(getName() + "() has been interrupted");
+      if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline)
+        throw new TimeoutException(getName() + "() exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey()
+            + " of " + timeoutMillis + "ms");
+    }
+
+    /**
+     * {@link #check()} throttled for a hot inner loop whose single iteration is too small to justify a flag
+     * test of its own. Checking only at the enclosing loop leaves abort latency proportional to the inner
+     * loop's length, which is exactly what these knobs make unbounded - node2vec's context window may span a
+     * whole walk, so one walk alone is O(walkLength&sup2;). Testing every 1024 iterations instead bounds the
+     * latency by a fixed amount of work at the cost of one AND and one branch per iteration.
+     * <p>
+     * "Every 1024" describes a counter that keeps climbing. The counter belongs to the caller, so a loop whose
+     * counter <em>restarts</em> - the negative-sampling loop runs {@code ns} from 0 again for every
+     * (position, context) pair - also tests on its first iteration every time round. That is deliberate rather
+     * than a redundancy to remove: it costs one flag test per restart, and it is what keeps a small
+     * {@code negSamples} responsive, since the enclosing context checkpoint fires only about once every 1024
+     * positions when the window is narrow.
+     *
+     * @param iterationCounter the caller's loop counter; its absolute value does not matter, only that it
+     *                         advances by one per iteration
+     */
+    public void checkPeriodically(final int iterationCounter) {
+      if ((iterationCounter & CHECK_INTERVAL_MASK) == 0)
+        check();
+    }
+  }
+
+  /**
+   * Creates a {@link WorkGuard} whose deadline starts now and honours
+   * {@link GlobalConfiguration#COMMAND_TIMEOUT}.
+   */
+  protected WorkGuard newWorkGuard(final CommandContext context) {
+    return new WorkGuard(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
   }
 
   /** @see GraphEngine#getAllVertices(Database, String[]) */

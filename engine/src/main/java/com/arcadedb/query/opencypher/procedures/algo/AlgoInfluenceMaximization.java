@@ -23,7 +23,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,6 +44,12 @@ import java.util.stream.Stream;
  * YIELD nodeId, rank, marginalGain
  * RETURN nodeId, rank, marginalGain ORDER BY rank ASC
  * </pre>
+ * </p>
+ * <p>
+ * {@code k} is clamped to the node count and rejected when negative. {@code simulations} must be at least 1
+ * (at 0 the Monte Carlo average divides by zero and the procedure silently returns nothing); above that it
+ * multiplies CPU work with no graph-derived ceiling, so instead of a guessed cap the cascade loop honours
+ * thread interruption and the {@code arcadedb.command.timeout} deadline.
  * </p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -81,9 +86,13 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final int k = args[0] instanceof Number n ? NumberUtils.saturateToInt(n) : 1;
+    // k saturates on purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to n below),
+    // but a NEGATIVE k has no such reading: unclamped it reaches `new int[seedCount]` as a bare
+    // NegativeArraySizeException that never names the parameter. extractCount() is exactly those two halves,
+    // added for algo.knn / algo.kShortestPaths by #6065.
+    final int k = args[0] instanceof Number n ? extractCount(n, "k") : 1;
     final String[] relTypes = args.length > 1 ? extractRelTypes(args[1]) : null;
-    final int simulations = args.length > 2 && args[2] instanceof Number n ? extractInt(n, "simulations") : 100;
+    final int simulations = args.length > 2 && args[2] instanceof Number n ? extractInt(n, "simulations", 1) : 100;
     final double propagationProbability = args.length > 3 && args[3] instanceof Number n ? n.doubleValue() : 0.1;
 
     final Database db = context.getDatabase();
@@ -100,6 +109,7 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
     final boolean[] isSeed = new boolean[n];
     final int[] seeds = new int[seedCount];
     final Random rng = new Random(42L);
+    final WorkGuard guard = newWorkGuard(context);
 
     final List<Result> results = new ArrayList<>(seedCount);
     double prevSpread = 0.0;
@@ -114,8 +124,15 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
 
         // Simulate IC spread from seeds ∪ {candidate}
         double totalSpread = 0.0;
-        for (int sim = 0; sim < simulations; sim++)
+        for (int sim = 0; sim < simulations; sim++) {
+          // Deliberately the unthrottled check(), not checkPeriodically(), unlike node2vec's and maxKCut's
+          // inner loops. Throttling pays off only where one iteration can be cheaper than the check itself,
+          // and simulateIC allocates and zero-fills two arrays of size n before the cascade starts, so it is
+          // never O(1) on any graph shape. Throttling to 1024 would instead make abort latency
+          // 1024 x O(n + m) cascades, worst on exactly the large graphs where the deadline matters most.
+          guard.check();
           totalSpread += simulateIC(adj, seeds, round, candidate, n, propagationProbability, rng);
+        }
         final double avgSpread = totalSpread / simulations;
 
         if (avgSpread > bestSpread) {

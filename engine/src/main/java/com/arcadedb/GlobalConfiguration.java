@@ -813,6 +813,28 @@ public enum GlobalConfiguration {
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
 
+  CYPHER_ALGO_MAX_WALK_MEMORY("arcadedb.cypher.algoMaxWalkMemory", SCOPE.DATABASE,
+      """
+      Maximum heap, in bytes, that a single call to an OpenCypher random-walk algorithm procedure may reserve for \
+      its walk buffers: algo.node2vec materialises walksPerNode x nodeCount walks of walkLength steps each, and \
+      algo.randomWalk a single walk of steps entries. Those knobs have no graph-derived ceiling to clamp against - \
+      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int would \
+      otherwise reach the allocator unchecked, or wrap the int product on the way there and surface as a \
+      NegativeArraySizeException from inside the walk generator. The estimate is computed in saturating long \
+      arithmetic and checked BEFORE anything is allocated: a call over the budget is rejected as a client error \
+      naming the knobs that produced the estimate and this setting. Negative number means no limit. When left at \
+      the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), so the walk buffers \
+      of a legitimate large run stay a fraction of the heap they share with the rest of the query.""",
+      Long.class, 64 * 1024 * 1024L, null, value -> {
+        // Auto-scale the default with the JVM max heap: one eighth of it, never below the 64MB floor so that a
+        // typical run (a few million walk entries) keeps working on small footprints.
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        if (maxHeap == Long.MAX_VALUE)
+          // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.
+          return 64 * 1024 * 1024L;
+        return Math.max(64 * 1024 * 1024L, maxHeap / 8);
+      }),
+
   // GRAPHQL
   GRAPHQL_MAX_NESTING_DEPTH("arcadedb.graphql.maxNestingDepth", SCOPE.DATABASE,
       """
