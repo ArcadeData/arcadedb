@@ -144,8 +144,9 @@ public class PageManagerFlushThread extends Thread {
    * SUSPENDED databases are ever deferred - so this is the number that actually explains a backlog, and the one
    * {@code arcadedb.pagemanager.deferred_ram_bytes} needs to be tagged by database (item 2 of #6087), which the
    * single JVM-wide total could not express. An entry is created with a database's first deferred batch and dropped
-   * when the whole backlog drains ({@link #resetDeferredRAMIfDrained}) or when the database is purged, so it is
-   * bounded by the number of open databases and empty whenever nothing is deferred anywhere.
+   * when its backlog ends - its last suspender resumed, or it was closed or dropped, both through
+   * {@link #releaseResidualDeferredRAM} - so it is bounded by the number of open databases and empty whenever
+   * nothing is deferred anywhere.
    */
   final ConcurrentHashMap<BasicDatabase, AtomicLong> deferredRAMByDatabase = new ConcurrentHashMap<>();
 
@@ -153,6 +154,13 @@ public class PageManagerFlushThread extends Thread {
    * Monitor of the committer-side backpressure of issue #4728: waiters park here while the deferred backlog is over
    * the cap, and {@link #addDeferredRAM} notifies them when it drops back under. Bounded waits, so a suspension
    * released without freeing any RAM (nothing was deferred) still lets its committers out.
+   * <p>
+   * ONE monitor for every suspended database, not one per database, because the condition they are all waiting on is
+   * one number: the JVM-wide total, which any database's release can move under the cap. Splitting it per database
+   * would mean notifying every one of them on every release anyway - the same wake-ups through more monitors. The
+   * herd is bounded by construction: the signal fires only on the DOWNWARD crossing of the cap (not per released
+   * page), on a resume, on a purge and on shutdown, and every woken committer re-reads the total and either
+   * proceeds or parks again.
    */
   private final Object deferredRAMLock = new Object();
 
@@ -857,10 +865,13 @@ public class PageManagerFlushThread extends Thread {
       // a long suspension throttles many of them, and the point is to name the database whose backlog is doing it.
       if (!reported && System.currentTimeMillis() - beginTime > DEFERRED_BACKLOG_WARN_MILLIS) {
         reported = true;
+        // Both numbers, and the JVM-wide one named as such: the cap is on the total across every suspended
+        // database, so the backlog holding this database's committers is very often NOT its own - which is the
+        // whole subject of #6200, and precisely what an operator reading a single figure would misread.
         LogManager.instance().log(this, Level.WARNING,
-            "Commits on database '%s' have been throttled for over %d ms: page flushing is suspended (backup or HA snapshot) and the deferred backlog is %s, at or above the '%s' cap",
+            "Commits on database '%s' have been throttled for over %d ms: page flushing is suspended (backup or HA snapshot) and the JVM-wide deferred backlog is %s, of which %s is this database's own, at or above the '%s' cap",
             null, db.getName(), DEFERRED_BACKLOG_WARN_MILLIS, FileUtils.getSizeAsString(deferredRAMBytes.get()),
-            GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM.getKey());
+            FileUtils.getSizeAsString(getDeferredRAMBytesOf(db)), GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM.getKey());
       }
     }
   }
